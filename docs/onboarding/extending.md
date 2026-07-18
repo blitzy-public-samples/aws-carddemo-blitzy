@@ -275,38 +275,35 @@ the no-feature-expansion boundary.
 > **Already delivered at this milestone** (previously listed here as future work): the application
 > modules under `src/main/**` and `src/test/**`; the Flyway schema; the core batch pipelines
 > (`dailyTransactionLoadJob`, `dailyTransactionValidateJob`, `dailyTransactionPostingJob`,
-> `interestCalculationJob`, `transactionReportJob`, `transactionCombineJob`, plus the master-print
-> and backup jobs); the golden-file parity tests and the per-reject-code coverage
+> `interestCalculationJob`, `transactionReportJob`, `transactionCombineJob`, `statementGenerationJob`
+> (`CREASTMT` / `CBSTM03A` + `CBSTM03B`), plus the master-print and backup jobs); the golden-file
+> parity tests — including the byte-exact statement fixtures under
+> `src/test/resources/golden/statement/` — and the per-reject-code coverage
 > (`100` / `101` / `102` / `103`); the local observability stack (`docker-compose.yml` with
 > PostgreSQL + Prometheus + Tempo + Grafana, verified locally); the CI workflow
 > (`.github/workflows/ci.yml`); and the Maven wrapper (`mvnw` / `mvnw.cmd` / `.mvn/`). Those items are
 > removed from the list below.
 
-1. **Statement generation job (`CREASTMT` / `CBSTM03A` + `CBSTM03B`).** The one remaining unmapped
-   batch pipeline. Implement `StatementGenerationJob` with the `CBSTM03B` file I/O re-expressed as an
-   injected file service (see the CALL-graph mapping in
-   [`../traceability-matrix.md`](../traceability-matrix.md)); preserve the statement record layout via
-   `common/util/FixedWidthCodec`.
-2. **Real executed-COBOL golden fixtures.** The current golden files derive from the legacy record
+1. **Real executed-COBOL golden fixtures.** The current golden files derive from the legacy record
    layouts and seed data, not from a live legacy run (no running COBOL system is assumed —
    [`../decision-log.md`](../decision-log.md), D21). If a legacy runtime becomes available, capture the
-   real POSTTRAN / INTCALC / report outputs and assert row-for-row against them, which would also
-   close the interest-rounding divergence question (HALF_UP vs. COBOL truncation, D31) against
+   real POSTTRAN / INTCALC / report / statement outputs and assert row-for-row against them, which would
+   also close the interest-rounding divergence question (HALF_UP vs. COBOL truncation, D31) against
    authoritative output.
-3. **Field-contract tests for online DTOs.** Assert each screen DTO preserves the BMS field names,
+2. **Field-contract tests for online DTOs.** Assert each screen DTO preserves the BMS field names,
    lengths, types, edit rules, and PF-key actions.
-4. **`@StepScope` batch writers for in-JVM concurrency.** The three fixed-width writers are singletons
+3. **`@StepScope` batch writers for in-JVM concurrency.** The three fixed-width writers are singletons
    and therefore support one job launch per JVM (D37). Convert them to `@StepScope` if concurrent
    same-JVM launches are ever required — the recorded, sanctioned forward path.
-5. **Parameterized scheduled batch flow.** The in-scope jobs need job parameters (`parmDate`,
+4. **Parameterized scheduled batch flow.** The in-scope jobs need job parameters (`parmDate`,
    `startDate` / `endDate`, `inputResource`) or externally-staged DALYTRAN input, so today they run via
    the integration-test suite and manual launch (see
    [`./getting-started.md`](./getting-started.md), "Run the batch jobs"). Add a parameterized scheduled
    flow (load → validate → post → interest → report) when operational scheduling beyond the nightly
    master-print/backup smoke loop is required.
-6. **Spring Boot lifecycle.** Track the Boot 3.5.x support status and plan a supported upgrade path
+5. **Spring Boot lifecycle.** Track the Boot 3.5.x support status and plan a supported upgrade path
    before any production use (see [`../decision-log.md`](../decision-log.md)).
-7. **Data anomalies.** Carry the classified legacy source anomalies (see
+6. **Data anomalies.** Carry the classified legacy source anomalies (see
    [`./pitfalls.md`](./pitfalls.md)) into fixtures/tests as known conditions — **classify, never
    edit** the legacy bytes.
 

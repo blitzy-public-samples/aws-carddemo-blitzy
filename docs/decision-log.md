@@ -74,6 +74,9 @@ its Java target, while this log explains the reasoning behind the design those m
 | [D38](#d38--reason-code-109-is-excluded-from-rejectcode-and-maps-to-return-code-8) | I. Batch Parity & Robustness | Reason code 109 excluded from RejectCode; maps to return code 8 | **Documented deviation** |
 | [D39](#d39--reject-101-account-not-found-is-an-unreachable-defensive-branch-under-the-cross-reference-foreign-key) | I. Batch Parity & Robustness | Reject 101 is an unreachable defensive branch under the cross-reference foreign key | Documented consequence |
 | [D40](#d40--transaction-report-read-order-is-cardnum-tranid-a-documented-deviation-from-physical-tran-id-order) | I. Batch Parity & Robustness | Transaction report read order is (cardNum, tranId) | **Documented deviation** |
+| [D41](#d41--statement-output-files-carry-no-in-band-delimiter-pure-recfmfb-image) | I. Batch Parity & Robustness | Statement output files carry no in-band delimiter (pure RECFM=FB image) | Contract preservation |
+| [D42](#d42--atomic-statement-file-publish-with-owner-only-temporary-work-files) | I. Batch Parity & Robustness | Atomic statement-file publish with owner-only temporary work files | **Intentional improvement** |
+| [D43](#d43--statement-html-is-a-byte-exact-batch-artifact-not-a-served-web-view-f29f32-disposition) | I. Batch Parity & Robustness | Statement HTML is a byte-exact batch artifact, not a served web view (F29/F32) | **Documented disposition** |
 
 ---
 
@@ -559,9 +562,14 @@ its Java target, while this log explains the reasoning behind the design those m
   the parameter validator or process zero rows, so forcing them into the smoke loop would be misleading.
   Instead they are verified by the **Testcontainers integration-test suite** in the `build` job and are
   documented for manual, parameterized launch in
-  [`docs/onboarding/getting-started.md`](./onboarding/getting-started.md) ("Run the batch jobs"). The
-  only remaining unimplemented mapped job is `StatementGenerationJob` (CREASTMT/CBSTM03A), deferred to a
-  later checkpoint. Because the jobs use **no `JobParametersIncrementer`**, each launch passes a
+  [`docs/onboarding/getting-started.md`](./onboarding/getting-started.md) ("Run the batch jobs"). `StatementGenerationJob`
+  (CREASTMT/CBSTM03A + CBSTM03B) is **likewise implemented** and is verified by the **Testcontainers
+  integration-test suite** (`StatementGenerationJobTest`, asserting both the text and HTML outputs
+  byte-for-byte against the golden fixtures under `src/test/resources/golden/statement/`); like the jobs
+  above it is **intentionally kept out of the correlationId-only nightly loop**, because it emits one
+  statement per cross-reference record and so needs an isolated seeded scenario — a bare launch against the
+  full base seed would emit many statements and be misleading. **All mapped batch jobs are therefore
+  implemented at this checkpoint.** Because the jobs use **no `JobParametersIncrementer`**, each launch passes a
   **unique identifying `correlationId`** parameter so nightly re-runs never hit
   `JobInstanceAlreadyCompleteException` (the value also propagates as the batch correlation id). This
   launch-by-name mechanism is exercised locally (the five nightly-loop jobs return `COMPLETED` / exit 0)
@@ -1481,6 +1489,148 @@ reviewable rationale (Explainability rule, §0.8.2).
   sequence would see a different detail ordering. *Mitigation:* the change is content-preserving and the
   golden-file report test asserts the canonical byte output; the deviation is documented here and
   cross-referenced from the job Javadoc and the traceability matrix.
+
+---
+
+### D41 — Statement output files carry no in-band delimiter (pure `RECFM=FB` image)
+
+- **Status:** Accepted
+- **Type:** Contract preservation (byte-exact external-file contract; corrects a framing defect)
+- **AAP references:** §0.5.4 (`StatementGenerationJob` &larr; CBSTM03A + CBSTM03B; fixed-width
+  reader/writer layouts), §0.7.1 / H3 (fixed-width record fidelity), §0.9.2 (golden-file row-for-row
+  parity), §0.9.6 (external file contracts byte/semantically preserved), G3 (identical external
+  interface contracts)
+- **Decision:** `batch/writer/StatementItemWriter` writes the plain-text (`STMTFILE` /
+  `FD-STMTFILE-REC PIC X(80)`) and HTML (`HTMLFILE` / `FD-HTMLFILE-REC PIC X(100)`) statement records
+  **back-to-back with no in-band delimiter and no trailing newline**. A statement file of *n* records is
+  therefore exactly *n* &times; width bytes (the golden fixtures are 22 &times; 80 = 1760 and
+  97 &times; 100 = 9700 bytes), containing no `0x0A`/`0x0D` byte anywhere. Record boundaries are implied
+  solely by the fixed record length, faithfully reproducing the COBOL `RECFM=FB` DD image
+  (`CREASTMT.JCL` STEP040 `DCB=(...,RECFM=FB)`).
+- **Context:** The prior implementation appended a single `LF` after each record, so the files were
+  22 &times; 81 = 1782 and 97 &times; 101 = 9797 bytes — one framing byte per record more than the
+  fixed-block contract. QA raised this as a **critical** parity defect: the statement outputs are the
+  job's byte-exact acceptance artifact (asserted row-for-row and by pinned SHA-256 against the shipped
+  goldens), and an in-band `LF` makes each physical record one byte longer than its `PIC X(80)`/`PIC
+  X(100)` length.
+- **Distinction from [D36](#d36--fixed-width-records-are-lf-framed-and-embedded-delimiters-are-sanitized):**
+  D36 governs the three *other* fixed-width writers (`DailyTransactionPostingWriter` DALYREJS,
+  `InterestTransactionWriter` SYSTRAN, `TransactionReportWriter` report), which retain a trailing `LF`
+  **for diff-ability during local golden validation**. D41 is scoped **only** to the statement writer and
+  reaches the opposite framing choice because its acceptance criteria differ: the statement tests read
+  the outputs by **fixed-width slicing** (not by line terminator) and assert **raw-byte equality plus a
+  pinned SHA-256** against the goldens, so the diff-ability rationale D36 cited does not apply here — and
+  the byte-exact `RECFM=FB` image is the stronger, required contract. The golden README documents a
+  width-based (not line-based) verification recipe. The two decisions are deliberately scoped to disjoint
+  writer sets; harmonizing the other writers to a delimiter-free image is a separate, out-of-boundary
+  consideration owned by those writers' pipelines.
+- **Alternatives:**
+  1. *Keep the trailing `LF` (as D36 does for the other writers).* **Rejected:** it violates the
+     statement's byte-exact fixed-record contract (each record would be 81/101 physical bytes), which the
+     golden row-for-row and SHA-256 assertions and AAP §0.9.6 require. The diff-ability benefit that
+     justified the `LF` elsewhere is unnecessary here because the statement tests and the README verify by
+     fixed width, not by line.
+  2. *Escape or otherwise transform record content.* **Rejected:** any transformation would change the
+     fixed record length and break byte parity; `FixedWidthCodec.writeAlphanumeric` already sanitizes any
+     stray in-field `0x0A`/`0x0D` to a space (D36) so no delimiter byte can appear inside a record.
+- **Rationale:** Removing the framing byte makes the Java output a pure length-framed image identical to
+  the legacy `RECFM=FB` dataset and to the regenerated goldens, and lets the boundary test assert the
+  strongest possible parity (raw-byte array equality, exact file length as an exact multiple of the
+  record width, per-record byte offsets, and a pinned SHA-256). Record content, column layout, monetary
+  edits, transaction ordering, and the RC 0/8 mapping are all unchanged.
+- **Risk & mitigation:** A consumer that previously split the statement file on `LF` would now see one
+  length-framed stream. *Mitigation:* fixed-length records are self-delimiting (read *width* bytes per
+  record); the writer/boundary tests assert the no-delimiter contract (no `0x0A`/`0x0D`, exact multiple of
+  width, fixed offsets), the goldens were regenerated to the delimiter-free image with recomputed
+  checksums, and the golden README documents the width-based verification.
+
+---
+
+### D42 — Atomic statement-file publish with owner-only temporary work files
+
+- **Status:** Accepted
+- **Type:** Intentional improvement (robustness / atomicity; no behavioral or layout change on a clean run)
+- **AAP references:** §0.5.4 (`StatementGenerationJob` writer), §0.7.1 / H3 (statement output fidelity),
+  §0.9.6 (external file contracts byte/semantically preserved)
+- **Decision:** `batch/writer/StatementItemWriter` streams both statement outputs to **unique per-run
+  temporary work files created in the same output directory** (owner-only `rw-------` where the filesystem
+  supports POSIX permissions), and publishes each onto its final path **only when the step succeeds**,
+  using an atomic move (`Files.move(..., ATOMIC_MOVE, REPLACE_EXISTING)`, falling back to a replacing move
+  only where an atomic move is unsupported). A run counts as successful only when there was no I/O error
+  **and** the step did not fail for any other reason; on any failure — including a publish or an open
+  failure — the temporary work files are deleted and the final paths are left untouched. A publish failure
+  maps to `ExitStatus.FAILED` (RC 8).
+- **Context:** The prior implementation opened the **final** paths directly with `TRUNCATE_EXISTING`, so a
+  chunk rollback, a mid-write I/O error, or a job failure could leave a half-written or truncated
+  statement file at a final path (CWE-459). Because statement generation has no reject path, the only
+  outcomes are a complete pair of files or a clean failure that publishes nothing.
+- **Relationship to [D35](#d35--atomic-reject-file-publish-with-a-substituting-iso-8859-1-encoder):** this
+  applies the same temp-write-then-atomic-publish integrity pattern D35 established for the DALYREJS reject
+  file to the two statement outputs, adding owner-only permissions on the in-progress work files. The two
+  statement files are independent artifacts (the two CBSTM03A output DDs) and are published independently;
+  each published file is always complete (never truncated).
+- **Alternatives:**
+  1. *Keep opening the final paths directly with `TRUNCATE_EXISTING`.* **Rejected:** it destroys any prior
+     good output up front and can leave a partial file on failure — the exact CWE-459 condition QA flagged.
+  2. *Publish both files under a single all-or-nothing transaction.* **Rejected:** a two-file atomic swap
+     is not available from the filesystem; per-file atomic publication already guarantees no partial file
+     at any final path, matching the two independent COBOL output DDs.
+- **Rationale:** On a clean run the published bytes are identical to before — the golden statement output
+  is unchanged — because only the *destination mechanics* changed (write to a temp, then rename), not the
+  record content. The change purely hardens the failure modes required by the checkpoint atomicity
+  criterion ("a file-write failure must leave no orphan/partial final file") and additionally protects the
+  in-progress artifact with owner-only permissions.
+- **Risk & mitigation:** On a non-POSIX filesystem the owner-only permission attribute is not applied.
+  *Mitigation:* the atomic-publish guarantee is independent of permissions; the owner-only step is
+  best-effort and guarded, and the behavior is covered by writer unit tests (clean publish leaves no temp
+  and, on POSIX, `rw-------` finals; a failed or aborted run publishes nothing and removes the temps).
+
+---
+
+### D43 — Statement HTML is a byte-exact batch artifact, not a served web view (F29/F32 disposition)
+
+- **Status:** Accepted
+- **Type:** Documented disposition (parity precedence; no code change)
+- **AAP references:** G3 (identical external interface contracts), G7 (no feature expansion), §0.3.3
+  (3270/BMS screen rendering and new web UI explicitly out of scope), §0.7.1 / H3 (fixed-width record
+  fidelity), §0.9.6 (external file contracts byte/semantically preserved)
+- **Decision:** The HTML statement file (`HTMLFILE` / `FD-HTMLFILE-REC PIC X(100)`) is preserved as a
+  **byte-exact reproduction of the legacy CBSTM03A HTML output**. QA raised the persisted-value HTML
+  concatenation as a stored-XSS concern (F29) and the statement markup as an accessibility/UI concern
+  (F32). Both are **dispositioned as preserve-parity-and-document** rather than code-changed at this
+  boundary, because the HTML statement is a frozen external **file** contract, not a served web page.
+- **Rationale (why the parity artifact is kept as-is):**
+  - **It is a batch file, not an executable web response.** The HTML statement is written to the
+    `HTMLFILE` DD image by the batch writer and asserted byte-for-byte against the golden fixture. No
+    controller serves this artifact as an executable `text/html` response, so the persisted markup is not
+    rendered in a browser trust context by the application. This satisfies F29's own accepted alternative
+    — *"keep the raw parity output non-executable"* — and CWE-79 does not arise for a file that the
+    application never serves executably.
+  - **HTML-escaping the field values would break byte parity.** Escaping (`&`, `<`, `>`, `"`) changes the
+    field bytes and therefore the fixed 100-byte record image and the pinned golden SHA-256, violating G3
+    and §0.9.6 ("fixed-width layouts byte/semantically preserved"). Under the precedence rules the frozen
+    external-file contract wins over a generic output-encoding heuristic for an artifact the application
+    does not execute.
+  - **A separate accessible/escaped rendering is feature expansion.** Producing a second, escaped and
+    accessibility-restructured HTML view (semantic landmarks, viewport, contrast-adjusted styling) would
+    add a capability beyond the existing COBOL scope — explicitly excluded by G7 and by §0.3.3, which
+    rules out BMS/3270 rendering and any new web UI as out of scope.
+- **Existing protections retained:** the writer never logs statement or HTML line content, and no CVV or
+  password ever appears in a statement (enforced in application code); see
+  [D22](#d22--password-hashing-and-cvv-hardening) and
+  [D34](#d34--card-pan-masked-in-batch-operational-logs-pci-dss-first-6last-4).
+- **Alternatives:**
+  1. *HTML-escape the concatenated field values.* **Rejected here:** breaks the byte-exact statement
+     contract (G3, §0.9.6) for an artifact the application does not serve executably; F29's non-executable
+     alternative is the applicable resolution.
+  2. *Add an approved, escaped, accessible statement view alongside the parity artifact.* **Deferred as
+     out of scope:** a new rendered view is feature expansion (G7, §0.3.3). Recorded here as the sanctioned
+     forward path if a served statement view is ever in scope, at which point escaping and accessibility
+     would be mandatory for that *served* surface.
+- **Risk & mitigation:** If a future component were to serve this file as executable HTML, the persisted
+  markup would need output-encoding at that serving boundary. *Mitigation:* the artifact is a batch file
+  only; this constraint (escape at any future serving boundary) is recorded here so the parity artifact is
+  never mistaken for a safe-to-serve web response.
 
 ---
 

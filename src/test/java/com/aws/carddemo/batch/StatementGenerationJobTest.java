@@ -20,16 +20,18 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.Mockito.atLeastOnce;
 import static org.mockito.Mockito.verify;
 
-import java.io.BufferedReader;
 import java.io.IOException;
 import java.io.InputStream;
-import java.io.InputStreamReader;
 import java.io.UncheckedIOException;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
+import java.util.ArrayList;
+import java.util.HexFormat;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicLong;
 
@@ -110,8 +112,10 @@ import com.aws.carddemo.repository.TransactionRepository;
  * size) against the shipped golden fixtures {@code golden/statement/expected-statement.txt} (22
  * fixed-width 80-character records, {@value #EXPECTED_TEXT_SIZE} bytes) and
  * {@code golden/statement/expected-statement.html} (97 fixed-width 100-character records,
- * {@value #EXPECTED_HTML_SIZE} bytes). Both fixtures are LF-only and end with a trailing newline,
- * matching the writer's ISO-8859-1 fixed-width emission.</p>
+ * {@value #EXPECTED_HTML_SIZE} bytes). Both fixtures reproduce the COBOL {@code RECFM=FB} contract:
+ * records are stored back-to-back with <strong>no in-band delimiter and no trailing newline</strong>,
+ * so a file of <var>n</var> records is exactly <var>n</var>&nbsp;&times;&nbsp;width bytes &mdash;
+ * matching the writer's ISO-8859-1 fixed-width emission byte-for-byte.</p>
  *
  * <h2>Critical test isolation</h2>
  * <p>{@code CBSTM03A} emits <strong>one statement per cross-reference record</strong> it reads
@@ -181,17 +185,25 @@ class StatementGenerationJobTest {
     /** Number of records in the golden HTML statement. */
     private static final int EXPECTED_HTML_RECORD_COUNT = 97;
 
-    /** Byte-exact golden text size: 22 records &times; (80 data bytes + 1 LF) = 1782 bytes. */
-    private static final long EXPECTED_TEXT_SIZE = 1782L;
+    /** Byte-exact golden text size: 22 records &times; 80 data bytes = 1760 bytes (RECFM=FB, no delimiter). */
+    private static final long EXPECTED_TEXT_SIZE = 1760L;
 
-    /** Byte-exact golden HTML size: 97 records &times; (100 data bytes + 1 LF) = 9797 bytes. */
-    private static final long EXPECTED_HTML_SIZE = 9797L;
+    /** Byte-exact golden HTML size: 97 records &times; 100 data bytes = 9700 bytes (RECFM=FB, no delimiter). */
+    private static final long EXPECTED_HTML_SIZE = 9700L;
 
     /** Classpath location of the authoritative expected plain-text statement. */
     private static final String GOLDEN_TEXT_RESOURCE = "golden/statement/expected-statement.txt";
 
     /** Classpath location of the authoritative expected HTML statement. */
     private static final String GOLDEN_HTML_RESOURCE = "golden/statement/expected-statement.html";
+
+    /** Pinned SHA-256 of the golden text fixture; guards the byte-exact external-file contract. */
+    private static final String GOLDEN_TEXT_SHA256 =
+            "1372a816705a1facfffe0e80123efd781b7c8c9a8bd391a9d1cacade6abdb481";
+
+    /** Pinned SHA-256 of the golden HTML fixture; guards the byte-exact external-file contract. */
+    private static final String GOLDEN_HTML_SHA256 =
+            "bd6187bbb7a8b57effd9f5b55e7ebd5baee1294b671bbc6400a8bbcd3258ad47";
 
     /** Sentinel contained in the first text record ({@code ST-LINE0}). */
     private static final String START_SENTINEL = "START OF STATEMENT";
@@ -534,8 +546,8 @@ class StatementGenerationJobTest {
         JobExecution execution = jobLauncherTestUtils.launchJob(statementParams());
         assertThat(execution.getStatus()).isEqualTo(BatchStatus.COMPLETED);
 
-        List<String> produced = readProducedLines(textFile());
-        List<String> golden = readGoldenLines(GOLDEN_TEXT_RESOURCE);
+        List<String> produced = readProducedRecords(textFile(), TEXT_RECORD_LENGTH);
+        List<String> golden = readGoldenRecords(GOLDEN_TEXT_RESOURCE, TEXT_RECORD_LENGTH);
 
         assertThat(produced)
                 .as("text statement is byte/row-identical to the golden fixture")
@@ -578,8 +590,8 @@ class StatementGenerationJobTest {
         JobExecution execution = jobLauncherTestUtils.launchJob(statementParams());
         assertThat(execution.getStatus()).isEqualTo(BatchStatus.COMPLETED);
 
-        List<String> produced = readProducedLines(htmlFile());
-        List<String> golden = readGoldenLines(GOLDEN_HTML_RESOURCE);
+        List<String> produced = readProducedRecords(htmlFile(), HTML_RECORD_LENGTH);
+        List<String> golden = readGoldenRecords(GOLDEN_HTML_RESOURCE, HTML_RECORD_LENGTH);
 
         assertThat(produced)
                 .as("HTML statement is byte/row-identical to the golden fixture")
@@ -602,6 +614,132 @@ class StatementGenerationJobTest {
     }
 
     /**
+     * F02 byte-exact contract (text): the produced plain-text statement is <strong>raw-byte
+     * identical</strong> to the golden fixture, is exactly {@value #EXPECTED_TEXT_SIZE} bytes, carries
+     * <strong>no in-band delimiter</strong> (no {@code 0x0A}/{@code 0x0D} anywhere), places record
+     * <var>k</var> at byte offset <var>k</var>&nbsp;&times;&nbsp;{@value #TEXT_RECORD_LENGTH}, and
+     * matches the pinned golden SHA-256. This is the strongest form of the external-file contract in
+     * AAP &sect;0.9.6 / G3 (&ldquo;fixed-width layouts byte/semantically preserved&rdquo;).
+     *
+     * @throws Exception if the job launch or file read fails
+     */
+    @Test
+    @DisplayName("F02: text statement is byte-identical to golden, has no delimiter, fixed offsets, pinned hash")
+    void textStatementIsByteExactWithNoDelimiter() throws Exception {
+        launchCompletedJob();
+
+        byte[] produced = Files.readAllBytes(textFile());
+        byte[] golden = readGoldenBytes(GOLDEN_TEXT_RESOURCE);
+
+        // Raw-byte equality (the definitive byte-for-byte parity assertion) and exact file length.
+        assertThat(produced)
+                .as("produced text file is raw-byte identical to the golden fixture")
+                .isEqualTo(golden);
+        assertThat(produced).hasSize((int) EXPECTED_TEXT_SIZE);
+        assertThat((long) produced.length).isEqualTo(EXPECTED_TEXT_SIZE);
+
+        // No in-band delimiter: RECFM=FB records are self-delimiting.
+        assertThat(indexOfByte(produced, (byte) 0x0A))
+                .as("text file must contain no LF (0x0A) delimiter byte").isEqualTo(-1);
+        assertThat(indexOfByte(produced, (byte) 0x0D))
+                .as("text file must contain no CR (0x0D) byte").isEqualTo(-1);
+
+        // Multi-record offset: record k occupies exactly bytes [k*width, (k+1)*width).
+        List<String> records = sliceFixedWidth(produced, TEXT_RECORD_LENGTH, textFile().toString());
+        assertThat(records).hasSize(EXPECTED_TEXT_RECORD_COUNT);
+        for (int k = 0; k < records.size(); k++) {
+            String atOffset =
+                    new String(produced, k * TEXT_RECORD_LENGTH, TEXT_RECORD_LENGTH, StandardCharsets.ISO_8859_1);
+            assertThat(atOffset)
+                    .as("record %d must sit at byte offset %d", k, k * TEXT_RECORD_LENGTH)
+                    .isEqualTo(records.get(k));
+        }
+        assertThat(records.get(0)).as("START banner at offset 0").contains(START_SENTINEL);
+        assertThat(records.get(records.size() - 1)).as("END banner at final record").contains(END_SENTINEL);
+
+        // Pinned SHA-256 guards both the fixture and the produced output against silent drift.
+        assertThat(sha256Hex(golden))
+                .as("golden text fixture SHA-256 is pinned").isEqualTo(GOLDEN_TEXT_SHA256);
+        assertThat(sha256Hex(produced))
+                .as("produced text statement SHA-256 equals the pinned golden digest")
+                .isEqualTo(GOLDEN_TEXT_SHA256);
+    }
+
+    /**
+     * F02 byte-exact contract (HTML): the produced HTML statement is <strong>raw-byte identical</strong>
+     * to the golden fixture, is exactly {@value #EXPECTED_HTML_SIZE} bytes, carries <strong>no in-band
+     * delimiter</strong>, places record <var>k</var> at byte offset
+     * <var>k</var>&nbsp;&times;&nbsp;{@value #HTML_RECORD_LENGTH}, and matches the pinned golden
+     * SHA-256.
+     *
+     * @throws Exception if the job launch or file read fails
+     */
+    @Test
+    @DisplayName("F02: HTML statement is byte-identical to golden, has no delimiter, fixed offsets, pinned hash")
+    void htmlStatementIsByteExactWithNoDelimiter() throws Exception {
+        launchCompletedJob();
+
+        byte[] produced = Files.readAllBytes(htmlFile());
+        byte[] golden = readGoldenBytes(GOLDEN_HTML_RESOURCE);
+
+        assertThat(produced)
+                .as("produced HTML file is raw-byte identical to the golden fixture")
+                .isEqualTo(golden);
+        assertThat(produced).hasSize((int) EXPECTED_HTML_SIZE);
+        assertThat((long) produced.length).isEqualTo(EXPECTED_HTML_SIZE);
+
+        assertThat(indexOfByte(produced, (byte) 0x0A))
+                .as("HTML file must contain no LF (0x0A) delimiter byte").isEqualTo(-1);
+        assertThat(indexOfByte(produced, (byte) 0x0D))
+                .as("HTML file must contain no CR (0x0D) byte").isEqualTo(-1);
+
+        List<String> records = sliceFixedWidth(produced, HTML_RECORD_LENGTH, htmlFile().toString());
+        assertThat(records).hasSize(EXPECTED_HTML_RECORD_COUNT);
+        for (int k = 0; k < records.size(); k++) {
+            String atOffset =
+                    new String(produced, k * HTML_RECORD_LENGTH, HTML_RECORD_LENGTH, StandardCharsets.ISO_8859_1);
+            assertThat(atOffset)
+                    .as("record %d must sit at byte offset %d", k, k * HTML_RECORD_LENGTH)
+                    .isEqualTo(records.get(k));
+        }
+        assertThat(records.get(0).stripTrailing()).isEqualTo("<!DOCTYPE html>");
+
+        assertThat(sha256Hex(golden))
+                .as("golden HTML fixture SHA-256 is pinned").isEqualTo(GOLDEN_HTML_SHA256);
+        assertThat(sha256Hex(produced))
+                .as("produced HTML statement SHA-256 equals the pinned golden digest")
+                .isEqualTo(GOLDEN_HTML_SHA256);
+    }
+
+    /**
+     * F02 generation determinism: launching the job twice over the same seeded scenario produces
+     * <strong>byte-identical</strong> text and HTML outputs. The statement body embeds no run-clock
+     * timestamp, so the output is a pure function of the data &mdash; and each re-run atomically
+     * re-publishes both files (F20), so a reader always observes a complete, identical artifact.
+     *
+     * @throws Exception if either job launch or a file read fails
+     */
+    @Test
+    @DisplayName("F02: statement generation is deterministic (two runs are byte-identical)")
+    void statementGenerationIsDeterministicAcrossRuns() throws Exception {
+        launchCompletedJob();
+        byte[] firstText = Files.readAllBytes(textFile());
+        byte[] firstHtml = Files.readAllBytes(htmlFile());
+
+        launchCompletedJob();
+        byte[] secondText = Files.readAllBytes(textFile());
+        byte[] secondHtml = Files.readAllBytes(htmlFile());
+
+        assertThat(secondText)
+                .as("two statement runs produce byte-identical text output").isEqualTo(firstText);
+        assertThat(secondHtml)
+                .as("two statement runs produce byte-identical HTML output").isEqualTo(firstHtml);
+        // And both remain equal to the pinned golden digests across re-runs.
+        assertThat(sha256Hex(secondText)).isEqualTo(GOLDEN_TEXT_SHA256);
+        assertThat(sha256Hex(secondHtml)).isEqualTo(GOLDEN_HTML_SHA256);
+    }
+
+    /**
      * Within a card's statement the transactions are listed ordered by {@code (cardNum, tranId)} &mdash;
      * the {@code CREASTMT.JCL} STEP010 {@code SORT FIELDS=(263,16,CH,A,1,16,CH,A)} key. The scenario
      * seeds the three transactions out of id order and with {@code proc_ts} values that <em>descend</em>
@@ -618,7 +756,7 @@ class StatementGenerationJobTest {
         JobExecution execution = jobLauncherTestUtils.launchJob(statementParams());
         assertThat(execution.getStatus()).isEqualTo(BatchStatus.COMPLETED);
 
-        List<String> detailLines = detailLines(readProducedLines(textFile()));
+        List<String> detailLines = detailLines(readProducedRecords(textFile(), TEXT_RECORD_LENGTH));
 
         List<String> tranIds = detailLines.stream()
                 .map(line -> line.substring(0, TRAN_ID_END))
@@ -701,33 +839,122 @@ class StatementGenerationJobTest {
     }
 
     /**
-     * Reads a produced statement file as fixed-width lines using ISO-8859-1 (one byte per character),
-     * so the 80-/100-character records are preserved without any charset re-interpretation and without
-     * trimming the significant trailing padding.
+     * Reads a produced statement file and slices it into fixed-width records using ISO-8859-1 (one
+     * byte per character). The file carries <strong>no in-band delimiter</strong> ({@code RECFM=FB}),
+     * so records are recovered purely by the fixed {@code recordWidth} &mdash; and the helper asserts
+     * the whole-file length is an exact multiple of that width, which would fail immediately if a stray
+     * delimiter byte (the F02 regression) were reintroduced.
      *
-     * @param file the produced statement file
+     * @param file        the produced statement file
+     * @param recordWidth the fixed record width (80 for text, 100 for HTML)
      * @return the produced records in emission order
      * @throws IOException if the file cannot be read
      */
-    private static List<String> readProducedLines(Path file) throws IOException {
-        return Files.readAllLines(file, StandardCharsets.ISO_8859_1);
+    private static List<String> readProducedRecords(Path file, int recordWidth) throws IOException {
+        return sliceFixedWidth(Files.readAllBytes(file), recordWidth, file.toString());
     }
 
     /**
-     * Reads a golden fixture from the classpath as lines, using ISO-8859-1 to match the statement's
-     * byte-faithful fixed-width encoding.
+     * Reads a golden fixture from the classpath and slices it into fixed-width records using
+     * ISO-8859-1. The golden fixture is <strong>mandatory</strong>: its absence fails the test rather
+     * than silently vacuously passing.
      *
-     * @param resource the classpath location of the golden fixture
+     * @param resource    the classpath location of the golden fixture
+     * @param recordWidth the fixed record width (80 for text, 100 for HTML)
      * @return the expected records in order
      * @throws IOException if the golden resource cannot be read
      */
-    private static List<String> readGoldenLines(String resource) throws IOException {
+    private static List<String> readGoldenRecords(String resource, int recordWidth) throws IOException {
+        return sliceFixedWidth(readGoldenBytes(resource), recordWidth, resource);
+    }
+
+    /**
+     * Reads a golden fixture's raw bytes from the classpath, asserting the fixture is present (a
+     * golden fixture is a mandatory part of the byte-exact contract; a missing fixture must fail the
+     * test, never let it pass vacuously).
+     *
+     * @param resource the classpath location of the golden fixture
+     * @return the fixture's raw bytes
+     * @throws IOException if the golden resource cannot be read
+     */
+    private static byte[] readGoldenBytes(String resource) throws IOException {
         ClassPathResource golden = new ClassPathResource(resource);
-        try (InputStream in = golden.getInputStream();
-             BufferedReader reader =
-                     new BufferedReader(new InputStreamReader(in, StandardCharsets.ISO_8859_1))) {
-            return reader.lines().toList();
+        assertThat(golden.exists())
+                .as("golden fixture %s must be present on the classpath", resource)
+                .isTrue();
+        try (InputStream in = golden.getInputStream()) {
+            return in.readAllBytes();
         }
+    }
+
+    /**
+     * Slices a fixed-width {@code RECFM=FB} byte buffer into {@code recordWidth}-byte records decoded as
+     * ISO-8859-1. Asserts the buffer length is an exact multiple of the record width &mdash; the
+     * external-file contract carries no in-band delimiter, so any remainder signals a regression of the
+     * F02 fixed-record contract.
+     *
+     * @param bytes       the raw file/fixture bytes
+     * @param recordWidth the fixed record width
+     * @param label       a human-readable label (file path or resource) for assertion messages
+     * @return the records in order, each exactly {@code recordWidth} characters
+     */
+    private static List<String> sliceFixedWidth(byte[] bytes, int recordWidth, String label) {
+        assertThat(bytes.length % recordWidth)
+                .as("%s length %d must be an exact multiple of the %d-byte record width "
+                        + "(RECFM=FB, no in-band delimiter)", label, bytes.length, recordWidth)
+                .isZero();
+        List<String> records = new ArrayList<>();
+        for (int offset = 0; offset < bytes.length; offset += recordWidth) {
+            records.add(new String(bytes, offset, recordWidth, StandardCharsets.ISO_8859_1));
+        }
+        return records;
+    }
+
+    /**
+     * Computes the lowercase hex SHA-256 of a byte buffer, used to pin the byte-exact external-file
+     * contract of the produced statement against the golden fixture's recorded digest.
+     *
+     * @param bytes the bytes to digest
+     * @return the lowercase hexadecimal SHA-256 digest
+     */
+    private static String sha256Hex(byte[] bytes) {
+        try {
+            MessageDigest digest = MessageDigest.getInstance("SHA-256");
+            return HexFormat.of().formatHex(digest.digest(bytes));
+        } catch (NoSuchAlgorithmException ex) {
+            // SHA-256 is a mandatory JCA algorithm on every conformant JRE; its absence is fatal.
+            throw new AssertionError("SHA-256 algorithm unexpectedly unavailable", ex);
+        }
+    }
+
+    /**
+     * Launches the statement job with fresh unique parameters and asserts it reached
+     * {@link BatchStatus#COMPLETED}. Returns {@code void} deliberately: a test-class method returning
+     * {@link JobExecution} would be picked up by {@link SpringBatchTest}'s job-scope listener as a
+     * scope factory and invoked with no arguments (see {@link #statementParams()}).
+     *
+     * @throws Exception if the job launch fails
+     */
+    private void launchCompletedJob() throws Exception {
+        JobExecution execution = jobLauncherTestUtils.launchJob(statementParams());
+        assertThat(execution.getStatus()).isEqualTo(BatchStatus.COMPLETED);
+    }
+
+    /**
+     * Returns the index of the first occurrence of {@code needle} in {@code haystack}, or {@code -1}
+     * if it does not occur. Used to assert the absence of delimiter bytes in a fixed-width file.
+     *
+     * @param haystack the bytes to scan
+     * @param needle   the byte value to search for
+     * @return the first matching index, or {@code -1} if absent
+     */
+    private static int indexOfByte(byte[] haystack, byte needle) {
+        for (int i = 0; i < haystack.length; i++) {
+            if (haystack[i] == needle) {
+                return i;
+            }
+        }
+        return -1;
     }
 
     /**

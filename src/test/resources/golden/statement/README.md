@@ -15,12 +15,15 @@ independently reviewable (Explainability rule) without running the mainframe.
 
 | File | Record layout | Records | Bytes | md5 |
 |------|---------------|---------|-------|-----|
-| `expected-statement.txt`  | `FD-STMTFILE-REC PIC X(80)` — every line exactly **80** chars, space-padded  | 22 | 1782 | `8e63f34cad38762adb8b02304447659c` |
-| `expected-statement.html` | `FD-HTMLFILE-REC PIC X(100)` — every record exactly **100** chars, space-padded | 97 | 9797 | `024a2e2da8403fdab24f4f73bc31d0e2` |
+| `expected-statement.txt`  | `FD-STMTFILE-REC PIC X(80)` — every record exactly **80** bytes, space-padded  | 22 | 1760 | `7464f47963a3b2a27b4b87ea490041af` |
+| `expected-statement.html` | `FD-HTMLFILE-REC PIC X(100)` — every record exactly **100** bytes, space-padded | 97 | 9700 | `8fbf26cceca7efc67c0277b3c1b38a37` |
 
-sha256 — txt `0688faab6c8075c7bce2ed748f6533eae165ce0d7a0d1d87879aed441ea264aa`;
-html `745453f5b64b1eb2afb4ad2b9d47593810703152d3c4b90f815f22e55bbd5849`.
-Both files are **LF-only (no CR)** and end with a trailing newline.
+sha256 — txt `1372a816705a1facfffe0e80123efd781b7c8c9a8bd391a9d1cacade6abdb481`;
+html `bd6187bbb7a8b57effd9f5b55e7ebd5baee1294b671bbc6400a8bbcd3258ad47`.
+Both files reproduce the COBOL `RECFM=FB` fixed-block contract: records are stored
+**back-to-back with no in-band delimiter and no trailing newline** (no `0x0A`/`0x0D`
+anywhere), so a file of *n* records is exactly *n* × width bytes (22 × 80 = 1760;
+97 × 100 = 9700). Record boundaries are implied by the fixed record length alone.
 
 ## Bounded scenario (the exact input these outputs were derived from)
 
@@ -84,10 +87,21 @@ order (no wall-clock inputs), so they can be re-verified at any time against the
 checksums above:
 
 ```
-wc -c expected-statement.txt expected-statement.html          # 1782 and 9797
-awk '{print length}' expected-statement.txt | sort -u          # 80
-awk '{print length}' expected-statement.html | sort -u         # 100
-md5sum expected-statement.txt expected-statement.html          # 8e63f34c... / 024a2e2d...
+wc -c expected-statement.txt expected-statement.html          # 1760 and 9700
+
+# Verify fixed-width records AND the absence of any in-band delimiter (RECFM=FB).
+# NOTE: line tools such as `awk '{print length}'` do NOT work here — the files carry
+# no newline, so they must be sliced by fixed width, not by line terminator.
+python3 - <<'PY'
+for name, width in (("expected-statement.txt", 80), ("expected-statement.html", 100)):
+    data = open(name, "rb").read()
+    assert len(data) % width == 0, f"{name}: not a multiple of {width}"
+    assert data.count(0x0A) == 0 and data.count(0x0D) == 0, f"{name}: stray delimiter byte"
+    print(f"{name}: {len(data)} bytes = {len(data)//width} records of {width}")
+PY
+
+md5sum expected-statement.txt expected-statement.html          # 7464f479... / 8fbf26cc...
+sha256sum expected-statement.txt expected-statement.html       # 1372a816... / bd6187bb...
 ```
 
 Below are the two load-bearing COBOL numeric edits the generator applies,

@@ -19,10 +19,18 @@ import java.io.BufferedWriter;
 import java.io.IOException;
 import java.nio.charset.Charset;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.AtomicMoveNotSupportedException;
+import java.nio.file.FileSystems;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
 import java.nio.file.StandardOpenOption;
+import java.nio.file.attribute.FileAttribute;
+import java.nio.file.attribute.PosixFilePermission;
+import java.nio.file.attribute.PosixFilePermissions;
+import java.util.EnumSet;
 import java.util.List;
+import java.util.Set;
 
 import com.aws.carddemo.batch.processor.StatementProcessor;
 import com.aws.carddemo.common.util.FixedWidthCodec;
@@ -76,25 +84,43 @@ import org.springframework.stereotype.Component;
  * <p>The class implements {@link StepExecutionListener} so Spring Batch auto-registers its
  * {@link #beforeStep(StepExecution)} / {@link #afterStep(StepExecution)} callbacks for the step:</p>
  * <ul>
- *   <li>{@link #beforeStep(StepExecution)} opens both files once, truncate/create
+ *   <li>{@link #beforeStep(StepExecution)} opens two <em>temporary</em> work files (one per output
+ *       file) in the configured output directory
  *       (CBSTM03A L293 {@code OPEN OUTPUT STMT-FILE HTML-FILE}; STEP040 {@code DISP=(NEW,CATLG,DELETE)}
- *       fresh-file semantics). Even a run that yields zero cards leaves two empty files present.</li>
- *   <li>{@link #write(Chunk)} serializes each {@link StatementProcessor.StatementDocument}'s lines
- *       ({@code WRITE FD-STMTFILE-REC} / {@code WRITE FD-HTMLFILE-REC}).</li>
- *   <li>{@link #afterStep(StepExecution)} closes both files once
- *       (CBSTM03A L339 {@code CLOSE STMT-FILE HTML-FILE}) and maps the outcome to a batch return
- *       code.</li>
+ *       fresh-file semantics). Even a run that yields zero cards leaves two empty files present after a
+ *       successful publish.</li>
+ *   <li>{@link #write(Chunk)} serializes each {@link StatementProcessor.StatementDocument}'s lines to
+ *       the temporary files ({@code WRITE FD-STMTFILE-REC} / {@code WRITE FD-HTMLFILE-REC}).</li>
+ *   <li>{@link #afterStep(StepExecution)} closes both temporary files once
+ *       (CBSTM03A L339 {@code CLOSE STMT-FILE HTML-FILE}) and, <strong>only when the step succeeded</strong>,
+ *       atomically publishes each temporary file onto its final path; on any failure the temporary
+ *       files are deleted and the final paths are left untouched. The outcome is mapped to a batch
+ *       return code.</li>
  * </ul>
+ *
+ * <h2>Atomic publication (no partial or truncated artifacts)</h2>
+ * <p>Records are streamed to per-run temporary work files rather than to the final output paths, so a
+ * chunk rollback, a mid-write I/O error, or a job failure can never leave a half-written or truncated
+ * file at a final path (CWE-459). Each temporary file is created owner-only where the filesystem
+ * supports POSIX permissions ({@code rw-------}), and each is published with an
+ * {@link java.nio.file.StandardCopyOption#ATOMIC_MOVE atomic move} (falling back to a replacing move on
+ * filesystems that cannot move atomically). The two output files are independent artifacts (the two
+ * CBSTM03A output DDs) and are therefore published independently; a reader of a final path observes
+ * either the fully written new file or the untouched previous file, never a partial one. If publication
+ * of either file fails, the run is reported as {@link ExitStatus#FAILED} (RC 8).</p>
  *
  * <h2>Byte-exact record model</h2>
  * <p>Every line is normalised through {@link FixedWidthCodec#writeAlphanumeric(String, int)}, which
  * implements COBOL {@code MOVE ... TO PIC X(n)} semantics (left-justify, right space-fill, right
  * truncate) and returns a string of exactly the requested width. Records are written with the
  * {@link StandardCharsets#ISO_8859_1} charset so one character maps to exactly one byte — matching the
- * fixed-width mainframe record model and keeping golden-file comparisons deterministic. Each
- * fixed-width record is followed by a single {@code "\n"} separator (the canonical external-file
- * representation shared by the sibling file writers and recorded in {@code docs/decision-log.md}); the
- * {@value #TEXT_RECORD_LENGTH}/{@value #HTML_RECORD_LENGTH} content bytes per record remain exact.</p>
+ * fixed-width mainframe record model and keeping golden-file comparisons deterministic. Records are
+ * written back-to-back with <strong>no in-band delimiter</strong>: the files reproduce the COBOL
+ * {@code RECFM=FB} contract ({@code FD-STMTFILE-REC PIC X(80)} / {@code FD-HTMLFILE-REC PIC X(100)},
+ * STEP040 {@code RECFM=FB}), so a text file of <var>n</var> records is exactly
+ * <var>n</var>&nbsp;&times;&nbsp;{@value #TEXT_RECORD_LENGTH} bytes and an HTML file of <var>n</var>
+ * records is exactly <var>n</var>&nbsp;&times;&nbsp;{@value #HTML_RECORD_LENGTH} bytes, with no
+ * trailing newline. Record boundaries are implied by the fixed record length alone.</p>
  *
  * <h2>Return-code contract</h2>
  * <p>Statement generation has <strong>no reject path</strong> — only success or an I/O failure:</p>
@@ -128,11 +154,22 @@ public class StatementItemWriter
     /** HTML record width — {@code FD-HTMLFILE-REC PIC X(100)} (CBSTM03A L47; STEP040 {@code LRECL=100}). */
     private static final int HTML_RECORD_LENGTH = 100;
 
-    /** Inter-record separator appended after every fixed-width record for deterministic, viewable output. */
-    private static final String RECORD_DELIMITER = "\n";
-
     /** Output charset: one character maps to exactly one byte, matching the fixed-width record model. */
     private static final Charset OUTPUT_CHARSET = StandardCharsets.ISO_8859_1;
+
+    /** Prefix applied to per-run temporary work files created in the output directory before publish. */
+    private static final String TEMP_PREFIX = ".";
+
+    /** Suffix applied to per-run temporary work files; distinguishes in-progress writes from published output. */
+    private static final String TEMP_SUFFIX = ".inprogress";
+
+    /**
+     * Owner read/write only ({@code rw-------}) for the temporary work files, applied at creation on
+     * POSIX filesystems so an in-progress statement artifact is never group/world readable. Non-POSIX
+     * filesystems (which do not support these attributes) fall back to platform defaults.
+     */
+    private static final Set<PosixFilePermission> OWNER_ONLY_PERMISSIONS =
+            EnumSet.of(PosixFilePermission.OWNER_READ, PosixFilePermission.OWNER_WRITE);
 
     /** Configured output directory (externalised; no hardcoded paths). */
     private final String outputDirectory;
@@ -149,11 +186,17 @@ public class StatementItemWriter
     /** Open HTML-file stream for the current step; {@code null} until {@link #beforeStep} opens it. */
     private BufferedWriter htmlWriter;
 
-    /** Resolved text-file path for the current step (used for logging and error messages). */
+    /** Resolved final text-file path for the current step (the atomic-publish target). */
     private Path textPath;
 
-    /** Resolved HTML-file path for the current step (used for logging and error messages). */
+    /** Resolved final HTML-file path for the current step (the atomic-publish target). */
     private Path htmlPath;
+
+    /** Temporary text work-file written during the step; atomically published onto {@link #textPath} on success. */
+    private Path textTempPath;
+
+    /** Temporary HTML work-file written during the step; atomically published onto {@link #htmlPath} on success. */
+    private Path htmlTempPath;
 
     /** Number of {@link StatementProcessor.StatementDocument}s (cards) processed in the current step. */
     private long documentCount;
@@ -187,25 +230,30 @@ public class StatementItemWriter
     }
 
     /**
-     * Opens both output files for the step, reproducing CBSTM03A L293
+     * Opens the step's two <em>temporary</em> work files, reproducing CBSTM03A L293
      * {@code OPEN OUTPUT STMT-FILE HTML-FILE}.
      *
      * <p>All per-run state is reset first (this is a singleton bean re-used across job executions).
-     * The output directory is created if absent, then both streams are opened in truncate/create mode
-     * with the {@link #OUTPUT_CHARSET ISO-8859-1} charset — reproducing the {@code DISP=(NEW,CATLG,DELETE)}
-     * fresh-file semantics of the STEP040 DDs, so a re-run overwrites prior output and a run yielding
-     * zero cards still leaves two valid, empty files. The text stream is opened first, then the HTML
-     * stream, mirroring the operand order of the COBOL {@code OPEN}.</p>
+     * The output directory is created if absent, then a unique temporary work file is created for each
+     * output file <em>in that same directory</em> (so the later publish move stays on one filesystem and
+     * can be atomic). Each temporary file is created owner-only ({@code rw-------}) where the filesystem
+     * supports POSIX permissions, then opened with the {@link #OUTPUT_CHARSET ISO-8859-1} charset. The
+     * final output paths are <strong>not</strong> touched here — they are written only at publish time in
+     * {@link #afterStep(StepExecution)}, and only on success — so a failure mid-step cannot leave a
+     * truncated file at a final path (CWE-459). The text work file is created first, then the HTML work
+     * file, mirroring the operand order of the COBOL {@code OPEN}. An empty run still yields two valid,
+     * empty temporary files, which publish to two valid, empty final files.</p>
      *
      * <p>{@link StepExecutionListener#beforeStep(StepExecution)} cannot declare a checked exception, so
-     * an {@link IOException} while creating the directory or opening either stream is rethrown as an
-     * (unchecked) {@link FileStatusException}. This fails the step and job fast — the batch
-     * return-code-8 analog of the COBOL open-failure abend. Opening is a hard prerequisite; the writer
-     * never silently continues without both streams.</p>
+     * an {@link IOException} while creating the directory, creating a temporary file, or opening either
+     * stream is rethrown as an (unchecked) {@link FileStatusException} after best-effort cleanup of any
+     * temporary file already created. This fails the step and job fast — the batch return-code-8 analog
+     * of the COBOL open-failure abend. Opening is a hard prerequisite; the writer never silently
+     * continues without both streams.</p>
      *
      * @param stepExecution the current step execution (supplied by Spring Batch); not otherwise used
-     * @throws FileStatusException if the output directory cannot be created or either file cannot be
-     *                             opened for writing
+     * @throws FileStatusException if the output directory cannot be created or either work file cannot be
+     *                             created or opened for writing
      */
     @Override
     public void beforeStep(StepExecution stepExecution) {
@@ -216,6 +264,8 @@ public class StatementItemWriter
         this.ioError = false;
         this.textWriter = null;
         this.htmlWriter = null;
+        this.textTempPath = null;
+        this.htmlTempPath = null;
 
         final Path outputDir = Path.of(outputDirectory);
         this.textPath = outputDir.resolve(textFileName);
@@ -223,28 +273,57 @@ public class StatementItemWriter
         try {
             // Idempotent: creates the directory tree if it does not already exist.
             Files.createDirectories(outputDir);
-            // OPEN OUTPUT STMT-FILE HTML-FILE (L293): text first, then HTML. Truncate/create so a
-            // re-run overwrites and an empty run still yields a valid, empty file.
-            this.textWriter = Files.newBufferedWriter(textPath, OUTPUT_CHARSET,
-                    StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING,
-                    StandardOpenOption.WRITE);
-            this.htmlWriter = Files.newBufferedWriter(htmlPath, OUTPUT_CHARSET,
-                    StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING,
-                    StandardOpenOption.WRITE);
+            // Create unique per-run temporary work files in the output directory (same filesystem as the
+            // final paths, so the publish move can be atomic). Owner-only where POSIX is supported.
+            this.textTempPath = createTempWorkFile(outputDir, textFileName);
+            this.htmlTempPath = createTempWorkFile(outputDir, htmlFileName);
+            // OPEN OUTPUT STMT-FILE HTML-FILE (L293): text first, then HTML. Truncate the freshly created
+            // (empty) work files so an empty run still yields a valid, empty file to publish.
+            this.textWriter = Files.newBufferedWriter(textTempPath, OUTPUT_CHARSET,
+                    StandardOpenOption.TRUNCATE_EXISTING, StandardOpenOption.WRITE);
+            this.htmlWriter = Files.newBufferedWriter(htmlTempPath, OUTPUT_CHARSET,
+                    StandardOpenOption.TRUNCATE_EXISTING, StandardOpenOption.WRITE);
         } catch (IOException ex) {
             this.ioError = true;
-            // Best-effort cleanup: the text stream may have opened before the HTML open failed.
+            // Best-effort cleanup: the text stream/temp may exist before the HTML open failed. Never
+            // leave an orphaned temporary work file behind.
             closeQuietly(this.textWriter);
             this.textWriter = null;
             this.htmlWriter = null;
+            deleteQuietly(this.textTempPath);
+            deleteQuietly(this.htmlTempPath);
+            this.textTempPath = null;
+            this.htmlTempPath = null;
             // Fail fast (batch RC 8), mirroring the COBOL open-failure abend. Paths carry no PII.
             throw new FileStatusException(FileStatusException.STATUS_OK,
                     "Error opening statement output files (STMTFILE=" + textPath
                             + ", HTMLFILE=" + htmlPath + ")", ex);
         }
-        log.info("Statement output files opened: STMTFILE={} ({}-byte records), "
-                + "HTMLFILE={} ({}-byte records), charset=ISO-8859-1.",
+        log.info("Statement output files opened for writing (temporary work files): "
+                + "STMTFILE={} ({}-byte records), HTMLFILE={} ({}-byte records), charset=ISO-8859-1.",
                 textPath, TEXT_RECORD_LENGTH, htmlPath, HTML_RECORD_LENGTH);
+    }
+
+    /**
+     * Creates a unique, owner-only temporary work file in {@code outputDir} for the given final file
+     * name. On POSIX filesystems the file is created with {@code rw-------} permissions atomically at
+     * creation; on filesystems that do not support POSIX permissions the file is created with platform
+     * defaults (the atomic-publish guarantee is unaffected).
+     *
+     * @param outputDir    the directory that also holds the final output file (same filesystem)
+     * @param finalName    the final output file name, used as the temporary file's prefix for legibility
+     * @return the path to the newly created temporary work file
+     * @throws IOException if the temporary file cannot be created
+     */
+    private static Path createTempWorkFile(Path outputDir, String finalName) throws IOException {
+        final String prefix = finalName + TEMP_PREFIX;
+        final boolean posix = FileSystems.getDefault().supportedFileAttributeViews().contains("posix");
+        if (posix) {
+            final FileAttribute<Set<PosixFilePermission>> ownerOnly =
+                    PosixFilePermissions.asFileAttribute(OWNER_ONLY_PERMISSIONS);
+            return Files.createTempFile(outputDir, prefix, TEMP_SUFFIX, ownerOnly);
+        }
+        return Files.createTempFile(outputDir, prefix, TEMP_SUFFIX, new FileAttribute<?>[0]);
     }
 
     /**
@@ -287,7 +366,9 @@ public class StatementItemWriter
      * Writes one document's plain-text lines as {@value #TEXT_RECORD_LENGTH}-byte records
      * ({@code WRITE FD-STMTFILE-REC}). Each line is normalised through
      * {@link FixedWidthCodec#writeAlphanumeric(String, int)} (COBOL {@code PIC X(80)} MOVE semantics:
-     * left-justify, right space-fill, right truncate) and followed by the record delimiter.
+     * left-justify, right space-fill, right truncate) and written back-to-back with <strong>no in-band
+     * delimiter</strong> — reproducing the {@code RECFM=FB} fixed-block contract where record boundaries
+     * are implied by the fixed {@value #TEXT_RECORD_LENGTH}-byte length alone.
      *
      * @param lines the ordered text lines for one statement; a {@code null} list writes no records
      * @throws IOException if the underlying stream write fails
@@ -299,9 +380,9 @@ public class StatementItemWriter
             return;
         }
         for (String line : lines) {
-            // FixedWidthCodec guarantees a String of exactly TEXT_RECORD_LENGTH characters.
+            // FixedWidthCodec guarantees a String of exactly TEXT_RECORD_LENGTH characters. No delimiter
+            // is written: fixed-length records are self-delimiting (RECFM=FB).
             textWriter.write(FixedWidthCodec.writeAlphanumeric(line, TEXT_RECORD_LENGTH));
-            textWriter.write(RECORD_DELIMITER);
             textRecordCount++;
         }
     }
@@ -310,7 +391,9 @@ public class StatementItemWriter
      * Writes one document's HTML lines as {@value #HTML_RECORD_LENGTH}-byte records
      * ({@code WRITE FD-HTMLFILE-REC}). Each line is normalised through
      * {@link FixedWidthCodec#writeAlphanumeric(String, int)} (COBOL {@code PIC X(100)} MOVE semantics:
-     * left-justify, right space-fill, right truncate) and followed by the record delimiter.
+     * left-justify, right space-fill, right truncate) and written back-to-back with <strong>no in-band
+     * delimiter</strong> — reproducing the {@code RECFM=FB} fixed-block contract where record boundaries
+     * are implied by the fixed {@value #HTML_RECORD_LENGTH}-byte length alone.
      *
      * @param lines the ordered HTML lines for one statement; a {@code null} list writes no records
      * @throws IOException if the underlying stream write fails
@@ -322,27 +405,35 @@ public class StatementItemWriter
             return;
         }
         for (String line : lines) {
-            // FixedWidthCodec guarantees a String of exactly HTML_RECORD_LENGTH characters.
+            // FixedWidthCodec guarantees a String of exactly HTML_RECORD_LENGTH characters. No delimiter
+            // is written: fixed-length records are self-delimiting (RECFM=FB).
             htmlWriter.write(FixedWidthCodec.writeAlphanumeric(line, HTML_RECORD_LENGTH));
-            htmlWriter.write(RECORD_DELIMITER);
             htmlRecordCount++;
         }
     }
 
     /**
-     * Closes both output files and maps the step outcome to a batch return code, reproducing CBSTM03A
-     * L339 {@code CLOSE STMT-FILE HTML-FILE}.
+     * Closes both temporary work files, atomically publishes them onto the final paths when the step
+     * succeeded, and maps the step outcome to a batch return code — reproducing CBSTM03A L339
+     * {@code CLOSE STMT-FILE HTML-FILE} while adding the atomic-publish integrity guarantee.
      *
      * <p>Both streams are flushed and closed best-effort (text first, then HTML), each guarded against
      * a {@code null} reference in case {@link #beforeStep(StepExecution)} failed before opening one; a
      * flush/close failure sets the sticky {@link #ioError} flag (RC 8) and is logged without content.
      * The three record counters are promoted to the step execution context for observability and
-     * restart traceability, and a single INFO summary of the counts and file paths is logged. Because
-     * statement generation has no reject path, the outcome is only success or failure:</p>
+     * restart traceability, and a single INFO summary of the counts and file paths is logged.</p>
+     *
+     * <p><strong>Publication.</strong> Because statement generation has no reject path, the outcome is
+     * only success or failure. When there was no I/O error and the step did not fail, each temporary
+     * work file is atomically published onto its final path (text first, then HTML) via
+     * {@link #publishAtomically(Path, Path)}; a fully written file therefore appears at a final path in
+     * a single move, never as a partial write. If either publish fails, the sticky {@link #ioError} flag
+     * is set. When the step failed (or publication failed), the temporary work files are deleted and the
+     * final paths are left untouched, so no partial or stale artifact is published (CWE-459).</p>
      * <ul>
-     *   <li>{@link #ioError} or a {@link BatchStatus#FAILED} step &rarr; {@link ExitStatus#FAILED}
-     *       (RC 8);</li>
-     *   <li>otherwise &rarr; {@link ExitStatus#COMPLETED} (RC 0).</li>
+     *   <li>{@link #ioError} (including a publish failure) or a {@link BatchStatus#FAILED} step &rarr;
+     *       {@link ExitStatus#FAILED} (RC 8); temporary files are removed and final paths untouched;</li>
+     *   <li>otherwise &rarr; {@link ExitStatus#COMPLETED} (RC 0) with both final files published.</li>
      * </ul>
      *
      * @param stepExecution the current step execution (supplied by Spring Batch)
@@ -380,6 +471,30 @@ public class StatementItemWriter
         stepExecution.getExecutionContext().putLong("statement.textRecordCount", textRecordCount);
         stepExecution.getExecutionContext().putLong("statement.htmlRecordCount", htmlRecordCount);
 
+        // Publish only a fully successful run. Any prior I/O error or a FAILED step must NOT publish.
+        final boolean succeeded = !ioError && stepExecution.getStatus() != BatchStatus.FAILED;
+        if (succeeded) {
+            try {
+                // Atomic publish (text first, then HTML): a reader sees either the fully written new
+                // file or the untouched previous file, never a partial one.
+                publishAtomically(textTempPath, textPath);
+                publishAtomically(htmlTempPath, htmlPath);
+            } catch (IOException ex) {
+                ioError = true;
+                // File names are non-sensitive configuration; statement content is never logged.
+                log.error("Error publishing statement output files (STMTFILE={}, HTMLFILE={}); "
+                        + "final outputs were not published.", textPath, htmlPath, ex);
+            }
+        }
+        // On failure (including a publish failure), delete any temporary work file that was not
+        // consumed by a successful move, leaving the final paths untouched.
+        if (!succeeded || ioError) {
+            deleteQuietly(textTempPath);
+            deleteQuietly(htmlTempPath);
+        }
+        this.textTempPath = null;
+        this.htmlTempPath = null;
+
         // Single INFO summary — counts and file paths only (statement content is PII, never logged).
         log.info("Statement writer finished: {} document(s); {} text record(s) (STMTFILE={}); "
                 + "{} HTML record(s) (HTMLFILE={}).",
@@ -390,6 +505,31 @@ public class StatementItemWriter
             return ExitStatus.FAILED;
         }
         return ExitStatus.COMPLETED;
+    }
+
+    /**
+     * Atomically publishes a fully written temporary work file onto its final path. The move is
+     * attempted with {@link StandardCopyOption#ATOMIC_MOVE} (also replacing any existing final file);
+     * on filesystems that cannot move atomically it falls back to a replacing move, which is still a
+     * single publish step (no partial content is ever visible at the final path because the temporary
+     * file was fully written and closed before this call).
+     *
+     * @param tempPath  the fully written temporary work file; if {@code null} nothing is published
+     * @param finalPath the final destination path
+     * @throws IOException if the file cannot be moved onto the final path
+     */
+    private static void publishAtomically(Path tempPath, Path finalPath) throws IOException {
+        if (tempPath == null) {
+            return;
+        }
+        try {
+            Files.move(tempPath, finalPath,
+                    StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
+        } catch (AtomicMoveNotSupportedException ex) {
+            // Filesystem cannot move atomically; fall back to a single replacing move. The temporary
+            // file is already fully written, so the final path still never observes a partial write.
+            Files.move(tempPath, finalPath, StandardCopyOption.REPLACE_EXISTING);
+        }
     }
 
     /**
@@ -408,6 +548,25 @@ public class StatementItemWriter
         } catch (IOException ex) {
             log.warn("Suppressed I/O error while closing a statement output stream during "
                     + "open-failure cleanup.", ex);
+        }
+    }
+
+    /**
+     * Deletes a temporary work file best-effort, suppressing (but logging) any {@link IOException}.
+     * Used to remove an unpublished temporary artifact after an open failure, a step failure, or a
+     * publish failure, so no orphaned in-progress file is ever left behind.
+     *
+     * @param path the temporary work file to delete; a {@code null} value is ignored
+     */
+    private static void deleteQuietly(Path path) {
+        if (path == null) {
+            return;
+        }
+        try {
+            Files.deleteIfExists(path);
+        } catch (IOException ex) {
+            log.warn("Suppressed I/O error while deleting a temporary statement work file during "
+                    + "cleanup.", ex);
         }
     }
 }
