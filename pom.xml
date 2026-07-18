@@ -5,10 +5,15 @@
     <modelVersion>4.0.0</modelVersion>
 
     <!--
-      AWS CardDemo - Java / Spring Boot migration (COBOL -> Java 25 + Spring Boot).
-      Single-module Maven project (AAP 0.3.1 / 0.7.3). All Java layers live under
-      src/main/java/com/aws/carddemo/**. No placeholder versions: everything is either
-      managed by the Spring Boot parent BOM or explicitly pinned below.
+      AWS CardDemo - Java / Spring Boot migration (COBOL / CICS / VSAM / JCL / BMS  ->
+      Java 25 LTS + Spring Boot 3.5.16). Single-module Maven project (AAP 0.3.1 / 0.7.3:
+      single module chosen for one-phase reviewability; multi-module is a documented
+      alternative). All Java layers live under src/main/java/com/aws/carddemo/**.
+
+      No placeholder versions (AAP 0.5.1): every version is either managed by the Spring
+      Boot parent BOM or explicitly pinned below (parent 3.5.16, JaCoCo 0.8.15, OWASP
+      dependency-check 12.2.2). The Maven wrapper separately pins Maven to 3.9.9.
+      No hardcoded credentials anywhere in this build manifest.
     -->
     <parent>
         <groupId>org.springframework.boot</groupId>
@@ -21,16 +26,18 @@
     <artifactId>carddemo</artifactId>
     <version>1.0.0</version>
     <packaging>jar</packaging>
-    <name>carddemo</name>
-    <description>Java/Spring Boot migration of the AWS CardDemo mainframe credit-card management application</description>
+    <name>AWS CardDemo (Java/Spring Boot Migration)</name>
+    <description>Java/Spring Boot migration of the AWS CardDemo mainframe credit-card management application (COBOL/CICS/VSAM/JCL/BMS to Java 25 + Spring Boot), preserving 100% of existing business behavior.</description>
 
     <properties>
         <java.version>25</java.version>
         <maven.compiler.release>25</maven.compiler.release>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
         <project.reporting.outputEncoding>UTF-8</project.reporting.outputEncoding>
-        <!-- Explicitly pinned (NOT managed by the Spring Boot parent BOM) -->
+        <!-- Explicitly pinned plugin versions (NOT managed by the Spring Boot parent BOM). -->
+        <!-- JaCoCo 0.8.15 filters javac 24-26 bytecode, required for the Java 25 target. -->
         <jacoco.version>0.8.15</jacoco.version>
+        <!-- OWASP dependency-check 12.2.2 enforces the zero critical/high CVE gate. -->
         <dependency-check.version>12.2.2</dependency-check.version>
     </properties>
 
@@ -40,55 +47,60 @@
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-web</artifactId>
         </dependency>
+        <!-- Server-rendered screens preserving the 24x80 BMS field/label/PF-key contract. -->
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-thymeleaf</artifactId>
         </dependency>
 
-        <!-- ============ Persistence (replace VSAM KSDS I/O) ============ -->
+        <!-- ============ Persistence (replace VSAM KSDS I/O with JPA over PostgreSQL) ============ -->
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-data-jpa</artifactId>
         </dependency>
 
-        <!-- ============ Batch (replace JCL / JES2) ============ -->
+        <!-- ============ Batch (replace JCL / JES2 orchestration) ============ -->
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-batch</artifactId>
         </dependency>
 
-        <!-- ============ Security (replace signon + RACF) ============ -->
+        <!-- ============ Security (replace app-level signon + RACF) ============ -->
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-security</artifactId>
         </dependency>
 
-        <!-- ============ Validation (replace program/BMS field edits) ============ -->
+        <!-- ============ Validation (replace program / BMS field edits) ============ -->
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-validation</artifactId>
         </dependency>
 
-        <!-- ============ Observability (Observability rule) ============ -->
+        <!-- ============ Observability (Observability rule: health/readiness/metrics/tracing) ============ -->
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-actuator</artifactId>
         </dependency>
+        <!-- Distributed tracing + correlation IDs. -->
         <dependency>
             <groupId>io.micrometer</groupId>
             <artifactId>micrometer-tracing-bridge-brave</artifactId>
         </dependency>
+        <!-- Prometheus metrics scrape endpoint feeding the Grafana dashboard template. -->
         <dependency>
             <groupId>io.micrometer</groupId>
             <artifactId>micrometer-registry-prometheus</artifactId>
         </dependency>
 
-        <!-- ============ Database: PostgreSQL driver + Flyway (VSAM -> relational) ============ -->
+        <!-- ============ Database: PostgreSQL driver + Flyway (VSAM -> relational schema) ============ -->
+        <!-- JDBC driver only needed at runtime; DB target 18.4, supported floor 16. -->
         <dependency>
             <groupId>org.postgresql</groupId>
             <artifactId>postgresql</artifactId>
             <scope>runtime</scope>
         </dependency>
+        <!-- Flyway schema migrations (DEFINE CLUSTER -> DDL) and reference/seed data load. -->
         <dependency>
             <groupId>org.flywaydb</groupId>
             <artifactId>flyway-core</artifactId>
@@ -99,26 +111,32 @@
         </dependency>
 
         <!-- ============ Test scope ============ -->
+        <!-- JUnit 5 (Jupiter) + Mockito + AssertJ + Spring Test. -->
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-test</artifactId>
             <scope>test</scope>
         </dependency>
+        <!-- Spring Batch job/step testing utilities. -->
         <dependency>
             <groupId>org.springframework.batch</groupId>
             <artifactId>spring-batch-test</artifactId>
             <scope>test</scope>
         </dependency>
+        <!-- Testcontainers JUnit 5 integration (version managed by the testcontainers BOM
+             imported through the Spring Boot parent; no explicit version). -->
         <dependency>
             <groupId>org.testcontainers</groupId>
             <artifactId>junit-jupiter</artifactId>
             <scope>test</scope>
         </dependency>
+        <!-- Real PostgreSQL container for integration / parity tests. -->
         <dependency>
             <groupId>org.testcontainers</groupId>
             <artifactId>postgresql</artifactId>
             <scope>test</scope>
         </dependency>
+        <!-- Spring Security test support (@WithMockUser, request post-processors, etc.). -->
         <dependency>
             <groupId>org.springframework.security</groupId>
             <artifactId>spring-security-test</artifactId>
@@ -128,13 +146,19 @@
 
     <build>
         <plugins>
-            <!-- Executable jar + spring-boot:run -->
+            <!-- Repackage into an executable (fat) jar and enable `./mvnw spring-boot:run`. -->
             <plugin>
                 <groupId>org.springframework.boot</groupId>
                 <artifactId>spring-boot-maven-plugin</artifactId>
             </plugin>
 
-            <!-- Compile with release 25 and enforce the zero-warning build (AAP 0.7.1) -->
+            <!--
+              Compile against Java release 25 (via <release>25</release> below) and enforce
+              the zero-warning build (AAP 0.7.1): the -Xlint:all argument surfaces every javac
+              lint category and failOnWarning turns any
+              warning into a build failure. (Lombok/MapStruct are intentionally NOT used by
+              the generated sources, so no annotationProcessorPaths are required here.)
+            -->
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-compiler-plugin</artifactId>
@@ -147,13 +171,17 @@
                 </configuration>
             </plugin>
 
-            <!-- Unit tests (*Test) -->
+            <!-- Unit tests (*Test) via JUnit 5. -->
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-surefire-plugin</artifactId>
             </plugin>
 
-            <!-- Integration / parity tests (*IT) via Testcontainers, in verify phase -->
+            <!--
+              Integration / parity tests (*IT) via Testcontainers. Bound to the
+              integration-test/verify phases so combined unit + integration coverage is
+              produced for the JaCoCo gate.
+            -->
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-failsafe-plugin</artifactId>
@@ -167,24 +195,41 @@
                 </executions>
             </plugin>
 
-            <!-- Coverage gate >=80% line coverage (AAP 0.7.1). JaCoCo 0.8.15 filters javac 24-26 bytecode. -->
+            <!--
+              Coverage gate: >=80% COMBINED (unit + integration) line coverage (AAP 0.7.1).
+              JaCoCo 0.8.15 is explicitly pinned because it is NOT managed by the Spring Boot
+              parent BOM and it is the version that filters javac 24-26 bytecode (Java 25).
+
+              Both the unit agent (surefire) and the integration agent (failsafe) write their
+              execution data to a single shared file (${project.build.directory}/jacoco.exec,
+              append=true is the agent default). The report and check goals read that same
+              file (their dataFile default), so the gate reflects COMBINED coverage.
+            -->
             <plugin>
                 <groupId>org.jacoco</groupId>
                 <artifactId>jacoco-maven-plugin</artifactId>
                 <version>${jacoco.version}</version>
                 <executions>
+                    <!-- Unit-test agent: writes ${project.build.directory}/jacoco.exec (surefire). -->
                     <execution>
                         <id>prepare-agent</id>
                         <goals>
                             <goal>prepare-agent</goal>
                         </goals>
                     </execution>
+                    <!-- Integration-test agent (failsafe): redirect exec output to the SAME
+                         jacoco.exec so report/check gate on combined coverage. -->
                     <execution>
                         <id>prepare-agent-integration</id>
                         <goals>
                             <goal>prepare-agent-integration</goal>
                         </goals>
+                        <configuration>
+                            <destFile>${project.build.directory}/jacoco.exec</destFile>
+                        </configuration>
                     </execution>
+                    <!-- Human-readable HTML/XML report from the combined exec data; declared
+                         before check so it runs first within the verify phase. -->
                     <execution>
                         <id>report</id>
                         <phase>verify</phase>
@@ -192,6 +237,7 @@
                             <goal>report</goal>
                         </goals>
                     </execution>
+                    <!-- Fail `./mvnw clean verify` below 80% combined line coverage. -->
                     <execution>
                         <id>check</id>
                         <phase>verify</phase>
@@ -211,6 +257,8 @@
                                     </limits>
                                 </rule>
                             </rules>
+                            <!-- Exclusions: bootstrap main, generated MapStruct impls, and pure
+                                 config classes; the overall BUNDLE gate stays at >=80%. -->
                             <excludes>
                                 <exclude>**/CardDemoApplication.*</exclude>
                                 <exclude>**/*MapperImpl.*</exclude>
@@ -222,9 +270,14 @@
             </plugin>
 
             <!--
-              OWASP dependency-check: fail build on HIGH (CVSS >= 7) or CRITICAL (AAP 0.7.1).
-              The NVD API key may be supplied via property/env (nvdApiKey / NVD_API_KEY) for reliable
-              local scans; do NOT hardcode any key here.
+              OWASP dependency-check: software-composition CVE scan bound to `verify`.
+              failBuildOnCVSS=7 fails the build on any HIGH (CVSS >= 7) or CRITICAL finding
+              (AAP 0.7.1 "zero critical/high CVEs"). Version 12.2.2 is explicitly pinned
+              because it is NOT managed by the Spring Boot parent BOM.
+
+              The NVD API key may be supplied at runtime via the `nvdApiKey` property or the
+              NVD_API_KEY environment variable for reliable local scans (recommended to avoid
+              NVD rate limiting) - do NOT hardcode any key in this file.
             -->
             <plugin>
                 <groupId>org.owasp</groupId>
