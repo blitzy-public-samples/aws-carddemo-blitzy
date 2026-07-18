@@ -39,6 +39,32 @@
         <jacoco.version>0.8.15</jacoco.version>
         <!-- OWASP dependency-check 12.2.2 enforces the zero critical/high CVE gate. -->
         <dependency-check.version>12.2.2</dependency-check.version>
+        <!--
+          Jackson BOM override (m-01). Spring Boot 3.5.16 manages Jackson via the
+          `jackson-bom.version` property and would otherwise resolve jackson-databind 2.21.4,
+          which is affected by CVE-2026-54515 / GHSA-5jmj-h7xm-6q6v (fixed in 2.21.5). Overriding
+          the managed property pins the WHOLE Jackson BOM (databind, core, annotations and every
+          jackson module) to 2.21.5 consistently. Rationale is recorded in docs/decision-log.md.
+        -->
+        <jackson-bom.version>2.21.5</jackson-bom.version>
+        <!--
+          Application-shipped dependency security-patch overrides (C-03). The Spring Boot
+          3.5.16 parent BOM (the final stable 3.x release, EOL 2026-06-30) manages these three
+          runtime/compile artifacts at versions that the OWASP dependency-check scan flags for
+          High/Critical CVEs published after 3.5.16 shipped. Each override stays WITHIN the same
+          major.minor line the BOM already uses, so it is a low-risk patch bump that preserves
+          Spring Boot 3.5.16 compatibility while clearing the shipped-artifact advisories:
+            - Tomcat  10.1.55 -> 10.1.57 (embedded servlet container; tomcat.version)
+            - PostgreSQL 42.7.11 -> 42.7.13 (JDBC driver; postgresql.version)
+            - Log4j2  2.24.3 -> 2.26.1 (log4j-api via the log4j-to-slf4j bridge; log4j2.version)
+          These clear the only build-shipped (compile/runtime scope) High/Critical findings; the
+          remaining advisories are confined to build-time Maven plugin / test-only graphs (not
+          shipped) and are handled by dependency-check-suppressions.xml with per-item
+          justification. Rationale + the SB 3.5.16 EOL follow-on are recorded in docs/decision-log.md.
+        -->
+        <tomcat.version>10.1.57</tomcat.version>
+        <postgresql.version>42.7.13</postgresql.version>
+        <log4j2.version>2.26.1</log4j2.version>
     </properties>
 
     <dependencies>
@@ -153,11 +179,20 @@
             </plugin>
 
             <!--
-              Compile against Java release 25 (via <release>25</release> below) and enforce
-              the zero-warning build (AAP 0.7.1): the -Xlint:all argument surfaces every javac
-              lint category and failOnWarning turns any
-              warning into a build failure. (Lombok/MapStruct are intentionally NOT used by
-              the generated sources, so no annotationProcessorPaths are required here.)
+              Compile against Java release 25 (via <release>25</release> below) and enforce a
+              zero-COMPILER-warning build (AAP 0.7.1): -Xlint:all surfaces every javac lint category
+              and failOnWarning turns any javac warning into a build failure. (Lombok/MapStruct are
+              intentionally NOT used by the generated sources, so no annotationProcessorPaths are
+              required here.)
+
+              Scope note (M-03): failOnWarning governs javac COMPILE warnings only. Separately, the
+              Maven 3.9.9 process JVM emits two startup warnings from Maven's OWN bundled libraries
+              on Java 25 - a Jansi restricted-native-access warning and a Guava sun.misc.Unsafe
+              terminal-deprecation warning. The Jansi warning is suppressed by the native-access
+              flag configured in `.mvn/jvm.config`. The Guava warning originates inside Maven's
+              bundled guava jar and CANNOT be removed by this project's configuration; it is
+              documented honestly in docs/decision-log.md rather than masked, and it does not affect
+              the compiled artifact. See the Maven-version support/warning decision row.
             -->
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
@@ -171,10 +206,26 @@
                 </configuration>
             </plugin>
 
-            <!-- Unit tests (*Test) via JUnit 5. -->
+            <!--
+              Unit tests via JUnit 5 (M-02). Non-overlapping naming contract: unit tests end in
+              `*Test` and run here (surefire); integration/parity tests end in `*IT` and run in
+              failsafe below - the two sets never overlap. failIfNoTests=true makes an empty unit
+              suite a build failure so the >=80% coverage gate (AAP 0.7.1) cannot be bypassed by
+              simply shipping no tests. (Test sources are a later checkpoint; `-DskipTests`
+              short-circuits execution and does not trip failIfNoTests.)
+            -->
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-surefire-plugin</artifactId>
+                <configuration>
+                    <failIfNoTests>true</failIfNoTests>
+                    <includes>
+                        <include>**/*Test.java</include>
+                    </includes>
+                    <excludes>
+                        <exclude>**/*IT.java</exclude>
+                    </excludes>
+                </configuration>
             </plugin>
 
             <!--
@@ -185,6 +236,15 @@
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-failsafe-plugin</artifactId>
+                <configuration>
+                    <!-- Integration / parity tests only (*IT); disjoint from surefire's *Test set.
+                         failIfNoTests=true makes an empty integration suite fail verify so the
+                         combined coverage gate genuinely requires integration tests (M-02). -->
+                    <failIfNoTests>true</failIfNoTests>
+                    <includes>
+                        <include>**/*IT.java</include>
+                    </includes>
+                </configuration>
                 <executions>
                     <execution>
                         <goals>
@@ -257,12 +317,17 @@
                                     </limits>
                                 </rule>
                             </rules>
-                            <!-- Exclusions: bootstrap main, generated MapStruct impls, and pure
-                                 config classes; the overall BUNDLE gate stays at >=80%. -->
+                            <!--
+                              Exclusions are narrowly limited to the Spring Boot bootstrap entry
+                              point and generated MapStruct mapper implementations (M-02). The
+                              previous blanket `**/config/**` exclusion was REMOVED: config classes
+                              carry behavior (SecurityConfig authorization rules, BatchConfig job
+                              wiring, DataSourceConfig, WebConfig, ObservabilityConfig) and must be
+                              covered by the >=80% BUNDLE gate rather than silently excluded.
+                            -->
                             <excludes>
                                 <exclude>**/CardDemoApplication.*</exclude>
                                 <exclude>**/*MapperImpl.*</exclude>
-                                <exclude>**/config/**</exclude>
                             </excludes>
                         </configuration>
                     </execution>
@@ -275,9 +340,17 @@
               (AAP 0.7.1 "zero critical/high CVEs"). Version 12.2.2 is explicitly pinned
               because it is NOT managed by the Spring Boot parent BOM.
 
-              The NVD API key may be supplied at runtime via the `nvdApiKey` property or the
-              NVD_API_KEY environment variable for reliable local scans (recommended to avoid
-              NVD rate limiting) - do NOT hardcode any key in this file.
+              Scope coverage (C-03): skipTestScope=false and scanPlugins=true so the scan covers
+              test-scope dependencies AND the Maven build-plugin graph, not just compile/runtime.
+              Without these, HIGH/CRITICAL advisories in test or plugin dependencies are invisible
+              and the declared zero-high/critical policy is not substantiated.
+
+              NVD API key (M-01): nvdApiKeyEnvironmentVariable=NVD_API_KEY makes the plugin actually
+              consume the NVD_API_KEY environment variable (the previous comment claimed this but no
+              configuration wired it). Supply the key via that env var for reliable/rate-limit-free
+              updates; the first run downloads the NVD data cache into the local Maven repository and
+              subsequent runs reuse it. Do NOT hardcode any key in this file. See docs/decision-log.md
+              for the offline/rate-limit note (NVD returns HTTP 429 without a key).
             -->
             <plugin>
                 <groupId>org.owasp</groupId>
@@ -285,6 +358,20 @@
                 <version>${dependency-check.version}</version>
                 <configuration>
                     <failBuildOnCVSS>7</failBuildOnCVSS>
+                    <skipTestScope>false</skipTestScope>
+                    <scanPlugins>true</scanPlugins>
+                    <nvdApiKeyEnvironmentVariable>NVD_API_KEY</nvdApiKeyEnvironmentVariable>
+                    <!--
+                      Suppressions (C-03) apply ONLY to build-time Maven plugin-graph and test-only
+                      dependencies that are never packaged into the deployable artifact (surfaced
+                      because scanPlugins=true / skipTestScope=false). Every application compile/runtime
+                      High/Critical finding is fixed at source via the patched-version property
+                      overrides above - none of those are suppressed. Each suppression is version-pinned
+                      and individually justified. See docs/decision-log.md.
+                    -->
+                    <suppressionFiles>
+                        <suppressionFile>${project.basedir}/dependency-check-suppressions.xml</suppressionFile>
+                    </suppressionFiles>
                 </configuration>
                 <executions>
                     <execution>

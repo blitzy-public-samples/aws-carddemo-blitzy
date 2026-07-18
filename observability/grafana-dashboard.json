@@ -14,7 +14,7 @@
       "type": "grafana",
       "id": "grafana",
       "name": "Grafana",
-      "version": "10.4.0"
+      "version": "12.4.5"
     },
     {
       "type": "datasource",
@@ -225,7 +225,7 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "process_uptime_seconds{job=~\"$job\", instance=~\"$instance\"}",
+          "expr": "process_uptime_seconds{application=~\"$application\", job=~\"$job\", instance=~\"$instance\"}",
           "range": true,
           "refId": "A",
           "legendFormat": "{{instance}}"
@@ -295,7 +295,7 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "process_cpu_usage{job=~\"$job\", instance=~\"$instance\"}",
+          "expr": "process_cpu_usage{application=~\"$application\", job=~\"$job\", instance=~\"$instance\"}",
           "range": true,
           "refId": "A",
           "legendFormat": "{{instance}}"
@@ -365,7 +365,7 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "system_cpu_usage{job=~\"$job\", instance=~\"$instance\"}",
+          "expr": "system_cpu_usage{application=~\"$application\", job=~\"$job\", instance=~\"$instance\"}",
           "range": true,
           "refId": "A",
           "legendFormat": "{{instance}}"
@@ -452,7 +452,7 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "sum(jvm_memory_used_bytes{area=\"heap\", job=~\"$job\", instance=~\"$instance\"}) / sum(jvm_memory_max_bytes{area=\"heap\", job=~\"$job\", instance=~\"$instance\"})",
+          "expr": "sum(jvm_memory_used_bytes{area=\"heap\", application=~\"$application\", job=~\"$job\", instance=~\"$instance\"}) / sum(jvm_memory_max_bytes{area=\"heap\", job=~\"$job\", instance=~\"$instance\"})",
           "range": true,
           "refId": "A",
           "legendFormat": "heap"
@@ -514,7 +514,7 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "jvm_threads_live_threads{job=~\"$job\", instance=~\"$instance\"}",
+          "expr": "jvm_threads_live_threads{application=~\"$application\", job=~\"$job\", instance=~\"$instance\"}",
           "range": true,
           "refId": "A",
           "legendFormat": "{{instance}}"
@@ -576,7 +576,7 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "jvm_classes_loaded_classes{job=~\"$job\", instance=~\"$instance\"}",
+          "expr": "jvm_classes_loaded_classes{application=~\"$application\", job=~\"$job\", instance=~\"$instance\"}",
           "range": true,
           "refId": "A",
           "legendFormat": "{{instance}}"
@@ -638,7 +638,7 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "sum(rate(jvm_gc_pause_seconds_sum{job=~\"$job\", instance=~\"$instance\"}[$__rate_interval])) / sum(rate(jvm_gc_pause_seconds_count{job=~\"$job\", instance=~\"$instance\"}[$__rate_interval]))",
+          "expr": "sum(rate(jvm_gc_pause_seconds_sum{application=~\"$application\", job=~\"$job\", instance=~\"$instance\"}[$__rate_interval])) / sum(rate(jvm_gc_pause_seconds_count{job=~\"$job\", instance=~\"$instance\"}[$__rate_interval]))",
           "range": true,
           "refId": "A",
           "legendFormat": "avg pause"
@@ -727,7 +727,7 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "sum(jvm_memory_used_bytes{area=\"heap\", job=~\"$job\", instance=~\"$instance\"})",
+          "expr": "sum(jvm_memory_used_bytes{area=\"heap\", application=~\"$application\", job=~\"$job\", instance=~\"$instance\"})",
           "range": true,
           "refId": "A",
           "legendFormat": "used"
@@ -738,7 +738,7 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "sum(jvm_memory_committed_bytes{area=\"heap\", job=~\"$job\", instance=~\"$instance\"})",
+          "expr": "sum(jvm_memory_committed_bytes{area=\"heap\", application=~\"$application\", job=~\"$job\", instance=~\"$instance\"})",
           "range": true,
           "refId": "B",
           "legendFormat": "committed"
@@ -749,7 +749,7 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "sum(jvm_memory_max_bytes{area=\"heap\", job=~\"$job\", instance=~\"$instance\"})",
+          "expr": "sum(jvm_memory_max_bytes{area=\"heap\", application=~\"$application\", job=~\"$job\", instance=~\"$instance\"})",
           "range": true,
           "refId": "C",
           "legendFormat": "max"
@@ -838,7 +838,7 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "sum(jvm_memory_used_bytes{area=\"nonheap\", job=~\"$job\", instance=~\"$instance\"})",
+          "expr": "sum(jvm_memory_used_bytes{area=\"nonheap\", application=~\"$application\", job=~\"$job\", instance=~\"$instance\"})",
           "range": true,
           "refId": "A",
           "legendFormat": "used"
@@ -849,7 +849,7 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "sum(jvm_memory_committed_bytes{area=\"nonheap\", job=~\"$job\", instance=~\"$instance\"})",
+          "expr": "sum(jvm_memory_committed_bytes{area=\"nonheap\", application=~\"$application\", job=~\"$job\", instance=~\"$instance\"})",
           "range": true,
           "refId": "B",
           "legendFormat": "committed"
@@ -938,7 +938,7 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "sum by (id) (jvm_memory_used_bytes{job=~\"$job\", instance=~\"$instance\"})",
+          "expr": "sum by (id) (jvm_memory_used_bytes{application=~\"$application\", job=~\"$job\", instance=~\"$instance\"})",
           "range": true,
           "refId": "A",
           "legendFormat": "{{id}}"
@@ -1027,7 +1027,7 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "rate(jvm_gc_pause_seconds_sum{job=~\"$job\", instance=~\"$instance\"}[$__rate_interval]) / rate(jvm_gc_pause_seconds_count{job=~\"$job\", instance=~\"$instance\"}[$__rate_interval])",
+          "expr": "rate(jvm_gc_pause_seconds_sum{application=~\"$application\", job=~\"$job\", instance=~\"$instance\"}[$__rate_interval]) / rate(jvm_gc_pause_seconds_count{job=~\"$job\", instance=~\"$instance\"}[$__rate_interval])",
           "range": true,
           "refId": "A",
           "legendFormat": "avg pause {{action}}"
@@ -1038,7 +1038,7 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "rate(jvm_gc_pause_seconds_count{job=~\"$job\", instance=~\"$instance\"}[$__rate_interval])",
+          "expr": "rate(jvm_gc_pause_seconds_count{application=~\"$application\", job=~\"$job\", instance=~\"$instance\"}[$__rate_interval])",
           "range": true,
           "refId": "B",
           "legendFormat": "collections/s {{action}}"
@@ -1127,7 +1127,7 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "jvm_threads_live_threads{job=~\"$job\", instance=~\"$instance\"}",
+          "expr": "jvm_threads_live_threads{application=~\"$application\", job=~\"$job\", instance=~\"$instance\"}",
           "range": true,
           "refId": "A",
           "legendFormat": "live"
@@ -1138,7 +1138,7 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "jvm_threads_daemon_threads{job=~\"$job\", instance=~\"$instance\"}",
+          "expr": "jvm_threads_daemon_threads{application=~\"$application\", job=~\"$job\", instance=~\"$instance\"}",
           "range": true,
           "refId": "B",
           "legendFormat": "daemon"
@@ -1149,7 +1149,7 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "jvm_threads_peak_threads{job=~\"$job\", instance=~\"$instance\"}",
+          "expr": "jvm_threads_peak_threads{application=~\"$application\", job=~\"$job\", instance=~\"$instance\"}",
           "range": true,
           "refId": "C",
           "legendFormat": "peak"
@@ -1238,7 +1238,7 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "jvm_classes_loaded_classes{job=~\"$job\", instance=~\"$instance\"}",
+          "expr": "jvm_classes_loaded_classes{application=~\"$application\", job=~\"$job\", instance=~\"$instance\"}",
           "range": true,
           "refId": "A",
           "legendFormat": "loaded"
@@ -1318,7 +1318,7 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "sum(rate(http_server_requests_seconds_count{job=~\"$job\", instance=~\"$instance\"}[$__rate_interval]))",
+          "expr": "sum(rate(http_server_requests_seconds_count{application=~\"$application\", job=~\"$job\", instance=~\"$instance\"}[$__rate_interval]))",
           "range": true,
           "refId": "A",
           "legendFormat": "req/s"
@@ -1389,7 +1389,7 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "100 * sum(rate(http_server_requests_seconds_count{outcome=~\"CLIENT_ERROR|SERVER_ERROR\", job=~\"$job\", instance=~\"$instance\"}[$__rate_interval])) / sum(rate(http_server_requests_seconds_count{job=~\"$job\", instance=~\"$instance\"}[$__rate_interval]))",
+          "expr": "100 * sum(rate(http_server_requests_seconds_count{outcome=~\"CLIENT_ERROR|SERVER_ERROR\", application=~\"$application\", job=~\"$job\", instance=~\"$instance\"}[$__rate_interval])) / sum(rate(http_server_requests_seconds_count{job=~\"$job\", instance=~\"$instance\"}[$__rate_interval]))",
           "range": true,
           "refId": "A",
           "legendFormat": "error %"
@@ -1452,7 +1452,7 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "histogram_quantile(0.95, sum(rate(http_server_requests_seconds_bucket{job=~\"$job\", instance=~\"$instance\"}[$__rate_interval])) by (le))",
+          "expr": "histogram_quantile(0.95, sum(rate(http_server_requests_seconds_bucket{application=~\"$application\", job=~\"$job\", instance=~\"$instance\"}[$__rate_interval])) by (le))",
           "range": true,
           "refId": "A",
           "legendFormat": "p95"
@@ -1515,7 +1515,7 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "histogram_quantile(0.99, sum(rate(http_server_requests_seconds_bucket{job=~\"$job\", instance=~\"$instance\"}[$__rate_interval])) by (le))",
+          "expr": "histogram_quantile(0.99, sum(rate(http_server_requests_seconds_bucket{application=~\"$application\", job=~\"$job\", instance=~\"$instance\"}[$__rate_interval])) by (le))",
           "range": true,
           "refId": "A",
           "legendFormat": "p99"
@@ -1604,7 +1604,7 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "sum by (uri) (rate(http_server_requests_seconds_count{job=~\"$job\", instance=~\"$instance\"}[$__rate_interval]))",
+          "expr": "sum by (uri) (rate(http_server_requests_seconds_count{application=~\"$application\", job=~\"$job\", instance=~\"$instance\"}[$__rate_interval]))",
           "range": true,
           "refId": "A",
           "legendFormat": "{{uri}}"
@@ -1693,7 +1693,7 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "sum by (method) (rate(http_server_requests_seconds_count{job=~\"$job\", instance=~\"$instance\"}[$__rate_interval]))",
+          "expr": "sum by (method) (rate(http_server_requests_seconds_count{application=~\"$application\", job=~\"$job\", instance=~\"$instance\"}[$__rate_interval]))",
           "range": true,
           "refId": "A",
           "legendFormat": "{{method}}"
@@ -1782,7 +1782,7 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "sum by (status) (rate(http_server_requests_seconds_count{outcome=~\"CLIENT_ERROR|SERVER_ERROR\", job=~\"$job\", instance=~\"$instance\"}[$__rate_interval]))",
+          "expr": "sum by (status) (rate(http_server_requests_seconds_count{outcome=~\"CLIENT_ERROR|SERVER_ERROR\", application=~\"$application\", job=~\"$job\", instance=~\"$instance\"}[$__rate_interval]))",
           "range": true,
           "refId": "A",
           "legendFormat": "{{status}}"
@@ -1871,7 +1871,7 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "sum by (uri) (rate(http_server_requests_seconds_sum{job=~\"$job\", instance=~\"$instance\"}[$__rate_interval])) / sum by (uri) (rate(http_server_requests_seconds_count{job=~\"$job\", instance=~\"$instance\"}[$__rate_interval]))",
+          "expr": "sum by (uri) (rate(http_server_requests_seconds_sum{application=~\"$application\", job=~\"$job\", instance=~\"$instance\"}[$__rate_interval])) / sum by (uri) (rate(http_server_requests_seconds_count{job=~\"$job\", instance=~\"$instance\"}[$__rate_interval]))",
           "range": true,
           "refId": "A",
           "legendFormat": "{{uri}}"
@@ -1960,7 +1960,7 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "histogram_quantile(0.5, sum(rate(http_server_requests_seconds_bucket{job=~\"$job\", instance=~\"$instance\"}[$__rate_interval])) by (le))",
+          "expr": "histogram_quantile(0.5, sum(rate(http_server_requests_seconds_bucket{application=~\"$application\", job=~\"$job\", instance=~\"$instance\"}[$__rate_interval])) by (le))",
           "range": true,
           "refId": "A",
           "legendFormat": "p50"
@@ -1971,7 +1971,7 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "histogram_quantile(0.95, sum(rate(http_server_requests_seconds_bucket{job=~\"$job\", instance=~\"$instance\"}[$__rate_interval])) by (le))",
+          "expr": "histogram_quantile(0.95, sum(rate(http_server_requests_seconds_bucket{application=~\"$application\", job=~\"$job\", instance=~\"$instance\"}[$__rate_interval])) by (le))",
           "range": true,
           "refId": "B",
           "legendFormat": "p95"
@@ -1982,7 +1982,7 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "histogram_quantile(0.99, sum(rate(http_server_requests_seconds_bucket{job=~\"$job\", instance=~\"$instance\"}[$__rate_interval])) by (le))",
+          "expr": "histogram_quantile(0.99, sum(rate(http_server_requests_seconds_bucket{application=~\"$application\", job=~\"$job\", instance=~\"$instance\"}[$__rate_interval])) by (le))",
           "range": true,
           "refId": "C",
           "legendFormat": "p99"
@@ -2071,7 +2071,7 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "max by (uri) (http_server_requests_seconds_max{job=~\"$job\", instance=~\"$instance\"})",
+          "expr": "max by (uri) (http_server_requests_seconds_max{application=~\"$application\", job=~\"$job\", instance=~\"$instance\"})",
           "range": true,
           "refId": "A",
           "legendFormat": "{{uri}}"
@@ -2150,7 +2150,7 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "sum(spring_batch_job_active_seconds_active_count{job=~\"$job\", instance=~\"$instance\"})",
+          "expr": "sum(spring_batch_job_active_seconds_active_count{application=~\"$application\", job=~\"$job\", instance=~\"$instance\"})",
           "range": true,
           "refId": "A",
           "legendFormat": "active"
@@ -2212,7 +2212,7 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "sum(spring_batch_job_seconds_count{job=~\"$job\", instance=~\"$instance\"})",
+          "expr": "sum(spring_batch_job_seconds_count{application=~\"$application\", job=~\"$job\", instance=~\"$instance\"})",
           "range": true,
           "refId": "A",
           "legendFormat": "total"
@@ -2223,7 +2223,7 @@
       "type": "stat",
       "id": 31,
       "title": "Job Failures",
-      "description": "Completed job executions with status FAILURE.",
+      "description": "Count of finished job executions whose Micrometer spring.batch.job status tag is FAILED (BatchStatus.FAILED).",
       "datasource": {
         "type": "prometheus",
         "uid": "${DS_PROMETHEUS}"
@@ -2278,7 +2278,7 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "sum(spring_batch_job_seconds_count{spring_batch_job_status=\"FAILURE\", job=~\"$job\", instance=~\"$instance\"})",
+          "expr": "sum(spring_batch_job_seconds_count{spring_batch_job_status=\"FAILED\", application=~\"$application\", job=~\"$job\", instance=~\"$instance\"})",
           "range": true,
           "refId": "A",
           "legendFormat": "failures"
@@ -2341,7 +2341,7 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "sum(rate(spring_batch_job_seconds_sum{job=~\"$job\", instance=~\"$instance\"}[$__rate_interval])) / sum(rate(spring_batch_job_seconds_count{job=~\"$job\", instance=~\"$instance\"}[$__rate_interval]))",
+          "expr": "sum(rate(spring_batch_job_seconds_sum{application=~\"$application\", job=~\"$job\", instance=~\"$instance\"}[$__rate_interval])) / sum(rate(spring_batch_job_seconds_count{job=~\"$job\", instance=~\"$instance\"}[$__rate_interval]))",
           "range": true,
           "refId": "A",
           "legendFormat": "avg"
@@ -2352,7 +2352,7 @@
       "type": "timeseries",
       "id": 33,
       "title": "Job Execution Rate by Name / Status",
-      "description": "Job completion rate grouped by job name and SUCCESS/FAILURE status.",
+      "description": "Job execution rate grouped by job name and Micrometer spring.batch.job status tag (BatchStatus values, e.g. COMPLETED / FAILED).",
       "datasource": {
         "type": "prometheus",
         "uid": "${DS_PROMETHEUS}"
@@ -2430,7 +2430,7 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "sum by (spring_batch_job_name, spring_batch_job_status) (rate(spring_batch_job_seconds_count{job=~\"$job\", instance=~\"$instance\"}[$__rate_interval]))",
+          "expr": "sum by (spring_batch_job_name, spring_batch_job_status) (rate(spring_batch_job_seconds_count{application=~\"$application\", job=~\"$job\", instance=~\"$instance\"}[$__rate_interval]))",
           "range": true,
           "refId": "A",
           "legendFormat": "{{spring_batch_job_name}} / {{spring_batch_job_status}}"
@@ -2519,7 +2519,7 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "sum by (spring_batch_job_name) (rate(spring_batch_job_seconds_sum{job=~\"$job\", instance=~\"$instance\"}[$__rate_interval])) / sum by (spring_batch_job_name) (rate(spring_batch_job_seconds_count{job=~\"$job\", instance=~\"$instance\"}[$__rate_interval]))",
+          "expr": "sum by (spring_batch_job_name) (rate(spring_batch_job_seconds_sum{application=~\"$application\", job=~\"$job\", instance=~\"$instance\"}[$__rate_interval])) / sum by (spring_batch_job_name) (rate(spring_batch_job_seconds_count{job=~\"$job\", instance=~\"$instance\"}[$__rate_interval]))",
           "range": true,
           "refId": "A",
           "legendFormat": "{{spring_batch_job_name}}"
@@ -2608,7 +2608,7 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "sum by (spring_batch_step_name) (rate(spring_batch_step_seconds_sum{job=~\"$job\", instance=~\"$instance\"}[$__rate_interval])) / sum by (spring_batch_step_name) (rate(spring_batch_step_seconds_count{job=~\"$job\", instance=~\"$instance\"}[$__rate_interval]))",
+          "expr": "sum by (spring_batch_step_name) (rate(spring_batch_step_seconds_sum{application=~\"$application\", job=~\"$job\", instance=~\"$instance\"}[$__rate_interval])) / sum by (spring_batch_step_name) (rate(spring_batch_step_seconds_count{job=~\"$job\", instance=~\"$instance\"}[$__rate_interval]))",
           "range": true,
           "refId": "A",
           "legendFormat": "{{spring_batch_step_name}}"
@@ -2697,7 +2697,7 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "sum(rate(spring_batch_item_read_seconds_count{job=~\"$job\", instance=~\"$instance\"}[$__rate_interval]))",
+          "expr": "sum(rate(spring_batch_item_read_seconds_count{application=~\"$application\", job=~\"$job\", instance=~\"$instance\"}[$__rate_interval]))",
           "range": true,
           "refId": "A",
           "legendFormat": "read"
@@ -2708,7 +2708,7 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "sum(rate(spring_batch_item_process_seconds_count{job=~\"$job\", instance=~\"$instance\"}[$__rate_interval]))",
+          "expr": "sum(rate(spring_batch_item_process_seconds_count{application=~\"$application\", job=~\"$job\", instance=~\"$instance\"}[$__rate_interval]))",
           "range": true,
           "refId": "B",
           "legendFormat": "process"
@@ -2719,7 +2719,7 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "sum(rate(spring_batch_chunk_write_seconds_count{job=~\"$job\", instance=~\"$instance\"}[$__rate_interval]))",
+          "expr": "sum(rate(spring_batch_chunk_write_seconds_count{application=~\"$application\", job=~\"$job\", instance=~\"$instance\"}[$__rate_interval]))",
           "range": true,
           "refId": "C",
           "legendFormat": "chunk write"
@@ -2798,7 +2798,7 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "sum(hikaricp_connections_active{job=~\"$job\", instance=~\"$instance\"})",
+          "expr": "sum(hikaricp_connections_active{application=~\"$application\", job=~\"$job\", instance=~\"$instance\"})",
           "range": true,
           "refId": "A",
           "legendFormat": "active"
@@ -2860,7 +2860,7 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "sum(hikaricp_connections_idle{job=~\"$job\", instance=~\"$instance\"})",
+          "expr": "sum(hikaricp_connections_idle{application=~\"$application\", job=~\"$job\", instance=~\"$instance\"})",
           "range": true,
           "refId": "A",
           "legendFormat": "idle"
@@ -2930,7 +2930,7 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "sum(hikaricp_connections_pending{job=~\"$job\", instance=~\"$instance\"})",
+          "expr": "sum(hikaricp_connections_pending{application=~\"$application\", job=~\"$job\", instance=~\"$instance\"})",
           "range": true,
           "refId": "A",
           "legendFormat": "pending"
@@ -2996,7 +2996,7 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "sum(hikaricp_connections_timeout_total{job=~\"$job\", instance=~\"$instance\"})",
+          "expr": "sum(hikaricp_connections_timeout_total{application=~\"$application\", job=~\"$job\", instance=~\"$instance\"})",
           "range": true,
           "refId": "A",
           "legendFormat": "timeouts"
@@ -3085,7 +3085,7 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "hikaricp_connections_active{job=~\"$job\", instance=~\"$instance\"}",
+          "expr": "hikaricp_connections_active{application=~\"$application\", job=~\"$job\", instance=~\"$instance\"}",
           "range": true,
           "refId": "A",
           "legendFormat": "active {{pool}}"
@@ -3096,7 +3096,7 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "hikaricp_connections_idle{job=~\"$job\", instance=~\"$instance\"}",
+          "expr": "hikaricp_connections_idle{application=~\"$application\", job=~\"$job\", instance=~\"$instance\"}",
           "range": true,
           "refId": "B",
           "legendFormat": "idle {{pool}}"
@@ -3107,7 +3107,7 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "hikaricp_connections_pending{job=~\"$job\", instance=~\"$instance\"}",
+          "expr": "hikaricp_connections_pending{application=~\"$application\", job=~\"$job\", instance=~\"$instance\"}",
           "range": true,
           "refId": "C",
           "legendFormat": "pending {{pool}}"
@@ -3118,7 +3118,7 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "hikaricp_connections_min{job=~\"$job\", instance=~\"$instance\"}",
+          "expr": "hikaricp_connections_min{application=~\"$application\", job=~\"$job\", instance=~\"$instance\"}",
           "range": true,
           "refId": "D",
           "legendFormat": "min {{pool}}"
@@ -3129,7 +3129,7 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "hikaricp_connections_max{job=~\"$job\", instance=~\"$instance\"}",
+          "expr": "hikaricp_connections_max{application=~\"$application\", job=~\"$job\", instance=~\"$instance\"}",
           "range": true,
           "refId": "E",
           "legendFormat": "max {{pool}}"
@@ -3218,7 +3218,7 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "rate(hikaricp_connections_acquire_seconds_sum{job=~\"$job\", instance=~\"$instance\"}[$__rate_interval]) / rate(hikaricp_connections_acquire_seconds_count{job=~\"$job\", instance=~\"$instance\"}[$__rate_interval])",
+          "expr": "rate(hikaricp_connections_acquire_seconds_sum{application=~\"$application\", job=~\"$job\", instance=~\"$instance\"}[$__rate_interval]) / rate(hikaricp_connections_acquire_seconds_count{job=~\"$job\", instance=~\"$instance\"}[$__rate_interval])",
           "range": true,
           "refId": "A",
           "legendFormat": "{{pool}}"
@@ -3307,7 +3307,7 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "rate(hikaricp_connections_usage_seconds_sum{job=~\"$job\", instance=~\"$instance\"}[$__rate_interval]) / rate(hikaricp_connections_usage_seconds_count{job=~\"$job\", instance=~\"$instance\"}[$__rate_interval])",
+          "expr": "rate(hikaricp_connections_usage_seconds_sum{application=~\"$application\", job=~\"$job\", instance=~\"$instance\"}[$__rate_interval]) / rate(hikaricp_connections_usage_seconds_count{job=~\"$job\", instance=~\"$instance\"}[$__rate_interval])",
           "range": true,
           "refId": "A",
           "legendFormat": "{{pool}}"
@@ -3396,7 +3396,7 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "rate(hikaricp_connections_creation_seconds_sum{job=~\"$job\", instance=~\"$instance\"}[$__rate_interval]) / rate(hikaricp_connections_creation_seconds_count{job=~\"$job\", instance=~\"$instance\"}[$__rate_interval])",
+          "expr": "rate(hikaricp_connections_creation_seconds_sum{application=~\"$application\", job=~\"$job\", instance=~\"$instance\"}[$__rate_interval]) / rate(hikaricp_connections_creation_seconds_count{job=~\"$job\", instance=~\"$instance\"}[$__rate_interval])",
           "range": true,
           "refId": "A",
           "legendFormat": "{{pool}}"
@@ -3429,6 +3429,29 @@
         "regex": "",
         "skipUrlSync": false,
         "type": "datasource"
+      },
+      {
+        "current": {},
+        "datasource": {
+          "type": "prometheus",
+          "uid": "${DS_PROMETHEUS}"
+        },
+        "definition": "label_values(application)",
+        "hide": 0,
+        "includeAll": true,
+        "allValue": ".*",
+        "multi": true,
+        "name": "application",
+        "options": [],
+        "query": {
+          "query": "label_values(application)",
+          "refId": "PrometheusVariableQueryEditor-VariableQuery"
+        },
+        "refresh": 2,
+        "regex": "",
+        "skipUrlSync": false,
+        "sort": 1,
+        "type": "query"
       },
       {
         "current": {},

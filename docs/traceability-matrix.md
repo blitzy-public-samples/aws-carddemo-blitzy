@@ -1,10 +1,10 @@
 # CardDemo COBOL → Java Traceability Matrix
 
-This document is the **bidirectional, 100 %-coverage traceability matrix** mandated by the
-**Explainability rule** (see Technical Specification §0.7.2 and §0.6.10). It maps **every** legacy
-COBOL / z/OS construct in the AWS CardDemo application to the Java / Spring Boot artifact that
-replaces it, and it documents the reverse direction so that any generated Java class can be traced
-back to its originating `legacy/` source.
+This document is the **bidirectional traceability matrix** mandated by the **Explainability rule**
+(see Technical Specification §0.7.2 and §0.6.10). It maps **every** legacy COBOL / z/OS construct in
+the AWS CardDemo application to the Java / Spring Boot artifact that is **planned** to replace it,
+and it defines the reverse-direction convention so that, once generated, any Java class can be
+traced back to its originating `legacy/` source.
 
 - **Source baseline:** AWS CardDemo — an IBM z/OS credit-card management application built on
   **COBOL, CICS, VSAM, JCL, BMS and RACF**.
@@ -12,22 +12,41 @@ back to its originating `legacy/` source.
   (`web/controller` → `service` → `repository` → PostgreSQL, with Spring Batch for JCL and Spring
   Security for signon/RACF) under the base package `com.aws.carddemo`.
 - **Direction:** *forward* = COBOL construct → Java artifact (Sections 2–7); *reverse* = Java
-  artifact → `legacy/` source path via a Javadoc origin-tag convention (Section 9).
-- **Coverage guarantee:** every one of the 28 COBOL programs, 28 copybooks, 17 BMS maps, 17
-  symbolic map copybooks, 29 JCL jobs, 2 PROCs, 1 sort-control member and 1 CSD appears in this
-  matrix. The only three intentional non-migrations (`UNUSED1Y`, `COCRDSEC`/`CDV1`,
-  `OPENFIL`/`CLOSEFIL`) are explicitly logged in the [Gaps ledger](#8-intentional-non-migrations-gaps-ledger)
-  so coverage provably reaches 100 % with no silent drops.
+  artifact → `legacy/` source path via a Javadoc origin-tag convention (Section 13).
 
-> **Legacy path convention.** The original COBOL tree was moved read-only from `app/**` to
-> `legacy/**` (Technical Specification §0.2.2 / §0.4.1). All source citations below use the
-> `legacy/` prefix while preserving the original subfolder names and exact file-name casing
-> (`legacy/cbl/…`, `legacy/cpy/…`, `legacy/cpy-bms/…`, `legacy/bms/…`, `legacy/jcl/…`,
-> `legacy/proc/…`, `legacy/ctl/…`, `legacy/csd/…`, `legacy/catlg/…`, `legacy/data/…`).
+> **Implementation status at this checkpoint (read first).** This matrix is written at the
+> **Legacy Oracle and Build Baseline** checkpoint. What that means for how to read it:
+>
+> - **Legacy side — present and verified.** Every `legacy/**` source cited below **exists now** in
+>   the repository (the COBOL tree was moved read-only from `app/**` to `legacy/**` per Technical
+>   Specification §0.2.2 / §0.4.1, and the 148-file inventory has been restored and byte-verified).
+>   All source citations, counts, offsets, and quirks in this document are checked against those
+>   files.
+> - **Java side — planned, not yet generated.** The Java targets named below (services, controllers,
+>   entities, repositories, DTOs, batch jobs, Thymeleaf templates, Flyway migrations such as
+>   `V1__schema.sql` / `V3__indexes.sql`, and tests) are the **planned** result of the subsequent
+>   generation phase. At this checkpoint the implemented Java deliverable is the **build baseline
+>   only** (`pom.xml`, the Maven wrapper, `.mvn/jvm.config`, and these docs); **no `src/**` Java
+>   source exists yet.** Every Java path is therefore a *forward mapping target*, not an assertion
+>   that the class currently exists.
+> - **Coverage claim, stated precisely.** This matrix guarantees that **100 % of legacy constructs
+>   are inventoried and each is assigned either a planned Java target or an explicitly logged
+>   intentional non-migration** — i.e. there are no *unaccounted* constructs. It does **not** claim
+>   that 100 % of the Java targets are implemented at this checkpoint (they are not). Implemented
+>   coverage is tracked separately in [§1 Coverage Summary](#1-coverage-summary).
+> - **Reverse direction — planned convention.** Because no Java classes exist yet, the reverse
+>   Javadoc origin-tags described in [§13](#13-reverse-direction-convention-java--legacy) are a
+>   **convention the generator will apply**, not tags that are present today.
+
+> **Legacy path convention.** All source citations use the `legacy/` prefix while preserving the
+> original subfolder names and exact file-name casing (`legacy/cbl/…`, `legacy/cpy/…`,
+> `legacy/cpy-bms/…`, `legacy/bms/…`, `legacy/jcl/…`, `legacy/proc/…`, `legacy/ctl/…`,
+> `legacy/csd/…`, `legacy/catlg/…`, `legacy/data/…`).
 >
 > **Related documents.** Consolidation decisions and every intentional gap are explained in
-> [`decision-log.md`](./decision-log.md); the before/after architecture diagrams are in
-> [`architecture/`](./architecture/).
+> [`decision-log.md`](./decision-log.md). The before/after architecture diagrams appear inline in
+> the Technical Specification (§0.1.2); a `docs/architecture/` folder is a *planned* deliverable and
+> does not yet exist at this checkpoint.
 
 ---
 
@@ -40,50 +59,60 @@ back to its originating `legacy/` source.
 5. [Repositories (One per VSAM File)](#5-repositories-one-per-vsam-file)
 6. [BMS Maps → Thymeleaf Templates + Screen Form DTOs](#6-bms-maps--thymeleaf-templates--screen-form-dtos)
 7. [Infrastructure JCL / PROC / CTL / CSD → Schema, Config, Sort](#7-infrastructure-jcl--proc--ctl--csd--schema-config-sort)
-8. [Intentional Non-Migrations (Gaps Ledger)](#8-intentional-non-migrations-gaps-ledger)
-9. [Reverse-Direction Convention (Java → Legacy)](#9-reverse-direction-convention-java--legacy)
+8. [Construct-Level Traceability (Paragraphs, Executable Copybooks, Subprograms)](#8-construct-level-traceability-paragraphs-executable-copybooks-subprograms)
+9. [Exact Record Contracts (Offsets, Keys, Signs, FILLER)](#9-exact-record-contracts-offsets-keys-signs-filler)
+10. [Source-Quirk Ledger (Preserve-or-Deviate + Parity-Test Obligations)](#10-source-quirk-ledger-preserve-or-deviate--parity-test-obligations)
+11. [Sensitive-Field Classification & Authorization Matrix](#11-sensitive-field-classification--authorization-matrix)
+12. [Intentional Non-Migrations (Gaps Ledger)](#12-intentional-non-migrations-gaps-ledger)
+13. [Reverse-Direction Convention (Java → Legacy)](#13-reverse-direction-convention-java--legacy)
 
 ---
 
 ## 1. Coverage Summary
 
-The table below counts every legacy construct type and confirms that each is either **mapped** to a
-Java target or **accounted-for** as a logged intentional non-migration. There are **zero unresolved
-gaps**.
+The table below counts every legacy construct type present at this checkpoint and confirms that each
+is either **mapped** to a planned Java target or **accounted-for** as a logged intentional
+non-migration. The **Implemented** column reflects the build-baseline checkpoint honestly: the Java
+source tree is not yet generated, so implemented Java artifacts are **0** for every mapped row.
 
-| Construct type | Count | Mapped / accounted-for | Unresolved gaps |
-| :------------- | ----: | ---------------------: | --------------: |
-| COBOL programs (`legacy/cbl/*.cbl`, `*.CBL`) | 28 | 28 | 0 |
-| Copybooks (`legacy/cpy/*.cpy`, `*.CPY`) | 28 | 28 *(incl. `UNUSED1Y` logged as dead code)* | 0 |
-| BMS map sources (`legacy/bms/*.bms`) | 17 | 17 | 0 |
-| Symbolic map copybooks (`legacy/cpy-bms/*.CPY`) | 17 | 17 | 0 |
-| JCL jobs (`legacy/jcl/*.jcl`, `*.JCL`) | 29 | 29 *(incl. `OPENFIL`/`CLOSEFIL` logged as N/A)* | 0 |
-| PROCs (`legacy/proc/*.prc`) | 2 | 2 | 0 |
-| Sort control (`legacy/ctl/*.ctl`) | 1 | 1 | 0 |
-| CICS resource definitions (`legacy/csd/CARDDEMO.CSD`) | 1 | 1 *(incl. `COCRDSEC` program logged → `SecurityConfig`)* | 0 |
-| **Total primary constructs** | **123** | **123** | **0** |
+| Construct type | Count (present at HEAD) | Inventoried & assigned a target / logged gap | Implemented Java artifacts (this checkpoint) | Unaccounted constructs |
+| :------------- | ----: | ---------------------: | ---: | --------------: |
+| COBOL programs (`legacy/cbl/*.cbl`, `*.CBL`) | 28 | 28 | 0 | 0 |
+| Copybooks (`legacy/cpy/*.cpy`, `*.CPY`) | 28 | 28 *(incl. `UNUSED1Y` logged as dead code)* | 0 | 0 |
+| BMS map sources (`legacy/bms/*.bms`) | 17 | 17 | 0 | 0 |
+| Symbolic map copybooks (`legacy/cpy-bms/*.CPY`) | 17 | 17 | 0 | 0 |
+| JCL jobs (`legacy/jcl/*.jcl`, `*.JCL`) | 29 | 29 *(incl. `OPENFIL`/`CLOSEFIL` logged as N/A)* | 0 | 0 |
+| PROCs (`legacy/proc/*.prc`) | 2 | 2 | 0 | 0 |
+| Sort control (`legacy/ctl/*.ctl`) | 1 | 1 | 0 | 0 |
+| CICS resource definitions (`legacy/csd/CARDDEMO.CSD`) | 1 | 1 *(incl. `COCRDSEC` program logged → `SecurityConfig`)* | 0 | 0 |
+| **Total primary constructs** | **123** | **123** | **0** | **0** |
+
+**How to read this:** *inventory* coverage is **100 %** (no legacy construct is unaccounted-for);
+*implementation* coverage is **0 %** at this build-baseline checkpoint and will rise as the
+generation phase produces `src/**`. Conflating the two is exactly the error this matrix now avoids.
 
 **Reference-only artifacts** (retained as parity oracles / schema inputs, not transformed into a
 single output, per Technical Specification §0.2.1): the VSAM catalog listing
 `legacy/catlg/LISTCAT.txt` (informs the Flyway schema), the **9** ASCII fixtures under
-`legacy/data/ASCII/` (Flyway seed + JUnit fixtures) and the **12** native EBCDIC datasets under
-`legacy/data/EBCDIC/` (binary source-of-truth).
+`legacy/data/ASCII/` (planned Flyway seed + JUnit fixtures) and the **12** native EBCDIC datasets
+under `legacy/data/EBCDIC/` (binary source-of-truth).
 
 The **28 COBOL programs** decompose as **10 batch** + **17 online** + **1 date utility**
 (`CSUTLDTC`). The CSD additionally defines the **18th** CICS program/transaction `COCRDSEC`/`CDV1`,
-which has **no `.cbl`** and is realized as Spring Security authorization — see the
-[Gaps ledger](#8-intentional-non-migrations-gaps-ledger).
+which has **no `.cbl`** and is planned to be realized as Spring Security authorization — see the
+[Gaps ledger](#12-intentional-non-migrations-gaps-ledger).
 
 ---
 
 ## 2. Online COBOL Programs → Service + Controller
 
-Each of the 17 online (pseudo-conversational) programs becomes one `@Service` (business logic) and
-one Spring MVC controller **route**, keyed to its CICS transaction id. The 18th CSD program
-(`COCRDSEC`, transaction `CDV1`) has no `.cbl` and is realized purely as Spring Security
-authorization.
+Each of the 17 online (pseudo-conversational) programs is planned to become one `@Service` (business
+logic) and one Spring MVC controller **route**, keyed to its CICS transaction id. The 18th CSD
+program (`COCRDSEC`, transaction `CDV1`) has no `.cbl` and is planned to be realized purely as Spring
+Security authorization. *(All Java paths below are planned targets — see the implementation-status
+note above.)*
 
-| CICS Tran | COBOL Program (legacy) | Java Service | Java Controller (route) | Screen / Function |
+| CICS Tran | COBOL Program (legacy) | Java Service (planned) | Java Controller / route (planned) | Screen / Function |
 | :-------- | :--------------------- | :----------- | :---------------------- | :---------------- |
 | `CC00` | `legacy/cbl/COSGN00C.cbl` | `service/online/SignonService.java` | `web/controller/SignonController.java` | Signon |
 | `CM00` | `legacy/cbl/COMEN01C.cbl` | `service/online/MainMenuService.java` | `web/controller/MenuController.java` | Main Menu |
@@ -102,37 +131,69 @@ authorization.
 | `CU01` | `legacy/cbl/COUSR01C.cbl` | `service/online/UserAddService.java` | `UserAdminController` (add) | Add User |
 | `CU02` | `legacy/cbl/COUSR02C.cbl` | `service/online/UserUpdateService.java` | `UserAdminController` (update) | Update User |
 | `CU03` | `legacy/cbl/COUSR03C.cbl` | `service/online/UserDeleteService.java` | `UserAdminController` (delete) | Delete User |
-| `CDV1` | `legacy/csd/CARDDEMO.CSD` (`COCRDSEC` program — no `.cbl`) | _(none — security cross-cut)_ | `config/SecurityConfig.java` (method/URL authorization) | Card-detail security variant — **intentional non-migration, see [§8](#8-intentional-non-migrations-gaps-ledger)** |
+| `CDV1` | `legacy/csd/CARDDEMO.CSD` (`COCRDSEC` program — no `.cbl`) | _(none — security cross-cut)_ | `config/SecurityConfig.java` (method/URL authorization) | Card-detail security variant — **intentional non-migration, see [§12](#12-intentional-non-migrations-gaps-ledger)** |
 
 > **Paragraph → method granularity.** Each online program's numbered paragraphs (e.g. `0000-`,
-> `1000-`, `9000-`) map to methods on the corresponding `@Service`, preserving the original
-> `PERFORM`/`EVALUATE` control flow (`PERFORM` → method call, `EVALUATE` → `switch`,
-> `PERFORM UNTIL` → loop; Technical Specification §0.3.3). This matrix maps at **program → class**
-> granularity; the paragraph → method detail is documented in each class's Javadoc. Inter-program
-> `XCTL`/`LINK` transfers (e.g. `COSGN00C` → `COADM01C`/`COMEN01C` after authentication) become
-> role-based controller redirects.
+> `1000-`, `9000-`) are planned to map to methods on the corresponding `@Service`, preserving the
+> original `PERFORM`/`EVALUATE` control flow (`PERFORM` → method call, `EVALUATE` → `switch`,
+> `PERFORM UNTIL` → loop; Technical Specification §0.3.3). This section maps at **program → class**
+> granularity; the paragraph-level inventory (counts, the one duplicate label, and the executable
+> copybooks) is detailed in [§8](#8-construct-level-traceability-paragraphs-executable-copybooks-subprograms).
+> Inter-program `XCTL`/`LINK` transfers (e.g. `COSGN00C` → `COADM01C`/`COMEN01C` after
+> authentication) become role-based controller redirects driven by a server-side allowlist (see
+> [§11](#11-sensitive-field-classification--authorization-matrix)).
 
 ---
 
 ## 3. Batch COBOL Programs + JCL → Spring Batch Jobs
 
-Each business batch program becomes a Spring Batch `@Configuration` `Job` composed of
-chunk-oriented `Step`s (reader → processor → writer) or a `Tasklet` for single-action utilities.
-The driving JCL job (and PROC, where present) is preserved as step topology and job parameters.
-The date utility `CSUTLDTC` is a called subroutine rather than a job and becomes a `@Service`.
+Each business batch program is planned to become a Spring Batch `@Configuration` `Job` composed of
+chunk-oriented `Step`s (reader → processor → writer) or a `Tasklet` for single-action utilities. The
+driving JCL job (and PROC, where present) is preserved as step topology and job parameters. The date
+utility `CSUTLDTC` is a called subroutine rather than a job and becomes a `@Service`.
 
-| Business function | COBOL Program (legacy) | JCL / PROC (legacy) | Java Batch `@Configuration` / util |
+**Naming vs. behavior:** the Java `@Configuration` names below are the **frozen** artifact names from
+the migration plan (Technical Specification §0.4.1). Where the frozen name reads more broadly than
+the COBOL program actually behaves, the true source behavior is stated in the table and reconciled in
+the footnotes — the name is preserved, the description is corrected.
+
+| Business function (source behavior) | COBOL Program (legacy) | JCL / PROC (legacy) | Java Batch `@Configuration` / util (planned, frozen name) |
 | :---------------- | :--------------------- | :------------------ | :--------------------------------- |
 | Post daily transactions | `legacy/cbl/CBTRN02C.cbl` | `legacy/jcl/POSTTRAN.jcl` | `batch/PostTransactionJobConfig.java` — reader = `DailyTransaction`, processor = validate xref + acct + credit-limit, writers = Transaction / TCATBAL / Account; over-limit → **430-byte** reject record |
-| Monthly interest calc | `legacy/cbl/CBACT04C.cbl` | `legacy/jcl/INTCALC.jcl` | `batch/InterestCalcJobConfig.java` — `(bal × rate) / 1200` truncated to 2 dp (`RoundingMode.DOWN`); `PARM` date → `JobParameter` |
-| Statement generation | `legacy/cbl/CBSTM03A.CBL` + `legacy/cbl/CBSTM03B.CBL` | `legacy/jcl/CREASTMT.JCL` | `batch/StatementJobConfig.java` — `CBSTM03B` I/O subprogram → reader / DAO using `COSTM01` layout |
-| Account file print | `legacy/cbl/CBACT01C.cbl` | `legacy/jcl/READACCT.jcl` | `batch/AccountPrintJobConfig.java` |
-| Card file print | `legacy/cbl/CBACT02C.cbl` | `legacy/jcl/READCARD.jcl` | `batch/CardPrintJobConfig.java` |
-| Xref file print | `legacy/cbl/CBACT03C.cbl` | `legacy/jcl/READXREF.jcl` | `batch/XrefPrintJobConfig.java` |
-| Customer file load | `legacy/cbl/CBCUS01C.cbl` | `legacy/jcl/READCUST.jcl` | `batch/CustomerLoadJobConfig.java` |
-| Transaction backup | `legacy/cbl/CBTRN01C.cbl` | `legacy/jcl/TRANBKP.jcl` | `batch/TransactionBackupJobConfig.java` |
+| Monthly interest calc | `legacy/cbl/CBACT04C.cbl` | `legacy/jcl/INTCALC.jcl` | `batch/InterestCalcJobConfig.java` — `(bal × rate) / 1200` truncated to 2 dp (`RoundingMode.DOWN`, no `ROUNDED` in source); `PARM` date → `JobParameter` |
+| Statement generation | `legacy/cbl/CBSTM03A.CBL` (driver) + `legacy/cbl/CBSTM03B.CBL` (I/O subprogram) | `legacy/jcl/CREASTMT.JCL` | `batch/StatementJobConfig.java` — the `CBSTM03B` flag-driven I/O subprogram becomes `batch/statement/StatementFileDao.java` (see [§8](#8-construct-level-traceability-paragraphs-executable-copybooks-subprograms)); statement layout from `COSTM01` |
+| Account file read/print | `legacy/cbl/CBACT01C.cbl` | `legacy/jcl/READACCT.jcl` | `batch/AccountPrintJobConfig.java` |
+| Card file read/print | `legacy/cbl/CBACT02C.cbl` | `legacy/jcl/READCARD.jcl` | `batch/CardPrintJobConfig.java` |
+| Xref file read/print | `legacy/cbl/CBACT03C.cbl` | `legacy/jcl/READXREF.jcl` | `batch/XrefPrintJobConfig.java` |
+| Customer file **read/print** (`OPEN INPUT` + `READ` + `DISPLAY`) [^cbcus01c] | `legacy/cbl/CBCUS01C.cbl` | `legacy/jcl/READCUST.jcl` | `batch/CustomerLoadJobConfig.java` *(frozen name; source reads & prints — it does not load)* |
+| Daily-transaction-feed **validation** (input-only) [^cbtrn01c] | `legacy/cbl/CBTRN01C.cbl` | `legacy/jcl/TRANBKP.jcl` | `batch/TransactionBackupJobConfig.java` *(frozen name; see footnote — the program validates the feed, the JCL is an IDCAMS backup)* |
 | Transaction report | `legacy/cbl/CBTRN03C.cbl` | `legacy/jcl/TRANREPT.jcl` + `legacy/proc/TRANREPT.prc` | `batch/TransactionReportJobConfig.java` |
-| Date validation utility | `legacy/cbl/CSUTLDTC.cbl` | _(called via Language Environment — no standalone JCL)_ | `util/DateConversionService.java` — replaces `CEEDAYS` / `CEEDATE` / `CEECBLDY` |
+| Date validation utility | `legacy/cbl/CSUTLDTC.cbl` | _(called via Language Environment — no standalone JCL)_ | `util/DateConversionService.java` — wraps **`CEEDAYS`** only (validates a date string against a format mask, returning a Lillian day + feedback code) [^csutldtc] |
+
+[^cbcus01c]: **`CBCUS01C` behavior correction.** The source opens the customer file `OPEN INPUT`,
+    reads each record (`READ CUSTFILE-FILE INTO CUSTOMER-RECORD`) and writes it to the job log via
+    `DISPLAY CUSTOMER-RECORD` — it is a **read-and-print** utility, not a data *load*. The frozen
+    plan name `CustomerLoadJobConfig` is retained for traceability, but the target reproduces
+    read/print behavior (and its sensitive-record output is governed by
+    [§11](#11-sensitive-field-classification--authorization-matrix)). No write/load path is
+    introduced that the source does not have.
+
+[^cbtrn01c]: **`CBTRN01C` + `TRANBKP.jcl` behavior correction.** Two distinct source members are
+    grouped under the frozen name `TransactionBackupJobConfig`: (1) **`CBTRN01C`** opens the daily
+    transaction feed (`SELECT DALYTRAN-FILE ASSIGN TO DALYTRAN`), reads each record, cross-references
+    it against XREF/ACCOUNT/CARD and `DISPLAY`s results — it is **input-only daily-feed validation**,
+    not a backup; it writes no transaction file. (2) **`TRANBKP.jcl`** executes **`IDCAMS REPRO`**
+    copying `TRANSACT.VSAM.KSDS` → `TRANSACT.BKUP(+1)` (a GDG generation) and contains **no COBOL
+    program**. The frozen name is preserved; the target reproduces the feed-validation behavior of
+    `CBTRN01C`, and the IDCAMS backup semantics of `TRANBKP.jcl` are realized as a Spring Batch
+    job-instance-versioned copy step. Neither source member is silently dropped.
+
+[^csutldtc]: **`CSUTLDTC` behavior correction.** The source `CALL`s only **`CEEDAYS`** (confirmed:
+    the single `CALL "CEEDAYS" USING …` at `legacy/cbl/CSUTLDTC.cbl:116`; the header comments name
+    only CEEDAYS). It does **not** call `CEEDATE` or `CEECBLDY`. `DateConversionService` therefore
+    reproduces the `CEEDAYS` validation contract (valid flag + feedback-code enum + Lillian/epoch-day
+    equivalent) using `java.time.DateTimeFormatter`; it does not claim to replace the two LE services
+    that the source never invokes.
 
 > This table covers **all 10 batch programs** plus the `CSUTLDTC` date utility (11 programs in
 > total; the statement row bundles the `CBSTM03A` driver with its `CBSTM03B` I/O subprogram). The
@@ -143,51 +204,67 @@ The date utility `CSUTLDTC` is a called subroutine rather than a job and becomes
 
 ## 4. Copybooks → Entities / DTOs / Enums / Constants
 
-All 28 copybooks are accounted for. Record layouts with a VSAM home become JPA `@Entity` classes;
-support copybooks become DTOs, enums or constant holders. Packed-decimal (`COMP-3` / `S9(n)V99`)
-monetary fields map to `java.math.BigDecimal` (never floating-point), per Technical Specification
-§0.6.1.
+All 28 copybooks are accounted for. Record layouts with a VSAM home are planned to become JPA
+`@Entity` classes; support copybooks become DTOs, enums or constant holders; the **executable**
+copybooks (which contain procedure logic, not just data) become Java **behavior** rather than passive
+constants — see the callouts below and [§8](#8-construct-level-traceability-paragraphs-executable-copybooks-subprograms).
 
-| Copybook (`legacy/cpy`) | VSAM file / role | Java artifact |
+> **Decimal representation (correcting the COMP-3 conflation).** The external record monetary fields
+> are **signed DISPLAY / zoned decimal** with an implied scale and an **overpunch sign on the trailing
+> byte** (e.g. `PIC S9(10)V99` occupies 12 bytes, character-encoded) — they are **not** packed
+> `COMP-3`. Only *internal working-storage* fields in some programs use `COMP-3`. All monetary values
+> map to `java.math.BigDecimal`, while the `FixedWidthRecordMapper` preserves the original zoned/overpunch
+> character representation for flat-file feeds. See [§9](#9-exact-record-contracts-offsets-keys-signs-filler).
+
+| Copybook (`legacy/cpy`) | VSAM file / role | Java artifact (planned) |
 | :---------------------- | :--------------- | :------------ |
 | `CVACT01Y.cpy` | `ACCTDAT` (account record, 300 B) | `domain/Account.java` |
 | `CVACT02Y.cpy` | `CARDDAT` (card record, 150 B) | `domain/Card.java` |
 | `CVACT03Y.cpy` | `CCXREF` (card-xref record, 50 B) | `domain/CardXref.java` |
-| `CVCUS01Y.cpy` | `CUSTDAT` (customer record, 500 B) | `domain/Customer.java` *(consolidated with `CUSTREC.cpy`)* |
-| `CUSTREC.cpy` | `CUSTDAT` (duplicate customer layout) | `domain/Customer.java` *(consolidated — see [`decision-log.md`](./decision-log.md))* |
+| `CVCUS01Y.cpy` | `CUSTDAT` (customer record, 500 B) | `domain/Customer.java` *(consolidated with `CUSTREC.cpy`; see DOB-alias note below)* |
+| `CUSTREC.cpy` | `CUSTDAT` (same 500 B layout, DOB data-name differs) | `domain/Customer.java` *(consolidated — see [`decision-log.md`](./decision-log.md) and note below)* |
 | `CVTRA05Y.cpy` | `TRANSACT` (transaction record, 350 B) | `domain/Transaction.java` |
 | `CVTRA01Y.cpy` | `TCATBAL` (transaction-category balance, 50 B) | `domain/TransactionCategoryBalance.java` |
 | `CVTRA02Y.cpy` | `DISCGRP` (disclosure group, 50 B) | `domain/DisclosureGroup.java` |
 | `CVTRA03Y.cpy` | `TRANTYPE` (transaction type, 60 B) | `domain/TransactionType.java` |
 | `CVTRA04Y.cpy` | `TRANCATG` (transaction category, 60 B) | `domain/TransactionCategory.java` |
 | `CSUSR01Y.cpy` | `USRSEC` (security user data, 80 B) | `domain/UserSecurity.java` |
-| `COCOM01Y.cpy` | COMMAREA (pseudo-conversational state) | `dto/CardDemoContext.java` |
+| `COCOM01Y.cpy` | COMMAREA (pseudo-conversational state, 160 B) | `dto/CardDemoContext.java` |
 | `CVTRA06Y.cpy` | `DALYTRAN` feed (batch input, 350 B) | `dto/DailyTransaction.java` |
-| `COSTM01.CPY` | statement layout (`TRNX-RECORD`) | `dto/StatementTransaction.java` |
-| `CVTRA07Y.cpy` | report layout (headers + detail) | `dto/report/*.java` *(edit-mask formatting)* |
+| `COSTM01.CPY` | statement layout (`TRNX-RECORD`, 350 B) | `dto/StatementTransaction.java` |
+| `CVTRA07Y.cpy` | report layout — **7 `01`-level groups** (headers + detail + totals) | `dto/report/ReportNameHeader.java`, `dto/report/TransactionDetailReport.java`, `dto/report/TransactionHeader1.java`, `dto/report/TransactionHeader2.java`, `dto/report/ReportPageTotals.java`, `dto/report/ReportAccountTotals.java`, `dto/report/ReportGrandTotals.java` *(edit-mask formatting; concrete DTOs — no wildcard)* |
 | `CVCRD01Y.cpy` | card work areas (`CC-WORK-AREAS`) | `dto/CardWorkArea.java` *(AID/PFK 88-levels → PF-key enum)* |
 | `COADM02Y.cpy` | admin menu options | `dto/menu/AdminMenuOptions.java` |
-| `COMEN02Y.cpy` | main menu options | `dto/menu/MainMenuOptions.java` |
+| `COMEN02Y.cpy` | main menu options *(note: active Transaction Add is user-accessible — quirk #8, [§10](#10-source-quirk-ledger-preserve-or-deviate--parity-test-obligations))* | `dto/menu/MainMenuOptions.java` |
 | `CSDAT01Y.cpy` | working date structure | `dto/DateStruct.java` |
 | `COTTL01Y.cpy` | screen title constants | `util/constants/ScreenTitles.java` |
-| `CSLKPCDY.cpy` | reference / lookup codes | `domain/enums/LookupCodes.java` |
-| `CSMSG01Y.cpy` | message constants | `util/constants/Messages.java` *(merged with `CSMSG02Y`)* |
-| `CSMSG02Y.cpy` | message constants | `util/constants/Messages.java` *(merged with `CSMSG01Y`)* |
-| `CSSETATY.cpy` | UI attribute / style constants | `util/constants/ScreenAttributes.java` |
-| `CSSTRPFY.cpy` | PF-key handling | `util/PfKeyHandler.java` |
-| `CSUTLDPY.cpy` | date linkage | `util/DateConversionSupport.java` *(merged with `CSUTLDWY`)* |
-| `CSUTLDWY.cpy` | date working storage | `util/DateConversionSupport.java` *(merged with `CSUTLDPY`)* |
-| `UNUSED1Y.cpy` | _(not referenced by any program)_ | **NOT MIGRATED — dead code, intentional gap, see [§8](#8-intentional-non-migrations-gaps-ledger)** |
+| `CSLKPCDY.cpy` | reference / lookup codes *(frozen lookup tables — quirk #10)* | `domain/enums/LookupCodes.java` |
+| `CSMSG01Y.cpy` | **message constants** (`01 CCDA-COMMON-MESSAGES` — `CCDA-MSG-*` `PIC X(50)` VALUEs) | `util/constants/Messages.java` |
+| `CSMSG02Y.cpy` | **`01 ABEND-DATA` abend work area** — `ABEND-CODE X(4)`, `ABEND-CULPRIT X(8)`, `ABEND-REASON X(50)`, `ABEND-MSG X(72)` — **not** message constants | `exception/AbendData.java` (abend/error-handling context used by `GlobalExceptionHandler`) — **not** merged into `Messages.java` |
+| `CSSETATY.cpy` | **executable `COPY … REPLACING` screen-attribute logic** (`IF FLG-(TESTVAR1)-NOT-OK/BLANK … MOVE DFHRED …` / `MOVE '*' …`) — **not** passive constants | screen-attribute handling logic emitted where the `COPY … REPLACING` was expanded (field-error highlight/`*` behavior); see [§8](#8-construct-level-traceability-paragraphs-executable-copybooks-subprograms) |
+| `CSSTRPFY.cpy` | **executable PF-key store logic** — 2 paragraphs (`YYYY-STORE-PFKEY`, `YYYY-STORE-PFKEY-EXIT`) | `util/PfKeyHandler.java` (behavior ported, not merely a constant table) |
+| `CSUTLDPY.cpy` | **14 executable date-validation paragraphs** (`EDIT-DATE-CCYYMMDD`, `EDIT-YEAR-CCYY`, `EDIT-MONTH`, `EDIT-DAY`, `EDIT-DAY-MONTH-YEAR`, `EDIT-DATE-LE`, `EDIT-DATE-OF-BIRTH`, + their `-EXIT`s) — **not** mere linkage | `util/DateConversionSupport.java` *(the 14 paragraphs → validation methods; merged with `CSUTLDWY` working storage)* |
+| `CSUTLDWY.cpy` | date working storage (century/window rules — quirk #10) | `util/DateConversionSupport.java` *(merged with `CSUTLDPY`)* |
+| `UNUSED1Y.cpy` | _(not referenced by any program)_ | **NOT MIGRATED — dead code, intentional gap, see [§12](#12-intentional-non-migrations-gaps-ledger)** |
+
+> **Customer DOB data-name alias (M-06 / quirk #7).** `CVCUS01Y.cpy` and `CUSTREC.cpy` describe the
+> **same 500-byte `01 CUSTOMER-RECORD` layout with byte-for-byte identical offsets**, but they are
+> **not textually identical**: the date-of-birth field (`PIC X(10)` at bytes **309–318**, the 19th
+> field) is named **`CUST-DOB-YYYYMMDD` in `CUSTREC.cpy`** and **`CUST-DOB-YYYY-MM-DD` in
+> `CVCUS01Y.cpy`**. This is a data-name alias only (same position, length, and picture), so
+> consolidation into a single `domain.Customer` is safe; the field is documented as carrying both
+> source aliases. This matches the corresponding entry in [`decision-log.md`](./decision-log.md).
 
 ---
 
 ## 5. Repositories (One per VSAM File)
 
-Each of the six base VSAM KSDS files plus the four reference/composite files becomes exactly one
-Spring Data JPA repository (10 repositories total). Alternate indexes become secondary DB indexes
-plus Spring Data **derived queries** (Technical Specification §0.6.2).
+Each of the six base VSAM KSDS files plus the four reference/composite files is planned to become
+exactly one Spring Data JPA repository (10 repositories total). Alternate indexes become secondary DB
+indexes (planned `V3__indexes.sql`) plus Spring Data **derived queries** (Technical Specification
+§0.6.2).
 
-| VSAM file | Copybook | Java Repository | Key / alternate-index handling |
+| VSAM file | Copybook | Java Repository (planned) | Key / alternate-index handling |
 | :-------- | :------- | :-------------- | :----------------------------- |
 | `ACCTDAT` | `CVACT01Y` | `repository/AccountRepository.java` | PK `acctId` |
 | `CARDDAT` | `CVACT02Y` | `repository/CardRepository.java` | PK `cardNum`; `findByCardAcctId` replaces the `CARDAIX` alt index |
@@ -200,23 +277,24 @@ plus Spring Data **derived queries** (Technical Specification §0.6.2).
 | `TRANTYPE` | `CVTRA03Y` | `repository/TransactionTypeRepository.java` | reference lookup |
 | `TRANCATG` | `CVTRA04Y` | `repository/TransactionCategoryRepository.java` | composite key (type + category) |
 
-> **Alternate-index parity.** The CSD defines two alternate-index PATHs — `CARDAIX`
+> **Alternate-index parity (planned).** The CSD defines two alternate-index PATHs — `CARDAIX`
 > (`CARDDATA.VSAM.AIX.PATH`) and `CXACAIX` (`CARDXREF.VSAM.AIX.PATH`) — plus the transaction-by-card
-> AIX. All three map to secondary database indexes created in
-> `src/main/resources/db/migration/V3__indexes.sql` and are queried through the Spring Data derived
-> queries listed above (`findByCardAcctId`, `findByXrefAcctId`, `findByCardNum`).
-
+> AIX. All three are planned to map to secondary database indexes created in
+> `src/main/resources/db/migration/V3__indexes.sql` (a **planned** migration that does not exist at
+> this checkpoint) and to be queried through the Spring Data derived queries listed above
+> (`findByCardAcctId`, `findByXrefAcctId`, `findByCardNum`).
 
 ---
 
 ## 6. BMS Maps → Thymeleaf Templates + Screen Form DTOs
 
-Each of the 17 BMS map sources (with its generated symbolic copybook) becomes one server-rendered
-Thymeleaf template and one screen-form DTO. Templates preserve the **24 × 80** field / label /
-length / colour / PF-key contract (PF3 = back, PF7 / PF8 = page up/down, ENTER = submit; Technical
-Specification §0.3.4).
+Each of the 17 BMS map sources (with its generated symbolic copybook) is planned to become one
+server-rendered Thymeleaf template and one screen-form DTO. Templates preserve the **24 × 80** field
+/ label / length / colour / PF-key contract (PF3 = back, PF7 / PF8 = page up/down, ENTER = submit;
+Technical Specification §0.3.4). PF/focus quirks that must be preserved per map are catalogued in
+[§10](#10-source-quirk-ledger-preserve-or-deviate--parity-test-obligations) (quirk #14).
 
-| BMS map (`legacy/bms`) | Symbolic copybook (`legacy/cpy-bms`) | Thymeleaf template | Screen form DTO |
+| BMS map (`legacy/bms`) | Symbolic copybook (`legacy/cpy-bms`) | Thymeleaf template (planned) | Screen form DTO (planned) |
 | :--------------------- | :----------------------------------- | :----------------- | :-------------- |
 | `legacy/bms/COSGN00.bms` | `legacy/cpy-bms/COSGN00.CPY` | `src/main/resources/templates/COSGN00.html` | `dto/screen/COSGN00Form.java` |
 | `legacy/bms/COMEN01.bms` | `legacy/cpy-bms/COMEN01.CPY` | `src/main/resources/templates/COMEN01.html` | `dto/screen/COMEN01Form.java` |
@@ -242,13 +320,13 @@ Specification §0.3.4).
 
 This section maps every remaining JCL job (those not already covered as business batch programs in
 [§3](#3-batch-cobol-programs--jcl--spring-batch-jobs)), plus the 2 PROCs, the sort-control member,
-the catalog listing and the CSD. IDCAMS `DEFINE CLUSTER` / `REPRO` become Flyway DDL and seed data;
-`SORT` becomes a Java `Comparator` / SQL `ORDER BY`; GDG output becomes job-instance versioning
-(Technical Specification §0.6.3).
+the catalog listing and the CSD. IDCAMS `DEFINE CLUSTER` / `REPRO` become planned Flyway DDL and seed
+data; `SORT` becomes a Java `Comparator` / SQL `ORDER BY`; GDG output becomes job-instance versioning
+(Technical Specification §0.6.3). *All Java/SQL targets are planned.*
 
-| Legacy artifact | z/OS utility / role | Java / Spring target |
+| Legacy artifact | z/OS utility / role | Java / Spring target (planned) |
 | :-------------- | :------------------ | :------------------- |
-| `legacy/jcl/ACCTFILE.jcl` | IDCAMS define + load Account master | `src/main/resources/db/migration/V1__schema.sql` (account table DDL + load) |
+| `legacy/jcl/ACCTFILE.jcl` | IDCAMS define + load Account master | `V1__schema.sql` (account table DDL + load) |
 | `legacy/jcl/CARDFILE.jcl` | IDCAMS refresh Card master | `V1__schema.sql` (card table) |
 | `legacy/jcl/CUSTFILE.jcl` | IDCAMS refresh Customer master | `V1__schema.sql` (customer table) |
 | `legacy/jcl/DEFCUST.jcl` | IDCAMS define Customer cluster | `V1__schema.sql` (customer define) |
@@ -260,51 +338,207 @@ the catalog listing and the CSD. IDCAMS `DEFINE CLUSTER` / `REPRO` become Flyway
 | `legacy/jcl/DISCGRP.jcl` | IDCAMS load Disclosure Group file | `V1__schema.sql` + `V2__reference_data.sql` (seed) |
 | `legacy/jcl/DUSRSECJ.jcl` | IEBGENER initial load of User security | `V1__schema.sql` (usrsec table) + `V2__reference_data.sql` (seed users) |
 | `legacy/catlg/LISTCAT.txt` | IDCAMS `LISTCAT` (VSAM cluster metadata) | informs `V1__schema.sql` — **REFERENCE only** |
-| `legacy/jcl/TRANIDX.jcl` | IDCAMS define AIX on transaction file | `src/main/resources/db/migration/V3__indexes.sql` (secondary index on `transaction.card_num`) |
-| `legacy/jcl/COMBTRAN.jcl` + `legacy/ctl/REPROCT.ctl` + `legacy/proc/REPROC.prc` | `PGM=SORT`, `SORT FIELDS=(TRAN-ID,A)` | `batch/TransactionCombineJobConfig.java` — Java `Comparator` ascending by `tranId` / `ORDER BY tran_id` |
+| `legacy/jcl/TRANIDX.jcl` | IDCAMS define AIX on transaction file | `V3__indexes.sql` (secondary index on `transaction.card_num`) |
+| `legacy/jcl/COMBTRAN.jcl` + `legacy/ctl/REPROCT.ctl` + `legacy/proc/REPROC.prc` | `PGM=SORT`, `SORT FIELDS=(TRAN-ID,A)` | `batch/TransactionCombineJobConfig.java` — Java `Comparator` ascending by `tranId` / `ORDER BY tran_id` (deterministic `C`/`POSIX` collation — see `decision-log.md`) |
 | `legacy/jcl/DALYREJS.jcl` + `legacy/jcl/DEFGDGB.jcl` | reject dataset (LRECL 430) + GDG base define | reject `FlatFileItemWriter` (350 B transaction + 80 B reason = 430 B) + Spring Batch job-instance versioning (GDG generations) |
 | `legacy/jcl/PRTCATBL.jcl` + `legacy/jcl/REPTFILE.jcl` | category-balance / report output | `batch/CategoryBalancePrintJobConfig.java` |
 | `legacy/jcl/CBADMCDJ.jcl` | admin batch driver | `batch/AdminBatchJobConfig.java` |
 | `legacy/proc/TRANREPT.prc` | transaction-report PROC | batch step configuration for `TransactionReportJobConfig` (driver `CBTRN03C`, see [§3](#3-batch-cobol-programs--jcl--spring-batch-jobs)) |
 | `legacy/csd/CARDDEMO.CSD` | CICS resource definitions (8 FILEs, 17 MAPSETs, 18 PROGRAMs, 18 TRANSACTIONS) | `config/SecurityConfig.java` + routing map — transaction → controller wiring (also the authoritative traceability reference) |
-| `legacy/jcl/OPENFIL.jcl` | CICS file **enable** (`IEFBR14`) | **N/A — managed by the Spring connection pool; intentional non-migration, see [§8](#8-intentional-non-migrations-gaps-ledger)** |
-| `legacy/jcl/CLOSEFIL.jcl` | CICS file **disable** (`IEFBR14`) | **N/A — managed by the Spring connection pool; intentional non-migration, see [§8](#8-intentional-non-migrations-gaps-ledger)** |
+| `legacy/jcl/OPENFIL.jcl` | CICS file **enable** (`IEFBR14`) | **N/A — managed by the Spring connection pool; intentional non-migration, see [§12](#12-intentional-non-migrations-gaps-ledger)** |
+| `legacy/jcl/CLOSEFIL.jcl` | CICS file **disable** (`IEFBR14`) | **N/A — managed by the Spring connection pool; intentional non-migration, see [§12](#12-intentional-non-migrations-gaps-ledger)** |
 
-> **29-JCL cross-check.** All 29 JCL jobs are now accounted for — **9** as business batch programs
-> in [§3](#3-batch-cobol-programs--jcl--spring-batch-jobs) (`POSTTRAN`, `INTCALC`, `CREASTMT`,
+> **29-JCL cross-check.** All 29 JCL jobs are accounted for — **9** as business batch programs in
+> [§3](#3-batch-cobol-programs--jcl--spring-batch-jobs) (`POSTTRAN`, `INTCALC`, `CREASTMT`,
 > `READACCT`, `READCARD`, `READXREF`, `READCUST`, `TRANBKP`, `TRANREPT`) and **20** here in §7
 > (`ACCTFILE`, `CARDFILE`, `CUSTFILE`, `DEFCUST`, `XREFFILE`, `TRANFILE`, `TCATBALF`, `TRANCATG`,
 > `TRANTYPE`, `DISCGRP`, `DUSRSECJ`, `TRANIDX`, `COMBTRAN`, `DALYREJS`, `DEFGDGB`, `PRTCATBL`,
 > `REPTFILE`, `CBADMCDJ`, `OPENFIL`, `CLOSEFIL`) = **29 total**. Both PROCs (`REPROC.prc`,
 > `TRANREPT.prc`), the sort control member (`REPROCT.ctl`) and the CSD (`CARDDEMO.CSD`) are also
-> mapped above.
+> mapped above. Note that `TRANBKP.jcl` is an IDCAMS REPRO backup job (no COBOL program); it is
+> listed as a business row in §3 only because the migration plan groups it with `CBTRN01C` under one
+> frozen job-config name — see footnote [^cbtrn01c].
 
 ---
 
-## 8. Intentional Non-Migrations (Gaps Ledger)
+## 8. Construct-Level Traceability (Paragraphs, Executable Copybooks, Subprograms)
+
+Section 2's program → class mapping is intentionally coarse; this section records the **paragraph /
+section** level and the copybooks that carry *executable* logic, so that control-flow parity is
+traceable and no logic is silently reclassified as data.
+
+**Paragraph / section inventory.**
+
+- **528** paragraph/section declarations across the 28 programs, of which **527** are unique
+  `program + label` pairs.
+- The single non-unique pair is a **duplicate label in `COACTVWC.cbl`: `0000-MAIN-EXIT` is declared
+  twice** (independently confirmed). Because two identically-named paragraphs cannot both become one
+  Java method, the target **disambiguates** them: the first is `mainExit()` and the second becomes a
+  distinct method (e.g. `mainExitDuplicate()` / an inlined fall-through), with the duplication and
+  the chosen disambiguation recorded as quirk-adjacent traceability so the behavior is preserved
+  rather than accidentally merged.
+- Each numbered paragraph maps to a `@Service`/job method preserving `PERFORM`/`EVALUATE`/`PERFORM
+  UNTIL` control flow (§0.3.3).
+
+**Executable copybooks (procedure logic, not data).** 16 executable paragraph declarations live in
+copybooks and must be ported as behavior:
+
+| Copybook | Executable declarations | Detail | Planned Java target |
+| :------- | ----------------------: | :----- | :------------------ |
+| `CSSTRPFY.cpy` | 2 | `YYYY-STORE-PFKEY`, `YYYY-STORE-PFKEY-EXIT` — capture/normalise the pressed PF (AID) key | `util/PfKeyHandler.java` |
+| `CSUTLDPY.cpy` | 14 | `EDIT-DATE-CCYYMMDD`, `EDIT-YEAR-CCYY`, `EDIT-MONTH`, `EDIT-DAY`, `EDIT-DAY-MONTH-YEAR`, `EDIT-DATE-LE`, `EDIT-DATE-OF-BIRTH` (+ their `-EXIT` paragraphs) — date-component validation and century/window rules | `util/DateConversionSupport.java` |
+| `CSSETATY.cpy` | inline (`COPY … REPLACING`) | executable field-attribute logic (`IF FLG-(TESTVAR1)-NOT-OK/BLANK … MOVE DFHRED …`, `MOVE '*' …`) expanded at each `COPY` site | screen-attribute highlight/`*` behavior emitted at each expansion site |
+
+**Multi-member subprogram.** `CBSTM03B.CBL` is a **flag-driven I/O subprogram**
+(`PROCEDURE DIVISION USING LK-M03B-AREA`; operation 88-levels `M03B-OPEN`='O', `M03B-READ`='R',
+`M03B-READ-K`='K'; performs `OPEN INPUT` / `READ … INTO` for the statement's `TRNX`, `XREF`,
+`CUSTOMER`, `ACCOUNT`, and `CARD` files). It is **not** a chunk step; its concrete planned target is
+`batch/statement/StatementFileDao.java`, a `@Component` DAO that `StatementJobConfig`'s reader
+delegates to for keyed/sequential reads.
+
+**Report DTOs (no wildcards).** `CVTRA07Y.cpy` declares **7** `01`-level groups; each maps to a named
+DTO (see [§4](#4-copybooks--entities--dtos--enums--constants)): `ReportNameHeader`,
+`TransactionDetailReport`, `TransactionHeader1`, `TransactionHeader2`, `ReportPageTotals`,
+`ReportAccountTotals`, `ReportGrandTotals`. The previous non-deterministic `dto/report/*.java`
+wildcard is replaced by these concrete targets.
+
+---
+
+## 9. Exact Record Contracts (Offsets, Keys, Signs, FILLER)
+
+Fixed-width parity requires exact byte contracts, not just record lengths. The table below gives the
+key, the notable field offsets (1-based byte positions), the sign/representation, and the FILLER /
+padding for each record. **All external monetary fields are signed DISPLAY / zoned decimal with an
+implied scale and an overpunch sign on the trailing byte — not packed `COMP-3`** (only some internal
+working-storage fields use `COMP-3`). Java uses `BigDecimal`; the `FixedWidthRecordMapper` preserves
+the original zoned/overpunch characters.
+
+| Source | Length / key | Critical offsets & representation |
+| :----- | :----------- | :-------------------------------- |
+| `CVACT01Y` (ACCTDAT) | 300; key `ACCT-ID` 1–11 (`9(11)` unsigned zoned) | status 12 `X(01)`; **five signed DISPLAY `S9(10)V99` (12 B each)**: curr-bal 13–24, credit-limit 25–36, cash-credit-limit 37–48, curr-cyc-credit 79–90, curr-cyc-debit 91–102; dates `X(10)` open 49–58 / expiry 59–68 / reissue 69–78; ZIP 103–112; group 113–122; **FILLER 123–300** |
+| `CVACT02Y` (CARDDAT) | 150; key card 1–16 | account 17–27; **CVV 28–30**; expiry/status follow |
+| `CVACT03Y` (CCXREF) | 50; card primary access | customer 17–25; account 26–36 (account alternate access → `CXACAIX`) |
+| `CVCUS01Y` / `CUSTREC` | 500; key customer 1–9 | phones 250–279; **SSN 280–288**; **government ID 289–308**; **DOB 309–318** (`X(10)`; alias `CUST-DOB-YYYYMMDD` in `CUSTREC` vs `CUST-DOB-YYYY-MM-DD` in `CVCUS01Y`); **FICO 330–332** |
+| `CVTRA01Y` (TCATBAL) | 50; composite key 1–17 (account+type+category) | signed DISPLAY balance 18–28 |
+| `CVTRA02Y` (DISCGRP) | 50; composite key 1–16 (group+type+category) | signed DISPLAY rate 17–22 (`S9(4)V99`) |
+| `CVTRA03Y` (TRANTYPE) | 60 | type 1–2; description 3–52 |
+| `CVTRA04Y` (TRANCATG) | 60 | type/category 1–6; description 7–56 |
+| `CVTRA05Y` / `CVTRA06Y` | 350 | amount 133–143 (signed DISPLAY); card 263–278; timestamps 279–330; **FILLER 331–350** |
+| `COSTM01` (statement) | 350 | card+transaction key 1–32; amount 149–159 |
+| `CSUSR01Y` / `UNUSED1Y` | 80 | id 1–8; **password 49–56** (cleartext `X(08)`); type 57 `X(01)`; **FILLER 58–80** |
+| `COCOM01Y` (COMMAREA) | 160 | routing/user/context 1–34; customer 35–118; account 119–130; card 131–146; map state 147–160 |
+| `CBTRN02C` reject | 430 | input record 1–350; reason code 351–354; description 355–430 |
+| `CBTRN03C` report | 133 | `DATEPARM` FD 80, meaningful prefix 21; padded report groups |
+| `CBSTM03` outputs | 80 / 100 | fixed statement text (80) and HTML record (100) |
+
+> **Collation note.** Because EBCDIC and ASCII/UTF-8 orderings differ, ordered output (notably
+> `COMBTRAN`'s `SORT FIELDS=(TRAN-ID,A)`) is reproduced with a deterministic `C`/`POSIX` collation on
+> the `CHAR` key, validated against the ASCII fixtures (see `decision-log.md`).
+
+---
+
+## 10. Source-Quirk Ledger (Preserve-or-Deviate + Parity-Test Obligations)
+
+The source contains deliberate and accidental quirks. Per the AAP's 100 %-parity mandate, each is
+**preserved** unless an explicit deviation is justified; each carries a parity-test obligation so the
+behavior is locked. "Cleaning up" any of these without a logged decision and a parity test would be a
+defect.
+
+| # | Quirk (source evidence) | Disposition | Parity-test obligation |
+| --: | :---------------------- | :---------- | :--------------------- |
+| 1 | `COCRDLIC.cbl:790` stray `I` token | **Preserve** semantics: the stray token does not alter observable output; the target reproduces the list behavior exactly and drops only the no-op token, logged here | Card-list output for 7 rows matches byte-for-byte |
+| 2 | `CBACT04C`: unreachable final-account flush; no-`ROUNDED` truncation; empty fee paragraph (`1400-COMPUTE-FEES`) | **Preserve**: interest truncates (`RoundingMode.DOWN`); the empty fee step is a no-op; the unreachable flush stays unreachable | Interest parity oracle; assert no fee applied; assert final-flush path is not taken |
+| 3 | `CBTRN02C`: reason **103 overwrites 102**; reason **109 occurs after acceptance and never reaches the reject writer** | **Preserve** exact reason-code precedence and the post-acceptance 109 path (record is accepted, 109 not written to `DALYREJS`) | Reject-file parity across 102/103 collision and 109-after-acceptance cases |
+| 4 | `COACTUPC`: broad state machine; City/line-3 mapping; segmented phones; **5-byte screen ZIP vs `X(10)` record ZIP** | **Preserve** state breadth and the screen-vs-record ZIP width difference (map 5, record 10) | Update-flow parity incl. ZIP round-trip and phone segmentation |
+| 5 | `COCRDUPC`: **CVV retained in comparison but hidden**; **protected EXPDAY** | **Preserve**: CVV participates in the optimistic compare but is never displayed; EXPDAY stays protected | Card-update optimistic-compare parity; assert CVV never rendered |
+| 6 | Four online files define an **unused/mismatched list-map constant using `CCRDSLA` rather than `CCRDLIA`** | **Preserve** the constants as-is (unused); do not "fix" the mismatch | Assert the mismatched constant has no runtime effect (dead constant) |
+| 7 | Customer **DOB identifier alias** (`CUST-DOB-YYYYMMDD` vs `CUST-DOB-YYYY-MM-DD`) | **Preserve** as a single field with both aliases documented (see [§4](#4-copybooks--entities--dtos--enums--constants) / `decision-log.md`) | Customer load/round-trip parity at bytes 309–318 |
+| 8 | `COMEN02Y`: **active Transaction Add is user-accessible** despite a commented "Admin Only" text | **Preserve** the actual (user-accessible) behavior, not the stale comment | Menu-authorization parity: a non-admin user can reach Transaction Add exactly as in source |
+| 9 | `CSSETATY` executable `COPY … REPLACING` logic; `CSMSG02Y` `ABEND-DATA` structure | **Preserve** as behavior/structure (see [§4](#4-copybooks--entities--dtos--enums--constants) / [§8](#8-construct-level-traceability-paragraphs-executable-copybooks-subprograms)); do **not** reduce to constants | Field-highlight/`*` behavior parity; abend-context population parity |
+| 10 | `CSUTLDPY`/`CSUTLDWY` validation + century/window rules; `CSLKPCDY` **frozen lookups** | **Preserve** the exact validation outcomes, century windowing, and the frozen lookup values | Date-validation parity across the 14 paragraphs; lookup-value snapshot test |
+| 11 | **Signed DISPLAY vs `COMP-3` distinction** for monetary fields | **Preserve**: external records are signed DISPLAY/zoned overpunch; only internal working fields may be `COMP-3` (see [§9](#9-exact-record-contracts-offsets-keys-signs-filler)) | Fixed-width codec round-trip preserves the exact zoned/overpunch bytes |
+| 12 | **Active sensitive-record displays** (`CBACT01C/02C/03C`, `CBCUS01C`, `CBTRN01C`, `CBTRN03C` `DISPLAY` full records) | **Preserve** the protected parity *report* output; **separate** it from redacted operational logs (see [§11](#11-sensitive-field-classification--authorization-matrix)) | Report-output parity; assert operational logs are redacted |
+| 13 | `CBTRN03C`: **stale final amount added again after EOF**; **final account total not emitted** | **Preserve** both: the post-EOF double-add and the omitted final total | Report-total parity reproducing the double-add and the missing final total |
+| 14 | **PF/focus variances**: `COACTVW` & `COCRDLI` handle unadvertised ENTER; `COUSR01` advertises unhandled F12; `COUSR03` handles unadvertised F12; `COCRDUP` IC on a protected field; `COTRN00`/`COUSR00` have no IC marker | **Preserve** each screen's actual key/focus handling, not the advertised legend | Per-screen key/focus parity tests reproducing each variance |
+
+---
+
+## 11. Sensitive-Field Classification & Authorization Matrix
+
+This section satisfies the security-traceability requirement (M-14): it classifies sensitive fields,
+states storage/display/logging controls, and defines the direct-route A/U authorization matrix. It
+complements the *Sensitive-field handling* decision in [`decision-log.md`](./decision-log.md).
+Controls are **behavior-preserving** (parity first); behavior-changing hardening is deferred and
+logged as a suggested next task.
+
+**Field classification & controls.**
+
+| Field (source offset) | Class | Storage (parity) | Display control | Logging control |
+| :-------------------- | :---- | :--------------- | :-------------- | :-------------- |
+| Password `CSUSR01Y` 49–56 | Secret / credential | Cleartext `CHAR(8)` (parity; BCrypt deferred) | Never rendered on screen | **Never logged**; excluded from structured logs |
+| PAN / card number `CVACT02Y` 1–16 | PCI — sensitive | `CHAR(16)` (fixed-width parity) | Shown only where the source screen shows it | **Never logged** in operational logs; parity report output is protected |
+| CVV `CVACT02Y` 28–30 | PCI — highly sensitive | `CHAR(3)` (parity) | **Never displayed** (quirk #5: used in compare, hidden) | **Never logged** |
+| SSN `CVCUS01Y` 280–288 | PII | `9(9)`/`CHAR` (parity) | Shown only where source shows it | **Never logged** |
+| Government ID 289–308 | PII | `CHAR(20)` (parity) | As per source screen | **Never logged** |
+| DOB 309–318 | PII | `CHAR(10)` (parity; alias per quirk #7) | As per source screen | Redacted in operational logs |
+| Phones 250–279 | PII | `CHAR` (parity; segmented — quirk #4) | As per source screen | Redacted in operational logs |
+| EFT account data | PII / financial | `CHAR` (parity) | As per source screen | **Never logged** |
+| FICO 330–332 | Financial-sensitive | `9(3)` (parity) | As per source screen | Redacted in operational logs |
+| Balances / limits (`CVACT01Y` signed DISPLAY) | Financial | `NUMERIC(12,2)` via `BigDecimal` | As per source screen | Redacted in operational logs |
+| Transaction history (`CVTRA05Y`) | Financial | per-record parity | As per source screen | Redacted in operational logs |
+
+**Operational-log vs. parity-report separation.** The source `DISPLAY`s full records in `CBACT01C`,
+`CBACT02C`, `CBACT03C`, `CBCUS01C`, `CBTRN01C`, and `CBTRN03C` (quirk #12). The Java target keeps two
+distinct sinks: (a) **protected parity report output** that reproduces the source dump byte-for-byte
+(for parity testing / operator report files), and (b) **redacted operational logs** (structured JSON
+via `logback-spring.xml`) that never contain PAN/CVV/SSN/password. These are not the same stream.
+
+**Direct-route A/U authorization matrix.** Menu visibility is **not** sufficient; each endpoint must
+independently enforce role authorization, and dynamic `XCTL` targets become a **server-side
+allowlist** (not a client-supplied program name).
+
+| Route / function | Source tran | Required role | Direct-navigation control |
+| :--------------- | :---------- | :------------ | :------------------------ |
+| Admin menu, user admin (list/add/update/delete) | `CA00`, `CU00–CU03` | `ROLE_ADMIN` | Method/URL `@PreAuthorize`-equivalent; direct URL blocked for `ROLE_USER` |
+| Main menu | `CM00` | `ROLE_USER` or `ROLE_ADMIN` | Authenticated only |
+| Account view/update | `CAVW`, `CAUP` | authenticated; per source | Direct URL enforces auth independent of menu |
+| Card list/detail/update | `CCLI`, `CCDL`, `CCUP` | authenticated; per source | Direct URL enforces auth |
+| **Card-detail security variant** | `CDV1` / `COCRDSEC` | **deferred disposition** | Realized in `SecurityConfig` (no `.cbl`); see [§12](#12-intentional-non-migrations-gaps-ledger) — the `CDV1`/`COCRDSEC` authorization intent is captured as URL/method rules; any residual behavior is a logged deferred item |
+| Transaction list/view/add | `CT00`, `CT01`, `CT02` | authenticated; **Transaction Add is user-accessible (quirk #8)** | Direct URL reproduces source accessibility exactly |
+| Bill pay | `CB00` | authenticated; per source | Direct URL enforces auth |
+| Report submit | `CR00` | authenticated; per source | `CORPT00C` validates dates then launches a **named Spring Batch job with typed date parameters** — no OS/JCL command-execution surface is reproduced |
+
+---
+
+## 12. Intentional Non-Migrations (Gaps Ledger)
 
 The following three constructs are **deliberately not migrated to Java code**. Each is logged here
-(and in [`decision-log.md`](./decision-log.md)) so that coverage is provably complete rather than
-silently reduced.
+(and in [`decision-log.md`](./decision-log.md)) so that coverage is provably *accounted-for* rather
+than silently reduced.
 
 | Construct | Reason not migrated | How coverage is preserved |
 | :-------- | :------------------ | :------------------------ |
 | `legacy/cpy/UNUSED1Y.cpy` | Dead code — not referenced (`COPY`d) by any program in the codebase. | Logged here and in `decision-log.md`; excluded deliberately, so no orphaned entity/DTO is created. |
-| `COCRDSEC` (CSD program, transaction `CDV1`; no `.cbl`) | CICS-only card-detail security variant with **no COBOL business logic** to translate. | Realized as `config/SecurityConfig.java` method/URL authorization rather than a standalone service. |
+| `COCRDSEC` (CSD program, transaction `CDV1`; no `.cbl`) | CICS-only card-detail security variant with **no COBOL business logic** to translate. | Planned to be realized as `config/SecurityConfig.java` method/URL authorization rather than a standalone service; the `CDV1` authorization intent is captured in the [§11](#11-sensitive-field-classification--authorization-matrix) route matrix, with any residual behavior recorded as a deferred item. |
 | `legacy/jcl/OPENFIL.jcl`, `legacy/jcl/CLOSEFIL.jcl` | CICS file **enable/disable** (`IEFBR14`) operations that toggle VSAM availability to the CICS region. | Not applicable under a Spring-managed connection pool, which opens/closes connections automatically. Logged as N/A. |
 
-**These are the only intentional gaps.** With all three explicitly accounted for, forward coverage
-of every COBOL / z/OS construct is **100 %**, reconciling exactly with the
-[Coverage Summary](#1-coverage-summary).
+**These are the only intentional gaps.** With all three explicitly accounted for, **every** COBOL /
+z/OS construct is either mapped to a planned Java target or logged here — i.e. inventory coverage
+reconciles exactly with the [Coverage Summary](#1-coverage-summary). (As stated in the
+implementation-status note, this is *inventory* completeness; *implemented* Java coverage is 0 at
+this build-baseline checkpoint.)
 
 ---
 
-## 9. Reverse-Direction Convention (Java → Legacy)
+## 13. Reverse-Direction Convention (Java → Legacy)
 
-Traceability is **bidirectional**. In addition to the forward tables above, every generated Java
-class carries a Javadoc **origin tag** citing the `legacy/` source path (and, where relevant, the
-CICS transaction id or JCL job) from which it was derived. The convention is a single Javadoc line
-of the form:
+Traceability is designed to be **bidirectional**. In addition to the forward tables above, the
+generation phase will apply a Javadoc **origin-tag convention** to every generated Java class, citing
+the `legacy/` source path (and, where relevant, the CICS transaction id or JCL job) it was derived
+from. **This convention is planned:** because no `src/**` Java classes exist at this checkpoint, no
+origin tags are present yet — they will be emitted with the code.
+
+The planned convention is a single Javadoc line of the form:
 
 ```java
 /**
@@ -314,18 +548,20 @@ of the form:
 ```
 
 For artifacts synthesised from more than one legacy member, the origin tag lists each source, e.g.
-`Origin: legacy/cbl/CBTRN02C.cbl + legacy/jcl/POSTTRAN.jcl`. This lets a reader navigate from any
-Java class back to the exact COBOL/JCL/BMS/copybook it replaces — the property that makes the
-matrix bidirectional per the Explainability rule.
+`Origin: legacy/cbl/CBTRN02C.cbl + legacy/jcl/POSTTRAN.jcl`. This will let a reader navigate from any
+Java class back to the exact COBOL/JCL/BMS/copybook it replaces — the property that makes the matrix
+bidirectional per the Explainability rule.
 
-**Concrete examples:**
+**Planned examples (to be emitted during generation):**
 
-| Java artifact | Javadoc origin tag (reverse citation) |
+| Java artifact (planned) | Planned Javadoc origin tag (reverse citation) |
 | :------------ | :------------------------------------ |
 | `domain/Account.java` | `Origin: legacy/cpy/CVACT01Y.cpy (ACCTDAT, RECLN 300)` |
 | `batch/PostTransactionJobConfig.java` | `Origin: legacy/cbl/CBTRN02C.cbl + legacy/jcl/POSTTRAN.jcl` |
 | `web/controller/SignonController.java` | `Origin: legacy/cbl/COSGN00C.cbl (CICS tran CC00)` |
+| `batch/statement/StatementFileDao.java` | `Origin: legacy/cbl/CBSTM03B.CBL (statement I/O subprogram)` |
 
-> Because each forward row above has a corresponding reverse origin tag on its target class, the two
-> directions are mutually consistent and jointly guarantee the 100 %, no-gap traceability the
-> Explainability rule requires.
+> Once generation applies these tags, each forward row above will have a corresponding reverse origin
+> tag on its target class, making the two directions mutually consistent. Until then, the forward
+> mapping in this document is the authoritative COBOL → Java direction, and this section defines the
+> reverse convention the generator must honor.
