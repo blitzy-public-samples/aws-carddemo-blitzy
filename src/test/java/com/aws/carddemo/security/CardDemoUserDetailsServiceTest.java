@@ -50,9 +50,11 @@ import com.aws.carddemo.repository.UserSecurityRepository;
  * Spring context, no database, no Testcontainers. They lock down the behavioral-parity
  * contract enumerated in the file's implementation checklist:</p>
  * <ul>
- *   <li><strong>Username normalization</strong> &mdash; the id is trimmed and upper-cased
- *       ({@code FUNCTION UPPER-CASE} parity), so {@code "admin001"} resolves the
- *       {@code "ADMIN001"} record and the repository is queried with the upper-cased key.</li>
+ *   <li><strong>Username normalization</strong> &mdash; the id is upper-cased only
+ *       ({@code FUNCTION UPPER-CASE} parity; COSGN00C does not trim), so {@code "admin001"}
+ *       resolves the {@code "ADMIN001"} record and the repository is queried with the
+ *       upper-cased key, while a space-padded id is upper-cased but <em>not</em> trimmed &mdash;
+ *       matching the CC00 sign-on service so both authentication surfaces resolve the same key.</li>
  *   <li><strong>Role mapping</strong> &mdash; {@code SEC-USR-TYPE 'A'} yields authority
  *       {@code "ROLE_ADMIN"}; every other value (here {@code 'U'}) yields {@code "ROLE_USER"}.</li>
  *   <li><strong>Not-found</strong> &mdash; an empty repository result raises
@@ -142,16 +144,24 @@ class CardDemoUserDetailsServiceTest {
     }
 
     @Test
-    @DisplayName("surrounding whitespace is trimmed before the keyed lookup")
-    void trimsWhitespaceBeforeLookup() {
-        when(userSecurityRepository.findBySecUsrId("ADMIN001"))
+    @DisplayName("username is upper-cased WITHOUT trimming before the keyed lookup (CC00 parity)")
+    void upperCasesWithoutTrimmingBeforeLookup() {
+        // COSGN00C applies FUNCTION UPPER-CASE to the entered id and only that - it
+        // does not strip surrounding spaces. The service must therefore query the
+        // repository with the upper-cased but UNTRIMMED id, so the HTTP Basic gate
+        // and the CC00 sign-on service (SignonService, which also does not trim)
+        // resolve the same key and neither silently accepts a space-padded id the
+        // other would reject. The stub is keyed on the untrimmed value; had the
+        // service still trimmed, it would query "ADMIN001" (unstubbed -> empty) and
+        // raise UsernameNotFoundException, so this test is discriminating.
+        when(userSecurityRepository.findBySecUsrId("  ADMIN001  "))
                 .thenReturn(Optional.of(user("ADMIN001", "A")));
 
         service.loadUserByUsername("  admin001  ");
 
         ArgumentCaptor<String> idCaptor = ArgumentCaptor.forClass(String.class);
         verify(userSecurityRepository).findBySecUsrId(idCaptor.capture());
-        assertThat(idCaptor.getValue()).isEqualTo("ADMIN001");
+        assertThat(idCaptor.getValue()).isEqualTo("  ADMIN001  ");
     }
 
     @Test

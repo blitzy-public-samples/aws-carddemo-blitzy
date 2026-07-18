@@ -20,12 +20,14 @@ import com.aws.carddemo.domain.Card;
 import com.aws.carddemo.domain.Transaction;
 import com.aws.carddemo.domain.TransactionCategory;
 import com.aws.carddemo.domain.TransactionType;
+import com.aws.carddemo.exception.DuplicateKeyException;
 
 import org.junit.jupiter.api.Test;
 import org.springframework.boot.test.autoconfigure.jdbc.AutoConfigureTestDatabase;
 import org.springframework.boot.test.autoconfigure.orm.jpa.DataJpaTest;
 import org.springframework.boot.test.autoconfigure.orm.jpa.TestEntityManager;
 import org.springframework.boot.testcontainers.service.connection.ServiceConnection;
+import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Pageable;
@@ -41,6 +43,7 @@ import java.util.Optional;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.assertj.core.api.Assertions.catchThrowable;
 
 /**
  * Testcontainers-backed Spring Data JPA integration tests for
@@ -477,5 +480,62 @@ class TransactionRepositoryTest {
                     "10.00", "2024-01-01-10.00.00.000000"));
             entityManager.flush();
         }).isInstanceOf(Exception.class);
+    }
+
+    /**
+     * QA CRITICAL-1 regression proof: a colliding transaction id must FAIL as a
+     * genuine {@code INSERT} (unique-constraint violation), never a silent
+     * {@code UPDATE} (overwrite).
+     *
+     * <p>Because {@link Transaction} implements
+     * {@link org.springframework.data.domain.Persistable} and a freshly-constructed
+     * record reports {@code isNew() == true}, Spring Data issues
+     * {@code EntityManager.persist(...)} (an {@code INSERT}) rather than
+     * {@code merge(...)}. Saving a <em>new</em> record whose {@code tran_id} already
+     * exists therefore violates the {@code pk_transaction} primary key and raises a
+     * {@link DataIntegrityViolationException} at flush &mdash; reproducing the COBOL
+     * {@code WRITE}&hellip;{@code DUPKEY} contract. Under the former assigned-id +
+     * no-{@code @Version} mapping the identical call would have merged (an
+     * {@code UPDATE}), silently overwriting the existing row and throwing nothing:
+     * the exact lost-insert this test guards against.</p>
+     *
+     * <p>The thrown violation is additionally asserted to be recognized by
+     * {@link DuplicateKeyException#isTransactionIdCollision(DataIntegrityViolationException)},
+     * proving the real PostgreSQL {@code 23505}/{@code pk_transaction} error flows
+     * through the exact classifier both posting services use to raise a
+     * {@link DuplicateKeyException}.</p>
+     */
+    @Test
+    void savingNewTransactionWithCollidingId_insertsAndFailsUniqueConstraint_neverSilentlyMerges() {
+        String cardNum = "4444333322221111";
+        long acctId = 990001L;
+        seedParents(cardNum, acctId, SYNTHETIC_TYPE_CD, SYNTHETIC_CAT_CD);
+
+        String collidingId = "0000000000009001";
+        // Commit an original row under the colliding id, then detach it so the second
+        // save must reach the database rather than merging within the persistence context.
+        repository.saveAndFlush(newTxn(
+                collidingId, cardNum, SYNTHETIC_TYPE_CD, SYNTHETIC_CAT_CD,
+                "100.00", "2024-01-01-10.00.00.000000"));
+        entityManager.clear();
+
+        // A brand-new record (isNew() == true) reusing the same id. Persistable forces an
+        // INSERT, so the pk_transaction unique constraint is violated at flush; a merge
+        // (the old behavior) would instead have UPDATEd this row and thrown nothing.
+        Transaction colliding = newTxn(
+                collidingId, cardNum, SYNTHETIC_TYPE_CD, SYNTHETIC_CAT_CD,
+                "999.99", "2024-02-02-11.11.11.111111");
+
+        Throwable thrown = catchThrowable(() -> repository.saveAndFlush(colliding));
+
+        assertThat(thrown)
+                .as("a colliding tran_id must fail as a genuine INSERT (unique violation), "
+                        + "never silently merge/UPDATE the existing row")
+                .isInstanceOf(DataIntegrityViolationException.class);
+        assertThat(DuplicateKeyException.isTransactionIdCollision(
+                (DataIntegrityViolationException) thrown))
+                .as("the real PostgreSQL 23505 on pk_transaction is recognized by the "
+                        + "shared collision classifier both posting services use")
+                .isTrue();
     }
 }

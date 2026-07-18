@@ -24,6 +24,7 @@ import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
 import java.math.BigDecimal;
+import java.sql.SQLException;
 import java.util.List;
 import java.util.Optional;
 import java.util.stream.Stream;
@@ -38,6 +39,7 @@ import org.junit.jupiter.params.provider.MethodSource;
 import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
+import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageImpl;
 import org.springframework.data.domain.PageRequest;
@@ -47,6 +49,7 @@ import org.springframework.data.domain.Sort;
 import com.aws.carddemo.common.util.IdGenerator;
 import com.aws.carddemo.domain.CardXref;
 import com.aws.carddemo.domain.Transaction;
+import com.aws.carddemo.exception.DuplicateKeyException;
 import com.aws.carddemo.exception.RecordNotFoundException;
 import com.aws.carddemo.repository.CardXrefRepository;
 import com.aws.carddemo.repository.TransactionRepository;
@@ -557,6 +560,105 @@ public class TransactionServiceTest {
         assertThat(result.getCardNum()).isEqualTo(normalizedCard);
         assertThat(result.getTranId()).isEqualTo("0000000000000101");
     }
+
+    // ------------------------------------------------------------------------
+    // H. addTransaction — field-length edits and narrowed data-integrity mapping
+    //    (QA MAJOR-2: overlength fields must be rejected as validation errors, and
+    //    only a genuine duplicate tran_id may be reported as a DuplicateKeyException;
+    //    QA CRITICAL-1: the eager INSERT surfaces a real key collision here.)
+    // ------------------------------------------------------------------------
+
+    @Test
+    @DisplayName("addTransaction rejects a 101-character description as a field-length validation error, never a duplicate-key error")
+    void addTransactionRejectsOverlengthDescriptionAsValidationError() {
+        // The key resolves so the data-field edits are reached; only the cross-reference
+        // lookup is stubbed (STRICT_STUBS: the persist path is never reached).
+        when(cardXrefRepository.findFirstByAcctIdOrderByXrefCardNumAsc(VALID_ACCOUNT_LONG))
+                .thenReturn(Optional.of(new CardXref(VALID_CARD, 1L, VALID_ACCOUNT_LONG)));
+
+        // 101 characters: one over the BMS TDESC width (60) and also over the DB
+        // column (VARCHAR(100)). It must be rejected as a length edit BEFORE any insert.
+        String overlengthDescription = "D".repeat(101);
+        TransactionService.AddTransactionCommand command = accountKeyed(
+                "05", "0002", "POS", overlengthDescription, VALID_AMOUNT, ORIG_DATE, PROC_DATE,
+                "1", "M", "C", "98101");
+
+        assertThatThrownBy(() -> service.addTransaction(command))
+                .isInstanceOf(TransactionService.TransactionValidationException.class)
+                .hasMessage("Description must not exceed 60 characters...");
+
+        // Never reaches (or misclassifies at) the database.
+        verify(transactionRepository, never()).saveAndFlush(any());
+        verifyNoInteractions(dateValidationService);
+    }
+
+    @Test
+    @DisplayName("addTransaction rejects an overlength merchant name as a field-length validation error (the same catch previously masked it)")
+    void addTransactionRejectsOverlengthMerchantNameAsValidationError() {
+        when(cardXrefRepository.findFirstByAcctIdOrderByXrefCardNumAsc(VALID_ACCOUNT_LONG))
+                .thenReturn(Optional.of(new CardXref(VALID_CARD, 1L, VALID_ACCOUNT_LONG)));
+
+        // 31 characters: one over the BMS MNAME width (30).
+        String overlengthMerchantName = "M".repeat(31);
+        TransactionService.AddTransactionCommand command = accountKeyed(
+                "05", "0002", "POS", "Desc", VALID_AMOUNT, ORIG_DATE, PROC_DATE,
+                "1", overlengthMerchantName, "C", "98101");
+
+        assertThatThrownBy(() -> service.addTransaction(command))
+                .isInstanceOf(TransactionService.TransactionValidationException.class)
+                .hasMessage("Merchant Name must not exceed 30 characters...");
+
+        verify(transactionRepository, never()).saveAndFlush(any());
+        verifyNoInteractions(dateValidationService);
+    }
+
+    @Test
+    @DisplayName("addTransaction translates ONLY a genuine duplicate tran_id (SQLState 23505 on pk_transaction) to DuplicateKeyException")
+    void addTransactionTranslatesTranIdCollisionToDuplicateKey() {
+        when(cardXrefRepository.findFirstByAcctIdOrderByXrefCardNumAsc(VALID_ACCOUNT_LONG))
+                .thenReturn(Optional.of(new CardXref(VALID_CARD, 1L, VALID_ACCOUNT_LONG)));
+        when(dateValidationService.isValid(ORIG_DATE, DATE_FMT)).thenReturn(true);
+        when(dateValidationService.isValid(PROC_DATE, DATE_FMT)).thenReturn(true);
+        when(transactionRepository.findMaxTranId()).thenReturn(Optional.of("0000000000000100"));
+        // The eager INSERT (Persistable forces persist) fails the pk_transaction unique
+        // constraint: PostgreSQL SQLState 23505 naming the primary-key constraint.
+        when(transactionRepository.saveAndFlush(any(Transaction.class)))
+                .thenThrow(new DataIntegrityViolationException(
+                        "could not execute statement",
+                        new SQLException(
+                                "ERROR: duplicate key value violates unique constraint \"pk_transaction\"",
+                                "23505")));
+
+        assertThatThrownBy(() -> service.addTransaction(validAccountKeyedCommand()))
+                .isInstanceOf(DuplicateKeyException.class)
+                .hasMessage("Tran ID already exist...");
+    }
+
+    @Test
+    @DisplayName("addTransaction re-throws a NON-tran_id integrity violation unchanged (not mislabelled as a duplicate key)")
+    void addTransactionReThrowsNonTranIdIntegrityViolation() {
+        when(cardXrefRepository.findFirstByAcctIdOrderByXrefCardNumAsc(VALID_ACCOUNT_LONG))
+                .thenReturn(Optional.of(new CardXref(VALID_CARD, 1L, VALID_ACCOUNT_LONG)));
+        when(dateValidationService.isValid(ORIG_DATE, DATE_FMT)).thenReturn(true);
+        when(dateValidationService.isValid(PROC_DATE, DATE_FMT)).thenReturn(true);
+        when(transactionRepository.findMaxTranId()).thenReturn(Optional.of("0000000000000100"));
+        // A foreign-key violation (SQLState 23503) is a different integrity error; it must
+        // NOT be reported as a duplicate tran_id.
+        DataIntegrityViolationException foreignKeyViolation = new DataIntegrityViolationException(
+                "could not execute statement",
+                new SQLException(
+                        "ERROR: insert or update on table \"transaction\" violates "
+                                + "foreign key constraint \"fk_transaction_card\"",
+                        "23503"));
+        when(transactionRepository.saveAndFlush(any(Transaction.class)))
+                .thenThrow(foreignKeyViolation);
+
+        assertThatThrownBy(() -> service.addTransaction(validAccountKeyedCommand()))
+                .isInstanceOf(DataIntegrityViolationException.class)
+                .isNotInstanceOf(DuplicateKeyException.class)
+                .isSameAs(foreignKeyViolation);
+    }
+
 
     // ------------------------------------------------------------------------
     // Fixtures

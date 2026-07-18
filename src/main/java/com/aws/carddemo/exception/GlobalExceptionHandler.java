@@ -19,9 +19,15 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.slf4j.MDC;
 import org.springframework.dao.OptimisticLockingFailureException;
+import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
+import org.springframework.http.MediaType;
 import org.springframework.http.ProblemDetail;
+import org.springframework.http.ResponseEntity;
+import org.springframework.http.converter.HttpMessageNotReadableException;
 import org.springframework.security.web.firewall.RequestRejectedException;
+import org.springframework.web.HttpMediaTypeNotSupportedException;
+import org.springframework.web.HttpRequestMethodNotSupportedException;
 import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
@@ -68,6 +74,13 @@ import jakarta.validation.ConstraintViolationException;
  *   <tr><td>{@link NoResourceFoundException}</td><td>404 Not&nbsp;Found</td>
  *       <td>Spring MVC "no handler/static resource for path" (bots, scanners,
  *           favicon, path typos)</td></tr>
+ *   <tr><td>{@link HttpRequestMethodNotSupportedException}</td><td>405 Method&nbsp;Not&nbsp;Allowed</td>
+ *       <td>Spring MVC "HTTP method not supported for this path" (client error;
+ *           response carries the mandatory {@code Allow} header)</td></tr>
+ *   <tr><td>{@link HttpMessageNotReadableException}</td><td>400 Bad&nbsp;Request</td>
+ *       <td>Spring MVC unreadable/malformed or missing request body (client error)</td></tr>
+ *   <tr><td>{@link HttpMediaTypeNotSupportedException}</td><td>415 Unsupported&nbsp;Media&nbsp;Type</td>
+ *       <td>Spring MVC unsupported request {@code Content-Type} (client error)</td></tr>
  *   <tr><td>{@link FileStatusException} (base)</td><td>500 Internal&nbsp;Server&nbsp;Error</td>
  *       <td>non-recoverable I/O, i.e. COBOL {@code 9999-ABEND-PROGRAM}</td></tr>
  *   <tr><td>{@link Exception} (fallback)</td><td>500 Internal&nbsp;Server&nbsp;Error</td>
@@ -105,7 +118,10 @@ import jakarta.validation.ConstraintViolationException;
  * {@code DEBUG} for a routine {@link NoResourceFoundException}) with no stack
  * trace; genuine server errors (5xx) are logged at {@code ERROR} with a stack
  * trace. Framework client-error signals &mdash; {@link NoResourceFoundException}
- * (404) and {@link RequestRejectedException} (400) &mdash; are handled explicitly
+ * (404), {@link RequestRejectedException} (400),
+ * {@link HttpRequestMethodNotSupportedException} (405),
+ * {@link HttpMessageNotReadableException} (400), and
+ * {@link HttpMediaTypeNotSupportedException} (415) &mdash; are handled explicitly
  * so they can never be mis-mapped to a 5xx by the {@link Exception} catch-all,
  * which would otherwise corrupt the error-rate metric and alerting. The
  * per-request correlation ID placed into the SLF4J {@link MDC} by the
@@ -320,6 +336,85 @@ public class GlobalExceptionHandler {
         log.warn("Request rejected by HTTP firewall: {}", ex.getClass().getSimpleName());
         return problem(HttpStatus.BAD_REQUEST, "Bad Request",
                 "The request was rejected as malformed.");
+    }
+
+    /**
+     * Maps an unsupported HTTP method to HTTP {@code 405 Method Not Allowed} and
+     * emits an {@code Allow} response header listing the methods the matched route
+     * does support, as required by RFC&nbsp;7231&nbsp;&sect;6.5.5. Spring MVC raises
+     * {@link HttpRequestMethodNotSupportedException} when a request's path matches a
+     * controller mapping but its HTTP method does not (for example a {@code PUT} to a
+     * route that exposes only {@code GET}/{@code POST}). Without an explicit handler
+     * the {@code @ExceptionHandler}-based resolver would let it fall through to the
+     * {@link Exception} catch-all and mis-report it as a {@code 500}, corrupting the
+     * server-error metric and alerting for what is a routine <em>client</em> error.
+     *
+     * <p>This handler returns a {@link ResponseEntity} (rather than a bare
+     * {@link ProblemDetail}) so the {@code Allow} header can be attached; the body is
+     * still the uniform RFC&nbsp;7807 {@link ProblemDetail}
+     * ({@code application/problem+json}, content type set explicitly) carrying the
+     * correlation ID. Neither the attempted method nor any request value is echoed.</p>
+     *
+     * @param ex the method-not-supported signal raised by Spring MVC
+     * @return a 405 {@link ResponseEntity} whose body is a {@link ProblemDetail} and
+     *         whose {@code Allow} header lists the supported methods
+     */
+    @ExceptionHandler(HttpRequestMethodNotSupportedException.class)
+    public ResponseEntity<ProblemDetail> handleMethodNotSupported(HttpRequestMethodNotSupportedException ex) {
+        log.warn("Method not allowed: {}", ex.getClass().getSimpleName());
+        ProblemDetail problemDetail = problem(HttpStatus.METHOD_NOT_ALLOWED, "Method Not Allowed",
+                "The HTTP method is not supported for this endpoint.");
+        HttpHeaders headers = new HttpHeaders();
+        headers.setContentType(MediaType.APPLICATION_PROBLEM_JSON);
+        var supportedMethods = ex.getSupportedHttpMethods();
+        if (supportedMethods != null && !supportedMethods.isEmpty()) {
+            headers.setAllow(supportedMethods);
+        }
+        return new ResponseEntity<>(problemDetail, headers, HttpStatus.METHOD_NOT_ALLOWED);
+    }
+
+    /**
+     * Maps an unreadable/malformed request body to HTTP {@code 400 Bad Request}.
+     * Spring MVC raises {@link HttpMessageNotReadableException} when the request body
+     * cannot be parsed or bound &mdash; malformed JSON, a deserialization type
+     * mismatch, or a missing required body &mdash; <em>before</em> any Bean
+     * Validation runs. Left to the catch-all it would be mis-reported as a
+     * {@code 500}, so it is handled here as the client error it is.
+     *
+     * <p>The raw parser message can quote fragments of the offending payload (which
+     * could include a password or card CVV), so it is <strong>never</strong> echoed;
+     * a fixed, non-revealing detail is returned and the signal is logged at
+     * {@code WARN} with no stack trace and without the body content.</p>
+     *
+     * @param ex the not-readable signal raised by the HTTP message converter
+     * @return a {@link ProblemDetail} with status 400 and title "Malformed Request"
+     */
+    @ExceptionHandler(HttpMessageNotReadableException.class)
+    public ProblemDetail handleNotReadable(HttpMessageNotReadableException ex) {
+        log.warn("Malformed request body: {}", ex.getClass().getSimpleName());
+        return problem(HttpStatus.BAD_REQUEST, "Malformed Request",
+                "The request body is missing or malformed.");
+    }
+
+    /**
+     * Maps an unsupported request {@code Content-Type} to HTTP {@code 415
+     * Unsupported Media Type}. Spring MVC raises
+     * {@link HttpMediaTypeNotSupportedException} when a request body is sent with a
+     * media type the endpoint cannot consume (for example {@code text/plain} to a
+     * JSON-only endpoint). Left to the catch-all it would be mis-reported as a
+     * {@code 500}; it is a client error and is handled here accordingly.
+     *
+     * <p>A fixed, non-revealing detail is returned; the offending content type is not
+     * echoed. The signal is logged at {@code WARN} with no stack trace.</p>
+     *
+     * @param ex the unsupported-media-type signal raised by Spring MVC
+     * @return a {@link ProblemDetail} with status 415 and title "Unsupported Media Type"
+     */
+    @ExceptionHandler(HttpMediaTypeNotSupportedException.class)
+    public ProblemDetail handleMediaTypeNotSupported(HttpMediaTypeNotSupportedException ex) {
+        log.warn("Unsupported media type: {}", ex.getClass().getSimpleName());
+        return problem(HttpStatus.UNSUPPORTED_MEDIA_TYPE, "Unsupported Media Type",
+                "The request Content-Type is not supported by this endpoint.");
     }
 
     /**

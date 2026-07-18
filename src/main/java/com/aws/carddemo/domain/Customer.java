@@ -19,6 +19,7 @@ import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
 import jakarta.persistence.Id;
 import jakarta.persistence.Table;
+import jakarta.persistence.Version;
 import java.util.Objects;
 
 /**
@@ -43,8 +44,16 @@ import java.util.Objects;
  * written to logs.
  *
  * <p>The primary key {@code cust_id} is a natural, externally seeded
- * identifier; there is no generated-value strategy and no optimistic-locking
- * version column on this table.
+ * identifier; there is no generated-value strategy.
+ *
+ * <p><strong>Optimistic locking.</strong> The {@link #version} column carries a
+ * JPA {@code @Version} optimistic-lock counter, mirroring {@code Account}. It
+ * reproduces the integrity of the COBOL customer READ-UPDATE-REWRITE cycle in
+ * the online account-update program {@code legacy/cbl/COACTUPC.cbl}, whose
+ * {@code 9700-CHECK-CHANGE-IN-REC} paragraph re-reads and field-compares
+ * <em>both</em> the account and the customer record before rewriting and aborts
+ * with "Record changed by some one else. Please review" when either has changed.
+ * This is a documented intentional improvement (see {@code docs/decision-log.md}).
  *
  * @see <a href="http://www.apache.org/licenses/LICENSE-2.0">Apache License 2.0</a>
  */
@@ -142,6 +151,15 @@ public class Customer {
     private Integer custFicoCreditScore;
 
     /**
+     * Optimistic-locking version counter. Managed by the JPA provider to
+     * reproduce the COBOL READ-UPDATE-REWRITE integrity guarantee for the
+     * customer record (see the class contract and {@code docs/decision-log.md}).
+     */
+    @Version
+    @Column(name = "version", nullable = false)
+    private Long version;
+
+    /**
      * Protected no-argument constructor required by the JPA provider.
      */
     protected Customer() {
@@ -149,7 +167,9 @@ public class Customer {
     }
 
     /**
-     * Convenience constructor that populates every mapped field.
+     * Convenience constructor that populates every mapped business field. The
+     * optimistic-lock {@link #version} is intentionally excluded because it is
+     * managed exclusively by the JPA provider.
      *
      * <p>Fields are assigned directly (not via setters) so that no overridable
      * method is invoked during construction of this non-final entity.
@@ -486,6 +506,25 @@ public class Customer {
     }
 
     /**
+     * Returns the optimistic-locking version counter.
+     *
+     * @return the version counter
+     */
+    public Long getVersion() {
+        return version;
+    }
+
+    /**
+     * Sets the optimistic-locking version counter. Normally managed by the JPA
+     * provider; exposed to support detached-entity merge scenarios and testing.
+     *
+     * @param version the version counter
+     */
+    public void setVersion(Long version) {
+        this.version = version;
+    }
+
+    /**
      * Compares two customers by their primary key {@code custId}.
      *
      * <p>Uses a pattern {@code instanceof} check so that comparison remains
@@ -542,6 +581,7 @@ public class Customer {
                 + ", custEftAccountId=" + custEftAccountId
                 + ", custPriCardHolderInd=" + custPriCardHolderInd
                 + ", custFicoCreditScore=" + custFicoCreditScore
+                + ", version=" + version
                 + '}';
     }
 }

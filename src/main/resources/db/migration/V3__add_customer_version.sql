@@ -1,0 +1,42 @@
+-- =============================================================================
+-- V3__add_customer_version.sql  --  Add optimistic-lock version to customer
+-- =============================================================================
+--
+-- PURPOSE
+--   Add the JPA @Version optimistic-lock counter column to the customer table.
+--   The customer record participates in the online account-update READ-UPDATE-
+--   REWRITE cycle (legacy/cbl/COACTUPC.cbl, paragraph 9700-CHECK-CHANGE-IN-REC),
+--   which re-reads and field-compares BOTH the account and the customer record
+--   before rewriting and aborts with "Record changed by some one else. Please
+--   review" (COACTUPC line 522) when either has changed. To reproduce that dual-
+--   record integrity guarantee in the relational target, the customer entity
+--   now carries a @Version column exactly like account, card, tran_cat_balance,
+--   and user_security. This is a documented intentional improvement over the
+--   COBOL field-by-field comparison (see docs/decision-log.md).
+--
+-- WHY A NEW MIGRATION (NOT AN EDIT TO V1)
+--   V1__schema.sql is an already-applied, immutable Flyway migration. Flyway is
+--   configured with validate-on-migrate=true (see application.yml), so editing a
+--   migration whose checksum is already recorded would fail validation on every
+--   existing database. Schema evolution is therefore delivered as a new, higher-
+--   versioned migration (V3) that Flyway applies on top of V1/V2.
+--
+-- EXECUTION MODEL
+--   * OWNED BY FLYWAY. Runs automatically at application startup
+--     (spring.flyway.locations=classpath:db/migration) and against a fresh
+--     Testcontainers PostgreSQL 16 during integration tests.
+--   * Hibernate NEVER generates DDL (spring.jpa.hibernate.ddl-auto=validate);
+--     after this migration the com.aws.carddemo.domain.Customer @Version mapping
+--     validates cleanly against the customer table.
+--
+-- IDEMPOTENCE / SAFETY
+--   ADD COLUMN ... NOT NULL DEFAULT 0 back-fills every pre-existing customer row
+--   with 0 in a single statement, so the migration is safe on a database that
+--   already holds seed data. IF NOT EXISTS makes re-application a no-op. The
+--   column declaration mirrors account.version in V1__schema.sql byte-for-byte
+--   (BIGINT NOT NULL DEFAULT 0) so the optimistic-lock semantics are identical
+--   across every versioned entity.
+-- =============================================================================
+
+ALTER TABLE customer
+    ADD COLUMN IF NOT EXISTS version BIGINT NOT NULL DEFAULT 0;  -- JPA @Version optimistic lock

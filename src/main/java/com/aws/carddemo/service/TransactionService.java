@@ -142,6 +142,30 @@ public class TransactionService {
     /** Zero-padding format for a 16-digit card number, matching the COBOL {@code PIC 9(16)} normalization. */
     private static final String CARD_NUMBER_FORMAT = "%0" + CARD_NUMBER_LENGTH + "d";
 
+    /** Maximum width of the type code ({@code TTYPCD} BMS field, {@code PIC X(2)}). */
+    private static final int TYPE_CD_MAX_LENGTH = 2;
+
+    /** Maximum width of the category code ({@code TCATCD} BMS field, {@code PIC X(4)}). */
+    private static final int CATEGORY_CD_MAX_LENGTH = 4;
+
+    /** Maximum width of the transaction source ({@code TRNSRC} BMS field, {@code PIC X(10)}). */
+    private static final int SOURCE_MAX_LENGTH = 10;
+
+    /** Maximum width of the description ({@code TDESC} BMS field, {@code PIC X(60)}). */
+    private static final int DESCRIPTION_MAX_LENGTH = 60;
+
+    /** Maximum width of the merchant id ({@code MID} BMS field, {@code PIC X(9)}). */
+    private static final int MERCHANT_ID_MAX_LENGTH = 9;
+
+    /** Maximum width of the merchant name ({@code MNAME} BMS field, {@code PIC X(30)}). */
+    private static final int MERCHANT_NAME_MAX_LENGTH = 30;
+
+    /** Maximum width of the merchant city ({@code MCITY} BMS field, {@code PIC X(25)}). */
+    private static final int MERCHANT_CITY_MAX_LENGTH = 25;
+
+    /** Maximum width of the merchant ZIP ({@code MZIP} BMS field, {@code PIC X(10)}). */
+    private static final int MERCHANT_ZIP_MAX_LENGTH = 10;
+
     /** Repository over the posted-transaction master ({@code TRANSACT.VSAM.KSDS}). */
     private final TransactionRepository transactionRepository;
 
@@ -365,6 +389,22 @@ public class TransactionService {
         requireNotEmpty(command.merchantCity(), "Merchant City");
         requireNotEmpty(command.merchantZip(), "Merchant Zip");
 
+        // 1.5) Field-length edits, matching the fixed BMS field widths of the
+        //      COTRN02 add-transaction map (a 3270 field cannot exceed its map
+        //      width, so an overlength value is a client-side contract violation).
+        //      Enforcing them here rejects an overlength field with a precise
+        //      validation message BEFORE the row reaches the database, so a value
+        //      that would overflow a column (for example a description longer than
+        //      VARCHAR(100)) is never misreported as a duplicate-key failure.
+        requireMaxLength(command.typeCd(), TYPE_CD_MAX_LENGTH, "Type CD");
+        requireMaxLength(command.categoryCd(), CATEGORY_CD_MAX_LENGTH, "Category CD");
+        requireMaxLength(command.source(), SOURCE_MAX_LENGTH, "Source");
+        requireMaxLength(command.description(), DESCRIPTION_MAX_LENGTH, "Description");
+        requireMaxLength(command.merchantId(), MERCHANT_ID_MAX_LENGTH, "Merchant ID");
+        requireMaxLength(command.merchantName(), MERCHANT_NAME_MAX_LENGTH, "Merchant Name");
+        requireMaxLength(command.merchantCity(), MERCHANT_CITY_MAX_LENGTH, "Merchant City");
+        requireMaxLength(command.merchantZip(), MERCHANT_ZIP_MAX_LENGTH, "Merchant Zip");
+
         // 2) Type CD / Category CD numeric edits.
         if (!isNumeric(command.typeCd())) {
             throw new TransactionValidationException("Type CD must be Numeric...");
@@ -416,16 +456,27 @@ public class TransactionService {
      * and inserts it.
      *
      * <p>The insert is flushed eagerly ({@code saveAndFlush}) so that a unique-key
-     * collision surfaces here as a {@link DataIntegrityViolationException} and can be
-     * translated to the {@link DuplicateKeyException} the COBOL {@code WRITE}
-     * {@code DUPKEY}/{@code DUPREC} branch produced, rather than deferring to
-     * transaction commit.</p>
+     * collision surfaces here as a {@link DataIntegrityViolationException} rather than
+     * deferring to transaction commit. Because {@link Transaction} implements
+     * {@link org.springframework.data.domain.Persistable} (a freshly-built record
+     * reports {@code isNew() == true}), the save performs a genuine {@code INSERT};
+     * a colliding {@code MAX(tran_id)+1} therefore fails the {@code pk_transaction}
+     * unique constraint instead of merging into (silently overwriting) the racing
+     * writer's row.</p>
+     *
+     * <p>The failure is classified narrowly: only a genuine duplicate {@code tran_id}
+     * primary key (SQLState {@code 23505} on {@code pk_transaction}, detected by
+     * {@link DuplicateKeyException#isTransactionIdCollision(DataIntegrityViolationException)})
+     * is translated to the {@link DuplicateKeyException} the COBOL {@code WRITE}
+     * {@code DUPKEY}/{@code DUPREC} branch produced. Any other integrity violation is
+     * re-thrown unchanged so it is not mislabelled as a duplicate key.</p>
      *
      * @param command    the validated submitted fields
      * @param cardNumber the resolved 16-character card number
      * @param amount     the parsed amount at scale 2
      * @return the persisted {@link Transaction}
      * @throws DuplicateKeyException if the generated id collides with an existing row
+     * @throws DataIntegrityViolationException if a different integrity constraint is violated
      */
     private Transaction persistNewTransaction(AddTransactionCommand command,
                                               String cardNumber,
@@ -456,7 +507,17 @@ public class TransactionService {
         try {
             return transactionRepository.saveAndFlush(transaction);
         } catch (DataIntegrityViolationException ex) {
-            throw new DuplicateKeyException("Tran ID already exist...", ex);
+            // Only a genuine duplicate tran_id primary key maps to the COBOL
+            // WRITE...DUPKEY outcome. Because Transaction implements Persistable
+            // (isNew() == true forces an INSERT), a colliding id reliably fails the
+            // pk_transaction unique constraint here instead of silently merging.
+            if (DuplicateKeyException.isTransactionIdCollision(ex)) {
+                throw new DuplicateKeyException("Tran ID already exist...", ex);
+            }
+            // Any other integrity violation (foreign key, not-null, check, or a
+            // different unique constraint) is NOT a duplicate transaction id; re-throw
+            // it unchanged so it is not mislabelled as a duplicate-key failure.
+            throw ex;
         }
     }
 
@@ -475,6 +536,30 @@ public class TransactionService {
     private static void requireNotEmpty(String value, String label) {
         if (value == null || value.isBlank()) {
             throw new TransactionValidationException(label + " can NOT be empty...");
+        }
+    }
+
+    /**
+     * Throws {@link TransactionValidationException} with the message
+     * {@code "<label> must not exceed <maxLength> characters..."} when {@code value}
+     * is longer than {@code maxLength}. This enforces the fixed BMS field widths of
+     * the {@code COTRN02} add-transaction map: because a 3270 field cannot exceed its
+     * map width, an overlength value is a client contract violation and is rejected
+     * as a field edit rather than being allowed to reach (and overflow) the database
+     * column, where it would otherwise surface as an ambiguous data-integrity error.
+     *
+     * <p>A {@code null} value is treated as length zero and passes; emptiness is the
+     * responsibility of {@link #requireNotEmpty(String, String)}, which always runs
+     * first.</p>
+     *
+     * @param value     the field value to test (may be {@code null})
+     * @param maxLength the inclusive maximum number of characters permitted
+     * @param label     the exact field label used in the message
+     */
+    private static void requireMaxLength(String value, int maxLength, String label) {
+        if (value != null && value.length() > maxLength) {
+            throw new TransactionValidationException(
+                    label + " must not exceed " + maxLength + " characters...");
         }
     }
 

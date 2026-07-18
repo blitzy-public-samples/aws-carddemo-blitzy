@@ -24,6 +24,7 @@ import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
 import java.math.BigDecimal;
+import java.sql.SQLException;
 import java.util.Optional;
 
 import org.junit.jupiter.api.BeforeEach;
@@ -36,10 +37,12 @@ import org.junit.jupiter.params.provider.ValueSource;
 import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
+import org.springframework.dao.DataIntegrityViolationException;
 
 import com.aws.carddemo.domain.Account;
 import com.aws.carddemo.domain.CardXref;
 import com.aws.carddemo.domain.Transaction;
+import com.aws.carddemo.exception.DuplicateKeyException;
 import com.aws.carddemo.exception.RecordNotFoundException;
 import com.aws.carddemo.repository.AccountRepository;
 import com.aws.carddemo.repository.CardXrefRepository;
@@ -248,7 +251,7 @@ public class BillPaymentServiceTest {
                 .hasMessage(BillPaymentService.ACCOUNT_NOT_FOUND_MESSAGE);
 
         // The confirmed path never reaches the cross-reference or the transaction write.
-        verify(transactionRepository, never()).save(any(Transaction.class));
+        verify(transactionRepository, never()).saveAndFlush(any(Transaction.class));
         verifyNoInteractions(cardXrefRepository);
     }
 
@@ -283,7 +286,7 @@ public class BillPaymentServiceTest {
         assertThat(result.newBalance()).isEqualByComparingTo(new BigDecimal(balance));
 
         // The credit-limit-style guard short-circuits before any posting work.
-        verify(transactionRepository, never()).save(any(Transaction.class));
+        verify(transactionRepository, never()).saveAndFlush(any(Transaction.class));
         verify(accountRepository, never()).save(any(Account.class));
         verifyNoInteractions(cardXrefRepository);
     }
@@ -302,7 +305,7 @@ public class BillPaymentServiceTest {
         when(cardXrefRepository.findFirstByAcctIdOrderByXrefCardNumAsc(ACCT_KEY))
                 .thenReturn(Optional.of(xref(ACCT_KEY)));
         when(transactionRepository.findMaxTranId()).thenReturn(Optional.of(MAX_TRAN_ID));
-        when(transactionRepository.save(any(Transaction.class)))
+        when(transactionRepository.saveAndFlush(any(Transaction.class)))
                 .thenAnswer(invocation -> invocation.getArgument(0, Transaction.class));
 
         BillPaymentResult result = service.payBill(ACCT_ID, "Y");
@@ -310,7 +313,7 @@ public class BillPaymentServiceTest {
         // Capture the persisted transaction and assert the fixed bill-payment attributes
         // (COBIL00C L220-L229) plus the resolved card number and the generated id.
         ArgumentCaptor<Transaction> txnCaptor = ArgumentCaptor.forClass(Transaction.class);
-        verify(transactionRepository).save(txnCaptor.capture());
+        verify(transactionRepository).saveAndFlush(txnCaptor.capture());
         Transaction posted = txnCaptor.getValue();
 
         assertThat(posted.getTypeCd()).isEqualTo("02");
@@ -362,7 +365,7 @@ public class BillPaymentServiceTest {
         when(cardXrefRepository.findFirstByAcctIdOrderByXrefCardNumAsc(ACCT_KEY))
                 .thenReturn(Optional.of(xref(ACCT_KEY)));
         when(transactionRepository.findMaxTranId()).thenReturn(Optional.of(MAX_TRAN_ID));
-        when(transactionRepository.save(any(Transaction.class)))
+        when(transactionRepository.saveAndFlush(any(Transaction.class)))
                 .thenAnswer(invocation -> invocation.getArgument(0, Transaction.class));
 
         BillPaymentResult result = service.payBill(ACCT_ID, confirm);
@@ -383,7 +386,7 @@ public class BillPaymentServiceTest {
         when(cardXrefRepository.findFirstByAcctIdOrderByXrefCardNumAsc(ACCT_KEY))
                 .thenReturn(Optional.of(xref(ACCT_KEY)));
         when(transactionRepository.findMaxTranId()).thenReturn(Optional.empty());
-        when(transactionRepository.save(any(Transaction.class)))
+        when(transactionRepository.saveAndFlush(any(Transaction.class)))
                 .thenAnswer(invocation -> invocation.getArgument(0, Transaction.class));
 
         BillPaymentResult result = service.payBill(ACCT_ID, "Y");
@@ -409,6 +412,66 @@ public class BillPaymentServiceTest {
         verify(accountRepository, never()).save(any(Account.class));
         verifyNoInteractions(transactionRepository);
     }
+
+    // ------------------------------------------------------------------
+    // Narrowed data-integrity mapping at the posting boundary (QA CRITICAL-1 /
+    // MAJOR-2): the eager INSERT surfaces a real tran_id collision here, and ONLY
+    // a genuine duplicate tran_id is translated to DuplicateKeyException — every
+    // other integrity violation propagates unchanged (consistent with
+    // TransactionService), never a silently swallowed or misclassified error.
+    // ------------------------------------------------------------------
+
+    @Test
+    @DisplayName("a duplicate tran_id (SQLState 23505 on pk_transaction) is translated to DuplicateKeyException; the balance is not reduced")
+    void confirmYes_duplicateTranId_translatedToDuplicateKey() {
+        when(accountRepository.findById(ACCT_KEY))
+                .thenReturn(Optional.of(account(ACCT_KEY, POSITIVE_BALANCE)));
+        when(cardXrefRepository.findFirstByAcctIdOrderByXrefCardNumAsc(ACCT_KEY))
+                .thenReturn(Optional.of(xref(ACCT_KEY)));
+        when(transactionRepository.findMaxTranId()).thenReturn(Optional.of(MAX_TRAN_ID));
+        // The eager INSERT (Persistable forces persist) fails the pk_transaction unique
+        // constraint under a MAX+1 race instead of silently overwriting the racing row.
+        when(transactionRepository.saveAndFlush(any(Transaction.class)))
+                .thenThrow(new DataIntegrityViolationException(
+                        "could not execute statement",
+                        new SQLException(
+                                "ERROR: duplicate key value violates unique constraint \"pk_transaction\"",
+                                "23505")));
+
+        assertThatThrownBy(() -> service.payBill(ACCT_ID, "Y"))
+                .isInstanceOf(DuplicateKeyException.class)
+                .hasMessage("Tran ID already exist...");
+
+        // The insert failed, so the balance-reducing account rewrite never runs — no
+        // audit-trail loss with a still-reduced balance (the CRITICAL-1 hazard).
+        verify(accountRepository, never()).save(any(Account.class));
+    }
+
+    @Test
+    @DisplayName("a NON-tran_id integrity violation propagates unchanged (raw DIVE), not mislabelled as a duplicate key or swallowed")
+    void confirmYes_nonTranIdIntegrityViolation_propagatesUnchanged() {
+        when(accountRepository.findById(ACCT_KEY))
+                .thenReturn(Optional.of(account(ACCT_KEY, POSITIVE_BALANCE)));
+        when(cardXrefRepository.findFirstByAcctIdOrderByXrefCardNumAsc(ACCT_KEY))
+                .thenReturn(Optional.of(xref(ACCT_KEY)));
+        when(transactionRepository.findMaxTranId()).thenReturn(Optional.of(MAX_TRAN_ID));
+        DataIntegrityViolationException foreignKeyViolation = new DataIntegrityViolationException(
+                "could not execute statement",
+                new SQLException(
+                        "ERROR: insert or update on table \"transaction\" violates "
+                                + "foreign key constraint \"fk_transaction_card\"",
+                        "23503"));
+        when(transactionRepository.saveAndFlush(any(Transaction.class)))
+                .thenThrow(foreignKeyViolation);
+
+        assertThatThrownBy(() -> service.payBill(ACCT_ID, "Y"))
+                .isInstanceOf(DataIntegrityViolationException.class)
+                .isNotInstanceOf(DuplicateKeyException.class)
+                .isSameAs(foreignKeyViolation);
+
+        verify(accountRepository, never()).save(any(Account.class));
+    }
+
 
     // ------------------------------------------------------------------
     // Confirm 'N' (COBIL00C EVALUATE CONFIRMI WHEN 'N'/'n'): CLEAR-CURRENT-SCREEN and

@@ -1043,7 +1043,7 @@ One subsection per program (28 total). Every PROCEDURE DIVISION paragraph from A
 | `9500-STORE-FETCHED-DATA-EXIT` | Structured paragraph return | (no-op) structured control return |
 | `9600-WRITE-PROCESSING` | Persist update (REWRITE) | AccountService update -> repository.save (@Version optimistic lock) |
 | `9600-WRITE-PROCESSING-EXIT` | Structured paragraph return | (no-op) structured control return |
-| `9700-CHECK-CHANGE-IN-REC` | Detect concurrent change | @Version optimistic-lock check (READ-before-REWRITE) |
+| `9700-CHECK-CHANGE-IN-REC` | Detect concurrent change (account + owning customer aggregate) | `@Version` optimistic-lock check; the account is loaded via `AccountRepository.findByIdForVersionedUpdate` (`OPTIMISTIC_FORCE_INCREMENT`) so any confirmed write — including a customer-only edit — advances `account.version` and a stale editor is rejected. The customer also carries `@Version`; the account force-increment anchors the account+customer aggregate (see decision-log D18). |
 | `9700-CHECK-CHANGE-IN-REC-EXIT` | Structured paragraph return | (no-op) structured control return |
 | `ABEND-ROUTINE` | Abnormal-end handler | exception/GlobalExceptionHandler -> thrown exception (online) / batch job failure |
 | `ABEND-ROUTINE-EXIT` | Structured paragraph return | (no-op) structured control return |

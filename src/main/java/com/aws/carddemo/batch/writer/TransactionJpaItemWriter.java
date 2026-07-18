@@ -53,16 +53,23 @@ import org.springframework.stereotype.Component;
  * &mdash; its sole responsibility is to load each {@link Transaction} into the master, exactly as
  * {@code STEP10}'s {@code REPRO} does.</p>
  *
- * <h2>REPRO / merge (upsert) semantics</h2>
+ * <h2>REPRO / insert semantics</h2>
  * <p>{@link Transaction} carries an <em>assigned</em> natural primary key ({@code tranId}, a
- * 16-character {@code String}) and declares no {@code @Version} column. Spring Data's
- * {@code SimpleJpaRepository.saveAll(...)} therefore classifies each entity as <em>not new</em>
- * (its id is non-null) and issues {@code EntityManager.merge(...)} rather than {@code persist(...)},
- * i.e. an insert-or-update keyed on {@code tran_id}. That is precisely the semantics of an IDCAMS
- * {@code REPRO} load into an existing KSDS: every record in the combined set is written into the
- * master, replacing any record already present under the same key. {@code saveAll} (not
- * {@code persist}) is therefore the correct REPRO analog, and this writer intentionally relies on
- * it.</p>
+ * 16-character {@code String}) and implements {@link org.springframework.data.domain.Persistable
+ * Persistable&lt;String&gt;}. The records this writer receives are freshly decoded from the two
+ * external sequential inputs by {@code batch/reader/CombinedTransactionItemReader} (they are
+ * constructed, never JPA-loaded), so each reports {@code isNew() == true}. Spring Data's
+ * {@code SimpleJpaRepository.saveAll(...)} therefore issues {@code EntityManager.persist(...)}
+ * &mdash; an <strong>insert</strong> keyed on {@code tran_id} &mdash; rather than
+ * {@code merge(...)}. That is precisely the semantics of {@code STEP10}'s IDCAMS load, whose
+ * control statement is {@code REPRO INFILE(TRANSACT) OUTFILE(TRANVSAM)} with <em>no</em>
+ * {@code REPLACE} option [legacy/jcl/COMBTRAN.jcl]: IDCAMS inserts every combined record into the
+ * (freshly (re)defined) master KSDS and <em>rejects</em> &mdash; never silently overwrites &mdash;
+ * any record whose key already exists. Under {@code persist} a colliding key surfaces as a
+ * {@link org.springframework.dao.DataIntegrityViolationException} on {@code pk_transaction} that
+ * fails the step, mirroring the non-zero condition code a duplicate-key {@code REPRO} would raise.
+ * {@code saveAll} over a {@link org.springframework.data.domain.Persistable} entity is therefore
+ * the correct REPRO analog, and this writer intentionally relies on it.</p>
  *
  * <h2>Transaction boundary and state</h2>
  * <p>The chunk commit interval and the surrounding {@code @Transactional} boundary are owned by the
@@ -113,9 +120,11 @@ public class TransactionJpaItemWriter implements ItemWriter<Transaction> {
      *
      * <p>The items are handed to {@link TransactionRepository#saveAll(Iterable)} in the exact order
      * the reader supplied them ({@code tranId} ascending); this method neither reorders nor mutates
-     * them. Because {@link Transaction} has an assigned id and no {@code @Version}, {@code saveAll}
-     * performs a merge (insert-or-update) per row &mdash; the relational equivalent of loading a
-     * record into an existing KSDS via {@code REPRO} (see the class Javadoc).</p>
+     * them. Because {@link Transaction} implements {@link org.springframework.data.domain.Persistable
+     * Persistable} and the reader-built items report {@code isNew() == true}, {@code saveAll}
+     * performs an insert per row &mdash; the relational equivalent of loading a record into the
+     * master KSDS via a no-{@code REPLACE} {@code REPRO} (see the class Javadoc). A duplicate key
+     * therefore fails the step rather than being silently overwritten.</p>
      *
      * <p>This method opens no transaction of its own; the chunk is committed within the
      * {@code Step}-owned transaction of {@code batch/TransactionCombineJob}. Any persistence failure
@@ -129,7 +138,7 @@ public class TransactionJpaItemWriter implements ItemWriter<Transaction> {
     @Override
     public void write(Chunk<? extends Transaction> chunk) throws Exception {
         LOGGER.debug(
-                "REPRO-load: merging {} transaction(s) into the transaction master (keyed on tran_id).",
+                "REPRO-load: inserting {} transaction(s) into the transaction master (keyed on tran_id).",
                 chunk.size());
         transactionRepository.saveAll(chunk.getItems());
     }

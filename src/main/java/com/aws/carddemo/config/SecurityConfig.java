@@ -16,9 +16,12 @@
  */
 package com.aws.carddemo.config;
 
+import com.aws.carddemo.security.ProblemDetailAccessDeniedHandler;
+import com.aws.carddemo.security.ProblemDetailAuthenticationEntryPoint;
+import com.aws.carddemo.security.UpperCasePasswordEncoder;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
-import org.springframework.security.config.Customizer;
 import org.springframework.security.config.annotation.method.configuration.EnableMethodSecurity;
 import org.springframework.security.config.annotation.web.builders.HttpSecurity;
 import org.springframework.security.config.annotation.web.configuration.EnableWebSecurity;
@@ -26,7 +29,9 @@ import org.springframework.security.config.annotation.web.configurers.AbstractHt
 import org.springframework.security.config.http.SessionCreationPolicy;
 import org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder;
 import org.springframework.security.crypto.password.PasswordEncoder;
+import org.springframework.security.web.AuthenticationEntryPoint;
 import org.springframework.security.web.SecurityFilterChain;
+import org.springframework.security.web.access.AccessDeniedHandler;
 
 /**
  * Security configuration for the CardDemo application.
@@ -48,6 +53,15 @@ import org.springframework.security.web.SecurityFilterChain;
  * class therefore intentionally declares no {@code UserDetailsService}, {@code AuthenticationManager},
  * {@code AuthenticationProvider}, or {@code DaoAuthenticationProvider} of its own, keeping the wiring
  * standard and warning-free.
+ *
+ * <h2>Credential-case normalization (parity across both authentication surfaces)</h2>
+ * <p>The {@link PasswordEncoder} bean is an {@code UpperCasePasswordEncoder} wrapping
+ * {@link BCryptPasswordEncoder}. Folding the raw password to upper case inside the shared encoder
+ * makes the framework-built {@code DaoAuthenticationProvider} (the HTTP&nbsp;Basic gate) honor the
+ * same case-insensitive password contract as the legacy CC00 sign-on program
+ * ({@code legacy/cbl/COSGN00C.cbl} folds the password with {@code FUNCTION UPPER-CASE} before
+ * comparison), so a credential accepted at sign-on is no longer rejected on the protected API. See
+ * the {@link #passwordEncoder()} Javadoc and {@code docs/decision-log.md} (decision D26).
  *
  * <h2>Why a hashing encoder (documented deviation, AAP &sect;0.7 hotspot L1)</h2>
  * <p>The legacy mainframe design stored user passwords in the {@code USRSEC} VSAM dataset in
@@ -87,8 +101,12 @@ import org.springframework.security.web.SecurityFilterChain;
  * <h2>Cross-cutting</h2>
  * <p>The {@code observability/CorrelationIdFilter} is a self-registering {@code @Component} at
  * {@code HIGHEST_PRECEDENCE} and is deliberately not referenced here (adding it to the chain would
- * double-register it). No connection strings or secrets are declared in this class, honoring the
- * "no hardcoded credentials" constraint (AAP &sect;0.8.1).
+ * double-register it). Because that filter runs ahead of the security filters, the correlation ID
+ * it places in the SLF4J MDC is available to the {@link ProblemDetailAuthenticationEntryPoint} and
+ * {@link ProblemDetailAccessDeniedHandler} installed below, which serialize authentication (401)
+ * and authorization (403) failures as RFC-7807 {@code application/problem+json} bodies uniform with
+ * the {@code @RestControllerAdvice GlobalExceptionHandler}. No connection strings or secrets are
+ * declared in this class, honoring the "no hardcoded credentials" constraint (AAP &sect;0.8.1).
  */
 @Configuration
 @EnableWebSecurity
@@ -101,12 +119,37 @@ public class SecurityConfig {
      * docs, and operational probes/scrape; admin URLs requiring {@code ROLE_ADMIN}; every other
      * request authenticated).
      *
-     * @param http the {@link HttpSecurity} builder supplied by Spring Security
+     * <h3>RFC-7807 authentication/authorization failures</h3>
+     * <p>Authentication (401) and authorization (403) failures are raised inside the security filter
+     * chain, before the {@code DispatcherServlet} and therefore beyond the reach of the
+     * {@code @RestControllerAdvice} {@code GlobalExceptionHandler}. To keep the error contract
+     * uniform across the entire API surface, the chain installs a {@link
+     * ProblemDetailAuthenticationEntryPoint} and a {@link ProblemDetailAccessDeniedHandler} that
+     * serialize an RFC-7807 {@code application/problem+json} body (carrying the request-scoped
+     * {@code correlationId}) identical in shape to the handler-produced responses.
+     *
+     * <p>The entry point is installed in two places on purpose: {@link
+     * org.springframework.security.web.access.ExceptionTranslationFilter} invokes the configured
+     * {@code exceptionHandling} entry point for an anonymous request to a protected resource, while
+     * {@code BasicAuthenticationFilter} invokes its own entry point on a failed credential - both
+     * paths must emit the same RFC-7807 body, so the entry point is set on {@code httpBasic} as well.
+     *
+     * @param http          the {@link HttpSecurity} builder supplied by Spring Security
+     * @param objectMapper  the application {@link ObjectMapper} (retains Boot's {@code ProblemDetail}
+     *                      support) used by the entry point / access-denied handler to serialize the
+     *                      RFC-7807 body
      * @return the built {@link SecurityFilterChain}
      * @throws Exception if the security configuration cannot be built
      */
     @Bean
-    public SecurityFilterChain securityFilterChain(HttpSecurity http) throws Exception {
+    public SecurityFilterChain securityFilterChain(HttpSecurity http, ObjectMapper objectMapper) throws Exception {
+        // Shared RFC-7807 failure responders (401 / 403). A single AuthenticationEntryPoint instance
+        // is used by both the ExceptionTranslationFilter (anonymous -> protected resource) and the
+        // BasicAuthenticationFilter (failed credential) so every unauthenticated response is uniform.
+        AuthenticationEntryPoint authenticationEntryPoint =
+            new ProblemDetailAuthenticationEntryPoint(objectMapper);
+        AccessDeniedHandler accessDeniedHandler =
+            new ProblemDetailAccessDeniedHandler(objectMapper);
         http
             // Stateless API authenticated with HTTP Basic: no browser session/cookie to protect.
             .csrf(AbstractHttpConfigurer::disable)
@@ -128,7 +171,10 @@ public class SecurityConfig {
                 .requestMatchers("/api/v1/admin/**").hasRole("ADMIN")
                 // Every remaining business endpoint requires authentication.
                 .anyRequest().authenticated())
-            .httpBasic(Customizer.withDefaults());
+            .httpBasic(basic -> basic.authenticationEntryPoint(authenticationEntryPoint))
+            .exceptionHandling(exceptions -> exceptions
+                .authenticationEntryPoint(authenticationEntryPoint)
+                .accessDeniedHandler(accessDeniedHandler));
         return http.build();
     }
 
@@ -136,18 +182,34 @@ public class SecurityConfig {
      * The application-wide password encoder used to verify (and, for user administration, encode)
      * {@code USRSEC} credentials.
      *
-     * <p>A {@link BCryptPasswordEncoder} is used: it applies a per-hash random salt and an adaptive
-     * work factor, so equal plaintext passwords produce distinct hashes and verification is
-     * performed with {@link PasswordEncoder#matches(CharSequence, String)}. This is the "BCrypt bean"
-     * the authentication collaborators document as their expected dependency; combined with the
-     * single {@code CardDemoUserDetailsService} bean it forms the framework-built
-     * {@code DaoAuthenticationProvider}.
+     * <p>The bean is an {@link UpperCasePasswordEncoder} wrapping a {@link BCryptPasswordEncoder}.
+     * The BCrypt delegate applies a per-hash random salt and an adaptive work factor, so equal
+     * plaintext passwords produce distinct hashes and verification is performed with
+     * {@link PasswordEncoder#matches(CharSequence, String)}. The {@link UpperCasePasswordEncoder}
+     * wrapper folds the raw password to upper case ({@link java.util.Locale#ROOT}) before every
+     * {@code encode}/{@code matches} call, reproducing the case-insensitive password contract of the
+     * legacy sign-on program ({@code legacy/cbl/COSGN00C.cbl:L132-L136} folds the entered password
+     * with {@code FUNCTION UPPER-CASE} before comparison).
      *
-     * @return the singleton {@link BCryptPasswordEncoder} shared across the authentication and
-     *         user-administration services
+     * <p>This wrapping is the fix for the credential-case divergence between the two authentication
+     * surfaces: the CC00 sign-on service ({@code SignonService}) already upper-cased the password
+     * before comparison, but the framework-built {@code DaoAuthenticationProvider} that guards every
+     * protected HTTP&nbsp;Basic endpoint compared the raw, exact-case password against the stored
+     * hash, so a lower-/mixed-case credential accepted at sign-on was rejected (401) on every API
+     * call. Performing the fold inside the shared encoder makes both surfaces &mdash; and user
+     * administration ({@code UserService}) &mdash; apply one identical normalization rule. The fold
+     * is idempotent, so the explicit service-level folds are unaffected. The rationale is recorded in
+     * {@code docs/decision-log.md} (decision D26).
+     *
+     * <p>This is the single {@link PasswordEncoder} bean the authentication collaborators document as
+     * their expected dependency; combined with the single {@code CardDemoUserDetailsService} bean it
+     * forms the framework-built {@code DaoAuthenticationProvider}.
+     *
+     * @return the singleton {@link UpperCasePasswordEncoder} (wrapping {@link BCryptPasswordEncoder})
+     *         shared across the authentication and user-administration services
      */
     @Bean
     public PasswordEncoder passwordEncoder() {
-        return new BCryptPasswordEncoder();
+        return new UpperCasePasswordEncoder(new BCryptPasswordEncoder());
     }
 }

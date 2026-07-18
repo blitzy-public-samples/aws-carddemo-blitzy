@@ -21,7 +21,12 @@ import java.util.Objects;
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
 import jakarta.persistence.Id;
+import jakarta.persistence.PostLoad;
+import jakarta.persistence.PrePersist;
 import jakarta.persistence.Table;
+import jakarta.persistence.Transient;
+
+import org.springframework.data.domain.Persistable;
 
 /**
  * JPA entity mapping the legacy COBOL copybook {@code TRAN-RECORD}
@@ -55,16 +60,47 @@ import jakarta.persistence.Table;
  * {@code java.time} types. The trailing {@code FILLER PIC X(20)} is layout
  * padding only and is intentionally not mapped.</p>
  *
+ * <p><strong>Insert semantics (concurrency safety).</strong> Because
+ * {@code tran_id} is an <em>application-assigned</em> natural key, Spring Data's
+ * default {@code save(...)} would classify a freshly-built record as
+ * <em>not new</em> (its id is non-null) and issue {@code EntityManager.merge(...)}.
+ * Under the reverse-browse {@code MAX(tran_id)+1} generation
+ * ({@code legacy/cbl/COTRN02C.cbl} L444-L451), a value committed by a racing
+ * writer between the {@code MAX} lookup and the merge would cause {@code merge}
+ * to silently issue an {@code UPDATE} (overwriting the other writer's row) rather
+ * than failing &mdash; a silent lost insert. To reproduce the COBOL
+ * {@code WRITE}&hellip;{@code DUPKEY} contract (a colliding key must FAIL, never
+ * overwrite), this entity implements {@link Persistable}: {@link #isNew()}
+ * reports {@code true} for a newly-constructed instance, forcing
+ * {@code EntityManager.persist(...)} (a genuine {@code INSERT}) so a key collision
+ * surfaces as a {@code DataIntegrityViolationException} (PostgreSQL SQLState
+ * {@code 23505} on {@code pk_transaction}). After the row is loaded or persisted,
+ * the transient new-record flag is cleared ({@link #markNotNew()}) so a
+ * subsequent {@code save(...)} of the same managed instance correctly performs an
+ * {@code UPDATE}. This affects the {@code save(...)}/{@code saveAll(...)} decision
+ * only; direct {@code EntityManager.merge(...)} callers are unchanged.</p>
+ *
  * @see <a href="http://www.apache.org/licenses/LICENSE-2.0">Apache License 2.0</a>
  */
 @Entity
 @Table(name = "transaction")
-public class Transaction {
+public class Transaction implements Persistable<String> {
 
     /** {@code TRAN-ID PIC X(16)} &mdash; natural primary key (application-generated). */
     @Id
     @Column(name = "tran_id", length = 16, nullable = false)
     private String tranId;
+
+    /**
+     * Transient new-record marker backing {@link #isNew()}. It is {@code true} for
+     * a freshly-constructed instance (forcing an {@code INSERT} on the first
+     * {@code save}) and is cleared to {@code false} once the row is loaded
+     * ({@code @PostLoad}) or persisted ({@code @PrePersist}). It is never persisted
+     * ({@code @Transient}) and is excluded from {@link #equals(Object)},
+     * {@link #hashCode()} and {@link #toString()}.
+     */
+    @Transient
+    private boolean newRecord = true;
 
     /** {@code TRAN-TYPE-CD PIC X(02)} &mdash; scalar FK to {@code transaction_type}; part of composite FK. */
     @Column(name = "type_cd", length = 2, nullable = false)
@@ -179,6 +215,50 @@ public class Transaction {
         this.cardNum = cardNum;
         this.origTs = origTs;
         this.procTs = procTs;
+    }
+
+    // ------------------------------------------------------------------------
+    // Persistable contract (forces INSERT for application-assigned keys)
+    // ------------------------------------------------------------------------
+
+    /**
+     * Returns the entity identifier for the {@link Persistable} contract, i.e. the
+     * {@code tran_id} natural primary key.
+     *
+     * @return the 16-character transaction id (may be {@code null} before assignment)
+     */
+    @Override
+    public String getId() {
+        return tranId;
+    }
+
+    /**
+     * Reports whether this instance is a new (not-yet-persisted) record.
+     *
+     * <p>Spring Data consults this to choose {@code EntityManager.persist(...)}
+     * (when {@code true}) over {@code merge(...)} (when {@code false}). A
+     * freshly-constructed transaction returns {@code true}, so the first
+     * {@code save(...)} performs a genuine {@code INSERT} and a duplicate
+     * {@code tran_id} fails loudly instead of silently overwriting an existing
+     * row (see the class documentation).</p>
+     *
+     * @return {@code true} if the row has not yet been loaded or persisted
+     */
+    @Override
+    public boolean isNew() {
+        return newRecord;
+    }
+
+    /**
+     * Clears the transient {@link #newRecord} marker after the row has been loaded
+     * from ({@code @PostLoad}) or written to ({@code @PrePersist}) the database, so
+     * a later {@code save(...)} of the same managed instance is treated as an
+     * {@code UPDATE} rather than an {@code INSERT}.
+     */
+    @PostLoad
+    @PrePersist
+    void markNotNew() {
+        this.newRecord = false;
     }
 
     /**

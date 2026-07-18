@@ -15,6 +15,11 @@
  */
 package com.aws.carddemo.exception;
 
+import java.sql.SQLException;
+import java.util.Locale;
+
+import org.springframework.dao.DataIntegrityViolationException;
+
 /**
  * Thrown when an insert/write violates a unique key — the Java equivalent of the
  * COBOL/VSAM {@code FILE STATUS} '22' (duplicate key on {@code WRITE}) and of the
@@ -102,5 +107,50 @@ public class DuplicateKeyException extends FileStatusException {
      */
     public static DuplicateKeyException of(String entityName, Object key) {
         return new DuplicateKeyException(entityName + " already exists: " + key);
+    }
+
+    /**
+     * PostgreSQL SQLState for a unique-constraint (primary-key) violation
+     * ({@code unique_violation}). Used to distinguish a genuine key collision from
+     * any other integrity violation.
+     */
+    private static final String SQLSTATE_UNIQUE_VIOLATION = "23505";
+
+    /**
+     * Determines whether the given {@link DataIntegrityViolationException} was
+     * caused specifically by a duplicate {@code transaction} primary key
+     * ({@code tran_id}) &mdash; the condition that maps to this exception on a
+     * transaction {@code INSERT}.
+     *
+     * <p>The chain is unwrapped to the underlying {@link SQLException}; a match
+     * requires the PostgreSQL {@code unique_violation} SQLState ({@code 23505})
+     * <em>and</em> a message that names the transaction primary-key constraint
+     * ({@code pk_transaction}) or its column ({@code tran_id}). Any other integrity
+     * violation (for example a foreign-key, not-null, check, or a different
+     * unique constraint) returns {@code false} so the caller can surface it as a
+     * distinct error rather than mislabelling it as a duplicate transaction id.</p>
+     *
+     * <p>This detection is shared by {@code TransactionService} and
+     * {@code BillPaymentService} so both posting paths classify a collision
+     * identically.</p>
+     *
+     * @param ex the data-integrity violation raised while flushing a transaction
+     *           insert; must not be {@code null}
+     * @return {@code true} if the violation is a duplicate {@code tran_id} primary
+     *         key; {@code false} for every other integrity violation
+     */
+    public static boolean isTransactionIdCollision(DataIntegrityViolationException ex) {
+        for (Throwable cause = ex; cause != null; cause = cause.getCause()) {
+            if (cause instanceof SQLException sqlException) {
+                if (!SQLSTATE_UNIQUE_VIOLATION.equals(sqlException.getSQLState())) {
+                    return false;
+                }
+                String text = sqlException.getMessage() == null
+                        ? ""
+                        : sqlException.getMessage().toLowerCase(Locale.ROOT);
+                return text.contains("pk_transaction") || text.contains("tran_id");
+            }
+        }
+        return false;
     }
 }

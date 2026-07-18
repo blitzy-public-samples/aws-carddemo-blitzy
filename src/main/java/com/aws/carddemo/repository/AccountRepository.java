@@ -17,10 +17,15 @@
 package com.aws.carddemo.repository;
 
 import com.aws.carddemo.domain.Account;
+import jakarta.persistence.LockModeType;
 import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.Lock;
+import org.springframework.data.jpa.repository.Query;
+import org.springframework.data.repository.query.Param;
 import org.springframework.stereotype.Repository;
 
 import java.util.List;
+import java.util.Optional;
 
 /**
  * Spring Data JPA repository for the {@link Account} master-account entity.
@@ -44,15 +49,25 @@ import java.util.List;
  *       inquiry {@code legacy/cbl/COACTVWC.cbl} ({@code EXEC CICS READ} on
  *       {@code ACCTDAT} by account id) is served by the inherited
  *       {@link JpaRepository#findById(Object) findById(Long)}.</li>
- *   <li><strong>Read-update-rewrite</strong> &mdash; the online account update
- *       {@code legacy/cbl/COACTUPC.cbl} and the posting balance update
- *       {@code legacy/cbl/CBTRN02C.cbl} are served by
+ *   <li><strong>Read-update-rewrite (posting)</strong> &mdash; the posting
+ *       balance update {@code legacy/cbl/CBTRN02C.cbl} is served by
  *       {@link JpaRepository#findById(Object) findById(Long)} followed by
  *       {@link JpaRepository#save(Object) save(Account)}. The integrity of the
  *       COBOL READ-UPDATE-REWRITE cycle is provided by the entity's
  *       {@code @Version} optimistic lock inside the calling service's
- *       {@code @Transactional} boundary &mdash; this repository intentionally
- *       declares no {@code @Lock} annotation.</li>
+ *       {@code @Transactional} boundary; a modified balance advances the version
+ *       naturally, so this path needs no explicit {@code @Lock}.</li>
+ *   <li><strong>Read-update-rewrite (online account update aggregate)</strong>
+ *       &mdash; the online account update {@code legacy/cbl/COACTUPC.cbl}
+ *       ({@code 9700-CHECK-CHANGE-IN-REC}) treats the account and its owning
+ *       customer as one edit aggregate, re-reading and comparing <em>both</em>
+ *       records before rewriting. Its confirmed-write path uses
+ *       {@link #findByIdForVersionedUpdate(Long)}, which loads the account under
+ *       {@link LockModeType#OPTIMISTIC_FORCE_INCREMENT} so that even a
+ *       customer-only edit (no account column changed) advances
+ *       {@code account.version}. A concurrent editor holding the now-stale
+ *       account version is then rejected, reproducing the COBOL abort for the
+ *       whole aggregate (AAP 0.7.1 H6; see {@code docs/decision-log.md}).</li>
  * </ul>
  *
  * <p>Monetary arithmetic and credit-limit checks are deliberately absent here;
@@ -74,4 +89,36 @@ public interface AccountRepository extends JpaRepository<Account, Long> {
      * @return all accounts sorted by {@code acctId} ascending; never {@code null}
      */
     List<Account> findAllByOrderByAcctIdAsc();
+
+    /**
+     * Reads the account by its primary key and force-increments its
+     * optimistic-lock {@code version} when the surrounding transaction commits
+     * &mdash; even when no business field on the account itself changes.
+     *
+     * <p><strong>Why force-increment.</strong> The online account-update program
+     * {@code legacy/cbl/COACTUPC.cbl} ({@code 9700-CHECK-CHANGE-IN-REC}) treats
+     * the account and its owning customer as a single edit aggregate: it
+     * re-reads and field-compares <em>both</em> records and aborts the rewrite
+     * with "Record changed by some one else. Please review" (COACTUPC line 522)
+     * if either changed since the user fetched the details. In the relational
+     * target the account row is the anchor of that aggregate, so loading it with
+     * {@link LockModeType#OPTIMISTIC_FORCE_INCREMENT} guarantees that every
+     * confirmed update advances {@code account.version} &mdash; including a
+     * customer-only edit that leaves all account columns untouched. A second,
+     * concurrent editor who fetched the now-stale account version is then
+     * rejected by the service's version guard, reproducing the COBOL abort for
+     * the whole account-plus-customer aggregate. This is a documented,
+     * intentional improvement (AAP 0.7.1 H6; see {@code docs/decision-log.md}).</p>
+     *
+     * <p>Used exclusively by the confirmed-write path of
+     * {@code AccountService.performWrite}; the read-only inquiry path continues
+     * to use the inherited {@link JpaRepository#findById(Object) findById(Long)}
+     * (no version bump on a pure read).</p>
+     *
+     * @param acctId the account primary key (COBOL {@code ACCT-ID PIC 9(11)})
+     * @return the managed account if present, otherwise an empty {@link Optional}
+     */
+    @Lock(LockModeType.OPTIMISTIC_FORCE_INCREMENT)
+    @Query("select a from Account a where a.acctId = :acctId")
+    Optional<Account> findByIdForVersionedUpdate(@Param("acctId") Long acctId);
 }

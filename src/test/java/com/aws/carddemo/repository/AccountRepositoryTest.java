@@ -221,6 +221,42 @@ class AccountRepositoryTest {
     }
 
     /**
+     * {@link AccountRepository#findByIdForVersionedUpdate(Long)} resolves the
+     * account by primary key and returns an empty {@link java.util.Optional} for an
+     * absent key. This finder is the load step of the online account-update write
+     * path ({@code COACTUPC 9600-WRITE-PROCESSING}); it is annotated
+     * {@code @Lock(OPTIMISTIC_FORCE_INCREMENT)} so that <em>any</em> confirmed write
+     * &mdash; including a customer-only edit that leaves every {@code account} column
+     * untouched &mdash; advances {@code account.version}, causing a second,
+     * stale-versioned editor of the account-plus-customer aggregate to be rejected
+     * ({@code 9700-CHECK-CHANGE-IN-REC}; AAP&nbsp;0.7.1&nbsp;H6; see
+     * {@code docs/decision-log.md}).
+     *
+     * <p><strong>Scope of this slice test.</strong> It verifies only the finder's
+     * query semantics (correct row by key, empty for a miss), which is all that is
+     * observable inside a {@code @DataJpaTest} slice. The force-increment behaviour
+     * itself is a commit-time action ({@code OPTIMISTIC_FORCE_INCREMENT} is emitted
+     * during before-transaction-completion, not on an intermediate {@code flush()}),
+     * so it cannot be observed in this rollback-per-test slice; it is verified
+     * end-to-end against a real commit boundary by
+     * {@code com.aws.carddemo.service.AccountServiceTest}.</p>
+     */
+    @Test
+    void findByIdForVersionedUpdateReturnsManagedAccountByKey() {
+        repository.saveAndFlush(newAccount(5L, "500.00"));
+        entityManager.clear();
+
+        // The @Query resolves the correct row by primary key and maps its scalar state.
+        Account forUpdate = repository.findByIdForVersionedUpdate(5L).orElseThrow();
+        assertThat(forUpdate.getAcctId()).isEqualTo(5L);
+        assertThat(forUpdate.getCurrBal()).isEqualByComparingTo(new BigDecimal("500.00"));
+        assertThat(forUpdate.getVersion()).isNotNull();
+
+        // A key that was never persisted yields an empty Optional (keyed-read miss).
+        assertThat(repository.findByIdForVersionedUpdate(999L)).isEmpty();
+    }
+
+    /**
      * A lookup for an account id that was never persisted returns an empty
      * {@link java.util.Optional}, reproducing the COBOL "record not found"
      * outcome of a keyed read.

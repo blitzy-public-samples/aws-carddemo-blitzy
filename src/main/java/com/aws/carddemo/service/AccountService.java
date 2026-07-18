@@ -850,13 +850,20 @@ public class AccountService {
     private AccountUpdateResult performWrite(AccountUpdateCommand command) {
         long acctId = requireAccountId(command);
 
-        // Re-read the account master fresh under the update transaction (COBOL READ ... UPDATE).
-        Account account = accountRepository.findById(acctId)
+        // Re-read the account master fresh under the update transaction (COBOL READ ... UPDATE),
+        // loaded with OPTIMISTIC_FORCE_INCREMENT so that ANY confirmed write advances the account
+        // version at commit -- even a customer-only edit that leaves every account column
+        // unchanged. The account row is the anchor of the account+customer edit aggregate that
+        // COACTUPC's 9700-CHECK-CHANGE-IN-REC guards by comparing BOTH records.
+        Account account = accountRepository.findByIdForVersionedUpdate(acctId)
                 .orElseThrow(() -> new RecordNotFoundException(notFoundInAccountMaster(acctId)));
 
         // 9700-CHECK-CHANGE-IN-REC (DATA-WAS-CHANGED-BEFORE-UPDATE): the @Version optimistic-lock
         // check replaces the COBOL field-by-field OLD/NEW comparison. If the persistent row has
-        // advanced past the version the client fetched, someone else changed it first.
+        // advanced past the version the client fetched, someone else changed it first. Because the
+        // account is loaded with force-increment above, a prior confirmed edit -- including a
+        // customer-only edit -- will have advanced the version, so this single guard rejects a
+        // stale editor of either record, covering the whole account+customer aggregate.
         Long expectedVersion = command.expectedVersion();
         if (expectedVersion != null && !expectedVersion.equals(account.getVersion())) {
             throw new OptimisticLockingFailureException(MSG_DATA_CHANGED);
@@ -880,7 +887,9 @@ public class AccountService {
         }
 
         // Apply the validated ACUP-NEW-* values and rewrite both records (9600-WRITE-PROCESSING).
-        // The account carries the @Version column; the customer does not (see class contract).
+        // Both the account and the customer carry a @Version column; the account was additionally
+        // loaded with force-increment so its version advances on every confirmed write, anchoring
+        // the aggregate version check above (see class contract and docs/decision-log.md).
         applyAccountUpdates(account, command);
         applyCustomerUpdates(customer, command);
         Account savedAccount = accountRepository.save(account);

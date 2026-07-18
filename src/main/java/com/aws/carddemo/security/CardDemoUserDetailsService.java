@@ -74,12 +74,20 @@ import java.util.Locale;
  * </ul>
  *
  * <p><strong>Username normalization (parity-critical).</strong> COSGN00C
- * upper-cases the entered user id before the keyed read, and the seed ids loaded
- * by {@code app/jcl/DUSRSECJ.jcl} are stored as UPPER-CASE 8-character keys.
- * {@link #loadUserByUsername(String)} therefore trims and upper-cases the incoming
- * value with {@link Locale#ROOT} (a locale-independent fold that avoids surprises
- * such as the Turkish dotless-i) before querying, so a login of {@code "admin001"}
- * resolves the same record as {@code "ADMIN001"}, matching the legacy behavior.</p>
+ * upper-cases the entered user id before the keyed read &mdash; and only that; it
+ * does not trim &mdash; and the seed ids loaded by {@code app/jcl/DUSRSECJ.jcl} are
+ * stored as UPPER-CASE 8-character keys. {@link #loadUserByUsername(String)}
+ * therefore upper-cases (but does not trim) the incoming value with
+ * {@link Locale#ROOT} (a locale-independent fold that avoids surprises such as the
+ * Turkish dotless-i) before querying, so a login of {@code "admin001"} resolves the
+ * same record as {@code "ADMIN001"}, matching the legacy behavior. The fold applies
+ * upper-case only &mdash; identical to the CC00 sign-on service
+ * ({@code service/SignonService}), which also upper-cases without trimming &mdash;
+ * so the interactive sign-on path and the HTTP&nbsp;Basic gate normalize the id the
+ * same way and neither accepts a space-padded id the other would reject. The
+ * companion password normalization (also upper-case only, per COSGN00C) is applied
+ * by the shared {@code PasswordEncoder} ({@code UpperCasePasswordEncoder} in
+ * {@code config/SecurityConfig}), not here; see decision log D26.</p>
  *
  * <p><strong>Confidentiality.</strong> The stored credential is never logged. The
  * only diagnostic emitted is a {@code DEBUG}-level line carrying the
@@ -144,9 +152,10 @@ public class CardDemoUserDetailsService implements UserDetailsService {
      *       {@link UsernameNotFoundException}. Spring Security's
      *       {@code DaoAuthenticationProvider} already short-circuits empty
      *       credentials, so this guard is defensive and keeps the method total.</li>
-     *   <li>The username is trimmed and upper-cased with {@link Locale#ROOT},
-     *       reproducing the {@code FUNCTION UPPER-CASE} normalization COSGN00C
-     *       applied to the entered id.</li>
+     *   <li>The username is upper-cased with {@link Locale#ROOT} (upper-case only;
+     *       it is not trimmed), reproducing the {@code FUNCTION UPPER-CASE}
+     *       normalization COSGN00C applied to the entered id and matching the CC00
+     *       sign-on service so both surfaces resolve the same key.</li>
      *   <li>The {@code user_security} table is read by primary key. An empty result
      *       becomes {@link UsernameNotFoundException}, the analog of the COBOL
      *       {@code WHEN 13} ({@code DFHRESP(NOTFND)}) branch.</li>
@@ -176,10 +185,14 @@ public class CardDemoUserDetailsService implements UserDetailsService {
             throw new UsernameNotFoundException("Username must not be blank");
         }
 
-        // Parity: COSGN00C applies FUNCTION UPPER-CASE to the entered id, and the
-        // USRSEC keys are stored upper-cased (see app/jcl/DUSRSECJ.jcl). Locale.ROOT
-        // makes the fold locale-independent.
-        String normalizedId = username.trim().toUpperCase(Locale.ROOT);
+        // Parity: COSGN00C applies FUNCTION UPPER-CASE to the entered id (and only
+        // that - it does not trim), and the USRSEC keys are stored upper-cased (see
+        // app/jcl/DUSRSECJ.jcl). The fold is upper-case only - matching the CC00
+        // sign-on service (SignonService), which likewise does not trim - so the two
+        // authentication surfaces normalize the id identically and neither accepts a
+        // space-padded id the other would reject. Locale.ROOT makes the fold
+        // locale-independent.
+        String normalizedId = username.toUpperCase(Locale.ROOT);
 
         // Non-sensitive id only; never log the password / hash (AAP 0.7.3 L1 / 0.9.3).
         log.debug("Loading user details for id={}", normalizedId);

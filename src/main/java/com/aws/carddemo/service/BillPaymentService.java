@@ -18,6 +18,7 @@ package com.aws.carddemo.service;
 import java.math.BigDecimal;
 import java.util.Objects;
 
+import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -27,6 +28,7 @@ import com.aws.carddemo.domain.Account;
 import com.aws.carddemo.domain.CardXref;
 import com.aws.carddemo.domain.Transaction;
 import com.aws.carddemo.domain.type.Money;
+import com.aws.carddemo.exception.DuplicateKeyException;
 import com.aws.carddemo.exception.RecordNotFoundException;
 import com.aws.carddemo.repository.AccountRepository;
 import com.aws.carddemo.repository.CardXrefRepository;
@@ -400,7 +402,26 @@ public class BillPaymentService {
                 xref.getXrefCardNum(),
                 timestamp,
                 timestamp);
-        Transaction savedTransaction = transactionRepository.save(transaction);
+
+        // WRITE-TRANSACT-FILE (L510-L547): flush the insert eagerly so a colliding
+        // MAX(tran_id)+1 fails here as a DataIntegrityViolationException rather than
+        // deferring to commit. Because Transaction implements Persistable
+        // (isNew() == true forces an INSERT), a key collision reliably violates the
+        // pk_transaction unique constraint instead of silently overwriting the racing
+        // writer's row (which would drop this posted bill-payment from the audit trail
+        // while still reducing the balance). Only a genuine duplicate tran_id is
+        // translated to the DuplicateKeyException the COBOL DUPKEY/DUPREC branch
+        // produced; any other integrity violation is re-thrown unchanged so it is not
+        // mislabelled as a duplicate key. This mirrors TransactionService.
+        Transaction savedTransaction;
+        try {
+            savedTransaction = transactionRepository.saveAndFlush(transaction);
+        } catch (DataIntegrityViolationException ex) {
+            if (DuplicateKeyException.isTransactionIdCollision(ex)) {
+                throw new DuplicateKeyException("Tran ID already exist...", ex);
+            }
+            throw ex;
+        }
 
         // COBOL L234: COMPUTE ACCT-CURR-BAL = ACCT-CURR-BAL - TRAN-AMT. The
         // subtraction is centralized in Money (scale 2, HALF_UP); paying the full

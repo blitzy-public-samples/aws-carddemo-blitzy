@@ -26,12 +26,18 @@ import org.junit.jupiter.api.Test;
 import org.mockito.Mockito;
 import org.slf4j.MDC;
 import org.springframework.dao.OptimisticLockingFailureException;
+import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpMethod;
 import org.springframework.http.HttpStatus;
+import org.springframework.http.MediaType;
 import org.springframework.http.ProblemDetail;
+import org.springframework.http.ResponseEntity;
+import org.springframework.http.converter.HttpMessageNotReadableException;
 import org.springframework.security.web.firewall.RequestRejectedException;
 import org.springframework.validation.BindingResult;
 import org.springframework.validation.FieldError;
+import org.springframework.web.HttpMediaTypeNotSupportedException;
+import org.springframework.web.HttpRequestMethodNotSupportedException;
 import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.servlet.resource.NoResourceFoundException;
 
@@ -371,6 +377,88 @@ class GlobalExceptionHandlerTest {
         assertThat(problem.getTitle()).isEqualTo("Bad Request");
         assertThat(problem.getDetail()).isEqualTo("The request was rejected as malformed.");
         assertThat(problem.getDetail()).doesNotContain("<untrusted>");
+    }
+
+    /**
+     * An unsupported HTTP method maps to HTTP 405 (rather than a catch-all 500) and
+     * the response carries the mandatory {@code Allow} header listing the methods the
+     * route supports (RFC&nbsp;7231&nbsp;&sect;6.5.5). The body is the uniform
+     * RFC&nbsp;7807 {@link ProblemDetail} served as {@code application/problem+json}.
+     * This is the executable proof that {@link HttpRequestMethodNotSupportedException}
+     * is no longer swallowed by the {@code Exception} catch-all (QA finding F3).
+     */
+    @Test
+    void mapsMethodNotSupportedTo405WithAllowHeader() {
+        HttpRequestMethodNotSupportedException ex =
+                Mockito.mock(HttpRequestMethodNotSupportedException.class);
+        Mockito.when(ex.getSupportedHttpMethods())
+                .thenReturn(Set.of(HttpMethod.GET, HttpMethod.POST));
+
+        ResponseEntity<ProblemDetail> response = handler.handleMethodNotSupported(ex);
+
+        assertThat(response.getStatusCode().value()).isEqualTo(HttpStatus.METHOD_NOT_ALLOWED.value());
+        assertThat(response.getHeaders().getContentType()).isEqualTo(MediaType.APPLICATION_PROBLEM_JSON);
+        assertThat(response.getHeaders().getAllow())
+                .containsExactlyInAnyOrder(HttpMethod.GET, HttpMethod.POST);
+        ProblemDetail problem = response.getBody();
+        assertThat(problem).isNotNull();
+        assertThat(problem.getStatus()).isEqualTo(HttpStatus.METHOD_NOT_ALLOWED.value());
+        assertThat(problem.getTitle()).isEqualTo("Method Not Allowed");
+        assertThat(problem.getDetail()).isEqualTo("The HTTP method is not supported for this endpoint.");
+    }
+
+    /**
+     * When the framework reports no supported methods (a {@code null} set), the 405
+     * handler still succeeds and simply omits the {@code Allow} header rather than
+     * throwing &mdash; a defensive path that keeps the handler total.
+     */
+    @Test
+    void methodNotSupportedWithNoSupportedMethodsOmitsAllowHeader() {
+        HttpRequestMethodNotSupportedException ex =
+                Mockito.mock(HttpRequestMethodNotSupportedException.class);
+        Mockito.when(ex.getSupportedHttpMethods()).thenReturn(null);
+
+        ResponseEntity<ProblemDetail> response = handler.handleMethodNotSupported(ex);
+
+        assertThat(response.getStatusCode().value()).isEqualTo(HttpStatus.METHOD_NOT_ALLOWED.value());
+        assertThat(response.getHeaders().getAllow()).isEmpty();
+        assertThat(response.getBody()).isNotNull();
+        assertThat(response.getBody().getStatus()).isEqualTo(HttpStatus.METHOD_NOT_ALLOWED.value());
+    }
+
+    /**
+     * A malformed/unreadable (or missing) request body maps to HTTP 400 with a fixed,
+     * non-revealing detail. The raw parser message can quote payload fragments (a
+     * password or card CVV), so it is never echoed &mdash; only the safe constant is
+     * returned (QA finding F3).
+     */
+    @Test
+    void mapsMessageNotReadableTo400() {
+        HttpMessageNotReadableException ex = Mockito.mock(HttpMessageNotReadableException.class);
+
+        ProblemDetail problem = handler.handleNotReadable(ex);
+
+        assertThat(problem.getStatus()).isEqualTo(HttpStatus.BAD_REQUEST.value());
+        assertThat(problem.getTitle()).isEqualTo("Malformed Request");
+        assertThat(problem.getDetail()).isEqualTo("The request body is missing or malformed.");
+    }
+
+    /**
+     * An unsupported request {@code Content-Type} maps to HTTP 415 with a fixed,
+     * non-revealing detail (the offending content type is not echoed). This is the
+     * executable proof that {@link HttpMediaTypeNotSupportedException} is no longer
+     * swallowed by the {@code Exception} catch-all (QA finding F3).
+     */
+    @Test
+    void mapsMediaTypeNotSupportedTo415() {
+        HttpMediaTypeNotSupportedException ex = Mockito.mock(HttpMediaTypeNotSupportedException.class);
+
+        ProblemDetail problem = handler.handleMediaTypeNotSupported(ex);
+
+        assertThat(problem.getStatus()).isEqualTo(HttpStatus.UNSUPPORTED_MEDIA_TYPE.value());
+        assertThat(problem.getTitle()).isEqualTo("Unsupported Media Type");
+        assertThat(problem.getDetail())
+                .isEqualTo("The request Content-Type is not supported by this endpoint.");
     }
 
     // ---------------------------------------------------------------------

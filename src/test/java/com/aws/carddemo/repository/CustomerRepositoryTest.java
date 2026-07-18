@@ -252,6 +252,38 @@ class CustomerRepositoryTest {
     }
 
     /**
+     * The {@code @Version} column added to {@code customer} by Flyway migration
+     * {@code V3__add_customer_version.sql} is assigned on insert and increments on
+     * update, giving the customer record the same optimistic-lock integrity as
+     * {@link com.aws.carddemo.domain.Account}. This reproduces the COBOL
+     * READ-UPDATE-REWRITE guarantee that {@code COACTUPC}'s
+     * {@code 9700-CHECK-CHANGE-IN-REC} enforced over the customer record before
+     * rewriting &mdash; a documented, intentional improvement (AAP&nbsp;0.7.1&nbsp;H6;
+     * see {@code docs/decision-log.md}).
+     *
+     * <p>A flush plus {@code clear} after each write materializes the version
+     * increment and forces the subsequent reload to be served from the database
+     * rather than the persistence-context first-level cache.</p>
+     */
+    @Test
+    void versionAssignedOnInsertAndIncrementsOnUpdate() {
+        repository.saveAndFlush(minimalCustomer(2L, "Ada"));
+        entityManager.clear();
+
+        Customer inserted = repository.findById(2L).orElseThrow();
+        assertThat(inserted.getVersion()).isNotNull();
+        long initialVersion = inserted.getVersion();
+
+        inserted.setCustLastName("Lovelace");
+        repository.saveAndFlush(inserted);
+        entityManager.clear();
+
+        Customer updated = repository.findById(2L).orElseThrow();
+        assertThat(updated.getVersion()).isNotNull();
+        assertThat(updated.getVersion()).isGreaterThan(initialVersion);
+    }
+
+    /**
      * Builds a customer that satisfies the schema (only {@code cust_id} is
      * {@code NOT NULL}) with a couple of readable non-sensitive fields and no
      * sensitive PII populated. Callers set any additional fields they assert.

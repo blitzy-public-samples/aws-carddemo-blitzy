@@ -59,6 +59,10 @@ its Java target, while this log explains the reasoning behind the design those m
 | [D23](#d23--observability-stack-logs-traces-metrics-dashboard) | G. Observability & Ops | Observability stack (logs, traces, metrics, dashboard) | Non-functional addition |
 | [D24](#d24--mq--racf--3270-emulation-and-aws-m2-runtime-out-of-scope) | G. Observability & Ops | MQ / RACF / 3270 emulation / AWS M2 runtime out of scope | Scope boundary |
 | [D25](#d25--full-pan-and-account-number-in-master-print-output) | G. Observability & Ops | Full PAN / account number in master-print output (SYSOUT parity; PCI hardening deferred) | Behavior preservation (parity) + documented improvement |
+| [D26](#d26--consistent-credential-case-normalization-across-authentication-surfaces) | F. Security | Consistent credential case-normalization across authentication surfaces | Behavior preservation (parity fix) |
+| [D27](#d27--csrf-protection-disabled-stateless-http-basic-api) | F. Security | CSRF protection disabled (stateless HTTP Basic API) | Security posture |
+| [D28](#d28--no-cors-configuration-same-origin-only) | F. Security | No CORS configuration (same-origin-only) | Security posture (scope boundary) |
+| [D29](#d29--us-phone-number-edit-rule-fixes-a-latent-legacy-bug-optional-when-all-blank) | H. Validation & Edit-Rule Parity | US phone-number edit rule fixes a latent legacy bug (optional-when-all-blank) | **Intentional improvement** |
 
 ---
 
@@ -354,8 +358,14 @@ its Java target, while this log explains the reasoning behind the design those m
   `tran_id` as a secondary sort key (`...OrderByProcTsAscTranIdAsc`) so rows sharing a `proc_ts` never
   shift across page boundaries — a deterministic-pagination robustness improvement over the non-unique
   legacy browse key; pagination boundaries are covered by tests; and identifier generation is guarded
-  within a transactional boundary (see [D18](#d18--jpa-optimistic-locking-version)) so concurrent adds
-  cannot collide.
+  within a transactional boundary (see [D18](#d18--jpa-optimistic-locking-version)). The
+  max-key-plus-one generator can still **race** under genuine concurrency; rather than assuming it is
+  collision-proof, the `Transaction` entity implements Spring Data `Persistable` so a freshly built
+  transaction is always **inserted** (never merged), and a duplicate `tran_id` is therefore **detected and
+  rejected** by the `transaction` primary-key constraint — surfaced as a `DuplicateKeyException`
+  (HTTP&nbsp;409) — instead of silently overwriting an existing row. This preserves the fail-loud outcome
+  of the COBOL `WRITE … INVALID KEY` / duplicate-key path (`legacy/cbl/COTRN02C.cbl`) and is verified by an
+  integration test that pre-seeds a colliding id.
 
 ### D11 — Flyway for schema and reference-data migrations
 
@@ -610,9 +620,18 @@ its Java target, while this log explains the reasoning behind the design those m
 - **Status:** Accepted
 - **Type:** **Intentional improvement (deviation from literal COBOL)**
 - **AAP references:** §0.4.2, §0.7.1 (H6)
-- **Decision:** Add a JPA **`@Version` column** to the entities updated online (notably the account and
-  category-balance records) so the COBOL **READ-UPDATE-REWRITE** cycle's integrity is reproduced with
-  **optimistic locking** inside a `@Transactional` boundary.
+- **Decision:** Add a JPA **`@Version` column** to every entity updated online — the **account**,
+  **customer**, **card**, **transaction-category-balance**, and **user-security** records — so the COBOL
+  **READ-UPDATE-REWRITE** cycle's integrity is reproduced with **optimistic locking** inside a
+  `@Transactional` boundary. The online **account update** (`legacy/cbl/COACTUPC.cbl`) edits the account
+  and its owning customer as a **single aggregate**: its `9700-CHECK-CHANGE-IN-REC` paragraph re-reads and
+  field-compares **both** records and aborts with *"Record changed by some one else. Please review"* if
+  **either** changed since the user fetched the details. To reproduce that aggregate guard faithfully, the
+  confirmed-write path loads the account with **`OPTIMISTIC_FORCE_INCREMENT`**
+  (`AccountRepository.findByIdForVersionedUpdate`), so **any** confirmed write — including a
+  **customer-only** edit that leaves every account column unchanged — advances `account.version`. A second
+  editor holding the now-stale account version is then rejected, covering the whole account-plus-customer
+  aggregate rather than the account alone.
 - **Alternatives:** **Pessimistic locking** (`SELECT … FOR UPDATE`), which serializes concurrent updates
   at the cost of throughput and deadlock risk; or **no locking at all**, which is closest to the literal
   COBOL but permits lost updates under concurrency.
@@ -624,10 +643,12 @@ its Java target, while this log explains the reasoning behind the design those m
 - **Risk & mitigation:** Under genuine concurrency, optimistic locking may reject an update that the
   lock-free COBOL would have accepted (last-writer-wins by luck), which could be misread as a regression.
   *Mitigation:* the behavior is documented **here** as a deliberate integrity improvement so it is never
-  mistaken for a regression; the `@Version` check is scoped to the records that participate in the
-  read-modify-write cycle; and identifier generation from
+  mistaken for a regression; the `@Version` check covers **every record that participates in the
+  read-modify-write cycle** — including the **customer**, which the online account update edits as part of
+  the account aggregate and which is guarded through the account's force-increment described above; and
+  identifier generation from
   [D10](#d10--alternate-indexes-to-b-tree-indexes-vsam-browse-to-sortedpaged-queries) is guarded within the
-  same transactional boundary.
+  same transactional boundary, where a colliding insert **fails loud** rather than overwriting.
 
 
 ---
@@ -723,6 +744,96 @@ its Java target, while this log explains the reasoning behind the design those m
   not a new feature; the observable auth outcome (who can log in, and with which role) is unchanged and
   covered by tests; and all credentials are externalized with **no hardcoded secrets** (see
   [D6](#d6--externalized-credentials-no-hardcoded-secrets)).
+
+### D26 — Consistent credential case-normalization across authentication surfaces
+
+- **Status:** Accepted
+- **Type:** Behavior preservation (parity fix)
+- **AAP references:** §0.2.2 (CICS → Spring Security), §0.7.3 (L1), §0.8.1 (behavioral parity), §0.9.2 (field-contract parity)
+- **Decision:** Normalize credentials to **UPPER CASE consistently across every authentication surface**.
+  The password is folded to upper case (`Locale.ROOT`) inside a **single shared `PasswordEncoder`** —
+  `security/UpperCasePasswordEncoder` wrapping `BCryptPasswordEncoder`, declared as the one
+  `config/SecurityConfig#passwordEncoder()` bean — and the user id is **upper-cased (not trimmed)** in both
+  the CC00 sign-on service (`service/SignonService`) and the `security/CardDemoUserDetailsService` consumed
+  by the HTTP&nbsp;Basic gate. This reproduces the legacy sign-on program, which folds **both** the entered
+  user id and password with `FUNCTION UPPER-CASE` and performs no trim
+  (`MOVE FUNCTION UPPER-CASE(USERIDI …) TO WS-USER-ID` / `MOVE FUNCTION UPPER-CASE(PASSWDI …) TO WS-USER-PWD`,
+  `legacy/cbl/COSGN00C.cbl`).
+- **Alternatives:**
+  - **(a) Strip the upper-casing from the sign-on service** so the screen compares the raw, exact-case
+    password. *Rejected* — COSGN00C is **case-insensitive on the password**, so removing the fold would
+    **regress** the legacy behavior and reject credentials the mainframe accepted.
+  - **(b) Fold the password only in the sign-on service** and leave the HTTP&nbsp;Basic gate case-sensitive.
+    *Rejected* — this is precisely the divergence that locked operators out of every protected endpoint (a
+    lower-/mixed-case password accepted at sign-on returned `401` on the API), because Spring Security's
+    `DaoAuthenticationProvider` compares the raw HTTP&nbsp;Basic password against the stored hash.
+  - **(c) Trim the id in the gate but not in sign-on.** *Rejected* — it creates an id-normalization
+    divergence where the gate would accept a space-padded id the sign-on screen rejects.
+- **Rationale:** Placing the case fold **inside the shared encoder** guarantees that the framework-built
+  `DaoAuthenticationProvider` applies the identical rule as the interactive sign-on path and user
+  administration (`service/UserService`), so all three surfaces accept and reject exactly the same
+  credential set. The fold is **idempotent** (`UPPER(UPPER(x)) == UPPER(x)`), so `SignonService` and
+  `UserService` retain their explicit folds as self-documenting parity assertions with no double-effect, and
+  the BCrypt seed hashes in `db/seed/user_security.csv` (derived from the upper-cased demo password) remain
+  valid. `Locale.ROOT` makes the fold locale-independent (avoiding surprises such as the Turkish dotless-i).
+- **Risk & mitigation:** Folding to upper case makes the password **case-insensitive**, a narrower secret
+  space than a case-sensitive password. *Mitigation:* this is a **faithful reproduction of the documented
+  legacy contract**, not a new design choice; it is recorded here explicitly (not a silent change);
+  passwords remain **BCrypt-hashed at rest** (see [D22](#d22--password-hashing-and-cvv-hardening)), are
+  **never logged**, and are externalized with **no hardcoded secrets** (see
+  [D6](#d6--externalized-credentials-no-hardcoded-secrets)). The normalization is covered by unit tests
+  (`UpperCasePasswordEncoderTest`, `SignonServiceTest`, `CardDemoUserDetailsServiceTest`) and re-verified at
+  runtime — a lower-case password now authenticates identically on the sign-on screen and the HTTP&nbsp;Basic
+  gate.
+
+### D27 — CSRF protection disabled (stateless HTTP Basic API)
+
+- **Status:** Accepted
+- **Type:** Security posture
+- **AAP references:** §0.2.1–§0.2.2 (CICS online → stateless Spring MVC), §0.7.1 (H1, pseudo-conversational → stateless HTTP), §0.4.1 (`config/SecurityConfig`)
+- **Decision:** Spring Security's CSRF protection is **disabled** in the single security filter chain
+  (`http.csrf(AbstractHttpConfigurer::disable)` in `config/SecurityConfig`). The chain is **stateless**
+  (`SessionCreationPolicy.STATELESS`) and authenticates every request with **HTTP&nbsp;Basic** credentials.
+- **Alternatives:** Keep Spring Security's **default CSRF token protection enabled** (synchronizer-token or
+  cookie-token pattern), issuing and validating a per-session CSRF token on state-changing requests.
+- **Rationale:** CSRF is an attack against **ambient, automatically-attached** browser credentials — a
+  session cookie the browser sends on a forged cross-site request without the caller's intent. This API has
+  **no such ambient credential**: there is **no server-side session and no auth cookie**
+  (`SessionCreationPolicy.STATELESS`), and HTTP&nbsp;Basic credentials must be **explicitly supplied on every
+  request** (they are never stored by the browser and replayed implicitly the way a cookie is). With no
+  cookie/session to forge, the CSRF token adds no protection while it *would* break the stateless,
+  token-per-request contract for non-browser and server-to-server clients. Disabling CSRF is therefore the
+  correct posture for a stateless HTTP&nbsp;Basic API, consistent with the CICS-online → stateless-REST
+  translation (see [D12](#d12--cics-pseudo-conversational-to-stateless-rest--flow-context)).
+- **Risk & mitigation:** The choice is only safe **while** the API stays stateless and cookie-free. *Mitigation:*
+  the statelessness is enforced in the same chain (`SessionCreationPolicy.STATELESS`) and asserted by the
+  security regression tests; this entry records the coupling explicitly, so if a future deliverable introduces
+  a browser client backed by a **cookie/session** login, CSRF protection must be **re-enabled** for the
+  cookie-authenticated paths and that reversal decision-logged.
+
+### D28 — No CORS configuration (same-origin-only)
+
+- **Status:** Accepted
+- **Type:** Security posture (scope boundary)
+- **AAP references:** §0.3.3 (physical 3270 emulation / BMS screen rendering **out of scope**), §0.7.1 (H2, BMS field-level contract re-expressed as REST DTOs, **not a rendered web UI**)
+- **Decision:** **No CORS policy is configured.** There is no `http.cors(...)` in `config/SecurityConfig`, no
+  `CorsConfigurationSource` bean, no `WebMvcConfigurer#addCorsMappings`, and no `@CrossOrigin` annotation
+  anywhere in the application. Consequently the API grants **no cross-origin allowance** and is effectively
+  **same-origin-only** (the browser's same-origin policy blocks cross-origin script access by default).
+- **Alternatives:** Register a CORS policy — either a **permissive** one (e.g. `allowedOrigins("*")`) or an
+  **explicit allow-list** of trusted origins — to permit a separate-origin browser client to call the API.
+- **Rationale:** The migration re-expresses the 17 legacy BMS/3270 screens as **REST request/response
+  contracts**, and physical 3270 emulation / browser UI rendering is **explicitly out of scope** (§0.3.3). No
+  cross-origin browser client is part of the delivered system, so there is **no origin to allow**. Adding a
+  CORS policy with no consumer would only **widen the attack surface** (a permissive policy) or encode
+  **speculative, unverifiable** origins (an allow-list) — neither of which serves a shipped requirement. The
+  secure, least-privilege default is therefore to **configure nothing** and remain same-origin-only.
+- **Risk & mitigation:** If a same-origin assumption is later violated — for example a separately-hosted SPA or
+  a partner front-end is introduced — cross-origin calls will be **blocked by the browser** until CORS is
+  configured, which is a safe-by-default failure mode (access is denied, not silently widened). *Mitigation:*
+  when such a client enters scope, add an **explicit least-privilege `CorsConfigurationSource`** (named
+  origins, minimal methods/headers, credentials only if required) and record that decision here; do **not**
+  reach for `allowedOrigins("*")`.
 
 
 ---
@@ -842,6 +953,38 @@ its Java target, while this log explains the reasoning behind the design those m
   future improvement, to be introduced through a new decision entry rather than silently. Operationally,
   master-print log output should be treated as cardholder data and access-controlled and
   retention-limited accordingly.
+
+---
+
+## H. Validation & Edit-Rule Parity
+
+### D29 — US phone-number edit rule fixes a latent legacy bug (optional-when-all-blank)
+
+- **Status:** Accepted
+- **Type:** **Intentional improvement (deviation from literal COBOL — corrects a latent defect)**
+- **AAP references:** §0.2.2 (edit paragraphs → rule components), §0.8.2, §0.8.3
+- **Decision:** The US phone-number validation rule (`service/rule/UsPhoneRule`, the Java reproduction of
+  `1260-EDIT-US-PHONE-NUM` in `legacy/cbl/COACTUPC.cbl`) treats the phone number as **optional only when
+  all three sub-fields are blank** — area code (`WS-EDIT-US-PHONE-NUMA`), prefix
+  (`WS-EDIT-US-PHONE-NUMB`), and line number (`WS-EDIT-US-PHONE-NUMC`). The legacy "all blank" test at
+  `legacy/cbl/COACTUPC.cbl:L2237-L2239` contains a **latent bug**: its third `AND`-clause tests
+  `WS-EDIT-US-PHONE-NUMA` a second time where it should test `WS-EDIT-US-PHONE-NUMC`, so the line-number
+  sub-field is never inspected by the optionality check. The Java rule implements the **intent** (optional
+  if and only if area, prefix, **and** line are all blank) rather than reproducing the defect.
+- **Alternatives:** Reproduce the bug verbatim for line-for-line parity. *Rejected:* it yields a
+  demonstrably wrong outcome — e.g. area and prefix blank while the line number is present would be
+  accepted as "no phone entered" and skip validation — and the AAP frames such corrections as documented
+  improvements (§0.8.3), not parity violations.
+- **Rationale:** The deviation changes behavior only in the narrow, malformed case the legacy defect
+  mishandles (area and prefix blank while the line number is non-blank); for every well-formed input the
+  outcome is identical to the legacy program. Recording it here satisfies the Explainability rule
+  (§0.8.2 — "Any deviation from a literal interpretation … has an explicit decision-log entry"; "Rationale
+  lives in the decision log, not in code comments"), lifting the rationale out of the `UsPhoneRule` Javadoc
+  and into this log.
+- **Risk & mitigation:** A reviewer comparing the rule to the raw COBOL line-for-line might read the
+  corrected `NUMC` check as an inserted discrepancy. *Mitigation:* the deviation is recorded here as an
+  intentional, behavior-preserving correction of a latent legacy defect, cross-referenced from the
+  `UsPhoneRule` class Javadoc; the corrected all-blank optionality is covered by the rule's unit tests.
 
 ---
 
