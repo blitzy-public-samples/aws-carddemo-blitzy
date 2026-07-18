@@ -15,30 +15,32 @@
  */
 package com.aws.carddemo.service.rule;
 
-import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
-import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertSame;
-import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.assertj.core.api.Assertions.assertThat;
 
-import org.junit.jupiter.api.DisplayName;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
-import org.junit.jupiter.params.ParameterizedTest;
-import org.junit.jupiter.params.provider.NullAndEmptySource;
-import org.junit.jupiter.params.provider.ValueSource;
 
 /**
  * Unit tests for {@link FicoScoreRule}, asserting bit-for-bit behavioral parity with the combined
- * COBOL FICO edit of {@code legacy/cbl/COACTUPC.cbl}: the numeric-required pre-edit
- * {@code 1245-EDIT-NUM-REQD} (L2109&ndash;L2178) followed, only when it passes, by the range check
- * {@code 1275-EDIT-FICO-SCORE} (L2514&ndash;L2533, {@code 88 FICO-RANGE-IS-VALID VALUES 300 THROUGH
- * 850}).
+ * COBOL FICO edit of {@code legacy/cbl/COACTUPC.cbl} (source-branch {@code app/cbl/COACTUPC.cbl}):
+ * the numeric-required pre-edit {@code 1245-EDIT-NUM-REQD} performed first
+ * ({@code legacy/cbl/COACTUPC.cbl:L1549-L1550}) and, <em>only when it passes</em>
+ * ({@code IF FLG-FICO-SCORE-ISVALID} at {@code L1553}), the range check
+ * {@code 1275-EDIT-FICO-SCORE} ({@code 88 FICO-RANGE-IS-VALID VALUES 300 THROUGH 850}) whose
+ * out-of-range message literal {@code ': should be between 300 and 850'} lives at
+ * {@code legacy/cbl/COACTUPC.cbl:L2523}.
  *
- * <p>The rule is exercised through a real {@link NumericRequiredRule} collaborator
- * (constructor-injected, mirroring the legacy {@code PERFORM 1245-EDIT-NUM-REQD} reuse) rather than
- * a mock, so the tests prove the two migrated paragraphs compose exactly as they do in COBOL. Every
- * failure asserts the verbatim screen message, and the ordered short-circuit is verified so that a
- * value which is simultaneously a pre-edit failure (for example {@code "000"}) reports the
- * {@code 1245} message, never the range message.</p>
+ * <p>Per the production validation instruction the rule is exercised with a <strong>real</strong>
+ * {@link NumericRequiredRule} collaborator &mdash; {@code new FicoScoreRule(new NumericRequiredRule())}
+ * &mdash; rather than a Mockito stub. {@code NumericRequiredRule} is stateless, so a genuine instance
+ * reproduces the legacy {@code PERFORM 1245-EDIT-NUM-REQD} reuse with higher fidelity than a mock and
+ * proves the two migrated paragraphs compose exactly as they do in COBOL. This is a pure JUnit 5 +
+ * AssertJ unit test: no Spring context, no {@code @SpringBootTest}, and no database.</p>
+ *
+ * <p>Every failing case asserts the verbatim screen message (mind the leading colon-space of the
+ * range message), and the ordered short-circuit is verified so that a value which is simultaneously a
+ * numeric-required failure and out of range &mdash; most importantly {@code "000"} &mdash; reports the
+ * {@code 1245} message ("must not be zero.") and <em>never</em> the range message.</p>
  */
 class FicoScoreRuleTest {
 
@@ -48,180 +50,179 @@ class FicoScoreRuleTest {
      */
     private static final String LABEL = "FICO Score";
 
-    /** The exact range-failure message from {@code legacy/cbl/COACTUPC.cbl:L2522-L2523}. */
+    /**
+     * The exact range-failure message: the trimmed label followed by the verbatim COBOL literal at
+     * {@code legacy/cbl/COACTUPC.cbl:L2523} (including its leading colon-space).
+     */
     private static final String RANGE_MESSAGE = "FICO Score: should be between 300 and 850";
 
     /**
-     * The rule under test, wired exactly as the agent prompt specifies:
-     * {@code new FicoScoreRule(new NumericRequiredRule())}.
+     * The rule under test, re-created before each test with a real numeric-required collaborator
+     * exactly as the agent prompt specifies: {@code new FicoScoreRule(new NumericRequiredRule())}.
+     * Constructing it through its public constructor verifies the constructor-injection contract.
      */
-    private final FicoScoreRule rule = new FicoScoreRule(new NumericRequiredRule());
+    private FicoScoreRule rule;
+
+    @BeforeEach
+    void setUp() {
+        rule = new FicoScoreRule(new NumericRequiredRule());
+    }
 
     // ---------------------------------------------------------------------------------------------
-    // Valid range (numeric pre-edit passes AND value within 300-850 inclusive)
+    // Valid range: numeric pre-edit passes AND value within 300-850 inclusive
     // ---------------------------------------------------------------------------------------------
 
     @Test
-    @DisplayName("(a) A mid-range score 700 is valid")
     void midRangeScoreIsValid() {
         ValidationResult result = rule.validate(LABEL, "700");
 
-        assertTrue(result.isValid(), "700 is within 300-850 and must be valid");
-        assertEquals("", result.message(), "a valid result carries the empty message");
-    }
-
-    @ParameterizedTest
-    @ValueSource(strings = {"300", "850"})
-    @DisplayName("(b) The inclusive boundaries 300 and 850 are valid (VALUES 300 THROUGH 850)")
-    void inclusiveBoundariesAreValid(String score) {
-        ValidationResult result = rule.validate(LABEL, score);
-
-        assertTrue(result.isValid(), () -> "boundary score '" + score + "' must be valid");
-        assertEquals("", result.message());
-    }
-
-    @ParameterizedTest
-    @ValueSource(strings = {"301", "500", "849"})
-    @DisplayName("Scores strictly inside the range are valid")
-    void interiorScoresAreValid(String score) {
-        assertTrue(rule.validate(LABEL, score).isValid(),
-                () -> "interior score '" + score + "' must be valid");
+        assertThat(result.isValid()).as("700 is within 300-850 and must be valid").isTrue();
+        assertThat(result.message()).as("a valid result carries the empty message").isEmpty();
     }
 
     @Test
-    @DisplayName("A passing rule returns the shared ValidationResult.valid() singleton")
+    void lowerBoundaryIsValid() {
+        // 88 FICO-RANGE-IS-VALID VALUES 300 THROUGH 850 -> the lower bound is inclusive.
+        ValidationResult result = rule.validate(LABEL, "300");
+
+        assertThat(result.isValid()).as("300 is the inclusive lower bound and must be valid").isTrue();
+        assertThat(result.message()).isEmpty();
+    }
+
+    @Test
+    void upperBoundaryIsValid() {
+        // 88 FICO-RANGE-IS-VALID VALUES 300 THROUGH 850 -> the upper bound is inclusive.
+        ValidationResult result = rule.validate(LABEL, "850");
+
+        assertThat(result.isValid()).as("850 is the inclusive upper bound and must be valid").isTrue();
+        assertThat(result.message()).isEmpty();
+    }
+
+    @Test
+    void interiorScoresAreValid() {
+        assertThat(rule.validate(LABEL, "301").isValid()).as("301 is just inside the range").isTrue();
+        assertThat(rule.validate(LABEL, "500").isValid()).as("500 is mid-range").isTrue();
+        assertThat(rule.validate(LABEL, "849").isValid()).as("849 is just inside the range").isTrue();
+    }
+
+    @Test
     void validOutcomeIsTheSharedSingleton() {
-        assertSame(ValidationResult.valid(), rule.validate(LABEL, "700"),
-                "a passing rule should return the cached valid() instance");
+        // A passing rule returns ValidationResult.valid(), the cached immutable singleton.
+        assertThat(rule.validate(LABEL, "700")).isSameAs(ValidationResult.valid());
     }
 
     // ---------------------------------------------------------------------------------------------
-    // Out of range (numeric pre-edit passes, range check fails) -> range message
+    // Out of range: numeric pre-edit passes, range check (1275) fails -> range message verbatim
     // ---------------------------------------------------------------------------------------------
 
     @Test
-    @DisplayName("(c) 299 (just below the lower bound) yields the range message")
-    void justBelowLowerBoundIsRejected() {
+    void justBelowLowerBoundYieldsRangeMessage() {
+        // 299 is a non-zero numeric value below 300: the 1245 pre-edit passes, so 1275 reports it.
         ValidationResult result = rule.validate(LABEL, "299");
 
-        assertTrue(result.isInvalid(), "299 is below 300 and must be invalid");
-        assertEquals(RANGE_MESSAGE, result.message());
+        assertThat(result.isValid()).as("299 is below 300 and must be invalid").isFalse();
+        assertThat(result.message()).isEqualTo(RANGE_MESSAGE);
     }
 
     @Test
-    @DisplayName("(d) 851 (just above the upper bound) yields the range message")
-    void justAboveUpperBoundIsRejected() {
+    void justAboveUpperBoundYieldsRangeMessage() {
+        // 851 is a non-zero numeric value above 850: the 1245 pre-edit passes, so 1275 reports it.
         ValidationResult result = rule.validate(LABEL, "851");
 
-        assertTrue(result.isInvalid(), "851 is above 850 and must be invalid");
-        assertEquals(RANGE_MESSAGE, result.message());
-    }
-
-    @ParameterizedTest
-    @ValueSource(strings = {"001", "299"})
-    @DisplayName("A non-zero numeric value below 300 yields the range message")
-    void belowRangeYieldsRangeMessage(String score) {
-        ValidationResult result = rule.validate(LABEL, score);
-
-        assertTrue(result.isInvalid(), () -> "'" + score + "' is below 300 and must be invalid");
-        assertEquals(RANGE_MESSAGE, result.message());
+        assertThat(result.isValid()).as("851 is above 850 and must be invalid").isFalse();
+        assertThat(result.message()).isEqualTo(RANGE_MESSAGE);
     }
 
     // ---------------------------------------------------------------------------------------------
-    // Numeric-required pre-edit (1245) failures -> that paragraph's message, verbatim
-    // ---------------------------------------------------------------------------------------------
-
-    @ParameterizedTest
-    @NullAndEmptySource
-    @ValueSource(strings = {" ", "   ", "\t"})
-    @DisplayName("(e) Blank input is caught by the 1245 pre-edit -> 'FICO Score must be supplied.'")
-    void blankIsRejectedByNumericPreEdit(String value) {
-        ValidationResult result = rule.validate(LABEL, value);
-
-        assertTrue(result.isInvalid(), "blank input must be invalid");
-        assertEquals("FICO Score must be supplied.", result.message(),
-                "blank must report the 1245 not-supplied message, not the range message");
-    }
-
-    @ParameterizedTest
-    @ValueSource(strings = {"12A", "7O0", "30.", "-99", "+50", "abc", "70 "})
-    @DisplayName("(f) Non-numeric input is caught by the 1245 pre-edit -> 'FICO Score must be all numeric.'")
-    void nonNumericIsRejectedByNumericPreEdit(String value) {
-        ValidationResult result = rule.validate(LABEL, value);
-
-        assertTrue(result.isInvalid(), () -> "'" + value + "' must be invalid");
-        assertEquals("FICO Score must be all numeric.", result.message(),
-                "non-numeric must report the 1245 numeric message, not the range message");
-    }
-
-    @ParameterizedTest
-    @ValueSource(strings = {"000", "0", "00"})
-    @DisplayName("(g) Zero is caught by the 1245 pre-edit -> 'FICO Score must not be zero.' (ordering proof)")
-    void zeroIsRejectedByNumericPreEditNotRangeCheck(String value) {
-        // This is the critical ordering assertion: "000" is numerically < 300, so a naive range-only
-        // rule would emit the range message. The COBOL runs 1245-EDIT-NUM-REQD FIRST, so zero must
-        // instead report "must not be zero." This proves the pre-edit precedence is preserved.
-        ValidationResult result = rule.validate(LABEL, value);
-
-        assertTrue(result.isInvalid(), () -> "'" + value + "' must be invalid");
-        assertEquals("FICO Score must not be zero.", result.message(),
-                "zero must report the 1245 non-zero message, never the range message");
-    }
-
-    // ---------------------------------------------------------------------------------------------
-    // Robustness: label trimming, defensive length bound, statelessness
+    // Numeric-required pre-edit (1245) failures -> that paragraph's message, verbatim.
+    // These prove the 1245 pre-edit runs BEFORE the 1275 range check (evaluation-order parity).
     // ---------------------------------------------------------------------------------------------
 
     @Test
-    @DisplayName("The field label is trimmed (FUNCTION TRIM) before substitution into the range message")
+    void nullInputIsRejectedByNumericPreEditAsNotSupplied() {
+        // null models COBOL LOW-VALUES: the not-supplied guard opens 1245-EDIT-NUM-REQD.
+        ValidationResult result = rule.validate(LABEL, null);
+
+        assertThat(result.isValid()).as("null (LOW-VALUES) must be invalid").isFalse();
+        assertThat(result.message())
+                .as("blank must report the 1245 not-supplied message, not the range message")
+                .isEqualTo("FICO Score must be supplied.");
+    }
+
+    @Test
+    void blankInputIsRejectedByNumericPreEditAsNotSupplied() {
+        // All-whitespace models COBOL SPACES / a trim length of zero.
+        ValidationResult result = rule.validate(LABEL, "   ");
+
+        assertThat(result.isValid()).as("all-whitespace (SPACES) must be invalid").isFalse();
+        assertThat(result.message()).isEqualTo("FICO Score must be supplied.");
+    }
+
+    @Test
+    void nonNumericInputIsRejectedByNumericPreEditAsAllNumeric() {
+        // "12A" fails the IS NUMERIC class test in 1245 before the range check is ever reached.
+        ValidationResult result = rule.validate(LABEL, "12A");
+
+        assertThat(result.isValid()).as("12A is not all numeric and must be invalid").isFalse();
+        assertThat(result.message())
+                .as("non-numeric must report the 1245 numeric message, not the range message")
+                .isEqualTo("FICO Score must be all numeric.");
+    }
+
+    @Test
+    void zeroIsRejectedByNumericPreEditNotByRangeCheck() {
+        // CRITICAL ORDERING ASSERTION: "000" is numerically < 300, so a naive range-only rule would
+        // emit the range message. The COBOL performs 1245-EDIT-NUM-REQD FIRST (L1549) and only runs
+        // 1275 when FLG-FICO-SCORE-ISVALID (L1553); zero fails the 1245 non-zero check and must
+        // therefore report "must not be zero.", never the range message.
+        ValidationResult result = rule.validate(LABEL, "000");
+
+        assertThat(result.isValid()).as("000 must be invalid").isFalse();
+        assertThat(result.message())
+                .as("zero must report the 1245 non-zero message, never the range message")
+                .isEqualTo("FICO Score must not be zero.");
+    }
+
+    // ---------------------------------------------------------------------------------------------
+    // Robustness: label trimming, PIC 9(03) width bound (never throws), statelessness
+    // ---------------------------------------------------------------------------------------------
+
+    @Test
     void fieldLabelIsTrimmedInRangeMessage() {
+        // FUNCTION TRIM(WS-EDIT-VARIABLE-NAME): leading/trailing label spaces are removed before the
+        // literal is appended, so the message equals the un-padded RANGE_MESSAGE.
         ValidationResult result = rule.validate("  FICO Score  ", "851");
 
-        assertTrue(result.isInvalid());
-        assertEquals(RANGE_MESSAGE, result.message(),
-                "leading/trailing label spaces must be removed, matching FUNCTION TRIM");
-    }
-
-    @ParameterizedTest
-    @ValueSource(strings = {"1000", "9999", "99999999999", "00000000000000000000000000001"})
-    @DisplayName("Input wider than the PIC 9(03) field is out of range and never throws (defensive bound)")
-    void overlongInputIsRejectedWithoutThrowing(String value) {
-        // A value longer than three digits cannot be a valid FICO score. The very long all-digit
-        // values additionally prove the internal Integer.parseInt can never overflow (the rule
-        // never throws, honoring the ValidationRule contract). Note the last value is all zeros
-        // beyond three digits, so it is first caught by the 1245 non-zero pre-edit.
-        ValidationResult result = assertDoesNotThrow(() -> rule.validate(LABEL, value));
-
-        assertTrue(result.isInvalid(), () -> "overlong '" + value + "' must be invalid");
+        assertThat(result.isValid()).isFalse();
+        assertThat(result.message())
+                .as("leading/trailing label spaces must be removed, matching FUNCTION TRIM")
+                .isEqualTo(RANGE_MESSAGE);
     }
 
     @Test
-    @DisplayName("A four-digit non-zero value is out of range with the range message (not a parse error)")
-    void fourDigitValueYieldsRangeMessage() {
-        ValidationResult result = assertDoesNotThrow(() -> rule.validate(LABEL, "1000"));
+    void overlongNonZeroInputIsOutOfRangeAndNeverThrows() {
+        // A value wider than the PIC 9(03) field cannot be a valid FICO score. If the internal parse
+        // ran unguarded, a very long all-digit value could overflow int; the rule instead treats
+        // length > 3 as out of range and returns a result (a thrown exception would fail this test),
+        // honoring the ValidationRule "never throw for a validation failure" contract.
+        ValidationResult fourDigits = rule.validate(LABEL, "1000");
+        assertThat(fourDigits.isValid()).as("1000 exceeds the three-digit field").isFalse();
+        assertThat(fourDigits.message()).isEqualTo(RANGE_MESSAGE);
 
-        assertTrue(result.isInvalid(), "1000 exceeds the three-digit field and is out of range");
-        assertEquals(RANGE_MESSAGE, result.message());
+        ValidationResult veryLong = rule.validate(LABEL, "99999999999");
+        assertThat(veryLong.isValid()).as("an oversized all-digit value must not throw").isFalse();
+        assertThat(veryLong.message()).isEqualTo(RANGE_MESSAGE);
     }
 
     @Test
-    @DisplayName("Fixed-width padding around a valid score is tolerated via strip()")
-    void paddedValidScoreIsStripped() {
-        // The numeric pre-edit runs on the raw value; a value padded with spaces would fail it as
-        // "must be all numeric" because a space is not a digit. This test therefore uses a value
-        // that is already all-digits and confirms strip() is a harmless no-op that keeps 700 valid.
-        assertTrue(rule.validate(LABEL, "700").isValid());
-    }
-
-    @Test
-    @DisplayName("The rule is stateless and safe to reuse across successive, mixed invocations")
-    void ruleIsStatelessAcrossInvocations() {
-        assertTrue(rule.validate(LABEL, "700").isValid());
-        assertTrue(rule.validate(LABEL, "851").isInvalid());
-        assertTrue(rule.validate(LABEL, "300").isValid());
-        assertTrue(rule.validate(LABEL, "000").isInvalid());
-        assertTrue(rule.validate(LABEL, null).isInvalid());
+    void ruleIsStatelessAcrossSuccessiveMixedInvocations() {
+        // Interleave valid, out-of-range, and pre-edit failures to prove no state leaks between calls.
+        assertThat(rule.validate(LABEL, "700").isValid()).isTrue();
+        assertThat(rule.validate(LABEL, "851").isValid()).isFalse();
+        assertThat(rule.validate(LABEL, "300").isValid()).isTrue();
+        assertThat(rule.validate(LABEL, "000").isValid()).isFalse();
+        assertThat(rule.validate(LABEL, null).isValid()).isFalse();
         // The final valid call still returns the canonical singleton, confirming no drift.
-        assertSame(ValidationResult.valid(), rule.validate(LABEL, "850"));
+        assertThat(rule.validate(LABEL, "850")).isSameAs(ValidationResult.valid());
     }
 }

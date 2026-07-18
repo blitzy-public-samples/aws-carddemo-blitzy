@@ -17,316 +17,726 @@ package com.aws.carddemo.service;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
-
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
+import static org.mockito.Mockito.when;
+import java.math.BigDecimal;
+import java.time.LocalDate;
+import java.util.Optional;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.DisplayName;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.ExtendWith;
+import org.mockito.ArgumentCaptor;
+import org.mockito.Mock;
+import org.mockito.junit.jupiter.MockitoExtension;
+import org.springframework.dao.OptimisticLockingFailureException;
 import com.aws.carddemo.domain.Account;
 import com.aws.carddemo.domain.CardXref;
 import com.aws.carddemo.domain.Customer;
+import com.aws.carddemo.exception.RecordNotFoundException;
 import com.aws.carddemo.repository.AccountRepository;
 import com.aws.carddemo.repository.CardXrefRepository;
 import com.aws.carddemo.repository.CustomerRepository;
+import com.aws.carddemo.service.AccountService.AccountDetail;
 import com.aws.carddemo.service.AccountService.AccountUpdateCommand;
 import com.aws.carddemo.service.AccountService.AccountUpdateResult;
 import com.aws.carddemo.service.AccountService.DateParts;
 import com.aws.carddemo.service.AccountService.PhoneParts;
 import com.aws.carddemo.service.AccountService.SsnParts;
 import com.aws.carddemo.service.AccountService.Status;
-
-import java.math.BigDecimal;
-
-import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.DisplayName;
-import org.junit.jupiter.api.Test;
-import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.dao.OptimisticLockingFailureException;
-import org.springframework.test.context.ActiveProfiles;
-import org.springframework.test.context.DynamicPropertyRegistry;
-import org.springframework.test.context.DynamicPropertySource;
-import org.testcontainers.containers.PostgreSQLContainer;
-import org.testcontainers.junit.jupiter.Container;
-import org.testcontainers.junit.jupiter.Testcontainers;
-import org.testcontainers.utility.DockerImageName;
+import com.aws.carddemo.service.rule.UsSsnRule;
+import com.aws.carddemo.service.rule.ValidationResult;
 
 /**
- * Full-context integration tests for {@link AccountService}'s confirmed
- * account-update write path ({@code COACTUPC} / transaction {@code CAUP}),
- * exercised against a real PostgreSQL&nbsp;16 database.
+ * Pure unit tests for {@link AccountService}, the Java re-platform of the COBOL account
+ * programs {@code COACTVWC} (view, transaction {@code CAVW}) and {@code COACTUPC} (update,
+ * transaction {@code CAUP} &mdash; the largest online program). This is the highest
+ * parity-risk service in the migration (AAP &sect;0.7 hotspots H1/H5/H6), so these tests lock
+ * down the observable behavior of:
  *
- * <p><strong>What this locks down (QA MAJOR-1).</strong> These tests reproduce
- * the concurrency-parity fix for the online account update: the COBOL
- * {@code 9700-CHECK-CHANGE-IN-REC} paragraph ({@code legacy/cbl/COACTUPC.cbl})
- * re-reads and field-compares <em>both</em> the account and its owning customer
- * record before rewriting, aborting with "Record changed by some one else.
- * Please review" (COACTUPC line&nbsp;522) when either changed since the user
- * fetched the details. In the relational target this is enforced by an
- * optimistic-lock version guard anchored on the account row, which the write
- * path loads with {@code OPTIMISTIC_FORCE_INCREMENT}
- * ({@link com.aws.carddemo.repository.AccountRepository#findByIdForVersionedUpdate(Long)})
- * so that <em>any</em> confirmed write &mdash; including a customer-only edit that
- * leaves every account column untouched &mdash; advances the account version and
- * causes a subsequent stale-versioned editor to be rejected. Both the account
- * and the customer additionally carry a JPA {@code @Version} column (AAP&nbsp;0.7.1&nbsp;H6;
- * documented in {@code docs/decision-log.md}).</p>
+ * <ul>
+ *   <li>the {@code 9000-READ-ACCT} inquiry chain (cross-reference &rarr; account &rarr;
+ *       customer) and its {@code NOTFND} outcomes;</li>
+ *   <li>the {@code COACTUPC 2000-DECIDE-ACTION} pseudo-conversational state machine
+ *       (SHOW_DETAILS, CHANGES_OK_NOT_CONFIRMED, CHANGES_NOT_OK, DONE) and re-entry
+ *       handling;</li>
+ *   <li>the {@code 1200-EDIT-MAP-INPUTS} field edits with first-message-wins latching and
+ *       the exact caller-visible message literals;</li>
+ *   <li>monetary handling &mdash; every money field is {@link BigDecimal} at scale 2 and is
+ *       asserted with {@code compareTo}/{@code isEqualByComparingTo}, never {@code equals} and
+ *       never {@code double}/{@code float} (AAP &sect;0.7 H3);</li>
+ *   <li>the READ-UPDATE-REWRITE concurrency guard, reproduced with JPA optimistic locking
+ *       (AAP &sect;0.7 H6);</li>
+ *   <li>the invariant that SSN, government id, and date of birth are never leaked.</li>
+ * </ul>
  *
- * <h2>Why {@link SpringBootTest} and not a {@code @DataJpaTest} slice</h2>
- * <p>{@code OPTIMISTIC_FORCE_INCREMENT} schedules its version bump as a
- * before-transaction-completion action &mdash; it is emitted when the transaction
- * <strong>commits</strong>, not on an intermediate {@code EntityManager.flush()}.
- * A {@code @DataJpaTest} slice wraps each test in a single transaction that rolls
- * back, so the forced increment is never observable there. This test therefore
- * boots the full application context and drives the <em>real</em>
- * {@link AccountService} Spring bean, whose {@code @Transactional} method commits
- * on return &mdash; exactly the per-request commit boundary that exists in
- * production. Two sequential online requests are modelled as two separate
- * {@code updateAccount} invocations; the first commits (firing the forced
- * increment) before the second runs, precisely reproducing two users who both
- * opened the edit screen at the same version.</p>
+ * <h2>Test strategy</h2>
+ * The suite is a pure Mockito unit test &mdash; NO Spring context, NO database, NO
+ * Testcontainers. Every collaborator is a mock and the system under test is constructed
+ * explicitly in the authored constructor order. The COBOL edit paragraphs are reproduced as
+ * <em>private</em> methods inside {@link AccountService} and are therefore exercised through
+ * real field values on the command (only the injected {@link DateValidationService} date
+ * backstop and the {@link UsSsnRule} SSN Strategy are stubbable within the edit pass).
  *
- * <p>The datasource is supplied dynamically from an ephemeral
- * {@code postgres:16-alpine} container via {@link DynamicPropertySource} (no
- * hardcoded credentials; AAP&nbsp;0.8.1 / 0.9.3), mirroring
- * {@code CardDemoApplicationTests}. Flyway applies the production migrations
- * ({@code V1}, {@code V2}, {@code V3__add_customer_version.sql}) and Hibernate
- * runs in {@code validate} mode. Because the test itself is not transactional,
- * every repository {@code save}/{@code delete} and every service call commits;
- * the seeded rows are removed in {@link #cleanUp()} after each test.</p>
+ * <h2>Mockito strictness</h2>
+ * The suite runs under {@link MockitoExtension} with the default {@code STRICT_STUBS} policy:
+ * each test stubs only the collaborators its code path actually reaches. Short-circuiting
+ * paths (blank/invalid account id, no-functional-change, unexpected state) assert
+ * {@code verifyNoInteractions}/{@code never()} instead of declaring stubs that would never be
+ * used, and the read/write chains are stubbed through small helpers so no stub is left
+ * unconsumed.
  */
-@SpringBootTest
-@ActiveProfiles("test")
-@Testcontainers
-@DisplayName("AccountService — COACTUPC account-update optimistic-lock concurrency parity")
-class AccountServiceTest {
+@ExtendWith(MockitoExtension.class)
+@DisplayName("AccountService — COACTVWC view + COACTUPC update (2000-DECIDE-ACTION) parity")
+public class AccountServiceTest {
 
-    /** Account identifier seeded and edited by every test. */
-    private static final long ACCT_ID = 1L;
+    /** Account id as typed on the screen filter ({@code ACCTSIDI}); numeric {@code PIC 9(11)}. */
+    private static final String ACCT_ID_STR = "1";
 
-    /** Owning customer identifier, linked to {@link #ACCT_ID} through the cross-reference. */
-    private static final long CUST_ID = 1L;
-
-    /** Card number of the cross-reference row that links the customer to the account. */
-    private static final String CARD_NUM = "4000000000000001";
+    /** The same account id as the {@link Long} primary key the repositories are keyed on. */
+    private static final long ACCT_KEY = 1L;
 
     /**
-     * Shared, single-instance PostgreSQL 16 container backing the integration context.
-     * Declared {@code static} so Testcontainers starts it once for the class and reuses it.
+     * Cross-referenced customer id, deliberately distinct from the account id so a swapped
+     * lookup would be caught. It is the {@link Long} primary key of the customer table.
      */
-    @Container
-    static PostgreSQLContainer<?> POSTGRES =
-            new PostgreSQLContainer<>(DockerImageName.parse("postgres:16-alpine"));
+    private static final long CUST_KEY = 555L;
 
     /**
-     * Binds the Spring datasource to the running Testcontainers PostgreSQL instance so no
-     * connection string or credential is ever hardcoded (the values are resolved lazily from the
-     * live container after it starts).
+     * Representative 16-digit card number on the cross-reference row. It is a well-known test
+     * PAN, not a real card, and the account flows never expose a CVV.
+     */
+    private static final String CARD_NUM = "4111111111111111";
+
+    /** Data-access mock for the {@code account} table (COBOL {@code ACCTDAT} / {@code ACCTFILE}). */
+    @Mock
+    private AccountRepository accountRepository;
+
+    /** Data-access mock for the {@code customer} table (COBOL {@code CUSTDAT} / {@code CUSTFILE}). */
+    @Mock
+    private CustomerRepository customerRepository;
+
+    /** Data-access mock for the {@code card_xref} table (COBOL {@code CXACAIX} alternate index). */
+    @Mock
+    private CardXrefRepository cardXrefRepository;
+
+    /** Date backstop mock reproducing the COBOL {@code CALL CSUTLDTC} ({@code EDIT-DATE-LE}). */
+    @Mock
+    private DateValidationService dateValidationService;
+
+    /** SSN Strategy mock reproducing the shared {@code 1265-EDIT-US-SSN} rule component. */
+    @Mock
+    private UsSsnRule usSsnRule;
+
+    /** System under test, constructed explicitly in the authored constructor order. */
+    private AccountService service;
+
+    /**
+     * Builds the system under test before each test, wiring the five mocks through the authored
+     * constructor order: account, customer, cross-reference repositories, the date backstop, and
+     * the SSN rule.
+     */
+    @BeforeEach
+    void setUp() {
+        service = new AccountService(
+                accountRepository,
+                customerRepository,
+                cardXrefRepository,
+                dateValidationService,
+                usSsnRule);
+    }
+
+    // ====================================================================================
+    // Fixtures
+    // ====================================================================================
+
+    /**
+     * Builds the fixed cross-reference row linking {@link #CARD_NUM} to {@link #CUST_KEY} and
+     * {@link #ACCT_KEY}, matching the {@code CXACAIX} alternate-index browse the read chain uses.
      *
-     * @param registry the Spring test property registry to populate with the container coordinates
+     * @return a fresh cross-reference fixture
      */
-    @DynamicPropertySource
-    static void registerDataSourceProperties(DynamicPropertyRegistry registry) {
-        registry.add("spring.datasource.url", POSTGRES::getJdbcUrl);
-        registry.add("spring.datasource.username", POSTGRES::getUsername);
-        registry.add("spring.datasource.password", POSTGRES::getPassword);
+    private static CardXref xref() {
+        return new CardXref(CARD_NUM, CUST_KEY, ACCT_KEY);
     }
 
-    private final AccountService service;
-    private final AccountRepository accountRepository;
-    private final CustomerRepository customerRepository;
-    private final CardXrefRepository cardXrefRepository;
-
     /**
-     * Constructor injection of the real {@link AccountService} bean and the repositories used to
-     * seed fixtures and read back committed state.
+     * Builds the stored account master row whose field values are the canonical baseline the
+     * {@link CommandBuilder} mirrors, so an unedited command compares equal ({@code 1205-COMPARE
+     * -OLD-NEW}). Monetary fields are {@link BigDecimal} at scale 2 and the {@code @Version}
+     * column is seeded to {@code 0} to exercise the optimistic-lock path.
      *
-     * @param service            the real, transactionally-managed service under test
-     * @param accountRepository  the account repository (seeding + version read-back)
-     * @param customerRepository the customer repository (seeding + read-back)
-     * @param cardXrefRepository the card cross-reference repository (seeding + cleanup)
+     * @return a fresh account fixture at version 0
      */
-    @Autowired
-    AccountServiceTest(AccountService service,
-                       AccountRepository accountRepository,
-                       CustomerRepository customerRepository,
-                       CardXrefRepository cardXrefRepository) {
-        this.service = service;
-        this.accountRepository = accountRepository;
-        this.customerRepository = customerRepository;
-        this.cardXrefRepository = cardXrefRepository;
-    }
-
-    /**
-     * Removes the rows seeded by each test. The test is non-transactional, so every service call
-     * committed real data; deletes run child-first to respect the {@code card_xref} foreign keys.
-     * The {@code test} profile does not run {@code LocalSeedDataLoader}, so these three tables hold
-     * only what a test seeded.
-     */
-    @AfterEach
-    void cleanUp() {
-        cardXrefRepository.deleteAll();
-        accountRepository.deleteAll();
-        customerRepository.deleteAll();
-    }
-
-    // ------------------------------------------------------------------------
-    // Fixture helpers (parents committed before the cross-reference; card_xref
-    // has real NOT NULL foreign keys to both customer and account).
-    // ------------------------------------------------------------------------
-
-    /** Commits the seeded account (version starts at 0 on insert), customer, and cross-reference. */
-    private void seedAccountCustomerAndXref(String customerLastName) {
-        Customer customer = new Customer(
-                CUST_ID,        // custId (primary key)
-                "Grace",        // custFirstName
-                "Brewster",     // custMiddleName
-                customerLastName, // custLastName
-                "1 Navy Yard",  // custAddrLine1
-                null,           // custAddrLine2
-                "Washington",   // custAddrLine3 (city)
-                "DC",           // custAddrStateCd
-                "USA",          // custAddrCountryCd
-                "20374",        // custAddrZip
-                null,           // custPhoneNum1
-                null,           // custPhoneNum2
-                null,           // custSsn (sensitive; omitted)
-                null,           // custGovtIssuedId (sensitive; omitted)
-                null,           // custDob (sensitive; omitted)
-                "1234567890",   // custEftAccountId
-                "Y",            // custPriCardHolderInd
-                700);           // custFicoCreditScore
-        customerRepository.save(customer);
-
+    private static Account storedAccount() {
         Account account = new Account(
-                ACCT_ID,                    // acctId (primary key)
-                "Y",                        // acctActiveStatus
-                new BigDecimal("1234.56"),  // currBal
-                new BigDecimal("5000.00"),  // creditLimit
-                new BigDecimal("1000.00"),  // cashCreditLimit
-                "2020-01-15",               // acctOpenDate
-                "2030-12-31",               // acctExpirationDate
-                "2020-06-01",               // acctReissueDate
-                new BigDecimal("250.00"),   // currCycCredit
-                new BigDecimal("75.25"),    // currCycDebit
-                "20374",                    // acctAddrZip
-                "A000000000");              // groupId (scalar; no FK)
-        accountRepository.save(account);
-
-        cardXrefRepository.save(new CardXref(CARD_NUM, CUST_ID, ACCT_ID));
+                ACCT_KEY,                    // acctId
+                "Y",                         // acctActiveStatus
+                new BigDecimal("1234.56"),   // currBal
+                new BigDecimal("5000.00"),   // creditLimit
+                new BigDecimal("1000.00"),   // cashCreditLimit
+                "2020-01-15",                // acctOpenDate
+                "2030-12-31",                // acctExpirationDate
+                "2020-06-01",                // acctReissueDate
+                new BigDecimal("250.00"),    // currCycCredit
+                new BigDecimal("75.25"),     // currCycDebit
+                "20374",                     // acctAddrZip
+                "A000000000");               // groupId
+        account.setVersion(0L);
+        return account;
     }
 
     /**
-     * Builds a fully-valid confirmed account-update command whose only difference
-     * from the seeded state is the customer last name. {@code priorStatus} is
-     * {@code CHANGES_OK_NOT_CONFIRMED} with {@code confirmSave=true} so
-     * {@link AccountService#updateAccount(AccountUpdateCommand, boolean)} (called
-     * with {@code reentry=true}) routes straight to the write path
-     * ({@code 9600-WRITE-PROCESSING}); every field is populated so the defensive
-     * {@code 1200-EDIT-MAP-INPUTS} re-edit passes. The account fields equal the
-     * seeded values, so the account entity is not dirtied &mdash; any advance of the
-     * account version is therefore due solely to the force-increment.
+     * Builds the stored customer master row whose field values mirror the canonical command. The
+     * sensitive columns (SSN, government id, DOB) hold synthetic, non-real values and are never
+     * asserted in full.
      *
-     * @param expectedVersion the account version the editor observed at fetch time
-     * @param lastName        the (alphabetic) customer last name to write
-     * @return a valid, confirmed customer-only edit command
+     * @return a fresh customer fixture at version 0
      */
-    private static AccountUpdateCommand customerEditCommand(Long expectedVersion, String lastName) {
-        return new AccountUpdateCommand(
-                String.valueOf(ACCT_ID),            // accountId
-                expectedVersion,                    // expectedVersion (fetched @Version)
-                "Y",                                // accountStatus
-                new DateParts("2020", "01", "15"),  // openDate
-                "5000.00",                          // creditLimit
-                new DateParts("2030", "12", "31"),  // expiryDate
-                "1000.00",                          // cashCreditLimit
-                new DateParts("2020", "06", "01"),  // reissueDate
-                "1234.56",                          // currentBalance
-                "250.00",                           // currentCycleCredit
-                "75.25",                            // currentCycleDebit
-                "A000000000",                       // groupId
-                new SsnParts("123", "45", "6789"),  // ssn
-                new DateParts("1980", "05", "20"),  // dob (past date)
-                "700",                              // ficoScore (300-850)
-                "Grace",                            // firstName
-                "Brewster",                         // middleName
-                lastName,                           // lastName (the customer-only change)
-                "1 Navy Yard",                      // addressLine1
-                "",                                 // addressLine2 (optional; not edited)
-                "Washington",                       // city -> custAddrLine3 (alphabetic)
-                "DC",                               // stateCode (valid USPS code)
-                "20374",                            // zipCode (numeric, DC prefix)
-                "USA",                              // countryCode (alphabetic)
-                new PhoneParts("", "", ""),         // phone1 (blank area+prefix -> skipped)
-                new PhoneParts("", "", ""),         // phone2 (skipped)
-                "GID1",                             // governmentId (not edited)
-                "1234567890",                       // eftAccountId (numeric, non-zero)
-                "Y",                                // primaryHolderFlag
-                Status.CHANGES_OK_NOT_CONFIRMED,    // priorStatus -> write path
-                true,                               // confirmSave (PF05)
-                false);                             // cancel
+    private static Customer storedCustomer() {
+        Customer customer = new Customer(
+                CUST_KEY,        // custId
+                "Grace",         // custFirstName
+                "Brewster",      // custMiddleName
+                "Franklin",      // custLastName
+                "1 Navy Yard",   // custAddrLine1
+                "",              // custAddrLine2
+                "Washington",    // custAddrLine3 (the screen "city" maps to ADDR-LINE-3)
+                "DC",            // custAddrStateCd
+                "USA",           // custAddrCountryCd
+                "20374",         // custAddrZip
+                null,            // custPhoneNum1 (blank phone -> no digits)
+                null,            // custPhoneNum2
+                null,            // custSsn (blank ssn parts on the command -> no digits)
+                "GID1",          // custGovtIssuedId
+                "1980-05-20",    // custDob
+                "1234567890",    // custEftAccountId
+                "Y",             // custPriCardHolderInd
+                Integer.valueOf(700)); // custFicoCreditScore
+        customer.setVersion(0L);
+        return customer;
     }
 
-    // ------------------------------------------------------------------------
-    // Tests
-    // ------------------------------------------------------------------------
+    /**
+     * Stubs the {@code 9000-READ-ACCT} inquiry chain (cross-reference &rarr; account &rarr;
+     * customer) with every record present. Used by the paths that read the full chain.
+     *
+     * @param account  the account the master read returns
+     * @param customer the customer the master read returns
+     */
+    private void stubReadChainPresent(Account account, Customer customer) {
+        when(cardXrefRepository.findFirstByAcctIdOrderByXrefCardNumAsc(ACCT_KEY))
+                .thenReturn(Optional.of(xref()));
+        when(accountRepository.findById(ACCT_KEY)).thenReturn(Optional.of(account));
+        when(customerRepository.findById(CUST_KEY)).thenReturn(Optional.of(customer));
+    }
 
     /**
-     * A confirmed customer-only edit succeeds and advances the account's
-     * optimistic-lock version even though no account column changes. Because the
-     * command's account fields equal the seeded values, the account entity is not
-     * dirty, so the version advance is caused solely by the force-increment that
-     * anchors the account-plus-customer aggregate guard.
+     * Stubs the {@code 9600-WRITE-PROCESSING} read chain used by {@code performWrite}: the account
+     * is re-read under update intent via the force-increment query, then the cross-reference and
+     * customer are resolved.
+     *
+     * @param account  the account the versioned update read returns
+     * @param customer the customer the master read returns
      */
+    private void stubWriteChainPresent(Account account, Customer customer) {
+        when(accountRepository.findByIdForVersionedUpdate(ACCT_KEY)).thenReturn(Optional.of(account));
+        when(cardXrefRepository.findFirstByAcctIdOrderByXrefCardNumAsc(ACCT_KEY))
+                .thenReturn(Optional.of(xref()));
+        when(customerRepository.findById(CUST_KEY)).thenReturn(Optional.of(customer));
+    }
+
+    /**
+     * Stubs the collaborators reached inside a clean {@code 1200-EDIT-MAP-INPUTS} pass over the
+     * canonical command: the date backstop accepts every composed date (the four date fields), the
+     * date-of-birth parse returns a date safely in the past, and the SSN rule returns valid.
+     */
+    private void stubEditCollaboratorsValid() {
+        when(dateValidationService.isValid(anyString(), anyString())).thenReturn(true);
+        when(dateValidationService.parse(anyString())).thenReturn(LocalDate.of(1980, 5, 20));
+        when(usSsnRule.validate(anyString(), anyString(), anyString()))
+                .thenReturn(ValidationResult.valid());
+    }
+
+    /**
+     * A mutable builder for {@link AccountUpdateCommand} whose defaults are the canonical, fully
+     * valid values that compare equal to {@link #storedAccount()} / {@link #storedCustomer()}. A
+     * test overrides exactly the field(s) under test; every other field stays valid so the field
+     * under test drives the (first) latched message.
+     */
+    private static CommandBuilder baseCommand() {
+        return new CommandBuilder();
+    }
+
+    /** Fluent builder mirroring the 32-component {@link AccountUpdateCommand} record. */
+    private static final class CommandBuilder {
+
+        private String accountId = ACCT_ID_STR;
+        private Long expectedVersion = 0L;
+        private String accountStatus = "Y";
+        private DateParts openDate = new DateParts("2020", "01", "15");
+        private String creditLimit = "5000.00";
+        private DateParts expiryDate = new DateParts("2030", "12", "31");
+        private String cashCreditLimit = "1000.00";
+        private DateParts reissueDate = new DateParts("2020", "06", "01");
+        private String currentBalance = "1234.56";
+        private String currentCycleCredit = "250.00";
+        private String currentCycleDebit = "75.25";
+        private String groupId = "A000000000";
+        private SsnParts ssn = new SsnParts("", "", "");
+        private DateParts dob = new DateParts("1980", "05", "20");
+        private String ficoScore = "700";
+        private String firstName = "Grace";
+        private String middleName = "Brewster";
+        private String lastName = "Franklin";
+        private String addressLine1 = "1 Navy Yard";
+        private String addressLine2 = "";
+        private String city = "Washington";
+        private String stateCode = "DC";
+        private String zipCode = "20374";
+        private String countryCode = "USA";
+        private PhoneParts phone1 = new PhoneParts("", "", "");
+        private PhoneParts phone2 = new PhoneParts("", "", "");
+        private String governmentId = "GID1";
+        private String eftAccountId = "1234567890";
+        private String primaryHolderFlag = "Y";
+        private Status priorStatus = Status.SHOW_DETAILS;
+        private boolean confirmSave;
+        private boolean cancel;
+
+        private CommandBuilder accountId(String value) {
+            this.accountId = value;
+            return this;
+        }
+
+        private CommandBuilder expectedVersion(Long value) {
+            this.expectedVersion = value;
+            return this;
+        }
+
+        private CommandBuilder creditLimit(String value) {
+            this.creditLimit = value;
+            return this;
+        }
+
+        private CommandBuilder currentBalance(String value) {
+            this.currentBalance = value;
+            return this;
+        }
+
+        private CommandBuilder ficoScore(String value) {
+            this.ficoScore = value;
+            return this;
+        }
+
+        private CommandBuilder stateCode(String value) {
+            this.stateCode = value;
+            return this;
+        }
+
+        private CommandBuilder priorStatus(Status value) {
+            this.priorStatus = value;
+            return this;
+        }
+
+        private CommandBuilder confirmSave(boolean value) {
+            this.confirmSave = value;
+            return this;
+        }
+
+        private CommandBuilder cancel(boolean value) {
+            this.cancel = value;
+            return this;
+        }
+
+        private AccountUpdateCommand build() {
+            return new AccountUpdateCommand(
+                    accountId, expectedVersion, accountStatus, openDate, creditLimit, expiryDate,
+                    cashCreditLimit, reissueDate, currentBalance, currentCycleCredit,
+                    currentCycleDebit, groupId, ssn, dob, ficoScore, firstName, middleName,
+                    lastName, addressLine1, addressLine2, city, stateCode, zipCode, countryCode,
+                    phone1, phone2, governmentId, eftAccountId, primaryHolderFlag, priorStatus,
+                    confirmSave, cancel);
+        }
+    }
+
+    // ====================================================================================
+    // viewAccount — COACTVWC inquiry (9000-READ-ACCT: xref -> account -> customer)
+    // ====================================================================================
+
     @Test
-    @DisplayName("confirmed customer-only edit succeeds and force-increments the account version")
-    void confirmedCustomerOnlyEditForceIncrementsAccountVersion() {
-        seedAccountCustomerAndXref("OldLast");
+    @DisplayName("viewAccount reads xref -> account -> customer and returns the merged detail; money is scale-2 BigDecimal")
+    void viewAccount_happyPath_returnsMergedDetail() {
+        stubReadChainPresent(storedAccount(), storedCustomer());
 
-        long initialVersion = accountRepository.findById(ACCT_ID).orElseThrow().getVersion();
+        AccountDetail detail = service.viewAccount(ACCT_KEY);
 
+        assertThat(detail).isNotNull();
+        assertThat(detail.account().getAcctId()).isEqualTo(ACCT_KEY);
+        assertThat(detail.customer().getCustId()).isEqualTo(CUST_KEY);
+        // Monetary parity (AAP 0.7 H3): compare by value at scale 2, never equals/double/float.
+        assertThat(detail.account().getCurrBal()).isEqualByComparingTo(new BigDecimal("1234.56"));
+        assertThat(detail.account().getCurrBal().scale()).isEqualTo(2);
+        assertThat(detail.account().getCreditLimit()).isEqualByComparingTo(new BigDecimal("5000.00"));
+    }
+
+    @Test
+    @DisplayName("viewAccount raises RecordNotFoundException when the cross-reference is missing (9200 NOTFND)")
+    void viewAccount_xrefMissing_throwsRecordNotFound() {
+        when(cardXrefRepository.findFirstByAcctIdOrderByXrefCardNumAsc(ACCT_KEY))
+                .thenReturn(Optional.empty());
+
+        assertThatThrownBy(() -> service.viewAccount(ACCT_KEY))
+                .isInstanceOf(RecordNotFoundException.class)
+                .hasMessageContaining("not found in Cross ref file.");
+
+        verifyNoInteractions(accountRepository, customerRepository);
+    }
+
+    @Test
+    @DisplayName("viewAccount raises RecordNotFoundException when the account master row is missing (9300 NOTFND)")
+    void viewAccount_accountMissing_throwsRecordNotFound() {
+        when(cardXrefRepository.findFirstByAcctIdOrderByXrefCardNumAsc(ACCT_KEY))
+                .thenReturn(Optional.of(xref()));
+        when(accountRepository.findById(ACCT_KEY)).thenReturn(Optional.empty());
+
+        assertThatThrownBy(() -> service.viewAccount(ACCT_KEY))
+                .isInstanceOf(RecordNotFoundException.class)
+                .hasMessageContaining("not found in Acct Master file.");
+
+        verifyNoInteractions(customerRepository);
+    }
+
+    @Test
+    @DisplayName("viewAccount raises RecordNotFoundException when the customer master row is missing (9400 NOTFND)")
+    void viewAccount_customerMissing_throwsRecordNotFound() {
+        when(cardXrefRepository.findFirstByAcctIdOrderByXrefCardNumAsc(ACCT_KEY))
+                .thenReturn(Optional.of(xref()));
+        when(accountRepository.findById(ACCT_KEY)).thenReturn(Optional.of(storedAccount()));
+        when(customerRepository.findById(CUST_KEY)).thenReturn(Optional.empty());
+
+        assertThatThrownBy(() -> service.viewAccount(ACCT_KEY))
+                .isInstanceOf(RecordNotFoundException.class)
+                .hasMessageContaining("not found in customer master.");
+    }
+
+    @Test
+    @DisplayName("viewAccount rejects a zero or over-11-digit filter with IllegalArgumentException (2210-EDIT-ACCOUNT) and reads nothing")
+    void viewAccount_invalidFilter_throwsIllegalArgument() {
+        assertThatThrownBy(() -> service.viewAccount(0L))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessage(AccountService.MSG_ACCT_FILTER_INVALID);
+        assertThatThrownBy(() -> service.viewAccount(100_000_000_000L))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessage(AccountService.MSG_ACCT_FILTER_INVALID);
+
+        verifyNoInteractions(cardXrefRepository, accountRepository, customerRepository);
+    }
+
+    @Test
+    @DisplayName("viewAccount never leaks SSN / government id / date of birth: the customer's toString omits them")
+    void viewAccount_doesNotLeakSensitiveCustomerData() {
+        // Synthetic, obviously-fake sentinels for the sensitive columns; none is a real value and
+        // none is ever asserted "in full" — the test proves only that they cannot escape via
+        // toString(), honoring the SSN/govt-id/DOB sensitivity discipline (AAP 0.7 / 0.9.3).
+        String ssnSentinel = "SSN-DO-NOT-LEAK";
+        String govtSentinel = "GOVT-DO-NOT-LEAK";
+        String dobSentinel = "DOB-DO-NOT-LEAK";
+        Customer sensitive = new Customer(
+                CUST_KEY, "Grace", "Brewster", "Franklin",
+                "1 Navy Yard", "", "Washington", "DC", "USA", "20374",
+                null, null, ssnSentinel, govtSentinel, dobSentinel,
+                "1234567890", "Y", Integer.valueOf(700));
+        stubReadChainPresent(storedAccount(), sensitive);
+
+        AccountDetail detail = service.viewAccount(ACCT_KEY);
+
+        // The sensitive values must not appear anywhere in the rendered customer or merged detail.
+        assertThat(detail.customer().toString())
+                .doesNotContain(ssnSentinel, govtSentinel, dobSentinel)
+                .doesNotContain("custSsn", "custGovtIssuedId", "custDob");
+        assertThat(detail.toString()).doesNotContain(ssnSentinel, govtSentinel, dobSentinel);
+        // Sanity: non-sensitive identity fields are still present.
+        assertThat(detail.customer().toString()).contains("custId=" + CUST_KEY, "Grace");
+    }
+
+    // ====================================================================================
+    // updateAccount — COACTUPC (0000-MAIN re-entry + 2000-DECIDE-ACTION state machine)
+    // ====================================================================================
+
+    @Test
+    @DisplayName("first entry (reentry=false) fetches the account and returns SHOW_DETAILS with the change prompt")
+    void updateAccount_firstEntry_showsDetails() {
+        stubReadChainPresent(storedAccount(), storedCustomer());
+
+        AccountUpdateResult result = service.updateAccount(baseCommand().build(), false);
+
+        assertThat(result.status()).isEqualTo(Status.SHOW_DETAILS);
+        assertThat(result.message()).isEqualTo(AccountService.MSG_PROMPT_CHANGES);
+        assertThat(result.detail()).isNotNull();
+        assertThat(result.detail().account().getAcctId()).isEqualTo(ACCT_KEY);
+        assertThat(result.detail().customer().getCustId()).isEqualTo(CUST_KEY);
+        verify(accountRepository, never()).save(any(Account.class));
+    }
+
+    @Test
+    @DisplayName("blank account id returns CHANGES_NOT_OK with 'Account number not provided' and reads nothing")
+    void updateAccount_blankAccountId_returnsChangesNotOk() {
+        AccountUpdateResult result = service.updateAccount(baseCommand().accountId("").build(), false);
+
+        assertThat(result.status()).isEqualTo(Status.CHANGES_NOT_OK);
+        assertThat(result.message()).isEqualTo(AccountService.MSG_ACCT_NOT_PROVIDED);
+        assertThat(result.detail()).isNull();
+        verifyNoInteractions(cardXrefRepository, accountRepository, customerRepository);
+    }
+
+    @Test
+    @DisplayName("non-numeric account id returns CHANGES_NOT_OK with the '11 digit Non-Zero Number' literal and reads nothing")
+    void updateAccount_nonNumericAccountId_returnsChangesNotOk() {
         AccountUpdateResult result =
-                service.updateAccount(customerEditCommand(initialVersion, "Newname"), true);
+                service.updateAccount(baseCommand().accountId("12A").build(), false);
+
+        assertThat(result.status()).isEqualTo(Status.CHANGES_NOT_OK);
+        assertThat(result.message()).isEqualTo(AccountService.MSG_ACCT_NON_ZERO_11);
+        assertThat(result.detail()).isNull();
+        verifyNoInteractions(cardXrefRepository, accountRepository, customerRepository);
+    }
+
+    @Test
+    @DisplayName("zero account id returns CHANGES_NOT_OK with the '11 digit Non-Zero Number' literal and reads nothing")
+    void updateAccount_zeroAccountId_returnsChangesNotOk() {
+        AccountUpdateResult result =
+                service.updateAccount(baseCommand().accountId("0").build(), false);
+
+        assertThat(result.status()).isEqualTo(Status.CHANGES_NOT_OK);
+        assertThat(result.message()).isEqualTo(AccountService.MSG_ACCT_NON_ZERO_11);
+        assertThat(result.detail()).isNull();
+        verifyNoInteractions(cardXrefRepository, accountRepository, customerRepository);
+    }
+
+    @Test
+    @DisplayName("resubmit with no functional change returns SHOW_DETAILS + 'No change detected...' (1205) and never writes")
+    void updateAccount_noFunctionalChange_returnsShowDetails() {
+        stubReadChainPresent(storedAccount(), storedCustomer());
+
+        AccountUpdateResult result = service.updateAccount(
+                baseCommand().priorStatus(Status.SHOW_DETAILS).build(), true);
+
+        assertThat(result.status()).isEqualTo(Status.SHOW_DETAILS);
+        assertThat(result.message()).isEqualTo(AccountService.MSG_NO_CHANGES);
+        verify(accountRepository, never()).save(any(Account.class));
+        verify(customerRepository, never()).save(any(Customer.class));
+    }
+
+    @Test
+    @DisplayName("valid edits, not yet confirmed, return CHANGES_OK_NOT_CONFIRMED + confirmation prompt and never write")
+    void updateAccount_validChangesNotConfirmed_returnsChangesOkNotConfirmed() {
+        stubReadChainPresent(storedAccount(), storedCustomer());
+        stubEditCollaboratorsValid();
+
+        // A single valid edit (new current balance) makes 1205 report a change so the edits run.
+        AccountUpdateResult result = service.updateAccount(
+                baseCommand().priorStatus(Status.SHOW_DETAILS).currentBalance("2222.22").build(), true);
+
+        assertThat(result.status()).isEqualTo(Status.CHANGES_OK_NOT_CONFIRMED);
+        assertThat(result.message()).isEqualTo(AccountService.MSG_PROMPT_CONFIRMATION);
+        assertThat(result.detail()).isNotNull();
+        // Nothing is persisted until the change is confirmed (PF05).
+        verify(accountRepository, never()).save(any(Account.class));
+        verify(customerRepository, never()).save(any(Customer.class));
+    }
+
+    @Test
+    @DisplayName("FICO score outside 300-850 returns CHANGES_NOT_OK with the verbatim range message and never writes")
+    void updateAccount_ficoOutOfRange_returnsChangesNotOk() {
+        stubReadChainPresent(storedAccount(), storedCustomer());
+        stubEditCollaboratorsValid();
+
+        AccountUpdateResult result = service.updateAccount(
+                baseCommand().priorStatus(Status.SHOW_DETAILS).ficoScore("200").build(), true);
+
+        assertThat(result.status()).isEqualTo(Status.CHANGES_NOT_OK);
+        assertThat(result.message()).isEqualTo("FICO Score: should be between 300 and 850");
+        verify(accountRepository, never()).save(any(Account.class));
+    }
+
+    @Test
+    @DisplayName("an invalid US state code returns CHANGES_NOT_OK with the verbatim state message and never writes")
+    void updateAccount_invalidStateCode_returnsChangesNotOk() {
+        stubReadChainPresent(storedAccount(), storedCustomer());
+        stubEditCollaboratorsValid();
+
+        AccountUpdateResult result = service.updateAccount(
+                baseCommand().priorStatus(Status.SHOW_DETAILS).stateCode("ZZ").build(), true);
+
+        assertThat(result.status()).isEqualTo(Status.CHANGES_NOT_OK);
+        assertThat(result.message()).isEqualTo("State: is not a valid state code");
+        verify(accountRepository, never()).save(any(Account.class));
+    }
+
+    @Test
+    @DisplayName("a non-numeric signed money field returns CHANGES_NOT_OK with 'Credit Limit is not valid' and never writes")
+    void updateAccount_invalidSignedAmount_returnsChangesNotOk() {
+        stubReadChainPresent(storedAccount(), storedCustomer());
+        stubEditCollaboratorsValid();
+
+        AccountUpdateResult result = service.updateAccount(
+                baseCommand().priorStatus(Status.SHOW_DETAILS).creditLimit("ABC").build(), true);
+
+        assertThat(result.status()).isEqualTo(Status.CHANGES_NOT_OK);
+        assertThat(result.message()).isEqualTo("Credit Limit is not valid");
+        verify(accountRepository, never()).save(any(Account.class));
+    }
+
+    @Test
+    @DisplayName("editSsn surfaces the injected UsSsnRule's message verbatim as CHANGES_NOT_OK and never writes")
+    void updateAccount_ssnRuleInvalid_returnsChangesNotOk() {
+        stubReadChainPresent(storedAccount(), storedCustomer());
+        // Dates accept; the SSN Strategy rejects. A valid balance edit forces the edit pass to run.
+        when(dateValidationService.isValid(anyString(), anyString())).thenReturn(true);
+        when(dateValidationService.parse(anyString())).thenReturn(LocalDate.of(1980, 5, 20));
+        when(usSsnRule.validate(anyString(), anyString(), anyString()))
+                .thenReturn(ValidationResult.invalid("SSN-1: must be all numeric."));
+
+        AccountUpdateResult result = service.updateAccount(
+                baseCommand().priorStatus(Status.SHOW_DETAILS).currentBalance("2222.22").build(), true);
+
+        assertThat(result.status()).isEqualTo(Status.CHANGES_NOT_OK);
+        assertThat(result.message()).isEqualTo("SSN-1: must be all numeric.");
+        verify(accountRepository, never()).save(any(Account.class));
+    }
+
+    @Test
+    @DisplayName("confirmed valid edits persist both records and return DONE; edited money is stored as scale-2 BigDecimal")
+    void updateAccount_confirmedValidChanges_persistsAndReturnsDone() {
+        Account account = storedAccount();
+        Customer customer = storedCustomer();
+        stubWriteChainPresent(account, customer);
+        stubEditCollaboratorsValid();
+        when(accountRepository.save(any(Account.class))).thenReturn(account);
+        when(customerRepository.save(any(Customer.class))).thenReturn(customer);
+
+        AccountUpdateResult result = service.updateAccount(
+                baseCommand()
+                        .priorStatus(Status.CHANGES_OK_NOT_CONFIRMED)
+                        .confirmSave(true)
+                        .currentBalance("2222.22")
+                        .creditLimit("9999.99")
+                        .build(),
+                true);
 
         assertThat(result.status()).isEqualTo(Status.DONE);
+        assertThat(result.message()).isEqualTo(AccountService.MSG_CONFIRM_SUCCESS);
 
-        long afterVersion = accountRepository.findById(ACCT_ID).orElseThrow().getVersion();
-        assertThat(afterVersion)
-                .as("a confirmed customer-only edit must still advance the account version")
-                .isGreaterThan(initialVersion);
-
-        assertThat(customerRepository.findById(CUST_ID).orElseThrow().getCustLastName())
-                .isEqualTo("Newname");
+        ArgumentCaptor<Account> accountCaptor = ArgumentCaptor.forClass(Account.class);
+        verify(accountRepository).save(accountCaptor.capture());
+        verify(customerRepository).save(any(Customer.class));
+        Account saved = accountCaptor.getValue();
+        // Edited money is applied through Money (scale 2, HALF_UP); assert by value + scale.
+        assertThat(saved.getCurrBal()).isEqualByComparingTo(new BigDecimal("2222.22"));
+        assertThat(saved.getCurrBal().scale()).isEqualTo(2);
+        assertThat(saved.getCreditLimit()).isEqualByComparingTo(new BigDecimal("9999.99"));
+        assertThat(saved.getCreditLimit().scale()).isEqualTo(2);
     }
 
-    /**
-     * The MAJOR-1 concurrency reproduction: after a first editor confirms a
-     * customer-only edit (advancing the account version at commit), a second editor
-     * who still holds the now-stale version and confirms another customer-only edit
-     * is rejected with the COBOL {@code 9700-CHECK-CHANGE-IN-REC} message. The two
-     * sequential online requests are two separate committed service calls.
-     */
     @Test
-    @DisplayName("stale second editor after a prior customer-only edit is rejected (9700-CHECK-CHANGE-IN-REC)")
-    void staleSecondEditorAfterCustomerOnlyEditIsRejected() {
-        seedAccountCustomerAndXref("OldLast");
+    @DisplayName("awaiting confirmation without PF05 re-reads and re-shows CHANGES_OK_NOT_CONFIRMED; nothing is written")
+    void updateAccount_awaitingConfirmationWithoutConfirm_reshowsConfirmation() {
+        stubReadChainPresent(storedAccount(), storedCustomer());
 
-        long fetchedVersion = accountRepository.findById(ACCT_ID).orElseThrow().getVersion();
+        AccountUpdateResult result = service.updateAccount(
+                baseCommand().priorStatus(Status.CHANGES_OK_NOT_CONFIRMED).confirmSave(false).build(), true);
 
-        // Request A: first editor confirms a customer-only edit with the fetched version -> commits.
-        AccountUpdateResult first =
-                service.updateAccount(customerEditCommand(fetchedVersion, "FirstEditor"), true);
-        assertThat(first.status()).isEqualTo(Status.DONE);
+        assertThat(result.status()).isEqualTo(Status.CHANGES_OK_NOT_CONFIRMED);
+        assertThat(result.message()).isEqualTo(AccountService.MSG_PROMPT_CONFIRMATION);
+        verify(accountRepository, never()).save(any(Account.class));
+    }
 
-        // The commit fired the force-increment, so the persistent account version has advanced.
-        assertThat(accountRepository.findById(ACCT_ID).orElseThrow().getVersion())
-                .isGreaterThan(fetchedVersion);
+    @Test
+    @DisplayName("a fetched version older than the persisted row throws OptimisticLockingFailureException (9700) and writes nothing")
+    void updateAccount_versionMismatch_throwsOptimisticLockingFailure() {
+        // AAP 0.7.1 H6 / docs/decision-log.md: the READ-UPDATE-REWRITE integrity guard is an
+        // INTENTIONAL, documented improvement implemented with JPA @Version optimistic locking.
+        // The service throws OptimisticLockingFailureException, which the web layer maps to HTTP 409
+        // (the documented Status.CONCURRENT_CHANGE semantic) — this is not a behavioral regression.
+        Account account = storedAccount(); // persisted at version 0
+        when(accountRepository.findByIdForVersionedUpdate(ACCT_KEY)).thenReturn(Optional.of(account));
 
-        // Request B: second editor still holds the stale version -> the aggregate guard rejects it,
-        // exactly as COACTUPC 9700-CHECK-CHANGE-IN-REC aborts the update.
-        assertThatThrownBy(() ->
-                service.updateAccount(customerEditCommand(fetchedVersion, "SecondEditor"), true))
+        assertThatThrownBy(() -> service.updateAccount(
+                baseCommand()
+                        .priorStatus(Status.CHANGES_OK_NOT_CONFIRMED)
+                        .confirmSave(true)
+                        .expectedVersion(7L) // client fetched an older version than persisted (0)
+                        .build(),
+                true))
                 .isInstanceOf(OptimisticLockingFailureException.class)
                 .hasMessage(AccountService.MSG_DATA_CHANGED);
 
-        // The rejected edit was rolled back: the customer still shows the first editor's value.
-        assertThat(customerRepository.findById(CUST_ID).orElseThrow().getCustLastName())
-                .isEqualTo("FirstEditor");
+        verify(accountRepository, never()).save(any(Account.class));
+        verify(customerRepository, never()).save(any(Customer.class));
+        verifyNoInteractions(cardXrefRepository);
     }
+
+    @Test
+    @DisplayName("a save-time optimistic-lock failure propagates (concurrent change at commit); the customer is not saved")
+    void updateAccount_saveDetectsConcurrentChange_throwsOptimisticLockingFailure() {
+        Account account = storedAccount();
+        Customer customer = storedCustomer();
+        stubWriteChainPresent(account, customer);
+        stubEditCollaboratorsValid();
+        when(accountRepository.save(any(Account.class)))
+                .thenThrow(new OptimisticLockingFailureException("row updated by another transaction"));
+
+        assertThatThrownBy(() -> service.updateAccount(
+                baseCommand()
+                        .priorStatus(Status.CHANGES_OK_NOT_CONFIRMED)
+                        .confirmSave(true)
+                        .expectedVersion(null) // skip the pre-check; exercise the save-time failure
+                        .build(),
+                true))
+                .isInstanceOf(OptimisticLockingFailureException.class);
+
+        verify(customerRepository, never()).save(any(Customer.class));
+    }
+
+    @Test
+    @DisplayName("PF12 cancel re-reads the record and returns SHOW_DETAILS, discarding pending edits")
+    void updateAccount_cancel_reReadsAndShowsDetails() {
+        stubReadChainPresent(storedAccount(), storedCustomer());
+
+        AccountUpdateResult result = service.updateAccount(
+                baseCommand().priorStatus(Status.CHANGES_OK_NOT_CONFIRMED).cancel(true).build(), true);
+
+        assertThat(result.status()).isEqualTo(Status.SHOW_DETAILS);
+        assertThat(result.message()).isEqualTo(AccountService.MSG_PROMPT_CHANGES);
+        verify(accountRepository, never()).save(any(Account.class));
+    }
+
+    @Test
+    @DisplayName("a completed (DONE) screen re-fetches fresh details on the next request")
+    void updateAccount_priorDone_reFetchesDetails() {
+        stubReadChainPresent(storedAccount(), storedCustomer());
+
+        AccountUpdateResult result = service.updateAccount(
+                baseCommand().priorStatus(Status.DONE).build(), true);
+
+        assertThat(result.status()).isEqualTo(Status.SHOW_DETAILS);
+        assertThat(result.message()).isEqualTo(AccountService.MSG_PROMPT_CHANGES);
+    }
+
+    @Test
+    @DisplayName("a transient outcome token resubmitted as prior status abends with 'UNEXPECTED DATA SCENARIO' and reads nothing")
+    void updateAccount_unexpectedPriorStatus_throwsIllegalState() {
+        assertThatThrownBy(() -> service.updateAccount(
+                baseCommand().priorStatus(Status.LOCK_ERROR).build(), true))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessage("UNEXPECTED DATA SCENARIO");
+
+        verifyNoInteractions(cardXrefRepository, accountRepository, customerRepository);
+    }
+
 }

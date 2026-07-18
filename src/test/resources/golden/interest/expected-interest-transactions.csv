@@ -1,0 +1,4 @@
+type_cd,cat_cd,tran_source,tran_desc,tran_amt,card_num,tran_merchant_id
+01,5,System,Int. for a/c 90000000010,12.50,9000000000000010,0
+01,5,System,Int. for a/c 90000000010,25.00,9000000000000010,0
+01,5,System,Int. for a/c 90000000010,0.01,9000000000000010,0
