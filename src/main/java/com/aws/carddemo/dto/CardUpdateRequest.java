@@ -76,10 +76,13 @@ import jakarta.validation.constraints.Size;
  * @param cardName    embossed name on the card. COBOL {@code CRDNAMEI},
  *                    {@code PIC X(50)}. Constrained to at most 50 characters.
  * @param cardStatus  card active flag as shown by the "Card Active Y/N" prompt.
- *                    COBOL {@code CRDSTCDI}, {@code PIC X(1)}. Constrained to at
- *                    most 1 character and, when present, to {@code Y}, {@code N}
- *                    or a single space ({@code ^[YN ]?$}), matching the legacy
- *                    edit.
+ *                    COBOL {@code CRDSTCDI}, {@code PIC X(1)}. Constrained
+ *                    declaratively only to at most 1 character (the {@code PIC X(1)}
+ *                    length). The {@code Y}/{@code N} value check is a service-level
+ *                    same-screen edit (COBOL {@code 1240-EDIT-CARDSTATUS} &rarr;
+ *                    "Card Active Status must be Y or N"), so an invalid one-character
+ *                    value is echoed back on-screen (HTTP 200) rather than rejected at
+ *                    the transport layer.
  * @param expiryMonth card expiry month. COBOL {@code EXPMONI}, {@code PIC X(2)}.
  *                    Constrained to at most 2 characters and, when present, to
  *                    digits only ({@code ^\d{0,2}$}).
@@ -106,8 +109,10 @@ public record CardUpdateRequest(
         @Size(max = 50)
         String cardName,
 
+        // CRDSTCDI PIC X(1): only the single-character length is enforced here; the
+        // Y/N value edit is a service-level same-screen edit (CardService,
+        // 1240-EDIT-CARDSTATUS), so an invalid one-character status returns HTTP 200.
         @Size(max = 1)
-        @Pattern(regexp = "^[YN ]?$")
         String cardStatus,
 
         @Size(max = 2)

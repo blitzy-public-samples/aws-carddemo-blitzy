@@ -17,7 +17,6 @@ package com.aws.carddemo.dto;
 
 import com.fasterxml.jackson.annotation.JsonProperty;
 
-import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.Pattern;
 import jakarta.validation.constraints.Size;
 
@@ -47,10 +46,13 @@ import jakarta.validation.constraints.Size;
  *   <li>{@code userType} &rarr; {@code USRTYPEI}, PIC {@code X(1)}</li>
  * </ul>
  *
- * <p>The edit rules are expressed here purely through Jakarta Bean Validation
- * constraints; the corresponding COBOL edit paragraphs (and the RED-highlight
- * attribute handling from {@code legacy/cpy/CSSETATY.cpy}) are reproduced in the
- * service/rule layer, not in this transport object.</p>
+ * <p>The length and character-set edit rules are expressed here through Jakarta
+ * Bean Validation constraints ({@link Size}, {@link Pattern}); the COBOL
+ * mandatory-field (&quot;can NOT be empty&quot;) edits and the RED-highlight
+ * attribute handling from {@code legacy/cpy/CSSETATY.cpy} are reproduced in the
+ * service/rule layer as same-screen messages, not in this transport object, so
+ * PF-key dispatch (for example {@link PfKeyAction#PF3}=Back) is not blocked by
+ * field validation.</p>
  *
  * <p><strong>Sensitive-field handling.</strong> The {@code password} component
  * corresponds to the map's {@code PASSWD} field, which is defined with the
@@ -97,26 +99,21 @@ import jakarta.validation.constraints.Size;
  */
 public record UserAddRequest(
 
-        @NotBlank
         @Size(max = 20)
         String firstName,
 
-        @NotBlank
         @Size(max = 20)
         String lastName,
 
-        @NotBlank
         @Size(max = 8)
         String userId,
 
-        @NotBlank
         @Size(max = 8)
         @JsonProperty(access = JsonProperty.Access.WRITE_ONLY)
         String password,
 
-        @NotBlank
         @Size(max = 1)
-        @Pattern(regexp = "^[AUau]$")
+        @Pattern(regexp = "^[AUau ]?$")
         String userType,
 
         PfKeyAction action) {

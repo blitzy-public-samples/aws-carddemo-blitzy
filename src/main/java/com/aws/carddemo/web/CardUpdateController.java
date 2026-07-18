@@ -219,8 +219,10 @@ public class CardUpdateController {
      * <p>The request body is validated by Bean Validation ({@link Valid}); a
      * malformed field surfaces as HTTP&nbsp;400 through {@code GlobalExceptionHandler},
      * reproducing the {@code PIC}-derived format edits of the BMS map. The
-     * substantive business edits and the rewrite are owned by
-     * {@link CardService#updateCard} and are exercised on the PF5 (save) path.
+     * substantive business edits ({@link CardService#validateEditableFields}) are
+     * exercised on the ENTER (validate) path, and the rewrite &mdash; owned by
+     * {@link CardService#updateCard}, which re-runs the same edits &mdash; is
+     * exercised on the PF5 (save) path.
      *
      * @param request the submitted card key, edited fields and attention key;
      *                 validated and never {@code null}
@@ -247,28 +249,54 @@ public class CardUpdateController {
      * re-presents the key-entry prompt ({@code CCUP-DETAILS-NOT-FETCHED}); otherwise
      * it fetches the current card by key ({@code 9000-READ-DATA}, card number taking
      * read precedence), applies the operator's editable fields onto the
-     * <em>detached</em> entity to build the echo preview, and re-presents the detail
-     * with the {@code PROMPT-FOR-CONFIRMATION} ("press F5 to save") message.
+     * <em>detached</em> entity to build the echo preview, then <strong>runs the
+     * field edits</strong> ({@code 1230-EDIT-NAME} &rarr; {@code 1240-EDIT-CARDSTATUS}
+     * &rarr; {@code 1250-EDIT-EXPIRY-MON} &rarr; {@code 1260-EDIT-EXPIRY-YEAR}) via
+     * {@link CardService#validateEditableFields}. A failing edit re-presents the
+     * detail with that field's exact COBOL error message (first-message latching);
+     * only when every field is valid is the {@code PROMPT-FOR-CONFIRMATION}
+     * ("press F5 to save") message shown. This is the legacy behavior in which each
+     * ENTER re-edited the fields before the change could be confirmed &mdash; a
+     * validated prompt is never shown for input the edits reject.
      *
      * <p>No persistence occurs here: the entity is detached
      * ({@code spring.jpa.open-in-view=false}) and {@link CardMapper#updateEntity}
      * only mutates in memory &mdash; no {@code save} is invoked on this path, so the
-     * legacy invariant "ENTER never rewrites" is preserved. A missing card raises
-     * {@code RecordNotFoundException} (&rarr; HTTP&nbsp;404).
+     * legacy invariant "ENTER never rewrites" is preserved. The edits are pure
+     * validations of the submitted values and perform no data access. A missing card
+     * raises {@code RecordNotFoundException} (&rarr; HTTP&nbsp;404).
      *
      * @param request the submitted key and edited fields
-     * @return {@code 200 OK} echoing the previewed detail with the confirmation prompt
+     * @return {@code 200 OK} echoing the previewed detail with either the
+     *         confirmation prompt (all edits pass) or the first failing field's
+     *         exact COBOL error message (same-screen)
      */
     private ResponseEntity<CardUpdateResponse> handleValidate(CardUpdateRequest request) {
         if (isBlank(request.cardId()) && isBlank(request.accountId())) {
             return ResponseEntity.ok(blankScreen(MSG_PROMPT_SEARCH_KEYS, ""));
         }
         Card card = cardService.viewCard(parseAccountId(request.accountId()), request.cardId());
-        // Build the change preview on the detached entity; this performs no write
-        // (no save is called and open-in-view is disabled). The CVV is not touched.
+        // Echo the operator's entered values on the detached entity; this performs
+        // no write (no save is called and open-in-view is disabled). The CVV is not
+        // touched, and updateEntity only reshapes the expiry text, so it cannot fail
+        // on an invalid month/year — the edits below are what decide validity.
         cardMapper.updateEntity(request, card);
+        LocalDateTime now = LocalDateTime.now();
+        // Run the COCRDUPC field edits (1230-EDIT-NAME / 1240-EDIT-CARDSTATUS /
+        // 1250-EDIT-EXPIRY-MON / 1260-EDIT-EXPIRY-YEAR) on the ENTER turn, exactly
+        // as the legacy program re-edited the fields on every ENTER before it would
+        // let the change be confirmed. An invalid field is rejected same-screen with
+        // its exact COBOL message (first-message latching); only when every field
+        // passes is the "press F5 to save" confirmation prompt shown.
+        String editMessage = CardService.validateEditableFields(
+                request.cardName(),
+                request.cardStatus(),
+                request.expiryMonth(),
+                request.expiryYear());
+        String infoMessage = (editMessage == null) ? MSG_PROMPT_CONFIRMATION : "";
+        String errorMessage = (editMessage == null) ? "" : editMessage;
         return ResponseEntity.ok(cardMapper.toUpdateResponse(
-                card, MSG_PROMPT_CONFIRMATION, "", LocalDateTime.now(),
+                card, infoMessage, errorMessage, now,
                 TRANSACTION_ID, TITLE_01, TITLE_02, PROGRAM_ID, FKEYS, FKEYS_CONT));
     }
 

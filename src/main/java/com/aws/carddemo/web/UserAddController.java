@@ -119,6 +119,21 @@ public class UserAddController {
     private static final String BACK_TRANSACTION_ID = "CA00";
 
     /**
+     * Response header conveying the next program to navigate to (the CICS
+     * {@code XCTL PROGRAM(...)} target) when the PF3 (back) key is pressed &mdash;
+     * the stateless-HTTP translation of the legacy {@code CDEMO-TO-PROGRAM}
+     * COMMAREA field.
+     */
+    private static final String HEADER_NEXT_PROGRAM = "X-CardDemo-Next-Program";
+
+    /**
+     * Response header conveying the next transaction id to navigate to when the
+     * PF3 (back) key is pressed &mdash; the stateless-HTTP translation of the
+     * legacy {@code CDEMO-TO-TRANID} COMMAREA field.
+     */
+    private static final String HEADER_NEXT_TRANSACTION = "X-CardDemo-Next-Transaction";
+
+    /**
      * First header title line ({@code TITLE01O}); COBOL {@code CCDA-TITLE01} from
      * copybook {@code COTTL01Y.cpy}, preserved at its full {@code PIC X(40)} width.
      */
@@ -275,11 +290,12 @@ public class UserAddController {
     /**
      * Handles the PF3 (back) action &mdash; COBOL {@code RETURN-TO-PREV-SCREEN},
      * which transferred control to the Admin Menu ({@code COADM01C}). Because the
-     * re-platform has no {@code XCTL}, the returned response header identifies the
-     * navigation target ({@code CA00}/{@code COADM01C}) so the client can navigate
-     * to the Admin Menu screen.
+     * re-platform has no {@code XCTL}, the response carries the navigation target
+     * ({@code COADM01C}/{@code CA00}) in the {@link #HEADER_NEXT_PROGRAM} and
+     * {@link #HEADER_NEXT_TRANSACTION} response headers so the client can navigate
+     * to the Admin Menu screen; the body remains the standard (blank) screen.
      *
-     * @return {@code 200 OK} with a header addressed to the Admin Menu
+     * @return {@code 200 OK} with the Admin Menu navigation headers
      */
     private ResponseEntity<UserAddResponse> backToAdminMenu() {
         UserAddResponse response = userMapper.toAddResponse(
@@ -289,7 +305,10 @@ public class UserAddController {
                 TITLE01,
                 TITLE02,
                 BACK_PROGRAM_NAME);
-        return ResponseEntity.ok(response);
+        return ResponseEntity.ok()
+                .header(HEADER_NEXT_PROGRAM, BACK_PROGRAM_NAME)
+                .header(HEADER_NEXT_TRANSACTION, BACK_TRANSACTION_ID)
+                .body(response);
     }
 
     /**

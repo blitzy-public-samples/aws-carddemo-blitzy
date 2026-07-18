@@ -173,7 +173,7 @@ public class AccountMapper {
                 SCREEN_TITLE_02,                              // title02
                 currentTime,                                  // currentTime
                 // --- Account detail fields ---
-                String.valueOf(account.getAcctId()),          // accountId
+                String.format("%011d", account.getAcctId()),          // accountId
                 account.getAcctActiveStatus(),                // accountStatus
                 account.getAcctOpenDate(),                    // dateOpened
                 scale2(account.getCreditLimit()),             // creditLimit
@@ -185,7 +185,7 @@ public class AccountMapper {
                 account.getGroupId(),                         // groupId
                 scale2(account.getCurrCycDebit()),            // currentCycleDebit
                 // --- Customer detail fields ---
-                String.valueOf(customer.getCustId()),         // customerId
+                String.format("%09d", customer.getCustId()),         // customerId
                 customer.getCustSsn(),                        // ssn (SENSITIVE - raw digits)
                 customer.getCustDob(),                        // dateOfBirth (SENSITIVE)
                 ficoScore,                                    // ficoScore
@@ -262,7 +262,7 @@ public class AccountMapper {
                 UPDATE_PROGRAM_NAME,                          // programName
                 currentTime,                                  // currentTime
                 // --- Account detail fields (dates decomposed) ---
-                String.valueOf(account.getAcctId()),          // accountId
+                String.format("%011d", account.getAcctId()),          // accountId
                 account.getAcctActiveStatus(),                // accountStatus
                 openDate[0],                                  // openYear
                 openDate[1],                                  // openMonth
@@ -280,7 +280,7 @@ public class AccountMapper {
                 account.getGroupId(),                         // groupId
                 scale2(account.getCurrCycDebit()),            // currentCycleDebit
                 // --- Customer detail fields (ssn/dob/phones decomposed) ---
-                String.valueOf(customer.getCustId()),         // customerId
+                String.format("%09d", customer.getCustId()),         // customerId
                 ssn[0],                                       // ssnPart1 (SENSITIVE)
                 ssn[1],                                       // ssnPart2 (SENSITIVE)
                 ssn[2],                                       // ssnPart3 (SENSITIVE)

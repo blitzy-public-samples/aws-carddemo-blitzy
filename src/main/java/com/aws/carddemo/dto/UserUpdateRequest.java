@@ -17,7 +17,6 @@
 package com.aws.carddemo.dto;
 
 import com.fasterxml.jackson.annotation.JsonProperty;
-import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.Pattern;
 import jakarta.validation.constraints.Size;
 
@@ -42,9 +41,11 @@ import jakarta.validation.constraints.Size;
  * amends the editable fields and presses a save key (F5, or F3 to save and exit)
  * to persist the change. The interpretation of each key is decided by the owning
  * controller/service (the Java equivalents of the {@code COUSR02C} paragraph
- * logic), not by this DTO. An empty {@code password} means &quot;leave the stored
- * password unchanged&quot; &mdash; that semantic is a rule-layer concern handled
- * in {@code service/rule/} and is deliberately not encoded here.</p>
+ * logic), not by this DTO. An empty {@code password} is rejected by
+ * {@code UserService} with the legacy same-screen edit &quot;Password can NOT be
+ * empty...&quot; (the COBOL {@code COUSR02C} mandatory-field edit); a supplied
+ * password that differs from the stored value replaces it. That rule is a
+ * service-layer concern and is deliberately not encoded here.</p>
  *
  * <h2>Sensitive-field handling</h2>
  * <p>The {@code password} component is a <strong>write-only</strong> credential
@@ -74,10 +75,10 @@ import jakarta.validation.constraints.Size;
  *     <tr><th>Record component</th><th>COBOL field</th><th>PIC</th><th>Constraints</th><th>Meaning</th></tr>
  *   </thead>
  *   <tbody>
- *     <tr><td>{@code userId}</td><td>{@code USRIDINI}</td><td>X(8)</td><td>{@code @NotBlank}, {@code @Size(max = 8)}</td><td>User-id lookup key (fetch, then edit).</td></tr>
+ *     <tr><td>{@code userId}</td><td>{@code USRIDINI}</td><td>X(8)</td><td>{@code @Size(max = 8)}</td><td>User-id lookup key (fetch, then edit); required &mdash; a blank id is rejected by the service as a same-screen edit.</td></tr>
  *     <tr><td>{@code firstName}</td><td>{@code FNAMEI}</td><td>X(20)</td><td>{@code @Size(max = 20)}</td><td>Editable first name.</td></tr>
  *     <tr><td>{@code lastName}</td><td>{@code LNAMEI}</td><td>X(20)</td><td>{@code @Size(max = 20)}</td><td>Editable last name.</td></tr>
- *     <tr><td>{@code password}</td><td>{@code PASSWDI}</td><td>X(8)</td><td>{@code @Size(max = 8)}, write-only</td><td>New password; blank leaves it unchanged (rule layer).</td></tr>
+ *     <tr><td>{@code password}</td><td>{@code PASSWDI}</td><td>X(8)</td><td>{@code @Size(max = 8)}, write-only</td><td>New password; a blank value is rejected as &quot;Password can NOT be empty...&quot; (service edit).</td></tr>
  *     <tr><td>{@code userType}</td><td>{@code USRTYPEI}</td><td>X(1)</td><td>{@code @Size(max = 1)}, {@code @Pattern}</td><td>Role code: {@code A}=Admin, {@code U}=User.</td></tr>
  *     <tr><td>{@code action}</td><td>{@code EIBAID}</td><td>&mdash;</td><td>optional</td><td>Attention key pressed (ENTER=Fetch, F3=Save&amp;Exit, F4=Clear, F5=Save, F12=Cancel).</td></tr>
  *   </tbody>
@@ -96,7 +97,8 @@ import jakarta.validation.constraints.Size;
  *                  (from {@code FNAMEI}, {@code PIC X(20)})
  * @param lastName  editable last name
  *                  (from {@code LNAMEI}, {@code PIC X(20)})
- * @param password  write-only new password; blank means &quot;unchanged&quot;
+ * @param password  write-only new password; a blank value is rejected as
+ *                  &quot;Password can NOT be empty...&quot; (service edit)
  *                  (from {@code PASSWDI}, {@code PIC X(8)}); never serialized back
  *                  and masked in {@link #toString()}
  * @param userType  role code, {@code A}=Admin or {@code U}=User
@@ -106,7 +108,6 @@ import jakarta.validation.constraints.Size;
  */
 public record UserUpdateRequest(
 
-        @NotBlank(message = "User ID is required")
         @Size(max = 8, message = "User ID must be at most 8 characters")
         String userId,
 

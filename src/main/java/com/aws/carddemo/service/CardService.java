@@ -496,16 +496,7 @@ public class CardService {
                 .orElseThrow(() -> new RecordNotFoundException(MSG_DID_NOT_FIND_ACCTCARD_COMBO));
 
         // Field edits in COBOL order, keeping the first failing message.
-        String message = editName(embossedName);
-        if (message == null) {
-            message = editCardStatus(activeStatus);
-        }
-        if (message == null) {
-            message = editExpiryMonth(expiryMonth);
-        }
-        if (message == null) {
-            message = editExpiryYear(expiryYear);
-        }
+        String message = validateEditableFields(embossedName, activeStatus, expiryMonth, expiryYear);
         if (message != null) {
             return new CardUpdateResult(CardUpdateStatus.CHANGES_NOT_OK, card, message);
         }
@@ -538,6 +529,49 @@ public class CardService {
     // Field edits (COCRDUPC 1230/1240/1250/1260) — return the exact COBOL
     // message on failure, or {@code null} when the value passes.
     // ==================================================================
+
+    /**
+     * Runs the four Card Update field edits in the exact COBOL evaluation order
+     * ({@code 1230-EDIT-NAME} &rarr; {@code 1240-EDIT-CARDSTATUS} &rarr;
+     * {@code 1250-EDIT-EXPIRY-MON} &rarr; {@code 1260-EDIT-EXPIRY-YEAR}) and
+     * returns the <em>first</em> failing field's exact COBOL screen message, or
+     * {@code null} when every field passes. This reproduces the COBOL
+     * first-message latching (each subsequent edit runs only while no earlier
+     * edit has failed).
+     *
+     * <p>This is the single validation entry point shared by
+     * {@link #updateCard(String, String, String, String, String)} (which runs it
+     * before applying the read-check-change-rewrite) and by the Card Update web
+     * controller's ENTER (validate-only) path, so the on-screen edits fire on both
+     * the validate and the confirm submits &mdash; exactly as the COBOL program
+     * re-edited the fields on every {@code ENTER} before allowing the update to be
+     * confirmed. Because the outcome depends solely on the submitted values, the
+     * method is {@code static} and performs no data access; the CVV is neither read
+     * nor referenced here.</p>
+     *
+     * @param embossedName the submitted embossed name (edited: mandatory, alpha + spaces)
+     * @param activeStatus the submitted active status (edited: {@code Y} or {@code N})
+     * @param expiryMonth  the submitted expiry month (edited: 1..12)
+     * @param expiryYear   the submitted expiry year (edited: 1950..2099)
+     * @return the first failing field's exact COBOL message, or {@code null} when
+     *         all four fields are valid
+     */
+    public static String validateEditableFields(String embossedName,
+                                                 String activeStatus,
+                                                 String expiryMonth,
+                                                 String expiryYear) {
+        String message = editName(embossedName);
+        if (message == null) {
+            message = editCardStatus(activeStatus);
+        }
+        if (message == null) {
+            message = editExpiryMonth(expiryMonth);
+        }
+        if (message == null) {
+            message = editExpiryYear(expiryYear);
+        }
+        return message;
+    }
 
     /**
      * {@code 1230-EDIT-NAME}: the embossed name is mandatory and may contain only

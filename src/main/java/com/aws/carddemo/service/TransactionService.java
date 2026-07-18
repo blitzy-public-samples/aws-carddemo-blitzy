@@ -18,6 +18,7 @@ package com.aws.carddemo.service;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.util.Objects;
+import java.util.Optional;
 
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.data.domain.Page;
@@ -142,6 +143,9 @@ public class TransactionService {
     /** Zero-padding format for a 16-digit card number, matching the COBOL {@code PIC 9(16)} normalization. */
     private static final String CARD_NUMBER_FORMAT = "%0" + CARD_NUMBER_LENGTH + "d";
 
+    /** Fixed width of a transaction id ({@code TRAN-ID PIC X(16)}, VSAM KEYLEN=16); zero-padded storage form. */
+    private static final int TRAN_ID_LENGTH = 16;
+
     /** Maximum width of the type code ({@code TTYPCD} BMS field, {@code PIC X(2)}). */
     private static final int TYPE_CD_MAX_LENGTH = 2;
 
@@ -241,6 +245,38 @@ public class TransactionService {
         return transactionRepository.findAll(withTranIdAscending(pageable));
     }
 
+    /**
+     * Lists transactions in ascending {@code tran_id} order starting <em>at or after</em>
+     * a supplied transaction-id key &mdash; the faithful reproduction of the
+     * {@code COTRN00C} start-key browse, in which the operator's {@code TRNIDIN} search
+     * key repositions the {@code TRANSACT} VSAM browse
+     * ({@code STARTBR ... RIDFLD(TRAN-ID)}) before a page of rows is read
+     * (legacy/cbl/COTRN00C.cbl, L206-215).
+     *
+     * <p>When {@code startKey} is {@code null} or blank the browse is not repositioned and
+     * this delegates to {@link #listTransactions(Pageable)} (the full key-ordered browse
+     * from the first transaction). When a key is supplied it is normalized to the stored
+     * 16-character, zero-padded {@code tran_id} form so that the {@code >=} predicate
+     * reproduces the KSDS reposition exactly (the fixed-width zero-padded key makes
+     * lexicographic ordering equal to numeric ordering), and the ascending {@code tran_id}
+     * sort is enforced regardless of the caller-supplied {@link Pageable} sort.</p>
+     *
+     * @param startKey the inclusive transaction-id start key; {@code null}/blank browses
+     *                 from the first transaction
+     * @param pageable the paging request (page number and size); {@code null}/unpaged
+     *                 returns the matching rows in a single key-ordered page
+     * @return a page of transactions with {@code tran_id >=} the (normalized) key in
+     *         ascending {@code tran_id} order; never {@code null}
+     */
+    @Transactional(readOnly = true)
+    public Page<Transaction> listTransactionsFrom(String startKey, Pageable pageable) {
+        String normalized = normalizeTransactionIdKey(startKey);
+        if (normalized == null) {
+            return listTransactions(pageable);
+        }
+        return transactionRepository.findByTranIdGreaterThanEqual(normalized, withTranIdAscending(pageable));
+    }
+
     // ------------------------------------------------------------------------
     // B. Transaction VIEW (COTRN01C, CT01)
     // ------------------------------------------------------------------------
@@ -275,6 +311,33 @@ public class TransactionService {
     // ------------------------------------------------------------------------
     // C. Transaction ADD (COTRN02C, CT02)
     // ------------------------------------------------------------------------
+
+    /**
+     * Returns the highest-keyed transaction &mdash; the re-platform of the
+     * {@code COTRN02C} {@code COPY-LAST-TRAN-DATA} reverse browse that pre-fills the
+     * Transaction Add screen (PF5, "Copy Last Tran"). The legacy program moved
+     * {@code HIGH-VALUES} into {@code TRAN-ID} and then issued
+     * {@code STARTBR}/{@code READPREV}/{@code ENDBR} on the {@code TRANSACT} VSAM
+     * file to land on the last record in ascending {@code tran_id} order
+     * (legacy/cbl/COTRN02C.cbl, L475-478); because {@code tran_id} is the fixed-width,
+     * zero-padded primary key, the highest key is the most recently generated
+     * transaction. That reverse browse is reproduced here as a single
+     * ordered-first lookup over the same key.
+     *
+     * <p>The record is returned verbatim; the web layer copies the reusable detail
+     * fields onto the add screen while preserving the operator-entered account/card
+     * key, exactly as the COBOL paragraph left {@code ACTIDINI}/{@code CARDNINI}
+     * untouched by the copy. An {@linkplain Optional#empty() empty} result means the
+     * transaction master holds no rows (the legacy browse would have raised its
+     * end-of-file condition), and the caller redisplays the entry screen unchanged.</p>
+     *
+     * @return the highest-keyed {@link Transaction}, or {@link Optional#empty()} when
+     *         the transaction master is empty; never {@code null}
+     */
+    @Transactional(readOnly = true)
+    public Optional<Transaction> findLastTransaction() {
+        return transactionRepository.findTopByOrderByTranIdDesc();
+    }
 
     /**
      * Adds a new transaction &mdash; the re-platform of {@code COTRN02C} paragraphs
@@ -689,6 +752,36 @@ public class TransactionService {
      */
     private static String normalizeCardNumber(String cardNumber) {
         return String.format(CARD_NUMBER_FORMAT, Long.parseLong(cardNumber));
+    }
+
+    /**
+     * Normalizes an operator-supplied transaction-id start key to the stored
+     * 16-character, zero-padded {@code tran_id} form used by the {@code transaction}
+     * table, or returns {@code null} when no usable key was supplied.
+     *
+     * <p>The list controller validates that a supplied key is numeric before calling
+     * (COBOL {@code TRNIDIN IS NUMERIC}); here a {@code null} or blank key yields
+     * {@code null} (browse from the first transaction) and any other key is left-padded
+     * with zeros to the 16-character key width so a {@code >=} comparison against the
+     * fixed-width stored keys matches the COBOL {@code STARTBR} reposition. A key already
+     * at or above the full width is returned stripped and unpadded (the request DTO caps
+     * the field at 16 characters).</p>
+     *
+     * @param startKey the raw operator-entered start key; may be {@code null}/blank
+     * @return the 16-character zero-padded key, or {@code null} when none was supplied
+     */
+    private static String normalizeTransactionIdKey(String startKey) {
+        if (startKey == null) {
+            return null;
+        }
+        String trimmed = startKey.strip();
+        if (trimmed.isEmpty()) {
+            return null;
+        }
+        if (trimmed.length() >= TRAN_ID_LENGTH) {
+            return trimmed;
+        }
+        return "0".repeat(TRAN_ID_LENGTH - trimmed.length()) + trimmed;
     }
 
     /**

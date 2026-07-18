@@ -132,6 +132,21 @@ public class BillPaymentController {
     private static final String BACK_TRANSACTION_ID = "CM00";
 
     /**
+     * Response-header name carrying the next program to enter &mdash; the stateless
+     * analog of the COBOL {@code XCTL PROGRAM(CDEMO-TO-PROGRAM)} navigation target.
+     * Emitted uniformly across the online controllers so every screen advertises its
+     * navigation the same way (the header-based navigation contract).
+     */
+    private static final String HEADER_NEXT_PROGRAM = "X-CardDemo-Next-Program";
+
+    /**
+     * Response-header name carrying the next screen's CICS transaction id &mdash; the
+     * companion of {@value #HEADER_NEXT_PROGRAM}, matching the transaction the target
+     * program runs under.
+     */
+    private static final String HEADER_NEXT_TRANSACTION = "X-CardDemo-Next-Transaction";
+
+    /**
      * Message shown when the operator presses a key the screen does not handle.
      * This is the shared literal {@code CCDA-MSG-INVALID-KEY} from
      * {@code legacy/cpy/CSMSG01Y.cpy} ({@code 'Invalid key pressed. Please see
@@ -242,8 +257,13 @@ public class BillPaymentController {
             return ResponseEntity.ok(toEnterResponse(request.accountId(), result, now));
         }
         if (action == PfKeyAction.PF3) {
-            // WHEN DFHPF3 -> RETURN-TO-PREV-SCREEN (XCTL to COMEN01C).
-            return ResponseEntity.ok(toBackNavigationResponse(now));
+            // WHEN DFHPF3 -> RETURN-TO-PREV-SCREEN (XCTL to COMEN01C). The navigation
+            // target is advertised through the X-CardDemo-Next-* response headers
+            // (uniform with the other online controllers) as well as in the body.
+            return ResponseEntity.ok()
+                    .header(HEADER_NEXT_PROGRAM, BACK_PROGRAM_NAME)
+                    .header(HEADER_NEXT_TRANSACTION, BACK_TRANSACTION_ID)
+                    .body(toBackNavigationResponse(now));
         }
         if (action == PfKeyAction.PF4) {
             // WHEN DFHPF4 -> CLEAR-CURRENT-SCREEN (blank all fields, re-send).
@@ -294,9 +314,12 @@ public class BillPaymentController {
      * {@code RETURN-TO-PREV-SCREEN} transfer to the Main Menu ({@code COBIL00C}
      * L128-L135 and L273-L284).
      *
-     * <p>The screen header identifies the destination screen
+     * <p>The response body names the destination screen
      * ({@value #BACK_TRANSACTION_ID} / {@value #BACK_PROGRAM_NAME}) so the client
-     * knows to render the Main Menu next; the date, time, and title lines are
+     * knows to render the Main Menu next; the matching
+     * {@value #HEADER_NEXT_PROGRAM}/{@value #HEADER_NEXT_TRANSACTION} HTTP response
+     * headers advertising the same target are added by the PF3 branch of
+     * {@link #payBill(BillPaymentRequest)}. The date, time, and title lines are
      * reused from the mapper's header so the formatting stays identical across
      * screens. No account id, balance, or message is carried.</p>
      *

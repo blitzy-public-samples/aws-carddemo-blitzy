@@ -19,6 +19,7 @@ import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.time.LocalDateTime;
 import java.util.Locale;
+import java.util.Optional;
 
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -88,9 +89,10 @@ import com.aws.carddemo.service.TransactionService.TransactionValidationExceptio
  *       treats {@code 'N'} identically to a blank confirm &mdash; it re-prompts;
  *       it does not cancel or clear &mdash; and that parity is preserved here.)</li>
  *   <li>any other value &mdash; the "{@code Invalid value. Valid values are (Y/N)...}"
- *       message. In practice a non-{@code Y}/{@code N} confirm is rejected by the
- *       request-body validation before this branch is reached; it is retained for
- *       parity and defensiveness.</li>
+ *       message. The one-character confirm field carries no value {@code @Pattern}, so a
+ *       non-{@code Y}/{@code N} confirm reaches this branch and is echoed back on-screen
+ *       (HTTP 200), reproducing the legacy {@code EVALUATE CONFIRMI WHEN OTHER} edit rather
+ *       than being rejected at the transport layer.</li>
  * </ul>
  *
  * <h2>Division of responsibility</h2>
@@ -120,11 +122,18 @@ import com.aws.carddemo.service.TransactionService.TransactionValidationExceptio
  *
  * <h2>Copy-last (PF5)</h2>
  * <p>The legacy {@code COPY-LAST-TRAN-DATA} pre-filled the entry fields from the
- * highest-keyed transaction. The transaction service does not expose a
- * fetch-last capability, so &mdash; per the migration guidance &mdash; this
- * controller does not synthesize that lookup (doing so would place data-access
- * logic in the web layer); it redisplays the current form with an informational
- * message instead.</p>
+ * highest-keyed transaction and then fell through to {@code PROCESS-ENTER-KEY}.
+ * That behavior is reproduced faithfully with clean layering: the service fetches
+ * the last transaction ({@link TransactionService#findLastTransaction()}, the
+ * re-platform of the {@code HIGH-VALUES}/{@code STARTBR}/{@code READPREV} reverse
+ * browse), the mapper copies its reusable detail fields onto the submitted request
+ * ({@link TransactionMapper#copyLastInto(TransactionAddRequest, Transaction)})
+ * while preserving the operator-entered account/card key, and the request is run
+ * through the same enter-key flow &mdash; so with a blank confirm the copied values
+ * are shown under the "{@code Confirm to add this transaction...}" prompt, and a
+ * confirmed ({@code 'Y'}) submit adds the copied transaction. When the transaction
+ * master is empty there is nothing to copy, so the form is redisplayed unchanged
+ * with an informational message.</p>
  */
 @RestController
 @RequestMapping("/api/v1/transactions/add")
@@ -154,6 +163,21 @@ public class TransactionAddController {
      * surfaced in the PF3 navigation response header.
      */
     private static final String BACK_TRANSACTION_ID = "CM00";
+
+    /**
+     * Response-header name carrying the next program to enter &mdash; the stateless
+     * analog of the COBOL {@code XCTL PROGRAM(CDEMO-TO-PROGRAM)} navigation target.
+     * Emitted uniformly across the online controllers so every screen advertises its
+     * navigation the same way (the header-based navigation contract).
+     */
+    private static final String HEADER_NEXT_PROGRAM = "X-CardDemo-Next-Program";
+
+    /**
+     * Response-header name carrying the next screen's CICS transaction id &mdash; the
+     * companion of {@value #HEADER_NEXT_PROGRAM}, matching the transaction the target
+     * program runs under.
+     */
+    private static final String HEADER_NEXT_TRANSACTION = "X-CardDemo-Next-Transaction";
 
     /**
      * Fixed decimal scale (two fraction digits) for monetary values, matching the
@@ -186,8 +210,9 @@ public class TransactionAddController {
     private static final String INVALID_KEY_MESSAGE = "Invalid key pressed. Please see below...";
 
     /**
-     * Informational message for the PF5 copy-last branch when no fetch-last service
-     * capability exists (see the class-level copy-last note).
+     * Informational message for the PF5 copy-last branch when the transaction master
+     * is empty and there is no prior transaction to copy (see the class-level
+     * copy-last note). The legacy screen would simply have nothing to pre-fill.
      */
     private static final String COPY_LAST_UNAVAILABLE_MESSAGE =
             "Copy last transaction is not available. Please enter transaction details.";
@@ -251,15 +276,71 @@ public class TransactionAddController {
             // DFHENTER -> PROCESS-ENTER-KEY (validate -> confirm -> add).
             case ENTER -> processEnter(request, now);
             // DFHPF3 -> RETURN-TO-PREV-SCREEN (navigate back to the main menu).
-            case PF3 -> ResponseEntity.ok(backToMenuResponse());
+            case PF3 -> backToMenu();
             // DFHPF4 -> CLEAR-CURRENT-SCREEN (blank form redisplay).
             case PF4 -> ResponseEntity.ok(transactionMapper.toAddResponse(blankRequest(), null, now));
-            // DFHPF5 -> COPY-LAST-TRAN-DATA (copy-last; see class-level note).
-            case PF5 -> ResponseEntity.ok(
-                    transactionMapper.toAddResponse(request, COPY_LAST_UNAVAILABLE_MESSAGE, now));
+            // DFHPF5 -> COPY-LAST-TRAN-DATA (copy the last transaction's detail fields).
+            case PF5 -> copyLastTransaction(request, now);
             // WHEN OTHER -> CCDA-MSG-INVALID-KEY redisplay.
             default -> ResponseEntity.ok(transactionMapper.toAddResponse(request, INVALID_KEY_MESSAGE, now));
         };
+    }
+
+    /**
+     * Reproduces the COBOL {@code COPY-LAST-TRAN-DATA} paragraph (PF5, "Copy Last
+     * Tran"). The highest-keyed transaction is fetched through the service (the
+     * re-platform of the {@code MOVE HIGH-VALUES TO TRAN-ID} /
+     * {@code STARTBR}&nbsp;/&nbsp;{@code READPREV}&nbsp;/&nbsp;{@code ENDBR} reverse
+     * browse), its reusable detail fields are copied onto the submitted request
+     * while the operator-entered account/card key is preserved, and the resulting
+     * request is fed straight through
+     * {@link #processEnter(TransactionAddRequest, LocalDateTime)} &mdash; the exact
+     * fall-through the COBOL paragraph performed when it ended with
+     * {@code PERFORM PROCESS-ENTER-KEY}. With the confirm flag still blank the
+     * operator sees the copied values under the "{@code Confirm to add this
+     * transaction...}" prompt; a confirmed ({@code 'Y'}) submit adds the copied
+     * transaction, exactly as the legacy flow allowed.
+     *
+     * <p>When the transaction master is empty there is nothing to copy (the legacy
+     * browse would have raised end-of-file and skipped the moves), so the entry
+     * screen is redisplayed unchanged with the
+     * "{@value #COPY_LAST_UNAVAILABLE_MESSAGE}" note.</p>
+     *
+     * @param request the submitted add-screen fields, supplying the preserved
+     *                account/card key and confirm flag
+     * @param now     the timestamp used to render the response header
+     * @return {@code 200 OK} with the copied values run through the enter-key flow,
+     *         or the unchanged screen when no prior transaction exists
+     */
+    private ResponseEntity<TransactionAddResponse> copyLastTransaction(TransactionAddRequest request,
+                                                                       LocalDateTime now) {
+        Optional<Transaction> last = transactionService.findLastTransaction();
+        if (last.isEmpty()) {
+            return ResponseEntity.ok(
+                    transactionMapper.toAddResponse(request, COPY_LAST_UNAVAILABLE_MESSAGE, now));
+        }
+        // COPY-LAST-TRAN-DATA: copy the detail fields, preserve the operator key, then
+        // fall through to PROCESS-ENTER-KEY exactly as the COBOL paragraph did.
+        TransactionAddRequest copied = transactionMapper.copyLastInto(request, last.get());
+        return processEnter(copied, now);
+    }
+
+    /**
+     * Builds the PF3 back-navigation response and emits the header-based navigation
+     * contract. The body (rendered by {@link #backToMenuResponse()}) still names the
+     * menu target for backward compatibility, and the
+     * {@value #HEADER_NEXT_PROGRAM}/{@value #HEADER_NEXT_TRANSACTION} response headers
+     * advertise the same target ({@value #BACK_PROGRAM_NAME} /
+     * {@value #BACK_TRANSACTION_ID}) uniformly with the other online controllers.
+     *
+     * @return {@code 200 OK} naming the main-menu target in both the navigation
+     *         headers and the response body
+     */
+    private ResponseEntity<TransactionAddResponse> backToMenu() {
+        return ResponseEntity.ok()
+                .header(HEADER_NEXT_PROGRAM, BACK_PROGRAM_NAME)
+                .header(HEADER_NEXT_TRANSACTION, BACK_TRANSACTION_ID)
+                .body(backToMenuResponse());
     }
 
     /**
@@ -273,8 +354,8 @@ public class TransactionAddController {
      *       "{@code Confirm to add this transaction...}" prompt (the legacy program
      *       treats {@code 'N'} the same as a blank confirm);</li>
      *   <li>anything else &rarr; the "{@code Invalid value. Valid values are (Y/N)...}"
-     *       message (defensive; a non-{@code Y}/{@code N} confirm is normally rejected
-     *       by request validation before reaching here).</li>
+     *       message (the one-character confirm carries no value {@code @Pattern}, so a
+     *       non-{@code Y}/{@code N} confirm reaches this branch and is echoed back at HTTP 200).</li>
      * </ul>
      *
      * @param request the submitted add-screen fields
@@ -394,14 +475,16 @@ public class TransactionAddController {
     }
 
     /**
-     * Builds the PF3 back-navigation response &mdash; the stateless analog of the
-     * COBOL {@code RETURN-TO-PREV-SCREEN} {@code XCTL} to the main menu. The
-     * navigation target ({@value #BACK_PROGRAM_NAME} / {@value #BACK_TRANSACTION_ID})
-     * is carried in the response header fields so the client can invoke the main-menu
-     * endpoint next; no message is set (the legacy return path sets none), and the
-     * entry fields are left blank.
+     * Builds the PF3 back-navigation response <em>body</em> &mdash; the stateless
+     * analog of the COBOL {@code RETURN-TO-PREV-SCREEN} {@code XCTL} to the main
+     * menu. The navigation target ({@value #BACK_PROGRAM_NAME} /
+     * {@value #BACK_TRANSACTION_ID}) is named in the response body's header fields;
+     * the {@value #HEADER_NEXT_PROGRAM}/{@value #HEADER_NEXT_TRANSACTION} HTTP
+     * response headers that advertise the same target are added by
+     * {@link #backToMenu()}. No message is set (the legacy return path sets none),
+     * and the entry fields are left blank.
      *
-     * @return a header-only {@link TransactionAddResponse} naming the menu target
+     * @return a {@link TransactionAddResponse} naming the menu target in its body
      */
     private static TransactionAddResponse backToMenuResponse() {
         return new TransactionAddResponse(

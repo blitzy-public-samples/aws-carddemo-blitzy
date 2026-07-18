@@ -126,7 +126,7 @@ public class CardMapper {
     public CardListResponse.CardListRow toListRow(Card card) {
         Objects.requireNonNull(card, "card must not be null");
         return new CardListResponse.CardListRow(
-                String.valueOf(card.getAcctId()),  // ACCTNOnO  <- CARD-ACCT-ID
+                String.format("%011d", card.getAcctId()),  // ACCTNOnO  <- CARD-ACCT-ID
                 card.getCardNum(),                 // CRDNUMnO  <- CARD-NUM
                 card.getCardActiveStatus());       // CRDSTSnO  <- CARD-ACTIVE-STATUS
         // NOTE: the sensitive card verification value is intentionally never read here.
@@ -243,7 +243,7 @@ public class CardMapper {
                 programName,                                            // PGMNAMEO
                 title02,                                                // TITLE02O
                 DateUtils.formatTimeHhMmSs(effectiveNow.toLocalTime()), // CURTIMEO
-                String.valueOf(card.getAcctId()),                       // ACCTSIDO <- CARD-ACCT-ID
+                String.format("%011d", card.getAcctId()),                       // ACCTSIDO <- CARD-ACCT-ID
                 card.getCardNum(),                                      // CARDSIDO <- CARD-NUM
                 card.getCardEmbossedName(),                             // CRDNAMEO <- CARD-EMBOSSED-NAME
                 card.getCardActiveStatus(),                             // CRDSTCDO <- CARD-ACTIVE-STATUS
@@ -308,7 +308,7 @@ public class CardMapper {
                 programName,                                            // PGMNAMEO
                 title02,                                                // TITLE02O
                 DateUtils.formatTimeHhMmSs(effectiveNow.toLocalTime()), // CURTIMEO
-                String.valueOf(card.getAcctId()),                       // ACCTSIDO <- CARD-ACCT-ID
+                String.format("%011d", card.getAcctId()),                       // ACCTSIDO <- CARD-ACCT-ID
                 card.getCardNum(),                                      // CARDSIDO <- CARD-NUM
                 card.getCardEmbossedName(),                             // CRDNAMEO <- CARD-EMBOSSED-NAME
                 card.getCardActiveStatus(),                             // CRDSTCDO <- CARD-ACTIVE-STATUS

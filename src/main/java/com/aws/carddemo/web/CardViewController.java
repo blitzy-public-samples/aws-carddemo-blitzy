@@ -70,8 +70,8 @@ import java.time.format.DateTimeFormatter;
  * <ul>
  *   <li><strong>{@link PfKeyAction#PF3}</strong> &mdash; the exit key. Reproduces
  *       the COBOL {@code EXEC CICS XCTL} back to the calling program: a
- *       {@code 200 OK} carrying the navigation headers {@value #HEADER_TO_PROGRAM}
- *       / {@value #HEADER_TO_TRANSACTION} set to the caller's from-program /
+ *       {@code 200 OK} carrying the navigation headers {@value #NEXT_PROGRAM_HEADER}
+ *       / {@value #NEXT_TRANSACTION_HEADER} set to the caller's from-program /
  *       from-transaction, or to the main menu ({@code COMEN01C} / {@code CM00})
  *       when none was supplied &mdash; exactly the COBOL default. When the caller
  *       arrived from the card-list screen it passes {@code COCRDLIC} /
@@ -89,14 +89,16 @@ import java.time.format.DateTimeFormatter;
  *       {@code CCDA-MSG-INVALID-KEY}).</li>
  * </ul>
  *
- * <h2>Exception handling (no {@code try}/{@code catch})</h2>
- * <p>This controller never catches a service exception; it delegates and lets the
- * typed exceptions surface to {@code GlobalExceptionHandler}. A not-found read
- * raises {@link com.aws.carddemo.service.CardService}'s
- * {@code RecordNotFoundException} (COBOL/CICS {@code NOTFND}), mapped to HTTP
- * {@code 404}. An input-edit failure raises the service's
- * {@link IllegalArgumentException} (the COBOL {@code 2210}/{@code 2220} edit
- * messages); ownership of the edit logic stays with the service, so this
+ * <h2>Exception handling</h2>
+ * <p>A not-found read raises {@link com.aws.carddemo.service.CardService}'s
+ * {@code RecordNotFoundException} (COBOL/CICS {@code NOTFND}); it is deliberately
+ * left uncaught so {@code GlobalExceptionHandler} maps it to HTTP {@code 404},
+ * preserving the caller-visible "not found" parity. An input-edit failure raises
+ * the service's {@link IllegalArgumentException} (the COBOL {@code 2210}/{@code 2220}
+ * edit messages); because the legacy program surfaced that as an ordinary
+ * same-screen field edit rather than an abend, the {@code ENTER} branch catches it
+ * and redisplays the screen at HTTP {@code 200} carrying the verbatim message
+ * (QA finding F1). Ownership of the edit logic stays with the service, so this
  * controller performs no input validation of its own beyond the request DTO's
  * Bean Validation constraints (which surface as HTTP {@code 400}).</p>
  *
@@ -174,16 +176,20 @@ public class CardViewController {
     static final String HEADER_FROM_TRANSACTION = "X-CardDemo-From-Tranid";
 
     /**
-     * Response header naming the program to navigate to on exit &mdash; the Java
-     * analog of the COBOL {@code CDEMO-TO-PROGRAM} set before {@code XCTL}.
+     * Response header naming the program to navigate to next &mdash; the Java
+     * analog of the COBOL {@code CDEMO-TO-PROGRAM} set before {@code XCTL}. The
+     * header name matches the uniform navigation contract emitted by every other
+     * online controller (QA finding F7).
      */
-    static final String HEADER_TO_PROGRAM = "X-CardDemo-To-Program";
+    static final String NEXT_PROGRAM_HEADER = "X-CardDemo-Next-Program";
 
     /**
-     * Response header naming the transaction to navigate to on exit &mdash; the
-     * Java analog of the COBOL {@code CDEMO-TO-TRANID} set before {@code XCTL}.
+     * Response header naming the transaction to navigate to next &mdash; the Java
+     * analog of the COBOL {@code CDEMO-TO-TRANID} set before {@code XCTL}. The
+     * header name matches the uniform navigation contract emitted by every other
+     * online controller (QA finding F7).
      */
-    static final String HEADER_TO_TRANSACTION = "X-CardDemo-To-Tranid";
+    static final String NEXT_TRANSACTION_HEADER = "X-CardDemo-Next-Transaction";
 
     /**
      * Header date format &mdash; matches the COBOL {@code WS-CURDATE-MM-DD-YY}
@@ -238,15 +244,16 @@ public class CardViewController {
      *
      * <ul>
      *   <li>{@link PfKeyAction#PF3} &rarr; {@code 200 OK} with the
-     *       {@value #HEADER_TO_PROGRAM} / {@value #HEADER_TO_TRANSACTION} navigation
+     *       {@value #NEXT_PROGRAM_HEADER} / {@value #NEXT_TRANSACTION_HEADER} navigation
      *       headers set to the caller's from-program / from-transaction, or to
      *       {@link #DEFAULT_BACK_PROGRAM} / {@link #DEFAULT_BACK_TRANSACTION} when
      *       absent.</li>
      *   <li>{@link PfKeyAction#ENTER} or {@code null} &rarr; resolve the card via
      *       {@link CardService#viewCard(Long, String)} and return {@code 200 OK}
-     *       with its detail; a not-found read propagates as {@code 404} and an
-     *       input-edit failure propagates as the service's
-     *       {@link IllegalArgumentException} (no {@code try}/{@code catch}).</li>
+     *       with its detail; a not-found read propagates as {@code 404}, while an
+     *       input-edit failure (the service's {@link IllegalArgumentException}
+     *       carrying a COBOL {@code 2210}/{@code 2220} edit message) is caught and
+     *       redisplayed at {@code 200 OK} same-screen with that message.</li>
      *   <li>any other key &rarr; {@code 200 OK} re-displaying the screen with
      *       {@link #MSG_INVALID_KEY}.</li>
      * </ul>
@@ -273,8 +280,8 @@ public class CardViewController {
             String toProgram = firstNonBlank(fromProgram, DEFAULT_BACK_PROGRAM);
             String toTransaction = firstNonBlank(fromTransaction, DEFAULT_BACK_TRANSACTION);
             return ResponseEntity.ok()
-                    .header(HEADER_TO_PROGRAM, toProgram)
-                    .header(HEADER_TO_TRANSACTION, toTransaction)
+                    .header(NEXT_PROGRAM_HEADER, toProgram)
+                    .header(NEXT_TRANSACTION_HEADER, toTransaction)
                     .body(blankScreen(null, null, null, null, now));
         }
 
@@ -283,7 +290,20 @@ public class CardViewController {
         // The service owns the field edits and the keyed read; exceptions are not caught
         // here (RecordNotFoundException -> 404; input-edit IllegalArgumentException -> 400/service).
         if (action == null || action == PfKeyAction.ENTER) {
-            Card card = cardService.viewCard(parseAccountId(request.accountId()), request.cardId());
+            // The service owns the field edits (COBOL 2210-EDIT-ACCOUNT / 2220-EDIT-CARD)
+            // and the keyed read. A not-found read raises RecordNotFoundException, which is
+            // deliberately NOT caught here so it propagates to the GlobalExceptionHandler
+            // (-> 404). An input-edit failure raises IllegalArgumentException carrying a
+            // COBOL edit message; that is a same-screen field edit, not a server fault, so
+            // it is caught and the screen is redisplayed at 200 OK echoing the operator's
+            // search keys and the verbatim message (QA finding F1, card recurrence).
+            Card card;
+            try {
+                card = cardService.viewCard(parseAccountId(request.accountId()), request.cardId());
+            } catch (IllegalArgumentException ex) {
+                return ResponseEntity.ok(
+                        blankScreen(request.accountId(), request.cardId(), null, ex.getMessage(), now));
+            }
             return ResponseEntity.ok(cardMapper.toViewResponse(
                     card, null, null, now, TRANSACTION_ID, TITLE01, TITLE02, PROGRAM_ID, FUNCTION_KEYS));
         }

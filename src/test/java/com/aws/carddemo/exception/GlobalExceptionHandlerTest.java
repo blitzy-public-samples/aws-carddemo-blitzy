@@ -25,6 +25,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.Mockito;
 import org.slf4j.MDC;
+import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.dao.OptimisticLockingFailureException;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpMethod;
@@ -39,6 +40,7 @@ import org.springframework.validation.FieldError;
 import org.springframework.web.HttpMediaTypeNotSupportedException;
 import org.springframework.web.HttpRequestMethodNotSupportedException;
 import org.springframework.web.bind.MethodArgumentNotValidException;
+import org.springframework.web.method.annotation.MethodArgumentTypeMismatchException;
 import org.springframework.web.servlet.resource.NoResourceFoundException;
 
 import jakarta.persistence.OptimisticLockException;
@@ -492,5 +494,74 @@ class GlobalExceptionHandlerTest {
 
         assertThat(problem.getProperties() == null
                 || !problem.getProperties().containsKey(CORRELATION_ID_MDC_KEY)).isTrue();
+    }
+
+    // ---------------------------------------------------------------------
+    // Data-integrity (foreign-key / unique) and parameter type-mismatch mapping
+    // (QA findings F5 and F12 — same "unmapped exception -> generic 500" family)
+    // ---------------------------------------------------------------------
+
+    /**
+     * A foreign-key (or check / not-null) integrity violation maps to HTTP 400
+     * rather than the catch-all 500. This is the executable proof for QA finding
+     * F5: adding a transaction whose {@code type_cd}/{@code cat_cd} is absent from
+     * the reference tables trips {@code fk_transaction_type} /
+     * {@code fk_transaction_category}, and the caller must see a typed client error.
+     * The constraint name / SQL text is logged server-side only and never leaks
+     * into the response body.
+     */
+    @Test
+    void mapsForeignKeyDataIntegrityViolationTo400() {
+        DataIntegrityViolationException ex = new DataIntegrityViolationException(
+                "insert or update on table \"transaction\" violates foreign key "
+                        + "constraint \"fk_transaction_type\"");
+
+        ProblemDetail problem = handler.handleDataIntegrity(ex);
+
+        assertThat(problem.getStatus()).isEqualTo(HttpStatus.BAD_REQUEST.value());
+        assertThat(problem.getTitle()).isEqualTo("Data Integrity Violation");
+        assertThat(problem.getDetail())
+                .isEqualTo("The request references data that does not exist or violates a data integrity rule.");
+        assertThat(problem.getDetail()).doesNotContain("fk_transaction_type");
+        assertThat(problem.getDetail()).doesNotContain("transaction");
+    }
+
+    /**
+     * A genuine duplicate-key / unique-constraint violation that surfaces as
+     * Spring's own {@link org.springframework.dao.DuplicateKeyException} (a subclass
+     * of {@link DataIntegrityViolationException}) is preserved as HTTP 409 CONFLICT,
+     * so the 409 duplicate-record outcome is never downgraded to 400 by the F5
+     * safety-net handler.
+     */
+    @Test
+    void preservesSpringDuplicateKeyViolationAs409() {
+        org.springframework.dao.DuplicateKeyException ex =
+                new org.springframework.dao.DuplicateKeyException(
+                        "duplicate key value violates unique constraint");
+
+        ProblemDetail problem = handler.handleDataIntegrity(ex);
+
+        assertThat(problem.getStatus()).isEqualTo(HttpStatus.CONFLICT.value());
+        assertThat(problem.getTitle()).isEqualTo("Duplicate Record");
+        assertThat(problem.getDetail()).isEqualTo("The record already exists.");
+    }
+
+    /**
+     * A query-/path-parameter type-conversion failure (for example a non-numeric
+     * {@code ?page=abc} bound to an {@code int}) maps to HTTP 400 rather than the
+     * catch-all 500 &mdash; the executable proof for QA finding F12. Only the
+     * parameter name is echoed; the rejected value is never included.
+     */
+    @Test
+    void mapsMethodArgumentTypeMismatchTo400() {
+        MethodArgumentTypeMismatchException ex =
+                Mockito.mock(MethodArgumentTypeMismatchException.class);
+        Mockito.when(ex.getName()).thenReturn("page");
+
+        ProblemDetail problem = handler.handleTypeMismatch(ex);
+
+        assertThat(problem.getStatus()).isEqualTo(HttpStatus.BAD_REQUEST.value());
+        assertThat(problem.getTitle()).isEqualTo("Invalid Parameter");
+        assertThat(problem.getDetail()).isEqualTo("The 'page' parameter has an invalid value.");
     }
 }

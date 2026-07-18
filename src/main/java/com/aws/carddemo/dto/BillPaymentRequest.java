@@ -52,9 +52,11 @@ import jakarta.validation.constraints.Size;
  *   <li>{@link #confirm()} maps to {@code CONFIRMI} ({@code PIC X(1)}); it is the Y/N confirmation.
  *       The legacy {@code EVALUATE CONFIRMI} accepts {@code 'Y'}/{@code 'y'} (pay),
  *       {@code 'N'}/{@code 'n'} (decline), and blank/unset (prompt for confirmation), rejecting any
- *       other value with &quot;Invalid value. Valid values are (Y/N)&quot;. The
- *       {@link #confirm() pattern} accepts exactly that set: a single {@code Y}, {@code y},
- *       {@code N}, {@code n}, space, or the empty string.</li>
+ *       other value with &quot;Invalid value. Valid values are (Y/N)&quot;. Only the single-character
+ *       {@code PIC X(1)} length is enforced declaratively here; that {@code Y}/{@code N} value
+ *       {@code EVALUATE} is reproduced by {@link com.aws.carddemo.service.BillPaymentService}, which
+ *       echoes &quot;Invalid value. Valid values are (Y/N)&quot; back on-screen (HTTP 200) for any
+ *       other one-character value rather than rejecting it at the transport layer.</li>
  * </ul>
  *
  * <p>{@link #action()} carries the terminal Attention Identifier (the key the operator pressed),
@@ -77,8 +79,9 @@ import jakarta.validation.constraints.Size;
  *        ({@code PIC X(11)}). At most eleven characters and digits only; may be empty so the
  *        service can surface the legacy empty-account-id message.
  * @param confirm the Y/N confirmation to post the full-balance payment; maps to {@code CONFIRMI}
- *        ({@code PIC X(1)}). One of {@code Y}, {@code y}, {@code N}, {@code n}, a single space, or
- *        the empty string.
+ *        ({@code PIC X(1)}). At most one character; the {@code Y}/{@code N}/blank value check is a
+ *        service-level same-screen edit, so an invalid one-character value is echoed back on-screen
+ *        (HTTP 200) rather than rejected at the transport layer.
  * @param action the terminal Attention Identifier for this submission (translated from
  *        {@code EIBAID} via {@code CSSTRPFY.cpy}); {@link PfKeyAction#ENTER},
  *        {@link PfKeyAction#PF3}, or {@link PfKeyAction#PF4} are meaningful on this screen.
@@ -90,8 +93,10 @@ public record BillPaymentRequest(
         @Pattern(regexp = "^\\d{0,11}$", message = "accountId must contain digits only")
         String accountId,
 
+        // CONFIRMI PIC X(1): only the single-character length is enforced here; the Y/N value
+        // EVALUATE is a service-level same-screen edit (BillPaymentService), so an invalid
+        // one-character confirm returns HTTP 200 with "Invalid value. Valid values are (Y/N)...".
         @Size(max = 1, message = "confirm must be a single character")
-        @Pattern(regexp = "^[YyNn ]?$", message = "confirm must be Y, N, or blank")
         String confirm,
 
         PfKeyAction action) {

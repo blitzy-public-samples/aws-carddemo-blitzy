@@ -190,7 +190,7 @@ public class TransactionListController {
      */
     @GetMapping
     public ResponseEntity<TransactionListResponse> firstPage() {
-        return ResponseEntity.ok(body(query(1), null));
+        return ResponseEntity.ok(body(query(1, null), null));
     }
 
     /**
@@ -211,21 +211,24 @@ public class TransactionListController {
 
         int currentPage = Math.max(1, page);
         PfKeyAction action = request.action();
+        // The (numeric) search key repositions the browse and is carried across page turns
+        // so PF7/PF8 page within the repositioned browse (COTRN00C reenter behavior).
+        String startKey = startKeyOf(request.transactionId());
 
         if (action == PfKeyAction.ENTER) {
             return handleEnter(request, currentPage);
         }
         if (action == PfKeyAction.PF3) {
-            return handleBack(currentPage);
+            return handleBack(currentPage, startKey);
         }
         if (action == PfKeyAction.PF7) {
-            return handlePageBackward(currentPage);
+            return handlePageBackward(currentPage, startKey);
         }
         if (action == PfKeyAction.PF8) {
-            return handlePageForward(currentPage);
+            return handlePageForward(currentPage, startKey);
         }
         // COBOL EVALUATE EIBAID ... WHEN OTHER: any other (or absent) key is invalid.
-        return ResponseEntity.ok(body(query(currentPage), MSG_INVALID_KEY));
+        return ResponseEntity.ok(body(query(currentPage, startKey), MSG_INVALID_KEY));
     }
 
     /**
@@ -253,10 +256,13 @@ public class TransactionListController {
      */
     private ResponseEntity<TransactionListResponse> handleEnter(TransactionListRequest request, int currentPage) {
         String errorMessage = null;
+        // A numeric TRNIDIN search key repositions the browse (STARTBR RIDFLD(TRAN-ID));
+        // a null/blank or non-numeric key means browse from the first transaction.
+        String startKey = startKeyOf(request.transactionId());
 
         int selectedIndex = firstSelectionIndex(request.rowSelections());
         if (selectedIndex >= 0) {
-            Page<Transaction> current = query(currentPage);
+            Page<Transaction> current = query(currentPage, startKey);
             List<Transaction> rows = current.getContent();
             String selectedId = (selectedIndex < rows.size()) ? rows.get(selectedIndex).getTranId() : null;
             if (selectedId != null && !selectedId.isBlank()) {
@@ -277,13 +283,14 @@ public class TransactionListController {
         if (searchKey != null) {
             String trimmed = searchKey.trim();
             if (!trimmed.isEmpty() && !isAllDigits(trimmed)) {
-                // Non-numeric search key: message only; page is not advanced.
-                return ResponseEntity.ok(body(query(currentPage), MSG_TRAN_ID_NUMERIC));
+                // Non-numeric search key: message only; the browse is not repositioned or advanced.
+                return ResponseEntity.ok(body(query(currentPage, null), MSG_TRAN_ID_NUMERIC));
             }
         }
 
-        // Valid or empty search key: display the first page from the start of the browse.
-        return ResponseEntity.ok(body(query(1), errorMessage));
+        // Valid or empty search key: display the first page, repositioned at the supplied
+        // start key (COTRN00C STARTBR RIDFLD(TRAN-ID)) or from the first row when none was given.
+        return ResponseEntity.ok(body(query(1, startKey), errorMessage));
     }
 
     /**
@@ -292,41 +299,46 @@ public class TransactionListController {
      * headers; the body redisplays the current page so the endpoint contract stays uniform.
      *
      * @param currentPage the one-based page currently displayed
+     * @param startKey    the active transaction-id start key, or {@code null} when unfiltered
      * @return {@code 200 OK} with back-navigation headers and the current page
      */
-    private ResponseEntity<TransactionListResponse> handleBack(int currentPage) {
+    private ResponseEntity<TransactionListResponse> handleBack(int currentPage, String startKey) {
         return ResponseEntity.ok()
                 .header(HEADER_NEXT_PROGRAM, BACK_PROGRAM)
                 .header(HEADER_NEXT_TRANSACTION, BACK_TRANSACTION)
-                .body(body(query(currentPage), null));
+                .body(body(query(currentPage, startKey), null));
     }
 
     /**
      * Reproduces {@code PROCESS-PF7-KEY}: page backward. When already on the first page the
-     * page is unchanged and the top-of-page boundary message is shown.
+     * page is unchanged and the top-of-page boundary message is shown. Any active start key
+     * is preserved so paging stays within the repositioned browse.
      *
      * @param currentPage the one-based page currently displayed
+     * @param startKey    the active transaction-id start key, or {@code null} when unfiltered
      * @return the previous page, or the first page with the top-of-page message
      */
-    private ResponseEntity<TransactionListResponse> handlePageBackward(int currentPage) {
+    private ResponseEntity<TransactionListResponse> handlePageBackward(int currentPage, String startKey) {
         if (currentPage > 1) {
-            return ResponseEntity.ok(body(query(currentPage - 1), null));
+            return ResponseEntity.ok(body(query(currentPage - 1, startKey), null));
         }
-        return ResponseEntity.ok(body(query(1), MSG_TOP_OF_PAGE));
+        return ResponseEntity.ok(body(query(1, startKey), MSG_TOP_OF_PAGE));
     }
 
     /**
      * Reproduces {@code PROCESS-PF8-KEY}: page forward. When there is no next page (the
      * legacy {@code NEXT-PAGE-NO} state, mapped to {@link Page#hasNext()}) the page is
-     * unchanged and the bottom-of-page boundary message is shown.
+     * unchanged and the bottom-of-page boundary message is shown. Any active start key is
+     * preserved so paging stays within the repositioned browse.
      *
      * @param currentPage the one-based page currently displayed
+     * @param startKey    the active transaction-id start key, or {@code null} when unfiltered
      * @return the next page, or the current page with the bottom-of-page message
      */
-    private ResponseEntity<TransactionListResponse> handlePageForward(int currentPage) {
-        Page<Transaction> current = query(currentPage);
+    private ResponseEntity<TransactionListResponse> handlePageForward(int currentPage, String startKey) {
+        Page<Transaction> current = query(currentPage, startKey);
         if (current.hasNext()) {
-            return ResponseEntity.ok(body(query(currentPage + 1), null));
+            return ResponseEntity.ok(body(query(currentPage + 1, startKey), null));
         }
         return ResponseEntity.ok(body(current, MSG_BOTTOM_OF_PAGE));
     }
@@ -334,14 +346,21 @@ public class TransactionListController {
     /**
      * Executes the key-ordered paged browse for a one-based page number, reproducing the
      * {@code COTRN00C} {@code TRAN-ID}-ordered VSAM browse via
-     * {@link TransactionService#listTransactions(org.springframework.data.domain.Pageable)}.
+     * {@link TransactionService#listTransactionsFrom(String, org.springframework.data.domain.Pageable)}.
+     *
+     * <p>When {@code startKey} is a (numeric) transaction id the browse is repositioned at
+     * the first record at or after that key ({@code STARTBR ... RIDFLD(TRAN-ID)}); when it
+     * is {@code null} the browse begins at the first transaction. The {@code startKey}
+     * context is threaded through every page turn so that, once repositioned, PF7/PF8 page
+     * <em>within</em> the repositioned browse exactly as the legacy screen did.</p>
      *
      * @param oneBasedPage the one-based page number (values below one are clamped to the first page)
+     * @param startKey     the inclusive transaction-id start key, or {@code null} to browse from the first row
      * @return the requested page of transactions in ascending {@code tranId} order; never {@code null}
      */
-    private Page<Transaction> query(int oneBasedPage) {
+    private Page<Transaction> query(int oneBasedPage, String startKey) {
         int zeroBasedPage = Math.max(0, oneBasedPage - 1);
-        return transactionService.listTransactions(
+        return transactionService.listTransactionsFrom(startKey,
                 PageRequest.of(zeroBasedPage, PAGE_SIZE, Sort.by(SORT_PROPERTY)));
     }
 
@@ -399,5 +418,24 @@ public class TransactionListController {
             }
         }
         return true;
+    }
+
+    /**
+     * Extracts a usable transaction-id start key from the submitted search field: the
+     * trimmed value when it is a non-empty run of digits (COBOL {@code TRNIDIN IS
+     * NUMERIC}), otherwise {@code null}. A {@code null}/blank or non-numeric field means
+     * "do not reposition" &mdash; the browse begins at the first transaction &mdash; so a
+     * non-numeric residual key carried on a page-turn cannot corrupt the browse (the ENTER
+     * path separately surfaces {@link #MSG_TRAN_ID_NUMERIC} for a non-numeric key).
+     *
+     * @param raw the raw {@code transactionId} search field; may be {@code null}
+     * @return the trimmed numeric start key, or {@code null} when absent or non-numeric
+     */
+    private static String startKeyOf(String raw) {
+        if (raw == null) {
+            return null;
+        }
+        String trimmed = raw.trim();
+        return (!trimmed.isEmpty() && isAllDigits(trimmed)) ? trimmed : null;
     }
 }

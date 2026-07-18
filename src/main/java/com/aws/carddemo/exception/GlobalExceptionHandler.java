@@ -18,6 +18,7 @@ package com.aws.carddemo.exception;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.slf4j.MDC;
+import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.dao.OptimisticLockingFailureException;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
@@ -31,6 +32,7 @@ import org.springframework.web.HttpRequestMethodNotSupportedException;
 import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
+import org.springframework.web.method.annotation.MethodArgumentTypeMismatchException;
 import org.springframework.web.servlet.resource.NoResourceFoundException;
 
 import jakarta.persistence.OptimisticLockException;
@@ -415,6 +417,69 @@ public class GlobalExceptionHandler {
         log.warn("Unsupported media type: {}", ex.getClass().getSimpleName());
         return problem(HttpStatus.UNSUPPORTED_MEDIA_TYPE, "Unsupported Media Type",
                 "The request Content-Type is not supported by this endpoint.");
+    }
+
+    /**
+     * Maps a database referential- or data-integrity violation to a typed client
+     * error. Spring translates a PostgreSQL constraint failure into a
+     * {@link DataIntegrityViolationException}; in the online layer this arises when
+     * a transaction is added that references a {@code type_cd}/{@code cat_cd} not
+     * present in the reference tables, tripping {@code fk_transaction_type} /
+     * {@code fk_transaction_category}. The legacy COTRN02C path performed no such
+     * existence check &mdash; the foreign keys are the documented integrity
+     * improvement recorded in {@code docs/decision-log.md} &mdash; so without this
+     * handler the violation reached the catch-all and was mis-reported as a
+     * {@code 500} rather than the caller-visible typed error the screen expects.
+     *
+     * <p>A genuine duplicate-key / unique-constraint violation that surfaces as
+     * Spring's own {@link org.springframework.dao.DuplicateKeyException} (a subclass
+     * of {@code DataIntegrityViolationException}) is preserved as {@code 409
+     * CONFLICT} so that its caller-visible outcome is never downgraded; every other
+     * integrity violation (foreign-key, check, not-null) is reported as {@code 400
+     * BAD_REQUEST} because the caller supplied a value the data model rejects.</p>
+     *
+     * <p>The offending constraint detail is logged server-side at {@code WARN} for
+     * diagnosis, but only a fixed, non-revealing message is returned to the client:
+     * no bound values, SQL text, or constraint internals are echoed.</p>
+     *
+     * @param ex the data-integrity violation raised during the persistence flush
+     * @return a {@link ProblemDetail} with status 409 for a duplicate/unique
+     *         violation, otherwise 400
+     */
+    @ExceptionHandler(DataIntegrityViolationException.class)
+    public ProblemDetail handleDataIntegrity(DataIntegrityViolationException ex) {
+        if (ex instanceof org.springframework.dao.DuplicateKeyException) {
+            log.warn("Duplicate-key integrity violation: {}", ex.getMostSpecificCause().getMessage());
+            return problem(HttpStatus.CONFLICT, "Duplicate Record", "The record already exists.");
+        }
+        log.warn("Data integrity violation: {}", ex.getMostSpecificCause().getMessage());
+        return problem(HttpStatus.BAD_REQUEST, "Data Integrity Violation",
+                "The request references data that does not exist or violates a data integrity rule.");
+    }
+
+    /**
+     * Maps a query-, path-, or form-parameter type-conversion failure to HTTP
+     * {@code 400 Bad Request}. Spring MVC raises
+     * {@link MethodArgumentTypeMismatchException} when a request parameter cannot be
+     * converted to the handler-method argument type &mdash; for example a
+     * non-numeric {@code ?page=abc} bound to an {@code int} page index. Left to the
+     * catch-all it would be mis-reported as a {@code 500}; it is a client error and
+     * is handled here accordingly (same family as the F1/F5 unmapped-exception
+     * defects).
+     *
+     * <p>Only the parameter <em>name</em> is included in the returned detail; the
+     * rejected value is never echoed (a mismatched parameter could, in principle,
+     * carry sensitive input). The signal is logged at {@code WARN} with no stack
+     * trace.</p>
+     *
+     * @param ex the type-mismatch signal raised during handler-argument binding
+     * @return a {@link ProblemDetail} with status 400 and title "Invalid Parameter"
+     */
+    @ExceptionHandler(MethodArgumentTypeMismatchException.class)
+    public ProblemDetail handleTypeMismatch(MethodArgumentTypeMismatchException ex) {
+        log.warn("Parameter type mismatch for '{}'", ex.getName());
+        return problem(HttpStatus.BAD_REQUEST, "Invalid Parameter",
+                "The '" + ex.getName() + "' parameter has an invalid value.");
     }
 
     /**

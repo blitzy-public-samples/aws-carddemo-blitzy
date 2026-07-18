@@ -118,6 +118,26 @@ public interface TransactionRepository extends JpaRepository<Transaction, String
     Page<Transaction> findByCardNumOrderByProcTsAscTranIdAsc(String cardNum, Pageable pageable);
 
     /**
+     * Returns a page of transactions whose {@code tran_id} is greater than or equal
+     * to the supplied key, in the order requested by {@code pageable}.
+     *
+     * <p>Reproduces the {@code COTRN00C} transaction-list start-key browse: the COBOL
+     * moves the operator's {@code TRNIDIN} search key into {@code TRAN-ID} and issues
+     * {@code STARTBR ... RIDFLD(TRAN-ID)} to reposition the browse at the first record
+     * at or after that key, then {@code READNEXT}s a page
+     * ({@code legacy/cbl/COTRN00C.cbl}, L206-215). Because {@code tran_id} is a
+     * fixed-width, zero-padded 16-character key, its lexicographic ordering equals its
+     * numeric ordering, so a {@code >=} predicate reproduces the KSDS reposition
+     * exactly. Callers supply a {@link Pageable} sorted ascending by {@code tranId} to
+     * preserve the primary-key browse order.</p>
+     *
+     * @param tranId   the inclusive lower-bound transaction id (16-char, zero-padded)
+     * @param pageable the paging (and {@code tranId}-ascending sort) request
+     * @return a page of transactions with {@code tranId >=} the key, in the requested order
+     */
+    Page<Transaction> findByTranIdGreaterThanEqual(String tranId, Pageable pageable);
+
+    /**
      * Returns the transaction carrying the highest {@code tran_id} (the
      * reverse-browse tip), or {@link Optional#empty()} when the table is empty.
      *

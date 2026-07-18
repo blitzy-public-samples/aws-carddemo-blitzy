@@ -142,9 +142,10 @@ public record TransactionAddRequest(
         @Size(max = 10)
         String merchantZip,
 
-        // CONFIRMI PIC X(1) - Y/N confirmation before commit.
+        // CONFIRMI PIC X(1): only the single-character length is enforced here; the Y/N value
+        // EVALUATE is reproduced in TransactionAddController.processEnter (WHEN OTHER), so an
+        // invalid one-character confirm returns HTTP 200 with "Invalid value. Valid values are (Y/N)...".
         @Size(max = 1)
-        @Pattern(regexp = "^[YyNn ]?$")
         String confirm,
 
         // EIBAID (CSSTRPFY.cpy) - transmitted attention key; Enter/PF3/PF4/PF5 per footer.

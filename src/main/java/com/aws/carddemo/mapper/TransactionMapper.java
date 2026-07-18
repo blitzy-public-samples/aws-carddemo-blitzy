@@ -401,6 +401,60 @@ public class TransactionMapper {
                 errorMessage);                                    // ERRMSGO
     }
 
+    /**
+     * Copies the reusable detail fields of an existing transaction onto a fresh
+     * add-screen request while preserving the operator-entered account/card key
+     * &mdash; the field-copy half of the COBOL {@code COTRN02C}
+     * {@code COPY-LAST-TRAN-DATA} paragraph (PF5, "Copy Last Tran",
+     * legacy/cbl/COTRN02C.cbl L479-490).
+     *
+     * <p>The legacy paragraph moved the last transaction's
+     * {@code TRAN-TYPE-CD}, {@code TRAN-CAT-CD}, {@code TRAN-SOURCE},
+     * {@code TRAN-AMT}, {@code TRAN-DESC}, {@code TRAN-ORIG-TS},
+     * {@code TRAN-PROC-TS}, and the four {@code TRAN-MERCHANT-*} fields into the
+     * corresponding {@code COTRN2AI} input fields, but left {@code ACTIDINI} and
+     * {@code CARDNINI} exactly as the operator had keyed (and cross-reference
+     * resolved) them. That contract is reproduced here: {@code accountId},
+     * {@code cardNumber}, {@code confirm}, and the transmitted {@code action} are
+     * carried through verbatim from {@code req}, and every other field is taken
+     * from {@code last} using the same display conversions as the persisted-record
+     * redisplay &mdash; the numeric category code and merchant id are zero-padded to
+     * their {@code X(4)}/{@code X(9)} widths, the origination and processing
+     * timestamps are reduced to their leading {@code YYYY-MM-DD} ten characters, and
+     * the amount is normalized to scale {@value #MONEY_SCALE}. No field is validated
+     * here; the returned request is fed straight back through the add screen's
+     * enter-key flow exactly as the COBOL paragraph fell through to
+     * {@code PROCESS-ENTER-KEY}.</p>
+     *
+     * @param req  the operator's submitted add request supplying the preserved
+     *             account/card key, confirm flag, and action; must not be {@code null}
+     * @param last the highest-keyed existing transaction whose detail fields are
+     *             copied onto the screen; must not be {@code null}
+     * @return a new {@link TransactionAddRequest} carrying the copied detail fields
+     *         over the operator's preserved key
+     * @throws NullPointerException if {@code req} or {@code last} is {@code null}
+     */
+    public TransactionAddRequest copyLastInto(TransactionAddRequest req, Transaction last) {
+        Objects.requireNonNull(req, "request must not be null");
+        Objects.requireNonNull(last, "last transaction must not be null");
+        return new TransactionAddRequest(
+                req.accountId(),                             // ACTIDINI preserved (operator-entered key)
+                req.cardNumber(),                            // CARDNINI preserved (operator-entered key)
+                last.getTypeCd(),                            // TTYPCDI  <- TRAN-TYPE-CD
+                formatCatCd(last.getCatCd()),                // TCATCDI  <- TRAN-CAT-CD (zero-padded X(4))
+                last.getTranSource(),                        // TRNSRCI  <- TRAN-SOURCE
+                last.getTranDesc(),                          // TDESCI   <- TRAN-DESC
+                scale2(last.getTranAmt()),                   // TRNAMTI  <- TRAN-AMT (scale 2)
+                leadingTen(last.getOrigTs()),                // TORIGDTI <- TRAN-ORIG-TS[0:10]
+                leadingTen(last.getProcTs()),                // TPROCDTI <- TRAN-PROC-TS[0:10]
+                formatMerchantId(last.getTranMerchantId()),  // MIDI     <- TRAN-MERCHANT-ID (zero-padded X(9))
+                last.getTranMerchantName(),                  // MNAMEI   <- TRAN-MERCHANT-NAME
+                last.getTranMerchantCity(),                  // MCITYI   <- TRAN-MERCHANT-CITY
+                last.getTranMerchantZip(),                   // MZIPI    <- TRAN-MERCHANT-ZIP
+                req.confirm(),                               // CONFIRMI preserved (operator confirm flag)
+                req.action());                               // action preserved (the transmitted PF5)
+    }
+
     // ------------------------------------------------------------------------
     // Private field-conversion helpers
     // ------------------------------------------------------------------------

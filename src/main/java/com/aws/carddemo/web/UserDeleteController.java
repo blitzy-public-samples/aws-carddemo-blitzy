@@ -81,10 +81,11 @@ import java.time.LocalDateTime;
  * outcome (legacy CICS {@code RESP = DFHRESP(NOTFND)}) is surfaced as a
  * {@link RecordNotFoundException}, which {@code GlobalExceptionHandler} maps to
  * HTTP {@code 404 Not Found}; the not-found path is therefore never caught here.
- * An empty user id (legacy <q>User ID can NOT be empty...</q>) is rejected up front
- * by the {@code @NotBlank} bean-validation constraint on the request as HTTP
- * {@code 400 Bad Request}. Every successful branch returns HTTP {@code 200 OK}
- * with a {@link UserDeleteResponse}.</p>
+ * An empty user id (legacy <q>User ID can NOT be empty...</q>) is a same-screen
+ * edit returned as HTTP {@code 200 OK} &mdash; enforced server-side on both the
+ * ENTER (fetch) and PF5 (delete) paths so the PF-key branch is evaluated first,
+ * matching the legacy {@code EVALUATE EIBAID}. Every successful branch returns
+ * HTTP {@code 200 OK} with a {@link UserDeleteResponse}.</p>
  *
  * <p><strong>Design constraints.</strong> Collaborators are supplied by
  * constructor injection only (no field injection, no Lombok). The response DTO
@@ -119,6 +120,21 @@ public class UserDeleteController {
     private static final String BACK_TRANSACTION_NAME = "CA00";
 
     /**
+     * Response header conveying the next program to navigate to (the CICS
+     * {@code XCTL PROGRAM(...)} target) when {@code F3}/{@code F12} is pressed
+     * &mdash; the stateless-HTTP translation of the legacy {@code CDEMO-TO-PROGRAM}
+     * COMMAREA field.
+     */
+    private static final String HEADER_NEXT_PROGRAM = "X-CardDemo-Next-Program";
+
+    /**
+     * Response header conveying the next transaction id to navigate to when
+     * {@code F3}/{@code F12} is pressed &mdash; the stateless-HTTP translation of
+     * the legacy {@code CDEMO-TO-TRANID} COMMAREA field.
+     */
+    private static final String HEADER_NEXT_TRANSACTION = "X-CardDemo-Next-Transaction";
+
+    /**
      * First application title header line ({@code CCDA-TITLE01} of copybook
      * {@code COTTL01Y}, {@code PIC X(40)}); preserved byte-for-byte, including padding.
      */
@@ -141,6 +157,16 @@ public class UserDeleteController {
      * Carried by the {@link RecordNotFoundException} surfaced as HTTP 404.
      */
     private static final String MSG_USER_ID_NOT_FOUND = "User ID NOT found...";
+
+    /**
+     * Empty-user-id edit message, matching {@code COUSR03C PROCESS-ENTER-KEY} (and
+     * {@link UserService#deleteUser(String)}): a blank key is reported as a
+     * same-screen edit ({@code 200 OK}), not treated as a not-found (404) or a
+     * transport validation error (400). This keeps the ENTER (fetch) and PF5
+     * (delete) blank-id behavior identical and legacy-faithful now that the empty
+     * check is enforced server-side rather than by a {@code @NotBlank} constraint.
+     */
+    private static final String MSG_USER_ID_EMPTY = "User ID can NOT be empty...";
 
     /**
      * Invalid-key advisory, matching the shared {@code CCDA-MSG-INVALID-KEY} of
@@ -199,11 +225,12 @@ public class UserDeleteController {
      *   <li>any other key (or an unspecified action) &rarr; the invalid-key advisory.</li>
      * </ul>
      *
-     * <p>An empty user id is rejected by {@code @Valid} ({@code @NotBlank}) as HTTP
-     * {@code 400} before this method runs, reproducing the legacy
-     * <q>User ID can NOT be empty...</q> edit. A not-found user id on the fetch or
-     * delete path propagates as {@link RecordNotFoundException} (HTTP {@code 404});
-     * it is never caught here. Neither the request nor the response is logged.</p>
+     * <p>An empty user id is reported as the legacy <q>User ID can NOT be empty...</q>
+     * same-screen edit (HTTP {@code 200}) on the ENTER and PF5 paths &mdash; enforced
+     * server-side so the PF-key branch (for example PF3=Back) is evaluated first. A
+     * not-found user id on the fetch or delete path propagates as
+     * {@link RecordNotFoundException} (HTTP {@code 404}); it is never caught here.
+     * Neither the request nor the response is logged.</p>
      *
      * @param request the validated Delete User request carrying the user id and the
      *                transmitted PF-key action; must not be {@code null}
@@ -225,15 +252,25 @@ public class UserDeleteController {
     /**
      * {@code ENTER} branch &mdash; {@code COUSR03C PROCESS-ENTER-KEY}: reads the
      * requested {@code USRSEC} record and echoes its name/type back for delete
-     * confirmation with the <q>Press PF5 key to delete this user ...</q> prompt. An
-     * unknown id raises {@link RecordNotFoundException} (HTTP 404) from
-     * {@link #readUser(String)}.
+     * confirmation with the <q>Press PF5 key to delete this user ...</q> prompt.
      *
-     * @param userId the operator-keyed user id (already validated non-blank)
+     * <p>A blank user id is reported as the legacy same-screen edit
+     * ({@value #MSG_USER_ID_EMPTY}, HTTP {@code 200}) &mdash; the same outcome as
+     * {@link UserService#deleteUser(String)} on the PF5 path &mdash; rather than
+     * attempting a lookup. An unknown (but non-blank) id raises
+     * {@link RecordNotFoundException} (HTTP 404) from {@link #readUser(String)}.</p>
+     *
+     * @param userId the operator-keyed user id (may be blank)
      * @param now    the timestamp used to render the header date/time
-     * @return HTTP {@code 200 OK} with the fetched user detail
+     * @return HTTP {@code 200 OK} with the fetched user detail, or the empty-id edit
      */
     private ResponseEntity<UserDeleteResponse> fetchForConfirmation(String userId, LocalDateTime now) {
+        if (isBlank(userId)) {
+            UserDeleteResponse editBody = userMapper.toDeleteResponse(
+                    null, MSG_USER_ID_EMPTY, now,
+                    TRANSACTION_NAME, TITLE01, TITLE02, PROGRAM_NAME);
+            return ResponseEntity.ok(editBody);
+        }
         UserSecurity user = readUser(userId);
         UserDeleteResponse body = userMapper.toDeleteResponse(
                 user, MSG_CONFIRM_DELETE, now,
@@ -279,16 +316,21 @@ public class UserDeleteController {
     /**
      * {@code F3}/{@code F12} branch &mdash; {@code COUSR03C RETURN-TO-PREV-SCREEN}:
      * navigates back to the Admin Menu ({@code COADM01C}, transaction {@code CA00})
-     * by returning a response whose header identifies the target screen.
+     * by returning {@code 200 OK} with the navigation target in the
+     * {@link #HEADER_NEXT_PROGRAM} and {@link #HEADER_NEXT_TRANSACTION} response
+     * headers; the body is the standard (blank) screen.
      *
      * @param now the timestamp used to render the header date/time
-     * @return HTTP {@code 200 OK} with a navigation-header {@link UserDeleteResponse}
+     * @return HTTP {@code 200 OK} with the Admin Menu navigation headers
      */
     private ResponseEntity<UserDeleteResponse> backToAdminMenu(LocalDateTime now) {
         UserDeleteResponse body = userMapper.toDeleteResponse(
                 null, null, now,
                 BACK_TRANSACTION_NAME, TITLE01, TITLE02, BACK_PROGRAM_NAME);
-        return ResponseEntity.ok(body);
+        return ResponseEntity.ok()
+                .header(HEADER_NEXT_PROGRAM, BACK_PROGRAM_NAME)
+                .header(HEADER_NEXT_TRANSACTION, BACK_TRANSACTION_NAME)
+                .body(body);
     }
 
     /**
@@ -331,5 +373,19 @@ public class UserDeleteController {
                         && candidate.getSecUsrId().trim().equalsIgnoreCase(target))
                 .findFirst()
                 .orElseThrow(() -> new RecordNotFoundException(MSG_USER_ID_NOT_FOUND));
+    }
+
+    /**
+     * Tests whether a user id is blank &mdash; {@code null}, empty, or only spaces
+     * &mdash; reproducing the COBOL {@code = SPACES OR LOW-VALUES} emptiness test so
+     * a blank key is handled as a same-screen edit rather than an attempted lookup
+     * (which would otherwise trim a {@code null} and fail). Kept consistent with the
+     * emptiness edit in {@link UserService}.
+     *
+     * @param userId the user id to test (may be {@code null})
+     * @return {@code true} when the id is {@code null} or contains only whitespace
+     */
+    private static boolean isBlank(String userId) {
+        return userId == null || userId.trim().isEmpty();
     }
 }

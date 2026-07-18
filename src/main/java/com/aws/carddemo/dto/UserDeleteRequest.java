@@ -15,7 +15,6 @@
  */
 package com.aws.carddemo.dto;
 
-import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.Size;
 
 /**
@@ -66,9 +65,12 @@ import jakarta.validation.constraints.Size;
  *
  * @param userId the identifier of the user to look up and delete; the sole
  *               terminal-enterable field of the Delete User map. Maps to
- *               {@code COUSR3AI.USRIDINI}, {@code PIC X(8)}. Required
- *               ({@link NotBlank}) and constrained to at most eight characters
- *               ({@link Size}), mirroring the 3270 field length.
+ *               {@code COUSR3AI.USRIDINI}, {@code PIC X(8)}. Required &mdash; an
+ *               empty value is rejected by {@code UserService} as the legacy
+ *               same-screen edit &quot;User ID can NOT be empty...&quot; (not by a
+ *               transport constraint, so a PF-key such as Back can dispatch first)
+ *               &mdash; and constrained to at most eight characters ({@link Size}),
+ *               mirroring the 3270 field length.
  * @param action the attention key the operator transmitted, translated from the
  *               CICS {@code EIBAID} via {@code legacy/cpy/CSSTRPFY.cpy}. Optional
  *               (may be {@code null} when unspecified); on this screen the
@@ -78,7 +80,6 @@ import jakarta.validation.constraints.Size;
  */
 public record UserDeleteRequest(
 
-        @NotBlank
         @Size(max = 8)
         String userId,
 

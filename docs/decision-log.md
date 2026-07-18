@@ -348,6 +348,17 @@ its Java target, while this log explains the reasoning behind the design those m
   browses on the **primary key** (`STARTBR ... RIDFLD(TRAN-ID)`) and merely *displays* `TRAN-ORIG-TS`;
   the alternate-index chronological retrieval formalized here is the `proc_ts` browse defined by
   `legacy/jcl/TRANIDX.jcl` (`KEYS(26 304)`).
+- **Start-key repositioning is honored, not dropped (transaction list, Explainability):** the online
+  transaction lister (`CT00` / `legacy/cbl/COTRN00C.cbl`) repositions its browse at the operator-supplied
+  transaction id — `STARTBR ... RIDFLD(TRAN-ID)` (L206-210) — rather than always restarting at the first
+  row. The Java target preserves this exactly: `service/TransactionService` threads the submitted
+  `transactionId` start key into the key-ordered paged query
+  `TransactionRepository.findByTranIdGreaterThanEqual(...)`, so a supplied id anchors the page as the
+  legacy `STARTBR` did, while a blank/`LOW-VALUES` key falls back to the first page (the numeric-guard
+  edit `"Tran ID must be Numeric ..."` is preserved). This mirrors the User-List start-key anchor
+  (`CU00` / `legacy/cbl/COUSR00C.cbl`) and makes the start key a **first-class query parameter**, not a
+  display-only field — recorded here so the behavior is documented in this log and not only in a
+  controller Javadoc.
 - **Rationale:** Forward browse maps naturally to `Pageable` queries ordered by the unique key; the
   alternate-index access paths map to database indexes that preserve the same retrieval order; and the
   reverse-browse-from-`HIGH-VALUES` idiom is exactly a "largest existing key, then increment" operation.
@@ -739,6 +750,16 @@ its Java target, while this log explains the reasoning behind the design those m
   demonstration anti-patterns** in the mainframe sample, not business requirements. Hashing passwords and
   restricting CVV exposure is a responsible, industry-standard hardening that **does not change the
   authentication *behavior*** — the same credentials authenticate the same users into the same roles.
+- **Consequence — a blank password on update is rejected (Explainability):** because passwords are hashed
+  at rest and the hash is **never returned** to the client, the update screen (`CU02` /
+  `legacy/cbl/COUSR02C.cbl`) cannot pre-fill the password field. On save, a blank password is therefore
+  rejected with the legacy edit `"Password can NOT be empty..."`, exactly reproducing the mandatory
+  `SEC-USR-PWD` check in `COUSR02C UPDATE-USER-INFO` (~L200). The intended, documented consequence is that
+  an administrator making a **role-only or name-only** change must **re-enter the password**: the
+  no-return hardening does not weaken the legacy mandatory-field edit — it means the operator retypes the
+  value the screen can no longer echo. The `UserUpdateRequest`/`UserUpdateController` Javadoc was corrected
+  to state this (a blank password is **rejected**, not "left unchanged") so the documentation matches the
+  legacy-faithful runtime rather than contradicting it.
 - **Risk & mitigation:** Because the storage mechanism changes, this could be misread as scope creep or a
   behavior change. *Mitigation:* it is flagged **here** explicitly as an intentional security improvement,
   not a new feature; the observable auth outcome (who can log in, and with which role) is unchanged and

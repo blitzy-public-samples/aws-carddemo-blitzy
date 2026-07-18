@@ -241,11 +241,16 @@ public class AccountViewController {
      *   <li><b>{@code ENTER} (or an unspecified key)</b> &mdash; fetch the
      *       account. The id is parsed to its numeric key and passed to
      *       {@link AccountService#viewAccount(long)}; the merged result is mapped
-     *       to the response. A missing account/customer surfaces as
-     *       {@code RecordNotFoundException}, which is intentionally <em>not</em>
-     *       caught here so it propagates to the {@code GlobalExceptionHandler}
-     *       and becomes {@code 404 Not Found} &mdash; the caller-visible parity of
-     *       the COBOL "account not found" outcome (AAP &sect;0.7.2 M1).</li>
+     *       to the response. A zero or out-of-range account filter (for example
+     *       {@code "00000000000"}, which passes the {@code @Valid} digit pattern)
+     *       raises {@link IllegalArgumentException} carrying the COBOL edit message;
+     *       that is a same-screen field edit, so it is caught and redisplayed at
+     *       {@code 200 OK} with the verbatim message. A missing account/customer
+     *       instead surfaces as {@code RecordNotFoundException}, which is
+     *       intentionally <em>not</em> caught here so it propagates to the
+     *       {@code GlobalExceptionHandler} and becomes {@code 404 Not Found}
+     *       &mdash; the caller-visible parity of the COBOL "account not found"
+     *       outcome (AAP &sect;0.7.2 M1).</li>
      *   <li><b>any other key</b> &mdash; redisplay the screen with the standard
      *       "invalid key" message and {@code 200 OK}.</li>
      * </ul>
@@ -288,10 +293,21 @@ public class AccountViewController {
         if (action == null || action == PfKeyAction.ENTER) {
             // ENTER (the COBOL remaps any unrecognized key to ENTER): fetch and display.
             // @Valid guarantees the id is 1-11 decimal digits, so parsing cannot fail or overflow.
-            // The service call is intentionally NOT wrapped in try/catch: a RecordNotFoundException
-            // propagates to the GlobalExceptionHandler (-> 404), preserving COBOL "not found" parity.
             long accountId = Long.parseLong(request.accountId());
-            AccountService.AccountDetail detail = accountService.viewAccount(accountId);
+            AccountService.AccountDetail detail;
+            try {
+                detail = accountService.viewAccount(accountId);
+            } catch (IllegalArgumentException ex) {
+                // COBOL COACTVWC same-screen field edit: a zero or out-of-range account
+                // filter (for example "00000000000", which passes the @Valid digit pattern)
+                // is not a server fault but a screen edit, so it is redisplayed at 200 OK
+                // carrying the verbatim edit message ("Account Filter must  be a non-zero
+                // 11 digit number"). A missing account instead raises RecordNotFoundException
+                // (NOT an IllegalArgumentException), which is deliberately left uncaught so it
+                // propagates to the GlobalExceptionHandler and becomes 404 -- preserving the
+                // COBOL "account not found" caller-visible parity (AAP 0.7.2 M1).
+                return ResponseEntity.ok(blankScreen(null, ex.getMessage(), LocalDateTime.now()));
+            }
             AccountViewResponse response = accountMapper.toViewResponse(
                     detail.account(), detail.customer(), null, null, LocalDateTime.now());
             return ResponseEntity.ok(response);

@@ -116,8 +116,10 @@ public record TransactionReportRequest(
         @Pattern(regexp = "^\\d{0,4}$")
         String endYear,
 
+        // CONFIRMI PIC X(1): only the single-character length is enforced here; the Y/N value
+        // EVALUATE is a service-level same-screen edit (ReportService.handleConfirmation), so an
+        // invalid one-character confirm returns HTTP 200 with '"x" is not a valid value to confirm...'.
         @Size(max = 1)
-        @Pattern(regexp = "^[YyNn ]?$")
         String confirm,
 
         PfKeyAction action) {

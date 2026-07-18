@@ -96,8 +96,9 @@ import jakarta.validation.Valid;
  * <h2>Sensitive-data discipline (absolute)</h2>
  * <p>The user password is a <em>write-only</em> credential. It is accepted on the
  * request (masked in {@link UserUpdateRequest#toString()}), passed verbatim to
- * {@link UserService} which decides whether to change it (a blank password leaves
- * the stored credential unchanged), and is <em>never</em> hashed, echoed, or
+ * {@link UserService} which decides whether to change it (a blank password is
+ * rejected as the legacy &quot;Password can NOT be empty...&quot; same-screen
+ * edit, matching {@code COUSR02C}), and is <em>never</em> hashed, echoed, or
  * logged here. The {@link UserUpdateResponse} has no password field, so the
  * credential can never be returned. This controller performs no logging at all
  * (it holds no logger), so no request or response can leak into the logs
@@ -305,10 +306,12 @@ public class UserUpdateController {
      *
      * <p>The controller delegates the entire edit/compare/persist decision to
      * {@link UserService#updateUser}, which applies the mandatory-field edits (in
-     * the legacy order), the change-detection, and the &quot;password only when a
-     * new value is supplied&quot; rule. The raw password from the request is passed
-     * through untouched &mdash; it is never hashed, echoed, or logged here; a blank
-     * password means &quot;leave the stored credential unchanged&quot;. The
+     * the legacy order) and the change-detection. The raw password from the request
+     * is passed through untouched &mdash; it is never hashed, echoed, or logged
+     * here; a blank password is rejected with the legacy &quot;Password can NOT be
+     * empty...&quot; same-screen edit ({@code COUSR02C} mandatory-field edit), and a
+     * supplied password is re-hashed and stored only when it differs from the
+     * current value. The
      * resulting message (a validation message, the &quot;nothing changed&quot;
      * message, or the {@code 'User <id> has been updated ...'} success message) and
      * the affected user (which may be {@code null} on a pre-persist validation
