@@ -1,0 +1,167 @@
+      ******************************************************************
+      * Program     : TSTACCT.CBL
+      * Application : CardDemo
+      * Type        : CICS COBOL Program
+      * Function    : API test driver - account inquiry service COACSVCC
+      ******************************************************************
+      * Copyright Amazon.com, Inc. or its affiliates.
+      * All Rights Reserved.
+      *
+      * Licensed under the Apache License, Version 2.0 (the "License").
+      * You may not use this file except in compliance with the License.
+      * You may obtain a copy of the License at
+      *
+      *    http://www.apache.org/licenses/LICENSE-2.0
+      *
+      * Unless required by applicable law or agreed to in writing,
+      * software distributed under the License is distributed on an
+      * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND,
+      * either express or implied. See the License for the specific
+      * language governing permissions and limitations under the License
+      ******************************************************************
+      *
+      * TSTACCT is a standalone CICS COBOL test driver for the additive,
+      * read-only CardDemo REST/JSON API layer.  It verifies the account
+      * inquiry service COACSVCC, which backs the endpoint
+      * GET /carddemo/api/v1/accounts/{acctId}.
+      *
+      * On a real CICS region the driver issues EXEC CICS LINK to
+      * COACSVCC with the shared API-COMMAREA (copybook COAPICOM) and
+      * inspects the returned API-RESPONSE-STATUS and, for the success
+      * path, the account payload mapped into API-ACCT-RESPONSE
+      * (copybook COAPACTY).  The driver performs NO VSAM writes.
+      *
+      * Test cases:
+      *   1000-TEST-ACCT-OK       account 00000000001 -> HTTP 200 and
+      *                           verified id/status/balance/dates.
+      *   2000-TEST-ACCT-NOTFOUND account 99999999999 -> HTTP 404.
+      *
+      * Expected values are the verified app/data/ASCII/acctdata.txt
+      * rec0 fixture; the balance assertion (+194.00) proves the signed
+      * implied-decimal S9(10)V99 field decoded overpunch '00000001940{'
+      * with correct value, 2-dp scale and positive sign.
+      ******************************************************************
+       IDENTIFICATION DIVISION.
+       PROGRAM-ID. TSTACCT.
+       AUTHOR. AWS.
+
+       ENVIRONMENT DIVISION.
+       CONFIGURATION SECTION.
+
+       DATA DIVISION.
+       WORKING-STORAGE SECTION.
+      ******************************************************************
+      * Shared API COMMAREA contract.  Provides 01 API-COMMAREA with
+      * the request keys (API-SERVICE-CODE, API-HTTP-METHOD and
+      * API-REQ-ACCT-ID), the API-RESPONSE-STATUS block (API-HTTP-STATUS
+      * plus 88 names API-HTTP-OK / API-HTTP-NOT-FOUND) and API-PAYLOAD.
+      ******************************************************************
+       COPY COAPICOM.
+      ******************************************************************
+      * API account response contract.  Provides 01 API-ACCT-RESPONSE
+      * into which API-PAYLOAD is re-mapped for field-level assertions.
+      ******************************************************************
+       COPY COAPACTY.
+      ******************************************************************
+      * Driver work fields and expected fixture literals.
+      ******************************************************************
+       01  WS-PGM-COACSVCC           PIC X(08) VALUE 'COACSVCC'.
+       01  WS-RESP-CD                PIC S9(09) COMP VALUE ZEROS.
+       01  WS-REAS-CD                PIC S9(09) COMP VALUE ZEROS.
+       01  WS-TESTS-RUN              PIC 9(03)  VALUE ZEROS.
+       01  WS-TESTS-PASS             PIC 9(03)  VALUE ZEROS.
+       01  WS-TESTS-FAIL             PIC 9(03)  VALUE ZEROS.
+       01  WS-TEST-RC                PIC S9(04) VALUE ZEROS.
+       01  WS-GOOD-ACCT              PIC 9(11)  VALUE 1.
+       01  WS-BAD-ACCT               PIC 9(11)  VALUE 99999999999.
+       01  WS-EXP-BAL                PIC S9(10)V99 VALUE +194.00.
+       PROCEDURE DIVISION.
+      ******************************************************************
+      * 0000-MAIN : entry point.  Run each test case, print the summary
+      * report, then return control to the caller.
+      ******************************************************************
+       0000-MAIN.
+           PERFORM 1000-TEST-ACCT-OK
+           PERFORM 2000-TEST-ACCT-NOTFOUND
+           PERFORM 9000-REPORT
+           EXEC CICS RETURN
+           END-EXEC
+           .
+      ******************************************************************
+      * 1000-TEST-ACCT-OK : good account (00000000001) must return HTTP
+      * 200 with the fixture id, active status, +194.00 balance and the
+      * open / expiration / reissue dates.  All assertions must hold for
+      * the case to PASS.
+      ******************************************************************
+       1000-TEST-ACCT-OK.
+           ADD 1 TO WS-TESTS-RUN
+           INITIALIZE API-COMMAREA
+           INITIALIZE API-ACCT-RESPONSE
+           MOVE 'COACSVCC'          TO API-SERVICE-CODE
+           MOVE 'GET '              TO API-HTTP-METHOD
+           MOVE WS-GOOD-ACCT        TO API-REQ-ACCT-ID
+           EXEC CICS LINK
+                PROGRAM   (WS-PGM-COACSVCC)
+                COMMAREA  (API-COMMAREA)
+                LENGTH    (LENGTH OF API-COMMAREA)
+                RESP      (WS-RESP-CD)
+                RESP2     (WS-REAS-CD)
+           END-EXEC
+           MOVE API-PAYLOAD         TO API-ACCT-RESPONSE
+           IF API-HTTP-OK
+              AND ACCT-ID = WS-GOOD-ACCT
+              AND ACCT-ACTIVE-STATUS = 'Y'
+              AND ACCT-CURR-BAL = WS-EXP-BAL
+              AND ACCT-OPEN-DATE = '2014-11-20'
+              AND ACCT-EXPIRAION-DATE = '2025-05-20'
+              AND ACCT-REISSUE-DATE = '2025-05-20'
+              ADD 1 TO WS-TESTS-PASS
+           ELSE
+              ADD 1 TO WS-TESTS-FAIL
+              DISPLAY 'TSTACCT: OK-CASE FAILED HTTP=' API-HTTP-STATUS
+           END-IF
+           .
+      ******************************************************************
+      * 2000-TEST-ACCT-NOTFOUND : unknown account (99999999999) must
+      * return HTTP 404 (API-HTTP-NOT-FOUND).
+      ******************************************************************
+       2000-TEST-ACCT-NOTFOUND.
+           ADD 1 TO WS-TESTS-RUN
+           INITIALIZE API-COMMAREA
+           INITIALIZE API-ACCT-RESPONSE
+           MOVE 'COACSVCC'          TO API-SERVICE-CODE
+           MOVE 'GET '              TO API-HTTP-METHOD
+           MOVE WS-BAD-ACCT         TO API-REQ-ACCT-ID
+           EXEC CICS LINK
+                PROGRAM   (WS-PGM-COACSVCC)
+                COMMAREA  (API-COMMAREA)
+                LENGTH    (LENGTH OF API-COMMAREA)
+                RESP      (WS-RESP-CD)
+                RESP2     (WS-REAS-CD)
+           END-EXEC
+           IF API-HTTP-NOT-FOUND
+              ADD 1 TO WS-TESTS-PASS
+           ELSE
+              ADD 1 TO WS-TESTS-FAIL
+              DISPLAY 'TSTACCT: NF-CASE FAILED HTTP=' API-HTTP-STATUS
+           END-IF
+           .
+      ******************************************************************
+      * 9000-REPORT : print run/pass/fail counts and an overall verdict.
+      * Sets WS-TEST-RC to 8 when any case failed, else ZERO.
+      ******************************************************************
+       9000-REPORT.
+           DISPLAY 'TSTACCT RESULTS RUN=' WS-TESTS-RUN
+                   ' PASS=' WS-TESTS-PASS
+                   ' FAIL=' WS-TESTS-FAIL
+           IF WS-TESTS-FAIL > ZERO
+              MOVE 8 TO WS-TEST-RC
+              DISPLAY 'TSTACCT RESULT: FAIL'
+           ELSE
+              MOVE ZERO TO WS-TEST-RC
+              DISPLAY 'TSTACCT RESULT: PASS'
+           END-IF
+           .
+      *
+      * Ver: CardDemo_v1.0
+      *
