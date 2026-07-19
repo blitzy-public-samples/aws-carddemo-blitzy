@@ -375,6 +375,41 @@ public class TransactionService {
     }
 
     /**
+     * Runs the COBOL {@code PROCESS-ENTER-KEY} input edits &mdash;
+     * {@code VALIDATE-INPUT-KEY-FIELDS} followed by {@code VALIDATE-INPUT-DATA-FIELDS}
+     * &mdash; <em>without</em> performing {@code ADD-TRANSACTION}. It exists so the
+     * online add flow can reproduce the legacy program's ordering, in which every field
+     * and reference edit is performed <strong>before</strong> the {@code EVALUATE CONFIRMI}
+     * confirm decision (COTRN02C {@code PROCESS-ENTER-KEY}, L155&ndash;167). Each failing
+     * edit in the legacy program did a {@code SEND-TRNADD-SCREEN} and {@code RETURN}
+     * (short-circuit); here the first failing edit throws, so the caller surfaces the
+     * exact legacy message and never advances to the confirm prompt.
+     *
+     * <p>This method performs no write &mdash; it only reads the card cross-reference to
+     * resolve/validate the key, so it runs in a {@code readOnly} transaction. The
+     * confirmed-add path ({@link #addTransaction(AddTransactionCommand)}) re-runs the
+     * same edits defensively before it persists, so validating here does not weaken the
+     * write path's own guard.</p>
+     *
+     * @param command the raw submitted fields; must not be {@code null}
+     * @throws TransactionValidationException if any key-field or data-field edit fails
+     *                                        (carries the exact legacy message)
+     * @throws RecordNotFoundException        if the supplied account id or card number has
+     *                                        no cross-reference row
+     *                                        ({@code "Card Number NOT found..."} /
+     *                                        {@code "Account ID NOT found..."})
+     */
+    @Transactional(readOnly = true)
+    public void validateAddCommand(AddTransactionCommand command) {
+        Objects.requireNonNull(command, "command must not be null");
+
+        // COTRN02C PROCESS-ENTER-KEY (L155-167): VALIDATE-INPUT-KEY-FIELDS then
+        // VALIDATE-INPUT-DATA-FIELDS run BEFORE EVALUATE CONFIRMI -- no ADD-TRANSACTION.
+        validateKeyFieldsAndResolveCard(command);
+        validateDataFields(command);
+    }
+
+    /**
      * Reproduces {@code VALIDATE-INPUT-KEY-FIELDS}: the operator supplies <em>either</em>
      * an account id <em>or</em> a card number, with account id taking precedence (the
      * COBOL {@code EVALUATE TRUE} tests the account field first). The supplied key is

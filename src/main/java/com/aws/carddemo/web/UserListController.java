@@ -409,13 +409,18 @@ public class UserListController {
 
     /**
      * Returns the number of users at or after the given start key (or the grand
-     * total when the key is {@code null}/blank), read from the {@link Page} total.
+     * total when the key is {@code null}/blank) as a single {@code COUNT} query,
+     * without fetching any rows. This backs the {@code PF7}/{@code PF8} paging
+     * position math ({@link #currentPageIndex(String, long)} and the bottom-boundary
+     * check) and deliberately avoids re-reading the user table just to obtain a
+     * total, mirroring the database-side count used by the card and transaction
+     * lists (AAP &sect;0.4.3).
      *
      * @param startKey the inclusive start key, or {@code null}/blank for the grand total
      * @return the matching user count
      */
     private long totalCount(String startKey) {
-        return userService.listUsers(startKey, PageRequest.of(0, 1, SORT)).getTotalElements();
+        return userService.countUsers(startKey);
     }
 
     /**

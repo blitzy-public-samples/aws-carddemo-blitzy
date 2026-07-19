@@ -306,6 +306,51 @@ class MainMenuControllerTest {
                 .andExpect(header().doesNotExist(NEXT_TRANSACTION_HEADER));
     }
 
+    @Test
+    @DisplayName("E2: POST ENTER non-numeric option \"5A\" -> 200 (NOT 400) + invalid-option message; the raw value reaches MenuService")
+    void postEnterNonNumericOptionReachesServiceReturns200() throws Exception {
+        // F-MENU-1 regression guard. The option field's @Pattern is a width-only guard
+        // ("^.{0,2}$"), so a non-numeric option is NOT rejected at the bean-validation boundary
+        // with HTTP 400; it flows into MenuService whose IS-NOT-NUMERIC check (COBOL COMEN01C
+        // L127-129) re-displays the same screen with the invalid-option message at HTTP 200. The
+        // pre-fix strict "^\\d{0,2}$" pattern produced a 400 here and never invoked the service.
+        when(menuService.selectMainMenuOption(anyString(), eq('U')))
+                .thenReturn(MenuService.MenuRouting.error(MenuService.INVALID_OPTION_MESSAGE));
+
+        mockMvc.perform(post(MENU_PATH).with(user(USER_PRINCIPAL))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(
+                                new MainMenuRequest("5A", PfKeyAction.ENTER))))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.errorMessage").value(MenuService.INVALID_OPTION_MESSAGE))
+                .andExpect(jsonPath("$.menuOptions", hasSize(3)))
+                .andExpect(header().doesNotExist(NEXT_PROGRAM_HEADER))
+                .andExpect(header().doesNotExist(NEXT_TRANSACTION_HEADER));
+
+        // The raw operator value reaches the service verbatim (no controller-side pre-filtering).
+        verify(menuService).selectMainMenuOption(eq("5A"), eq('U'));
+    }
+
+    @Test
+    @DisplayName("E3: POST ENTER blank/space option \" \" -> 200 (NOT 400) + invalid-option message; the raw value reaches MenuService")
+    void postEnterSpaceOptionReachesServiceReturns200() throws Exception {
+        // COBOL folds blanks to '0' -> WS-OPTION = ZEROS -> invalid (COMEN01C L123-129). A
+        // space-only option must therefore reach the service and yield a 200 same-screen
+        // redisplay, not a bean-validation 400.
+        when(menuService.selectMainMenuOption(anyString(), eq('U')))
+                .thenReturn(MenuService.MenuRouting.error(MenuService.INVALID_OPTION_MESSAGE));
+
+        mockMvc.perform(post(MENU_PATH).with(user(USER_PRINCIPAL))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(
+                                new MainMenuRequest(" ", PfKeyAction.ENTER))))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.errorMessage").value(MenuService.INVALID_OPTION_MESSAGE))
+                .andExpect(header().doesNotExist(NEXT_PROGRAM_HEADER));
+
+        verify(menuService).selectMainMenuOption(eq(" "), eq('U'));
+    }
+
     // ------------------------------------------------------------------
     // F. ENTER -> admin-only option selected by a regular user: denial surfaced.
     // ------------------------------------------------------------------
@@ -371,8 +416,11 @@ class MainMenuControllerTest {
     }
 
     // ------------------------------------------------------------------
-    // I. Field-contract parity: @Valid on the option field yields an RFC-7807
-    //    problem+json 400 that names the field but never leaks the bad value.
+    // I. Field-contract parity: a STRUCTURAL (over-width) option violates
+    //    @Size/@Pattern and yields an RFC-7807 problem+json 400 that names the
+    //    field without leaking the value (I1); a within-width non-numeric option
+    //    is NOT a 400 -- it is handled same-screen at 200 by MenuService, matching
+    //    COBOL COMEN01C's IS-NOT-NUMERIC redisplay (I2).
     // ------------------------------------------------------------------
 
     @Test
@@ -394,18 +442,26 @@ class MainMenuControllerTest {
     }
 
     @Test
-    @DisplayName("I2: POST non-digit option -> 400 problem+json naming 'option', value not leaked")
-    void postNonDigitOptionReturnsProblemDetail() throws Exception {
+    @DisplayName("I2: POST within-width non-digit option \"ab\" -> 200 same-screen invalid-option message (COBOL COMEN01C IS-NOT-NUMERIC), service consulted")
+    void postNonDigitOptionHandledSameScreen() throws Exception {
+        // F-MENU-1. A two-character non-numeric option fits the field width, so it is NOT a
+        // structural (400) violation: COBOL COMEN01C (L123-129) folds it, finds
+        // WS-OPTION IS NOT NUMERIC, and re-displays the same screen with
+        // "Please enter a valid option number..." at HTTP 200. The pre-fix all-digits @Pattern
+        // wrongly rejected this at the 400 bean-validation boundary before the service ran.
+        when(menuService.selectMainMenuOption(anyString(), eq('U')))
+                .thenReturn(MenuService.MenuRouting.error(MenuService.INVALID_OPTION_MESSAGE));
+
         mockMvc.perform(post(MENU_PATH).with(user(USER_PRINCIPAL))
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("{\"option\":\"ab\",\"action\":\"ENTER\"}"))
-                .andExpect(status().isBadRequest())
-                .andExpect(content().contentTypeCompatibleWith(MediaType.APPLICATION_PROBLEM_JSON))
-                .andExpect(jsonPath("$.title").value("Validation Failed"))
-                .andExpect(jsonPath("$.status").value(400))
-                .andExpect(jsonPath("$.detail", containsString("option")))
-                .andExpect(jsonPath("$.detail", not(containsString("ab"))));
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.errorMessage").value(MenuService.INVALID_OPTION_MESSAGE))
+                .andExpect(jsonPath("$.menuOptions", hasSize(3)))
+                .andExpect(header().doesNotExist(NEXT_PROGRAM_HEADER))
+                .andExpect(header().doesNotExist(NEXT_TRANSACTION_HEADER));
 
-        verify(menuService, never()).selectMainMenuOption(anyString(), anyChar());
+        // The within-width value reaches the service verbatim (no controller-side pre-filtering).
+        verify(menuService).selectMainMenuOption(eq("ab"), eq('U'));
     }
 }

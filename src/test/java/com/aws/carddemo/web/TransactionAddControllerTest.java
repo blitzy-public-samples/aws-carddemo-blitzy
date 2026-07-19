@@ -17,6 +17,7 @@ package com.aws.carddemo.web;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
@@ -542,6 +543,87 @@ class TransactionAddControllerTest {
                 .andExpect(content().contentTypeCompatibleWith(MediaType.APPLICATION_PROBLEM_JSON));
 
         verify(transactionService, times(1)).addTransaction(any(AddTransactionCommand.class));
+    }
+
+    // ------------------------------------------------------------------------
+    // F-CT02-1 - validate-before-confirm ordering (COBOL PROCESS-ENTER-KEY L155-167:
+    //            the input edits run BEFORE EVALUATE CONFIRMI, short-circuiting on the
+    //            first failure). An invalid card or field must be reported IMMEDIATELY,
+    //            regardless of the confirm flag - never masked by the confirm prompt.
+    // ------------------------------------------------------------------------
+
+    /**
+     * F-CT02-1 (key-field edit before confirm). With an <em>invalid card</em> and
+     * {@code confirm = 'N'}, the controller must run {@code VALIDATE-INPUT-KEY-FIELDS}
+     * first, so the unresolved-card {@link RecordNotFoundException} propagates to the
+     * global 404 handler <strong>immediately</strong> &mdash; it must NOT show the
+     * "{@code Confirm to add this transaction...}" prompt. The add is never attempted.
+     */
+    @Test
+    @DisplayName("F-CT02-1. Invalid card + confirm 'N' reports card error at 404 (not the confirm prompt)")
+    void postEnterInvalidCardWithConfirmNReportsCardErrorNotPrompt() throws Exception {
+        doThrow(new RecordNotFoundException("Card Number NOT found..."))
+                .when(transactionService).validateAddCommand(any(AddTransactionCommand.class));
+        // Card path, deliberately unresolved, with confirm = 'N' (the pre-fix masking case).
+        TransactionAddRequest request = new TransactionAddRequest(
+                null, "9999999999999999", "01", "0005", "POS", "probe",
+                new BigDecimal("10.00"), "2024-01-01", "2024-01-01",
+                "123456789", "QA", "QACITY", "00000", "N", PfKeyAction.ENTER);
+
+        mockMvc.perform(post(ADD_PATH)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(request)))
+                .andExpect(status().isNotFound())
+                .andExpect(content().contentTypeCompatibleWith(MediaType.APPLICATION_PROBLEM_JSON));
+
+        // Edits ran before the confirm decision; the add was never attempted.
+        verify(transactionService, times(1)).validateAddCommand(any(AddTransactionCommand.class));
+        verify(transactionService, never()).addTransaction(any(AddTransactionCommand.class));
+    }
+
+    /**
+     * F-CT02-1 (data-field edit before confirm). With a <em>field edit failure</em> and
+     * {@code confirm = 'N'}, the controller must surface the exact service edit message at
+     * a same-screen HTTP 200 &mdash; NOT the "{@code Confirm to add this transaction...}"
+     * prompt. The add is never attempted.
+     */
+    @Test
+    @DisplayName("F-CT02-1. Field edit failure + confirm 'N' surfaces the edit message (not the confirm prompt)")
+    void postEnterFieldEditFailureWithConfirmNSurfacesMessageNotPrompt() throws Exception {
+        doThrow(new TransactionValidationException("Type CD must be Numeric..."))
+                .when(transactionService).validateAddCommand(any(AddTransactionCommand.class));
+        TransactionAddRequest request = fullRequest("N", PfKeyAction.ENTER);
+
+        mockMvc.perform(post(ADD_PATH)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(request)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.errorMessage").value("Type CD must be Numeric..."));
+
+        verify(transactionService, times(1)).validateAddCommand(any(AddTransactionCommand.class));
+        verify(transactionService, never()).addTransaction(any(AddTransactionCommand.class));
+    }
+
+    /**
+     * F-CT02-1 (valid input still reaches the confirm prompt). When every edit passes and
+     * {@code confirm = 'N'}, the edits are run first (proving the ordering) and only then is
+     * the "{@code Confirm to add this transaction...}" prompt shown; the add is not yet
+     * performed. This guards against the fix over-correcting into an eager add.
+     */
+    @Test
+    @DisplayName("F-CT02-1. Valid input + confirm 'N' runs edits first, then shows the confirm prompt")
+    void postEnterValidWithConfirmNRunsEditsThenPrompts() throws Exception {
+        // validateAddCommand is a no-op mock (edits pass); confirm 'N' -> prompt.
+        TransactionAddRequest request = fullRequest("N", PfKeyAction.ENTER);
+
+        mockMvc.perform(post(ADD_PATH)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(request)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.errorMessage").value("Confirm to add this transaction..."));
+
+        verify(transactionService, times(1)).validateAddCommand(any(AddTransactionCommand.class));
+        verify(transactionService, never()).addTransaction(any(AddTransactionCommand.class));
     }
 
     // ------------------------------------------------------------------------

@@ -22,6 +22,10 @@ import org.springframework.boot.test.autoconfigure.jdbc.AutoConfigureTestDatabas
 import org.springframework.boot.test.autoconfigure.orm.jpa.DataJpaTest;
 import org.springframework.boot.test.autoconfigure.orm.jpa.TestEntityManager;
 import org.springframework.boot.testcontainers.service.connection.ServiceConnection;
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.PageRequest;
+import org.springframework.data.domain.Pageable;
+import org.springframework.data.domain.Sort;
 import org.springframework.test.context.ActiveProfiles;
 import org.testcontainers.containers.PostgreSQLContainer;
 import org.testcontainers.junit.jupiter.Container;
@@ -203,6 +207,63 @@ class UserSecurityRepositoryTest {
                 .hasSize(3)
                 .extracting(UserSecurity::getSecUsrId)
                 .containsExactly("USER0001", "USER0002", "USER0003");
+    }
+
+    /**
+     * {@link UserSecurityRepository#findBySecUsrIdGreaterThanEqual(String, Pageable)}
+     * repositions the ascending browse at the first id greater than or equal to the
+     * key and returns only the requested database page window, while reporting the
+     * full count of matching rows. This is the database-paginated
+     * ({@code LIMIT}/{@code OFFSET} + single {@code COUNT}) analogue of the legacy
+     * {@code STARTBR}/{@code READNEXT} browse used by the {@code COUSR00C} admin
+     * user-list screen, so the whole table is never materialized (AAP&nbsp;&sect;0.4.3).
+     */
+    @Test
+    void findBySecUsrIdGreaterThanEqual_positionsAndPagesInDatabase() {
+        repository.saveAll(List.of(
+                minimalUser("USER0001", "U"),
+                minimalUser("USER0002", "U"),
+                minimalUser("USER0003", "U"),
+                minimalUser("USER0004", "U"),
+                minimalUser("USER0005", "U")));
+        repository.flush();
+        entityManager.clear();
+
+        Pageable firstTwoAscending =
+                PageRequest.of(0, 2, Sort.by(Sort.Direction.ASC, "secUsrId"));
+        Page<UserSecurity> page =
+                repository.findBySecUsrIdGreaterThanEqual("USER0003", firstTwoAscending);
+
+        // Inclusive >= USER0003 matches USER0003..USER0005 (three rows); the first
+        // page of size two returns USER0003 and USER0004 in ascending order.
+        assertThat(page.getTotalElements()).isEqualTo(3);
+        assertThat(page.getContent())
+                .extracting(UserSecurity::getSecUsrId)
+                .containsExactly("USER0003", "USER0004");
+    }
+
+    /**
+     * {@link UserSecurityRepository#countBySecUsrIdGreaterThanEqual(String)} counts
+     * the users at or after the key inclusively without loading any rows, backing
+     * the efficient {@code PF7}/{@code PF8} paging position math of the admin
+     * user-list screen.
+     */
+    @Test
+    void countBySecUsrIdGreaterThanEqual_countsFromKeyInclusive() {
+        repository.saveAll(List.of(
+                minimalUser("USER0001", "U"),
+                minimalUser("USER0002", "U"),
+                minimalUser("USER0003", "U"),
+                minimalUser("USER0004", "U"),
+                minimalUser("USER0005", "U")));
+        repository.flush();
+        entityManager.clear();
+
+        // Inclusive of the key: USER0003, USER0004, USER0005.
+        assertThat(repository.countBySecUsrIdGreaterThanEqual("USER0003")).isEqualTo(3L);
+        // A key before the first id counts everything; one after the last counts none.
+        assertThat(repository.countBySecUsrIdGreaterThanEqual("USER0000")).isEqualTo(5L);
+        assertThat(repository.countBySecUsrIdGreaterThanEqual("USER9999")).isZero();
     }
 
     /**

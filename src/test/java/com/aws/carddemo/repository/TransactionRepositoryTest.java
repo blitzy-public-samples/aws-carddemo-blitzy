@@ -435,6 +435,43 @@ class TransactionRepositoryTest {
     }
 
     /**
+     * Schema regression guard for the statement per-card browse index.
+     *
+     * <p>The statement-generation job reads every transaction for one card via
+     * {@link TransactionRepository#findByCardNumOrderByProcTsAscTranIdAsc(String)}
+     * ({@code WHERE card_num = ? ORDER BY proc_ts, tran_id}). Because
+     * {@code transaction.card_num} is a foreign key and PostgreSQL does <em>not</em>
+     * auto-create an index on a foreign-key column, that query would otherwise fall
+     * back to a full sequential scan plus an in-memory (disk-spilling) sort. Flyway
+     * migration {@code V4__add_transaction_card_num_index.sql} adds the covering
+     * index {@code idx_transaction_card_num} on {@code (card_num, proc_ts, tran_id)}
+     * so the filter and the ordering are both served by a single Index Scan (AAP
+     * &sect;0.4.3; decision log D10, &ldquo;Statement per-card covering index&rdquo;).</p>
+     *
+     * <p>This test asserts the migration created that index on the {@code transaction}
+     * table with the exact column order the query relies on, guarding against an
+     * accidental removal or reordering. It reads {@code pg_indexes.indexdef}, whose
+     * canonical rendering for this index is
+     * {@code ... USING btree (card_num, proc_ts, tran_id)}.</p>
+     */
+    @Test
+    void schema_definesCoveringIndexForStatementPerCardBrowse() {
+        List<?> indexDefs = entityManager.getEntityManager()
+                .createNativeQuery(
+                        "SELECT indexdef FROM pg_indexes "
+                                + "WHERE tablename = 'transaction' "
+                                + "AND indexname = 'idx_transaction_card_num'")
+                .getResultList();
+
+        assertThat(indexDefs)
+                .as("Flyway V4 must create idx_transaction_card_num on the transaction table")
+                .hasSize(1);
+        assertThat(String.valueOf(indexDefs.get(0)))
+                .as("the statement per-card browse index must cover (card_num, proc_ts, tran_id) in order")
+                .containsIgnoringCase("btree (card_num, proc_ts, tran_id)");
+    }
+
+    /**
      * Monetary-fidelity round trip. A transaction is persisted with
      * {@code tran_amt = 1234.56} (built with the {@link BigDecimal} string
      * constructor, never {@code double}/{@code float}); after a flush and clear it

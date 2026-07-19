@@ -109,6 +109,13 @@ public class AccountMasterPrintJob {
      */
     private static final String JOB_NAME = "accountMasterPrintJob";
 
+    /**
+     * Legacy program name printed in the START/END execution banners by
+     * {@link ExecutionBannerJobListener}, byte-identical to the CBACT01C {@code DISPLAY} literals
+     * ({@code legacy/cbl/CBACT01C.cbl} L71 START / L85 END).
+     */
+    private static final String PROGRAM_NAME = "CBACT01C";
+
     /** Step bean name for the single chunk-oriented read&rarr;print step. */
     private static final String STEP_NAME = "accountMasterPrintStep";
 
@@ -157,7 +164,12 @@ public class AccountMasterPrintJob {
      * CBACT01C.
      *
      * <p>The {@link CorrelationIdJobListener} is registered so the job (and its step) log lines
-     * carry a correlation id end-to-end.</p>
+     * carry a correlation id end-to-end. An {@link ExecutionBannerJobListener} for
+     * {@code CBACT01C} is registered <em>after</em> it, reproducing the legacy
+     * {@code START OF EXECUTION OF PROGRAM CBACT01C} banner on entry and
+     * {@code END OF EXECUTION OF PROGRAM CBACT01C} only on normal completion (an abend/FAILED run
+     * prints no END banner, matching {@code CEE3ABD} bypassing the trailer). Registering it after
+     * the correlation listener means both banners carry the run's correlation id.</p>
      *
      * @param jobRepository             the auto-configured Spring Batch {@link JobRepository};
      *                                  never {@code null}
@@ -173,6 +185,7 @@ public class AccountMasterPrintJob {
                                      CorrelationIdJobListener correlationIdJobListener) {
         return new JobBuilder(JOB_NAME, jobRepository)
                 .listener(correlationIdJobListener)
+                .listener(new ExecutionBannerJobListener(PROGRAM_NAME))
                 .start(accountMasterPrintStep)
                 .build();
     }

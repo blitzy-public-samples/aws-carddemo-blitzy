@@ -195,7 +195,7 @@ carddemo-java/
 ├── src/main/resources/
 │   ├── application.yml  /  application-local.yml
 │   ├── logback-spring.xml
-│   ├── db/migration/             # Flyway: V1__schema.sql, V2__reference_data.sql (planned), ...
+│   ├── db/migration/             # Flyway: V1__schema.sql, V2__reference_data.sql, V3__add_customer_version.sql
 │   ├── db/seed/                  # seed CSVs derived from legacy/data/ASCII
 │   └── static/openapi/
 ├── src/test/java/com/aws/carddemo/   # unit + integration (Testcontainers PostgreSQL)
@@ -230,8 +230,9 @@ and uniform:
 
 The schema is created by **Flyway** migrations: `V1__schema.sql` builds the eleven tables (ten core
 plus one staging), their five indexes (three AIX-derived plus two supporting), and the foreign-key
-constraints; the planned `V2__reference_data.sql` (reference data is currently loaded from
-`db/seed/**`) loads the reference data (types, categories, disclosure groups). Seed rows are derived from the **fixed-width, headerless** ASCII files
+constraints; the delivered `V2__reference_data.sql` loads the reference data (types, categories,
+disclosure groups). Flyway is intentionally **not** pointed at `db/seed/**`, which instead supplies the
+bulk demo/transactional data via `LocalSeedDataLoader` (active under the `local` profile). Seed rows are derived from the **fixed-width, headerless** ASCII files
 under `legacy/data/ASCII/**` (formerly `app/data/ASCII`) — parsed by **fixed column positions** per the
 governing copybook, not as CSV/delimited — and materialized as seed CSVs under
 `src/main/resources/db/seed/`. Each file's record width equals its copybook record length
@@ -248,7 +249,7 @@ dataset.
 | ACCTDATA.VSAM.KSDS | `account` | `acct_id` | `group_id` = grouping attribute (**no FK** — `disclosure_group` PK is composite; see note) | `legacy/cpy/CVACT01Y.cpy` |
 | CARDDATA.VSAM.KSDS | `card` | `card_num` | index `acct_id` (=CARDDATA.VSAM.AIX); FK `acct_id` | `legacy/cpy/CVACT02Y.cpy` |
 | CARDXREF.VSAM.KSDS | `card_xref` | `xref_card_num` | index `acct_id` (=CARDXREF.VSAM.AIX); FK `cust_id`, `acct_id` | `legacy/cpy/CVACT03Y.cpy` |
-| TRANSACT.VSAM.KSDS | `transaction` | `tran_id` | index `proc_ts` (=TRANSACT.VSAM.AIX, `AXRKP=304`); FK `card_num`, `type_cd`, composite (`type_cd`,`cat_cd`)→`transaction_category` | `legacy/cpy/CVTRA05Y.cpy` |
+| TRANSACT.VSAM.KSDS | `transaction` | `tran_id` | index `proc_ts` (=TRANSACT.VSAM.AIX, `AXRKP=304`); covering index (`card_num`,`proc_ts`,`tran_id`) for the statement per-card browse (V4); FK `card_num`, `type_cd`, composite (`type_cd`,`cat_cd`)→`transaction_category` | `legacy/cpy/CVTRA05Y.cpy` |
 | USRSEC.VSAM.KSDS | `user_security` | `sec_usr_id` | — | `legacy/cpy/CSUSR01Y.cpy` |
 | TRANTYPE (reference) | `transaction_type` | `type_cd` | — | `legacy/cpy/CVTRA03Y.cpy` |
 | TRANCATG (reference) | `transaction_category` | (`type_cd`,`cat_cd`) | — | `legacy/cpy/CVTRA04Y.cpy` |
@@ -266,6 +267,16 @@ transaction record (`CVTRA05Y`) carries two 26-character timestamps — `TRAN-OR
 `TRAN-PROC-TS` at offset 304 — and the VSAM catalog (`legacy/catlg/LISTCAT.txt`) shows
 `TRANSACT.VSAM.AIX` with `KEYLEN=26` at `AXRKP=304`, i.e. `TRAN-PROC-TS` → the `proc_ts` column. All
 "list transactions" queries therefore order by `proc_ts`.
+
+A **fourth** B-tree index on `transaction (card_num, proc_ts, tran_id)` (`idx_transaction_card_num`,
+added by Flyway migration `V4`) supports the **statement-generation** job, which retrieves every
+transaction for one card ordered by processing timestamp then id
+(`findByCardNumOrderByProcTsAscTranIdAsc`). This is *not* one of the three alternate indexes: the
+card-then-transaction ordering derives from the legacy `CREASTMT.JCL` `SORT` (by `CARD-NUM` then
+`TRAN-ID`), not from a VSAM AIX. Because `transaction.card_num` is a foreign key and PostgreSQL does not
+auto-index foreign-key columns, the covering index preserves the statement browse as an indexed, sorted
+query (AAP §0.4.3) — turning a full sequential scan plus sort into a single Index Scan. See
+[`decision-log.md`](./decision-log.md) (D10, "Statement per-card covering index").
 
 Because the relationships between customers, accounts, cards, cross-references, and transactions were
 previously enforced only in application logic, expressing them as **real foreign-key constraints** —
@@ -505,7 +516,7 @@ external file **layout** is preserved so downstream file exchange is byte/semant
 | Batch | `spring-boot-starter-batch` | Batch jobs (JCL/batch programs) |
 | Security | `spring-boot-starter-security` | Authentication (USRSEC / role model) |
 | Validation | `spring-boot-starter-validation` | Bean Validation (COBOL edit paragraphs) |
-| Schema migration | Flyway (`flyway-core` + `flyway-database-postgresql`) | `V1__schema.sql`, `V2__reference_data.sql` (planned), ... |
+| Schema migration | Flyway (`flyway-core` + `flyway-database-postgresql`) | `V1__schema.sql`, `V2__reference_data.sql`, `V3__add_customer_version.sql` |
 | API docs | springdoc-openapi 2.8.17 | OpenAPI 3 / Swagger UI (targets Spring Boot 3.x) |
 | Metrics / health | `spring-boot-starter-actuator` + Micrometer Prometheus registry | `/actuator/prometheus`, health/readiness |
 | Tracing | Micrometer tracing bridge (OTel) + OTLP exporter | Distributed tracing over OTLP |

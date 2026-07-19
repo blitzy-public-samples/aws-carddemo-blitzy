@@ -341,6 +341,57 @@ public class TransactionServiceTest {
     }
 
     // ------------------------------------------------------------------------
+    // D2. validateAddCommand — the edit-only pass (COTRN02C PROCESS-ENTER-KEY edits
+    //     that run BEFORE EVALUATE CONFIRMI). It runs the same key-field + data-field
+    //     edits as addTransaction, but performs NO persist (F-CT02-1 support).
+    // ------------------------------------------------------------------------
+
+    @Test
+    @DisplayName("validateAddCommand runs every edit but never persists (no id generation, no save)")
+    void validateAddCommandRunsEditsWithoutPersisting() {
+        when(cardXrefRepository.findFirstByAcctIdOrderByXrefCardNumAsc(VALID_ACCOUNT_LONG))
+                .thenReturn(Optional.of(new CardXref(VALID_CARD, 1L, VALID_ACCOUNT_LONG)));
+        when(dateValidationService.isValid(ORIG_DATE, DATE_FMT)).thenReturn(true);
+        when(dateValidationService.isValid(PROC_DATE, DATE_FMT)).thenReturn(true);
+
+        // A fully-valid command validates cleanly and returns without touching the write path.
+        service.validateAddCommand(validAccountKeyedCommand());
+
+        verify(transactionRepository, never()).findMaxTranId();
+        verify(transactionRepository, never()).saveAndFlush(any());
+    }
+
+    @Test
+    @DisplayName("validateAddCommand throws Card-Number-NOT-found for an unresolved card, without persisting")
+    void validateAddCommandThrowsWhenCardKeyHasNoCrossReference() {
+        when(cardXrefRepository.findById(VALID_CARD)).thenReturn(Optional.empty());
+        TransactionService.AddTransactionCommand command = new TransactionService.AddTransactionCommand(
+                null, VALID_CARD, "05", "0002", "POS", "Desc", VALID_AMOUNT,
+                ORIG_DATE, PROC_DATE, "1", "M", "C", "98101");
+
+        assertThatThrownBy(() -> service.validateAddCommand(command))
+                .isInstanceOf(RecordNotFoundException.class)
+                .hasMessage("Card Number NOT found...");
+
+        verify(transactionRepository, never()).saveAndFlush(any());
+        verifyNoInteractions(dateValidationService);
+    }
+
+    @Test
+    @DisplayName("validateAddCommand rejects a non-numeric Type CD before the confirm decision, without persisting")
+    void validateAddCommandRejectsNonNumericTypeCode() {
+        when(cardXrefRepository.findFirstByAcctIdOrderByXrefCardNumAsc(VALID_ACCOUNT_LONG))
+                .thenReturn(Optional.of(new CardXref(VALID_CARD, 1L, VALID_ACCOUNT_LONG)));
+
+        assertThatThrownBy(() -> service.validateAddCommand(
+                accountKeyed("0A", "0002", "POS", "Desc", VALID_AMOUNT, ORIG_DATE, PROC_DATE, "1", "M", "C", "98101")))
+                .isInstanceOf(TransactionService.TransactionValidationException.class)
+                .hasMessage("Type CD must be Numeric...");
+
+        verify(transactionRepository, never()).saveAndFlush(any());
+    }
+
+    // ------------------------------------------------------------------------
     // E. addTransaction — data-field empty edits (short-circuit order, 11 fields)
     // ------------------------------------------------------------------------
 

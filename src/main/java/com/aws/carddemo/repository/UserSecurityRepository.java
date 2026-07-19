@@ -18,6 +18,8 @@ package com.aws.carddemo.repository;
 
 import com.aws.carddemo.domain.UserSecurity;
 
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.stereotype.Repository;
 
@@ -102,4 +104,44 @@ public interface UserSecurityRepository extends JpaRepository<UserSecurity, Stri
      *         ascending; an empty list if no users exist
      */
     List<UserSecurity> findAllByOrderBySecUsrIdAsc();
+
+    /**
+     * Database-paginated ascending browse starting at or after a user-id key for
+     * the admin user-list screen ({@code legacy/cbl/COUSR00C.cbl}), reproducing the
+     * {@code STARTBR RIDFLD(SEC-USR-ID)} reposition followed by a
+     * {@code READNEXT} page.
+     *
+     * <p>This is the {@code >=}-anchored, {@link Pageable}-windowed analogue of
+     * {@link #findAllByOrderBySecUsrIdAsc()}: the {@code WHERE sec_usr_id >= :key}
+     * predicate reproduces the legacy browse reposition (because the fixed-width,
+     * upper-cased {@code PIC X(08)} key makes lexicographic ordering equal to the
+     * VSAM key ordering) and the database performs the {@code LIMIT}/{@code OFFSET}
+     * windowing plus a single {@code COUNT}. The row ordering follows the
+     * {@link Pageable}'s {@code Sort}; callers supply ascending {@code secUsrId} to
+     * preserve the legacy screen sequence. It exists so the online list can page
+     * from a key without loading the whole table into memory, mirroring the
+     * transaction-list browse ({@code TransactionRepository.findByTranIdGreaterThanEqual}).</p>
+     *
+     * @param secUsrId the inclusive start-key user id (already normalized by the
+     *                 service to the stored upper-cased form)
+     * @param pageable the page window (page number, size, and ascending
+     *                 {@code secUsrId} sort) to return
+     * @return the requested {@link Page} of users with {@code secUsrId >=} the key,
+     *         reporting the total number of matching rows
+     */
+    Page<UserSecurity> findBySecUsrIdGreaterThanEqual(String secUsrId, Pageable pageable);
+
+    /**
+     * Counts the users whose id is at or after a given key, without loading any
+     * rows &mdash; the efficient {@code COUNT} that lets the online list position
+     * the browse cursor for backward/forward paging ({@code COUSR00C}
+     * {@code PROCESS-PF7-KEY}/{@code PROCESS-PF8-KEY}) instead of reading the whole
+     * table. It is the {@code >=}-anchored companion to the inherited
+     * {@link JpaRepository#count()} grand total.
+     *
+     * @param secUsrId the inclusive start-key user id (already normalized by the
+     *                 service to the stored upper-cased form)
+     * @return the number of users with {@code secUsrId >=} the key
+     */
+    long countBySecUsrIdGreaterThanEqual(String secUsrId);
 }

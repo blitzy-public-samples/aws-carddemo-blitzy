@@ -39,8 +39,8 @@ import java.nio.charset.StandardCharsets;
  * ({@code CBTRN02C}) jobs then read that staging table set-based via the DB-backed
  * {@link DailyTransactionItemReader}. The two readers are therefore complementary, not alternatives:
  * <ul>
- *   <li><strong>this class</strong> &mdash; a streaming {@code FlatFileItemReader} that reads the raw
- *       external file line-by-line and decodes each 350-byte record; and</li>
+ *   <li><strong>this class</strong> &mdash; a streaming {@code FlatFileItemReader} that frames the raw
+ *       external file into fixed-length 350-byte records and decodes each; and</li>
  *   <li>{@link DailyTransactionItemReader} &mdash; a paged {@code RepositoryItemReader} over the
  *       populated {@code daily_transaction} table, reproducing the COBOL sequential read order.</li>
  * </ul>
@@ -53,8 +53,13 @@ import java.nio.charset.StandardCharsets;
  * canonical character (for example a trailing {@code G} = positive last digit 7), which the mapper
  * then decodes to a scale-2 {@link java.math.BigDecimal} via
  * {@link com.aws.carddemo.common.util.FixedWidthCodec#readSignedDecimal(String, int, int, int)}.
- * The default {@code FlatFileItemReader} record-separator policy treats each newline-terminated line
- * as one record, matching the LF-framed layout of the shipped fixtures and delimited datasets.
+ * Records are framed by <em>position</em>, not by newline: the injected
+ * {@link FixedLengthBufferedReaderFactory} returns exactly one 350-character record per
+ * {@code readLine()} regardless of whether the input is newline-framed (the shipped LF-terminated
+ * ASCII fixtures) or a true contiguous {@code RECFM=FB} fixed-block file with no in-band delimiter.
+ * This preserves the {@code DALYTRAN} fixed-width contract exactly &mdash; a delimiter-free file no
+ * longer collapses into a single over-length line that would drop every record after the first
+ * &mdash; and a non-blank short trailing remainder fails the step deterministically.
  *
  * <h2>Late-bound input location and scope</h2>
  * The input file location is supplied entirely by the {@code inputResource} job parameter, resolved
@@ -94,6 +99,13 @@ public class DailyTransactionFileItemReader extends FlatFileItemReader<DailyTran
     private static final String READER_NAME = "dailyTransactionFileItemReader";
 
     /**
+     * Canonical fixed record length of {@code DALYTRAN-RECORD} (CVTRA06Y): {@code RECFM=FB, LRECL=350}.
+     * Every record is framed to exactly this width by the {@link FixedLengthBufferedReaderFactory}
+     * regardless of whether the raw input carries inter-record newlines.
+     */
+    private static final int RECORD_LENGTH = 350;
+
+    /**
      * Constructs and fully configures the fixed-width daily-transaction file reader.
      *
      * @param inputResource the raw external {@code DALYTRAN} fixed-width file, late-bound from the
@@ -112,6 +124,15 @@ public class DailyTransactionFileItemReader extends FlatFileItemReader<DailyTran
         // ISO-8859-1 is mandatory: it preserves the zoned-decimal overpunch byte of DALYTRAN-AMT as
         // its canonical single-byte character so readSignedDecimal decodes the sign correctly.
         setEncoding(StandardCharsets.ISO_8859_1.name());
+        // Frame the raw stream into fixed-length 350-byte records by POSITION rather than by newline.
+        // The COBOL DALYTRAN dataset is RECFM=FB (contiguous fixed blocks, no in-band delimiter); the
+        // default line-oriented factory would collapse a delimiter-free file into one over-length line
+        // and silently drop every record after the first. This factory returns exactly one 350-char
+        // record per readLine() whether or not the file is newline-framed, so the LF-framed ASCII
+        // fixtures and a true fixed-block file decode identically, and it fails fast on a non-blank
+        // short trailing remainder. One readLine() still equals one record, so the reader's restart
+        // line-count save-state is unchanged.
+        setBufferedReaderFactory(new FixedLengthBufferedReaderFactory(RECORD_LENGTH));
         // A missing input file must fail the step deterministically rather than load zero records.
         setStrict(true);
         // Restartable line-count save-state for chunk-oriented steps.

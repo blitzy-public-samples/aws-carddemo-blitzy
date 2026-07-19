@@ -24,6 +24,7 @@ import com.aws.carddemo.repository.AccountRepository;
 import com.aws.carddemo.repository.CardXrefRepository;
 import com.aws.carddemo.repository.CustomerRepository;
 import com.aws.carddemo.service.rule.UsSsnRule;
+import com.aws.carddemo.service.rule.UsStateZipRule;
 import com.aws.carddemo.service.rule.ValidationResult;
 
 import org.slf4j.Logger;
@@ -286,6 +287,16 @@ public class AccountService {
     private final UsSsnRule usSsnRule;
 
     /**
+     * The state/ZIP cross-field edit rule (Java reproduction of COBOL
+     * {@code 1280-EDIT-US-STATE-ZIP-CD}), injected and reused as the single component that owns the
+     * exhaustive {@code (state, zip-prefix)} membership table from copybook {@code CSLKPCDY}. The
+     * {@code 1200-EDIT-MAP-INPUTS} cross-field check ({@link #editStateZip}) delegates to this rule
+     * so the check is enforced against the full lookup table (QA finding F-CAUP-1), not merely a
+     * structural prefix test.
+     */
+    private final UsStateZipRule usStateZipRule;
+
+    /**
      * The clock used for every "current date" reference in the edit rules &mdash; most notably the
      * {@code EDIT-DATE-OF-BIRTH} "must be in the past" comparison ({@link #editDateOfBirth}). It is
      * a collaborator (never a direct {@code LocalDate.now()} call) so the date-of-birth boundary can
@@ -303,8 +314,9 @@ public class AccountService {
      * (it is the injection point; the {@link Autowired} annotation is required only because a second,
      * package-private constructor exists for tests). It delegates to
      * {@link #AccountService(AccountRepository, CustomerRepository, CardXrefRepository,
-     * DateValidationService, UsSsnRule, Clock)} with {@link Clock#systemDefaultZone()}, so the
-     * runtime date-of-birth boundary is the real wall clock exactly as before.
+     * DateValidationService, UsSsnRule, UsStateZipRule, Clock)} with
+     * {@link Clock#systemDefaultZone()}, so the runtime date-of-birth boundary is the real wall
+     * clock exactly as before.
      *
      * @param accountRepository     repository for the {@code account} table (VSAM
      *                              {@code ACCTDATA} KSDS)
@@ -319,15 +331,21 @@ public class AccountService {
      * @param usSsnRule             the SSN edit rule (Java reproduction of COBOL
      *                              {@code 1265-EDIT-US-SSN}); the {@code 1200-EDIT-MAP-INPUTS}
      *                              SSN field delegates to this shared rule component
+     * @param usStateZipRule        the state/ZIP cross-field edit rule (Java reproduction of COBOL
+     *                              {@code 1280-EDIT-US-STATE-ZIP-CD}); the
+     *                              {@code 1200-EDIT-MAP-INPUTS} cross-field check delegates to this
+     *                              shared rule component so the full {@code CSLKPCDY} membership
+     *                              table is enforced (QA finding F-CAUP-1)
      */
     @Autowired
     public AccountService(AccountRepository accountRepository,
                           CustomerRepository customerRepository,
                           CardXrefRepository cardXrefRepository,
                           DateValidationService dateValidationService,
-                          UsSsnRule usSsnRule) {
+                          UsSsnRule usSsnRule,
+                          UsStateZipRule usStateZipRule) {
         this(accountRepository, customerRepository, cardXrefRepository,
-                dateValidationService, usSsnRule, Clock.systemDefaultZone());
+                dateValidationService, usSsnRule, usStateZipRule, Clock.systemDefaultZone());
     }
 
     /**
@@ -343,6 +361,7 @@ public class AccountService {
      * @param cardXrefRepository    repository for the {@code card_xref} table
      * @param dateValidationService the {@code CSUTLDTC} date-validation re-platform
      * @param usSsnRule             the SSN edit rule
+     * @param usStateZipRule        the state/ZIP cross-field edit rule ({@code 1280-EDIT-US-STATE-ZIP-CD})
      * @param clock                 the clock used for "current date" comparisons; must not be
      *                              {@code null}
      */
@@ -351,12 +370,14 @@ public class AccountService {
                    CardXrefRepository cardXrefRepository,
                    DateValidationService dateValidationService,
                    UsSsnRule usSsnRule,
+                   UsStateZipRule usStateZipRule,
                    Clock clock) {
         this.accountRepository = accountRepository;
         this.customerRepository = customerRepository;
         this.cardXrefRepository = cardXrefRepository;
         this.dateValidationService = dateValidationService;
         this.usSsnRule = usSsnRule;
+        this.usStateZipRule = Objects.requireNonNull(usStateZipRule, "usStateZipRule");
         this.clock = Objects.requireNonNull(clock, "clock");
     }
 
@@ -847,22 +868,48 @@ public class AccountService {
         }
 
         // All edits passed -> present the confirmation prompt (SET ACUP-CHANGES-OK-NOT-CONFIRMED).
+        // COBOL 3203-SHOW-UPDATED-VALUES re-displays the submitted ACUP-NEW-* map fields (the typed
+        // candidate values), NOT the un-mutated master record. The confirmation preview therefore
+        // echoes the validated candidate values (QA finding F-CAUP-2) via a transient, detached copy
+        // so the managed entities of the enclosing read-write transaction are never mutated (no
+        // premature flush). Building the copy is safe here because every edit has just passed.
         return new AccountUpdateResult(
-                Status.CHANGES_OK_NOT_CONFIRMED, current, MSG_PROMPT_CONFIRMATION);
+                Status.CHANGES_OK_NOT_CONFIRMED, previewOf(current, command), MSG_PROMPT_CONFIRMATION);
     }
 
     /**
      * COBOL {@code 2000-DECIDE-ACTION WHEN ACUP-CHANGES-OK-NOT-CONFIRMED} without PF05: re-read the
-     * record and re-show the confirmation prompt unchanged.
+     * record and re-show the confirmation prompt with the submitted (candidate) values still in the
+     * map fields.
+     *
+     * <p>The re-shown confirmation echoes the submitted {@code ACUP-NEW-*} candidate values rather
+     * than the un-mutated master record (QA finding F-CAUP-2), consistent with
+     * {@link #decideFromShowDetails(AccountUpdateCommand)}. Because the candidate preview is built
+     * from typed entity fields, the string inputs must first parse cleanly; the field edits are
+     * therefore re-run defensively here &mdash; exactly as {@link #performWrite(AccountUpdateCommand)}
+     * does before it applies the values &mdash; so a client that resubmits values that no longer
+     * validate drops back to {@code CHANGES-NOT-OK} instead of failing to render. In the normal flow
+     * the values already passed the edits that produced this state, so the re-edit passes and the
+     * confirmation prompt is re-shown with the candidate values. The transient copy guarantees the
+     * managed entities are never mutated (no premature flush).</p>
      *
      * @param command the submitted command
-     * @return the confirmation-pending flow state
+     * @return the confirmation-pending flow state (or {@code CHANGES-NOT-OK} if a resubmit no longer
+     *         validates)
      */
     private AccountUpdateResult reshowConfirm(AccountUpdateCommand command) {
         long acctId = requireAccountId(command);
         AccountDetail current = readAccountChain(acctId);
+
+        // Defensive re-edit (see performWrite): guarantees the candidate values parse before they
+        // are echoed, so the preview can never throw and a stale/invalid resubmit is handled cleanly.
+        EditState edit = editFields(command);
+        if (edit.inputError) {
+            return new AccountUpdateResult(Status.CHANGES_NOT_OK, current, edit.message);
+        }
+
         return new AccountUpdateResult(
-                Status.CHANGES_OK_NOT_CONFIRMED, current, MSG_PROMPT_CONFIRMATION);
+                Status.CHANGES_OK_NOT_CONFIRMED, previewOf(current, command), MSG_PROMPT_CONFIRMATION);
     }
 
     /**
@@ -1429,21 +1476,27 @@ public class AccountService {
     }
 
     /**
-     * COBOL {@code 1280-EDIT-US-STATE-ZIP-CD}: cross-field check that the state and the first two
-     * ZIP digits form a valid combination.
+     * COBOL {@code 1280-EDIT-US-STATE-ZIP-CD}: cross-field check that the state code and the first
+     * two ZIP digits form a valid combination.
      *
      * <p>The exhaustive {@code (state, zip-prefix)} membership table lives in copybook
-     * {@code CSLKPCDY} (1318 lines) and is owned by the dedicated {@code service/rule/UsStateZipRule}
-     * component (AAP &sect;0.5.3). This self-contained service reproduces the check position, the
-     * exact failure message, and a structural consistency re-check; the exhaustive membership is a
-     * documented bounded deviation (decision log) that never rejects a value the COBOL accepts.</p>
+     * {@code CSLKPCDY} and is owned by the dedicated {@link UsStateZipRule} component
+     * (AAP &sect;0.5.3). The check is delegated to that injected rule so the full lookup table is
+     * enforced at runtime, exactly as COBOL {@code 1280-EDIT-US-STATE-ZIP-CD} builds
+     * {@code US-STATE-AND-FIRST-ZIP2} and tests {@code VALID-US-STATE-ZIP-CD2-COMBO}
+     * ({@code legacy/cbl/COACTUPC.cbl} L2536-L2557). On a mismatch the first-message-wins accumulator
+     * latches the exact caller-visible failure message (QA finding F-CAUP-1).</p>
+     *
+     * <p>This is an instance method (not {@code static}) because it collaborates with the injected
+     * {@link #usStateZipRule} bean; it is invoked from {@link #editFields(AccountUpdateCommand)}
+     * only after the state code and ZIP have each individually passed their own edits.</p>
      *
      * @param state     the edit accumulator
-     * @param stateCode the submitted state code (already valid)
-     * @param zip       the submitted ZIP code (already valid)
+     * @param stateCode the submitted state code (already individually valid)
+     * @param zip       the submitted ZIP code (already individually valid)
      */
-    private static void editStateZip(EditState state, String stateCode, String zip) {
-        if (!isValidStateZipCombo(stateCode, zip)) {
+    private void editStateZip(EditState state, String stateCode, String zip) {
+        if (usStateZipRule.validate(stateCode, zip).isInvalid()) {
             state.latch(MSG_ZIP_FOR_STATE_INVALID);
         }
     }
@@ -1588,23 +1641,6 @@ public class AccountService {
     private static boolean isGeneralPurposeAreaCode(String area) {
         int code = Integer.parseInt(area);
         return code >= 200 && (code % 100) != 11;
-    }
-
-    /**
-     * Structural consistency re-check for {@link #editStateZip(EditState, String, String)}; the full
-     * {@code (state, zip-prefix)} membership is delegated to {@code service/rule/UsStateZipRule}.
-     *
-     * @param stateCode the state code
-     * @param zip       the ZIP code
-     * @return {@code true} when the state is valid and the ZIP has a numeric two-digit prefix
-     */
-    private static boolean isValidStateZipCombo(String stateCode, String zip) {
-        String s = trim(stateCode);
-        String z = trim(zip);
-        if (!VALID_US_STATE_CODES.contains(s)) {
-            return false;
-        }
-        return z.length() >= 2 && isAllDigits(z.substring(0, 2));
     }
 
     /**
@@ -1776,6 +1812,104 @@ public class AccountService {
             return "";
         }
         return String.format("%s-%02d-%02d", yy, Integer.parseInt(mm), Integer.parseInt(dd));
+    }
+
+    // --------------------------------------------------------------------------------
+    // 3203-SHOW-UPDATED-VALUES — confirmation preview echoing candidate values (F-CAUP-2)
+    // --------------------------------------------------------------------------------
+
+    /**
+     * Builds the confirmation-preview detail that echoes the submitted, validated candidate values,
+     * reproducing COBOL {@code 3203-SHOW-UPDATED-VALUES}, which re-displays the {@code ACUP-NEW-*}
+     * map fields (the values the user just typed) rather than the un-mutated master record
+     * (QA finding F-CAUP-2).
+     *
+     * <p>The account and customer are copied into fresh, unmanaged (detached) instances via their
+     * all-args constructors; the optimistic-lock {@code @Version} is carried across so the web layer
+     * still emits the correct version header for the next submit; and the validated
+     * {@code ACUP-NEW-*} values are applied to the <em>copies</em>. The managed entities loaded by
+     * {@link #readAccountChain(long)} within the enclosing {@link Transactional} read-write boundary
+     * are therefore never mutated, so no premature flush is triggered &mdash; only a confirmed write
+     * (PF05 &rarr; {@code 9600-WRITE-PROCESSING}) persists changes.</p>
+     *
+     * <p>This must be called only after the field edits have passed, because
+     * {@link #applyAccountUpdates(Account, AccountUpdateCommand)} and
+     * {@link #applyCustomerUpdates(Customer, AccountUpdateCommand)} parse the validated strings
+     * (a non-numeric monetary or date value would otherwise throw). Both call sites
+     * ({@link #decideFromShowDetails(AccountUpdateCommand)} and
+     * {@link #reshowConfirm(AccountUpdateCommand)}) enforce this by running the edits first.</p>
+     *
+     * @param current the freshly-read, managed account+customer aggregate
+     * @param command the validated submitted values
+     * @return a transient detail carrying the candidate values for display (never persisted)
+     */
+    private static AccountDetail previewOf(AccountDetail current, AccountUpdateCommand command) {
+        Account previewAccount = detachedCopy(current.account());
+        Customer previewCustomer = detachedCopy(current.customer());
+        applyAccountUpdates(previewAccount, command);
+        applyCustomerUpdates(previewCustomer, command);
+        return new AccountDetail(previewAccount, previewCustomer);
+    }
+
+    /**
+     * Creates a fresh, unmanaged (detached) copy of the given {@link Account} through its all-args
+     * constructor, carrying over the optimistic-lock {@code @Version} so the confirmation preview
+     * still surfaces the version the client must echo on the next submit. Because the copy is not
+     * associated with the persistence context, mutating it to apply candidate values for display can
+     * never trigger a JPA flush of the managed record.
+     *
+     * @param source the managed account read within the transaction
+     * @return a transient, field-for-field copy (version included)
+     */
+    private static Account detachedCopy(Account source) {
+        Account copy = new Account(
+                source.getAcctId(),
+                source.getAcctActiveStatus(),
+                source.getCurrBal(),
+                source.getCreditLimit(),
+                source.getCashCreditLimit(),
+                source.getAcctOpenDate(),
+                source.getAcctExpirationDate(),
+                source.getAcctReissueDate(),
+                source.getCurrCycCredit(),
+                source.getCurrCycDebit(),
+                source.getAcctAddrZip(),
+                source.getGroupId());
+        copy.setVersion(source.getVersion());
+        return copy;
+    }
+
+    /**
+     * Creates a fresh, unmanaged (detached) copy of the given {@link Customer} through its all-args
+     * constructor, carrying over the optimistic-lock {@code @Version}. Because the copy is not
+     * associated with the persistence context, mutating it to apply candidate values for display can
+     * never trigger a JPA flush of the managed record.
+     *
+     * @param source the managed customer read within the transaction
+     * @return a transient, field-for-field copy (version included)
+     */
+    private static Customer detachedCopy(Customer source) {
+        Customer copy = new Customer(
+                source.getCustId(),
+                source.getCustFirstName(),
+                source.getCustMiddleName(),
+                source.getCustLastName(),
+                source.getCustAddrLine1(),
+                source.getCustAddrLine2(),
+                source.getCustAddrLine3(),
+                source.getCustAddrStateCd(),
+                source.getCustAddrCountryCd(),
+                source.getCustAddrZip(),
+                source.getCustPhoneNum1(),
+                source.getCustPhoneNum2(),
+                source.getCustSsn(),
+                source.getCustGovtIssuedId(),
+                source.getCustDob(),
+                source.getCustEftAccountId(),
+                source.getCustPriCardHolderInd(),
+                source.getCustFicoCreditScore());
+        copy.setVersion(source.getVersion());
+        return copy;
     }
 
     // --------------------------------------------------------------------------------

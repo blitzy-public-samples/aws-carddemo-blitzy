@@ -250,6 +250,39 @@ class AccountMasterPrintJobTest {
     }
 
     /**
+     * The job reproduces the legacy CBACT01C SYSOUT execution banners (QA finding F4): a
+     * {@code START OF EXECUTION OF PROGRAM CBACT01C} line before the run and, on a normal
+     * (COMPLETED) run, an {@code END OF EXECUTION OF PROGRAM CBACT01C} line after it &mdash; emitted
+     * in that order by the {@link ExecutionBannerJobListener} registered on the job. These are the
+     * SYSOUT header/trailer of the master print.
+     *
+     * @throws Exception if the job launch fails (fails the test)
+     */
+    @Test
+    void emitsStartAndEndExecutionBanners() throws Exception {
+        Logger bannerLogger = (Logger) LoggerFactory.getLogger(ExecutionBannerJobListener.class);
+        ListAppender<ILoggingEvent> capture = new ListAppender<>();
+        capture.start();
+        bannerLogger.addAppender(capture);
+        try {
+            JobExecution execution = launchJob();
+            assertThat(execution.getStatus()).isEqualTo(BatchStatus.COMPLETED);
+
+            List<String> banners = capture.list.stream()
+                    .map(ILoggingEvent::getFormattedMessage)
+                    .filter(message -> message.contains("OF EXECUTION OF PROGRAM"))
+                    .toList();
+
+            assertThat(banners).containsExactly(
+                    "START OF EXECUTION OF PROGRAM CBACT01C",
+                    "END OF EXECUTION OF PROGRAM CBACT01C");
+        } finally {
+            bannerLogger.detachAppender(capture);
+            capture.stop();
+        }
+    }
+
+    /**
      * The job is strictly read-only: the account row count, the aggregate of every monetary field,
      * and the JPA optimistic-lock {@code @Version} counters are all identical before and after the
      * run. This mirrors CBACT01C opening the file {@code INPUT} and never writing or rewriting a

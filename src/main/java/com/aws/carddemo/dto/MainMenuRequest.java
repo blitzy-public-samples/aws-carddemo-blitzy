@@ -45,8 +45,16 @@ import jakarta.validation.constraints.Size;
  *               numeric digits. Modeled as {@link String} (never a numeric type) to preserve the
  *               exact two-character width contract; an empty value is permitted because the field
  *               may be left blank (for example when exiting with {@link PfKeyAction#PF3}).
- *               Constrained to at most two characters ({@link Size}) that must all be digits
- *               ({@link Pattern}).
+ *               Constrained to at most two characters ({@link Size}); the {@link Pattern} bounds
+ *               only the width, accepting any up-to-two-character value at the transport boundary.
+ *               The numeric-shape check is intentionally NOT enforced here: COBOL {@code COMEN01C}
+ *               (PROCESS-ENTER-KEY, L122-129) folds blanks to zero and, when
+ *               {@code WS-OPTION IS NOT NUMERIC} (or out of range / zero), re-displays the menu with
+ *               "{@code Please enter a valid option number...}" on the same screen (an HTTP 200
+ *               redisplay, not a hard rejection). Enforcing an all-digits {@link Pattern} here
+ *               would instead reject a non-numeric option (for example "{@code 5A}" or a blank)
+ *               with HTTP 400 before {@code MenuService} runs, breaking that legacy same-screen
+ *               behavior; the shape check is therefore left to that service.
  * @param action the 3270 attention identifier (AID) the operator transmitted; origin
  *               {@code EIBAID} via shared copybook {@code CSSTRPFY.cpy}. Optional and may be
  *               {@code null}. For this screen the footer advertises {@code ENTER=Continue  F3=Exit},
@@ -57,7 +65,11 @@ import jakarta.validation.constraints.Size;
 public record MainMenuRequest(
 
         @Size(max = 2)
-        @Pattern(regexp = "^\\d{0,2}$")
+        // Width-only guard (any <=2-char value). COBOL COMEN01C L122-129 handles the
+        // numeric-shape / range / zero checks in the service, re-displaying the same screen
+        // with "Please enter a valid option number..." (HTTP 200) rather than rejecting a
+        // non-numeric or blank option at the transport boundary with HTTP 400.
+        @Pattern(regexp = "^.{0,2}$")
         String option,
 
         PfKeyAction action) {

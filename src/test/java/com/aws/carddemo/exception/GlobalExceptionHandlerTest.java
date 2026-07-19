@@ -25,6 +25,8 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.Mockito;
 import org.slf4j.MDC;
+import org.springframework.dao.CannotAcquireLockException;
+import org.springframework.dao.ConcurrencyFailureException;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.dao.OptimisticLockingFailureException;
 import org.springframework.http.HttpHeaders;
@@ -248,6 +250,36 @@ class GlobalExceptionHandlerTest {
         assertThat(problem.getTitle()).isEqualTo("Concurrent Update Conflict");
         assertThat(problem.getDetail()).isEqualTo(OPTIMISTIC_LOCK_DETAIL);
         assertThat(problem.getDetail()).doesNotContain("entity Account");
+    }
+
+    /**
+     * A database lock-acquisition failure &mdash; the translation of a PostgreSQL
+     * deadlock ({@code SQLSTATE 40P01}) when two confirmed updates race for the same
+     * rows &mdash; surfaces as Spring's {@link CannotAcquireLockException}. Before QA
+     * finding F-CAUP-3 this type had no handler and fell through to a generic HTTP 500;
+     * it is now caught by the same handler through its broad root
+     * {@link ConcurrencyFailureException} and maps to HTTP 409 with the identical
+     * fixed, safe detail. The routing guarantee is asserted structurally
+     * ({@code CannotAcquireLockException} IS-A {@code ConcurrencyFailureException}, the
+     * type listed on the {@code @ExceptionHandler}) and the mapping is asserted on the
+     * handler result; the end-to-end dispatch is exercised by the runtime API check.
+     */
+    @Test
+    void cannotAcquireLockMapsTo409() {
+        // Structural routing guarantee: the handler lists ConcurrencyFailureException.class,
+        // so every subtype (including CannotAcquireLockException) is dispatched to it.
+        assertThat(ConcurrencyFailureException.class)
+                .isAssignableFrom(CannotAcquireLockException.class);
+
+        ProblemDetail problem = handler.handleOptimisticLock(
+                new CannotAcquireLockException("deadlock detected; SQLSTATE 40P01 on ACCOUNT id=1"));
+
+        assertThat(problem.getStatus()).isEqualTo(HttpStatus.CONFLICT.value());
+        assertThat(problem.getTitle()).isEqualTo("Concurrent Update Conflict");
+        assertThat(problem.getDetail()).isEqualTo(OPTIMISTIC_LOCK_DETAIL);
+        assertThat(problem.getDetail())
+                .doesNotContain("40P01")
+                .doesNotContain("ACCOUNT id=1");
     }
 
     // ---------------------------------------------------------------------

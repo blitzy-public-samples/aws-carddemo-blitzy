@@ -15,7 +15,6 @@
  */
 package com.aws.carddemo.service;
 
-import java.util.List;
 import java.util.Locale;
 import java.util.Objects;
 
@@ -24,8 +23,9 @@ import org.slf4j.LoggerFactory;
 import org.springframework.dao.DataAccessException;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.data.domain.Page;
-import org.springframework.data.domain.PageImpl;
+import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Pageable;
+import org.springframework.data.domain.Sort;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -407,42 +407,87 @@ public class UserService {
      * {@code STARTBR}/{@code READNEXT}/{@code READPREV} (paged forward with
      * {@code PF8} and backward with {@code PF7}).
      *
-     * <p>The ascending key browse is reproduced with
-     * {@link UserSecurityRepository#findAllByOrderBySecUsrIdAsc()}. When
+     * <p>The ascending key browse is <strong>paginated in the database</strong>
+     * exactly as the card and transaction lists are (AAP &sect;0.4.3): the requested
+     * page is fetched with a single {@code LIMIT}/{@code OFFSET} query and its total
+     * with a single {@code COUNT}, so the whole {@code user_security} table is never
+     * loaded into memory. When {@code startUserId} is blank the page is served by
+     * the inherited {@link UserSecurityRepository#findAll(Pageable)}. When
      * {@code startUserId} is supplied (non-blank) it reproduces the legacy
      * {@code STARTBR} positioning: the listing begins at the first user id greater
-     * than or equal to that (upper-cased) key. The requested
-     * {@link Pageable#getOffset() offset} / {@link Pageable#getPageSize() page size}
-     * window is then returned as a {@link Page}. In-memory windowing is appropriate
-     * here because {@code user_security} is a small administrative table.</p>
+     * than or equal to that (normalized, upper-cased) key, served by
+     * {@link UserSecurityRepository#findBySecUsrIdGreaterThanEqual(String, Pageable)}.
+     * Because the {@code SEC-USR-ID} key is a fixed-width, upper-cased
+     * {@code PIC X(08)} value, the {@code >=} predicate reproduces the KSDS
+     * reposition exactly (lexicographic ordering equals key ordering).</p>
+     *
+     * <p>The ascending {@code secUsrId} ordering is enforced here regardless of any
+     * sort carried on the incoming {@link Pageable} (via
+     * {@link #withSecUsrIdAscending(Pageable)}), preserving the fixed legacy browse
+     * sequence; only the page number and page size are taken from the caller.</p>
      *
      * @param startUserId optional inclusive start key reproducing the COBOL
      *                    {@code STARTBR} position; {@code null} or blank starts at
      *                    the first record
-     * @param pageable    the page window (offset and size) to return; its sort is
-     *                    ignored because the ascending user-id order is fixed by the
-     *                    legacy browse contract
+     * @param pageable    the page window (page number and size) to return; its sort
+     *                    is overridden with the fixed ascending user-id order
      * @return a {@link Page} of {@link UserSecurity} records ordered by
-     *         {@code secUsrId} ascending
+     *         {@code secUsrId} ascending, reporting the full matching total
      */
     @Transactional(readOnly = true)
     public Page<UserSecurity> listUsers(String startUserId, Pageable pageable) {
-        List<UserSecurity> ordered = userSecurityRepository.findAllByOrderBySecUsrIdAsc();
-
-        if (!isBlank(startUserId)) {
-            String seekKey = normalizeUserId(startUserId);
-            ordered = ordered.stream()
-                    .filter(candidate -> candidate.getSecUsrId() != null
-                            && candidate.getSecUsrId().compareTo(seekKey) >= 0)
-                    .toList();
+        Pageable ordered = withSecUsrIdAscending(pageable);
+        if (isBlank(startUserId)) {
+            return userSecurityRepository.findAll(ordered);
         }
+        return userSecurityRepository.findBySecUsrIdGreaterThanEqual(
+                normalizeUserId(startUserId), ordered);
+    }
 
-        int total = ordered.size();
-        int fromIndex = (int) Math.min(pageable.getOffset(), total);
-        int toIndex = (int) Math.min((long) fromIndex + pageable.getPageSize(), total);
-        List<UserSecurity> window = ordered.subList(fromIndex, toIndex);
+    /**
+     * Counts application users at or after an optional start key, without loading
+     * any rows. This supports the {@code COUSR00C} backward/forward paging
+     * ({@code PROCESS-PF7-KEY}/{@code PROCESS-PF8-KEY}), which must know the grand
+     * total (to detect the bottom boundary) and the number of users at or after the
+     * page anchor (to derive the current page index) &mdash; both as efficient
+     * {@code COUNT} queries rather than as full-table reads.
+     *
+     * <p>When {@code startUserId} is blank the inherited
+     * {@link UserSecurityRepository#count()} grand total is returned; otherwise the
+     * {@code >=}-anchored
+     * {@link UserSecurityRepository#countBySecUsrIdGreaterThanEqual(String)} is used
+     * with the same normalized (upper-cased) key as {@link #listUsers}, so the two
+     * are always consistent.</p>
+     *
+     * @param startUserId optional inclusive start key; {@code null} or blank counts
+     *                    every user
+     * @return the number of users with {@code secUsrId >=} the (normalized) key, or
+     *         the grand total when the key is blank
+     */
+    @Transactional(readOnly = true)
+    public long countUsers(String startUserId) {
+        if (isBlank(startUserId)) {
+            return userSecurityRepository.count();
+        }
+        return userSecurityRepository.countBySecUsrIdGreaterThanEqual(
+                normalizeUserId(startUserId));
+    }
 
-        return new PageImpl<>(window, pageable, total);
+    /**
+     * Builds a {@link Pageable} that keeps the caller's page number and size but
+     * forces ascending {@code secUsrId} ordering, reproducing the {@code COUSR00C}
+     * primary-key browse regardless of the sort the caller supplied. A {@code null}
+     * or unpaged request is turned into a single, key-ordered page over all rows.
+     *
+     * @param pageable the caller's paging request; may be {@code null} or unpaged
+     * @return a {@link Pageable} sorted ascending by {@code secUsrId}
+     */
+    private static Pageable withSecUsrIdAscending(Pageable pageable) {
+        Sort bySecUsrId = Sort.by(Sort.Direction.ASC, "secUsrId");
+        if (pageable == null || pageable.isUnpaged()) {
+            return PageRequest.of(0, Integer.MAX_VALUE, bySecUsrId);
+        }
+        return PageRequest.of(pageable.getPageNumber(), pageable.getPageSize(), bySecUsrId);
     }
 
     /**

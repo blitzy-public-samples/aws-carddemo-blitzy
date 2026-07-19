@@ -172,9 +172,10 @@ The legacy `CBACT04C` computation uses `PIC S9(9)V99` intermediate fields
 **The Java `HALF_UP` result is authoritative for these golden fixtures**, so the
 `interest/` fixtures encode `0.01` and a total of `37.51`. This is an intentional
 deviation from a literal COBOL translation and is recorded in the decision log
-(decision **D9**, "BigDecimal scale-2 Money value object") -
-[`docs/decision-log.md`](../../../../docs/decision-log.md). Tests must assert the
-`HALF_UP` values, not the legacy truncated values.
+(decision **D31**, "Interest rounding uses HALF_UP (documented divergence from
+COBOL truncation)"; see also the related **D9**, "BigDecimal scale-2 Money value
+object") - [`docs/decision-log.md`](../../../../docs/decision-log.md). Tests must
+assert the `HALF_UP` values, not the legacy truncated values.
 
 ### 3. Reject codes are preserved with identical trigger conditions *and* evaluation order
 

@@ -364,10 +364,29 @@ public class TransactionAddController {
      */
     private ResponseEntity<TransactionAddResponse> processEnter(TransactionAddRequest request,
                                                                 LocalDateTime now) {
+        // COBOL COTRN02C PROCESS-ENTER-KEY (L155-167): the field and reference edits
+        // (VALIDATE-INPUT-KEY-FIELDS + VALIDATE-INPUT-DATA-FIELDS) run BEFORE the
+        // EVALUATE CONFIRMI confirm decision, and each failing edit did a
+        // SEND-TRNADD-SCREEN + RETURN (short-circuit). Run the edits first so an invalid
+        // field or an unresolved account/card key is reported immediately -- regardless
+        // of the confirm flag -- rather than being masked by the confirm prompt.
+        AddTransactionCommand command = buildCommand(request);
+        try {
+            transactionService.validateAddCommand(command);
+        } catch (TransactionValidationException ex) {
+            // VALIDATE-INPUT-*-FIELDS failure -> MOVE msg TO WS-MESSAGE + SEND-TRNADD-SCREEN
+            // (a normal same-screen redisplay, not an abend). Surface the exact message at 200 OK.
+            return ResponseEntity.ok(transactionMapper.toAddResponse(request, ex.getMessage(), now));
+        }
+        // A RecordNotFoundException (unresolved account/card key, "Card Number NOT found...")
+        // or DuplicateKeyException is deliberately NOT caught -- it propagates to the global
+        // handler for the correct 404/409 status, exactly as on the confirmed-add path.
+
+        // Only after every edit has passed do we EVALUATE CONFIRMI.
         String confirm = (request.confirm() == null) ? "" : request.confirm();
         // WHEN 'Y' / 'y' -> PERFORM ADD-TRANSACTION.
         if (CONFIRM_YES.equalsIgnoreCase(confirm)) {
-            return confirmAndAdd(request, now);
+            return confirmAndAdd(command, request, now);
         }
         // WHEN 'N' / 'n' / SPACES / LOW-VALUES -> 'Confirm to add this transaction...'.
         if (confirm.isBlank() || CONFIRM_NO.equalsIgnoreCase(confirm)) {
@@ -379,28 +398,64 @@ public class TransactionAddController {
 
     /**
      * Reproduces the confirmed-add path (COBOL {@code CONFIRMI = 'Y'} &rarr;
-     * {@code ADD-TRANSACTION}). The submitted values are copied field-for-field into
-     * the service command &mdash; the amount is rendered into the exact signed
-     * fixed-point text the service edits expect &mdash; and the transaction is added.
-     * The 16-character id is assigned by the service (never here).
+     * {@code ADD-TRANSACTION}). The (already-built and already-edited) service command is
+     * persisted &mdash; the 16-character id is assigned by the service (never here). The
+     * input edits ran earlier in {@link #processEnter(TransactionAddRequest, LocalDateTime)}
+     * (COBOL ordering: edits precede {@code EVALUATE CONFIRMI}), so this method only adds
+     * the transaction.
      *
-     * <p>A {@link TransactionValidationException} means an input edit failed; the
-     * legacy program surfaced that as an ordinary screen redisplay, so it is echoed
+     * <p>A {@link TransactionValidationException} means an input edit failed on the
+     * service's defensive re-edit inside {@link TransactionService#addTransaction};
+     * the legacy program surfaced that as an ordinary screen redisplay, so it is echoed
      * back at {@code 200 OK} carrying the exact legacy message. A
      * {@code RecordNotFoundException} or {@code DuplicateKeyException} is deliberately
      * not caught &mdash; it propagates to the global handler for the correct
      * {@code 404}/{@code 409} status.</p>
      *
-     * @param request the submitted add-screen fields
+     * @param command the validated service command built by {@link #buildCommand(TransactionAddRequest)}
+     * @param request the submitted add-screen fields (for the same-screen redisplay)
      * @param now     the timestamp used to render the response header
      * @return {@code 200 OK} with the success redisplay, or the same-screen edit-failure
      *         redisplay
      */
-    private ResponseEntity<TransactionAddResponse> confirmAndAdd(TransactionAddRequest request,
+    private ResponseEntity<TransactionAddResponse> confirmAndAdd(AddTransactionCommand command,
+                                                                 TransactionAddRequest request,
                                                                  LocalDateTime now) {
-        // Straight field copy into the service-layer command; tranId is NOT set here
-        // (the service assigns it via IdGenerator). Field order matches AddTransactionCommand.
-        AddTransactionCommand command = new AddTransactionCommand(
+        Transaction added;
+        try {
+            added = transactionService.addTransaction(command);
+        } catch (TransactionValidationException ex) {
+            // COBOL VALIDATE-INPUT-*-FIELDS failure -> MOVE msg TO WS-MESSAGE + SEND-TRNADD-SCREEN
+            // (a normal same-screen redisplay, not an abend). Surface the exact message at 200 OK.
+            // Reached only if a re-edit inside addTransaction fails (the edits already ran in
+            // processEnter before the confirm decision); kept as a defensive same-screen redisplay.
+            return ResponseEntity.ok(transactionMapper.toAddResponse(request, ex.getMessage(), now));
+        }
+
+        // COBOL WRITE-TRANSACT-FILE success STRING:
+        //   'Transaction added successfully. ' ' Your Tran ID is ' TRAN-ID '.'
+        String successMessage =
+                "Transaction added successfully. " + " Your Tran ID is " + added.getTranId() + ".";
+        return ResponseEntity.ok(
+                transactionMapper.toAddResponse(added, request.accountId(), successMessage, now));
+    }
+
+    /**
+     * Copies the submitted add-screen fields into the service-layer command, field for
+     * field. The transaction id is never set here (the service assigns it via
+     * {@code IdGenerator}); the amount is rendered into the exact signed fixed-point text
+     * the service edits expect via {@link #formatAmountForCommand(BigDecimal)}. This is a
+     * pure transport mapping with no business logic &mdash; it is built once per
+     * {@code PROCESS-ENTER-KEY} turn and shared by both the pre-confirm edit pass
+     * ({@link TransactionService#validateAddCommand(AddTransactionCommand)}) and the
+     * confirmed add ({@link TransactionService#addTransaction(AddTransactionCommand)}),
+     * so the values that are validated are exactly the values that are persisted.
+     *
+     * @param request the submitted add-screen fields
+     * @return the assembled {@link AddTransactionCommand} (field order matches the record)
+     */
+    private static AddTransactionCommand buildCommand(TransactionAddRequest request) {
+        return new AddTransactionCommand(
                 request.accountId(),                       // ACTIDINI
                 request.cardNumber(),                      // CARDNINI
                 request.typeCode(),                        // TTYPCDI
@@ -414,22 +469,6 @@ public class TransactionAddController {
                 request.merchantName(),                    // MNAMEI
                 request.merchantCity(),                    // MCITYI
                 request.merchantZip());                    // MZIPI
-
-        Transaction added;
-        try {
-            added = transactionService.addTransaction(command);
-        } catch (TransactionValidationException ex) {
-            // COBOL VALIDATE-INPUT-*-FIELDS failure -> MOVE msg TO WS-MESSAGE + SEND-TRNADD-SCREEN
-            // (a normal same-screen redisplay, not an abend). Surface the exact message at 200 OK.
-            return ResponseEntity.ok(transactionMapper.toAddResponse(request, ex.getMessage(), now));
-        }
-
-        // COBOL WRITE-TRANSACT-FILE success STRING:
-        //   'Transaction added successfully. ' ' Your Tran ID is ' TRAN-ID '.'
-        String successMessage =
-                "Transaction added successfully. " + " Your Tran ID is " + added.getTranId() + ".";
-        return ResponseEntity.ok(
-                transactionMapper.toAddResponse(added, request.accountId(), successMessage, now));
     }
 
     /**

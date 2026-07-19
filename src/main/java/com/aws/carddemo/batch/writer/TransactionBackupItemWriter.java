@@ -64,10 +64,14 @@ import org.springframework.stereotype.Component;
  * {@code RepositoryItemReader}/{@code JpaPagingItemReader} ordered by {@code tranId} ascending)
  * streams the entire {@code transaction} table; this writer serializes each streamed
  * {@link Transaction} to the 350-byte record image defined by copybook
- * {@code legacy/cpy/CVTRA05Y.cpy} ({@code TRAN-RECORD}, {@code RECLN = 350}). The <em>timestamped
- * output filename</em> ({@code file-prefix + yyyyMMddHHmmss}) is the relational analog of the GDG
- * {@code (+1)} "new generation": each run writes a fresh, immutable backup file rather than
- * overwriting the previous one.</p>
+ * {@code legacy/cpy/CVTRA05Y.cpy} ({@code TRAN-RECORD}, {@code RECLN = 350}). The <em>unique-per-run
+ * output filename</em> ({@code file-prefix + yyyyMMddHHmmssSSS + "." + jobExecutionId +
+ * "-" + stepExecutionId}) is the relational analog of the GDG {@code (+1)} "new generation": each run
+ * writes a fresh, immutable backup file rather than overwriting the previous one. The millisecond
+ * timestamp keeps names human-readable and time-ordered, while the {@code JobRepository}-assigned
+ * execution-id suffix guarantees uniqueness even across two separate JVM processes launched within the
+ * same wall-clock second (they share the same database sequence), so a concurrent backup is never
+ * silently lost (QA finding F7; see {@link #uniqueRunToken(StepExecution)}).</p>
  *
  * <h2>Documented deviation &mdash; VSAM storage management is NOT replicated</h2>
  * <p>Beyond the REPRO export, {@code TRANBKP.jcl} also runs two IDCAMS storage-management steps:
@@ -133,8 +137,14 @@ import org.springframework.stereotype.Component;
  * {@link Path} are therefore mutable per-step state. This backup is a <strong>full regeneration on
  * every run</strong> (it mirrors a complete REPRO copy), so it is deliberately <em>not</em>
  * restartable and holds no chunk-level save state: a re-run simply produces a new, complete,
- * freshly timestamped file. As a singleton {@link Component} it assumes a single active execution of
- * its step at a time (the batch is scheduled, not run concurrently against itself).</p>
+ * freshly named file. Because the output filename embeds the {@code JobRepository}-assigned
+ * execution-id suffix (see {@link #uniqueRunToken(StepExecution)}), two <em>separate</em> JVM
+ * processes launched within the same wall-clock second write to distinct files rather than colliding
+ * on a shared name (QA finding F7). The remaining constraint is purely in-JVM: because the open
+ * output {@link Writer} and counters are singleton instance state, a single JVM must not run two of
+ * <em>this</em> step concurrently against itself; the batch is scheduled one launch per process, and
+ * this in-JVM single-active-step constraint is the one recorded in {@code docs/decision-log.md}
+ * (D37).</p>
  *
  * <h2>Configuration</h2>
  * <p>The output location is fully configuration-driven through two properties (safe relative
@@ -144,7 +154,8 @@ import org.springframework.stereotype.Component;
  *   <li>{@code carddemo.batch.backup.directory} &mdash; output directory (default
  *       {@code ./target/backup});</li>
  *   <li>{@code carddemo.batch.backup.file-prefix} &mdash; filename prefix (default
- *       {@code TRANSACT.BKUP.}); the {@code yyyyMMddHHmmss} timestamp is appended to form the
+ *       {@code TRANSACT.BKUP.}); a {@code yyyyMMddHHmmssSSS} millisecond timestamp and a
+ *       {@code .jobExecutionId-stepExecutionId} suffix are appended to form the unique-per-run,
  *       generation-style filename.</li>
  * </ul>
  *
@@ -178,11 +189,14 @@ public class TransactionBackupItemWriter
     private static final String RECORD_DELIMITER = "\n";
 
     /**
-     * Timestamp pattern that forms the generation-style filename suffix; the relational analog of a
-     * GDG {@code (+1)} generation.
+     * Timestamp pattern that forms the human-readable, sortable portion of the generation-style
+     * filename. Millisecond precision ({@code SSS}) is used rather than the original second-only
+     * pattern so that two launches within the same wall-clock second still receive distinct,
+     * time-ordered names; the guaranteed-unique discriminator, however, is the execution-id suffix
+     * appended in {@link #beforeStep(StepExecution)} (see {@link #uniqueRunToken(StepExecution)}).
      */
     private static final DateTimeFormatter TIMESTAMP_FORMAT =
-            DateTimeFormatter.ofPattern("yyyyMMddHHmmss");
+            DateTimeFormatter.ofPattern("yyyyMMddHHmmssSSS");
 
     // ------------------------------------------------------------------------
     // 350-byte TRAN-RECORD field descriptors (copybook CVTRA05Y.cpy).
@@ -234,7 +248,10 @@ public class TransactionBackupItemWriter
     /** Configured output directory (safe relative default {@code ./target/backup}). */
     private final String backupDirectory;
 
-    /** Configured filename prefix (default {@code TRANSACT.BKUP.}); the timestamp is appended. */
+    /**
+     * Configured filename prefix (default {@code TRANSACT.BKUP.}); the millisecond timestamp and the
+     * unique execution-id suffix are appended to it.
+     */
     private final String filePrefix;
 
     /** Open output stream for the current step; {@code null} outside an active step. */
@@ -256,8 +273,9 @@ public class TransactionBackupItemWriter
      *
      * @param backupDirectory the directory into which backup files are written; bound from
      *                        {@code carddemo.batch.backup.directory} (default {@code ./target/backup})
-     * @param filePrefix      the filename prefix to which the {@code yyyyMMddHHmmss} timestamp is
-     *                        appended; bound from {@code carddemo.batch.backup.file-prefix} (default
+     * @param filePrefix      the filename prefix to which the {@code yyyyMMddHHmmssSSS} timestamp and
+     *                        the unique {@code .jobExecutionId-stepExecutionId} suffix are appended;
+     *                        bound from {@code carddemo.batch.backup.file-prefix} (default
      *                        {@code TRANSACT.BKUP.})
      */
     public TransactionBackupItemWriter(
@@ -268,13 +286,17 @@ public class TransactionBackupItemWriter
     }
 
     /**
-     * Opens a fresh, timestamped backup file for the step and prepares the output stream.
+     * Opens a fresh, unique-per-run backup file for the step and prepares the output stream.
      *
-     * <p>The filename is {@code filePrefix + yyyyMMddHHmmss} (the GDG {@code (+1)} generation
-     * analog), resolved beneath the configured {@link #backupDirectory}. The parent directory is
-     * created if it does not already exist, and the stream is opened with
-     * {@link StandardCharsets#ISO_8859_1} so that each 350-character record serializes to exactly
-     * 350 bytes. The per-step record counter is reset to zero.</p>
+     * <p>The filename is {@code filePrefix + yyyyMMddHHmmssSSS + "." + jobExecutionId + "-" +
+     * stepExecutionId} (the GDG {@code (+1)} generation analog), resolved beneath the configured
+     * {@link #backupDirectory}. The millisecond timestamp keeps the name human-readable and
+     * time-ordered; the {@code JobRepository}-assigned execution-id suffix (see
+     * {@link #uniqueRunToken(StepExecution)}) guarantees the name is unique per run, so two separate
+     * JVM processes launched in the same wall-clock second no longer collide on one filename (QA
+     * finding F7). The parent directory is created if it does not already exist, and the stream is
+     * opened with {@link StandardCharsets#ISO_8859_1} so that each 350-character record serializes to
+     * exactly 350 bytes. The per-step record counter is reset to zero.</p>
      *
      * <p>{@link StepExecutionListener#beforeStep(StepExecution)} does not permit checked exceptions,
      * so any {@link IOException} raised while creating the directory or opening the file is rethrown
@@ -288,7 +310,8 @@ public class TransactionBackupItemWriter
     @Override
     public void beforeStep(StepExecution stepExecution) {
         final String timestamp = LocalDateTime.now().format(TIMESTAMP_FORMAT);
-        final Path target = Path.of(backupDirectory, filePrefix + timestamp);
+        final String uniqueToken = uniqueRunToken(stepExecution);
+        final Path target = Path.of(backupDirectory, filePrefix + timestamp + "." + uniqueToken);
         try {
             final Path parent = target.getParent();
             if (parent != null) {
@@ -303,6 +326,36 @@ public class TransactionBackupItemWriter
         }
         LOGGER.info("Transaction backup opened: {} (350-byte fixed-width records, ISO-8859-1).",
                 target);
+    }
+
+    /**
+     * Derives a guaranteed-unique-per-run filename discriminator from the step execution.
+     *
+     * <p>The suffix is {@code jobExecutionId + "-" + stepExecutionId}. Both identifiers are assigned
+     * by the shared Spring Batch {@code JobRepository} (the PostgreSQL {@code BATCH_JOB_EXECUTION_SEQ}
+     * / {@code BATCH_STEP_EXECUTION_SEQ} sequences) <em>before</em> this listener runs, so they are
+     * monotonically increasing and unique across <strong>every</strong> execution recorded in that
+     * repository — including two launches from separate JVM processes that share the same database.
+     * Appending this token therefore eliminates the cross-process, same-wall-clock-second filename
+     * collision that a second-granularity timestamp alone could produce (QA finding F7): each run
+     * writes to a distinct file and no backup is silently overwritten. It is also the faithful
+     * relational analog of the GDG {@code (+1)} "new generation" number, which the mainframe likewise
+     * assigns uniquely per run.</p>
+     *
+     * <p>In a normally launched step both identifiers are always present. As a defensive fallback for
+     * an unpersisted {@link StepExecution} (not produced by the framework during a real launch), a
+     * high-resolution {@link System#nanoTime()} token is used so the filename remains unique.</p>
+     *
+     * @param stepExecution the current step execution; never {@code null}
+     * @return a non-blank filename discriminator that is unique per run
+     */
+    private static String uniqueRunToken(final StepExecution stepExecution) {
+        final Long jobExecutionId = stepExecution.getJobExecutionId();
+        final Long stepExecutionId = stepExecution.getId();
+        if (jobExecutionId != null && stepExecutionId != null) {
+            return jobExecutionId + "-" + stepExecutionId;
+        }
+        return "run" + System.nanoTime();
     }
 
     /**

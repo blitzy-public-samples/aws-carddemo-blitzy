@@ -513,6 +513,39 @@ class CustomerMasterPrintJobTest {
     }
 
     /**
+     * The job reproduces the legacy CBCUS01C SYSOUT execution banners (QA finding F4): a
+     * {@code START OF EXECUTION OF PROGRAM CBCUS01C} line before the run and, on a normal
+     * (COMPLETED) run, an {@code END OF EXECUTION OF PROGRAM CBCUS01C} line after it &mdash; emitted
+     * in that order by the {@link ExecutionBannerJobListener} registered on the job.
+     *
+     * @throws Exception if the job launch fails (fails the test)
+     */
+    @Test
+    void emitsStartAndEndExecutionBanners() throws Exception {
+        ch.qos.logback.classic.Logger bannerLogger =
+                (ch.qos.logback.classic.Logger) LoggerFactory.getLogger(ExecutionBannerJobListener.class);
+        ListAppender<ILoggingEvent> capture = new ListAppender<>();
+        capture.start();
+        bannerLogger.addAppender(capture);
+        try {
+            JobExecution execution = launchJob();
+            assertThat(execution.getStatus()).isEqualTo(BatchStatus.COMPLETED);
+
+            List<String> banners = capture.list.stream()
+                    .map(ILoggingEvent::getFormattedMessage)
+                    .filter(message -> message.contains("OF EXECUTION OF PROGRAM"))
+                    .toList();
+
+            assertThat(banners).containsExactly(
+                    "START OF EXECUTION OF PROGRAM CBCUS01C",
+                    "END OF EXECUTION OF PROGRAM CBCUS01C");
+        } finally {
+            bannerLogger.detachAppender(capture);
+            capture.stop();
+        }
+    }
+
+    /**
      * Returns the read count of the customer-master-print step within a job execution.
      *
      * @param execution the completed job execution

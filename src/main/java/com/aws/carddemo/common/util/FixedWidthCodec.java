@@ -18,7 +18,9 @@ package com.aws.carddemo.common.util;
 import java.math.BigDecimal;
 import java.math.BigInteger;
 import java.math.RoundingMode;
+import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.List;
 import java.util.Objects;
 
 /**
@@ -399,6 +401,88 @@ public final class FixedWidthCodec {
     public static BigDecimal readSignedDecimal(String record, FieldDef def) {
         requireType(def, FieldType.SIGNED_DECIMAL);
         return readSignedDecimal(record, def.offset(), def.length(), def.scale());
+    }
+
+    // ------------------------------------------------------------------------
+    // RECORD framing (fixed-length record splitting)
+    // ------------------------------------------------------------------------
+
+    /**
+     * Splits the raw text of a fixed-block dataset into its constituent {@code recordLength}-character
+     * records, tolerating (and discarding) any inter-record line framing.
+     *
+     * <p>This is the parity-faithful reader for a COBOL {@code RECFM=F(B)} sequential file: the true
+     * external contract is a stream of back-to-back fixed-length record images with <em>no</em>
+     * in-band delimiter. A naive line-oriented read ({@code BufferedReader.readLine()}) breaks that
+     * contract in two ways &mdash; if the file has no line terminators it returns the whole file as a
+     * single over-length "line" (so every record after the first is silently lost), and if a record
+     * legitimately contained a {@code 0x0A} byte it would be split mid-record. This method instead
+     * frames strictly by position:</p>
+     * <ul>
+     *   <li><strong>Framing bytes are skipped between records only.</strong> Any run of {@code CR}
+     *       ({@code \r}) / {@code LF} ({@code \n}) characters occurring <em>at a record boundary</em>
+     *       is consumed and discarded, so a file materialised one-record-per-line (LF- or
+     *       CRLF-terminated, the shipped ASCII fixture form) and a true contiguous fixed-block file
+     *       (no terminators at all) both decode identically. Bytes <em>inside</em> the
+     *       {@code recordLength} window are never treated as framing, so an embedded {@code 0x0A}
+     *       within a record is preserved.</li>
+     *   <li><strong>Each record is exactly {@code recordLength} characters.</strong> The window is
+     *       sliced verbatim (no trimming); the caller decodes fields from it via the position-driven
+     *       read primitives.</li>
+     *   <li><strong>A short trailing remainder is fail-fast, unless blank.</strong> If fewer than
+     *       {@code recordLength} characters remain after a record boundary, the remainder is a
+     *       malformed partial record and an {@link IllegalArgumentException} is thrown &mdash; unless
+     *       it is entirely blank (spaces/framing only), which is tolerated as trailing pad and
+     *       discarded. This makes a truncated input (for example a 300-character single record when
+     *       {@code recordLength} is 350) fail deterministically rather than load a corrupt record.</li>
+     * </ul>
+     *
+     * <p>The input {@code content} must already have been decoded with a byte-preserving charset
+     * (typically {@link java.nio.charset.StandardCharsets#ISO_8859_1}) so that zoned-decimal overpunch
+     * bytes survive for a later {@link #readSignedDecimal(String, int, int, int)} decode. This method
+     * performs no charset work of its own; it operates purely on the supplied {@link String}.</p>
+     *
+     * @param content      the full decoded text of the dataset; must not be {@code null} (an empty
+     *                     string yields an empty list)
+     * @param recordLength the fixed record width in characters; must be {@code > 0}
+     * @return an immutable-safe, ordered {@link List} of the fixed-length record images, in the order
+     *         they appear in {@code content} (never {@code null})
+     * @throws IllegalArgumentException if {@code content} is {@code null}, if {@code recordLength <= 0},
+     *                                  or if a non-blank trailing remainder shorter than
+     *                                  {@code recordLength} is encountered
+     */
+    public static List<String> readFixedLengthRecords(String content, int recordLength) {
+        Objects.requireNonNull(content, "content must not be null");
+        if (recordLength <= 0) {
+            throw new IllegalArgumentException("recordLength must be > 0 but was " + recordLength);
+        }
+        List<String> records = new ArrayList<>();
+        int index = 0;
+        int length = content.length();
+        while (index < length) {
+            // Discard inter-record framing (CR/LF) that sits at a record boundary.
+            while (index < length && (content.charAt(index) == '\n' || content.charAt(index) == '\r')) {
+                index++;
+            }
+            if (index >= length) {
+                break;
+            }
+            int end = index + recordLength;
+            if (end > length) {
+                // A short remainder: tolerate it only if it is entirely blank trailing pad.
+                String remainder = content.substring(index);
+                if (remainder.isBlank()) {
+                    break;
+                }
+                throw new IllegalArgumentException(
+                        "Trailing partial fixed-length record: expected " + recordLength
+                                + " characters but only " + remainder.length()
+                                + " remained before end of input");
+            }
+            records.add(content.substring(index, end));
+            index = end;
+        }
+        return records;
     }
 
     // ------------------------------------------------------------------------

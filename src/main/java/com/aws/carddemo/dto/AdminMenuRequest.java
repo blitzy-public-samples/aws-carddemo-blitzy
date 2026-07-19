@@ -50,8 +50,12 @@ import jakarta.validation.constraints.Size;
  * safe to log.</p>
  *
  * @param option the menu-option selector the operator typed; maps to {@code OPTIONI}
- *        ({@code PIC X(2)}). At most two characters and, when present, composed solely of
- *        ASCII digits (the empty value represents a blank field). The value is retained
+ *        ({@code PIC X(2)}). At most two characters ({@link Size}); the {@link Pattern} bounds
+ *        only the width, so any up-to-two-character value (a blank, or a non-numeric such as
+ *        "{@code 5A}") is accepted at the transport boundary and the numeric-shape check is left
+ *        to the owning service, which reproduces the legacy {@code COADM01C}/{@code COMEN01C}
+ *        IS-NOT-NUMERIC same-screen redisplay (HTTP 200) rather than an HTTP 400. The value is
+ *        retained
  *        verbatim &mdash; not parsed or range-checked &mdash; so the owning service can
  *        reproduce the exact legacy option-routing behavior.
  * @param action the attention key the operator pressed, as the transport-neutral
@@ -63,7 +67,11 @@ import jakarta.validation.constraints.Size;
 public record AdminMenuRequest(
 
         @Size(max = 2)
-        @Pattern(regexp = "^\\d{0,2}$")
+        // Width-only guard (any <=2-char value). COADM01C/COMEN01C perform the numeric-shape /
+        // range / zero checks in the service, re-displaying the same screen with
+        // "Please enter a valid option number..." (HTTP 200) rather than rejecting a non-numeric
+        // or blank option at the transport boundary with HTTP 400.
+        @Pattern(regexp = "^.{0,2}$")
         String option,
 
         PfKeyAction action) {

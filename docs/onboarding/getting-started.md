@@ -472,6 +472,9 @@ java -jar target/carddemo-1.0.0.jar \
 
 ### End-to-end example flow
 
+The five commands below walk the whole pipeline and demonstrate the **launch mechanics** — bean
+name, parameters, and the exit-code contract:
+
 ```shell
 # load -> validate -> post -> interest -> report
 J="java -jar target/carddemo-1.0.0.jar --spring.main.web-application-type=none --spring.batch.job.enabled=true"
@@ -479,10 +482,57 @@ J="java -jar target/carddemo-1.0.0.jar --spring.main.web-application-type=none -
 $J --spring.batch.job.name=dailyTransactionLoadJob \
    inputResource=file:./src/test/resources/seed/dailytran-fixedwidth-sample.txt
 $J --spring.batch.job.name=dailyTransactionValidateJob
-$J --spring.batch.job.name=dailyTransactionPostingJob      # exit 4 if any record was rejected
+$J --spring.batch.job.name=dailyTransactionPostingJob      # on the SEEDED db this abends (exit 8) - see the note below
 $J --spring.batch.job.name=interestCalculationJob parmDate=2022071800
 $J --spring.batch.job.name=transactionReportJob startDate=2022-07-01 endDate=2022-07-31
 ```
+
+> **The posting step abends on the freshly-seeded database — and that is correct.** The `local`
+> profile seeds **two** tables from the same demonstration data: `transaction` (300 rows of
+> *already-posted* history, so the online screens and the report/statement jobs have data) and
+> `daily_transaction` (the same 300 IDs *staged* for posting, plus the 10 you load above). Posting
+> therefore tries to re-post transactions that already exist, and the first row hits the
+> `pk_transaction` primary key —
+> `duplicate key value violates unique constraint "pk_transaction" ... (tran_id)=(0000000000683580) already exists`.
+> The step fails, its chunk rolls back (so no `DALYREJS.dat` is written and the table is left
+> unchanged), and the job abends with **exit 8**. This is faithful `CBTRN02C` behavior:
+> `2900-WRITE-TRANSACTION-FILE` treats a duplicate-key write (VSAM `FILE STATUS '22'`) as
+> `9999-ABEND-PROGRAM`. Because of the exit-code contract
+> ([§8 intro](#8-run-the-batch-jobs), decision-log
+> [**D45**](../decision-log.md#d45--batch-process-exit-code-equals-the-spring-batch-return-code-jcl-condition-code-parity)),
+> that abend now surfaces **as process exit 8** rather than the silent "exit 0 with no output" a new
+> developer would otherwise see.
+> `load`, `validate`, `interest`, and `report` all run clean against the seed; only `post` collides,
+> because only `post` inserts new `transaction` rows.
+
+#### Run a clean post
+
+To watch a posting run actually **succeed**, give it staging rows whose IDs are not already posted.
+The simplest way — no extra fixture needed — is to release exactly the IDs you are about to post,
+leaving the rest of the posted history in place so the local seed loader does **not** re-add them on
+the next launch (it only fills a table that is completely empty). The `psql` calls below run inside
+the Compose `postgres` container, so they need no local client:
+
+```shell
+J="java -jar target/carddemo-1.0.0.jar --spring.main.web-application-type=none --spring.batch.job.enabled=true"
+
+# 1) Replace the pre-seeded staging rows with just your own input file.
+docker compose exec -T postgres psql -U "$DB_USERNAME" -d carddemo -c "TRUNCATE daily_transaction;"
+$J --spring.batch.job.name=dailyTransactionLoadJob \
+   inputResource=file:./src/test/resources/seed/dailytran-fixedwidth-sample.txt
+
+# 2) Free exactly those tran-ids in the posted table. transaction stays non-empty (~290 rows), so the
+#    local seed loader leaves it untouched on the next launch and the IDs remain available to post.
+docker compose exec -T postgres psql -U "$DB_USERNAME" -d carddemo \
+  -c "DELETE FROM transaction t USING daily_transaction d WHERE t.tran_id = d.dalytran_id;"
+
+# 3) Validate and post: the IDs are now free, so posting COMPLETEs with exit 0
+#    (or exit 4 if a staged row is genuinely rejected — reason code 100/102/103).
+$J --spring.batch.job.name=dailyTransactionValidateJob
+$J --spring.batch.job.name=dailyTransactionPostingJob
+```
+
+See [Common pitfalls](pitfalls.md) for more on the seed's posted/staging overlap.
 
 ### Inspect the outputs
 
@@ -509,6 +559,10 @@ The same launch-by-name mechanism is what the CI workflow's scheduled batch job 
 read-only master-print and backup jobs (`accountMasterPrintJob`, `cardMasterPrintJob`,
 `xrefPrintJob`, `customerMasterPrintJob`, `transactionBackupJob`); see
 [`../decision-log.md`](../decision-log.md) (D14) and [`../architecture.md`](../architecture.md).
+
+To measure these jobs against a realistically larger data tier — generating a scaled (Nx) dataset
+and reading the resulting query plans and batch timings — follow
+[`./performance-testing.md`](./performance-testing.md).
 
 ---
 
@@ -599,6 +653,8 @@ You now have a running, testable, modifiable CardDemo. Continue with:
 - [`./extending.md`](./extending.md) — how to add functionality the idiomatic way,
   including the **suggested next tasks** discovered during the migration.
 - [`./pitfalls.md`](./pitfalls.md) — the parity traps to avoid when changing code.
+- [`./performance-testing.md`](./performance-testing.md) — how to generate a
+  scaled (Nx) dataset and verify query plans and batch timings against it.
 - [`../architecture.md`](../architecture.md) — the layered target architecture and
   its boundaries.
 - [`../../README.md`](../../README.md) — the project overview, build/run summary,

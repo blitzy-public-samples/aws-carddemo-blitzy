@@ -306,7 +306,35 @@ edit rules; it does not reproduce EBCDIC bytes or packed-decimal nibbles on disk
 
 ---
 
-## 7. Suggested next tasks
+## 7. Local seed: the posting job re-posts already-posted rows (MEDIUM risk)
+
+The `local`-profile seed loader ([`config/LocalSeedDataLoader`](../../src/main/java/com/aws/carddemo/config/LocalSeedDataLoader.java))
+populates **two** tables from the same demonstration data: `transaction` — 300 rows of
+**already-posted** history, so the online screens and the report / statement jobs have data to show
+— and `daily_transaction` — the same 300 transaction IDs **staged** for posting. The two share
+**100 % of their IDs by design**.
+
+**Pitfall.** Running `dailyTransactionPostingJob` verbatim against the freshly-seeded database
+**abends with exit 8**, not a clean post. Posting reads **every** `daily_transaction` row and
+inserts it into `transaction`; the first staged ID already exists, so PostgreSQL raises
+`duplicate key value violates unique constraint "pk_transaction"`, the chunk rolls back (no
+`DALYREJS.dat` is written and the table is left unchanged), and the step fails. This is **correct,
+faithful behavior** — legacy `CBTRN02C` `2900-WRITE-TRANSACTION-FILE` treats a duplicate-key write
+(VSAM `FILE STATUS '22'`) as `9999-ABEND-PROGRAM` — surfaced as **exit 8** by the exit-code contract
+([decision log **D45**](../decision-log.md#d45--batch-process-exit-code-equals-the-spring-batch-return-code-jcl-condition-code-parity)).
+Before that contract was wired the same abend looked like a silent "exit 0 with no output," which is
+the trap this note exists to prevent.
+
+**To run a clean post,** stage rows whose IDs are not already posted, then free exactly those IDs in
+`transaction` (leaving the table non-empty so the seed loader does not re-add them on the next
+launch). The full, copy-pasteable recipe is in
+[`getting-started.md` — "Run a clean post"](./getting-started.md#run-a-clean-post). `load`,
+`validate`, `interest`, and `report` all run clean against the seed as-is; only `post` collides,
+because only `post` inserts new `transaction` rows.
+
+---
+
+## 8. Suggested next tasks
 
 The following concrete follow-ups were discovered during the migration and are
 recorded here per the onboarding requirement. Pick one, follow

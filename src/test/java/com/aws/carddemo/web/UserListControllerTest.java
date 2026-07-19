@@ -587,23 +587,27 @@ class UserListControllerTest {
     // ------------------------------------------------------------------
 
     /**
-     * Programs the mocked {@link UserService} with a single coherent answer that
-     * mirrors the real {@link UserService#listUsers(String, Pageable)} windowing,
-     * so every call the controller makes (the size-1 total-count probe and the
-     * size-10 page fetch) is derived from one consistent data set.
+     * Programs the mocked {@link UserService} with a pair of coherent answers that
+     * mirror the real service: {@link UserService#listUsers(String, Pageable)}
+     * returns the requested database page window and
+     * {@link UserService#countUsers(String)} returns the matching total. Both are
+     * derived from one consistent data set, so the controller's page fetch and its
+     * {@code PF7}/{@code PF8} position counts always agree.
      *
      * @param all the full, ascending-ordered set of users the "store" contains
      */
     private void givenUsers(List<UserSecurity> all) {
         when(userService.listUsers(any(), any(Pageable.class))).thenAnswer(pagedAnswer(all));
+        when(userService.countUsers(any())).thenAnswer(countAnswer(all));
     }
 
     /**
-     * Builds a coherent {@link Answer} reproducing the production listing logic:
-     * an inclusive, upper-cased start-key filter over an ascending-ordered set,
-     * then the requested offset/size window returned as a {@link PageImpl} that
-     * carries the requested {@link Pageable} (so {@code getNumber()} reflects the
-     * requested page and the controller's 1-based page number is exact).
+     * Builds a coherent {@link Answer} reproducing the production page fetch: an
+     * inclusive, upper-cased start-key filter over an ascending-ordered set, then
+     * the requested offset/size window returned as a {@link PageImpl} that carries
+     * the requested {@link Pageable} (so {@code getNumber()} reflects the requested
+     * page and the controller's 1-based page number is exact). This mirrors the
+     * database-side {@code LIMIT}/{@code OFFSET} paging the real service now performs.
      *
      * @param all the full ordered set of users
      * @return an answer that windows {@code all} per the invocation's arguments
@@ -613,20 +617,50 @@ class UserListControllerTest {
             String startKey = invocation.getArgument(0);
             Pageable pageable = invocation.getArgument(1);
 
-            List<UserSecurity> ordered = all;
-            if (startKey != null && !startKey.isBlank()) {
-                String seekKey = startKey.trim().toUpperCase(Locale.ROOT);
-                ordered = all.stream()
-                        .filter(candidate -> candidate.getSecUsrId() != null
-                                && candidate.getSecUsrId().compareTo(seekKey) >= 0)
-                        .toList();
-            }
-
+            List<UserSecurity> ordered = filteredFrom(all, startKey);
             int total = ordered.size();
             int fromIndex = (int) Math.min(pageable.getOffset(), total);
             int toIndex = (int) Math.min((long) fromIndex + pageable.getPageSize(), total);
             return new PageImpl<>(List.copyOf(ordered.subList(fromIndex, toIndex)), pageable, total);
         };
+    }
+
+    /**
+     * Builds an {@link Answer} for {@link UserService#countUsers(String)} that is
+     * consistent with {@link #pagedAnswer(List)}: it returns the number of users at
+     * or after the (inclusive, upper-cased) start key, or the grand total when the
+     * key is {@code null}/blank. It lets the mocked service answer the controller's
+     * {@code PF7}/{@code PF8} position counts from the same data set the page
+     * fetches use, mirroring the efficient database {@code COUNT} the real service
+     * now performs.
+     *
+     * @param all the full ordered set of users
+     * @return an answer that counts {@code all} at or after the invocation's key
+     */
+    private static Answer<Long> countAnswer(List<UserSecurity> all) {
+        return invocation -> (long) filteredFrom(all, invocation.getArgument(0)).size();
+    }
+
+    /**
+     * Applies the inclusive, upper-cased start-key filter shared by
+     * {@link #pagedAnswer(List)} and {@link #countAnswer(List)}: when {@code startKey}
+     * is {@code null}/blank the full set is returned; otherwise only the users whose
+     * id is greater than or equal to the normalized key are kept, reproducing the
+     * legacy {@code STARTBR} reposition.
+     *
+     * @param all      the full ascending-ordered set of users
+     * @param startKey the optional inclusive start key
+     * @return the (possibly filtered) ascending-ordered users
+     */
+    private static List<UserSecurity> filteredFrom(List<UserSecurity> all, String startKey) {
+        if (startKey == null || startKey.isBlank()) {
+            return all;
+        }
+        String seekKey = startKey.trim().toUpperCase(Locale.ROOT);
+        return all.stream()
+                .filter(candidate -> candidate.getSecUsrId() != null
+                        && candidate.getSecUsrId().compareTo(seekKey) >= 0)
+                .toList();
     }
 
     /**

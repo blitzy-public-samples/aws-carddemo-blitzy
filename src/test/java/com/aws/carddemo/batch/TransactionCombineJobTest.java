@@ -511,9 +511,10 @@ class TransactionCombineJobTest {
      *
      * <p>This tie-break is asserted at the reader rather than through the {@code transaction} table:
      * the REPRO load ({@code TransactionJpaItemWriter}) inserts on {@code tran_id} with no
-     * {@code REPLACE}, so a duplicate key would fail the step instead of loading a second row &mdash;
-     * equal keys therefore cannot be observed through the table. The two records sharing a key are
-     * distinguished here by their {@code TRAN-SOURCE} field.</p>
+     * {@code REPLACE}, so the second record of an equal-key pair is <em>rejected</em> (the
+     * {@code IDC1440I} skip) rather than loaded as a second row &mdash; equal keys therefore cannot be
+     * observed as two rows through the table (the run merely ends {@code COMPLETED_WITH_REJECTS}). The
+     * two records sharing a key are distinguished here by their {@code TRAN-SOURCE} field.</p>
      *
      * @throws Exception if writing the inputs or driving the reader fails
      */
@@ -549,6 +550,213 @@ class TransactionCombineJobTest {
         assertThat(sharedSources)
                 .as("stable, backup-first tie-break: the backup record precedes the system record")
                 .containsExactly("BKUP", "SYS");
+    }
+
+    /**
+     * A pre-existing "stale" master row that is <em>not</em> re-supplied by the combined input
+     * survives the load, and the run completes clean (return code {@code 0}).
+     *
+     * <p>This reproduces IDCAMS {@code REPRO} without {@code REPLACE} into an existing KSDS opened
+     * {@code DISP=SHR}: {@code STEP10} performs no {@code DELETE}/{@code DEFINE}, so a record already in
+     * the master that is absent from {@code SORTIN} is never removed. The combine job is a merge-insert,
+     * not a rebuild &mdash; stale-row survival is the faithful legacy behavior (see the COMBTRAN
+     * decision-log entry), not a defect. Because no input record collides, nothing is rejected and the
+     * return code is {@code 0}.</p>
+     *
+     * @throws Exception if writing the inputs or launching the job fails
+     */
+    @Test
+    @DisplayName("REPRO merge-insert: a pre-existing stale row survives; disjoint inputs load, RC 0")
+    void staleRowSurvivesWithReturnCodeZero() throws Exception {
+        // Pre-seed a stale master row whose id appears in NEITHER input.
+        String staleId = "0000000000000999";
+        transactionRepository.save(newTransaction(staleId, "SEED", new BigDecimal("555.55")));
+
+        Path backup = writeFixedWidthFile("backup.dat",
+                List.of(newTransaction("0000000000000030", "BKUP", TEST_AMOUNT)));
+        Path system = writeFixedWidthFile("system.dat",
+                List.of(newTransaction("0000000000000040", "SYS", TEST_AMOUNT)));
+
+        JobExecution execution = launchCombineJob(backup, system);
+
+        assertThat(execution.getStatus()).isEqualTo(BatchStatus.COMPLETED);
+        assertThat(execution.getExitStatus().getExitCode())
+                .as("no duplicate was rejected, so the run is clean (RC 0)")
+                .isEqualTo(ExitStatus.COMPLETED.getExitCode());
+
+        assertThat(loadedTranIdsSorted())
+                .as("the two disjoint inputs are loaded AND the stale row survives (no rebuild)")
+                .containsExactly("0000000000000030", "0000000000000040", staleId);
+        assertThat(transactionRepository.findById(staleId).orElseThrow().getTranAmt())
+                .as("the stale row is untouched (its amount is unchanged)")
+                .isEqualByComparingTo(new BigDecimal("555.55"));
+    }
+
+    /**
+     * A combined record whose {@code tranId} already exists in the master is rejected (the
+     * {@code IDC1440I} skip) &mdash; the existing row is left untouched, never overwritten &mdash;
+     * while every non-duplicate record is still loaded; the run ends {@code COMPLETED_WITH_REJECTS}
+     * (return code {@code 4}).
+     *
+     * <p>This is the core REPRO-without-{@code REPLACE} contract: a duplicate key does not fail the
+     * step (contrast the pre-fix {@code saveAll} behavior, which failed the whole step on the first
+     * collision), and it does not overwrite the existing row.</p>
+     *
+     * @throws Exception if seeding, writing the inputs, or launching the job fails
+     */
+    @Test
+    @DisplayName("REPRO reject: an input row already in the master is skipped (RC 4); the rest load")
+    void duplicateInTableIsRejectedAndRestLoadedWithReturnCodeFour() throws Exception {
+        // Pre-seed the master with id 0030 at a DISTINCT amount so we can prove it is not overwritten.
+        String dupId = "0000000000000030";
+        transactionRepository.save(newTransaction(dupId, "SEED", new BigDecimal("777.77")));
+
+        // Backup carries the colliding 0030 (at a different amount) plus a fresh 0031; system a fresh 0040.
+        Path backup = writeFixedWidthFile("backup.dat", List.of(
+                newTransaction(dupId, "BKUP", new BigDecimal("100.00")),
+                newTransaction("0000000000000031", "BKUP", TEST_AMOUNT)));
+        Path system = writeFixedWidthFile("system.dat",
+                List.of(newTransaction("0000000000000040", "SYS", TEST_AMOUNT)));
+
+        JobExecution execution = launchCombineJob(backup, system);
+
+        assertThat(execution.getStatus())
+                .as("a rejected duplicate must NOT fail the step (reject-and-continue)")
+                .isEqualTo(BatchStatus.COMPLETED);
+        assertThat(execution.getExitStatus().getExitCode())
+                .as("one record was rejected, so the return code is 4")
+                .isEqualTo("COMPLETED_WITH_REJECTS");
+
+        assertThat(loadedTranIdsSorted())
+                .as("the duplicate is skipped, the two fresh records load, the seed survives")
+                .containsExactly(dupId, "0000000000000031", "0000000000000040");
+        assertThat(transactionRepository.findById(dupId).orElseThrow().getTranAmt())
+                .as("the existing row is untouched (not overwritten by the combined duplicate)")
+                .isEqualByComparingTo(new BigDecimal("777.77"));
+    }
+
+    /**
+     * When the same {@code tranId} appears twice <em>within the same combined input</em> (once in the
+     * backup source and once in the system source), the first occurrence (backup, by the reader's
+     * stable backup-first order) is loaded and the second is rejected; the run ends
+     * {@code COMPLETED_WITH_REJECTS} (return code {@code 4}).
+     *
+     * <p>This proves the record-at-a-time commit ({@code CHUNK_SIZE == 1}) makes an intra-input
+     * duplicate detectable: the second occurrence's {@code existsById} probe sees the first, already
+     * committed, occurrence &mdash; exactly as a record-at-a-time {@code REPRO} would.</p>
+     *
+     * @throws Exception if writing the inputs or launching the job fails
+     */
+    @Test
+    @DisplayName("REPRO reject: an intra-input duplicate is skipped on its second occurrence (RC 4)")
+    void duplicateWithinInputIsRejectedWithReturnCodeFour() throws Exception {
+        // 0030 appears in BOTH sources at distinct amounts; the reader emits backup 0030 before system 0030.
+        String dupId = "0000000000000030";
+        Path backup = writeFixedWidthFile("backup.dat", List.of(
+                newTransaction(dupId, "BKUP", new BigDecimal("111.11")),
+                newTransaction("0000000000000031", "BKUP", TEST_AMOUNT)));
+        Path system = writeFixedWidthFile("system.dat", List.of(
+                newTransaction(dupId, "SYS", new BigDecimal("222.22")),
+                newTransaction("0000000000000041", "SYS", TEST_AMOUNT)));
+
+        JobExecution execution = launchCombineJob(backup, system);
+
+        assertThat(execution.getStatus()).isEqualTo(BatchStatus.COMPLETED);
+        assertThat(execution.getExitStatus().getExitCode())
+                .as("the second occurrence of the shared id is rejected, so the return code is 4")
+                .isEqualTo("COMPLETED_WITH_REJECTS");
+
+        assertThat(loadedTranIdsSorted())
+                .as("the shared id is loaded exactly once; the two unique records also load")
+                .containsExactly(dupId, "0000000000000031", "0000000000000041");
+        assertThat(transactionRepository.findById(dupId).orElseThrow().getTranAmt())
+                .as("backup-first wins: the backup occurrence is loaded, the system occurrence rejected")
+                .isEqualByComparingTo(new BigDecimal("111.11"));
+    }
+
+    /**
+     * A contiguous fixed-block input &mdash; two 350-byte {@code TRAN-RECORD} images written
+     * back-to-back with <strong>no</strong> line delimiter, the true {@code RECFM=FB} contract
+     * &mdash; loads <em>every</em> record. The pre-fix line-oriented reader saw such a file as a
+     * single 700-character "line", decoded only the first record, and silently dropped the second
+     * (QA finding F3). Framing by position now yields both. The assertion is made both at the reader
+     * (the {@code SORTOUT} analog, which must emit all three records) and end-to-end through the load.
+     *
+     * @throws Exception if writing the inputs, driving the reader, or launching the job fails
+     */
+    @Test
+    @DisplayName("F3: a contiguous fixed-block input (no delimiters) loads EVERY record, not just the first")
+    void combinesContiguousFixedBlockInputLoadingEveryRecord() throws Exception {
+        // backup.dat: TWO 350-byte records back-to-back with NO delimiter (contiguous RECFM=FB).
+        Path backup = writeContiguousFixedWidthFile("backup.dat", List.of(
+                newTransaction("0000000000000010", "BKUP", TEST_AMOUNT),
+                newTransaction("0000000000000020", "BKUP", TEST_AMOUNT)));
+        // system.dat: one record, also written contiguously (a single record is contiguous by definition).
+        Path system = writeContiguousFixedWidthFile("system.dat", List.of(
+                newTransaction("0000000000000030", "SYS", TEST_AMOUNT)));
+
+        // Reader-level proof (SORTOUT): all three records are emitted, not just the first of the
+        // contiguous backup file.
+        assertThat(readCombinedStream(backup, system))
+                .as("the reader emits every contiguous record (both backup records + the system record)")
+                .hasSize(3);
+
+        JobExecution execution = launchCombineJob(backup, system);
+
+        assertThat(execution.getStatus()).isEqualTo(BatchStatus.COMPLETED);
+        assertThat(execution.getExitStatus().getExitCode())
+                .isEqualTo(ExitStatus.COMPLETED.getExitCode());
+        assertThat(loadedTranIdsSorted())
+                .as("all three records load end-to-end (no contiguous record is dropped)")
+                .containsExactly("0000000000000010", "0000000000000020", "0000000000000030");
+    }
+
+    /**
+     * When <em>neither</em> {@code SORTIN} member resolves to an existing dataset, the job
+     * <strong>fails</strong> rather than completing a silent no-op with return code 0 (QA finding
+     * F6): a missing {@code SORTIN} is an operator error the mainframe {@code SORT} would abend on,
+     * not an empty combine.
+     *
+     * @throws Exception if launching the job fails
+     */
+    @Test
+    @DisplayName("F6: the job FAILS (not a silent RC-0 no-op) when NEITHER SORTIN input resolves")
+    void failsWhenNoInputResolves() throws Exception {
+        Path missingBackup = nonexistentFile("missing-backup.dat");
+        Path missingSystem = nonexistentFile("missing-system.dat");
+
+        JobExecution execution = launchCombineJob(missingBackup, missingSystem);
+
+        assertThat(execution.getStatus())
+                .as("a missing SORTIN must fail the step, not complete a no-op with RC 0")
+                .isEqualTo(BatchStatus.FAILED);
+        assertThat(transactionRepository.count())
+                .as("nothing is loaded when the combine input is missing")
+                .isZero();
+    }
+
+    /**
+     * A supplied-but-missing input is skipped (and logged at {@code WARN}); as long as at least one
+     * input resolves, the present dataset still loads and the run completes cleanly (QA finding F6:
+     * single-input flexibility is preserved, but a missing input is no longer invisible).
+     *
+     * @throws Exception if writing the input or launching the job fails
+     */
+    @Test
+    @DisplayName("F6: a supplied-but-missing input is skipped; the present input still loads (RC 0)")
+    void skipsMissingInputAndLoadsThePresentOne() throws Exception {
+        Path missingBackup = nonexistentFile("missing-backup.dat");
+        Path system = writeFixedWidthFile("system.dat", List.of(
+                newTransaction("0000000000000040", "SYS", TEST_AMOUNT),
+                newTransaction("0000000000000050", "SYS", TEST_AMOUNT)));
+
+        JobExecution execution = launchCombineJob(missingBackup, system);
+
+        assertThat(execution.getStatus())
+                .as("one resolving input is enough: the present system input loads, RC 0")
+                .isEqualTo(BatchStatus.COMPLETED);
+        assertThat(loadedTranIdsSorted())
+                .containsExactly("0000000000000040", "0000000000000050");
     }
 
     // -------------------------------------------------------------------------
@@ -670,6 +878,41 @@ class TransactionCombineJobTest {
         Path file = inputDir.resolve(fileName);
         Files.writeString(file, content.toString(), StandardCharsets.ISO_8859_1);
         return file;
+    }
+
+    /**
+     * Writes the given transactions to a byte-exact <em>contiguous</em> fixed-width file in the
+     * per-test temporary directory: the 350-character {@code TRAN-RECORD} images are concatenated
+     * back-to-back with <strong>no</strong> delimiter, reproducing the true {@code RECFM=FB} layout
+     * (fixed blocks, no in-band newline). This is the input form that exposed QA finding F3, where a
+     * line-oriented read would collapse the file into a single over-length "line".
+     *
+     * @param fileName     the file name to create inside {@link #inputDir}
+     * @param transactions the records to serialise, in the order given (the file's on-disk order)
+     * @return the path of the written file
+     * @throws IOException if the file cannot be written
+     */
+    private Path writeContiguousFixedWidthFile(String fileName, List<Transaction> transactions)
+            throws IOException {
+        StringBuilder content = new StringBuilder(transactions.size() * RECORD_LENGTH);
+        for (Transaction transaction : transactions) {
+            content.append(toFixedWidthRecord(transaction)); // NO delimiter -> contiguous fixed blocks
+        }
+        Path file = inputDir.resolve(fileName);
+        Files.writeString(file, content.toString(), StandardCharsets.ISO_8859_1);
+        return file;
+    }
+
+    /**
+     * Resolves a path inside {@link #inputDir} that is deliberately <em>never written</em>, so the
+     * reader's {@code Resource.exists()} probe returns {@code false}. Used to exercise the
+     * missing-{@code SORTIN} handling (QA finding F6).
+     *
+     * @param fileName the file name to reference (but not create) inside {@link #inputDir}
+     * @return a path to a non-existent file
+     */
+    private Path nonexistentFile(String fileName) {
+        return inputDir.resolve(fileName);
     }
 
     /**

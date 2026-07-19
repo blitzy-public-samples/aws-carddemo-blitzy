@@ -49,6 +49,7 @@ import com.aws.carddemo.service.AccountService.PhoneParts;
 import com.aws.carddemo.service.AccountService.SsnParts;
 import com.aws.carddemo.service.AccountService.Status;
 import com.aws.carddemo.service.rule.UsSsnRule;
+import com.aws.carddemo.service.rule.UsStateZipRule;
 import com.aws.carddemo.service.rule.ValidationResult;
 
 /**
@@ -138,7 +139,9 @@ public class AccountServiceTest {
     /**
      * Builds the system under test before each test, wiring the five mocks through the authored
      * constructor order: account, customer, cross-reference repositories, the date backstop, and
-     * the SSN rule.
+     * the SSN rule. The state/ZIP cross-field rule ({@link UsStateZipRule}) is supplied as its
+     * real, dependency-free instance (it owns a static lookup table and is deterministic), so it is
+     * never stubbed.
      */
     @BeforeEach
     void setUp() {
@@ -147,7 +150,8 @@ public class AccountServiceTest {
                 customerRepository,
                 cardXrefRepository,
                 dateValidationService,
-                usSsnRule);
+                usSsnRule,
+                new UsStateZipRule());
     }
 
     // ====================================================================================
@@ -335,6 +339,11 @@ public class AccountServiceTest {
 
         private CommandBuilder stateCode(String value) {
             this.stateCode = value;
+            return this;
+        }
+
+        private CommandBuilder lastName(String value) {
+            this.lastName = value;
             return this;
         }
 
@@ -551,6 +560,37 @@ public class AccountServiceTest {
     }
 
     @Test
+    @DisplayName("the confirmation preview echoes the SUBMITTED candidate values, not the stored record (QA F-CAUP-2)")
+    void updateAccount_confirmationPreview_echoesSubmittedCandidateValues() {
+        stubReadChainPresent(storedAccount(), storedCustomer());
+        stubEditCollaboratorsValid();
+
+        // COBOL 3203-SHOW-UPDATED-VALUES re-displays the typed ACUP-NEW-* fields. The stored credit
+        // limit is 5000.00; the user submits 8888.00 and a changed last name. The confirmation
+        // preview must echo the SUBMITTED values, not the un-mutated master record.
+        AccountUpdateResult result = service.updateAccount(
+                baseCommand()
+                        .priorStatus(Status.SHOW_DETAILS)
+                        .creditLimit("8888.00")
+                        .lastName("Changed")
+                        .build(),
+                true);
+
+        assertThat(result.status()).isEqualTo(Status.CHANGES_OK_NOT_CONFIRMED);
+        assertThat(result.message()).isEqualTo(AccountService.MSG_PROMPT_CONFIRMATION);
+        // The echoed candidate values (not the stored 5000.00 / original last name).
+        assertThat(result.detail().account().getCreditLimit())
+                .isEqualByComparingTo(new BigDecimal("8888.00"));
+        assertThat(result.detail().account().getCreditLimit().scale()).isEqualTo(2);
+        assertThat(result.detail().customer().getCustLastName()).isEqualTo("Changed");
+        // The optimistic-lock version is carried across so the client still gets the version header.
+        assertThat(result.detail().account().getVersion()).isEqualTo(0L);
+        // Nothing is persisted at the preview step (no premature flush of the managed record).
+        verify(accountRepository, never()).save(any(Account.class));
+        verify(customerRepository, never()).save(any(Customer.class));
+    }
+
+    @Test
     @DisplayName("FICO score outside 300-850 returns CHANGES_NOT_OK with the verbatim range message and never writes")
     void updateAccount_ficoOutOfRange_returnsChangesNotOk() {
         stubReadChainPresent(storedAccount(), storedCustomer());
@@ -647,6 +687,10 @@ public class AccountServiceTest {
     @DisplayName("awaiting confirmation without PF05 re-reads and re-shows CHANGES_OK_NOT_CONFIRMED; nothing is written")
     void updateAccount_awaitingConfirmationWithoutConfirm_reshowsConfirmation() {
         stubReadChainPresent(storedAccount(), storedCustomer());
+        // reshowConfirm re-runs the field edits defensively (mirroring performWrite) before echoing
+        // the candidate values in the preview (QA finding F-CAUP-2), so the edit collaborators are
+        // reached on this path and must be stubbed valid.
+        stubEditCollaboratorsValid();
 
         AccountUpdateResult result = service.updateAccount(
                 baseCommand().priorStatus(Status.CHANGES_OK_NOT_CONFIRMED).confirmSave(false).build(), true);

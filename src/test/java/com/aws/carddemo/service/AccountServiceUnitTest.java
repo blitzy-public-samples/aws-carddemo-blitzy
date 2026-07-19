@@ -51,6 +51,7 @@ import com.aws.carddemo.service.AccountService.SsnParts;
 import com.aws.carddemo.service.AccountService.Status;
 import com.aws.carddemo.service.rule.NumericRequiredRule;
 import com.aws.carddemo.service.rule.UsSsnRule;
+import com.aws.carddemo.service.rule.UsStateZipRule;
 
 /**
  * Fast, dependency-isolated unit tests for {@link AccountService} — the re-platform
@@ -137,6 +138,7 @@ class AccountServiceUnitTest {
                 cardXrefRepository,
                 new DateValidationService(),
                 new UsSsnRule(new NumericRequiredRule()),
+                new UsStateZipRule(),
                 fixedClock);
     }
 
@@ -784,6 +786,37 @@ class AccountServiceUnitTest {
 
             assertThat(result.status()).isEqualTo(Status.CHANGES_NOT_OK);
             assertThat(result.message()).isEqualTo("Invalid zip code for state");
+        }
+
+        @Test
+        @DisplayName("cross-field state+ZIP check enforces the full CSLKPCDY lookup table: CT + 90210 is rejected (QA F-CAUP-1)")
+        void stateZipComboMismatchRejectedAgainstFullTable() {
+            stubReadChain(0L, "Brewster");
+
+            // "CT" (Connecticut) is a valid state and "90210" is a well-formed five-digit numeric
+            // ZIP (California's Beverly Hills), so BOTH pass their individual edits. The pair,
+            // however, is not a member of the exhaustive (state, zip-prefix) table in copybook
+            // CSLKPCDY: the key "CT90" is absent, so COBOL 1280-EDIT-US-STATE-ZIP-CD rejects it. This
+            // is the exact gap QA finding F-CAUP-1 identified: the combination edit must consult the
+            // full lookup table (via UsStateZipRule), not merely verify a two-digit numeric prefix.
+            AccountUpdateResult result = service.updateAccount(stateZipCommand("CT", "90210"), true);
+
+            assertThat(result.status()).isEqualTo(Status.CHANGES_NOT_OK);
+            assertThat(result.message()).isEqualTo("Invalid zip code for state");
+        }
+
+        @Test
+        @DisplayName("a state+ZIP combination present in the CSLKPCDY table is accepted: DC + 20005 advances to confirmation")
+        void stateZipComboMatchAccepted() {
+            stubReadChain(0L, "Brewster");
+
+            // "DC" + first-two "20" (key "DC20") IS a member of the lookup table, so the combination
+            // edit passes and the flow advances to the confirmation prompt. This guards against an
+            // over-strict rule that would reject a value COBOL accepts.
+            AccountUpdateResult result = service.updateAccount(stateZipCommand("DC", "20005"), true);
+
+            assertThat(result.status()).isEqualTo(Status.CHANGES_OK_NOT_CONFIRMED);
+            assertThat(result.message()).isEqualTo(AccountService.MSG_PROMPT_CONFIRMATION);
         }
     }
 

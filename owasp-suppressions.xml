@@ -1,0 +1,73 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  ==========================================================================
+  OWASP dependency-check suppression file.
+  ==========================================================================
+  This file suppresses ONLY vulnerabilities for which no patched release is
+  reachable in the dependency graph (no-fix-available security debt). Every
+  vulnerability that DOES have a fixed release is remediated by forward-pinning
+  the version in pom.xml (<properties> / <dependencyManagement>), never here.
+
+  Each <suppress> block:
+    * is scoped to an exact artifact (packageUrl) AND an exact CVE, so it can
+      never silently mask a different or future vulnerability;
+    * carries an `until` date so the suppression EXPIRES and forces a scheduled
+      re-review (has a patched release appeared yet?) - an expired suppression
+      no longer applies and the build fails again by design;
+    * has a matching rationale, owner, and review date in docs/decision-log.md
+      (decision D49).
+
+  Reviewed: 2026-07-19. Next review: 2026-10-19 (see `until` below).
+-->
+<suppressions xmlns="https://jeremylong.github.io/DependencyCheck/dependency-suppression.1.3.xsd">
+
+    <!--
+      kotlin-stdlib - CVE-2026-53914.
+      Path: opentelemetry-exporter-otlp (Observability tracing exporter) -> okhttp
+            -> org.jetbrains.kotlin:kotlin-stdlib (runtime scope).
+      There is NO stable patched release: the CVE is fixed only in kotlin-stdlib
+      2.4.20, which upstream has published exclusively as a pre-release
+      (2.4.20-Beta1); the latest STABLE Kotlin release remains below the fixed
+      line and is still affected. Forward-pinning to a beta would violate the
+      "no unverified/pre-release dependency" discipline, and swapping the OTLP
+      transport away from okhttp risks regressing the (rule-mandated) tracing
+      pipeline. The artifact is a transitive runtime dependency of an optional
+      exporter; it carries no attacker-reachable entry point in this application.
+      Suppress this single CVE until a stable fixed Kotlin release is available.
+    -->
+    <suppress until="2026-10-19Z">
+        <notes><![CDATA[
+            No stable fixed release (fix only in kotlin-stdlib 2.4.20-Beta1, a
+            pre-release). Transitive/runtime via opentelemetry-exporter-otlp -> okhttp.
+            Tracked in docs/decision-log.md D49; re-review on expiry of `until`.
+        ]]></notes>
+        <packageUrl regex="true">^pkg:maven/org\.jetbrains\.kotlin/kotlin-stdlib(-jdk[78]|-common)?@.*$</packageUrl>
+        <cve>CVE-2026-53914</cve>
+    </suppress>
+
+    <!--
+      httpcore5 5.0.2 (SHADED) - CVE-2026-54399, CVE-2026-54428.
+      This is NOT a first-class graph node: version 5.0.2 is relocated/bundled
+      INSIDE com.github.docker-java:docker-java-transport-zerodep:3.4.2, which
+      Testcontainers pulls in at TEST scope only. Because the classes are shaded
+      into the zerodep uber-jar, a <dependencyManagement> forward-pin cannot
+      rewrite them (they are not resolved as an external coordinate). The artifact
+      is confined to the test/integration harness (Testcontainers Docker client)
+      and is ABSENT from the production application fat jar - it never ships and
+      is not reachable at runtime. Suppress both CVEs on the exact shaded version
+      until Testcontainers/docker-java ship a zerodep build embedding a patched
+      httpcore5.
+    -->
+    <suppress until="2026-10-19Z">
+        <notes><![CDATA[
+            Shaded inside docker-java-transport-zerodep-3.4.2 (Testcontainers, TEST
+            scope); not an external coordinate, so dependencyManagement cannot bump it,
+            and it is absent from the production fat jar. Tracked in docs/decision-log.md
+            D49; re-review on expiry of `until`.
+        ]]></notes>
+        <packageUrl regex="true">^pkg:maven/org\.apache\.httpcomponents\.core5/httpcore5(-h2)?@5\.0\.2$</packageUrl>
+        <cve>CVE-2026-54399</cve>
+        <cve>CVE-2026-54428</cve>
+    </suppress>
+
+</suppressions>

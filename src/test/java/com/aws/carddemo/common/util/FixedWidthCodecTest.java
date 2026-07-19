@@ -16,6 +16,7 @@
 package com.aws.carddemo.common.util;
 
 import java.math.BigDecimal;
+import java.util.List;
 
 import org.junit.jupiter.api.Test;
 
@@ -567,6 +568,120 @@ class FixedWidthCodecTest {
     @Test
     void recordBuilderPutRawRejectsNegativeOffset() {
         assertThrows(IllegalArgumentException.class, () -> FixedWidthCodec.of(4).putRaw(-1, "x"));
+    }
+
+    // ------------------------------------------------------------------------
+    // readFixedLengthRecords - RECFM=F(B) framing by position (F3 parity fix)
+    // ------------------------------------------------------------------------
+
+    @Test
+    void readFixedLengthRecordsSplitsContiguousStreamWithNoDelimiters() {
+        // A true fixed-block file: back-to-back records, no line terminator at all. The pre-fix
+        // line-oriented read returned this as a single over-length "line" and dropped record 2.
+        assertThat(FixedWidthCodec.readFixedLengthRecords("AAAAABBBBB", 5))
+                .containsExactly("AAAAA", "BBBBB");
+    }
+
+    @Test
+    void readFixedLengthRecordsSkipsLfFraming() {
+        // One record per line, LF-terminated (the shipped ASCII fixture form) decodes identically.
+        assertThat(FixedWidthCodec.readFixedLengthRecords("AAAAA\nBBBBB\n", 5))
+                .containsExactly("AAAAA", "BBBBB");
+    }
+
+    @Test
+    void readFixedLengthRecordsSkipsCrlfFraming() {
+        assertThat(FixedWidthCodec.readFixedLengthRecords("AAAAA\r\nBBBBB\r\n", 5))
+                .containsExactly("AAAAA", "BBBBB");
+    }
+
+    @Test
+    void readFixedLengthRecordsHandlesMissingTrailingNewline() {
+        assertThat(FixedWidthCodec.readFixedLengthRecords("AAAAA\nBBBBB", 5))
+                .containsExactly("AAAAA", "BBBBB");
+    }
+
+    @Test
+    void readFixedLengthRecordsReturnsSingleRecordForExactLength() {
+        assertThat(FixedWidthCodec.readFixedLengthRecords("AAAAA", 5))
+                .containsExactly("AAAAA");
+    }
+
+    @Test
+    void readFixedLengthRecordsReturnsEmptyForEmptyContent() {
+        assertThat(FixedWidthCodec.readFixedLengthRecords("", 5)).isEmpty();
+    }
+
+    @Test
+    void readFixedLengthRecordsReturnsEmptyForFramingOnlyContent() {
+        // Only line terminators: every character is inter-record framing, so no records are produced.
+        assertThat(FixedWidthCodec.readFixedLengthRecords("\n\r\n\n", 5)).isEmpty();
+    }
+
+    @Test
+    void readFixedLengthRecordsToleratesBlankTrailingRemainder() {
+        // A short trailing remainder that is entirely blank (trailing pad) is discarded, not an error.
+        assertThat(FixedWidthCodec.readFixedLengthRecords("AAAAA  ", 5))
+                .containsExactly("AAAAA");
+        assertThat(FixedWidthCodec.readFixedLengthRecords("AAAAA\n  \n", 5))
+                .containsExactly("AAAAA");
+    }
+
+    @Test
+    void readFixedLengthRecordsThrowsOnNonBlankShortRemainder() {
+        // A truncated (short, non-blank) trailing remainder must fail fast rather than load a
+        // corrupt record -- the parity requirement behind the F3 fix.
+        IllegalArgumentException ex = assertThrows(IllegalArgumentException.class,
+                () -> FixedWidthCodec.readFixedLengthRecords("AAAAABB", 5));
+        assertThat(ex.getMessage()).contains("Trailing partial fixed-length record");
+    }
+
+    @Test
+    void readFixedLengthRecordsThrowsOnSingleShortRecord() {
+        // A 300-character single record when the width is 350 (the QA-reported case) is rejected.
+        String threeHundred = "9".repeat(300);
+        assertThrows(IllegalArgumentException.class,
+                () -> FixedWidthCodec.readFixedLengthRecords(threeHundred, 350));
+    }
+
+    @Test
+    void readFixedLengthRecordsPreservesRecordBytesVerbatim() {
+        // Slices are taken verbatim: interior spaces are NOT trimmed (the field readers trim, not
+        // the framer). The record retains its full width exactly.
+        List<String> records = FixedWidthCodec.readFixedLengthRecords("AB CDE F  ", 5);
+        assertThat(records).containsExactly("AB CD", "E F  ");
+        assertThat(records.get(0)).hasSize(5);
+        assertThat(records.get(1)).hasSize(5);
+    }
+
+    @Test
+    void readFixedLengthRecordsRejectsNullContent() {
+        assertThrows(NullPointerException.class,
+                () -> FixedWidthCodec.readFixedLengthRecords(null, 5));
+    }
+
+    @Test
+    void readFixedLengthRecordsRejectsNonPositiveLength() {
+        assertThrows(IllegalArgumentException.class,
+                () -> FixedWidthCodec.readFixedLengthRecords("AAAAA", 0));
+        assertThrows(IllegalArgumentException.class,
+                () -> FixedWidthCodec.readFixedLengthRecords("AAAAA", -1));
+    }
+
+    @Test
+    void readFixedLengthRecordsFramesTwoCanonical350ByteRecords() {
+        // Two real 350-byte DALYTRAN images concatenated with NO delimiter frame into exactly two
+        // records, each byte-identical to the canonical image (contiguous fixed-block parity).
+        String canonical = canonicalDalytranRecord();
+        assertThat(canonical).hasSize(350);
+
+        List<String> contiguous = FixedWidthCodec.readFixedLengthRecords(canonical + canonical, 350);
+        assertThat(contiguous).containsExactly(canonical, canonical);
+
+        // The LF-framed form of the same two records decodes identically.
+        List<String> lfFramed =
+                FixedWidthCodec.readFixedLengthRecords(canonical + "\n" + canonical + "\n", 350);
+        assertThat(lfFramed).containsExactly(canonical, canonical);
     }
 
     // ------------------------------------------------------------------------

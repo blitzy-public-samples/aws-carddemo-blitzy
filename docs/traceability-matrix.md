@@ -6,7 +6,7 @@ This document satisfies the **Explainability** rule (AAP Section 0.8.2) and the 
 
 The matrix additionally provides coverage at two further granularities, each **complete at its own level of detail** (and labelled as such where it appears, rather than under a single blanket "100%"): **screen field-level** traceability for all 17 BMS maps and their 441 fields plus per-program action-key (AID) handling (Section 3), and **data-artifact-level** traceability for the seed/reference data files — 9 ASCII, 12 EBCDIC, and the VSAM catalog listing (Section 8). Where a source construct is intentionally **not** mapped one-to-one (for example a source-only CSD entry with no program, a reference-only JCL member, or an application-enforced relationship that cannot become a database constraint), it is **explicitly classified** rather than silently omitted, so "no gaps" means *nothing is undocumented*, not that every construct becomes a like-for-like target.
 
-- **Scope:** 28 COBOL programs, **527 unique PROCEDURE DIVISION paragraphs**, 11 data entities/tables, 17 online screens, 11 Spring Batch jobs, plus JCL/PROC/CTL/CSD orchestration.
+- **Scope:** 28 COBOL programs, **527 unique PROCEDURE DIVISION paragraphs**, 11 data entities/tables, 17 online screens, **12 Spring Batch jobs** (11 COBOL-derived plus the `dailyTransactionLoadJob` raw-`DALYTRAN` loader, which has **no COBOL source** — see decision [D30](./decision-log.md#d30--dalytran-raw-fixed-width-loader-executable-external-file-ingestion) and the job-count note in Section 1), plus JCL/PROC/CTL/CSD orchestration.
 - **Legacy source location:** the original COBOL is retained read-only under `legacy/**` (relocated from `app/**`); all source references below point at `legacy/**`.
 - **Related documents:** [Architecture](./architecture.md) &middot; [Decision Log](./decision-log.md).
 - **Identifier fidelity:** COBOL paragraph names are preserved verbatim (uppercase, hyphenated); Java targets use the package-by-layer names defined in the architecture.
@@ -51,6 +51,19 @@ One row per COBOL program: its type, unique PROCEDURE DIVISION paragraph count, 
 
 **Assertion:** 28 programs, **527 unique paragraphs**, **100%** mapped to Java targets with no gaps (verified against `legacy/cbl/**`; see Appendix A and the reconciliation footnote in Section 4.12).
 
+**Spring Batch job count — 11 COBOL-derived + 1 loader = 12 registered `Job` beans.** The per-program
+table above maps the **11 COBOL-derived** Spring Batch jobs (the ten batch programs
+`CBACT01C`–`CBTRN03C`, where `CBSTM03A.CBL` and its `CBSTM03B.CBL` subprogram both map to the single
+`statementGenerationJob`). A **12th** registered `Job` bean — **`dailyTransactionLoadJob`**
+(`batch/DailyTransactionLoadJob`) — has **no COBOL source**: it is the executable raw-`DALYTRAN`
+fixed-width loader added for external-file ingestion (decision
+[D30](./decision-log.md#d30--dalytran-raw-fixed-width-loader-executable-external-file-ingestion)).
+It is therefore **classified here rather than mapped from a PROCEDURE DIVISION paragraph** (consistent
+with this matrix's "explicitly classified, never silently omitted" standard), so the total registered
+in `src/main/**` is **12** Spring Batch `Job` beans. The `11`-job tables in
+[Architecture](./architecture.md) and the onboarding `domain-context.md` are legitimate
+COBOL-program → job views and intentionally exclude this source-less loader.
+
 ## Cross-Reference / Clarification Notes (CF)
 
 Rows in Sections 4–8 occasionally cite a **CF** code (**CF1**, **CF2**, …) to attach a short, shared clarification without repeating it inline. Each code resolves below. Every fact a CF note annotates has been verified against the cited legacy artifact; these notes complement (and cross-reference) the numbered decision-log entries **D1–D24**.
@@ -76,7 +89,7 @@ Each VSAM KSDS becomes a PostgreSQL 16 table; the unique key becomes the primary
 | `CVACT01Y.cpy` | `domain/Account.java` | `account` | `acct_id` | `group_id` = grouping attribute (**no FK**; `disclosure_group` PK is composite — see note) |
 | `CVACT02Y.cpy` | `domain/Card.java` | `card` | `card_num` | index acct_id (=CARDDATA.VSAM.AIX); FK acct_id -> account |
 | `CVACT03Y.cpy` | `domain/CardXref.java` | `card_xref` | `xref_card_num` | index acct_id (=CARDXREF.VSAM.AIX); FK cust_id -> customer, acct_id -> account |
-| `CVTRA05Y.cpy` | `domain/Transaction.java` | `transaction` | `tran_id (16-char)` | index proc_ts (=TRANSACT.VSAM.AIX, KEYLEN=26 @ AXRKP=304); FK card_num -> card, type_cd -> transaction_type, composite (type_cd, cat_cd) -> transaction_category |
+| `CVTRA05Y.cpy` | `domain/Transaction.java` | `transaction` | `tran_id (16-char)` | index proc_ts (=TRANSACT.VSAM.AIX, KEYLEN=26 @ AXRKP=304); covering index (card_num, proc_ts, tran_id) = statement per-card browse (V4, not an AIX — see D10); FK card_num -> card, type_cd -> transaction_type, composite (type_cd, cat_cd) -> transaction_category |
 | `CVTRA06Y.cpy` | `domain/DailyTransaction.java` | `daily_transaction` | `staging key` | - (posting staging) |
 | `CSUSR01Y.cpy` | `domain/UserSecurity.java` | `user_security` | `sec_usr_id` | - (role A/U) |
 | `CVTRA03Y.cpy` | `domain/TransactionType.java` | `transaction_type` | `type_cd` | - |
@@ -84,7 +97,7 @@ Each VSAM KSDS becomes a PostgreSQL 16 table; the unique key becomes the primary
 | `CVTRA02Y.cpy` | `domain/DisclosureGroup.java` | `disclosure_group` | `(group_id, type_cd, cat_cd)` | int_rate DECIMAL(6,2) |
 | `CVTRA01Y.cpy` | `domain/TransactionCategoryBalance.java` | `tran_cat_balance` | `(acct_id, type_cd, cat_cd)` | bal DECIMAL(11,2) |
 
-**Reference-only copybooks (no separate entity):** `CVTRA07Y.cpy`, `CVCRD01Y.cpy`, and `CUSTREC*` are used to reconcile field semantics only. **Alternate indexes formalized:** `CARDDATA.VSAM.AIX` (→ index on `card.acct_id`), `CARDXREF.VSAM.AIX` (→ index on `card_xref.acct_id`), and `TRANSACT.VSAM.AIX` (→ index on `transaction.proc_ts`) become ordinary B-tree indexes preserving the card-to-account, xref-to-account, and chronological-transaction browse patterns.
+**Reference-only copybooks (no separate entity):** `CVTRA07Y.cpy`, `CVCRD01Y.cpy`, and `CUSTREC*` are used to reconcile field semantics only. **Alternate indexes formalized:** `CARDDATA.VSAM.AIX` (→ index on `card.acct_id`), `CARDXREF.VSAM.AIX` (→ index on `card_xref.acct_id`), and `TRANSACT.VSAM.AIX` (→ index on `transaction.proc_ts`) become ordinary B-tree indexes preserving the card-to-account, xref-to-account, and chronological-transaction browse patterns. **Supporting (non-AIX) index:** a fourth B-tree covering index `idx_transaction_card_num` on `transaction (card_num, proc_ts, tran_id)` (Flyway `V4`) preserves the **statement per-card browse** — the legacy `CREASTMT.JCL` `SORT` by `CARD-NUM` then `TRAN-ID`, re-expressed as `findByCardNumOrderByProcTsAscTranIdAsc` — as an indexed sorted query (AAP §0.4.3), since `transaction.card_num` is a foreign key and PostgreSQL does not auto-index foreign-key columns (see decision **D10**, "Statement per-card covering index").
 
 > **AIX key disambiguation (`TRANSACT.VSAM.AIX` → `proc_ts`, not `orig_ts`):** the transaction record (`CVTRA05Y`) defines **two** 26-character timestamps — `TRAN-ORIG-TS` (origination) at offset **278** and `TRAN-PROC-TS` (processing) at offset **304**. The VSAM catalog listing (`legacy/catlg/LISTCAT.txt`) shows `TRANSACT.VSAM.AIX` with `KEYLEN=26` beginning at `AXRKP=304` — i.e. the alternate key is `TRAN-PROC-TS`, which maps to the `proc_ts` column. The chronological transaction browse therefore orders by `proc_ts`; ordering by `orig_ts` would not reproduce the legacy browse order.
 
@@ -740,6 +753,7 @@ One subsection per program (28 total). Every PROCEDURE DIVISION paragraph from A
 
 | COBOL Paragraph | Purpose | Target Java (class#method or component) |
 |-----------------|---------|-----------------------------------------|
+| (`PROCEDURE DIVISION` main body) `DISPLAY 'START OF EXECUTION OF PROGRAM CBACT01C'` (L71) / `DISPLAY 'END OF EXECUTION OF PROGRAM CBACT01C'` (L85) | SYSOUT execution-boundary banners bracketing the run | batch/ExecutionBannerJobListener("CBACT01C") on the JobBuilder (after CorrelationIdJobListener): START in beforeJob (always), END in afterJob only on BatchStatus.COMPLETED — an abend (CEE3ABD) bypasses the END DISPLAY; see [D48](./decision-log.md#d48--master-print-execution-banners-are-reproduced-via-a-job-listener) |
 | `1000-ACCTFILE-GET-NEXT` | Read next Account record | AccountMasterPrintJob reader - AccountRepository (paged, key-ordered) / RepositoryItemReader.read() |
 | `1100-DISPLAY-ACCT-RECORD` | Format/print record | AccountMasterPrintJob ItemWriter (print/log record) |
 | `0000-ACCTFILE-OPEN` | Open Account file | AccountRepository - Spring Data JPA (no explicit open) |
@@ -753,6 +767,7 @@ One subsection per program (28 total). Every PROCEDURE DIVISION paragraph from A
 
 | COBOL Paragraph | Purpose | Target Java (class#method or component) |
 |-----------------|---------|-----------------------------------------|
+| (`PROCEDURE DIVISION` main body) `DISPLAY 'START OF EXECUTION OF PROGRAM CBACT02C'` (L71) / `DISPLAY 'END OF EXECUTION OF PROGRAM CBACT02C'` (L85) | SYSOUT execution-boundary banners bracketing the run | batch/ExecutionBannerJobListener("CBACT02C") on the JobBuilder (after CorrelationIdJobListener): START in beforeJob (always), END in afterJob only on BatchStatus.COMPLETED — an abend (CEE3ABD) bypasses the END DISPLAY; see [D48](./decision-log.md#d48--master-print-execution-banners-are-reproduced-via-a-job-listener) |
 | `1000-CARDFILE-GET-NEXT` | Read next Card record | CardMasterPrintJob reader - CardRepository (paged, key-ordered) / RepositoryItemReader.read() |
 | `0000-CARDFILE-OPEN` | Open Card file | CardRepository - Spring Data JPA (no explicit open) |
 | `9000-CARDFILE-CLOSE` | Close Card file | CardRepository - Spring Data JPA (no explicit close) |
@@ -765,6 +780,7 @@ One subsection per program (28 total). Every PROCEDURE DIVISION paragraph from A
 
 | COBOL Paragraph | Purpose | Target Java (class#method or component) |
 |-----------------|---------|-----------------------------------------|
+| (`PROCEDURE DIVISION` main body) `DISPLAY 'START OF EXECUTION OF PROGRAM CBACT03C'` (L71) / `DISPLAY 'END OF EXECUTION OF PROGRAM CBACT03C'` (L85) | SYSOUT execution-boundary banners bracketing the run | batch/ExecutionBannerJobListener("CBACT03C") on the JobBuilder (after CorrelationIdJobListener): START in beforeJob (always), END in afterJob only on BatchStatus.COMPLETED — an abend (CEE3ABD) bypasses the END DISPLAY; see [D48](./decision-log.md#d48--master-print-execution-banners-are-reproduced-via-a-job-listener) |
 | `1000-XREFFILE-GET-NEXT` | Read next CardXref record | XrefPrintJob reader - CardXrefRepository (paged, key-ordered) / RepositoryItemReader.read() |
 | `0000-XREFFILE-OPEN` | Open CardXref file | CardXrefRepository - Spring Data JPA (no explicit open) |
 | `9000-XREFFILE-CLOSE` | Close CardXref file | CardXrefRepository - Spring Data JPA (no explicit close) |
@@ -806,6 +822,7 @@ One subsection per program (28 total). Every PROCEDURE DIVISION paragraph from A
 
 | COBOL Paragraph | Purpose | Target Java (class#method or component) |
 |-----------------|---------|-----------------------------------------|
+| (`PROCEDURE DIVISION` main body) `DISPLAY 'START OF EXECUTION OF PROGRAM CBCUS01C'` (L71) / `DISPLAY 'END OF EXECUTION OF PROGRAM CBCUS01C'` (L85) | SYSOUT execution-boundary banners bracketing the run | batch/ExecutionBannerJobListener("CBCUS01C") on the JobBuilder (after CorrelationIdJobListener): START in beforeJob (always), END in afterJob only on BatchStatus.COMPLETED — an abend (CEE3ABD) bypasses the END DISPLAY; see [D48](./decision-log.md#d48--master-print-execution-banners-are-reproduced-via-a-job-listener) |
 | `1000-CUSTFILE-GET-NEXT` | Read next Customer record | CustomerMasterPrintJob reader - CustomerRepository (paged, key-ordered) / RepositoryItemReader.read() |
 | `0000-CUSTFILE-OPEN` | Open Customer file | CustomerRepository - Spring Data JPA (no explicit open) |
 | `9000-CUSTFILE-CLOSE` | Close Customer file | CustomerRepository - Spring Data JPA (no explicit close) |
@@ -1003,7 +1020,7 @@ One subsection per program (28 total). Every PROCEDURE DIVISION paragraph from A
 | `1270-EDIT-US-STATE-CD-EXIT` | Structured paragraph return | (no-op) structured control return |
 | `1275-EDIT-FICO-SCORE` | Validate FICO score range | service/rule/FicoScoreRule |
 | `1275-EDIT-FICO-SCORE-EXIT` | Structured paragraph return | (no-op) structured control return |
-| `1280-EDIT-US-STATE-ZIP-CD` | Validate state+ZIP consistency | service/rule/StateZipRule |
+| `1280-EDIT-US-STATE-ZIP-CD` | Validate state+ZIP consistency | `service/rule/UsStateZipRule` — enforced via `AccountService.editStateZip`, which delegates to `UsStateZipRule.validate(stateCode, zip)` (240-entry state + ZIP-prefix table) and latches "Invalid zip code for state" when the combination is absent, matching COACTUPC `1280-EDIT-US-STATE-ZIP-CD` |
 | `1280-EDIT-US-STATE-ZIP-CD-EXIT` | Structured paragraph return | (no-op) structured control return |
 | `2000-DECIDE-ACTION` | Decide action (PF-key/action) | AccountUpdateController action dispatch (PF-key/action routing) |
 | `2000-DECIDE-ACTION-EXIT` | Structured paragraph return | (no-op) structured control return |
@@ -1017,7 +1034,7 @@ One subsection per program (28 total). Every PROCEDURE DIVISION paragraph from A
 | `3201-SHOW-INITIAL-VALUES-EXIT` | Structured paragraph return | (no-op) structured control return |
 | `3202-SHOW-ORIGINAL-VALUES` | Show original values | mapper/AccountMapper -> DTO (original values) |
 | `3202-SHOW-ORIGINAL-VALUES-EXIT` | Structured paragraph return | (no-op) structured control return |
-| `3203-SHOW-UPDATED-VALUES` | Show updated values | mapper/AccountMapper -> DTO (updated values) |
+| `3203-SHOW-UPDATED-VALUES` | Show updated values | `AccountService.previewOf` builds transient (detached) copies of the account + customer, applies the submitted candidate values to those copies, and `mapper/AccountMapper` renders them into the response DTO — so the CHANGES-OK-NOT-CONFIRMED redisplay echoes the operator's just-entered values (matching `3203-SHOW-UPDATED-VALUES`), not the persisted originals. The managed entities are never mutated, so no JPA flush occurs on the preview path. |
 | `3203-SHOW-UPDATED-VALUES-EXIT` | Structured paragraph return | (no-op) structured control return |
 | `3250-SETUP-INFOMSG` | Set info message | response DTO info/error message field |
 | `3250-SETUP-INFOMSG-EXIT` | Structured paragraph return | (no-op) structured control return |
@@ -1043,7 +1060,7 @@ One subsection per program (28 total). Every PROCEDURE DIVISION paragraph from A
 | `9500-STORE-FETCHED-DATA-EXIT` | Structured paragraph return | (no-op) structured control return |
 | `9600-WRITE-PROCESSING` | Persist update (REWRITE) | AccountService update -> repository.save (@Version optimistic lock) |
 | `9600-WRITE-PROCESSING-EXIT` | Structured paragraph return | (no-op) structured control return |
-| `9700-CHECK-CHANGE-IN-REC` | Detect concurrent change (account + owning customer aggregate) | `@Version` optimistic-lock check; the account is loaded via `AccountRepository.findByIdForVersionedUpdate` (`OPTIMISTIC_FORCE_INCREMENT`) so any confirmed write — including a customer-only edit — advances `account.version` and a stale editor is rejected. The customer also carries `@Version`; the account force-increment anchors the account+customer aggregate (see decision-log D18). |
+| `9700-CHECK-CHANGE-IN-REC` | Detect concurrent change (account + owning customer aggregate) | `@Version` optimistic-lock check; the account is loaded via `AccountRepository.findByIdForVersionedUpdate` (`OPTIMISTIC_FORCE_INCREMENT`) so any confirmed write — including a customer-only edit — advances `account.version` and a stale editor is rejected. The customer also carries `@Version`; the account force-increment anchors the account+customer aggregate (see decision-log D18). A detected conflict is surfaced as **HTTP 409 Conflict** by `GlobalExceptionHandler`, which maps `ConcurrencyFailureException` — including `OptimisticLockingFailureException` and the PostgreSQL-deadlock `CannotAcquireLockException` — and `OptimisticLockException` to 409, never HTTP 500. |
 | `9700-CHECK-CHANGE-IN-REC-EXIT` | Structured paragraph return | (no-op) structured control return |
 | `ABEND-ROUTINE` | Abnormal-end handler | exception/GlobalExceptionHandler -> thrown exception (online) / batch job failure |
 | `ABEND-ROUTINE-EXIT` | Structured paragraph return | (no-op) structured control return |
@@ -1098,7 +1115,7 @@ One subsection per program (28 total). Every PROCEDURE DIVISION paragraph from A
 | COBOL Paragraph | Purpose | Target Java (class#method or component) |
 |-----------------|---------|-----------------------------------------|
 | `MAIN-PARA` | Program entry / AID dispatch | AdminMenuController request entry (AID/action dispatch) |
-| `PROCESS-ENTER-KEY` | Handle Enter / submit | AdminMenuController submit handler -> MenuService |
+| `PROCESS-ENTER-KEY` | Handle Enter / submit | `AdminMenuController` -> `MenuService.selectAdminMenuOption`, reproducing the COADM01C/COMEN01C option check: a space-folded, `IS NOT NUMERIC` / out-of-range / zero option re-displays the same screen with "Please enter a valid option number..." (HTTP 200). `AdminMenuRequest.option` `@Pattern` is a width-only guard (`^.{0,2}$`), so a non-numeric or blank option is NOT rejected as a 400 — the numeric-shape check is performed by the service |
 | `RETURN-TO-SIGNON-SCREEN` | Return to signon | Navigate to SignonController (signon view) |
 | `SEND-MENU-SCREEN` | Build/send the screen (output) | AdminMenuController builds response DTO |
 | `RECEIVE-MENU-SCREEN` | Receive the screen (input) | AdminMenuController consumes request DTO |
@@ -1274,7 +1291,7 @@ One subsection per program (28 total). Every PROCEDURE DIVISION paragraph from A
 | COBOL Paragraph | Purpose | Target Java (class#method or component) |
 |-----------------|---------|-----------------------------------------|
 | `MAIN-PARA` | Program entry / AID dispatch | MainMenuController request entry (AID/action dispatch) |
-| `PROCESS-ENTER-KEY` | Handle Enter / submit | MainMenuController submit handler -> MenuService |
+| `PROCESS-ENTER-KEY` | Handle Enter / submit | `MainMenuController` -> `MenuService.selectMainMenuOption`, reproducing COMEN01C L122-129: the option is space-folded and the `IS NOT NUMERIC` / `> option-count` / `= ZEROS` checks re-display the same screen with "Please enter a valid option number..." (HTTP 200). `MainMenuRequest.option` `@Pattern` is a width-only guard (`^.{0,2}$`), so a non-numeric or blank option is NOT rejected as a 400 at the transport boundary — the numeric-shape check is performed by the service, matching the legacy same-screen behavior |
 | `RETURN-TO-SIGNON-SCREEN` | Return to signon | Navigate to SignonController (signon view) |
 | `SEND-MENU-SCREEN` | Build/send the screen (output) | MainMenuController builds response DTO |
 | `RECEIVE-MENU-SCREEN` | Receive the screen (input) | MainMenuController consumes request DTO |
@@ -1357,9 +1374,9 @@ One subsection per program (28 total). Every PROCEDURE DIVISION paragraph from A
 | COBOL Paragraph | Purpose | Target Java (class#method or component) |
 |-----------------|---------|-----------------------------------------|
 | `MAIN-PARA` | Program entry / AID dispatch | TransactionAddController request entry (AID/action dispatch) |
-| `PROCESS-ENTER-KEY` | Handle Enter / submit | TransactionAddController submit handler -> TransactionService |
-| `VALIDATE-INPUT-KEY-FIELDS` | Validate key fields (account/card) | service/rule/* + Bean Validation (key fields) |
-| `VALIDATE-INPUT-DATA-FIELDS` | Validate data fields (amount/date/desc) | service/rule/* + Bean Validation (data fields) |
+| `PROCESS-ENTER-KEY` | Handle Enter / submit | `TransactionAddController.processEnter` runs `TransactionService.validateAddCommand` (both key + data edits) **before** the `EVALUATE CONFIRMI` confirm decision, matching the COBOL ordering (L164-169): a failing edit short-circuits to a same-screen redisplay (200) or, for an unresolved account/card key, propagates a 404/409 — regardless of the confirm flag; only after every edit passes is the confirm branch (Y -> add, N/blank -> prompt) evaluated |
+| `VALIDATE-INPUT-KEY-FIELDS` | Validate key fields (account/card) | `TransactionService.validateAddCommand` -> `validateKeyFieldsAndResolveCard` (+ service/rule/* + Bean Validation); runs before the confirm decision |
+| `VALIDATE-INPUT-DATA-FIELDS` | Validate data fields (amount/date/desc) | `TransactionService.validateAddCommand` -> `validateDataFields` (+ service/rule/* + Bean Validation); runs before the confirm decision |
 | `ADD-TRANSACTION` | Generate next id (max+1) and add the transaction [legacy L444-L451] | TransactionService.add + common/util/IdGenerator.nextTransactionId (max+1) |
 | `COPY-LAST-TRAN-DATA` | Reverse-browse last transaction to seed the id | common/util/IdGenerator max-key lookup (READPREV from HIGH-VALUES) -> TransactionRepository |
 | `RETURN-TO-PREV-SCREEN` | Return to previous screen | TransactionAddController navigate to previous view |
@@ -1573,8 +1590,8 @@ The artifact-level rows in Section 7.1 map each job to its Spring target. The ta
 
 | Step | Program | DD / control cards | Target semantics |
 |------|---------|--------------------|------------------|
-| `STEP05R` | `SORT` | `SORTIN`=TRANSACT.BKUP(0) **concatenated with** SYSTRAN(0) (both SHR); `SYMNAMES`: `TRAN-ID,1,16,CH`; `SYSIN`: `SORT FIELDS=(TRAN-ID,A)`; `SORTOUT`=TRANSACT.COMBINED(+1) GDG (NEW,CATLG,DELETE, `DCB=(*.SORTIN)`) | Merge current + system-generated transactions and sort ascending by `TRAN-ID` (offset 1, len 16) → Java `Comparator.comparing(tranId)` / `ORDER BY tran_id ASC` in `TransactionCombineJob`. |
-| `STEP10` | `IDCAMS` | `SYSIN`: `REPRO INFILE(TRANSACT) OUTFILE(TRANVSAM)` where `TRANSACT`=COMBINED(+1), `TRANVSAM`=TRANSACT.VSAM.KSDS | Load the sorted combined generation into the transaction master (bulk upsert). Runs unconditionally (no `COND`). |
+| `STEP05R` | `SORT` | `SORTIN`=TRANSACT.BKUP(0) **concatenated with** SYSTRAN(0) (both SHR); `SYMNAMES`: `TRAN-ID,1,16,CH`; `SYSIN`: `SORT FIELDS=(TRAN-ID,A)`; `SORTOUT`=TRANSACT.COMBINED(+1) GDG (NEW,CATLG,DELETE, `DCB=(*.SORTIN)`) | Merge current + system-generated transactions and sort ascending by `TRAN-ID` (offset 1, len 16) → Java `Comparator.comparing(tranId)` / `ORDER BY tran_id ASC` in `TransactionCombineJob`. The `SORTIN` concatenation is read by `batch/reader/CombinedTransactionItemReader`, which frames each member **by fixed 350-byte position** (`FixedWidthCodec.readFixedLengthRecords`, skipping inter-record `LF`/`CR`) so a contiguous `RECFM=F` image with no in-band delimiter is read in full, and which **requires at least one existing member**: a run with no resolvable `SORTIN` fails fast (RC 8), a supplied-but-absent member is skipped with a `WARN`, and a present-but-empty member contributes zero records — see [D47](./decision-log.md#d47--combtran-requires-at-least-one-existing-sortin-member-missing-input-fail-fast). |
+| `STEP10` | `IDCAMS` | `SYSIN`: `REPRO INFILE(TRANSACT) OUTFILE(TRANVSAM)` where `TRANSACT`=COMBINED(+1), `TRANVSAM`=TRANSACT.VSAM.KSDS (**existing KSDS, `DISP=SHR`, no `DELETE`/`DEFINE`/`REPLACE`**) | Load the sorted combined generation into the transaction master via `TransactionJpaItemWriter` with faithful **`REPRO`-without-`REPLACE`** semantics: **merge-insert** each new key, **reject** each duplicate key (analog of IDCAMS `IDC1440I`), and **leave stale rows untouched** — never an overwrite/upsert. A duplicate-only run ends `COMPLETED_WITH_REJECTS` → **RC 4** (RC 8 reserved for hard failures); see [D46](./decision-log.md#d46--combtran-reproduces-idcams-repro-without-replace-reject-duplicates-preserve-stale-rows-rc-4). Runs unconditionally (no `COND`). |
 
 **Backup / redefine chain: `CLOSEFIL.jcl` → `TRANBKP.jcl` → `OPENFIL.jcl`, with GDG bases from `DEFGDGB.jcl`.**
 
@@ -1590,7 +1607,7 @@ The artifact-level rows in Section 7.1 map each job to its Spring target. The ta
 
 `DEFGDGB.jcl` (`STEP05 EXEC PGM=IDCAMS`, source L21-L59) defines six generation-data groups — `TRANSACT.BKUP`, `TRANSACT.DALY`, `TRANREPT`, `TCATBALF.BKUP`, `SYSTRAN`, `TRANSACT.COMBINED` — each `LIMIT(5) SCRATCH`, each guarded by `IF LASTCC=12 THEN SET MAXCC=0` (tolerate already-exists). Target: a **backup retention policy of 5 generations** per stream in the scheduled DB-backup configuration (not a runtime code path).
 
-**Representative IDCAMS define/load job (`ACCTFILE.jcl` pattern, shared by `CARDFILE`/`CUSTFILE`/`XREFFILE`/`TRANFILE`/`DISCGRP`/`TRANCATG`/`TRANTYPE`/`TCATBALF`/`DUSRSECJ`).** Three ordered steps: (1) `IDCAMS DELETE … CLUSTER` with `IF MAXCC LE 08 THEN SET MAXCC = 0` (tolerant drop); (2) `IDCAMS DEFINE CLUSTER (… KEYS(…) RECORDSIZE(…) INDEXED)` (must succeed); (3) `IDCAMS REPRO INFILE(seq) OUTFILE(ksds)` loading the EBCDIC/ASCII seed into the KSDS (must succeed). Target: step (1)+(2) → Flyway `V1__schema.sql` (plus the planned `V2__reference_data.sql` for the reference tables — currently seeded from `db/seed/*.csv`) `CREATE TABLE` + PK; step (3) → `db/seed/*.csv` load. `TRANIDX.jcl` adds an `IDCAMS DEFINE ALTERNATEINDEX` + `BLDINDEX` over TRANSACT keyed at `AXRKP=304` → Flyway B-tree index on `transaction.proc_ts` (=TRANSACT.VSAM.AIX; see CF2). Return-code semantics: the DELETE tolerates not-found (RC reset to 0); DEFINE and REPRO must return 0, else the job fails (mapped to a failed Flyway migration / failed seed load).
+**Representative IDCAMS define/load job (`ACCTFILE.jcl` pattern, shared by `CARDFILE`/`CUSTFILE`/`XREFFILE`/`TRANFILE`/`DISCGRP`/`TRANCATG`/`TRANTYPE`/`TCATBALF`/`DUSRSECJ`).** Three ordered steps: (1) `IDCAMS DELETE … CLUSTER` with `IF MAXCC LE 08 THEN SET MAXCC = 0` (tolerant drop); (2) `IDCAMS DEFINE CLUSTER (… KEYS(…) RECORDSIZE(…) INDEXED)` (must succeed); (3) `IDCAMS REPRO INFILE(seq) OUTFILE(ksds)` loading the EBCDIC/ASCII seed into the KSDS (must succeed). Target: step (1)+(2) → Flyway `V1__schema.sql` (plus the delivered `V2__reference_data.sql`, which loads the reference tables `transaction_type`/`transaction_category`/`disclosure_group`) `CREATE TABLE` + PK; step (3) → `db/seed/*.csv` load (the bulk business tables, loaded by `LocalSeedDataLoader`). `TRANIDX.jcl` adds an `IDCAMS DEFINE ALTERNATEINDEX` + `BLDINDEX` over TRANSACT keyed at `AXRKP=304` → Flyway B-tree index on `transaction.proc_ts` (=TRANSACT.VSAM.AIX; see CF2). Return-code semantics: the DELETE tolerates not-found (RC reset to 0); DEFINE and REPRO must return 0, else the job fails (mapped to a failed Flyway migration / failed seed load).
 
 #### 7.1.2 Reference-only and anomalous members (classified, not edited)
 
@@ -1642,10 +1659,10 @@ Each line is one fixed-width record terminated by a newline; byte size therefore
 | `cardxref.txt` | 36 (visible) | 50 | 1850 | `efec3825` | `CVACT03Y` | `card_xref` table → `db/seed/card_xref.csv` (EBCDIC image carries a 14-byte trailing filler to 50; see 8.2) |
 | `custdata.txt` | 500 | 50 | 25050 | `d8cfa5b7` | `CVCUS01Y` | `customer` table → `db/seed/customer.csv` |
 | `dailytran.txt` | 350 | 300 | 105300 | `1605206d` | `CVTRA06Y` | `daily_transaction` staging → posting input fixture |
-| `discgrp.txt` | 50 | 51 | 2601 | `dfdd3832` | `CVTRA02Y` | `disclosure_group` → Flyway `V2__reference_data.sql` (planned; currently `db/seed/disclosure_group.csv`) |
+| `discgrp.txt` | 50 | 51 | 2601 | `dfdd3832` | `CVTRA02Y` | `disclosure_group` → Flyway `V2__reference_data.sql` (delivered) |
 | `tcatbal.txt` | 50 | 50 | 2550 | `2c45817e` | `CVTRA01Y` | `tran_cat_balance` → seed |
-| `trancatg.txt` | 60 | 18 | 1098 | `80040907` | `CVTRA04Y` | `transaction_category` → Flyway `V2__reference_data.sql` (planned; currently `db/seed/transaction_category.csv`) |
-| `trantype.txt` | 60 | 7 | 427 | `3e0ae004` | `CVTRA03Y` | `transaction_type` → Flyway `V2__reference_data.sql` (planned; currently `db/seed/transaction_type.csv`) |
+| `trancatg.txt` | 60 | 18 | 1098 | `80040907` | `CVTRA04Y` | `transaction_category` → Flyway `V2__reference_data.sql` (delivered) |
+| `trantype.txt` | 60 | 7 | 427 | `3e0ae004` | `CVTRA03Y` | `transaction_type` → Flyway `V2__reference_data.sql` (delivered) |
 
 There is **no `usrsec.txt`** in the ASCII set (CF4); user-security seed rows derive from the EBCDIC `USRSEC.PS` dataset (8.2) via `CSUSR01Y`.
 
@@ -1679,7 +1696,7 @@ These are the on-mainframe images (fixed width, no newline; byte size = `rows ×
 - **`ACCDATA.PS` = `ACCTDATA.PS`** — identical byte content and hash (`23167cdf`). Only `ACCTDATA.VSAM.KSDS`/`ACCTDATA.PS` is treated as authoritative; `ACCDATA.PS` is a duplicate alias retained for reference and **not** loaded a second time (CF14).
 - **Snapshot semantics** — the ASCII seed files and the EBCDIC images are **point-in-time snapshots** and can differ in row counts (e.g. the daily-transaction ASCII fixture is 300 rows; live/GDG-driven runs vary). The migration seeds from the documented snapshot and does not assume the two encodings are row-count-identical for the transactional (non-reference) datasets (CF14).
 - **`cardxref` width** — ASCII visible width 36 vs EBCDIC width 50: the 14-byte difference is trailing filler present in the fixed 50-byte VSAM record and trimmed in the ASCII extract; both map to the same `card_xref` columns (`CVACT03Y`).
-- **Reference tables** — `disclosure_group` (51 rows), `transaction_category` (18), `transaction_type` (7), and `tran_cat_balance` (50) load identically from either encoding into the planned Flyway `V2__reference_data.sql` (currently the `db/seed/*.csv` seed); row counts match across ASCII and EBCDIC.
+- **Reference tables** — `transaction_type` (7 rows), `transaction_category` (18), and `disclosure_group` (51) are loaded by the delivered Flyway `V2__reference_data.sql`; `tran_cat_balance` (50) is loaded from `db/seed/tran_cat_balance.csv` by `LocalSeedDataLoader`. The values derive identically from either encoding; row counts match across ASCII and EBCDIC.
 
 ## Appendix A - Authoritative Paragraph Inventory (527 unique)
 

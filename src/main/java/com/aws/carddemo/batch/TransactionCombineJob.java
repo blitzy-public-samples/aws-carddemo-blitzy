@@ -64,10 +64,13 @@ import com.aws.carddemo.domain.Transaction;
  *       owned by the reader; this configuration must not reorder its output.</li>
  *   <li><strong>{@code STEP10} {@code REPRO} &rarr; the writer.</strong> The IDCAMS load of the
  *       combined file into {@code TRANSACT.VSAM.KSDS} is reproduced by
- *       {@link TransactionJpaItemWriter}, which merges each {@link Transaction} into the relational
- *       transaction master (PostgreSQL table {@code transaction}) via
- *       {@code TransactionRepository.saveAll(...)} &mdash; an insert-or-update keyed on
- *       {@code tran_id}, exactly the semantics of a {@code REPRO} load into an existing KSDS.</li>
+ *       {@link TransactionJpaItemWriter}, which loads each {@link Transaction} into the relational
+ *       transaction master (PostgreSQL table {@code transaction}) with REPRO-without-{@code REPLACE}
+ *       semantics: a record whose {@code tran_id} is new is inserted, and a record whose key already
+ *       exists is <em>rejected</em> (the {@code IDC1440I} skip) rather than overwritten, leaving the
+ *       existing row and any pre-existing "stale" rows untouched. {@code STEP10} performs no
+ *       {@code DELETE}/{@code DEFINE} and specifies no {@code REPLACE}, so the master is merged into,
+ *       never rebuilt; when any record is rejected the step ends with condition code {@code 4}.</li>
  *   <li><strong>Two JCL steps &rarr; one chunk step.</strong> Because the reader already yields the
  *       fully combined and sorted stream, the sort ({@code STEP05R}) and the load ({@code STEP10})
  *       collapse into a single chunk-oriented {@link Step} whose reader feeds the writer directly.
@@ -97,11 +100,15 @@ import com.aws.carddemo.domain.Transaction;
  * on the job so every log line emitted during the run carries the observability correlation id
  * (Technical Specification &sect;0.9.5).</p>
  *
- * <p><strong>Return codes.</strong> A clean pass completes with {@code COMPLETED} status (return
- * code {@code 0}); any exception raised while reading, sorting, or loading propagates, fails the
- * step, and yields a {@code FAILED} job with a non-zero return code &mdash; preserving the
- * caller-visible {@code RC 0} / non-zero outcome of the mainframe {@code SORT}/{@code IDCAMS}
- * steps.</p>
+ * <p><strong>Return codes.</strong> The three-value {@code 0}/{@code 4}/{@code 8} contract of the
+ * mainframe {@code SORT}/{@code IDCAMS} steps is preserved by {@link TransactionJpaItemWriter}
+ * (which is auto-registered as the step's {@code StepExecutionListener}): a clean pass completes with
+ * {@code COMPLETED} (RC&nbsp;0); a pass in which at least one record was rejected as a duplicate key
+ * (the {@code IDC1440I} skip of a no-{@code REPLACE} {@code REPRO}) completes
+ * {@code COMPLETED_WITH_REJECTS} (RC&nbsp;4) while still loading every non-duplicate record; and any
+ * exception raised while reading, sorting, or loading propagates, fails the step, and yields a
+ * {@code FAILED} job (RC&nbsp;8). The job-level exit status is translated to the process exit code by
+ * {@code com.aws.carddemo.config.BatchExitCodeGenerator}.</p>
  *
  * <p><strong>Bean-name note.</strong> The configuration bean is explicitly named
  * {@code transactionCombineJobConfig} so it does not collide with the {@code transactionCombineJob}
@@ -121,17 +128,21 @@ import com.aws.carddemo.domain.Transaction;
 public class TransactionCombineJob {
 
     /**
-     * Chunk (commit-interval) size for the combine step.
+     * Chunk (commit-interval) size for the combine step: <strong>one record per chunk</strong>.
      *
-     * <p>The value matches the size used by the sibling batch configurations for consistency. The
-     * combined transaction volume is small (the seed data holds 311 transactions plus any backup
-     * generations), so the load typically completes in a few commits while remaining correct for an
-     * arbitrarily large combined set. Because {@link CombinedTransactionItemReader} performs a
-     * single global sort of the concatenated inputs before emitting, the chunk size affects only
-     * the commit granularity of the load ({@code STEP10} {@code REPRO}) &mdash; never the final
-     * {@code tranId}-ascending ordering, which is fixed by the reader.</p>
+     * <p>The load reproduces a record-at-a-time IDCAMS {@code REPRO} without {@code REPLACE} (see
+     * {@link TransactionJpaItemWriter}): for each record the writer probes the master with
+     * {@code existsById} and either inserts it or rejects it as a duplicate ({@code IDC1440I}). A
+     * commit interval of {@code 1} is required for correctness, not merely for granularity: it
+     * guarantees each inserted record is committed before the next record's {@code existsById} probe,
+     * so a duplicate {@code tranId} that appears twice <em>within the same combined input</em> is
+     * detected on its second occurrence rather than slipping through an unflushed persistence context.
+     * The final {@code tranId}-ascending ordering is unaffected by the chunk size &mdash; it is fixed
+     * once by {@link CombinedTransactionItemReader}'s single global sort of the concatenated inputs
+     * (the combined volume is small: the seed data holds a few hundred transactions plus any backup
+     * generations).</p>
      */
-    private static final int CHUNK_SIZE = 100;
+    private static final int CHUNK_SIZE = 1;
 
     /**
      * Defines the {@code transactionCombineJob} batch job: a single-step job that combines the
@@ -190,9 +201,10 @@ public class TransactionCombineJob {
      * @param combinedTransactionItemReader the step-scoped reader that concatenates the backup and
      *                                      system transaction inputs and emits them in ascending
      *                                      {@code tranId} order ({@code STEP05R}); never {@code null}
-     * @param transactionJpaItemWriter      the writer that merges each {@link Transaction} into the
-     *                                      {@code transaction} master ({@code STEP10} {@code REPRO});
-     *                                      never {@code null}
+     * @param transactionJpaItemWriter      the writer that loads each {@link Transaction} into the
+     *                                      {@code transaction} master &mdash; inserting new keys and
+     *                                      rejecting duplicates ({@code STEP10} {@code REPRO} without
+     *                                      {@code REPLACE}); never {@code null}
      * @return the configured {@link Step}; never {@code null}
      */
     @Bean

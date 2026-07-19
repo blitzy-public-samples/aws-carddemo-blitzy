@@ -141,12 +141,22 @@ public class CustomerMasterPrintJob {
     private static final String DOB_LABEL = "custDob";
 
     /**
+     * Legacy program name printed in the START/END execution banners by
+     * {@link ExecutionBannerJobListener}, byte-identical to the CBCUS01C {@code DISPLAY} literals
+     * ({@code legacy/cbl/CBCUS01C.cbl} L71 START / L85 END).
+     */
+    private static final String PROGRAM_NAME = "CBCUS01C";
+
+    /**
      * Defines the {@code customerMasterPrintJob} batch job (the CBCUS01C
      * equivalent).
      *
      * <p>The job consists of the single {@code customerMasterPrintStep} and
      * registers the {@link CorrelationIdJobListener} so that its logs (and the
-     * per-record output of the step) carry a stable correlation ID.</p>
+     * per-record output of the step) carry a stable correlation ID. An
+     * {@link ExecutionBannerJobListener} for {@code CBCUS01C} is registered after it, reproducing
+     * the legacy {@code START}/{@code END OF EXECUTION OF PROGRAM CBCUS01C} banners (START on entry;
+     * END only on normal completion).</p>
      *
      * @param jobRepository             the Boot-provided batch {@link JobRepository}
      *                                  used to persist job/step metadata
@@ -164,6 +174,7 @@ public class CustomerMasterPrintJob {
                                       CorrelationIdJobListener correlationIdJobListener) {
         return new JobBuilder("customerMasterPrintJob", jobRepository)
                 .listener(correlationIdJobListener)
+                .listener(new ExecutionBannerJobListener(PROGRAM_NAME))
                 .start(customerMasterPrintStep)
                 .build();
     }

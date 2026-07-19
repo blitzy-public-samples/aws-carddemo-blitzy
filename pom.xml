@@ -100,6 +100,28 @@
         -->
         <tomcat.version>10.1.57</tomcat.version>
 
+        <!--
+          SECURITY OVERRIDE (CVE remediation). Spring Boot 3.5.16 manages the Log4j 2
+          coordinates via the `log4j2.version` property; its default (2.24.3) enters the
+          dependency graph transitively through spring-boot-starter-logging (the
+          log4j-to-slf4j / log4j-api bridge that lets Logback remain the active backend).
+          2.24.3 is affected by CVE-2026-34479 (CVSS 7.5, high), and the same 2.25.x line
+          also remediates CVE-2026-34477 and CVE-2026-49844. Pin the managed Log4j 2
+          coordinate forward to the current patched release (2.25.5), which covers all
+          three. This overrides only the transitive Log4j 2 version; the logging backend
+          remains Logback (see docs/decision-log.md D49).
+        -->
+        <log4j2.version>2.25.5</log4j2.version>
+
+        <!--
+          SECURITY OVERRIDE (CVE remediation). Spring Boot 3.5.16 manages the PostgreSQL
+          JDBC driver via the `postgresql.version` property; its default (42.7.11) is a
+          direct runtime dependency of this application and is affected by CVE-2026-54291
+          (CVSS 8.2, high). Pin the managed coordinate forward to the current patched
+          release (42.7.13). See docs/decision-log.md D49.
+        -->
+        <postgresql.version>42.7.13</postgresql.version>
+
         <!-- Minimum combined (unit + integration) line-coverage ratio enforced by JaCoCo. -->
         <jacoco.coverage.minimum>0.80</jacoco.coverage.minimum>
     </properties>
@@ -142,6 +164,24 @@
                 <groupId>org.apache.commons</groupId>
                 <artifactId>commons-lang3</artifactId>
                 <version>3.20.0</version>
+            </dependency>
+
+            <!--
+              OpenTelemetry Semantic Conventions: the micrometer-tracing-bridge-otel
+              1.5.12 stack (managed by the Spring Boot 3.5.16 BOM for the Observability
+              rule) lands io.opentelemetry.semconv:opentelemetry-semconv 1.32.0 on the
+              graph. That coordinate is NOT governed by the OpenTelemetry instrumentation
+              BOM that Spring Boot imports, so it is not covered by a managed property and
+              must be pinned here explicitly. 1.32.0 is affected by CVE-2026-24051 (fixed
+              in 1.40.0) and CVE-2026-39883 (CVSS 7.3, high; fixed in 1.43.0). Pin forward
+              to 1.43.0, which covers both. The semconv artifact is a passive constants
+              provider (attribute-key definitions) consumed by the Micrometer OTel bridge,
+              so the forward pin is source-compatible. See docs/decision-log.md D49.
+            -->
+            <dependency>
+                <groupId>io.opentelemetry.semconv</groupId>
+                <artifactId>opentelemetry-semconv</artifactId>
+                <version>1.43.0</version>
             </dependency>
         </dependencies>
     </dependencyManagement>
@@ -451,6 +491,19 @@
                     <skipTestScope>false</skipTestScope>
                     <skipProvidedScope>false</skipProvidedScope>
                     <skipRuntimeScope>false</skipRuntimeScope>
+                    <!--
+                      Narrowly-scoped, dated, and justified false-positive / no-fix-
+                      available suppressions. Each entry pins an exact packageUrl and CVE
+                      so the suppression cannot silently mask a different or future
+                      vulnerability. Every suppression has a corresponding rationale and
+                      review date in docs/decision-log.md (D49). The versioned bumps for
+                      the remaining CVEs are handled in <dependencyManagement>/properties
+                      above; only vulnerabilities with NO patched release reachable in the
+                      dependency graph are suppressed here.
+                    -->
+                    <suppressionFiles>
+                        <suppressionFile>${project.basedir}/owasp-suppressions.xml</suppressionFile>
+                    </suppressionFiles>
                     <formats>
                         <format>HTML</format>
                         <format>JSON</format>

@@ -292,7 +292,7 @@
           <div class="kpi"><div class="num">29</div><div class="lbl">JCL Jobs</div><div class="sub">plus 2 PROCs and 1 control member</div></div>
           <div class="kpi"><div class="num">10</div><div class="lbl">VSAM Datasets</div><div class="sub">plus 3 alternate indexes</div></div>
           <div class="kpi"><div class="num">17</div><div class="lbl">Online Transactions</div><div class="sub">production surfaces; CSD registers an 18th source-only (CDV1/COCRDSEC)</div></div>
-          <div class="kpi"><div class="num">311</div><div class="lbl">Seed Transactions</div><div class="sub">with 50 customers, accounts, and cards</div></div>
+          <div class="kpi"><div class="num">300</div><div class="lbl">Seed Transactions</div><div class="sub">with 50 customers, accounts, and cards</div></div>
         </div>
         <div class="slide-footer">Prepared by <b>Blitzy</b></div>
       </section>
@@ -486,11 +486,12 @@ flowchart LR
         <div class="icon-grid">
           <div class="feature"><div class="ic"><i data-lucide="test-tube-diagonal"></i></div><div><h3>&ge;80% Coverage</h3><p>JaCoCo line-coverage gate across unit and integration tests.</p></div></div>
           <div class="feature"><div class="ic"><i data-lucide="badge-check"></i></div><div><h3>Zero-warning Build</h3><p>Compiles clean on Java 25 via the Maven wrapper.</p></div></div>
-          <div class="feature"><div class="ic"><i data-lucide="shield-alert"></i></div><div><h3>Zero Critical / High CVEs</h3><p>OWASP dependency-check 12.2.2 fails the build otherwise.</p></div></div>
+          <div class="feature"><div class="ic"><i data-lucide="shield-alert"></i></div><div><h3>Critical / High CVE Gate</h3><p>OWASP dependency-check 12.2.2 fails the build on any unsuppressed CVSS &ge; 7 finding.</p></div></div>
           <div class="feature"><div class="ic"><i data-lucide="key-round"></i></div><div><h3>No Hardcoded Secrets</h3><p>All credentials resolve from environment variables.</p></div></div>
           <div class="feature"><div class="ic"><i data-lucide="package-check"></i></div><div><h3>Jakarta Namespace</h3><p>Spring Boot 3.x; no <span class="mono">javax.*</span>, no wildcard imports.</p></div></div>
           <div class="feature"><div class="ic"><i data-lucide="database"></i></div><div><h3>Testcontainers</h3><p>Integration tests run against real PostgreSQL 16.</p></div></div>
         </div>
+        <p class="note" style="margin-top:14px;">The gate fails the build on any unsuppressed critical or high (CVSS &ge; 7) CVE. A small number of advisories with no upstream-fixed release are handled with narrowly scoped, dated suppressions recorded in the decision log and re-reviewed on expiry.</p>
         <div class="slide-footer">Prepared by <b>Blitzy</b></div>
       </section>
 

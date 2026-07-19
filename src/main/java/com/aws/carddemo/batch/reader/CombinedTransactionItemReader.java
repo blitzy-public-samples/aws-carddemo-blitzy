@@ -15,10 +15,8 @@
  */
 package com.aws.carddemo.batch.reader;
 
-import java.io.BufferedReader;
 import java.io.IOException;
 import java.io.InputStream;
-import java.io.InputStreamReader;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Comparator;
@@ -26,6 +24,8 @@ import java.util.List;
 
 import com.aws.carddemo.common.util.FixedWidthCodec;
 import com.aws.carddemo.domain.Transaction;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.batch.core.configuration.annotation.StepScope;
 import org.springframework.batch.item.ExecutionContext;
 import org.springframework.batch.item.ItemStreamException;
@@ -81,22 +81,30 @@ import org.springframework.stereotype.Component;
  * {@code SORT FIELDS=(TRAN-ID,A)}.
  *
  * <h2>Reading and character set</h2>
- * The canonical dataset layout is {@code RECFM=FB, LRECL=350}. When the input is
- * materialised as a text file with one record per line, {@link #readRecords} reads
- * it line-by-line. Bytes are decoded with {@link java.nio.charset.StandardCharsets#ISO_8859_1}
- * (a byte-preserving 8-bit charset) rather than UTF-8, so the zoned-decimal
- * overpunch bytes (<code>{ } A-R</code>) survive intact for the amount decode. If
- * an input is instead a true fixed-block stream with no line terminators, the
- * equivalent strategy is to read the whole stream and slice it into
- * {@value #RECORD_LENGTH}-character records; the line-oriented form is used here
- * because it matches the delimited ASCII datasets shipped with CardDemo.
+ * The canonical dataset layout is {@code RECFM=FB, LRECL=350}. {@link #readRecords}
+ * reads the whole resource and frames it into {@value #RECORD_LENGTH}-character
+ * records <em>by position</em> via
+ * {@link FixedWidthCodec#readFixedLengthRecords(String, int)}, so a true contiguous
+ * fixed-block stream (no line terminators) and a one-record-per-line file (LF- or
+ * CRLF-terminated, the shipped ASCII fixture form) decode identically; a non-blank
+ * short trailing remainder fails fast rather than loading a corrupt record. Bytes
+ * are decoded with {@link java.nio.charset.StandardCharsets#ISO_8859_1} (a
+ * byte-preserving 8-bit charset) rather than UTF-8, so the zoned-decimal overpunch
+ * bytes (<code>{ } A-R</code>) survive intact for the amount decode.
  *
  * <h2>Buffering rationale</h2>
  * A global sort across the two concatenated inputs requires all records in memory
  * at once, which is why this is a custom {@link ItemStreamReader} rather than a
  * streaming {@code FlatFileItemReader}. Buffering is acceptable: the combined
  * transaction volume is small (the seed data holds 311 transactions plus any
- * backups).
+ * backups). Because every record is held in heap at once and sorted in a single
+ * pass with no spill-to-disk fallback, this imposes a daily-volume ceiling that
+ * grows linearly with the input row count. That ceiling &mdash; and its
+ * bounded-memory alternatives (an external merge sort, or a database
+ * {@code ORDER BY} via a {@code RepositoryItemReader} once the inputs are
+ * table-resident) &mdash; is analysed in decision <b>D55</b> ("Combine-job global
+ * sort is in-memory and buffered") of {@code docs/decision-log.md}. Within
+ * CardDemo's frozen scope the ceiling is never approached.
  *
  * <h2>Restartability</h2>
  * The reader participates in the Spring Batch {@link org.springframework.batch.item.ItemStream}
@@ -139,6 +147,9 @@ import org.springframework.stereotype.Component;
 @Component
 @StepScope
 public class CombinedTransactionItemReader implements ItemStreamReader<Transaction> {
+
+    /** Logger for input-resolution diagnostics (a supplied-but-missing SORTIN member is warned). */
+    private static final Logger LOGGER = LoggerFactory.getLogger(CombinedTransactionItemReader.class);
 
     /**
      * {@link ExecutionContext} key under which the next read index is saved for
@@ -258,14 +269,34 @@ public class CombinedTransactionItemReader implements ItemStreamReader<Transacti
     @Override
     public void open(ExecutionContext executionContext) throws ItemStreamException {
         items = new ArrayList<>();
+        int resolvedInputs = 0;
         try {
             // SORTIN concatenation order: backup first, then system.
-            readRecords(backupResource, items);
-            readRecords(systemResource, items);
+            if (readRecords(backupResource, "backupResource", items)) {
+                resolvedInputs++;
+            }
+            if (readRecords(systemResource, "systemResource", items)) {
+                resolvedInputs++;
+            }
         } catch (IOException ex) {
             items = null;
             throw new ItemStreamException(
                     "Failed to read combined transaction input (COMBTRAN SORTIN)", ex);
+        }
+        // A missing SORTIN must not be silently treated as an empty combine. If NEITHER input
+        // resolved to an existing dataset (both parameters were absent or pointed at a non-existent
+        // location), fail the step deterministically rather than complete a no-op with return code 0
+        // -- the mainframe SORT would abend on a missing SORTIN. An existing-but-empty input is a
+        // legitimate zero-record member and does NOT trip this guard (empty is not the same as
+        // missing).
+        if (resolvedInputs == 0) {
+            items = null;
+            throw new ItemStreamException(
+                    "No COMBTRAN input resolved: neither the 'backupResource' nor the "
+                            + "'systemResource' job parameter points to an existing dataset. The SORT "
+                            + "step requires at least one SORTIN member (AWS.M2.CARDDEMO.TRANSACT.BKUP "
+                            + "or AWS.M2.CARDDEMO.SYSTRAN). Supply at least one existing input, for "
+                            + "example backupResource=file:/path/to/TRANSACT.BKUP.");
         }
         // SORT FIELDS=(TRAN-ID,A): stable ascending sort by transaction id.
         items.sort(Comparator.comparing(Transaction::getTranId));
@@ -311,36 +342,67 @@ public class CombinedTransactionItemReader implements ItemStreamReader<Transacti
     }
 
     /**
-     * Reads every fixed-width record from {@code resource} and appends the decoded
-     * {@link Transaction}s to {@code target}.
+     * Reads every fixed-width record from {@code resource}, appending the decoded
+     * {@link Transaction}s to {@code target}, and reports whether the resource
+     * resolved to an existing dataset.
      *
-     * <p>The stream is decoded with {@link StandardCharsets#ISO_8859_1} so the
-     * zoned-decimal overpunch bytes survive intact, and is read one record per
-     * line; wholly blank lines are skipped. A {@code null} or non-existent
-     * resource is treated as empty input, because a given run may supply only the
-     * backup or only the system dataset. (For a true fixed-block stream with no
-     * line terminators the equivalent approach is to read the whole stream and
-     * slice it into {@value #RECORD_LENGTH}-character records.)</p>
+     * <p>The whole resource is read and decoded with
+     * {@link StandardCharsets#ISO_8859_1} (a byte-preserving 8-bit charset, so the
+     * zoned-decimal overpunch bytes survive intact for the amount decode), then
+     * framed into {@value #RECORD_LENGTH}-character records <em>by position</em>
+     * via {@link FixedWidthCodec#readFixedLengthRecords(String, int)}. Framing by
+     * position rather than by newline reproduces the {@code RECFM=FB} contract
+     * exactly: a delimiter-free contiguous fixed-block file and a
+     * one-record-per-line file (LF- or CRLF-terminated, the shipped ASCII fixture
+     * form) decode identically, and a non-blank short trailing remainder fails
+     * fast (a truncated input is not loaded as a corrupt record). Any wholly blank
+     * record image is skipped.</p>
      *
-     * @param resource the input dataset; may be {@code null} or non-existent
-     * @param target   the accumulating list to append decoded records to
+     * <p>Resolution semantics &mdash; a missing SORTIN must be visible, not
+     * silent:</p>
+     * <ul>
+     *   <li>a {@code null} resource means the parameter was not supplied for this
+     *       run (a COMBTRAN run may legitimately provide only one SORTIN member)
+     *       and is skipped quietly, returning {@code false};</li>
+     *   <li>a non-{@code null} resource that does not exist was supplied but is
+     *       missing; it is logged at {@code WARN} and skipped, returning
+     *       {@code false}, so a mistyped or absent dataset is operator-visible;</li>
+     *   <li>an existing resource is read and returns {@code true} even if it holds
+     *       zero records &mdash; an empty member is legal input, distinct from a
+     *       missing one.</li>
+     * </ul>
+     * The caller ({@link #open(ExecutionContext)}) fails the step when
+     * <em>neither</em> input resolves.
+     *
+     * @param resource      the input dataset; may be {@code null} or non-existent
+     * @param parameterName the job-parameter name of this input, used in the warning
+     *                      ({@code "backupResource"} or {@code "systemResource"})
+     * @param target        the accumulating list to append decoded records to
+     * @return {@code true} if {@code resource} resolved to an existing dataset that
+     *         was read; {@code false} if it was absent ({@code null}) or missing
      * @throws IOException if the resource exists but cannot be opened or read
      */
-    private void readRecords(Resource resource, List<Transaction> target) throws IOException {
-        if (resource == null || !resource.exists()) {
-            return;
+    private boolean readRecords(Resource resource, String parameterName, List<Transaction> target)
+            throws IOException {
+        if (resource == null) {
+            return false;
         }
-        try (InputStream in = resource.getInputStream();
-             BufferedReader reader = new BufferedReader(
-                     new InputStreamReader(in, StandardCharsets.ISO_8859_1))) {
-            String line;
-            while ((line = reader.readLine()) != null) {
-                if (line.isBlank()) {
-                    continue;
-                }
-                target.add(mapRecord(line));
+        if (!resource.exists()) {
+            LOGGER.warn("COMBTRAN input '{}' was supplied but does not exist and is skipped: {}",
+                    parameterName, resource.getDescription());
+            return false;
+        }
+        String content;
+        try (InputStream in = resource.getInputStream()) {
+            content = new String(in.readAllBytes(), StandardCharsets.ISO_8859_1);
+        }
+        for (String record : FixedWidthCodec.readFixedLengthRecords(content, RECORD_LENGTH)) {
+            if (record.isBlank()) {
+                continue;
             }
+            target.add(mapRecord(record));
         }
+        return true;
     }
 
     /**

@@ -126,12 +126,22 @@ public class XrefPrintJob {
     private static final String READER_NAME = "xrefPrintItemReader";
 
     /**
+     * Legacy program name printed in the START/END execution banners by
+     * {@link ExecutionBannerJobListener}, byte-identical to the CBACT03C {@code DISPLAY} literals
+     * ({@code legacy/cbl/CBACT03C.cbl} L71 START / L85 END).
+     */
+    private static final String PROGRAM_NAME = "CBACT03C";
+
+    /**
      * Defines the {@code xrefPrintJob} batch job: a single-step job that prints the card
      * cross-reference file, reproducing {@code CBACT03C}.
      *
      * <p>The bean name is exactly {@code xrefPrintJob} (from the method name), which is the
      * identifier used to launch the job by name. The {@code correlationIdJobListener} is attached so
-     * the correlation id propagates across the batch boundary for the whole execution.</p>
+     * the correlation id propagates across the batch boundary for the whole execution, and an
+     * {@link ExecutionBannerJobListener} for {@code CBACT03C} is attached after it to reproduce the
+     * legacy {@code START}/{@code END OF EXECUTION OF PROGRAM CBACT03C} banners (START on entry; END
+     * only on normal completion).</p>
      *
      * @param jobRepository             the auto-configured Spring Batch {@link JobRepository};
      *                                  never {@code null}
@@ -148,6 +158,7 @@ public class XrefPrintJob {
                             CorrelationIdJobListener correlationIdJobListener) {
         return new JobBuilder("xrefPrintJob", jobRepository)
                 .listener(correlationIdJobListener)
+                .listener(new ExecutionBannerJobListener(PROGRAM_NAME))
                 .start(xrefPrintStep)
                 .build();
     }

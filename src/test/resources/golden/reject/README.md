@@ -192,6 +192,9 @@ records (`R2`, `R3`, `R4`) are rejected**.
 
 - This file is the **80-byte trailer only**, not a full 430-byte record (see §5 for why).
 - **Trailer:** `0101` + `ACCOUNT RECORD NOT FOUND`.
+- **Asserted by:** `ExpectedReject101FixtureTest` (package `com.aws.carddemo.batch.writer`), which
+  reconstructs the trailer with the production `FixedWidthCodec` and `RejectCode.ACCOUNT_NOT_FOUND` and
+  checks this file byte-for-byte, so the trailer-only golden is a consumed fixture and not an orphan.
 - **SHA-256:** `2ab7a1850b267ce2a184b1b4a05ebc9025df744cd5a49f85155d396069dd3c0c`
 
 ### `expected-reject-summary.csv`
@@ -216,10 +219,16 @@ deliberate. In the relational target, the `card_xref.acct_id → account` foreig
 xref that resolves to a missing account. The 101 branch is therefore **unreachable** through the
 normal load-and-run path.
 
-To preserve behavioral parity with the COBOL `1500-B-LOOKUP-ACCT` `INVALID KEY` branch, the 101 path
-is exercised by a **unit test that mocks the account repository** to return empty for the lookup.
-`expected-reject-101.dat` is supplied as an **80-byte EXPECTED trailer** (`0101` +
-`ACCOUNT RECORD NOT FOUND`, space-padded to 80) for that unit test to assert against.
+To preserve behavioral parity with the COBOL `1500-B-LOOKUP-ACCT` `INVALID KEY` branch, the 101
+*decision* is exercised by `DailyTransactionPostingProcessorTest`, a **unit test that mocks the account
+repository** to return empty for the lookup and asserts the processor selects
+`RejectCode.ACCOUNT_NOT_FOUND`. `expected-reject-101.dat` is supplied as an **80-byte EXPECTED
+trailer** (`0101` + `ACCOUNT RECORD NOT FOUND`, space-padded to 80) and is asserted separately by
+`ExpectedReject101FixtureTest`, which reconstructs the same trailer from the production
+`FixedWidthCodec` and `RejectCode.ACCOUNT_NOT_FOUND` and compares this file byte-for-byte. The two
+tests are complementary: the former proves the reason is *chosen*, the latter proves this trailer
+golden matches what the reject writer would *serialize* at trailer offsets `[350:354]` (reason code)
+and `[354:430]` (reason description).
 
 `expected-reject-101.dat` is **intentionally excluded** from `expected-reject-summary.csv` because it
 is not part of the loadable `seed/posting/` scenario. (The parity of this defensive branch is

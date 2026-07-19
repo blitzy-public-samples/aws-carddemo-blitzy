@@ -316,6 +316,51 @@ class AdminMenuControllerTest {
         verify(menuService).selectAdminMenuOption("9");
     }
 
+    @Test
+    @WithMockUser(roles = "ADMIN")
+    @DisplayName("D2: POST Enter with a non-numeric option \"5A\" -> 200 (NOT 400); the raw value reaches the service")
+    void postEnter_nonNumericOption_reachesServiceReturns200() throws Exception {
+        stubAdminCatalog();
+        // F-MENU-1 regression guard. The option @Pattern is a width-only guard ("^.{0,2}$"), so a
+        // non-numeric option is not rejected at the bean-validation boundary with HTTP 400; it
+        // flows into MenuService whose IS-NOT-NUMERIC check re-displays the same admin menu with
+        // the invalid-option message at HTTP 200 (COADM01C / COMEN01C L127-129). The pre-fix strict
+        // "^\\d{0,2}$" pattern produced a 400 here and never invoked the service.
+        when(menuService.selectAdminMenuOption("5A"))
+                .thenReturn(MenuRouting.error(MenuService.INVALID_OPTION_MESSAGE));
+
+        mockMvc.perform(post(MENU_PATH)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(body("5A", PfKeyAction.ENTER)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.errorMessage").value(MenuService.INVALID_OPTION_MESSAGE))
+                .andExpect(jsonPath("$.menuOptions", hasSize(EXPECTED_ADMIN_LABELS.size())))
+                .andExpect(header().doesNotExist(HEADER_NEXT_PROGRAM))
+                .andExpect(header().doesNotExist(HEADER_NEXT_TRANSACTION));
+
+        verify(menuService).selectAdminMenuOption("5A");
+    }
+
+    @Test
+    @WithMockUser(roles = "ADMIN")
+    @DisplayName("D3: POST Enter with a blank/space option \" \" -> 200 (NOT 400); the raw value reaches the service")
+    void postEnter_spaceOption_reachesServiceReturns200() throws Exception {
+        stubAdminCatalog();
+        // COBOL folds blanks to '0' -> WS-OPTION = ZEROS -> invalid. A space-only option must reach
+        // the service and yield a 200 same-screen redisplay, not a bean-validation 400.
+        when(menuService.selectAdminMenuOption(" "))
+                .thenReturn(MenuRouting.error(MenuService.INVALID_OPTION_MESSAGE));
+
+        mockMvc.perform(post(MENU_PATH)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(body(" ", PfKeyAction.ENTER)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.errorMessage").value(MenuService.INVALID_OPTION_MESSAGE))
+                .andExpect(header().doesNotExist(HEADER_NEXT_PROGRAM));
+
+        verify(menuService).selectAdminMenuOption(" ");
+    }
+
     // ---------------------------------------------------------------------------------------------
     // E. POST PF3 - RETURN-TO-SIGNON-SCREEN (XCTL to COSGN00C / CC00), service not consulted.
     // ---------------------------------------------------------------------------------------------
@@ -381,13 +426,16 @@ class AdminMenuControllerTest {
     }
 
     // ---------------------------------------------------------------------------------------------
-    // G. Field-contract parity + @Valid - out-of-shape option -> RFC 7807 400, no value leaked.
+    // G. Field-contract parity + @Valid - an OVER-LENGTH option (>2 chars) is a structural width
+    //    violation (a 3270 OPTIONI field is PIC X(2) and cannot hold more) -> RFC 7807 400 naming
+    //    the field, no value leaked. A within-width non-numeric option is NOT a 400; it is handled
+    //    same-screen at 200 (see D2/D3), matching COBOL COMEN01C/COADM01C IS-NOT-NUMERIC.
     // ---------------------------------------------------------------------------------------------
 
-    @ParameterizedTest(name = "invalid option \"{0}\"")
-    @ValueSource(strings = { "AB", "1A", "999" })
+    @ParameterizedTest(name = "over-length option \"{0}\"")
+    @ValueSource(strings = { "999", "1234", "abc" })
     @WithMockUser(roles = "ADMIN")
-    @DisplayName("G: POST with an out-of-shape option returns a 400 problem+json naming the field, no value leaked")
+    @DisplayName("G: POST with an over-length option (>2 chars) returns a 400 problem+json naming the field, no value leaked")
     void postEnter_invalidOptionShape_returns400ProblemDetail(String badOption) throws Exception {
         String requestBody = body(badOption, PfKeyAction.ENTER);
 

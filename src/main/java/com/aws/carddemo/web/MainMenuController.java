@@ -257,7 +257,8 @@ public class MainMenuController {
      *       the legacy {@code WHEN OTHER} branch.</li>
      * </ul>
      * The request body is bean-validated ({@link Valid}) for the structural constraints
-     * on the option field (at most two digits); the business "invalid option number"
+     * on the option field (at most two characters; the numeric-shape check is left to
+     * {@code MenuService}); the business "invalid option number"
      * outcome is still produced by {@link MenuService} and returned with {@code 200 OK}.
      *
      * @param request   the submitted menu request (validated); carries the typed option

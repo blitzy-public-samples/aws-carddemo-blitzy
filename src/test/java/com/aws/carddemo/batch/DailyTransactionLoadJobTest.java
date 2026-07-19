@@ -21,6 +21,7 @@ import com.aws.carddemo.repository.DailyTransactionRepository;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 import org.springframework.batch.core.BatchStatus;
 import org.springframework.batch.core.Job;
 import org.springframework.batch.core.JobExecution;
@@ -43,6 +44,9 @@ import org.testcontainers.junit.jupiter.Testcontainers;
 import org.testcontainers.utility.DockerImageName;
 
 import java.math.BigDecimal;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicLong;
 
@@ -104,6 +108,10 @@ class DailyTransactionLoadJobTest {
 
     @Autowired
     private DailyTransactionRepository dailyTransactionRepository;
+
+    /** Per-test temporary directory for synthesised contiguous / truncated fixed-width inputs. */
+    @TempDir
+    Path tempDir;
 
     @BeforeEach
     void clearStagingBefore() {
@@ -176,6 +184,76 @@ class DailyTransactionLoadJobTest {
                 .hasMessageContaining("inputResource");
 
         assertThat(dailyTransactionRepository.count()).isZero();
+    }
+
+    @Test
+    void loadsEveryRecordFromContiguousFixedBlockInput() throws Exception {
+        // Build a CONTIGUOUS fixed-block file: the first two 350-byte records of the shipped fixture,
+        // concatenated back-to-back with NO newline (the true RECFM=FB contract). Pre-fix, the
+        // line-oriented reader saw one 700-character "line" and dropped the second record (F3).
+        String[] records = fixtureRecords();
+        String contiguous = records[0] + records[1];
+        assertThat(contiguous).hasSize(700);
+        String location = writeTempInput("dalytran-contiguous.dat", contiguous);
+
+        JobExecution execution = launchLoadJob(location);
+
+        assertThat(execution.getStatus()).isEqualTo(BatchStatus.COMPLETED);
+
+        List<DailyTransaction> loaded = dailyTransactionRepository.findAllByOrderByIdAsc();
+        assertThat(loaded)
+                .as("both contiguous records are loaded; the second is no longer silently dropped")
+                .hasSize(2);
+        assertThat(loaded.get(0).getDalytranId()).isEqualTo("0000000000683580");
+        assertThat(loaded.get(0).getTranAmt()).isEqualByComparingTo(new BigDecimal("504.77"));
+        assertThat(loaded.get(1).getDalytranId()).isEqualTo("0000000001774260");
+        assertThat(loaded.get(1).getTranAmt()).isEqualByComparingTo(new BigDecimal("-919.00"));
+        assertThat(loaded).allSatisfy(record -> assertThat(record.getTranAmt().scale()).isEqualTo(2));
+    }
+
+    @Test
+    void failsFastOnTruncatedShortRecord() throws Exception {
+        // A single 300-character (truncated, non-blank) record when the width is 350 must fail the
+        // step rather than load a corrupt record -- the fixed-length framing fail-fast contract (F3).
+        String truncated = fixtureRecords()[0].substring(0, 300);
+        String location = writeTempInput("dalytran-truncated.dat", truncated);
+
+        JobExecution execution = launchLoadJob(location);
+
+        assertThat(execution.getStatus())
+                .as("a truncated fixed-width record must fail the load, not silently corrupt it")
+                .isEqualTo(BatchStatus.FAILED);
+        assertThat(dailyTransactionRepository.count()).isZero();
+    }
+
+    /**
+     * Reads the shipped 350-byte fixture and returns its records (LF split away), so tests can
+     * re-materialise them in a contiguous or truncated form without hardcoding record bytes.
+     *
+     * @return the fixture's ten 350-character record images
+     * @throws Exception if the fixture resource cannot be read
+     */
+    private String[] fixtureRecords() throws Exception {
+        byte[] bytes;
+        try (var in = getClass().getResourceAsStream("/seed/dailytran-fixedwidth-sample.txt")) {
+            bytes = in.readAllBytes();
+        }
+        return new String(bytes, StandardCharsets.ISO_8859_1).split("\n");
+    }
+
+    /**
+     * Writes {@code content} to a file in {@link #tempDir} (ISO-8859-1, verbatim) and returns its
+     * {@code file:} URL for use as the {@code inputResource} job parameter.
+     *
+     * @param fileName the file name to create inside {@link #tempDir}
+     * @param content  the exact bytes to write (no added delimiter)
+     * @return the {@code file:}-prefixed absolute location
+     * @throws Exception if the file cannot be written
+     */
+    private String writeTempInput(String fileName, String content) throws Exception {
+        Path file = tempDir.resolve(fileName);
+        Files.writeString(file, content, StandardCharsets.ISO_8859_1);
+        return "file:" + file.toAbsolutePath();
     }
 
     /**

@@ -70,13 +70,25 @@ its Java target, while this log explains the reasoning behind the design those m
 | [D34](#d34--card-pan-masked-in-batch-operational-logs-pci-dss-first-6last-4) | I. Batch Parity & Robustness | Card PAN masked in batch operational logs (PCI-DSS first-6/last-4) | **Intentional improvement** |
 | [D35](#d35--atomic-reject-file-publish-with-a-substituting-iso-8859-1-encoder) | I. Batch Parity & Robustness | Atomic reject-file publish with a substituting ISO-8859-1 encoder | **Intentional improvement** |
 | [D36](#d36--fixed-width-records-are-lf-framed-and-embedded-delimiters-are-sanitized) | I. Batch Parity & Robustness | Fixed-width records are LF-framed and embedded delimiters are sanitized | Contract preservation |
-| [D37](#d37--batch-fixed-width-writers-require-a-single-launch-per-jvm) | I. Batch Parity & Robustness | Batch fixed-width writers require a single launch per JVM | Constraint documented |
+| [D37](#d37--batch-fixed-width-writers-require-a-single-launch-per-jvm) | I. Batch Parity & Robustness | Batch fixed-width writers require a single launch per JVM; backup output filename made unique-per-run (F7) | Constraint documented + code fix |
 | [D38](#d38--reason-code-109-is-excluded-from-rejectcode-and-maps-to-return-code-8) | I. Batch Parity & Robustness | Reason code 109 excluded from RejectCode; maps to return code 8 | **Documented deviation** |
 | [D39](#d39--reject-101-account-not-found-is-an-unreachable-defensive-branch-under-the-cross-reference-foreign-key) | I. Batch Parity & Robustness | Reject 101 is an unreachable defensive branch under the cross-reference foreign key | Documented consequence |
 | [D40](#d40--transaction-report-read-order-is-cardnum-tranid-a-documented-deviation-from-physical-tran-id-order) | I. Batch Parity & Robustness | Transaction report read order is (cardNum, tranId) | **Documented deviation** |
 | [D41](#d41--statement-output-files-carry-no-in-band-delimiter-pure-recfmfb-image) | I. Batch Parity & Robustness | Statement output files carry no in-band delimiter (pure RECFM=FB image) | Contract preservation |
 | [D42](#d42--atomic-statement-file-publish-with-owner-only-temporary-work-files) | I. Batch Parity & Robustness | Atomic statement-file publish with owner-only temporary work files | **Intentional improvement** |
 | [D43](#d43--statement-html-is-a-byte-exact-batch-artifact-not-a-served-web-view-f29f32-disposition) | I. Batch Parity & Robustness | Statement HTML is a byte-exact batch artifact, not a served web view (F29/F32) | **Documented disposition** |
+| [D44](#d44--statement-html-fields-are-emitted-unescaped-faithful-cbstm03a-byte-move-parity) | I. Batch Parity & Robustness | Statement HTML fields emitted unescaped (faithful CBSTM03A byte-move) | **Intentional parity anti-pattern** |
+| [D45](#d45--batch-process-exit-code-equals-the-spring-batch-return-code-jcl-condition-code-parity) | I. Batch Parity & Robustness | Batch process exit code equals the Spring Batch return code (JCL condition-code parity) | Behavior preservation (parity) |
+| [D46](#d46--combtran-reproduces-idcams-repro-without-replace-reject-duplicates-preserve-stale-rows-rc-4) | I. Batch Parity & Robustness | COMBTRAN reproduces IDCAMS `REPRO`-without-`REPLACE` (reject duplicates, preserve stale rows, RC 4) | Behavior preservation (parity) |
+| [D47](#d47--combtran-requires-at-least-one-existing-sortin-member-missing-input-fail-fast) | I. Batch Parity & Robustness | COMBTRAN requires at least one existing SORTIN member (missing-input fail-fast) | Behavior preservation (parity) |
+| [D48](#d48--master-print-execution-banners-are-reproduced-via-a-job-listener) | I. Batch Parity & Robustness | Master-print execution banners are reproduced via a job listener | Behavior preservation (parity) |
+| [D49](#d49--sca-gate-remediation-forward-pin-fixable-cves-narrowly-suppress-the-two-no-fix-advisories) | A. Platform & Build | SCA gate remediation: forward-pin fixable CVEs, suppress two no-fix advisories | Security remediation |
+| [D50](#d50--account-state-and-zip-combination-edit-is-enforced) | J. Online Parity Corrections | Account state+ZIP combination edit is enforced (F-CAUP-1) | Behavior preservation (parity fix) |
+| [D51](#d51--account-update-preview-echoes-the-submitted-candidate-values) | J. Online Parity Corrections | Account update preview echoes the submitted candidate values (F-CAUP-2) | Behavior preservation (parity fix) |
+| [D52](#d52--transaction-add-edits-run-before-the-confirm-decision) | J. Online Parity Corrections | Transaction-add edits run before the confirm decision (F-CT02-1) | Behavior preservation (parity fix) |
+| [D53](#d53--menu-option-numeric-shape-check-runs-in-the-service-not-the-transport-boundary) | J. Online Parity Corrections | Menu option numeric-shape check runs in the service (F-MENU-1) | Behavior preservation (parity fix) |
+| [D54](#d54--concurrent-update-maps-to-http-409-across-the-concurrency-exception-family) | J. Online Parity Corrections | Concurrent update maps to HTTP 409 across the concurrency-exception family (F-CAUP-3) | Robustness (extends D18/D15) |
+| [D55](#d55--combine-job-global-sort-is-in-memory-and-buffered-a-documented-daily-volume-ceiling) | I. Batch Parity & Robustness | Combine-job global sort is in-memory and buffered | Constraint documented |
 
 ---
 
@@ -120,7 +132,7 @@ its Java target, while this log explains the reasoning behind the design those m
   available *within the requested line* and keeps the dependency set internally consistent.
 - **Risk & mitigation:** The open-source support lifecycle of the 3.5 line **has already ended**.
   Spring Boot **3.5.16 was released 2026-06-25** (the final open-source 3.5.x patch), and **free
-  open-source support for the 3.5 line ended 2026-07-16**. Consequently this pin currently receives
+  open-source support for the 3.5 line ended 2026-06-30**. Consequently this pin currently receives
   **no further open-source security patches**: continued patching requires either a **commercial
   support arrangement (Spring/VMware Tanzu Enterprise/Broadcom extended support)** or an **upgrade off
   the 3.5 line before any production deployment**. *Mitigation:* the pin is retained to honor the
@@ -399,6 +411,52 @@ its Java target, while this log explains the reasoning behind the design those m
   (HTTP&nbsp;409) — instead of silently overwriting an existing row. This preserves the fail-loud outcome
   of the COBOL `WRITE … INVALID KEY` / duplicate-key path (`legacy/cbl/COTRN02C.cbl`) and is verified by an
   integration test that pre-seeds a colliding id.
+- **Statement per-card covering index — a fourth, supporting index distinct from the three alternate
+  indexes (Explainability / performance):** the statement-generation job retrieves *all transactions
+  for one card* in card-then-transaction order. The legacy path did this with a **batch `SORT`**, not a
+  VSAM alternate index: `legacy/jcl/CREASTMT.JCL` `STEP010` sorts the transaction extract with
+  `SORT FIELDS=(263,16,CH,A,1,16,CH,A)` (ascending by `CARD-NUM` then `TRAN-ID`) before
+  `legacy/cbl/CBSTM03A.CBL` reads it. The Java target re-expresses that pre-sorted per-card extract as
+  the repository query `TransactionRepository.findByCardNumOrderByProcTsAscTranIdAsc`
+  (`SELECT … FROM transaction WHERE card_num = ? ORDER BY proc_ts, tran_id`), consumed by
+  `StatementFileService.readTransactionsForCard`. Because `transaction.card_num` is a foreign key to
+  `card` and **PostgreSQL does not auto-create an index on a foreign-key column** (only on the
+  referenced key), the initial `V1__schema.sql` left this column unindexed: the per-card query ran a
+  full **sequential scan** of `transaction` plus an in-memory (disk-spilling on high-volume cards)
+  **sort**, an `O(cards × table)` access pattern whose cost grows with the whole table rather than with
+  one card's history. This is a **fourth** B-tree index that is *not* one of the three formalized
+  alternate indexes above — the alternate-index browse (`TRANSACT.VSAM.AIX`) is the chronological
+  `proc_ts` browse; the card-then-transaction ordering here comes from the `CREASTMT` `SORT`, so
+  preserving it as an *indexed* sorted query (AAP §0.4.3 "browse patterns preserved as indexed sorted
+  queries"; §0.2.2 SORT → sorted query with identical key ordering) requires its own supporting index.
+- **Decision:** add a **covering index `idx_transaction_card_num` on `transaction (card_num, proc_ts,
+  tran_id)`**, delivered as the immutable-migration-safe `V4__add_transaction_card_num_index.sql` (a new
+  Flyway migration, never an edit to the already-applied `V1` — see
+  [D11](#d11--flyway-for-schema-and-reference-data-migrations)). The leading `card_num` serves the
+  equality predicate and the trailing `proc_ts, tran_id` match the query's `ORDER BY`, so the planner
+  satisfies the filter *and* the ordering from the index alone — an **Index Scan with no separate Sort
+  and no temporary-file spill**. The column order deliberately mirrors the
+  `WHERE card_num = ? ORDER BY proc_ts, tran_id` shape of the repository method.
+- **Alternatives:** a plain single-column index on `card_num` (rejected — it removes the sequential scan
+  but leaves a separate `Sort`, and still spills to disk on high-transaction cards); relying on the
+  planner to reuse `idx_transaction_proc_ts` (rejected — that index is not selective on `card_num`, so
+  it is only chosen in the degenerate case where a single card is ~100 % of the table); or a covering
+  index that also `INCLUDE`s the non-key statement columns (not adopted — the three key columns already
+  eliminate both the scan and the sort; adding payload columns would enlarge the index for a negligible
+  heap-fetch saving at the small per-card row counts).
+- **Measured effect (EXPLAIN ANALYZE, BUFFERS on the 10× dataset, one card):** the shipped plan is a
+  `Seq Scan on transaction` (≈2 994 rows removed by filter to return a handful) plus a `Sort`; with the
+  covering index the same query becomes an `Index Scan` with no `Sort`, cutting buffer reads from the
+  whole table to a few index+heap pages and eliminating the `external merge` temp-file spill observed on
+  high-transaction cards. This is a purely additive, non-behavioral change: the result set and its
+  ordering are byte-for-byte identical (the statement golden-file output is unchanged), so it is a
+  performance fix, not a parity change.
+- **Risk & mitigation:** an index adds a small write-amplification cost on `transaction` inserts (batch
+  posting / combine load). *Mitigation:* the write cost of one additional B-tree is negligible against
+  the read savings for the statement job, and the posting/interest chunk sizes are already `1` for
+  COBOL commit parity (see [D14](#d14--chunk-oriented-spring-batch-scheduling-moves-to-cicd)); the index
+  is verified to exist by an integration test (`TransactionRepositoryTest`) and its plan effect is
+  re-verifiable with the `EXPLAIN` above.
 
 ### D11 — Flyway for schema and reference-data migrations
 
@@ -407,8 +465,9 @@ its Java target, while this log explains the reasoning behind the design those m
 - **AAP references:** §0.4.3, §0.5.5
 - **Decision:** Create and evolve the database with **Flyway** versioned migrations —
   `V1__schema.sql` (eleven tables — ten core plus one staging — five indexes, foreign-key constraints)
-  and the planned `V2__reference_data.sql` (reference tables; currently seeded via `db/seed/*.csv`)
-  — seeded from the **fixed-width, headerless ASCII data** under
+  and the delivered `V2__reference_data.sql` (the reference tables `transaction_type`,
+  `transaction_category`, `disclosure_group`) — with the reference-data values derived from the
+  **fixed-width, headerless ASCII data** under
   `legacy/data/ASCII/**`, parsed by **fixed column positions** per the governing copybook.
 - **Alternatives:** Hibernate `ddl-auto` schema generation from entities; Liquibase; or hand-run SQL
   scripts applied outside the application lifecycle.
@@ -545,8 +604,11 @@ its Java target, while this log explains the reasoning behind the design those m
   the demo rows the master-print jobs read), builds the application with `./mvnw -B -DskipTests clean
   package`, and then **launches each implemented Spring Batch job by name** via
   `--spring.batch.job.enabled=true --spring.batch.job.name=<job>` with the web server disabled so the
-  **process exit code equals the Spring Batch return code (`0` == `COMPLETED`)**, failing the workflow if
-  any job returns non-zero; (3) the jobs launched by the correlationId-only nightly loop are
+  **process exit code equals the Spring Batch return code** under the JCL condition-code mapping
+  `COMPLETED` &rarr; `0`, `COMPLETED_WITH_REJECTS` &rarr; `4`, and any other outcome (`FAILED`/`STOPPED`)
+  &rarr; `8` (realized by the `BatchExitCodeGenerator`; see
+  [D41](#d41--batch-process-exit-code-equals-the-spring-batch-return-code-jcl-condition-code-parity)),
+  failing the workflow if any job returns non-zero; (3) the jobs launched by the correlationId-only nightly loop are
   `accountMasterPrintJob` (CBACT01C), `cardMasterPrintJob` (CBACT02C), `xrefPrintJob` (CBACT03C),
   `customerMasterPrintJob` (CBCUS01C) and `transactionBackupJob` (TRANBKP / IDCAMS `REPRO`) — the
   read-only jobs that need no job parameters and read the seeded demo rows. The in-scope transaction
@@ -1071,7 +1133,10 @@ reviewable rationale (Explainability rule, §0.8.2).
   (350-byte `DALYTRAN-RECORD`, copybook `legacy/cpy/CVTRA06Y.cpy`) directly into the
   `daily_transaction` staging table. It is composed of a `@StepScope`
   `batch/reader/DailyTransactionFileItemReader` (a `FlatFileItemReader<DailyTransaction>` reading
-  over `ISO-8859-1` so the `DALYTRAN-AMT` zoned-decimal overpunch byte survives intact), a stateless
+  over `ISO-8859-1` so the `DALYTRAN-AMT` zoned-decimal overpunch byte survives intact, and configured
+  with a `batch/reader/FixedLengthBufferedReaderFactory` so it frames the raw stream into exact 350-byte
+  records by **position** rather than by newline — faithful to `RECFM=F`, which carries no in-band record
+  delimiter), a stateless
   `batch/reader/DailyTransactionLineMapper` that slices each record per the CVTRA06Y offset table with
   `common/util/FixedWidthCodec`, and a `batch/writer/DailyTransactionStagingWriter` that inserts the
   decoded rows. The amount field is decoded with `FixedWidthCodec.readSignedDecimal(...)` to a scale-2
@@ -1101,6 +1166,15 @@ reviewable rationale (Explainability rule, §0.8.2).
   the job against a real PostgreSQL 16 and asserts every fixture record lands in `daily_transaction` with
   the expected decoded values, that the load is rerun-safe, and that a launch without `inputResource`
   is rejected with `JobParametersInvalidException`.
+- **Framing risk & mitigation (contiguous `RECFM=F` input):** A raw `RECFM=F` image carries **no** in-band
+  newline, so a newline-splitting reader would treat a multi-record file as a single over-length "line"
+  and **silently drop** every record after the first, ending `COMPLETED`/RC 0 while loading only one row.
+  *Mitigation:* the `FixedLengthBufferedReaderFactory` frames strictly by the 350-byte record length — it
+  skips any inter-record `LF`/`CR` as boundary framing (so a delimited file and a pure contiguous image
+  read identically), tolerates only a blank trailing remainder, and **fails fast** (job `FAILED` → RC 8)
+  on a non-blank short trailing record rather than admitting a truncated record. `DailyTransactionLoadJobTest`
+  asserts that a 700-byte contiguous two-record image loads **both** rows and that a 300-byte truncated
+  record fails the job with zero rows staged.
 
 ---
 
@@ -1314,10 +1388,13 @@ reviewable rationale (Explainability rule, §0.8.2).
   documented the newline for INPUT seed files only.
 - **Alternatives:**
   1. *Emit no delimiter (pure `RECFM=F` image).* **Rejected (kept LF):** the length-framed form is
-     preserved and reachable — every record is still exactly its fixed length, and an offset-based
-     reader (the companion `FixedWidthCodec` reader, D30) ignores the delimiter — but a plain trailing
-     `LF` keeps the files diff-able and greppable for local validation and golden comparison, which the
-     validation criteria rely on.
+     preserved and reachable — every record is still exactly its fixed length, and the companion
+     fixed-length reader (`FixedWidthCodec.readFixedLengthRecords` /
+     `batch/reader/FixedLengthBufferedReaderFactory`, D30) frames records **by position** (exactly LRECL
+     characters) and treats any inter-record `LF`/`CR` as boundary framing that it skips, so it reads the
+     output correctly whether or not the trailing `LF` is present — but a plain trailing `LF` keeps the
+     files diff-able and greppable for local validation and golden comparison, which the validation
+     criteria rely on.
   2. *Escape embedded delimiters (for example to a printable sequence).* **Rejected:** an escape would
      change the field width and therefore the fixed record length; replacing one control character with
      one space is a strict 1:1 substitution that preserves the column layout.
@@ -1344,14 +1421,24 @@ reviewable rationale (Explainability rule, §0.8.2).
 ### D37 — Batch fixed-width writers require a single launch per JVM
 
 - **Status:** Accepted
-- **Type:** Constraint documented (no code change; operating-model boundary made explicit)
+- **Type:** Constraint documented (in-JVM shared-state boundary) + code change for the backup writer's
+  unique-per-run output filename (QA finding F7)
 - **AAP references:** §0.4.4 (each batch job launched by CI/CD), §0.7.2 / M4 (JCL orchestration &rarr;
   Spring Batch + CI/CD scheduling)
 - **Decision:** The three fixed-width output writers are singleton `@Component` beans that hold per-run
   mutable state (record/reject counters, running totals, last-account accumulator, and the open output
-  stream) reset in `beforeStep`. The supported operating model is therefore <strong>one job launch per
-  JVM process</strong>: two concurrent same-JVM executions of the same job are not supported. This is
-  documented in each writer's class Javadoc rather than changed in code.
+  stream) reset in `beforeStep`. Two concurrent same-JVM executions of the same step would race on that
+  shared instance state, so the supported operating model remains <strong>one launch of a given step per
+  JVM process</strong>; this in-JVM constraint is documented in each writer's class Javadoc rather than
+  changed in code. Distinct from that shared-state concern, the <em>backup</em> writer previously also
+  risked a <strong>cross-process</strong> collision: two <em>separate</em> JVM processes launched within
+  the same wall-clock second both derived the identical second-granularity output filename
+  `TRANSACT.BKUP.yyyyMMddHHmmss`, so one backup silently overwrote the other (QA finding F7). That
+  filename collision <strong>is fixed in code</strong>: `TransactionBackupItemWriter.beforeStep` now
+  appends a millisecond timestamp and a `.jobExecutionId-stepExecutionId` suffix taken from the shared
+  `JobRepository` sequences, which are unique across every execution recorded in the database (including
+  two separate processes), so each run writes a distinct file and no backup is lost. It is the faithful
+  relational analog of the GDG `(+1)` new-generation number.
 - **Alternatives:**
   1. *Convert the writers to `@StepScope`.* **Considered and deferred:** step scope would give each step
      execution its own writer instance and make concurrent same-JVM launches safe. It was not adopted
@@ -1368,8 +1455,12 @@ reviewable rationale (Explainability rule, §0.8.2).
   boundary explicit and truthful, matching QA's accepted resolution ("make the writers `@StepScope`, or
   document the single-launch-per-JVM constraint").
 - **Risk & mitigation:** A future change that launches two of these jobs in one JVM concurrently could
-  race on the shared counters/stream. *Mitigation:* the constraint is documented on all three writers and
-  here; the recorded `@StepScope` migration is the sanctioned remedy if that requirement arises.
+  race on the shared counters/stream. *Mitigation:* the in-JVM constraint is documented on all three
+  writers and here; the recorded `@StepScope` migration is the sanctioned remedy if that requirement
+  arises. The separate cross-process backup-filename collision (F7) is eliminated by the unique-per-run
+  filename and is regression-guarded by `TransactionBackupItemWriterTest` (two runs in the same second
+  produce two distinct files, the execution-id suffix disambiguating) alongside the byte-exactness
+  coverage in `TransactionBackupJobTest`.
 
 ---
 
@@ -1431,6 +1522,13 @@ reviewable rationale (Explainability rule, §0.8.2).
   account lookup can never miss and reject `101` is **unreachable in production**. The decision is to
   **keep the `101` branch and its unit-level test coverage** as a faithful, defensive reproduction of
   the COBOL, and to document that the foreign key — not a code change — is what renders it unreachable.
+  That unit coverage is two complementary assertions: `DailyTransactionPostingProcessorTest` mocks an
+  absent account to prove the processor *chooses* `RejectCode.ACCOUNT_NOT_FOUND` (101), and
+  `ExpectedReject101FixtureTest` proves the corresponding golden `expected-reject-101.dat` — an
+  intentional **80-byte, trailer-only** fixture (rather than a full 430-byte load-based record, because
+  the load path cannot reach `101`) — matches the production reject-writer trailer encoding
+  byte-for-byte (reason code at offset `[350:354]`, reason description at `[354:430]`). The trailer-only
+  size is therefore deliberate and now test-anchored, not an orphaned or truncated fixture.
 - **Legacy-versus-target note:** Under the legacy VSAM, referential integrity between `CARDXREF` and
   `ACCTFILE` was enforced only in application logic, so a dangling cross-reference (and therefore a live
   `101`) was physically possible. Formalizing the relationship as a database foreign key (D8) removes
@@ -1449,7 +1547,8 @@ reviewable rationale (Explainability rule, §0.8.2).
   and explains why an integration test cannot exercise `101` without deliberately breaking the schema.
 - **Risk & mitigation:** A future schema change that removes the foreign key would silently make `101`
   reachable again. *Mitigation:* the dependency is documented here and cross-referenced from D8; the
-  branch keeps unit coverage so the reject reason is exercised regardless of the FK.
+  branch keeps unit coverage (both the processor decision test and the byte-for-byte fixture test noted
+  above) so the reject reason and its serialized trailer are exercised regardless of the FK.
 
 ---
 
@@ -1631,6 +1730,501 @@ reviewable rationale (Explainability rule, §0.8.2).
   markup would need output-encoding at that serving boundary. *Mitigation:* the artifact is a batch file
   only; this constraint (escape at any future serving boundary) is recorded here so the parity artifact is
   never mistaken for a safe-to-serve web response.
+### D44 — Statement HTML fields are emitted unescaped (faithful CBSTM03A byte-move parity)
+
+- **Status:** Accepted
+- **Type:** Intentional legacy anti-pattern preserved for parity (no code change; parity decision made explicit)
+- **AAP references:** §0.9.2 (batch outputs compared **row-for-row** against golden fixtures; interest/statement/report byte parity), §0.7.3 / L1 (CardDemo's **intentional legacy anti-patterns** are preserved by design), §0.3.3 (RACF / mainframe-security replatform and new features are **out of scope**), §0.8.2 (Explainability rule — intentional anti-patterns are recorded here with rationale, alternatives, and risk)
+- **Decision:** The HTML statement produced by `batch/processor/StatementProcessor` (the parity analog of
+  legacy `CBSTM03A`, paragraphs `5000-CREATE-STATEMENT` / `5100-WRITE-HTML-HEADER` /
+  `5200-WRITE-HTML-NMADBS` / `6000-WRITE-TRANS`) writes customer, account and transaction field values
+  **verbatim** into the HTML template by raw string concatenation (`appendHtmlNameAddressBasic`,
+  `appendHtmlTransactionRow`). No HTML entity-escaping (`<`&rarr;`&lt;`, `&`&rarr;`&amp;`, etc.) is
+  applied. This exactly reproduces the mainframe program's `MOVE`/`STRING` of fixed-width field bytes
+  into the HTML skeleton, which likewise performed no escaping. The escaping-free path is therefore
+  **preserved deliberately**, not by oversight.
+- **Consequence:** A reserved HTML character carried inside a data field would be interpreted as markup
+  by a browser rather than shown literally. In normal flows this cannot arise: statement fields are
+  **controlled fixed-width** values sourced from the seed/transaction pipeline, and the in-scope
+  special-character set exercised by QA (`& ' " - # % /`) renders as **literal text with zero broken
+  markup**. The only way to inject active markup is **synthetic** data hand-crafted outside the
+  fixed-width contract (e.g. an injected `<script>`), which does not occur for real statement inputs.
+- **Alternatives:**
+  1. *HTML-escape every data field before emission.* **Rejected:** escaping changes the emitted byte
+     stream (for example `&`&rarr;`&amp;` widens the field) and would immediately break the **row-for-row
+     / byte-exact golden-file parity** asserted by `StatementGenerationJobTest.htmlStatementMatchesGolden`
+     (`containsExactlyElementsOf(golden)` plus a byte-exact file size and the `FD-HTMLFILE-REC PIC X(100)`
+     fixed-width record contract). That directly contradicts the AAP's #1 mandate (§0.9.2) and would be a
+     behavioural regression, not a fix.
+  2. *Add a separate "hardened" (escaped) statement output mode alongside the faithful one.* **Rejected
+     for this checkpoint (recorded as the clean forward path):** a second, non-parity output variant is
+     **feature expansion** (§0.3.3) and dilutes the single faithful contract. It is the correct place to
+     add context-appropriate output encoding **if and when** a genuinely browser-facing, user-controlled
+     statement surface is ever introduced — at which point the encoding would be a deliberate, documented
+     deviation weighed against parity.
+  3. *Constrain field content at the data layer.* **Already the effective state:** the fixed-width
+     `COBOL PIC` field widths and the seed/transaction ingestion pipeline already bound what statement
+     fields can contain, so faithfully decoded data does not carry active HTML/script content.
+- **Rationale:** Faithful behavioural parity is the project's primary constraint, and statement output is
+  a **golden-file-verified batch artifact**, not a live web page. Preserving the legacy byte-move keeps
+  the statement byte-identical to the reference and keeps the fixed-width record contract intact. This is
+  the same class of preserved-legacy anti-pattern as the plaintext-password / unencrypted-CVV demonstration
+  behaviour catalogued in [D22](#d22--password-hashing-and-cvv-hardening) and AAP §0.7.3 (L1); unlike
+  passwords and the CVV — which are hardened because they are **never** part of the faithful output byte
+  stream and are never logged or returned — statement field escaping **is** part of the output byte
+  stream, so hardening it would break parity and is therefore intentionally not applied. Recording it here
+  satisfies the Explainability rule and gives security / decision-log reviewers an explicit home for the
+  disposition (rather than leaving it implicit in code Javadoc).
+- **Risk & mitigation:** A hypothetical future consumer that renders this statement HTML in a browser
+  with **attacker-controlled** field content would inherit the legacy program's HTML/script-injection
+  exposure. *Mitigation:* statements are generated fixed-width batch files rather than a user-facing web
+  surface; field content originates from controlled fixed-width seed/transaction data; the CVV is never
+  rendered and passwords are never emitted (see [D22](#d22--password-hashing-and-cvv-hardening)); and the
+  exposure is now recorded here so that any future browser-facing statement-rendering path can introduce
+  context-appropriate output encoding as a deliberate, documented deviation — explicitly weighed against
+  the row-for-row golden-file parity requirement of [D21](#d21--testing-strategy-testcontainers-jacoco-80-golden-file-parity)
+  and AAP §0.9.2.
+### D45 — Batch process exit code equals the Spring Batch return code (JCL condition-code parity)
+
+- **Status:** Accepted
+- **Type:** Behavior preservation (parity)
+- **AAP references:** §0.2.2 (JCL job &rarr; step ordering, dependencies, **return codes**), §0.4.4
+  (JCL &rarr; Spring Batch), §0.7.2 (M4 — return-code gating 0/4/8), §0.9.6 (batch parity)
+- **Decision:** Propagate each Spring Batch job's return code as the **operating-system process exit
+  code** so a launched batch job behaves like a JCL job step whose condition code gates downstream work.
+  A dedicated `config/BatchExitCodeGenerator` (`@Component` implementing
+  `ApplicationListener<JobExecutionEvent>` **and** `ExitCodeGenerator`) accumulates every `JobExecution`
+  published by Spring Boot's `JobLauncherApplicationRunner` and, in `getExitCode()`, returns the **maximum**
+  of a per-execution mapping keyed on the **`ExitStatus` code string**: `COMPLETED` &rarr; `0`,
+  `COMPLETED_WITH_REJECTS` &rarr; `4`, and any other outcome (`FAILED`, `STOPPED`, unknown) &rarr; `8`.
+  `CardDemoApplication.main()` then calls `System.exit(SpringApplication.exit(context))` — **but only when
+  the context is not a `WebServerApplicationContext`**, so the online REST mode (servlet web context) never
+  calls `System.exit` and the embedded server keeps serving; only non-web batch launches
+  (`--spring.main.web-application-type=none`) propagate the code.
+- **Alternatives:**
+  1. *Spring Boot's built-in `JobExecutionExitCodeGenerator`.* **Rejected:** it maps by **`BatchStatus`**,
+     not by the job's `ExitStatus` code — a job that finishes `COMPLETED` while setting a
+     `COMPLETED_WITH_REJECTS` exit status is reported as `0` (losing the RC 4 reject signal), and `FAILED`
+     maps to `5`, not the AAP's `8`. It cannot express the 0/4/8 contract. (The two generators **coexist
+     safely** because `SpringApplication.exit` takes the **max** across all registered generators: for a
+     reject run `max(0, 4) = 4`, and for a failure `max(5, 8) = 8`, so the custom generator dominates.)
+  2. *A bespoke `ApplicationRunner` per job that calls `System.exit`.* **Rejected:** it duplicates logic
+     across jobs and fights `JobLauncherApplicationRunner`, which already launches the requested job and
+     publishes exactly one `JobExecutionEvent` per job.
+  3. *Parse job logs in CI to infer success/failure.* **Rejected:** brittle and non-authoritative.
+- **Rationale:** The JCL scheduler and the CI `scheduled-batch` job (D14) gate on the numeric condition
+  code; that gating is only meaningful once the **process** actually returns the code. A **single global
+  listener** captures every job launched in the JVM without per-job wiring, and keying on the `ExitStatus`
+  code string is what lets the reject signal (`COMPLETED_WITH_REJECTS`, set by the posting writer and by
+  the combine writer per [D46](#d46--combtran-reproduces-idcams-repro-without-replace-reject-duplicates-preserve-stale-rows-rc-4))
+  surface as `4` rather than being flattened to `0`. Before this decision, `main()` was a bare
+  `SpringApplication.run(...)` that always exited `0`, silently masking `FAILED` (should be `8`) and
+  with-rejects (should be `4`) jobs and defeating both the JCL-parity contract and the CI gate.
+- **Risk & mitigation:** Calling `System.exit` in the online web profile would terminate the server.
+  *Mitigation:* the `WebServerApplicationContext` guard restricts the call to non-web (batch) contexts,
+  and the online integration tests boot the servlet context and confirm it keeps serving. A future job
+  emitting a novel `ExitStatus` code maps to `8` — the safe "error" default. `BatchExitCodeGeneratorTest`
+  asserts every mapping including the max-across-jobs cases, and runtime re-verification confirms a clean
+  job exits `0`, a with-rejects job exits `4`, a `FAILED` job exits `8`, and web mode still serves.
+
+---
+
+### D46 — COMBTRAN reproduces IDCAMS `REPRO`-without-`REPLACE` (reject duplicates, preserve stale rows, RC 4)
+
+- **Status:** Accepted
+- **Type:** Behavior preservation (parity)
+- **AAP references:** §0.2.2 (IDCAMS `REPRO` copy/load; SORT &rarr; identical key ordering),
+  §0.4.4 (`TransactionCombineJob` &larr; `COMBTRAN`), §0.8.1 (100% behavioral parity — the legacy JCL is
+  the authoritative definition of observable behavior), §0.7.2 (M4)
+- **Decision:** `TransactionCombineJob`'s load step reproduces the exact semantics of
+  [`legacy/jcl/COMBTRAN.jcl`](../legacy/jcl/COMBTRAN.jcl) `STEP10`, which is
+  `REPRO INFILE(TRANSACT) OUTFILE(TRANVSAM)` where `TRANVSAM` is the **existing** `TRANSACT.VSAM.KSDS`
+  opened `DISP=SHR` with **no** preceding `DELETE`/`DEFINE` and **no** `REPLACE` keyword. Accordingly the
+  `TransactionJpaItemWriter`:
+  - **inserts** each transaction whose id is not already present (`existsById` guard &rarr; `save`);
+  - **rejects (skips)** each transaction whose id already exists, incrementing a reject counter and
+    logging it (the relational analog of IDCAMS `IDC1440I` "duplicate record");
+  - via a `StepExecutionListener.afterStep`, maps the outcome to the batch return code: `FAILED` &rarr;
+    `ExitStatus.FAILED` (RC 8), `rejectCount > 0` &rarr; `new ExitStatus("COMPLETED_WITH_REJECTS")` (RC 4),
+    otherwise `ExitStatus.COMPLETED` (RC 0).
+
+  The step's **chunk size is 1** so each insert commits before the next `existsById` check, which makes
+  **intra-input** duplicates detectable as well — when the same id appears twice within the combined,
+  sorted `SORTIN` stream (backup source `TRANSACT.BKUP(0)` concatenated **before** system source
+  `SYSTRAN(0)`, per the JCL) the **first occurrence wins** and the second is rejected. **Stale** rows
+  already in the `transaction` table that appear in neither input are left **untouched**.
+- **Deliberate divergence from the QA finding's phrasing (Explainability):** the finding's checkpoint
+  paraphrase described the expectation as *stale-row removal* (truncate/replace the target). That is the
+  behavior of `REPRO` **with** `REPLACE`, or of a `DELETE`+`DEFINE`+`REPRO` sequence — **neither of which
+  appears in `COMBTRAN.jcl`.** Because the AAP §0.8.1 behavioral-parity constraint makes the **legacy JCL
+  the authority** for observable behavior, the faithful COMBTRAN behavior is **merge-insert with duplicate
+  rejection and stale-row survival**, and a run that rejects only duplicates ends `COMPLETED_WITH_REJECTS`
+  (RC 4), not RC 8. The finding's own body acknowledges this true `REPRO`-without-`REPLACE` semantics
+  (reject the duplicate, load the rest, RC 4); this entry records the deliberate choice to follow the
+  legacy source over the one-line paraphrase.
+- **Why RC 4 (not RC 8) for duplicates:** duplicate-key rejection is a **warning-level** IDCAMS condition;
+  `REPRO` completes with `MAXCC 4` when it rejected only duplicate keys, reserving RC 8 for hard failures
+  (open/I/O errors). Mapping duplicates to `COMPLETED_WITH_REJECTS`/`4` preserves the condition code that
+  downstream JCL (and now the CI gate) tests. That RC 4 is what
+  [D45](#d45--batch-process-exit-code-equals-the-spring-batch-return-code-jcl-condition-code-parity)
+  translates into process exit code `4`, end-to-end.
+- **Alternatives:**
+  1. *`faultTolerant().skip(DataIntegrityViolationException.class)`.* **Rejected:** it depends on the
+     persistence layer throwing on the duplicate at flush; with chunk > 1 the whole chunk rolls back,
+     muddying the exact reject count and the deterministic "first-occurrence-wins" order. The explicit
+     `existsById` guard is deterministic and cheaper to reason about.
+  2. *Truncate-then-insert (`REPLACE` semantics).* **Rejected:** unfaithful to `COMBTRAN.jcl` per the
+     parity constraint — the target KSDS is never emptied.
+  3. *Upsert / overwrite existing rows.* **Rejected:** `REPRO`-without-`REPLACE` never overwrites an
+     existing record; it rejects the incoming duplicate.
+- **Rationale:** Exact JCL parity for the observable outcomes — which records land in the target, which
+  are rejected, and the resulting condition code. `chunk = 1` is the minimal change that makes intra-input
+  duplicate detection correct without fault-tolerance rollback semantics.
+- **Risk & mitigation:** `chunk = 1` commits one record at a time and is slower than a batched chunk;
+  acceptable for the combine volume and **required** for record-at-a-time `REPRO` semantics — documented
+  here. Reordering the two inputs would change which duplicate "wins"; *mitigation:* the reader preserves
+  the legacy concatenation order (backup before system) and
+  `duplicateWithinInputIsRejectedWithReturnCodeFour` asserts it. The integration tests
+  `staleRowSurvivesWithReturnCodeZero`, `duplicateInTableIsRejectedAndRestLoadedWithReturnCodeFour`, and
+  `duplicateWithinInputIsRejectedWithReturnCodeFour`, together with the existing disjoint-merge and
+  sort-order tests, exercise every path.
+
+---
+
+### D47 — COMBTRAN requires at least one existing SORTIN member (missing-input fail-fast)
+
+- **Status:** Accepted
+- **Type:** Contract preservation (faithful `SORT` input-concatenation semantics; fail-fast on an empty
+  concatenation)
+- **AAP references:** §0.5.4 (SORT/MERGE → Java sort; batch layer), §0.7.2 / M4 (JCL orchestration; DD
+  concatenation), §0.8.1 (behavioral parity — the legacy JCL is the authority for observable behavior)
+- **Decision:** `batch/reader/CombinedTransactionItemReader` resolves its two `SORTIN` members — the
+  `backupResource` (`TRANSACT.BKUP(0)`) concatenated **before** the `systemResource` (`SYSTRAN(0)`), per
+  the legacy `COMBTRAN.jcl` order (D46) — with three distinct outcomes: (a) a **null** job parameter means
+  the member was *not supplied* and is skipped **silently**; (b) a **non-null** parameter that points to a
+  **non-existent** file is *supplied but absent* and is skipped with a `WARN` naming the parameter and the
+  resolved location; (c) an **existing** file (even a zero-byte one) is *present* and contributes its
+  records (possibly zero). If **no** member resolves to an existing dataset, `open()` throws
+  `ItemStreamException`, so the step — and therefore the job and the process exit code — **fails** (RC 8
+  per [D45](#d45--batch-process-exit-code-equals-the-spring-batch-return-code-jcl-condition-code-parity)).
+- **Context:** In the legacy `COMBTRAN.jcl` the `SORTIN` DD concatenates two members; a `SORT` over an
+  **empty** concatenation is an operational error (nothing to sort), whereas a present-but-empty member is
+  a normal, if degenerate, input. The Java reader must reproduce that distinction: an absent *required*
+  input is a hard failure, while an empty-but-present input is a valid zero-record contribution.
+- **Alternatives:**
+  1. *Treat a missing member as an empty input (the prior behavior).* **Rejected:** QA showed that when
+     **both** members were missing the job ended `COMPLETED` with exit `0` and **no diagnostic**, masking a
+     mis-specified `SORTIN` as a successful no-op — the opposite of the legacy operational-error signal.
+  2. *Fail whenever any supplied member is absent.* **Rejected:** the two members are a concatenation; the
+     legacy job runs whenever **at least one** member is present, so failing on a single absent member
+     would reject runs the legacy accepts (for example a day with only `SYSTRAN`).
+  3. *Fail when a member is present but empty.* **Rejected:** a zero-byte member is a valid (degenerate)
+     concatenation element in the legacy job and must contribute zero records, not fail.
+- **Rationale:** Exact parity for the observable outcome — a run with at least one existing input proceeds
+  (and merges/rejects per D46); a run with **no** existing input fails loudly with a message that names
+  both parameters and the expected members, so a mis-specified `SORTIN` is caught at launch rather than
+  silently producing an empty combine. The `WARN` on a supplied-but-absent member preserves the lenient
+  concatenation while leaving an operator-visible breadcrumb.
+- **Risk & mitigation:** Distinguishing "not supplied" (null, silent) from "supplied but absent"
+  (non-null, `WARN`) relies on the job-parameter binding. *Mitigation:* `TransactionCombineJobTest`
+  asserts `failsWhenNoInputResolves` (both absent → `FAILED`, zero rows loaded) and
+  `skipsMissingInputAndLoadsThePresentOne` (one absent + one present → `COMPLETED`, the present member
+  fully loaded); the runtime re-verification launched the packaged jar with both resources absent and
+  observed process exit code `8`, two `WARN` lines, and the `No COMBTRAN input resolved` diagnostic, with
+  the target table left unchanged.
+
+---
+
+### D48 — Master-print execution banners are reproduced via a job listener
+
+- **Status:** Accepted
+- **Type:** Contract preservation (SYSOUT execution-boundary banners)
+- **AAP references:** §0.5.4 (batch layer; master-print jobs), §0.8.1 (behavioral parity &mdash; observable
+  SYSOUT), §0.8.2 Explainability (every deviation documented)
+- **Decision:** The four read-only master-print jobs &mdash; `AccountMasterPrintJob` (`CBACT01C`),
+  `CardMasterPrintJob` (`CBACT02C`), `XrefPrintJob` (`CBACT03C`) and `CustomerMasterPrintJob`
+  (`CBCUS01C`) &mdash; reproduce the legacy SYSOUT execution-boundary banners
+  `START OF EXECUTION OF PROGRAM <name>` and `END OF EXECUTION OF PROGRAM <name>` (each program's
+  {@code DISPLAY} at `legacy/cbl/<name>.cbl` L71 START / L85 END) through a reusable
+  `batch/ExecutionBannerJobListener(programName)` registered on each `JobBuilder` **after** the
+  `CorrelationIdJobListener`. `beforeJob` emits the START banner **unconditionally** (the legacy START
+  `DISPLAY` is the first `PROCEDURE DIVISION` statement, always reached); `afterJob` emits the END banner
+  **only when** the job finished `BatchStatus.COMPLETED`.
+- **Context:** In each legacy program a file-I/O failure routes through the `Z-ABEND-PROGRAM` paragraph
+  and the LE `CEE3ABD` service (return code `8`), which terminates the program **before** control can fall
+  through to the `DISPLAY 'END OF EXECUTION...'` line. Spring Batch, by contrast, always invokes
+  `afterJob` (success or failure), so the END banner must be guarded to fire only on a normal pass to keep
+  the observable SYSOUT contract: a `FAILED` run prints START but no END. Registering the banner listener
+  **after** the correlation listener means the correlation id is on the MDC before the START banner is
+  logged and is still present when the END banner is logged (Spring Batch runs `beforeJob` in registration
+  order and `afterJob` in reverse), so both banners carry the run's `correlationId`.
+- **Alternatives:**
+  1. *Document the deviation only (banner &rarr; Spring Batch lifecycle log), do not emit the literals.*
+     **Rejected:** the banners are an observable SYSOUT contract and the checkpoint expects master prints
+     to verify headers/trailers, not merely `COMPLETED` status; emitting the exact literals is faithful
+     parity, and the deviation would otherwise be undocumented (an Explainability gap).
+  2. *Emit the END banner unconditionally in `afterJob`.* **Rejected:** unfaithful &mdash; the legacy
+     abend bypasses the END `DISPLAY`, so a `FAILED` run must print START but not END.
+  3. *Inline the two `DISPLAY` equivalents inside each job's writer or step.* **Rejected:** the banners
+     bracket the **whole program run**, not a record or a step; a job-level `JobExecutionListener` is the
+     exact analog and avoids duplicating the literal (and the COMPLETED guard) across four writers. A
+     single reusable listener parameterized by program name keeps one implementation.
+- **Rationale:** Exact parity for the observable SYSOUT boundary of each master print, delivered as one
+  small reusable component with the abend-bypasses-END semantics preserved, and with both banners
+  correlated to the run. The banners are emitted through SLF4J at `INFO` (the idiomatic analog of COBOL
+  `DISPLAY` to SYSOUT) with message text byte-identical to the legacy literal so they stay greppable for
+  local validation.
+- **Risk & mitigation:** A future edit could drop the listener from one job or break the COMPLETED guard.
+  *Mitigation:* `ExecutionBannerJobListenerTest` asserts START-always, END-only-on-COMPLETED (and
+  no-END-on-FAILED) plus constructor validation, and each of the four master-print integration tests
+  (`AccountMasterPrintJobTest`, `CardMasterPrintJobTest`, `XrefPrintJobTest`,
+  `CustomerMasterPrintJobTest`) asserts its job emits exactly `[START, END]` for its program name on a
+  COMPLETED run.
+
+### D49 — SCA gate remediation: forward-pin fixable CVEs, narrowly suppress the two no-fix advisories
+
+- **Status:** Accepted
+- **Type:** Security remediation (transitive-dependency CVEs) + documented suppression
+- **AAP references:** §0.6.1 (`dependency-check-maven` 12.2.2, `failBuildOnCVSS`), §0.8.1 (security
+  scanning: zero critical/high CVEs), §0.9.3 (OWASP dependency-check reports zero critical/high CVEs)
+- **Context:** As the NVD data feed advanced, the OWASP dependency-check gate (`failBuildOnCVSS=7`,
+  scanning all scopes per [D5](#d5)) began failing `./mvnw clean verify` on seven high/critical
+  transitive CVEs disclosed after the dependency graph was frozen. The gate is behaving correctly; the
+  fix is to move each affected coordinate to a patched release where one exists, and to suppress —
+  narrowly, dated, and documented — only those with no reachable patched release.
+- **Decision:** Two complementary mechanisms, mirroring the existing forward-pin pattern
+  ([D5](#d5); the embedded-Tomcat pin in `pom.xml` properties):
+  1. **Forward-pin (fix available)** — override the Spring-Boot-managed version so the patched release
+     lands on the graph across every scope:
+     - `log4j2.version` &rarr; **2.25.5** (transitive via `spring-boot-starter-logging`'s
+       `log4j-to-slf4j`/`log4j-api` bridge): remediates CVE-2026-34479 (7.5) and the same-line
+       CVE-2026-34477 / CVE-2026-49844. Logback remains the active backend; only the bridge coordinate
+       moves.
+     - `postgresql.version` &rarr; **42.7.13** (direct runtime JDBC driver): remediates CVE-2026-54291 (8.2).
+     - `io.opentelemetry.semconv:opentelemetry-semconv` &rarr; **1.43.0** via `<dependencyManagement>`
+       (transitive via `micrometer-tracing-bridge-otel` 1.5.12; not covered by any managed property, so
+       pinned explicitly): remediates CVE-2026-39883 (7.3) and CVE-2026-24051. The artifact is a passive
+       attribute-key constants provider, so the forward pin is source-compatible; the full
+       `mvnw clean verify` (Micrometer/OTel tracing tests included) confirms no runtime regression.
+  2. **Suppress (no fix reachable)** — in `owasp-suppressions.xml`, scoped to an exact packageUrl **and**
+     exact CVE, each with an `until` re-review date (2026-10-19) so the suppression expires and re-fails
+     the build by design:
+     - `org.jetbrains.kotlin:kotlin-stdlib`(`-jdk7`/`-jdk8`/`-common`) — **CVE-2026-53914 (9.8)**.
+       Fixed only in Kotlin **2.4.20**, which upstream ships exclusively as a pre-release (`2.4.20-Beta1`);
+       the latest *stable* Kotlin remains below the fixed line. Forward-pinning to a beta would violate the
+       "no unverified/pre-release dependency" discipline, and replacing the OTLP transport's `okhttp`
+       (which pulls in kotlin-stdlib) risks regressing the rule-mandated tracing exporter. Transitive
+       runtime dependency of an optional exporter; no attacker-reachable entry point in this application.
+     - `org.apache.httpcomponents.core5:httpcore5`(`-h2`) `@5.0.2` — **CVE-2026-54399 (7.5),
+       CVE-2026-54428 (7.5)**. These classes are **shaded** inside
+       `com.github.docker-java:docker-java-transport-zerodep:3.4.2` (Testcontainers, **test scope**);
+       because they are relocated into the uber-jar they are not an external coordinate and
+       `<dependencyManagement>` cannot rewrite them. The artifact is confined to the integration-test
+       harness and is **absent from the production fat jar**.
+- **Alternatives:**
+  1. *Raise `failBuildOnCVSS` above 7 (e.g., 9) to "pass".* **Rejected:** it would silently weaken the
+     mandated zero-high-CVE gate for every dependency, not just these advisories — the opposite of the
+     constraint.
+  2. *Broadly suppress by artifact only (no CVE / no date).* **Rejected:** a blanket suppression would
+     mask future, unrelated CVEs on the same artifact. Each entry is pinned to a specific CVE and expires.
+  3. *Pin Kotlin to `2.4.20-Beta1`.* **Rejected:** pre-release dependency; not production-appropriate.
+  4. *Swap the OTLP exporter transport to drop `okhttp`/Kotlin.* **Rejected:** disproportionate change to
+     a working, rule-mandated observability path to chase a non-reachable transitive CVE.
+- **Rationale:** Everything with a patched release is upgraded; only genuinely unfixable advisories are
+  suppressed, and those are narrowly scoped, justified, and time-boxed. After remediation the maximum
+  CVSS across all remaining (non-suppressed) reported advisories is **6.0** — below the 7.0 gate — so the
+  "zero critical/high CVE" constraint holds on its own merits, not by masking. Residual sub-threshold
+  advisories (e.g., `jackson-databind` CVE-2026-54515, `opentelemetry-semconv` CVE-2026-41178, the
+  bundled Swagger-UI DOMPurify advisories, `kotlin-stdlib` CVE-2020-29582) are all &lt; 7.0 and therefore
+  outside the gate; they are governed by the same `failBuildOnCVSS=7` threshold as everything else and
+  will trip the build if any is ever re-scored to high.
+- **Risk & mitigation:** (a) A future NVD update could re-score a residual advisory to &ge; 7.0 and fail
+  the build — *acceptable and intended*; it forces a fresh remediation decision. (b) The two suppressions
+  expire on 2026-10-19; if no stable fix exists by then the build re-fails, forcing re-review rather than
+  indefinite silent debt. (c) The semconv 1.43.0 forward pin spans several minor versions above the
+  Micrometer bridge's expectation; *mitigation:* the full test suite (including tracing) runs in
+  `verify`, and the pin is source-compatible in practice — if a future bridge upgrade conflicts, the two
+  semconv CVEs would instead be suppressed like the others.
+## J. Online Parity Corrections (QA-checkpoint remediation)
+
+These entries record the root-cause fixes applied at the final Online / API / Data parity checkpoint.
+Each restores 100% behavioral parity with the legacy COBOL where the earlier implementation had diverged;
+none adds a business feature. They are logged individually so the Explainability rule's "explicit
+decision-log entry" requirement is met for every checkpoint finding, and each is cross-referenced from the
+[traceability matrix](./traceability-matrix.md).
+
+### D50 — Account state and ZIP combination edit is enforced
+
+- **Status:** Accepted
+- **Type:** Behavior preservation (parity fix) — resolves finding **F-CAUP-1**
+- **AAP references:** §0.2.2 (edit paragraphs → rule components), §0.7.1 (H2), §0.8.3
+- **Decision:** `AccountService.editStateZip` delegates to `service/rule/UsStateZipRule.validate(stateCode, zip)`
+  — the 240-entry state + ZIP-prefix lookup — and latches the message *"Invalid zip code for state"* when the
+  combination is absent, reproducing `1280-EDIT-US-STATE-ZIP-CD` in `legacy/cbl/COACTUPC.cbl`
+  (`legacy/cbl/COACTUPC.cbl:L2536-L2557`).
+- **Alternatives:** Keep the prior implementation, which validated only that the state code was in the valid
+  set and that the ZIP began with two digits, never consulting the combination table. *Rejected:* it
+  accepted impossible combinations (for example `state=CT, zip=90210`) that the COBOL rejects — a behavioral
+  regression against `1280-EDIT-US-STATE-ZIP-CD`.
+- **Rationale:** The `UsStateZipRule` component (240 combinations) already existed but was **orphaned** — never
+  injected or invoked. Wiring it into `editStateZip` restores literal parity; the individual state-code and
+  ZIP-numeric edits (`1270-EDIT-US-STATE-CD`) continue to run first, so the combination edit fires only for
+  two individually-valid values, exactly as the legacy paragraph ordering intends.
+- **Risk & mitigation:** The combination table is large; an incorrect entry would wrongly accept or reject a
+  pair. *Mitigation:* the rule's own unit tests plus `AccountService` tests exercise both an accepted pair
+  and a rejected pair (`CT`+`90210`), and the fix was runtime-verified against the live database.
+
+---
+
+### D51 — Account update preview echoes the submitted candidate values
+
+- **Status:** Accepted
+- **Type:** Behavior preservation (parity fix) + implementation technique — resolves finding **F-CAUP-2**
+- **AAP references:** §0.2.2 (BMS field-level contract), §0.4.2, §0.7.1 (H1)
+- **Decision:** On the *validated-but-unconfirmed* redisplay (`CHANGES-OK-NOT-CONFIRMED`), the response echoes
+  the operator's **just-entered candidate values**, reproducing `3203-SHOW-UPDATED-VALUES` in
+  `legacy/cbl/COACTUPC.cbl`. `AccountService.previewOf` builds **transient (detached) copies** of the managed
+  account and customer entities (via their all-args constructors, carrying the fetched `@Version`), applies
+  the candidate values to those copies, and maps the copies into the response DTO.
+- **Alternatives:** (a) Apply the candidate values directly to the **managed** entities for the preview.
+  *Rejected:* those entities are attached inside the `@Transactional` boundary, so mutating them risks a JPA
+  dirty-flush that would persist **unconfirmed** changes — the opposite of the legacy behavior. (b) Continue
+  returning the persisted originals (the pre-fix behavior). *Rejected:* it showed stale values, diverging from
+  `3203-SHOW-UPDATED-VALUES`.
+- **Rationale:** The transient-copy technique reproduces the legacy candidate echo while guaranteeing the
+  managed entities are never mutated on the preview path, so **no flush occurs** and nothing is persisted until
+  the operator confirms (`PF5`). The card-update screen (`COCRDUPC`) already used this candidate-echo pattern;
+  this aligns account update with it.
+- **Risk & mitigation:** A future edit could accidentally mutate the managed entity instead of the copy.
+  *Mitigation:* a test submits a change and asserts the preview echoes the candidate **and** the database row
+  (including `version`) is unchanged after repeated preview submits (runtime-verified).
+
+---
+
+### D52 — Transaction-add edits run before the confirm decision
+
+- **Status:** Accepted
+- **Type:** Behavior preservation (parity fix) — resolves finding **F-CT02-1**
+- **AAP references:** §0.2.2 (paragraph control flow), §0.5.3, §0.8.3
+- **Decision:** `TransactionAddController.processEnter` runs `TransactionService.validateAddCommand` (the key
+  and data edits — `VALIDATE-INPUT-KEY-FIELDS` + `VALIDATE-INPUT-DATA-FIELDS`) **before** the `EVALUATE CONFIRMI`
+  confirm decision, reproducing `PROCESS-ENTER-KEY` in `legacy/cbl/COTRN02C.cbl` (L164-169: the two
+  `VALIDATE-INPUT-*` performs precede `EVALUATE CONFIRMI`). A failing field
+  edit short-circuits to a same-screen redisplay (HTTP 200); an unresolved account/card key propagates as a
+  404/409 — in both cases **regardless of the confirm flag**. Only after every edit passes is the confirm
+  branch (`Y` → add, `N`/blank → prompt) evaluated.
+- **Alternatives:** Keep the prior ordering, which evaluated the confirm flag first (so `confirm=N` returned the
+  "Confirm to add this transaction..." prompt and ran no edits, while `confirm=Y` ran the edits). *Rejected:* it
+  masked an invalid card or field behind the confirm prompt, inverting the legacy edit-then-confirm sequence.
+- **Rationale:** `validateAddCommand` performs the same edits with **no persistence**, so surfacing errors
+  before the confirm branch does not weaken the write path — `addTransaction` still re-runs both validators
+  defensively before the insert, and `buildCommand` is shared so the validated values equal the persisted values.
+- **Risk & mitigation:** Running the edits twice (pre-confirm and inside `addTransaction`) is redundant work.
+  *Mitigation:* the edits are pure in-memory checks plus at most one cross-reference read; the defensive re-edit
+  guards the service against callers other than the controller. Tests cover invalid-card-with-`confirm=N` →
+  immediate key error (not the prompt) and the confirmed valid add (runtime-verified: max+1 id, count +1).
+
+---
+
+### D53 — Menu option numeric-shape check runs in the service, not the transport boundary
+
+- **Status:** Accepted
+- **Type:** Behavior preservation (parity fix) + field-contract decision — resolves finding **F-MENU-1**
+- **AAP references:** §0.2.2 (BMS field-level contract, PF-key semantics), §0.5.3
+- **Decision:** The `MainMenuRequest.option` and `AdminMenuRequest.option` `@Pattern` is a **width-only** guard
+  (`^.{0,2}$`). The numeric-shape / range / zeros check is performed by `MenuService`
+  (`selectMainMenuOption` / `selectAdminMenuOption`), which re-displays the **same screen** with *"Please enter
+  a valid option number..."* at **HTTP 200** for a non-numeric or blank option — reproducing `COMEN01C`
+  `PROCESS-ENTER-KEY` (`legacy/cbl/COMEN01C.cbl:L122-L129`: right-scan, `INSPECT REPLACING ' ' BY '0'`,
+  `IF WS-OPTION IS NOT NUMERIC OR > count OR = ZEROS`). An **over-length** (>2-char) option remains an
+  HTTP 400 structural violation, because a 3270 `OPTIONI` field is `PIC X(2)` and cannot physically hold more.
+- **Alternatives:** (a) Keep the strict all-digits `@Pattern` (`^\d{0,2}$`), the pre-fix contract. *Rejected:*
+  it rejected a non-numeric or space option with an HTTP 400 at the bean-validation boundary before the service
+  ran, whereas the legacy program re-displays the same screen at 200. (b) Drop the `@Pattern` entirely.
+  *Rejected:* it loses the width guard that maps the `PIC X(2)` field width.
+- **Rationale:** The service already reproduced the legacy same-screen invalid-option behavior faithfully; the
+  only defect was the transport-layer pattern intercepting the input first. Relaxing the pattern to a width-only
+  guard lets a within-width non-numeric/space option flow to the service (200 same-screen), while the width
+  constraint still rejects a structurally impossible over-length value (400).
+- **Risk & mitigation:** A reviewer might read the relaxed pattern as weakened validation. *Mitigation:* the
+  numeric/range/zeros validation is unchanged — it simply lives in `MenuService` (where the COBOL performs it),
+  covered by service unit tests and controller slice tests for both `"5A"` and a space option, and
+  runtime-verified on both `POST /api/v1/menu` and `POST /api/v1/admin/menu`.
+
+---
+
+### D54 — Concurrent update maps to HTTP 409 across the concurrency-exception family
+
+- **Status:** Accepted
+- **Type:** Robustness / behavior preservation — resolves finding **F-CAUP-3**; extends
+  [D18](#d18--jpa-optimistic-locking-version) and [D15](#d15--typed-exception-hierarchy-for-file-status--cics-resp)
+- **AAP references:** §0.4.2, §0.7.1 (H6), §0.7.2 (M1)
+- **Decision:** `GlobalExceptionHandler` maps `org.springframework.dao.ConcurrencyFailureException` — including
+  its subclasses `OptimisticLockingFailureException` and the PostgreSQL-deadlock `CannotAcquireLockException`
+  (SQLState `40P01`) — and `jakarta.persistence.OptimisticLockException` to **HTTP 409 Conflict** with an
+  RFC-7807 problem body, never HTTP 500.
+- **Alternatives:** Enumerate only `OptimisticLockingFailureException` / `OptimisticLockException` (the pre-fix
+  handler). *Rejected:* a genuine row-level **deadlock** under concurrency surfaces as `CannotAcquireLockException`,
+  which fell through to the generic 500 handler — presenting a client-retryable conflict as a server error.
+- **Rationale:** All three are members of the Spring DAO concurrency family; the broad `ConcurrencyFailureException`
+  parent covers the whole family with one handler, so any lost-update or deadlock conflict is reported as a
+  retryable 409 consistent with the optimistic-locking integrity guarantee of D18. The 409 body leaks no SQL,
+  stack, or deadlock detail (only a generic "please retry" message with a correlation id).
+- **Risk & mitigation:** The broad parent could, in principle, catch an unrelated `ConcurrencyFailureException`.
+  *Mitigation:* in this application the concurrency family is raised only by the versioned read-modify-write
+  paths; a dedicated test asserts both an optimistic-lock failure and a `CannotAcquireLockException` map to 409,
+  and the fix was runtime-verified by reproducing a live PostgreSQL deadlock (5×409, zero 500).
+### D55 — Combine-job global sort is in-memory and buffered, a documented daily-volume ceiling
+
+- **Status:** Accepted
+- **Type:** Constraint documented (performance ceiling; no behavior change)
+- **AAP references:** §0.4.4 (`TransactionCombineJob` &larr; `COMBTRAN.jcl` SORT), §0.2.2
+  (SORT/MERGE &rarr; identical key ordering), §0.9.2 (behavioral parity — content preserved)
+- **Decision:** `COMBTRAN.jcl` runs `SORT FIELDS=(TRAN-ID,A)` over the concatenation of the transaction
+  backup and the system-generated transactions before the load into the master. The Java equivalent,
+  [`CombinedTransactionItemReader`](../src/main/java/com/aws/carddemo/batch/reader/CombinedTransactionItemReader.java),
+  reproduces that SORT by reading **both** resources fully into a single in-memory `ArrayList` in
+  `open(...)` (`readRecords(backupResource, ...)` then `readRecords(systemResource, ...)`) and then
+  sorting the whole list with `items.sort(Comparator.comparing(Transaction::getTranId))` (reader L271) —
+  a `java.util.List#sort` call, i.e. **TimSort**, which is stable and therefore keeps backup records
+  ahead of equal-`TRAN-ID` system records, the deterministic realization of the legacy SORT. The reader
+  is intentionally a custom `ItemStreamReader` rather than a streaming `FlatFileItemReader` **because a
+  global sort inherently requires every record to be resident at once**. This buffer-everything-then-sort
+  design is accepted for CardDemo's scope: the combined daily volume is small (the seed corpus holds 311
+  transactions plus any backup), so the entire working set fits comfortably in heap and the sort is
+  effectively instantaneous.
+- **The ceiling (why this is documented):** the design's memory footprint and pre-load latency grow
+  **linearly with the combined input row count**, because all rows are held in the JVM heap
+  simultaneously and sorted in one pass. There is no spill-to-disk fallback. If the combine input were
+  scaled by orders of magnitude beyond the demo corpus (e.g. into the millions of daily rows), the reader
+  would be bounded by available heap rather than by streaming throughput and could exhaust memory. This
+  is a **scaling ceiling**, not a correctness defect — within the migrated CardDemo scope it never
+  triggers, and the AAP freezes scope to the existing COBOL capability (no feature expansion, §0.3.3).
+- **Alternatives considered:**
+  1. *External merge sort (bounded-memory, spill-to-disk).* The classic mainframe `DFSORT`/`SyncSort`
+     strategy: sort bounded runs, spill each to a temp file, then k-way merge. **Deferred:** it removes
+     the heap ceiling but adds substantial code and temp-file lifecycle management for a volume that
+     never approaches the bound; it is the correct answer only if the daily volume is re-platformed to a
+     much larger scale.
+  2. *Database `ORDER BY` via a `RepositoryItemReader`.* If both the backup and the system-generated
+     transactions were already persisted in the `transaction` table, a `RepositoryItemReader<Transaction>`
+     over `TransactionRepository` with `findAll` and a `tranId`-ascending sort would let PostgreSQL do the
+     ordering (streaming, index- or disk-sort backed, no application heap ceiling). **Deferred:** the
+     combine step's inputs are *fixed-width files* (a backup dataset plus a freshly generated file), not
+     yet table rows; routing them through the database first would change the step's external file
+     contract. This alternative is already noted in the reader's "Alternative: database-backed reader"
+     Javadoc as the natural evolution if the inputs become table-resident.
+- **Rationale:** the in-memory global sort is the smallest, most transparent, and fully restartable
+  realization of a whole-file SORT at the demo's data scale; it preserves the exact `(TRAN-ID, backup-first)`
+  ordering the golden-file combine test asserts, and it introduces no temp-file machinery for volumes that
+  never need it. The bounded-memory alternatives are documented so the ceiling is a **known, deliberate**
+  boundary rather than a hidden assumption.
+- **Risk & mitigation:** a future operator who scales the combine input far beyond the CardDemo corpus
+  could hit an `OutOfMemoryError` during `open(...)`. *Mitigation:* the ceiling and both bounded-memory
+  alternatives are documented here and cross-referenced from the reader's "Buffering rationale" Javadoc,
+  so the remediation path (external merge, or database `ORDER BY` once inputs are table-resident) is
+  pre-identified; the golden-file combine test guards the ordering contract so any future swap must
+  reproduce the same byte output.
 
 ---
 

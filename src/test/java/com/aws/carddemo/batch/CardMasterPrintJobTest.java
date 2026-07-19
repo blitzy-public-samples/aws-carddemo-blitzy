@@ -329,6 +329,39 @@ class CardMasterPrintJobTest {
     }
 
     /**
+     * The job reproduces the legacy CBACT02C SYSOUT execution banners (QA finding F4): a
+     * {@code START OF EXECUTION OF PROGRAM CBACT02C} line before the run and, on a normal
+     * (COMPLETED) run, an {@code END OF EXECUTION OF PROGRAM CBACT02C} line after it &mdash; emitted
+     * in that order by the {@link ExecutionBannerJobListener} registered on the job.
+     *
+     * @throws Exception if the job launch fails (fails the test)
+     */
+    @Test
+    void emitsStartAndEndExecutionBanners() throws Exception {
+        ch.qos.logback.classic.Logger bannerLogger =
+                (ch.qos.logback.classic.Logger) LoggerFactory.getLogger(ExecutionBannerJobListener.class);
+        ListAppender<ILoggingEvent> capture = new ListAppender<>();
+        capture.start();
+        bannerLogger.addAppender(capture);
+        try {
+            JobExecution execution = jobLauncherTestUtils.launchJob(uniqueJobParameters());
+            assertThat(execution.getStatus()).isEqualTo(BatchStatus.COMPLETED);
+
+            List<String> banners = capture.list.stream()
+                    .map(ILoggingEvent::getFormattedMessage)
+                    .filter(message -> message.contains("OF EXECUTION OF PROGRAM"))
+                    .toList();
+
+            assertThat(banners).containsExactly(
+                    "START OF EXECUTION OF PROGRAM CBACT02C",
+                    "END OF EXECUTION OF PROGRAM CBACT02C");
+        } finally {
+            bannerLogger.detachAppender(capture);
+            capture.stop();
+        }
+    }
+
+    /**
      * Returns the fully-formatted card lines the job emitted during the current
      * test, in emission order (which is the ascending-key read order).
      *

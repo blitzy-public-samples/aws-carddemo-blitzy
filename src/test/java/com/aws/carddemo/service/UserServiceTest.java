@@ -18,6 +18,7 @@ package com.aws.carddemo.service;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
@@ -41,6 +42,7 @@ import org.springframework.dao.DataAccessResourceFailureException;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.dao.OptimisticLockingFailureException;
 import org.springframework.data.domain.Page;
+import org.springframework.data.domain.PageImpl;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Pageable;
 import org.springframework.security.crypto.password.PasswordEncoder;
@@ -555,58 +557,117 @@ public class UserServiceTest {
     // ==================================================================
 
     @Test
-    @DisplayName("listUsers returns every user in ascending id order when no start key is supplied")
+    @DisplayName("listUsers pages the whole table in the database (findAll(Pageable)) in ascending id order when no start key is supplied")
     void listUsersReturnsAllInAscendingOrder() {
         UserSecurity u1 = user("USER0001", "Ann", "Alpha", STORED_HASH, "U");
         UserSecurity u2 = user("USER0002", "Bob", "Bravo", STORED_HASH, "U");
         UserSecurity u3 = user("USER0003", "Cy", "Charlie", STORED_HASH, "A");
-        when(userSecurityRepository.findAllByOrderBySecUsrIdAsc())
-                .thenReturn(List.of(u1, u2, u3));
-
         Pageable pageable = PageRequest.of(0, 10);
+        // A blank start key must be served by the database-paginated findAll(Pageable),
+        // never by loading the whole table into memory.
+        when(userSecurityRepository.findAll(any(Pageable.class)))
+                .thenReturn(new PageImpl<>(List.of(u1, u2, u3), pageable, 3));
+
         Page<UserSecurity> page = service.listUsers(null, pageable);
 
         assertThat(page.getTotalElements()).isEqualTo(3);
         assertThat(page.getContent())
                 .extracting(UserSecurity::getSecUsrId)
                 .containsExactly("USER0001", "USER0002", "USER0003");
+
+        // The DB query is asked for the requested window in a fixed ascending
+        // secUsrId order; the whole-table in-memory browse is never used.
+        ArgumentCaptor<Pageable> pageableCaptor = ArgumentCaptor.forClass(Pageable.class);
+        verify(userSecurityRepository).findAll(pageableCaptor.capture());
+        Pageable requested = pageableCaptor.getValue();
+        assertThat(requested.getPageNumber()).isZero();
+        assertThat(requested.getPageSize()).isEqualTo(10);
+        var order = requested.getSort().getOrderFor("secUsrId");
+        assertThat(order).isNotNull();
+        assertThat(order.isAscending()).isTrue();
+        verify(userSecurityRepository, never()).findAllByOrderBySecUsrIdAsc();
     }
 
     @Test
-    @DisplayName("listUsers positions at the first id >= the (normalized) start key, reproducing STARTBR")
+    @DisplayName("listUsers positions at the first id >= the (normalized) start key via the DB >= query, reproducing STARTBR")
     void listUsersFiltersFromStartKey() {
-        UserSecurity u1 = user("USER0001", "Ann", "Alpha", STORED_HASH, "U");
         UserSecurity u2 = user("USER0002", "Bob", "Bravo", STORED_HASH, "U");
         UserSecurity u3 = user("USER0003", "Cy", "Charlie", STORED_HASH, "A");
-        when(userSecurityRepository.findAllByOrderBySecUsrIdAsc())
-                .thenReturn(List.of(u1, u2, u3));
-
         Pageable pageable = PageRequest.of(0, 10);
+        // A non-blank start key is served by the >=-anchored database query, with the
+        // lower-case input normalized (trim + upper-case) before it reaches the query.
+        when(userSecurityRepository.findBySecUsrIdGreaterThanEqual(eq("USER0002"), any(Pageable.class)))
+                .thenReturn(new PageImpl<>(List.of(u2, u3), pageable, 2));
+
         // Lower-case start key exercises the service's trim + upper-case normalization.
         Page<UserSecurity> page = service.listUsers("user0002", pageable);
 
         assertThat(page.getContent())
                 .extracting(UserSecurity::getSecUsrId)
                 .containsExactly("USER0002", "USER0003");
+
+        // The service normalizes the key to the stored upper-cased form before querying,
+        // and never falls back to the whole-table browse.
+        ArgumentCaptor<String> keyCaptor = ArgumentCaptor.forClass(String.class);
+        verify(userSecurityRepository)
+                .findBySecUsrIdGreaterThanEqual(keyCaptor.capture(), any(Pageable.class));
+        assertThat(keyCaptor.getValue()).isEqualTo("USER0002");
+        verify(userSecurityRepository, never()).findAllByOrderBySecUsrIdAsc();
     }
 
     @Test
-    @DisplayName("listUsers returns only the requested offset/size window while reporting the full total")
+    @DisplayName("listUsers returns the database page window (offset/size) while reporting the full total")
     void listUsersHonorsPageWindow() {
-        UserSecurity u1 = user("USER0001", "Ann", "Alpha", STORED_HASH, "U");
-        UserSecurity u2 = user("USER0002", "Bob", "Bravo", STORED_HASH, "U");
         UserSecurity u3 = user("USER0003", "Cy", "Charlie", STORED_HASH, "A");
         UserSecurity u4 = user("USER0004", "Di", "Delta", STORED_HASH, "U");
-        when(userSecurityRepository.findAllByOrderBySecUsrIdAsc())
-                .thenReturn(List.of(u1, u2, u3, u4));
-
-        // Second page of size two -> offset 2 -> the third and fourth records.
+        // Second page of size two: the database returns the third and fourth records
+        // (offset 2) and reports the full total of four; the service passes it through.
         Pageable pageable = PageRequest.of(1, 2);
+        when(userSecurityRepository.findAll(any(Pageable.class)))
+                .thenReturn(new PageImpl<>(List.of(u3, u4), pageable, 4));
+
         Page<UserSecurity> page = service.listUsers(null, pageable);
 
         assertThat(page.getTotalElements()).isEqualTo(4);
+        assertThat(page.getNumber()).isEqualTo(1);
         assertThat(page.getContent())
                 .extracting(UserSecurity::getSecUsrId)
                 .containsExactly("USER0003", "USER0004");
+
+        // The requested page number and size are forwarded to the database query.
+        ArgumentCaptor<Pageable> pageableCaptor = ArgumentCaptor.forClass(Pageable.class);
+        verify(userSecurityRepository).findAll(pageableCaptor.capture());
+        assertThat(pageableCaptor.getValue().getPageNumber()).isEqualTo(1);
+        assertThat(pageableCaptor.getValue().getPageSize()).isEqualTo(2);
+    }
+
+    // ==================================================================
+    // COUNT (COUSR00C paging position math) — efficient COUNT, no row load.
+    // ==================================================================
+
+    @Test
+    @DisplayName("countUsers returns the grand total via count() when no start key is supplied")
+    void countUsersReturnsGrandTotal() {
+        when(userSecurityRepository.count()).thenReturn(42L);
+
+        // Both null and all-blank keys mean "grand total".
+        assertThat(service.countUsers(null)).isEqualTo(42L);
+        assertThat(service.countUsers("   ")).isEqualTo(42L);
+
+        // A blank key never triggers the >= count and never loads rows.
+        verify(userSecurityRepository, never()).countBySecUsrIdGreaterThanEqual(any());
+        verify(userSecurityRepository, never()).findAll(any(Pageable.class));
+    }
+
+    @Test
+    @DisplayName("countUsers counts from the normalized start key via countBySecUsrIdGreaterThanEqual")
+    void countUsersCountsFromStartKey() {
+        when(userSecurityRepository.countBySecUsrIdGreaterThanEqual("USER0002")).thenReturn(3L);
+
+        // Surrounding whitespace + lower case exercises the trim + upper-case normalization.
+        assertThat(service.countUsers("  user0002 ")).isEqualTo(3L);
+
+        verify(userSecurityRepository).countBySecUsrIdGreaterThanEqual("USER0002");
+        verify(userSecurityRepository, never()).count();
     }
 }

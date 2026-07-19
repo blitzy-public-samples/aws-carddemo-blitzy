@@ -18,6 +18,7 @@ package com.aws.carddemo.exception;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.slf4j.MDC;
+import org.springframework.dao.ConcurrencyFailureException;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.dao.OptimisticLockingFailureException;
 import org.springframework.http.HttpHeaders;
@@ -62,10 +63,14 @@ import jakarta.validation.ConstraintViolationException;
  *   <tr><td>{@link DuplicateKeyException}</td><td>409 Conflict</td>
  *       <td>CICS {@code DFHRESP(DUPKEY)}/{@code DFHRESP(DUPREC)} / {@code FILE STATUS '22'}
  *           (e.g. {@code legacy/cbl/COUSR01C.cbl} "User ID already exist")</td></tr>
- *   <tr><td>{@link OptimisticLockingFailureException} /
+ *   <tr><td>{@link ConcurrencyFailureException} (incl.
+ *           {@link OptimisticLockingFailureException} and
+ *           {@code CannotAcquireLockException}) /
  *           {@link OptimisticLockException}</td><td>409 Conflict</td>
  *       <td>COBOL READ-UPDATE-REWRITE cycle re-expressed as JPA {@code @Version}
- *           optimistic locking (documented integrity improvement)</td></tr>
+ *           optimistic locking; also covers database lock-acquisition/deadlock
+ *           failures (PostgreSQL {@code 40P01}) surfaced during a confirmed write
+ *           (documented integrity improvement)</td></tr>
  *   <tr><td>{@link MethodArgumentNotValidException}</td><td>400 Bad&nbsp;Request</td>
  *       <td>COBOL edit/validation paragraphs re-expressed as Bean Validation on the request DTO</td></tr>
  *   <tr><td>{@link ConstraintViolationException}</td><td>400 Bad&nbsp;Request</td>
@@ -202,23 +207,36 @@ public class GlobalExceptionHandler {
     }
 
     /**
-     * Maps an optimistic-locking failure to HTTP {@code 409 Conflict}. Both the
-     * Spring Data abstraction ({@link OptimisticLockingFailureException}) and the
-     * raw JPA type ({@link OptimisticLockException}, in case it escapes without
-     * translation) are handled here. This reproduces the last-writer integrity of
-     * the COBOL READ-UPDATE-REWRITE cycle now enforced by a JPA {@code @Version}
-     * column. A fixed, safe detail is returned; the raw provider message (which may
-     * expose internal entity details) is deliberately not echoed to the client.
+     * Maps any concurrency-related data-access failure to HTTP {@code 409 Conflict}.
+     * The Spring Data hierarchy is caught at its broad root
+     * ({@link ConcurrencyFailureException}), which subsumes both the
+     * <em>optimistic</em> branch ({@link OptimisticLockingFailureException}, raised by
+     * the JPA {@code @Version} check) and the <em>pessimistic</em> branch
+     * ({@code PessimisticLockingFailureException} and its
+     * {@code CannotAcquireLockException} subtype). The pessimistic subtype is the
+     * translation of a database lock-acquisition failure &mdash; most notably a
+     * PostgreSQL deadlock ({@code SQLSTATE 40P01}) when two confirmed updates race for
+     * the same rows. The raw JPA type ({@link OptimisticLockException}, in case it
+     * escapes without translation) is also handled. This reproduces the last-writer
+     * integrity of the COBOL READ-UPDATE-REWRITE cycle; whether the conflict is
+     * detected by the version check or by the database lock manager, the caller-visible
+     * outcome is identical &mdash; a {@code 409 Conflict}, never a {@code 500}. A fixed,
+     * safe detail is returned; the raw provider message (which may expose internal
+     * entity details) is deliberately not echoed to the client.
      *
-     * @param ex the optimistic-lock failure; declared as the common supertype
-     *           {@link RuntimeException} because the two handled types share no
-     *           closer ancestor
+     * @param ex the concurrency failure; declared as the common supertype
+     *           {@link RuntimeException} because the handled Spring and JPA types share
+     *           no closer common ancestor
      * @return a {@link ProblemDetail} with status 409 and title
      *         "Concurrent Update Conflict"
      */
-    @ExceptionHandler({ OptimisticLockingFailureException.class, OptimisticLockException.class })
+    @ExceptionHandler({
+        ConcurrencyFailureException.class,
+        OptimisticLockingFailureException.class,
+        OptimisticLockException.class
+    })
     public ProblemDetail handleOptimisticLock(RuntimeException ex) {
-        log.warn("Optimistic lock conflict: {}", ex.getClass().getSimpleName());
+        log.warn("Concurrency conflict: {}", ex.getClass().getSimpleName());
         return problem(HttpStatus.CONFLICT, "Concurrent Update Conflict", OPTIMISTIC_LOCK_DETAIL);
     }
 

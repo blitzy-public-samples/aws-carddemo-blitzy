@@ -95,7 +95,11 @@ jobs:
         env:
           POSTGRES_DB: carddemo
           POSTGRES_USER: carddemo
-          POSTGRES_PASSWORD: carddemo_ci
+          # No committed literal secret. Use the `CI_DB_PASSWORD` repository secret when it is set;
+          # otherwise derive a throwaway password unique to this workflow run (github.run_id /
+          # run_attempt). The identical expression is repeated on the app's DB_PASSWORD below so the
+          # service container and the application always agree on the value.
+          POSTGRES_PASSWORD: ${{ secrets.CI_DB_PASSWORD || format('ephemeral-ci-{0}-{1}', github.run_id, github.run_attempt) }}
         ports:
           - 5432:5432
         options: >-
@@ -124,7 +128,9 @@ jobs:
         env:
           DB_URL: jdbc:postgresql://localhost:5432/carddemo
           DB_USERNAME: carddemo
-          DB_PASSWORD: carddemo_ci
+          # Same secret-or-ephemeral expression as the postgres service's POSTGRES_PASSWORD above, so
+          # the application connects with exactly the value the service container was initialized with.
+          DB_PASSWORD: ${{ secrets.CI_DB_PASSWORD || format('ephemeral-ci-{0}-{1}', github.run_id, github.run_attempt) }}
           # `local` activates the seed loader so the master-print jobs process real demo rows;
           # each job is launched with the web server disabled so the process exit code equals the
           # Spring Batch return code (0 == COMPLETED).

@@ -118,6 +118,13 @@ public class CardMasterPrintJob {
     private static final String JOB_NAME = "cardMasterPrintJob";
 
     /**
+     * Legacy program name printed in the START/END execution banners by
+     * {@link ExecutionBannerJobListener}, byte-identical to the CBACT02C {@code DISPLAY} literals
+     * ({@code legacy/cbl/CBACT02C.cbl} L71 START / L85 END).
+     */
+    private static final String PROGRAM_NAME = "CBACT02C";
+
+    /**
      * Canonical Spring Batch {@code Step} name for the single read-and-print
      * step of this job.
      */
@@ -153,7 +160,9 @@ public class CardMasterPrintJob {
 
     /**
      * Defines the {@code cardMasterPrintJob} batch job: a single-step job that
-     * reads and prints the entire card master, with correlation-id logging.
+     * reads and prints the entire card master, with correlation-id logging and the
+     * {@code CBACT02C} START/END execution banners (START on entry; END only on normal
+     * completion) reproduced by {@link ExecutionBannerJobListener}.
      *
      * @param jobRepository             the auto-configured Spring Batch job
      *                                  repository (never {@code null})
@@ -171,6 +180,7 @@ public class CardMasterPrintJob {
                                   CorrelationIdJobListener correlationIdJobListener) {
         return new JobBuilder(JOB_NAME, jobRepository)
                 .listener(correlationIdJobListener)
+                .listener(new ExecutionBannerJobListener(PROGRAM_NAME))
                 .start(cardMasterPrintStep)
                 .build();
     }
