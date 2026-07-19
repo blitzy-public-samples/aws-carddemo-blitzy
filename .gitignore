@@ -1,0 +1,10 @@
+# Python bytecode caches produced when running the API contract test
+# (app/test/api/openapi-contract-test.py). Keeping these ignored ensures the
+# in-scope test leaves a clean working tree (no untracked __pycache__).
+__pycache__/
+*.pyc
+*.pyo
+
+# Local Python virtual environment used for OpenAPI/YAML tooling on non-z/OS
+# workstations (created by the onboarding instructions); never committed.
+.venv/

@@ -110,6 +110,77 @@ TRAN_BAD="9999999999999999"
 # When unset the 500 check is SKIPPED (printed as SKIP), never failed.
 FAULT_PATH="${FAULT_PATH:-}"
 
+# ---- curl timeouts (env-overridable) : never hang on an unresponsive host ---
+# --connect-timeout bounds the TCP-connect phase; --max-time bounds the whole
+# transfer. A black-hole host (packets silently dropped) therefore fails fast
+# instead of blocking the harness indefinitely.
+API_CONNECT_TIMEOUT="${API_CONNECT_TIMEOUT:-5}"
+API_MAX_TIME="${API_MAX_TIME:-30}"
+
+# -----------------------------------------------------------------------------
+# Command-line options
+# -----------------------------------------------------------------------------
+# Only -h/--help is accepted; every other setting is environment-overridable
+# (see CONFIGURATION above). Options are parsed HERE, before the dependency
+# checks, so `--help` is always available even on a host without curl.
+# usage() writes the help text using only the printf shell builtin (no external
+# command such as cat), so `--help` is guaranteed to work even on a host that
+# is missing curl or coreutils entirely.
+usage() {
+    printf '%s\n' \
+'Usage: run-api-tests.sh [-h|--help]' \
+'' \
+'End-to-end HTTP/JSON test harness for the CardDemo REST/JSON API layer. It' \
+'signs on, exercises all seven endpoints and every documented edge case' \
+'(404/400/401/200-empty/optional-500), asserts the uniform success ({data}) and' \
+'error ({error:{code,message,requestId}}) envelopes and the application/json' \
+'response content-type, then runs first-class security assertions over the' \
+'collected response bodies.' \
+'' \
+'There are no positional arguments. All settings are environment-overridable:' \
+'' \
+'  API_SCHEME           URL scheme                     (default: http)' \
+'  API_HOST             CICS Web Support host          (default: localhost)' \
+'  API_PORT             TCPIPSERVICE listener port     (default: 8080)' \
+'  API_BASE             API base path                  (default: /carddemo/api/v1)' \
+'  API_USER             CardDemo user id               (default: USER0001)' \
+'  API_PASS             Password for API_USER          (default: PASSWORD)' \
+'  ACCT_OK CUST_OK CARD_OK TRAN_OK LIST_ACCT EMPTY_ACCT' \
+'                       Valid fixture identifiers      (see CONFIGURATION header)' \
+'  FAULT_PATH           Route forcing a 500            (default: unset -> skipped)' \
+'  API_CONNECT_TIMEOUT  curl connect timeout, seconds  (default: 5)' \
+'  API_MAX_TIME         curl total timeout, seconds    (default: 30)' \
+'' \
+'Examples:' \
+'  ./run-api-tests.sh' \
+'  API_HOST=cics.example.com API_PORT=13080 ./run-api-tests.sh' \
+'' \
+'Exit codes: 0 every check passed; 1 at least one check failed; 2 curl missing.'
+}
+
+while [ "$#" -gt 0 ]; do
+    case "$1" in
+        -h|--help)
+            usage
+            exit 0
+            ;;
+        --)
+            shift
+            break
+            ;;
+        -*)
+            printf 'ERROR: unknown option: %s\n\n' "$1" >&2
+            usage >&2
+            exit 2
+            ;;
+        *)
+            printf 'ERROR: unexpected argument: %s\n\n' "$1" >&2
+            usage >&2
+            exit 2
+            ;;
+    esac
+done
+
 # -----------------------------------------------------------------------------
 # Dependency checks
 # -----------------------------------------------------------------------------
@@ -137,9 +208,12 @@ fi
 #          end. A newline separator is appended between bodies so that grep
 #          cannot miss or spuriously merge a match across two concatenated
 #          payloads.
+# HDRS     holds the response headers (curl -D) of the most recent call so the
+#          response Content-Type can be asserted (must be application/json).
 BODY="$(mktemp)"
 RESP_ALL="$(mktemp)"
-trap 'rm -f "$RESP_ALL" "$BODY"' EXIT
+HDRS="$(mktemp)"
+trap 'rm -f "$RESP_ALL" "$BODY" "$HDRS"' EXIT
 
 # -----------------------------------------------------------------------------
 # Counters and issued bearer token
@@ -177,9 +251,12 @@ http_call() {
     local -a curl_args=(
         -s
         -o "$BODY"
+        -D "$HDRS"
         -w '%{http_code}'
         -X "$method"
         -H 'Accept: application/json'
+        --connect-timeout "$API_CONNECT_TIMEOUT"
+        --max-time "$API_MAX_TIME"
     )
 
     if [ -n "$data" ]; then
@@ -192,8 +269,10 @@ http_call() {
         curl_args+=(-H "Authorization: Bearer ${auth}")
     fi
 
-    # Start from a clean body so a connection failure cannot leave stale content.
+    # Start from a clean body and header dump so a connection failure cannot
+    # leave stale content behind for the envelope/content-type assertions.
     : > "$BODY"
+    : > "$HDRS"
 
     local code
     code="$(curl "${curl_args[@]}" "$url")" || code="000"
@@ -252,6 +331,110 @@ extract_token() {
     fi
 }
 
+# response_content_type
+# Prints the value of the most recent response's Content-Type header (from the
+# $HDRS dump), lowercased and trimmed of surrounding whitespace and CR; empty
+# when the header is absent. The last matching header wins (in case of a proxy
+# that appends one).
+response_content_type() {
+    grep -i '^Content-Type:' "$HDRS" 2>/dev/null \
+        | tail -1 \
+        | sed -E 's/^[Cc]ontent-[Tt]ype:[[:space:]]*//; s/[[:space:]]*$//' \
+        | tr -d '\r' \
+        | tr '[:upper:]' '[:lower:]'
+}
+
+# check_error_envelope EXPECTED_CODE LABEL
+# Assert that the CURRENT $BODY is a uniform ERROR envelope
+# ({"error":{"code","message","requestId"}}) whose code equals EXPECTED_CODE,
+# whose message and requestId are non-empty, and whose response Content-Type is
+# application/json. MUST be called immediately after the request under test,
+# before the next http_call overwrites $BODY/$HDRS. Counts as one assertion.
+check_error_envelope() {
+    local expected_code="$1"
+    local label="$2"
+    local ct
+    ct="$(response_content_type)"
+    local ok=1
+    local reason=""
+
+    case "$ct" in
+        application/json*) : ;;
+        *) ok=0; reason="content-type '${ct:-<none>}' is not application/json" ;;
+    esac
+
+    if [ "$ok" -eq 1 ]; then
+        if [ "$HAVE_JQ" -eq 1 ]; then
+            local code msg rid
+            code="$(jq -r '.error.code // empty' "$BODY" 2>/dev/null)"
+            msg="$(jq -r '.error.message // empty' "$BODY" 2>/dev/null)"
+            rid="$(jq -r '.error.requestId // empty' "$BODY" 2>/dev/null)"
+            if [ "$code" != "$expected_code" ]; then
+                ok=0; reason="error.code='${code:-<none>}' != '$expected_code'"
+            elif [ -z "$msg" ]; then
+                ok=0; reason="error.message is empty/absent"
+            elif [ -z "$rid" ]; then
+                ok=0; reason="error.requestId is empty/absent"
+            fi
+        else
+            if ! grep -Eq "\"code\"[[:space:]]*:[[:space:]]*\"${expected_code}\"" "$BODY"; then
+                ok=0; reason="error.code != '$expected_code'"
+            elif ! grep -Eq '"message"[[:space:]]*:[[:space:]]*"[^"]+"' "$BODY"; then
+                ok=0; reason="error.message is empty/absent"
+            elif ! grep -Eq '"requestId"[[:space:]]*:[[:space:]]*"[^"]+"' "$BODY"; then
+                ok=0; reason="error.requestId is empty/absent"
+            fi
+        fi
+    fi
+
+    if [ "$ok" -eq 1 ]; then
+        record_pass "error-envelope: ${label} (code=${expected_code}, message+requestId present, application/json)"
+    else
+        record_fail "error-envelope: ${label} (${reason})"
+    fi
+}
+
+# check_data_envelope LABEL IDENTIFYING_KEY
+# Assert that the CURRENT $BODY is a uniform SUCCESS envelope whose top-level
+# "data" is an object containing IDENTIFYING_KEY, and whose response
+# Content-Type is application/json. MUST be called immediately after the request
+# under test, before the next http_call overwrites $BODY/$HDRS. One assertion.
+check_data_envelope() {
+    local label="$1"
+    local key="$2"
+    local ct
+    ct="$(response_content_type)"
+    local ok=1
+    local reason=""
+
+    case "$ct" in
+        application/json*) : ;;
+        *) ok=0; reason="content-type '${ct:-<none>}' is not application/json" ;;
+    esac
+
+    if [ "$ok" -eq 1 ]; then
+        if [ "$HAVE_JQ" -eq 1 ]; then
+            if ! jq -e '(.data | type) == "object"' "$BODY" >/dev/null 2>&1; then
+                ok=0; reason="top-level 'data' object absent"
+            elif ! jq -e --arg k "$key" '.data | has($k)' "$BODY" >/dev/null 2>&1; then
+                ok=0; reason="data.${key} absent"
+            fi
+        else
+            if ! grep -Eq '"data"[[:space:]]*:[[:space:]]*\{' "$BODY"; then
+                ok=0; reason="top-level 'data' object absent"
+            elif ! grep -Eq "\"${key}\"[[:space:]]*:" "$BODY"; then
+                ok=0; reason="data.${key} absent"
+            fi
+        fi
+    fi
+
+    if [ "$ok" -eq 1 ]; then
+        record_pass "data-envelope: ${label} ({data:{...,${key},...}}, application/json)"
+    else
+        record_fail "data-envelope: ${label} (${reason})"
+    fi
+}
+
 
 # -----------------------------------------------------------------------------
 # Test execution
@@ -266,6 +449,7 @@ printf '%s\n' '-- 1. Authentication --'
 SIGNON_BODY="$(printf '{"userId":"%s","password":"%s"}' "$API_USER" "$API_PASS")"
 status="$(http_call POST "${BASE_URL}/signon" "$SIGNON_BODY")"
 check_status 200 "$status" "POST /signon"
+check_data_envelope "POST /signon" "token"
 TOKEN="$(extract_token)"
 if [ -z "$TOKEN" ]; then
     # Non-fatal: continue so the negative/auth checks that do not need a valid
@@ -277,64 +461,80 @@ fi
 printf '\n-- 2. Positive inquiries (expect 200) --\n'
 status="$(http_call GET "${BASE_URL}/accounts/${ACCT_OK}" "" auth)"
 check_status 200 "$status" "GET /accounts/{acctId}"
+check_data_envelope "GET /accounts/{acctId}" "accountId"
 
 status="$(http_call GET "${BASE_URL}/customers/${CUST_OK}" "" auth)"
 check_status 200 "$status" "GET /customers/{custId}"
+check_data_envelope "GET /customers/{custId}" "customerId"
 
 status="$(http_call GET "${BASE_URL}/cards/${CARD_OK}" "" auth)"
 check_status 200 "$status" "GET /cards/{cardNum}"
+check_data_envelope "GET /cards/{cardNum}" "cardNumberMasked"
 
 # Card -> account/customer resolution (User Example Flow 2, step 1).
 status="$(http_call GET "${BASE_URL}/xref/${CARD_OK}" "" auth)"
 check_status 200 "$status" "GET /xref/{cardNum}"
+check_data_envelope "GET /xref/{cardNum}" "accountId"
 
 # Account -> transaction list (User Example Flow 2, step 2).
 status="$(http_call GET "${BASE_URL}/accounts/${LIST_ACCT}/transactions" "" auth)"
 check_status 200 "$status" "GET /accounts/{acctId}/transactions"
+check_data_envelope "GET /accounts/{acctId}/transactions" "transactions"
 
 status="$(http_call GET "${BASE_URL}/transactions/${TRAN_OK}" "" auth)"
 check_status 200 "$status" "GET /transactions/{tranId}"
+check_data_envelope "GET /transactions/{tranId}" "transactionId"
 
 # ---- 3. Not found (expect 404) ----------------------------------------------
 printf '\n-- 3. Not found (expect 404) --\n'
 status="$(http_call GET "${BASE_URL}/accounts/${ACCT_BAD}" "" auth)"
 check_status 404 "$status" "GET /accounts/{acctId} (unknown id)"
+check_error_envelope NOT_FOUND "GET /accounts/{acctId} (unknown id)"
 
 status="$(http_call GET "${BASE_URL}/customers/${CUST_BAD}" "" auth)"
 check_status 404 "$status" "GET /customers/{custId} (unknown id)"
+check_error_envelope NOT_FOUND "GET /customers/{custId} (unknown id)"
 
 status="$(http_call GET "${BASE_URL}/cards/${CARD_BAD}" "" auth)"
 check_status 404 "$status" "GET /cards/{cardNum} (unknown id)"
+check_error_envelope NOT_FOUND "GET /cards/{cardNum} (unknown id)"
 
 status="$(http_call GET "${BASE_URL}/transactions/${TRAN_BAD}" "" auth)"
 check_status 404 "$status" "GET /transactions/{tranId} (unknown id)"
+check_error_envelope NOT_FOUND "GET /transactions/{tranId} (unknown id)"
 
 # ---- 4. Bad request (expect 400) --------------------------------------------
 printf '\n-- 4. Bad request (expect 400) --\n'
 # (a) Malformed JSON on sign-on.
 status="$(http_call POST "${BASE_URL}/signon" '{ this is : not json')"
 check_status 400 "$status" "POST /signon (malformed JSON)"
+check_error_envelope BAD_REQUEST "POST /signon (malformed JSON)"
 
 # (b) Unknown route under the API base.
 status="$(http_call GET "${BASE_URL}/bogusroute" "" auth)"
 check_status 400 "$status" "GET /bogusroute (unknown route)"
+check_error_envelope BAD_REQUEST "GET /bogusroute (unknown route)"
 
 # (c) Non-numeric path parameter.
 status="$(http_call GET "${BASE_URL}/accounts/XYZ" "" auth)"
 check_status 400 "$status" "GET /accounts/XYZ (non-numeric acct)"
+check_error_envelope BAD_REQUEST "GET /accounts/XYZ (non-numeric acct)"
 
 status="$(http_call GET "${BASE_URL}/accounts/ABC/transactions" "" auth)"
 check_status 400 "$status" "GET /accounts/ABC/transactions (non-numeric acct)"
+check_error_envelope BAD_REQUEST "GET /accounts/ABC/transactions (non-numeric acct)"
 
 # ---- 5. Unauthorized (expect 401) -------------------------------------------
 printf '\n-- 5. Unauthorized (expect 401) --\n'
 # (a) No Authorization header on a protected resource.
 status="$(http_call GET "${BASE_URL}/accounts/${ACCT_OK}")"
 check_status 401 "$status" "GET /accounts/{acctId} (no token)"
+check_error_envelope UNAUTHORIZED "GET /accounts/{acctId} (no token)"
 
 # (b) Forged/invalid bearer token.
 status="$(http_call GET "${BASE_URL}/accounts/${ACCT_OK}" "" "forged-invalid-token")"
 check_status 401 "$status" "GET /accounts/{acctId} (forged token)"
+check_error_envelope UNAUTHORIZED "GET /accounts/{acctId} (forged token)"
 
 # ---- 6. Empty transaction list (expect 200, NOT 404) ------------------------
 printf '\n-- 6. Empty transaction list (expect 200 + empty array) --\n'
@@ -366,6 +566,7 @@ if [ -n "$FAULT_PATH" ]; then
     esac
     status="$(http_call GET "$fault_url" "" auth)"
     check_status 500 "$status" "GET fault route (forced 500)"
+    check_error_envelope INTERNAL_ERROR "GET fault route (forced 500)"
     # The 500 envelope must not leak internal CICS RESP2 detail.
     if grep -Eiq 'resp2' "$BODY"; then
         record_fail "500 body leaks internal RESP2 detail"
@@ -391,7 +592,22 @@ printf '\n-- Security assertions (over response bodies) --\n'
 if grep -Eq '0500024453765740|4859452612877065' "$RESP_ALL"; then
     record_fail "security: a full PAN appears in a response body"
 else
-    record_pass "security: no full PAN in any response body"
+    record_pass "security: no full PAN (known fixture value) in any response body"
+fi
+
+# Generic (fixture-independent) raw-PAN detector: flag ANY JSON string value of
+# 13-19 consecutive digits that appears under a key other than the handful that
+# legitimately carry long all-digit strings (transactionId/tranId are 16-digit
+# ids; id/token are opaque). A correctly masked PAN is "************1234"
+# (asterisks + 4 digits) and never matches a pure-digit run, so this catches an
+# unmasked PAN under ANY field name -- not just the shipped fixtures.
+raw_pan_hits="$(grep -oE '"[A-Za-z0-9_]+"[[:space:]]*:[[:space:]]*"[0-9]{13,19}"' "$RESP_ALL" \
+    | grep -viE '"(transactionId|tranId|id|token)"[[:space:]]*:' || true)"
+if [ -n "$raw_pan_hits" ]; then
+    record_fail "security: a raw 13-19 digit value appears under a non-id/token key (possible unmasked PAN)"
+    printf '%s\n' "$raw_pan_hits" | head -5 | sed 's/^/DETAIL: /'
+else
+    record_pass "security: no raw 13-19 digit PAN-like value under any non-id/token key"
 fi
 
 bad_mask=0
@@ -405,8 +621,15 @@ while IFS= read -r masked; do
     fi
 done < <(grep -oE '"cardNumberMasked"[[:space:]]*:[[:space:]]*"[^"]*"' "$RESP_ALL" \
     | sed -E 's/.*:[[:space:]]*"([^"]*)".*/\1/')
-if [ "$bad_mask" -eq 0 ]; then
-    record_pass "security: all masked card values well-formed (checked ${mask_count})"
+# The mask check is only meaningful if at least one masked card value was
+# actually observed; otherwise it would pass vacuously (the original defect:
+# "checked 0"). Requiring mask_count > 0 makes a run that produced no card data
+# -- e.g. an unreachable region where every body is empty -- FAIL here rather
+# than report a hollow green.
+if [ "$mask_count" -eq 0 ]; then
+    record_fail "security: no masked card value (cardNumberMasked) observed in any response -- masking was never exercised"
+elif [ "$bad_mask" -eq 0 ]; then
+    record_pass "security: all ${mask_count} masked card value(s) well-formed (12 asterisks + 4 digits)"
 else
     record_fail "security: at least one masked card value is malformed"
 fi

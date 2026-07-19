@@ -76,6 +76,13 @@ MONEY_FIELDS = frozenset({
 # Field name that always carries a masked PAN in the response examples.
 MASKED_PAN_FIELD = "cardNumberMasked"
 
+# Customer PII that is permitted to appear ONLY in masked form (last four
+# digits). These are the documented, service-produced fields (COAPCUSY
+# CUST-SSN-MASKED / CUST-GOVT-ID-MASKED; COCUSVCC 2100-MASK-SSN /
+# 2200-MASK-GOVTID). Any other ssn/govt-named property is an unmasked leak and
+# must be rejected.
+ALLOWED_MASKED_PII = frozenset({"ssnMasked", "govtIdMasked"})
+
 
 # --- Result recording -------------------------------------------------------
 # Real pass/fail checks are counted toward the SUMMARY. Warnings capture soft
@@ -143,6 +150,36 @@ def validator_for(ref, root):
         return Draft7Validator({"$ref": ref}, resolver=resolver)
 
 
+def validator_for_inline(schema, root):
+    """Return a ``Draft7Validator`` for an INLINE ``schema`` object, resolving
+    any nested component ``$ref``s against ``root``.
+
+    Mirrors :func:`validator_for`'s two resolution strategies (modern
+    ``referencing`` registry, then legacy ``RefResolver``) but accepts a full
+    schema object instead of a JSON-pointer fragment. Used by the path-wired
+    validation when an operation declares its 200 schema inline rather than as
+    a ``$ref``.
+    """
+    # Path A: referencing API (jsonschema >= 4.18).
+    try:
+        from referencing import Registry, Resource
+        from referencing.jsonschema import DRAFT7
+
+        resource = Resource.from_contents(root, default_specification=DRAFT7)
+        registry = Registry().with_resource(uri="urn:spec", resource=resource)
+        return Draft7Validator(schema, registry=registry)
+    except Exception:
+        pass
+
+    # Path B: legacy RefResolver (jsonschema < 4.18).
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        from jsonschema import RefResolver
+
+        resolver = RefResolver.from_schema(root)
+        return Draft7Validator(schema, resolver=resolver)
+
+
 # --- Recursive traversal helper --------------------------------------------
 def iter_kv(obj):
     """Yield every ``(key, value)`` pair found in nested dicts and lists.
@@ -170,7 +207,12 @@ def iter_kv(obj):
 # transaction 0000000000683580). No example carries a CVV, SSN, government id,
 # password, or an unmasked PAN.
 SIGNON_EXAMPLE = {
-    "data": {"token": "abc.def.ghi", "userType": "U", "expiresIn": 900}
+    "data": {
+        "token": "abc.def.ghi",
+        "userId": "USER0001",
+        "userType": "U",
+        "expiresAt": "2026-07-19 08:15:00.000000",
+    }
 }
 ACCOUNT_EXAMPLE = {
     "data": {
@@ -192,6 +234,8 @@ CUSTOMER_EXAMPLE = {
         "customerId": "000000001",
         "firstName": "IMMANUEL",
         "lastName": "PUBLIC",
+        "ssnMasked": "XXX-XX-6789",
+        "govtIdMasked": "6789",
         "ficoCreditScore": 274,
     }
 }
@@ -225,10 +269,16 @@ TRANSACTION_LIST_EXAMPLE = {
             }
         ],
         "count": 1,
+        "truncated": False,
     }
 }
 TRANSACTION_LIST_EMPTY_EXAMPLE = {
-    "data": {"accountId": "00000000099", "transactions": [], "count": 0}
+    "data": {
+        "accountId": "00000000099",
+        "transactions": [],
+        "count": 0,
+        "truncated": False,
+    }
 }
 TRANSACTION_EXAMPLE = {
     "data": {
@@ -285,6 +335,55 @@ REQUIRED_ERROR_CODES = [
     "NOT_FOUND",
     "INTERNAL_ERROR",
 ]
+
+# The EXACT set of (path, method) operations the read-only contract may
+# declare - nothing more, nothing fewer. The only non-GET is POST /signon.
+ALLOWED_OPERATIONS = frozenset({
+    ("/signon", "post"),
+    ("/accounts/{acctId}", "get"),
+    ("/customers/{custId}", "get"),
+    ("/cards/{cardNum}", "get"),
+    ("/xref/{cardNum}", "get"),
+    ("/accounts/{acctId}/transactions", "get"),
+    ("/transactions/{tranId}", "get"),
+})
+# HTTP methods an OpenAPI path item may carry, and the mutating subset. The
+# API is strictly read-only, so no write verb may appear except POST /signon.
+HTTP_METHODS = frozenset({
+    "get", "put", "post", "delete", "patch", "options", "head", "trace",
+})
+WRITE_METHODS = frozenset({"put", "post", "delete", "patch"})
+
+# Candidate raw (unmasked) PAN strings spanning the 13-19 digit range. Any
+# response-schema string ``pattern`` that ACCEPTS one of these would permit a
+# full PAN to be serialized and is therefore a leak vector.
+RAW_PAN_SAMPLES = (
+    "0500024453765740",     # 16-digit fixture PAN
+    "4859452612877065",     # 16-digit fixture PAN
+    "4111111111111111",     # canonical 16-digit test PAN
+    "1234567890123",        # 13-digit lower bound
+    "1234567890123456789",  # 19-digit upper bound
+)
+# Response-schema property NAMES that must never appear: credentials, card
+# security code, and full/unmasked PAN names. Masked PII (ssnMasked /
+# govtIdMasked) and the masked PAN (cardNumberMasked) are allowed elsewhere.
+FORBIDDEN_PROPERTY_RE = re.compile(
+    r"password|passwd|\bpwd\b|cvv|securitycode|"
+    r"cardnumberfull|fullcardnumber|unmaskedpan|\bpan\b",
+    re.I,
+)
+# Maps each success-case label to the operationId whose declared 200 response
+# schema it must satisfy. The empty-list variant reuses listAccountTransactions.
+CASE_OPERATION = {
+    "signon": "signon",
+    "getAccount": "getAccount",
+    "getCustomer": "getCustomer",
+    "getCard": "getCard",
+    "getCardXref": "getCardXref",
+    "listAccountTransactions": "listAccountTransactions",
+    "listAccountTransactionsEmpty": "listAccountTransactions",
+    "getTransaction": "getTransaction",
+}
 
 
 def error_envelope_ok(example):
@@ -438,20 +537,29 @@ def run_structural_checks(spec):
     else:
         record_pass("card example has no CVV key")
 
-    # 6. Customer schema and example must contain no SSN / government id.
+    # 6. Customer may expose SSN / government id ONLY in masked form (last four
+    #    digits). The masked fields ssnMasked / govtIdMasked are the documented,
+    #    service-produced output (COAPCUSY CUST-SSN-MASKED / CUST-GOVT-ID-MASKED;
+    #    COCUSVCC 2100-MASK-SSN / 2200-MASK-GOVTID). Any other ssn/govt-named
+    #    property (an unmasked value such as a bare `ssn` or `govtIssuedId`) is a
+    #    leak and must never appear in the schema or the example.
     ssn_re = re.compile(r"ssn|govt|government", re.I)
     cust_props = schemas.get("Customer", {}).get("properties", {})
-    ssn_props = [k for k in cust_props if ssn_re.search(k)]
-    if ssn_props:
-        record_fail("Customer schema exposes SSN/govt properties: %s"
-                    % ssn_props)
+    unmasked_props = [k for k in cust_props
+                      if ssn_re.search(k) and k not in ALLOWED_MASKED_PII]
+    if unmasked_props:
+        record_fail("Customer schema exposes unmasked SSN/govt properties: %s"
+                    % unmasked_props)
     else:
-        record_pass("Customer schema has no SSN/govt property")
-    ssn_keys = [k for k, _v in iter_kv(CUSTOMER_EXAMPLE) if ssn_re.search(k)]
-    if ssn_keys:
-        record_fail("customer example exposes SSN/govt keys: %s" % ssn_keys)
+        record_pass("Customer schema exposes no unmasked SSN/govt property "
+                    "(masked-only)")
+    unmasked_keys = [k for k, _v in iter_kv(CUSTOMER_EXAMPLE)
+                     if ssn_re.search(k) and k not in ALLOWED_MASKED_PII]
+    if unmasked_keys:
+        record_fail("customer example exposes unmasked SSN/govt keys: %s"
+                    % unmasked_keys)
     else:
-        record_pass("customer example has no SSN/govt key")
+        record_pass("customer example has no unmasked SSN/govt key")
 
     # 7. No 'password' key anywhere in any success or error response example.
     #    (SignonRequest is a request schema and is intentionally not examined.)
@@ -479,6 +587,227 @@ def run_structural_checks(spec):
         record_fail("spec does not reference error codes: %s" % missing_codes)
     else:
         record_pass("all four error codes referenced in spec")
+
+
+# --- Operation / method enforcement (read-only contract) -------------------
+def run_operation_checks(spec):
+    """Enforce the EXACT set of operations and the read-only verb policy.
+
+    Three checks: (a) no operation beyond the seven allowed ``(path, method)``
+    pairs; (b) every allowed pair is declared with exactly that method (a
+    changed method - e.g. ``POST /signon`` becoming ``PUT`` - therefore fails);
+    (c) no write verb (PUT/POST/DELETE/PATCH) appears anywhere except the single
+    permitted ``POST /signon`` (a newly added write operation fails).
+    """
+    paths = spec.get("paths", {})
+    declared = set()
+    write_violations = []
+    for path, item in paths.items():
+        if not isinstance(item, dict):
+            continue
+        for method in item:
+            m = method.lower()
+            if m not in HTTP_METHODS:
+                continue  # skip non-operation keys (parameters, summary, ...)
+            declared.add((path, m))
+            if m in WRITE_METHODS and (path, m) != ("/signon", "post"):
+                write_violations.append("%s %s" % (m.upper(), path))
+
+    extra = sorted(declared - ALLOWED_OPERATIONS)
+    if extra:
+        record_fail("spec declares operations beyond the seven allowed: %s"
+                    % ["%s %s" % (m.upper(), p) for p, m in extra])
+    else:
+        record_pass("no operation beyond the seven allowed (path, method) "
+                    "pairs")
+
+    missing = sorted(ALLOWED_OPERATIONS - declared)
+    if missing:
+        record_fail("spec is missing required operations "
+                    "(wrong or absent method): %s"
+                    % ["%s %s" % (m.upper(), p) for p, m in missing])
+    else:
+        record_pass("all seven required operations declared with the exact "
+                    "method")
+
+    if write_violations:
+        record_fail("read-only contract violated by write verb(s): %s"
+                    % write_violations)
+    else:
+        record_pass("read-only preserved (no write verb except POST /signon)")
+
+
+# --- Response-schema reachability -----------------------------------------
+def _refs_in(node):
+    """Yield every local ``#/components/schemas/<Name>`` name referenced by a
+    ``$ref`` anywhere within ``node`` (recursively)."""
+    if isinstance(node, dict):
+        ref = node.get("$ref")
+        if isinstance(ref, str) and ref.startswith("#/components/schemas/"):
+            yield ref.rsplit("/", 1)[-1]
+        for value in node.values():
+            yield from _refs_in(value)
+    elif isinstance(node, list):
+        for item in node:
+            yield from _refs_in(item)
+
+
+def response_schema_names(spec):
+    """Return the set of component-schema names reachable from any RESPONSE
+    body - operation ``responses`` plus shared ``components.responses`` -
+    followed transitively through nested ``$ref``s.
+
+    Request-only schemas (for example ``SignonRequest``, which legitimately
+    carries a ``password``) are reachable solely from ``requestBody`` and are
+    therefore excluded, so the property-safety scan only inspects data the API
+    actually returns.
+    """
+    schemas = spec.get("components", {}).get("schemas", {})
+    seed = set()
+    for item in spec.get("paths", {}).values():
+        if not isinstance(item, dict):
+            continue
+        for method, operation in item.items():
+            if method.lower() in HTTP_METHODS and isinstance(operation, dict):
+                for response in (operation.get("responses") or {}).values():
+                    seed.update(_refs_in(response))
+    for response in (spec.get("components", {}).get("responses") or {}).values():
+        seed.update(_refs_in(response))
+
+    reachable = set()
+    stack = list(seed)
+    while stack:
+        name = stack.pop()
+        if name in reachable or name not in schemas:
+            continue
+        reachable.add(name)
+        stack.extend(_refs_in(schemas[name]))
+    return reachable
+
+
+# --- Response-schema property safety (recursive) ---------------------------
+def run_property_safety_checks(spec):
+    """Recursively reject dangerous response-schema properties.
+
+    Walks EVERY schema in ``components.schemas`` (including nested
+    ``properties`` / ``items`` / ``additionalProperties`` / ``allOf`` /
+    ``oneOf`` / ``anyOf``) and fails on:
+      * a forbidden property NAME - a credential (``password``), card security
+        code (``cvv`` / ``securityCode``), an unmasked full-PAN name, or an
+        unmasked ``ssn`` / ``govt`` name that is not one of the allowed masked
+        fields; and
+      * any string ``pattern`` that ACCEPTS a raw 13-19 digit PAN, which would
+        let a full PAN be serialized (e.g. a novel ``cardNumberFull`` field
+        patterned ``^[0-9]{16}$``).
+    Only schemas reachable from a RESPONSE body are scanned; request-only
+    schemas (e.g. SignonRequest, which legitimately carries a password) and
+    request parameters (which legitimately accept a full card number) are out
+    of scope.
+    """
+    schemas = spec.get("components", {}).get("schemas", {})
+    scan_names = response_schema_names(spec)
+    bad_names = set()
+    pan_patterns = set()
+    ssn_govt_re = re.compile(r"ssn|govt|government", re.I)
+
+    def walk(node, prop_name):
+        if isinstance(node, dict):
+            if prop_name is not None and prop_name not in ALLOWED_MASKED_PII:
+                if (FORBIDDEN_PROPERTY_RE.search(prop_name)
+                        or ssn_govt_re.search(prop_name)):
+                    bad_names.add(prop_name)
+            pattern = node.get("pattern")
+            if isinstance(pattern, str):
+                try:
+                    compiled = re.compile(pattern)
+                except re.error:
+                    compiled = None
+                if compiled and any(compiled.search(s)
+                                    for s in RAW_PAN_SAMPLES):
+                    pan_patterns.add(prop_name if prop_name else pattern)
+            for key, value in node.get("properties", {}).items():
+                walk(value, key)
+            for kw in ("items", "additionalProperties"):
+                if isinstance(node.get(kw), dict):
+                    walk(node[kw], prop_name)
+            for kw in ("allOf", "oneOf", "anyOf"):
+                for sub in node.get(kw, []) or []:
+                    walk(sub, prop_name)
+        elif isinstance(node, list):
+            for item in node:
+                walk(item, prop_name)
+
+    for name, schema in schemas.items():
+        if name in scan_names:
+            walk(schema, None)
+
+    if bad_names:
+        record_fail("response schema exposes forbidden/unmasked "
+                    "propert(y/ies): %s" % sorted(bad_names))
+    else:
+        record_pass("no forbidden or unmasked-PII property in any response "
+                    "schema")
+
+    if pan_patterns:
+        record_fail("response-schema string pattern(s) accept a raw PAN: %s"
+                    % sorted(pan_patterns))
+    else:
+        record_pass("no response-schema string pattern accepts a raw 13-19 "
+                    "digit PAN")
+
+
+# --- Path-wired success-example validation ($ref-chain traversal) ----------
+def run_path_wired_validation(spec):
+    """Validate each success example against the schema reached by TRAVERSING
+    the real ``path -> 200 -> content -> application/json -> schema`` chain.
+
+    Unlike :func:`run_schema_validation` (which validates against a component
+    schema by NAME), this walks the operation's declared 200 response, so a
+    broken or dangling ``$ref`` anywhere in that chain is caught rather than
+    silently bypassed.
+    """
+    paths = spec.get("paths", {})
+    op_index = {}
+    for path, item in paths.items():
+        if not isinstance(item, dict):
+            continue
+        for method, operation in item.items():
+            if method.lower() in HTTP_METHODS and isinstance(operation, dict):
+                opid = operation.get("operationId")
+                if opid:
+                    op_index[opid] = (path, method, operation)
+
+    for label, _envelope, _inner, example in SUCCESS_CASES:
+        opid = CASE_OPERATION.get(label)
+        if opid is None or opid not in op_index:
+            record_fail("path-wired: no operation found for success case %s"
+                        % label)
+            continue
+        path, method, operation = op_index[opid]
+        try:
+            schema = (operation["responses"]["200"]["content"]
+                      ["application/json"]["schema"])
+        except Exception:
+            record_fail("path-wired: %s %s has no 200 application/json schema"
+                        % (method.upper(), path))
+            continue
+        try:
+            if isinstance(schema, dict) and "$ref" in schema:
+                validator = validator_for(schema["$ref"], spec)
+            else:
+                validator = validator_for_inline(schema, spec)
+            errs = list(validator.iter_errors(example))
+        except Exception as exc:
+            record_fail("path-wired: %s %s 200 schema did not resolve "
+                        "(broken $ref?): %r" % (method.upper(), path, exc))
+            continue
+        if errs:
+            msgs = "; ".join(e.message for e in errs[:5])
+            record_fail("path-wired: %s example fails its declared 200 "
+                        "schema: %s" % (label, msgs))
+        else:
+            record_pass("path-wired: %s example validates against its "
+                        "declared 200 schema" % label)
 
 
 # --- Spec resolution and entry point ---------------------------------------
@@ -517,6 +846,9 @@ def main():
     print("INFO: validating contract at " + spec_path)
     run_schema_validation(spec)
     run_structural_checks(spec)
+    run_operation_checks(spec)
+    run_property_safety_checks(spec)
+    run_path_wired_validation(spec)
 
     checks = len(_passes) + len(_fails)
     print("SUMMARY: checks=%d passed=%d failed=%d"

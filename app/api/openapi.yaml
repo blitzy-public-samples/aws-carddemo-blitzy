@@ -24,8 +24,9 @@ info:
     minimized: the primary account number (PAN) is masked to the last four
     digits, the card security code is never returned, credentials are never
     returned, and customer Social Security Number and government-issued
-    identification are omitted. Monetary values are signed decimals with
-    exactly two fractional digits and are represented as strings to preserve
+    identification are masked to the last four digits (full values are never
+    returned). Monetary values are signed decimals with exactly two fractional
+    digits and are represented as strings to preserve
     exact scale and sign (the underlying COBOL fields are implied-decimal
     numerics stored with no decimal point).
   license:
@@ -125,8 +126,9 @@ paths:
       summary: Retrieve a customer by id.
       description: >-
         Returns customer demographic and identification fields for the given
-        customer id. Reads the CUSTDAT file read-only. Social Security Number
-        and government-issued identification are intentionally omitted.
+        customer id. Reads the CUSTDAT file read-only. Social Security Number is
+        masked as 'XXX-XX-####' and government-issued identification is masked
+        to the last four digits; full values are never returned.
       security:
         - bearerAuth: []
       parameters:
@@ -215,7 +217,9 @@ paths:
         account is resolved to its card(s) via the cross-reference and matching
         TRANSACT records are returned read-only. An account that exists but has
         no transactions returns HTTP 200 with an empty array (not 404). Card
-        numbers are masked to the last four digits.
+        numbers are masked to the last four digits. The list is capped at 500
+        transactions; an account whose matching transactions exceed that cap
+        returns HTTP 500 (INTERNAL_ERROR) rather than a silently truncated list.
       security:
         - bearerAuth: []
       parameters:
@@ -495,17 +499,28 @@ components:
     SignonData:
       type: object
       description: >-
-        Sign-on result carrying the issued bearer token and user type.
+        Sign-on result carrying the issued bearer token, the authenticated user
+        id and type, and the absolute token expiry timestamp.
       required:
         - token
+        - userId
         - userType
+        - expiresAt
       properties:
         token:
           type: string
           description: >-
             Short-lived opaque bearer token to send on subsequent calls in the
-            Authorization header.
+            Authorization header. The token lifetime is fixed at 900 seconds
+            (15 minutes) from issue.
           example: "eyJ0a2VuIjoiQ0FSRERFTU8ifQ"
+        userId:
+          type: string
+          maxLength: 8
+          description: >-
+            Authenticated CardDemo user id echoed from SEC-USR-ID PIC X(08)
+            (SGNO-USER-ID); identifies the subject bound to the token.
+          example: "USER0001"
         userType:
           type: string
           maxLength: 1
@@ -513,10 +528,16 @@ components:
             User type echoed from SEC-USR-TYPE PIC X(01); typical values are
             'A' (admin) and 'U' (regular user).
           example: "U"
-        expiresIn:
-          type: integer
-          description: Token lifetime in seconds.
-          example: 900
+        expiresAt:
+          type: string
+          maxLength: 26
+          description: >-
+            Absolute token expiry timestamp (SGNO-TOKEN-EXPIRY-TS PIC X(26)),
+            formatted 'YYYY-MM-DD HH:MM:SS.ffffff'. The token is valid until
+            this instant; the fixed lifetime is 900 seconds (15 minutes) from
+            issue.
+            Represented as a string to preserve the exact stored format.
+          example: "2026-07-19 08:15:00.000000"
     Account:
       type: object
       description: >-
@@ -575,11 +596,6 @@ components:
             - $ref: '#/components/schemas/MonetaryAmount'
           description: Current cycle debit (ACCT-CURR-CYC-DEBIT PIC S9(10)V99).
           example: "375.25"
-        addressZip:
-          type: string
-          maxLength: 10
-          description: Account address ZIP code (ACCT-ADDR-ZIP PIC X(10)).
-          example: "62704"
         groupId:
           type: string
           maxLength: 10
@@ -648,8 +664,8 @@ components:
       type: object
       description: >-
         Customer entity mapped from CVCUS01Y CUSTOMER-RECORD (read-only). Social
-        Security Number and government-issued identification are intentionally
-        omitted for PII minimization.
+        Security Number and government-issued identification are masked to the
+        last four digits for PII minimization; full values are never returned.
       properties:
         customerId:
           type: string
@@ -711,16 +727,28 @@ components:
           maxLength: 15
           description: Secondary phone number (CUST-PHONE-NUM-2 PIC X(15)).
           example: "+1-217-555-0101"
+        ssnMasked:
+          type: string
+          maxLength: 11
+          pattern: '^(XXX-XX-\d{4})?\s*$'
+          description: >-
+            Social Security Number masked to the last four digits
+            (CUST-SSN-MASKED PIC X(11)), formatted 'XXX-XX-####'; blank when the
+            source SSN is absent. The full SSN is never returned.
+          example: "XXX-XX-6789"
+        govtIdMasked:
+          type: string
+          maxLength: 4
+          description: >-
+            Government-issued identification masked to the last four significant
+            characters (CUST-GOVT-ID-MASKED PIC X(04)). The full identifier is
+            never returned.
+          example: "6789"
         dateOfBirth:
           type: string
           maxLength: 10
           description: Date of birth (CUST-DOB-YYYY-MM-DD PIC X(10)).
           example: "1980-05-20"
-        eftAccountId:
-          type: string
-          maxLength: 10
-          description: EFT account id (CUST-EFT-ACCOUNT-ID PIC X(10)).
-          example: "0000000001"
         primaryCardHolderIndicator:
           type: string
           maxLength: 1
@@ -808,7 +836,11 @@ components:
           example: "2022-07-20 02:00:00.000000"
     TransactionList:
       type: object
-      description: A list of transactions for a single account.
+      description: >-
+        A list of transactions for a single account. The list is capped at 500
+        transactions; an account whose matching transactions exceed that cap
+        fails deterministically with HTTP 500 (INTERNAL_ERROR) rather than
+        returning a silently partial list, so a 200 response is always complete.
       required:
         - accountId
         - transactions
@@ -827,3 +859,12 @@ components:
           type: integer
           description: Number of transactions returned; 0 for an empty list.
           example: 2
+        truncated:
+          type: boolean
+          description: >-
+            Whether the returned list was truncated (from TRAN-LIST-TRUNCATED
+            PIC X(01): 'N' -> false, 'Y' -> true). Always false in a successful
+            200 response: the list is capped at 500 and an account exceeding
+            that cap returns HTTP 500 (INTERNAL_ERROR) rather than a partial
+            list, so a 200 body is never a truncated result.
+          example: false
