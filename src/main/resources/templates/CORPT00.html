@@ -1,0 +1,273 @@
+<!DOCTYPE html>
+<!--
+  CardDemo - Transaction Reports screen (CICS transaction CR00, program CORPT00C).
+  Server-rendered Thymeleaf reproduction of BMS mapset CORPT00 / map CORPT0A.
+  Origin (read-only): legacy/bms/CORPT00.bms + legacy/cpy-bms/CORPT00.CPY
+  Backing bean : com.aws.carddemo.dto.screen.CORPT00Form (model attribute "form")
+  Rendered by  : com.aws.carddemo.web.controller.ReportController
+  Routes       : GET /report (display), POST /report (submit; request param "pfkey")
+  The 24x80 field/label/length/colour/PF-key contract of the original 3270 map is
+  preserved one-for-one via a fixed monospaced CSS character grid.
+-->
+<html lang="en" xmlns:th="http://www.thymeleaf.org">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>CardDemo - Transaction Reports (CR00)</title>
+    <style>
+        /* ---- Theme tokens: BMS colours -> hex, terminal geometry ---- */
+        :root {
+            --c-blue: #0000CD;
+            --c-yellow: #CCCC00;
+            --c-turquoise: #00CDCD;
+            --c-green: #00CD00;
+            --c-red: #CD0000;
+            --c-neutral: #FFFFFF;
+            --c-bg: #000000;
+            --c-page: #1b1b1b;
+            --cols: 80;
+            --rows: 24;
+            --line: 1.4rem;
+            --mono: "Cascadia Mono", "Consolas", "DejaVu Sans Mono",
+                    "Liberation Mono", "Courier New", monospace;
+        }
+
+        *, *::before, *::after { box-sizing: border-box; }
+
+        html { font-size: 16px; }
+
+        body {
+            margin: 0;
+            padding: 1rem;
+            min-height: 100vh;
+            background: var(--c-page);
+            color: var(--c-neutral);
+            font-family: var(--mono);
+        }
+
+        /* ---- Skip link (invisible accessibility; visible on focus) ---- */
+        .skip-link {
+            position: absolute;
+            left: -9999px;
+            top: 0;
+            z-index: 10;
+            background: var(--c-yellow);
+            color: #000;
+            padding: 0.25rem 0.5rem;
+            text-decoration: none;
+        }
+        .skip-link:focus { left: 0.5rem; top: 0.5rem; }
+
+        /* ---- Fixed 80-column artboard; horizontal scroll on narrow viewports ---- */
+        .terminal-wrap {
+            max-width: 80ch;
+            margin: 0 auto;
+            overflow-x: auto;
+        }
+
+        /* ---- 24x80 monospaced character grid (BMS POS -> grid cell) ---- */
+        .screen {
+            display: grid;
+            grid-template-columns: repeat(var(--cols), 1ch);
+            grid-template-rows: repeat(var(--rows), var(--line));
+            align-items: center;
+            width: 80ch;
+            background: var(--c-bg);
+            border: 1px solid #333;
+            color: var(--c-neutral);
+            font-family: var(--mono);
+            font-size: 1rem;
+            line-height: var(--line);
+            white-space: pre;
+        }
+        .screen > * {
+            min-width: 0;
+            line-height: var(--line);
+            white-space: pre;
+        }
+
+        /* ---- BMS COLOR attribute -> text colour utilities ---- */
+        .blue { color: var(--c-blue); }
+        .yellow { color: var(--c-yellow); }
+        .turquoise { color: var(--c-turquoise); }
+        .green { color: var(--c-green); }
+        .red { color: var(--c-red); }
+        .neutral { color: var(--c-neutral); }
+
+        /* ---- BMS BRT (high intensity) -> bold ---- */
+        .bright { font-weight: 700; }
+
+        /* ---- Unprotected input fields (BMS UNPROT, GREEN, HILIGHT=UNDERLINE) ---- */
+        .fld {
+            width: 100%;
+            min-width: 0;
+            height: var(--line);
+            margin: 0;
+            padding: 0;
+            border: 0;
+            border-bottom: 1px solid var(--c-green);
+            border-radius: 0;
+            background: rgba(255, 255, 255, 0.08);
+            color: var(--c-green);
+            caret-color: var(--c-green);
+            font-family: var(--mono);
+            font-size: 1rem;
+            line-height: var(--line);
+            text-align: left;
+            -webkit-appearance: none;
+            appearance: none;
+        }
+        .fld:focus-visible {
+            outline: 2px solid var(--c-neutral);
+            outline-offset: -2px;
+            background: rgba(255, 255, 255, 0.16);
+        }
+
+        /* ---- Web affordance for the ENTER / F3 PF-keys (below the grid) ---- */
+        .action-bar {
+            width: 80ch;
+            max-width: 100%;
+            margin: 0.75rem auto 0;
+            display: flex;
+            flex-wrap: wrap;
+            gap: 2ch;
+        }
+        .term-btn {
+            font-family: var(--mono);
+            font-size: 1rem;
+            color: var(--c-yellow);
+            background: #111;
+            border: 1px solid var(--c-yellow);
+            border-radius: 0;
+            padding: 0.4rem 1.5ch;
+            cursor: pointer;
+        }
+        .term-btn--alt {
+            color: var(--c-turquoise);
+            border-color: var(--c-turquoise);
+        }
+        .term-btn:focus-visible {
+            outline: 2px solid var(--c-neutral);
+            outline-offset: 2px;
+        }
+        @media (hover: hover) {
+            .term-btn:hover { background: var(--c-yellow); color: #000; }
+            .term-btn--alt:hover { background: var(--c-turquoise); color: #000; }
+        }
+        @media (prefers-reduced-motion: no-preference) {
+            .term-btn { transition: background 150ms ease-out, color 150ms ease-out; }
+        }
+    </style>
+</head>
+<body>
+<a class="skip-link" href="#report-form">Skip to report form</a>
+
+<main class="terminal-wrap">
+    <!-- The entire screen is a single pseudo-conversational form (CICS RETURN TRANSID CR00). -->
+    <form id="report-form" th:object="${form}" th:action="@{/report}" method="post"
+          aria-label="Transaction Reports">
+        <div class="screen" role="group" aria-label="Transaction Reports 24 by 80 screen">
+
+            <!-- ===== Header line 1 (BMS row 1) ===== -->
+            <span class="blue" style="grid-row:1;grid-column:1/span 5;">Tran:</span>
+            <span class="blue" style="grid-row:1;grid-column:7/span 4;" th:text="*{trnname}">CR00</span>
+            <span class="yellow" style="grid-row:1;grid-column:21/span 40;" th:text="*{title01}">AWS CardDemo</span>
+            <span class="blue" style="grid-row:1;grid-column:65/span 5;">Date:</span>
+            <span class="blue" style="grid-row:1;grid-column:71/span 8;" th:text="*{curdate} ?: 'mm/dd/yy'">mm/dd/yy</span>
+
+            <!-- ===== Header line 2 (BMS row 2) ===== -->
+            <span class="blue" style="grid-row:2;grid-column:1/span 5;">Prog:</span>
+            <span class="blue" style="grid-row:2;grid-column:7/span 8;" th:text="*{pgmname}">CORPT00C</span>
+            <span class="yellow" style="grid-row:2;grid-column:21/span 40;" th:text="*{title02}">Transaction Reports</span>
+            <span class="blue" style="grid-row:2;grid-column:65/span 5;">Time:</span>
+            <span class="blue" style="grid-row:2;grid-column:71/span 8;" th:text="*{curtime} ?: 'hh:mm:ss'">hh:mm:ss</span>
+
+            <!-- ===== Screen title (BMS row 4, NEUTRAL bright) ===== -->
+            <span class="neutral bright" style="grid-row:4;grid-column:30/span 19;">Transaction Reports</span>
+
+            <!-- ===== Report-type selection flags (three independent 1-char BMS fields) ===== -->
+            <!-- BMS MONTHLY (row 7): IC -> autofocus -->
+            <input type="text" class="fld" th:field="*{monthly}" id="monthly"
+                   maxlength="1" size="1" autocomplete="off" spellcheck="false" autofocus
+                   style="grid-row:7;grid-column:10/span 1;">
+            <label class="turquoise bright" for="monthly"
+                   style="grid-row:7;grid-column:15/span 23;">Monthly (Current Month)</label>
+
+            <!-- BMS YEARLY (row 9) -->
+            <input type="text" class="fld" th:field="*{yearly}" id="yearly"
+                   maxlength="1" size="1" autocomplete="off" spellcheck="false"
+                   style="grid-row:9;grid-column:10/span 1;">
+            <label class="turquoise bright" for="yearly"
+                   style="grid-row:9;grid-column:15/span 23;">Yearly (Current Year)</label>
+
+            <!-- BMS CUSTOM (row 11) -->
+            <input type="text" class="fld" th:field="*{custom}" id="custom"
+                   maxlength="1" size="1" autocomplete="off" spellcheck="false"
+                   style="grid-row:11;grid-column:10/span 1;">
+            <label class="turquoise bright" for="custom"
+                   style="grid-row:11;grid-column:15/span 23;">Custom (Date Range)</label>
+
+            <!-- ===== Custom start date (BMS row 13): MM / DD / YYYY numeric parts ===== -->
+            <span class="turquoise" style="grid-row:13;grid-column:15/span 12;">Start Date :</span>
+            <input type="text" class="fld" th:field="*{sdtmm}" id="sdtmm"
+                   maxlength="2" size="2" inputmode="numeric" pattern="[0-9]*"
+                   autocomplete="off" spellcheck="false" aria-label="Start date month (MM)"
+                   style="grid-row:13;grid-column:29/span 2;">
+            <span class="blue" style="grid-row:13;grid-column:32/span 1;">/</span>
+            <input type="text" class="fld" th:field="*{sdtdd}" id="sdtdd"
+                   maxlength="2" size="2" inputmode="numeric" pattern="[0-9]*"
+                   autocomplete="off" spellcheck="false" aria-label="Start date day (DD)"
+                   style="grid-row:13;grid-column:34/span 2;">
+            <span class="blue" style="grid-row:13;grid-column:37/span 1;">/</span>
+            <input type="text" class="fld" th:field="*{sdtyyyy}" id="sdtyyyy"
+                   maxlength="4" size="4" inputmode="numeric" pattern="[0-9]*"
+                   autocomplete="off" spellcheck="false" aria-label="Start date year (YYYY)"
+                   style="grid-row:13;grid-column:39/span 4;">
+            <span class="blue" style="grid-row:13;grid-column:46/span 12;">(MM/DD/YYYY)</span>
+
+            <!-- ===== Custom end date (BMS row 14; label has two leading spaces) ===== -->
+            <span class="turquoise" style="grid-row:14;grid-column:15/span 12;">  End Date :</span>
+            <input type="text" class="fld" th:field="*{edtmm}" id="edtmm"
+                   maxlength="2" size="2" inputmode="numeric" pattern="[0-9]*"
+                   autocomplete="off" spellcheck="false" aria-label="End date month (MM)"
+                   style="grid-row:14;grid-column:29/span 2;">
+            <span class="blue" style="grid-row:14;grid-column:32/span 1;">/</span>
+            <input type="text" class="fld" th:field="*{edtdd}" id="edtdd"
+                   maxlength="2" size="2" inputmode="numeric" pattern="[0-9]*"
+                   autocomplete="off" spellcheck="false" aria-label="End date day (DD)"
+                   style="grid-row:14;grid-column:34/span 2;">
+            <span class="blue" style="grid-row:14;grid-column:37/span 1;">/</span>
+            <input type="text" class="fld" th:field="*{edtyyyy}" id="edtyyyy"
+                   maxlength="4" size="4" inputmode="numeric" pattern="[0-9]*"
+                   autocomplete="off" spellcheck="false" aria-label="End date year (YYYY)"
+                   style="grid-row:14;grid-column:39/span 4;">
+            <span class="blue" style="grid-row:14;grid-column:46/span 12;">(MM/DD/YYYY)</span>
+
+            <!-- ===== Confirmation prompt (BMS row 19) + confirm flag + (Y/N) hint ===== -->
+            <label class="turquoise" for="confirm"
+                   style="grid-row:19;grid-column:6/span 59;">The Report will be submitted for printing. Please confirm: </label>
+            <input type="text" class="fld" th:field="*{confirm}" id="confirm"
+                   maxlength="1" size="1" autocomplete="off" spellcheck="false"
+                   style="grid-row:19;grid-column:66/span 1;">
+            <span class="neutral" style="grid-row:19;grid-column:69/span 5;">(Y/N)</span>
+
+            <!-- ===== Error message line (BMS row 23, RED bright, conditional) ===== -->
+            <span class="red bright" role="alert"
+                  th:if="${!#strings.isEmpty(form.errmsg)}"
+                  th:text="*{errmsg}"
+                  style="grid-row:23;grid-column:1/span 78;">error message</span>
+
+            <!-- ===== PF-key legend (BMS row 24, YELLOW; two spaces preserved) ===== -->
+            <span class="yellow" style="grid-row:24;grid-column:1/span 23;">ENTER=Continue  F3=Back</span>
+        </div>
+
+        <!-- PF-key affordances. The controller reads request param "pfkey".
+             ENTER is the first submit control, so pressing Enter in any field posts pfkey=ENTER. -->
+        <div class="action-bar">
+            <button type="submit" name="pfkey" value="ENTER" class="term-btn">ENTER = Continue</button>
+            <button type="submit" name="pfkey" value="PF3" class="term-btn term-btn--alt">F3 = Back</button>
+        </div>
+    </form>
+</main>
+</body>
+</html>

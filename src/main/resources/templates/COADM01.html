@@ -1,0 +1,266 @@
+<!DOCTYPE html>
+<!--
+  CardDemo - Admin Menu screen (server-rendered Thymeleaf).
+
+  Origin (read-only): legacy/bms/COADM01.bms (mapset COADM01, map COADM1A)
+                      + legacy/cpy-bms/COADM01.CPY (symbolic map).
+  Rendered by       : com.aws.carddemo.web.controller.AdminMenuController
+                      (CICS transaction CA00, program COADM01C); view name "COADM01".
+  Backing bean      : com.aws.carddemo.dto.screen.COADM01Form (model attribute "form").
+  Routes            : GET /admin/menu (display), POST /admin/menu (submit); ROLE_ADMIN only.
+
+  This template reproduces the original 24x80 3270 screen one-for-one: field
+  positions, lengths, colours and PF-key contract are preserved. It is intentionally
+  self-contained (no shared fragment) and uses only an inline <style> block; no
+  external CSS/JS and no i18n message bundles (US-only, per FixedLocaleResolver).
+-->
+<html lang="en" xmlns:th="http://www.thymeleaf.org">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="color-scheme" content="dark">
+    <title>CardDemo - Admin Menu</title>
+    <style>
+        /* ---- Reset ------------------------------------------------------- */
+        *, *::before, *::after { box-sizing: border-box; }
+        html, body { margin: 0; padding: 0; }
+
+        body {
+            background: #000000;
+            color: #cfcfcf;
+            font-family: 'Courier New', Courier, monospace;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: flex-start;
+            min-height: 100vh;
+            padding: 1rem;
+            overflow-x: auto;
+        }
+
+        /* ---- 24x80 terminal grid ---------------------------------------- */
+        /* The screen is an exact 80-column by 24-row monospaced character grid.
+           Each field is absolutely positioned: horizontal offset in `ch`
+           (one character cell) and vertical offset in whole row-heights.
+           A fixed pixel-derived grid is used deliberately (not rem) so the
+           80x24 alignment cannot drift with user font settings; the BMS layout
+           is the authoritative design source for these dimensions. */
+        .screen {
+            --rh: 1.5em;                    /* one row height (24px at 16px font) */
+            position: relative;
+            width: 80ch;
+            height: calc(24 * var(--rh));
+            font-size: 16px;
+            line-height: 1.5;
+            background: #000000;
+            border: 1px solid #333333;
+        }
+
+        .fld {
+            position: absolute;
+            margin: 0;
+            padding: 0;
+            font-family: inherit;
+            font-size: inherit;
+            font-weight: 400;
+            height: var(--rh);
+            line-height: var(--rh);
+            white-space: pre;               /* preserve exact spacing (e.g. legend) */
+            overflow: hidden;               /* clip to the field's BMS length */
+        }
+
+        /* ---- BMS colour palette -> inline hex --------------------------- */
+        /* BLITZY [A11Y]: the 3270/BMS colour palette below is rendered verbatim
+           from the source screen, which is the authoritative design source for
+           this migration. BLUE (#0000CD) and RED (#CD0000) text on the black
+           background fall below the WCAG AA 4.5:1 contrast recommendation.
+           They are preserved intentionally for terminal fidelity and flagged
+           here for designer review rather than being silently auto-corrected. */
+        .blue    { color: #0000CD; }
+        .yellow  { color: #CCCC00; }
+        .turq    { color: #00CDCD; }
+        .green   { color: #00CD00; }
+        .red     { color: #CD0000; }
+        .neutral { color: #FFFFFF; }
+        .bright  { font-weight: 700; }      /* BMS BRT attribute */
+
+        /* ---- Option input (BMS field OPTION) ---------------------------- */
+        /* ATTRB=(FSET,IC,NORM,NUM,UNPROT), HILIGHT=UNDERLINE,
+           JUSTIFY=(RIGHT,ZERO), LENGTH=2. IC -> autofocus; NUM -> numeric;
+           UNDERLINE -> bottom border; RIGHT -> right-aligned text. */
+        .opt-input {
+            position: absolute;
+            width: 2ch;
+            height: var(--rh);
+            padding: 0;
+            margin: 0;
+            border: none;
+            border-bottom: 1px solid #00CD00;
+            background: transparent;
+            color: #00CD00;
+            caret-color: #00CD00;
+            font-family: inherit;
+            font-size: inherit;
+            line-height: var(--rh);
+            text-align: right;
+        }
+        .opt-input:focus { outline: none; background: #001400; }
+        .opt-input:focus-visible {
+            outline: 2px solid #00CDCD;
+            outline-offset: 1px;
+            background: #001400;
+        }
+
+        /* ---- PF-key controls (accessible web affordance for ENTER/F3) --- */
+        /* The on-screen legend on row 24 preserves the original PF-key
+           contract; these submit buttons are the clickable, no-JavaScript
+           web equivalent. "Continue" is first in the DOM so pressing Enter
+           in the option field submits with pfkey=ENTER. */
+        .controls {
+            width: 80ch;
+            display: flex;
+            gap: 1ch;
+            margin-top: 0.5rem;
+        }
+        .pfkey-btn {
+            font-family: 'Courier New', Courier, monospace;
+            font-size: 16px;
+            background: #111111;
+            color: #CCCC00;
+            border: 1px solid #444444;
+            padding: 0.25rem 1ch;
+            cursor: pointer;
+        }
+        @media (hover: hover) {
+            .pfkey-btn:hover { background: #1c1c00; color: #FFFF33; }
+        }
+        @media (prefers-reduced-motion: no-preference) {
+            .pfkey-btn { transition: background-color 180ms ease-out, color 180ms ease-out; }
+        }
+        .pfkey-btn:focus-visible {
+            outline: 2px solid #00CDCD;
+            outline-offset: 2px;
+        }
+
+        /* ---- Skip link (invisible until focused) ------------------------ */
+        .skip-link {
+            position: absolute;
+            left: -9999px;
+            top: auto;
+            width: 1px;
+            height: 1px;
+            overflow: hidden;
+        }
+        .skip-link:focus {
+            left: 8px;
+            top: 8px;
+            width: auto;
+            height: auto;
+            padding: 4px 8px;
+            background: #000000;
+            color: #FFFFFF;
+            border: 1px solid #00CDCD;
+            z-index: 10;
+        }
+    </style>
+</head>
+<body>
+    <a class="skip-link" href="#option">Skip to option entry</a>
+
+    <form id="admin-menu-form"
+          th:object="${form}"
+          th:action="@{/admin/menu}"
+          method="post"
+          class="terminal">
+
+        <!-- 24x80 terminal screen -->
+        <div class="screen">
+
+            <!-- Row 1: Tran / Title01 / Date -->
+            <span class="fld blue"   style="top:0; left:0;    width:5ch">Tran:</span>
+            <span class="fld blue"   style="top:0; left:6ch;  width:4ch"  th:text="*{trnname} ?: ''">CA00</span>
+            <span class="fld yellow" style="top:0; left:20ch; width:40ch" th:text="*{title01} ?: ''"></span>
+            <span class="fld blue"   style="top:0; left:64ch; width:5ch">Date:</span>
+            <span class="fld blue"   style="top:0; left:70ch; width:8ch"  th:text="*{curdate} ?: 'mm/dd/yy'">mm/dd/yy</span>
+
+            <!-- Row 2: Prog / Title02 / Time -->
+            <span class="fld blue"   style="top:calc(1 * var(--rh)); left:0;    width:5ch">Prog:</span>
+            <span class="fld blue"   style="top:calc(1 * var(--rh)); left:6ch;  width:8ch"  th:text="*{pgmname} ?: ''">COADM01C</span>
+            <span class="fld yellow" style="top:calc(1 * var(--rh)); left:20ch; width:40ch" th:text="*{title02} ?: ''"></span>
+            <span class="fld blue"   style="top:calc(1 * var(--rh)); left:64ch; width:5ch">Time:</span>
+            <span class="fld blue"   style="top:calc(1 * var(--rh)); left:70ch; width:8ch"  th:text="*{curtime} ?: 'hh:mm:ss'">hh:mm:ss</span>
+
+            <!-- Row 4: screen title (only content difference vs Main Menu) -->
+            <h1 class="fld neutral bright" style="top:calc(3 * var(--rh)); left:34ch; width:10ch">Admin Menu</h1>
+
+            <!-- Rows 6-17: 12 runtime-filled admin menu option lines -->
+            <span class="fld blue" style="top:calc(5 * var(--rh));  left:19ch; width:40ch" th:text="*{optn001} ?: ''"></span>
+            <span class="fld blue" style="top:calc(6 * var(--rh));  left:19ch; width:40ch" th:text="*{optn002} ?: ''"></span>
+            <span class="fld blue" style="top:calc(7 * var(--rh));  left:19ch; width:40ch" th:text="*{optn003} ?: ''"></span>
+            <span class="fld blue" style="top:calc(8 * var(--rh));  left:19ch; width:40ch" th:text="*{optn004} ?: ''"></span>
+            <span class="fld blue" style="top:calc(9 * var(--rh));  left:19ch; width:40ch" th:text="*{optn005} ?: ''"></span>
+            <span class="fld blue" style="top:calc(10 * var(--rh)); left:19ch; width:40ch" th:text="*{optn006} ?: ''"></span>
+            <span class="fld blue" style="top:calc(11 * var(--rh)); left:19ch; width:40ch" th:text="*{optn007} ?: ''"></span>
+            <span class="fld blue" style="top:calc(12 * var(--rh)); left:19ch; width:40ch" th:text="*{optn008} ?: ''"></span>
+            <span class="fld blue" style="top:calc(13 * var(--rh)); left:19ch; width:40ch" th:text="*{optn009} ?: ''"></span>
+            <span class="fld blue" style="top:calc(14 * var(--rh)); left:19ch; width:40ch" th:text="*{optn010} ?: ''"></span>
+            <span class="fld blue" style="top:calc(15 * var(--rh)); left:19ch; width:40ch" th:text="*{optn011} ?: ''"></span>
+            <span class="fld blue" style="top:calc(16 * var(--rh)); left:19ch; width:40ch" th:text="*{optn012} ?: ''"></span>
+
+            <!-- Row 20: prompt + option input -->
+            <label class="fld turq bright"
+                   for="option"
+                   style="top:calc(19 * var(--rh)); left:14ch; width:25ch">Please select an option :</label>
+            <input class="opt-input"
+                   style="top:calc(19 * var(--rh)); left:40ch"
+                   type="text"
+                   th:field="*{option}"
+                   maxlength="2"
+                   inputmode="numeric"
+                   pattern="\d{0,2}"
+                   autocomplete="off"
+                   spellcheck="false"
+                   autofocus
+                   aria-describedby="errmsg-line">
+
+            <!-- Row 23: error / informational message (red, bold; empty when none) -->
+            <span id="errmsg-line"
+                  class="fld red bright"
+                  style="top:calc(22 * var(--rh)); left:0; width:78ch"
+                  role="alert"
+                  aria-live="assertive"
+                  th:text="*{errmsg} ?: ''"></span>
+
+            <!-- Row 24: PF-key legend (verbatim from BMS INITIAL) -->
+            <span class="fld yellow"
+                  style="top:calc(23 * var(--rh)); left:0; width:23ch">ENTER=Continue  F3=Exit</span>
+        </div>
+
+        <!-- Clickable PF-key controls (work without JavaScript; keyboard/AT friendly) -->
+        <div class="controls">
+            <button type="submit" name="pfkey" value="ENTER" id="pf-continue" class="pfkey-btn">ENTER = Continue</button>
+            <button type="submit" name="pfkey" value="PF3" id="pf-exit" class="pfkey-btn">F3 = Exit</button>
+        </div>
+    </form>
+
+    <script>
+        /* Progressive enhancement only. The two submit buttons above are the
+           canonical controls and function fully without JavaScript. This maps
+           the physical 3270 PF3 key to the Exit action so keyboard users get
+           terminal-faithful behaviour. ENTER is handled natively by the browser
+           (form submits via the first submit button, which carries pfkey=ENTER).
+           No third-party libraries are used. */
+        (function () {
+            document.addEventListener('keydown', function (event) {
+                if (event.key === 'F3') {
+                    event.preventDefault();
+                    var exitButton = document.getElementById('pf-exit');
+                    if (exitButton) {
+                        exitButton.click();
+                    }
+                }
+            });
+        })();
+    </script>
+</body>
+</html>

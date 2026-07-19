@@ -1,0 +1,222 @@
+<!DOCTYPE html>
+<!--
+  COCRDSL.html — View Credit Card Detail screen (BMS mapset COCRDSL / map CCRDSLA).
+
+  Server-rendered Thymeleaf template reproducing the AWS CardDemo 3270/BMS
+  "View Credit Card Detail" screen one-for-one on a fixed 24x80 monospaced grid.
+
+  Origin (read-only, authoritative layout source):
+    legacy/bms/COCRDSL.bms  +  legacy/cpy-bms/COCRDSL.CPY
+  Rendered by: com.aws.carddemo.web.controller.CardController
+    (card detail; CICS transaction CCDL -> program COCRDSLC); view name "COCRDSL".
+  Routes: GET /card/detail (display), POST /card/detail (search/submit).
+  Backing bean: com.aws.carddemo.dto.screen.COCRDSLForm (model attribute "form").
+
+  BLITZY [A11Y]: The 3270 terminal palette is reproduced verbatim from the
+  authoritative BMS source (BLUE #0000CD, YELLOW #CCCC00, TURQUOISE #00CDCD,
+  GREEN #00CD00, RED #CD0000, NEUTRAL #FFFFFF) on a black background. BLUE and
+  RED text on black fall below the WCAG AA 4.5:1 contrast minimum for normal
+  text. Per design-source precedence the original colors are implemented exactly
+  and flagged here for designer review rather than silently auto-corrected.
+-->
+<html lang="en" xmlns:th="http://www.thymeleaf.org">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>View Credit Card Detail</title>
+    <style>
+        /* -- Reset ---------------------------------------------------------- */
+        *, *::before, *::after { box-sizing: border-box; }
+
+        html {
+            background-color: #000000;
+        }
+
+        body {
+            margin: 0;
+            min-height: 100vh;
+            display: flex;
+            align-items: flex-start;
+            justify-content: center;
+            padding: 1rem;
+            background-color: #000000;
+            /* px on decorative border only; rem for scalable metrics elsewhere. */
+            font-family: "Courier New", Courier, "Lucida Console", monospace;
+        }
+
+        /* -- 24x80 terminal grid ------------------------------------------- */
+        /* The form IS the terminal surface: a relatively positioned 80ch x 24row
+           box. Every field is an absolutely positioned "cell" whose column maps
+           to `ch` units (monospace advance) and whose row maps to a 1.5rem line
+           box, faithfully reproducing the BMS POS=(row,col) grid. */
+        .terminal {
+            position: relative;
+            width: 80ch;
+            height: 36rem;               /* 24 rows * 1.5rem */
+            margin: 0;
+            font-size: 16px;             /* fixes the ch advance for the grid */
+            line-height: 1.5rem;
+            background-color: #000000;
+            color: #FFFFFF;
+            overflow: hidden;
+        }
+
+        .cell {
+            position: absolute;
+            margin: 0;
+            padding: 0;
+            height: 1.5rem;
+            line-height: 1.5rem;
+            white-space: pre;            /* preserve verbatim BMS label spacing */
+            font-family: inherit;
+            font-size: inherit;
+        }
+
+        /* Read-only display value fields (BMS HILIGHT=UNDERLINE, output on the
+           VIEW screen): fixed-width underlined cells. */
+        .field {
+            display: inline-block;
+            overflow: hidden;
+            border-bottom: 1px solid currentColor;
+            vertical-align: top;
+        }
+
+        /* Editable search inputs (BMS UNPROT + HILIGHT=UNDERLINE). */
+        input.cell {
+            background-color: transparent;
+            border: none;
+            border-bottom: 1px solid currentColor;
+            font-family: inherit;
+            font-size: inherit;
+            line-height: 1.5rem;
+            outline: none;
+            vertical-align: top;
+        }
+        input.cell:focus-visible {
+            outline: 2px solid #FFFFFF;
+            outline-offset: 0;
+        }
+
+        /* PF-key legend controls (row 24). Rendered as real submit buttons that
+           look like the BMS legend text so the visible legend is also the
+           accessible, keyboard-operable control set. */
+        .pf {
+            margin: 0;
+            padding: 0;
+            border: none;
+            background-color: transparent;
+            color: inherit;
+            font-family: inherit;
+            font-size: inherit;
+            line-height: 1.5rem;
+            white-space: pre;
+            cursor: pointer;
+        }
+        .pf:focus-visible {
+            outline: 2px solid #FFFFFF;
+            outline-offset: 0;
+        }
+        @media (hover: hover) {
+            .pf:hover { text-decoration: underline; }
+        }
+
+        /* Skip link: invisible until focused (keyboard users). */
+        .skip-link {
+            position: absolute;
+            left: -9999px;
+            top: 0;
+            z-index: 10;
+            padding: 0.5rem 0.75rem;
+            background-color: #000000;
+            color: #FFFFFF;
+            font-family: inherit;
+        }
+        .skip-link:focus { left: 0; }
+    </style>
+</head>
+<body>
+    <a class="skip-link" href="#acctsid">Skip to card search form</a>
+    <main>
+        <!-- CSRF: th:action emits the hidden _csrf token; never use a plain action=. -->
+        <form class="terminal"
+              th:object="${form}"
+              th:action="@{/card/detail}"
+              method="post"
+              aria-label="View Credit Card Detail screen">
+
+            <!-- ============================ Row 1 ============================ -->
+            <span class="cell" style="top:0;left:0;color:#0000CD;">Tran:</span>
+            <span class="cell" style="top:0;left:6ch;color:#0000CD;" th:text="*{trnname}"></span>
+            <span class="cell" style="top:0;left:20ch;color:#CCCC00;" th:text="*{title01}"></span>
+            <span class="cell" style="top:0;left:64ch;color:#0000CD;">Date:</span>
+            <span class="cell" style="top:0;left:70ch;color:#0000CD;" th:text="*{curdate} ?: 'mm/dd/yy'">mm/dd/yy</span>
+
+            <!-- ============================ Row 2 ============================ -->
+            <span class="cell" style="top:1.5rem;left:0;color:#0000CD;">Prog:</span>
+            <span class="cell" style="top:1.5rem;left:6ch;color:#0000CD;" th:text="*{pgmname}"></span>
+            <span class="cell" style="top:1.5rem;left:20ch;color:#CCCC00;" th:text="*{title02}"></span>
+            <span class="cell" style="top:1.5rem;left:64ch;color:#0000CD;">Time:</span>
+            <span class="cell" style="top:1.5rem;left:70ch;color:#0000CD;" th:text="*{curtime} ?: 'hh:mm:ss'">hh:mm:ss</span>
+
+            <!-- ===================== Row 4: screen title ===================== -->
+            <h1 class="cell" style="top:4.5rem;left:29ch;color:#FFFFFF;font-weight:normal;font-size:1rem;">View Credit Card Detail</h1>
+
+            <!-- ================= Row 7: Account Number (input) ============== -->
+            <label class="cell" for="acctsid" style="top:9rem;left:22ch;color:#00CDCD;">Account Number    :</label>
+            <input type="text" class="cell"
+                   th:field="*{acctsid}"
+                   maxlength="11" size="11"
+                   autocomplete="off" spellcheck="false" autofocus
+                   style="top:9rem;left:44ch;width:11ch;color:#00CD00;">
+
+            <!-- ================= Row 8: Card Number (input) ================= -->
+            <label class="cell" for="cardsid" style="top:10.5rem;left:22ch;color:#00CDCD;">Card Number       :</label>
+            <input type="text" class="cell"
+                   th:field="*{cardsid}"
+                   maxlength="16" size="16"
+                   autocomplete="off" spellcheck="false"
+                   style="top:10.5rem;left:44ch;width:16ch;color:#00CD00;">
+
+            <!-- ============ Row 11: Name on card (read-only view) ========== -->
+            <span class="cell" id="crdname-lbl" style="top:15rem;left:3ch;color:#00CDCD;">Name on card      :</span>
+            <span class="cell field" aria-labelledby="crdname-lbl"
+                  style="top:15rem;left:24ch;width:50ch;color:#00CD00;" th:text="*{crdname}"></span>
+
+            <!-- ========== Row 13: Card Active Y/N (read-only view) ========= -->
+            <span class="cell" id="crdstcd-lbl" style="top:18rem;left:3ch;color:#00CDCD;">Card Active Y/N   : </span>
+            <span class="cell field" aria-labelledby="crdstcd-lbl"
+                  style="top:18rem;left:24ch;width:1ch;color:#00CD00;" th:text="*{crdstcd}"></span>
+
+            <!-- ============ Row 15: Expiry Date (read-only view) ========== -->
+            <span class="cell" id="expiry-lbl" style="top:21rem;left:3ch;color:#00CDCD;">Expiry Date       : </span>
+            <span class="cell field" aria-label="Card expiry month"
+                  style="top:21rem;left:24ch;width:2ch;color:#00CD00;" th:text="*{expmon}"></span>
+            <span class="cell" style="top:21rem;left:27ch;color:#00CD00;">/</span>
+            <span class="cell field" aria-label="Card expiry year"
+                  style="top:21rem;left:29ch;width:4ch;color:#00CD00;" th:text="*{expyear}"></span>
+
+            <!-- ============ Row 20: informational message (cond.) ========== -->
+            <span class="cell" role="status" aria-live="polite"
+                  th:if="${!#strings.isEmpty(form.infomsg)}"
+                  th:text="*{infomsg}"
+                  style="top:28.5rem;left:24ch;max-width:40ch;color:#FFFFFF;"></span>
+
+            <!-- =============== Row 23: error message (cond., X(80)) ========= -->
+            <!-- errmsg is PIC X(80) on this screen (NOT X(78)); the wider error line. -->
+            <div class="cell" role="alert"
+                 th:if="${!#strings.isEmpty(form.errmsg)}"
+                 th:text="*{errmsg}"
+                 style="top:33rem;left:0;max-width:80ch;color:#CD0000;font-weight:bold;"></div>
+
+            <!-- ================= Row 24: PF-key legend (FKEYS) ============== -->
+            <!-- BMS FKEYS PIC X(75) INITIAL='ENTER=Search Cards  F3=Exit'.
+                 Realized as real submit buttons carrying request param pfkey.
+                 ENTER is the first submit button so pressing Enter in a field
+                 submits with pfkey=ENTER (Search Cards). The two literal spaces
+                 between the buttons reproduce the BMS legend text exactly. -->
+            <div class="cell" style="top:34.5rem;left:0;color:#CCCC00;"><button type="submit" name="pfkey" value="ENTER" class="pf">ENTER=Search Cards</button>  <button type="submit" name="pfkey" value="PF3" class="pf">F3=Exit</button></div>
+
+        </form>
+    </main>
+</body>
+</html>

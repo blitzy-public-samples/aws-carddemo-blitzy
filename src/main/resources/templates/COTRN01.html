@@ -1,0 +1,257 @@
+<!DOCTYPE html>
+<html lang="en" xmlns:th="http://www.thymeleaf.org">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>View Transaction - AWS CardDemo</title>
+    <!--
+      COTRN01.html - View Transaction screen (CICS transaction CT01 / program COTRN01C).
+      One-for-one server-rendered reproduction of BMS mapset COTRN01 / map COTRN1A.
+      Origin (read-only): legacy/bms/COTRN01.bms + legacy/cpy-bms/COTRN01.CPY
+      Rendered by : com.aws.carddemo.web.controller.TransactionController (view name "COTRN01").
+      Backing bean: com.aws.carddemo.dto.screen.COTRN01Form (model attribute "form").
+      Layout      : fixed 24x80 monospaced 3270 grid (1 char = 1ch, 1 line = --row-h).
+      PF keys     : controller reads request param "pfkey" (ENTER, PF3, PF4, PF5).
+
+      BLITZY [A11Y]: The BMS COLOR=BLUE (#0000CD) display fields render at a low contrast
+      ratio (~2.4:1) against the black terminal background, below the WCAG AA 4.5:1
+      recommendation. The 3270/BMS color contract is the authoritative design source for
+      this migration, so the color is preserved verbatim and flagged here for designer
+      review rather than being silently altered.
+    -->
+    <style>
+        :root {
+            /* BMS color contract -> inline hex (authoritative design source) */
+            --c-blue: #0000CD;
+            --c-yellow: #CCCC00;
+            --c-turquoise: #00CDCD;
+            --c-green: #00CD00;
+            --c-red: #CD0000;
+            --c-neutral: #FFFFFF;
+            --screen-bg: #000000;
+            /* Fixed 3270 artboard geometry */
+            --cols: 80;
+            --rows: 24;
+            --row-h: 1.4rem;
+        }
+
+        *, *::before, *::after {
+            box-sizing: border-box;
+        }
+
+        html {
+            font-size: 100%;
+        }
+
+        body {
+            margin: 0;
+            min-block-size: 100vh;
+            background: var(--screen-bg);
+            color: var(--c-neutral);
+            font-family: "Courier New", "DejaVu Sans Mono", "Consolas", monospace;
+            font-size: 1rem;
+            line-height: var(--row-h);
+        }
+
+        .screen-wrap {
+            inline-size: 100%;
+        }
+
+        /* The 80-column x 24-row terminal artboard, centered on the page. */
+        .screen {
+            position: relative;
+            inline-size: calc(var(--cols) * 1ch);
+            block-size: calc(var(--rows) * var(--row-h));
+            margin-block: 1rem;
+            margin-inline: auto;
+            background: var(--screen-bg);
+            overflow: hidden;
+        }
+
+        /*
+         * Every screen element is a grid cell positioned by the 1-based BMS
+         * coordinates supplied via the --line / --col / --w custom properties:
+         *   top   = (line - 1) * row height
+         *   left  = (col  - 1) * one character
+         *   width = w * one character
+         */
+        .cell {
+            position: absolute;
+            inset-block-start: calc((var(--line) - 1) * var(--row-h));
+            inset-inline-start: calc((var(--col) - 1) * 1ch);
+            inline-size: calc(var(--w) * 1ch);
+            block-size: var(--row-h);
+            margin: 0;
+            padding: 0;
+            /*
+             * pre (not nowrap): a 3270 field renders the controller's fixed-width
+             * formatted string character-for-character, preserving leading/trailing
+             * justification spaces (e.g., a right-justified amount). overflow:hidden
+             * still clips anything wider than the BMS field length.
+             */
+            white-space: pre;
+            overflow: hidden;
+        }
+
+        /* BMS field colors */
+        .c-blue { color: var(--c-blue); }
+        .c-yellow { color: var(--c-yellow); }
+        .c-turquoise { color: var(--c-turquoise); }
+        .c-green { color: var(--c-green); }
+        .c-red { color: var(--c-red); }
+        .c-neutral { color: var(--c-neutral); }
+
+        /* BMS ATTRB=BRT (bright/highlighted intensity) */
+        .bright { font-weight: 700; }
+
+        /*
+         * The single editable field (TRNIDIN). BMS attributes: UNPROT, COLOR=GREEN,
+         * HILIGHT=UNDERLINE -> rendered as a borderless green field with an underline.
+         */
+        .field-input {
+            font: inherit;
+            line-height: var(--row-h);
+            color: var(--c-green);
+            background: transparent;
+            border: 0;
+            border-block-end: 1px solid var(--c-green);
+            outline-offset: 2px;
+        }
+        .field-input:focus-visible {
+            outline: 2px solid var(--c-neutral);
+        }
+
+        /*
+         * The row-24 legend renders as borderless "terminal text" submit buttons so the
+         * screen keeps the exact BMS legend appearance while remaining keyboard/mouse
+         * operable. Each button carries name="pfkey" and its PF value.
+         */
+        .pfkey {
+            font: inherit;
+            line-height: var(--row-h);
+            text-align: start;
+            color: var(--c-yellow);
+            background: none;
+            border: 0;
+            cursor: pointer;
+            outline-offset: 2px;
+        }
+        .pfkey:focus-visible {
+            outline: 2px solid var(--c-neutral);
+        }
+
+        @media (hover: hover) {
+            .pfkey:hover { text-decoration: underline; }
+        }
+
+        @media (prefers-reduced-motion: no-preference) {
+            .field-input,
+            .pfkey { transition: outline-color 150ms ease-out; }
+        }
+
+        /* Skip link: visually hidden until focused (zero visual impact on the grid). */
+        .skip-link {
+            position: absolute;
+            inset-inline-start: -999px;
+            inset-block-start: 0;
+            z-index: 10;
+            padding: 0.25rem 0.5rem;
+            background: var(--c-neutral);
+            color: var(--screen-bg);
+        }
+        .skip-link:focus {
+            inset-inline-start: 0;
+        }
+    </style>
+</head>
+<body>
+    <a class="skip-link" href="#trnidin">Skip to Transaction ID input</a>
+    <main class="screen-wrap">
+        <form th:object="${form}" th:action="@{/transaction/view}" method="post"
+              class="screen" aria-label="View Transaction">
+
+            <!-- ===================== Header line 1 (row 1) ===================== -->
+            <span class="cell c-blue" style="--line:1; --col:1; --w:5;">Tran:</span>
+            <span class="cell c-blue" style="--line:1; --col:7; --w:4;" th:text="${form.trnname}"></span>
+            <span class="cell c-yellow" style="--line:1; --col:21; --w:40;" th:text="${form.title01}"></span>
+            <span class="cell c-blue" style="--line:1; --col:65; --w:5;">Date:</span>
+            <span class="cell c-blue" style="--line:1; --col:71; --w:8;" th:text="${form.curdate}"></span>
+
+            <!-- ===================== Header line 2 (row 2) ===================== -->
+            <span class="cell c-blue" style="--line:2; --col:1; --w:5;">Prog:</span>
+            <span class="cell c-blue" style="--line:2; --col:7; --w:8;" th:text="${form.pgmname}"></span>
+            <span class="cell c-yellow" style="--line:2; --col:21; --w:40;" th:text="${form.title02}"></span>
+            <span class="cell c-blue" style="--line:2; --col:65; --w:5;">Time:</span>
+            <span class="cell c-blue" style="--line:2; --col:71; --w:8;" th:text="${form.curtime}"></span>
+
+            <!-- ===================== Title (row 4) ===================== -->
+            <span class="cell c-neutral bright" style="--line:4; --col:30; --w:16;">View Transaction</span>
+
+            <!-- ===================== Search input (row 6) ===================== -->
+            <label class="cell c-turquoise" style="--line:6; --col:6; --w:14;" for="trnidin">Enter Tran ID:</label>
+            <input class="cell field-input" style="--line:6; --col:21; --w:16;"
+                   type="text" th:field="*{trnidin}" maxlength="16" size="16"
+                   autocomplete="off" autofocus
+                   aria-label="Enter Transaction ID to fetch" />
+
+            <!-- ===================== Separator (row 8, 70 dashes) ===================== -->
+            <span class="cell c-neutral" style="--line:8; --col:6; --w:70;" aria-hidden="true">----------------------------------------------------------------------</span>
+
+            <!-- ===================== Detail: Transaction ID / Card Number (row 10) ===================== -->
+            <span class="cell c-turquoise" style="--line:10; --col:6; --w:15;">Transaction ID:</span>
+            <span class="cell c-blue" style="--line:10; --col:22; --w:16;" th:text="${form.trnid}"></span>
+            <span class="cell c-turquoise" style="--line:10; --col:45; --w:12;">Card Number:</span>
+            <span class="cell c-blue" style="--line:10; --col:58; --w:16;" th:text="${form.cardnum}"></span>
+
+            <!-- ===================== Detail: Type / Category / Source (row 12) ===================== -->
+            <span class="cell c-turquoise" style="--line:12; --col:6; --w:8;">Type CD:</span>
+            <span class="cell c-blue" style="--line:12; --col:15; --w:2;" th:text="${form.ttypcd}"></span>
+            <span class="cell c-turquoise" style="--line:12; --col:23; --w:12;">Category CD:</span>
+            <span class="cell c-blue" style="--line:12; --col:36; --w:4;" th:text="${form.tcatcd}"></span>
+            <span class="cell c-turquoise" style="--line:12; --col:46; --w:7;">Source:</span>
+            <span class="cell c-blue" style="--line:12; --col:54; --w:10;" th:text="${form.trnsrc}"></span>
+
+            <!-- ===================== Detail: Description (row 14) ===================== -->
+            <span class="cell c-turquoise" style="--line:14; --col:6; --w:12;">Description:</span>
+            <span class="cell c-blue" style="--line:14; --col:19; --w:60;" th:text="${form.tdesc}"></span>
+
+            <!-- ===================== Detail: Amount / Orig Date / Proc Date (row 16) ===================== -->
+            <span class="cell c-turquoise" style="--line:16; --col:6; --w:7;">Amount:</span>
+            <span class="cell c-blue" style="--line:16; --col:14; --w:12;" th:text="${form.trnamt}"></span>
+            <span class="cell c-turquoise" style="--line:16; --col:31; --w:10;">Orig Date:</span>
+            <span class="cell c-blue" style="--line:16; --col:42; --w:10;" th:text="${form.torigdt}"></span>
+            <span class="cell c-turquoise" style="--line:16; --col:57; --w:10;">Proc Date:</span>
+            <span class="cell c-blue" style="--line:16; --col:68; --w:10;" th:text="${form.tprocdt}"></span>
+
+            <!-- ===================== Detail: Merchant ID / Name (row 18) ===================== -->
+            <span class="cell c-turquoise" style="--line:18; --col:6; --w:12;">Merchant ID:</span>
+            <span class="cell c-blue" style="--line:18; --col:19; --w:9;" th:text="${form.mid}"></span>
+            <span class="cell c-turquoise" style="--line:18; --col:33; --w:14;">Merchant Name:</span>
+            <span class="cell c-blue" style="--line:18; --col:48; --w:30;" th:text="${form.mname}"></span>
+
+            <!-- ===================== Detail: Merchant City / Zip (row 20) ===================== -->
+            <span class="cell c-turquoise" style="--line:20; --col:6; --w:14;">Merchant City:</span>
+            <span class="cell c-blue" style="--line:20; --col:21; --w:25;" th:text="${form.mcity}"></span>
+            <span class="cell c-turquoise" style="--line:20; --col:53; --w:13;">Merchant Zip:</span>
+            <span class="cell c-blue" style="--line:20; --col:67; --w:10;" th:text="${form.mzip}"></span>
+
+            <!-- ===================== Error message (row 23, conditional) ===================== -->
+            <span class="cell c-red bright" style="--line:23; --col:1; --w:78;"
+                  role="alert"
+                  th:if="${!#strings.isEmpty(form.errmsg)}"
+                  th:text="${form.errmsg}"></span>
+
+            <!-- ===================== Legend / PF keys (row 24) ===================== -->
+            <!-- ENTER is first in DOM so pressing Enter in the input submits pfkey=ENTER. -->
+            <button class="cell pfkey" style="--line:24; --col:1; --w:11;"
+                    type="submit" name="pfkey" value="ENTER">ENTER=Fetch</button>
+            <button class="cell pfkey" style="--line:24; --col:14; --w:7;"
+                    type="submit" name="pfkey" value="PF3">F3=Back</button>
+            <button class="cell pfkey" style="--line:24; --col:23; --w:8;"
+                    type="submit" name="pfkey" value="PF4">F4=Clear</button>
+            <button class="cell pfkey" style="--line:24; --col:33; --w:15;"
+                    type="submit" name="pfkey" value="PF5">F5=Browse Tran.</button>
+        </form>
+    </main>
+</body>
+</html>

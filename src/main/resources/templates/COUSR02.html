@@ -1,0 +1,231 @@
+<!DOCTYPE html>
+<!--/*
+  ~ CardDemo - Update User screen (CICS transaction CU02, program COUSR02C).
+  ~
+  ~ Server-rendered Thymeleaf view that reproduces the 3270/BMS screen defined by
+  ~ mapset COUSR02 / map COUSR2A one-for-one on a fixed 24x80 monospaced grid.
+  ~
+  ~ Origin (read-only): legacy/bms/COUSR02.bms + legacy/cpy-bms/COUSR02.CPY
+  ~ Rendered by:        com.aws.carddemo.web.controller.UserAdminController (admin-only)
+  ~ Backing bean:       com.aws.carddemo.dto.screen.COUSR02Form (model attribute "form")
+  ~ Routes:             GET  /admin/users/update  (display)
+  ~                     POST /admin/users/update  (fetch/save; honored pfkey: ENTER, PF3, PF4, PF5, PF12)
+  ~
+  ~ Field/label positions, lengths, colors and PF-key legend are taken verbatim from the
+  ~ BMS POS/LENGTH/COLOR/INITIAL clauses. The 3270 base colours are rendered as hex.
+*/-->
+<html lang="en" xmlns:th="http://www.thymeleaf.org">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>CardDemo - Update User (CU02)</title>
+    <style>
+        /* ============================================================
+           Fixed 24x80 monospaced "green screen" grid.
+           Each element is absolutely positioned from its BMS POS=(row,col)
+           coordinate using CSS custom properties:
+             --r  BMS row    (1-based)  -> top:  (r-1) * row-height
+             --c  BMS column (1-based)  -> left: (c-1) * 1ch
+             --len  BMS field LENGTH    -> width: len * 1ch
+           ============================================================ */
+        :root {
+            --row-h: 1.3rem;            /* height of one 3270 text row */
+            --c-blue: #0000CD;          /* BMS BLUE      */
+            --c-yellow: #CCCC00;        /* BMS YELLOW    */
+            --c-turquoise: #00CDCD;     /* BMS TURQUOISE */
+            --c-green: #00CD00;         /* BMS GREEN     */
+            --c-red: #CD0000;           /* BMS RED       */
+            --c-neutral: #FFFFFF;       /* BMS NEUTRAL   */
+            --c-bg: #000000;            /* dark terminal background */
+        }
+
+        *, *::before, *::after { box-sizing: border-box; }
+
+        html { font-size: 16px; }
+
+        body {
+            margin: 0;
+            min-height: 100vh;
+            padding: 1rem;
+            background: var(--c-bg);
+            color: var(--c-green);
+            font-family: "Courier New", Courier, "DejaVu Sans Mono", monospace;
+            display: flex;
+            justify-content: center;
+            align-items: flex-start;
+            overflow: auto;
+        }
+
+        /* Visually-hidden skip link (invisible accessibility); visible on focus. */
+        .skip-link {
+            position: absolute;
+            left: -9999px;
+            top: 0;
+            padding: 0.25rem 0.5rem;
+            background: var(--c-neutral);
+            color: var(--c-bg);
+            z-index: 10;
+        }
+        .skip-link:focus { left: 0; }
+
+        /* The fixed 24x80 terminal surface; positioning context for all cells. */
+        .screen {
+            position: relative;
+            flex: 0 0 auto;
+            width: 80ch;
+            height: calc(24 * var(--row-h));
+            background: var(--c-bg);
+            font-size: 1rem;
+            line-height: var(--row-h);
+        }
+
+        /* A positioned static text cell (label or bound display value). */
+        .cell {
+            position: absolute;
+            top: calc((var(--r) - 1) * var(--row-h));
+            left: calc((var(--c) - 1) * 1ch);
+            margin: 0;
+            padding: 0;
+            height: var(--row-h);
+            line-height: var(--row-h);
+            white-space: pre;
+            font: inherit;
+        }
+
+        /* Bound display value clipped to its BMS field length so an over-long
+           value can never disturb the fixed grid (defensive: UI8). */
+        .out {
+            display: inline-block;
+            width: calc(var(--len) * 1ch);
+            overflow: hidden;
+            text-overflow: clip;
+        }
+
+        /* A positioned unprotected (editable) input field. */
+        .field {
+            position: absolute;
+            top: calc((var(--r) - 1) * var(--row-h));
+            left: calc((var(--c) - 1) * 1ch);
+            width: calc(var(--len) * 1ch);
+            height: var(--row-h);
+            margin: 0;
+            padding: 0;
+            border: 0;
+            border-bottom: 1px solid currentColor;  /* BMS HILIGHT=UNDERLINE */
+            background: transparent;
+            color: var(--c-green);
+            font: inherit;
+            line-height: var(--row-h);
+        }
+        .field:focus-visible {
+            outline: 2px solid var(--c-neutral);
+            outline-offset: 0;
+        }
+
+        /* Row-24 PF-key legend rendered as transparent submit buttons so the
+           screen submits with the correct pfkey value without any JavaScript. */
+        .legend-key {
+            position: absolute;
+            top: calc((var(--r) - 1) * var(--row-h));
+            left: calc((var(--c) - 1) * 1ch);
+            margin: 0;
+            padding: 0;
+            border: 0;
+            height: var(--row-h);
+            line-height: var(--row-h);
+            background: transparent;
+            color: var(--c-yellow);
+            font: inherit;
+            white-space: pre;
+            cursor: pointer;
+        }
+        .legend-key:focus-visible { outline: 2px solid var(--c-neutral); }
+        @media (hover: hover) {
+            .legend-key:hover { color: var(--c-neutral); text-decoration: underline; }
+        }
+
+        /* 3270 base palette. */
+        .blue      { color: var(--c-blue); }
+        .yellow    { color: var(--c-yellow); }
+        .turquoise { color: var(--c-turquoise); }
+        .green     { color: var(--c-green); }
+        .red       { color: var(--c-red); }
+        .neutral   { color: var(--c-neutral); }
+        .bright    { font-weight: 700; }   /* BMS BRT (bright intensity) */
+    </style>
+</head>
+<body>
+    <a class="skip-link" href="#screen-main">Skip to form</a>
+
+    <!-- 24x80 terminal surface reproducing BMS map COUSR2A. -->
+    <main class="screen" id="screen-main" tabindex="-1">
+        <form th:object="${form}" th:action="@{/admin/users/update}" method="post" autocomplete="off">
+
+            <!-- ===================== Header line 1 (row 1) ===================== -->
+            <span class="cell blue" style="--r:1; --c:1;">Tran:</span>
+            <span class="cell blue out" style="--r:1; --c:7; --len:4;" th:text="*{trnname}">CU02</span>
+            <span class="cell yellow out" style="--r:1; --c:21; --len:40;" th:text="*{title01}"></span>
+            <span class="cell blue" style="--r:1; --c:65;">Date:</span>
+            <span class="cell blue out" style="--r:1; --c:71; --len:8;" th:text="*{curdate}">mm/dd/yy</span>
+
+            <!-- ===================== Header line 2 (row 2) ===================== -->
+            <span class="cell blue" style="--r:2; --c:1;">Prog:</span>
+            <span class="cell blue out" style="--r:2; --c:7; --len:8;" th:text="*{pgmname}">COUSR02C</span>
+            <span class="cell yellow out" style="--r:2; --c:21; --len:40;" th:text="*{title02}"></span>
+            <span class="cell blue" style="--r:2; --c:65;">Time:</span>
+            <span class="cell blue out" style="--r:2; --c:71; --len:8;" th:text="*{curtime}">hh:mm:ss</span>
+
+            <!-- ===================== Screen title (row 4) ======================
+                 Semantic page heading; ".cell { font: inherit }" neutralises the
+                 default first-level-heading sizing so it renders identically to the
+                 fixed-grid BMS label. -->
+            <h1 class="cell neutral bright" style="--r:4; --c:35;">Update User</h1>
+
+            <!-- ============== User-ID fetch key (row 6) ======================== -->
+            <label class="cell green" style="--r:6; --c:6;" for="usridin">Enter User ID:</label>
+            <input class="field green" style="--r:6; --c:21; --len:8;" type="text"
+                   id="usridin" th:field="*{usridin}" maxlength="8" size="8" autofocus />
+
+            <!-- ============== Asterisk separator (row 8, exactly 70) =========== -->
+            <span class="cell yellow" style="--r:8; --c:6;" aria-hidden="true">**********************************************************************</span>
+
+            <!-- ============== First / Last name (row 11) ======================= -->
+            <label class="cell turquoise" style="--r:11; --c:6;" for="fname">First Name:</label>
+            <input class="field green" style="--r:11; --c:18; --len:20;" type="text"
+                   id="fname" th:field="*{fname}" maxlength="20" size="20" />
+            <label class="cell turquoise" style="--r:11; --c:45;" for="lname">Last Name:</label>
+            <input class="field green" style="--r:11; --c:56; --len:20;" type="text"
+                   id="lname" th:field="*{lname}" maxlength="20" size="20" />
+
+            <!-- ============== Password (row 13, masked) ======================== -->
+            <label class="cell turquoise" style="--r:13; --c:6;" for="passwd">Password:</label>
+            <input class="field green" style="--r:13; --c:16; --len:8;" type="password"
+                   id="passwd" th:field="*{passwd}" maxlength="8" size="8" autocomplete="new-password" />
+            <span class="cell blue" style="--r:13; --c:25;">(8 Char)</span>
+
+            <!-- ============== User type (row 15) =============================== -->
+            <label class="cell turquoise" style="--r:15; --c:6;" for="usrtype">User Type: </label>
+            <input class="field green" style="--r:15; --c:17; --len:1;" type="text"
+                   id="usrtype" th:field="*{usrtype}" maxlength="1" size="1" />
+            <span class="cell blue" style="--r:15; --c:19;">(A=Admin, U=User)</span>
+
+            <!-- ============== Error message (row 23, conditional) ============== -->
+            <span class="cell red bright out" style="--r:23; --c:1; --len:78;"
+                  th:if="${form.errmsg != null and !#strings.isEmpty(form.errmsg)}"
+                  th:text="*{errmsg}">error message</span>
+
+            <!-- ============== PF-key legend (row 24) ==========================
+                 Rendered as transparent submit buttons. ENTER is first in the DOM
+                 so pressing the Enter key submits with pfkey=ENTER (Fetch). The BMS
+                 legend uses a double-ampersand to mean one literal ampersand, so the
+                 F3 caption reads F3=Save[ampersand]Exit; it is written in this HTML
+                 source using the ampersand entity so it renders as a single glyph. -->
+            <button class="legend-key" style="--r:24; --c:1;"  type="submit" name="pfkey" value="ENTER">ENTER=Fetch</button>
+            <button class="legend-key" style="--r:24; --c:14;" type="submit" name="pfkey" value="PF3">F3=Save&amp;Exit</button>
+            <button class="legend-key" style="--r:24; --c:28;" type="submit" name="pfkey" value="PF4">F4=Clear</button>
+            <button class="legend-key" style="--r:24; --c:38;" type="submit" name="pfkey" value="PF5">F5=Save</button>
+            <button class="legend-key" style="--r:24; --c:47;" type="submit" name="pfkey" value="PF12">F12=Cancel</button>
+        </form>
+    </main>
+</body>
+</html>

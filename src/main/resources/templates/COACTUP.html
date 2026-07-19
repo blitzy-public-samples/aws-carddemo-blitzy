@@ -1,0 +1,396 @@
+<!DOCTYPE html>
+<!--
+  ~ CardDemo - Update Account screen (Thymeleaf view: COACTUP)
+  ~
+  ~ Server-rendered reproduction of the AWS CardDemo "Update Account" 3270/BMS
+  ~ screen. One-for-one migration of BMS mapset COACTUP / map CACTUPA.
+  ~   Origin (read-only): legacy/bms/COACTUP.bms + legacy/cpy-bms/COACTUP.CPY
+  ~   Rendered by       : com.aws.carddemo.web.controller.AccountController (CICS tran CAUP -> program COACTUPC)
+  ~   Backing bean      : com.aws.carddemo.dto.screen.COACTUPForm (model attribute "form")
+  ~   Routes            : GET /account/update (display), POST /account/update (process/save)
+  ~
+  ~ The original screen is a fixed 24-row x 80-column monospaced terminal grid.
+  ~ Every field/label is positioned at its exact BMS POS(row,col): the CSS left
+  ~ offset is (col-1) character cells and the CSS top offset is (row-1) row
+  ~ heights, so the rendered layout is byte-accurate to the mainframe map.
+  ~
+  ~ This is the editable sibling of the read-only COACTVW view: dates are split
+  ~ into year/month/day parts, the SSN into three parts, and each phone number
+  ~ into area/prefix/line parts (all underlined entry fields, per BMS
+  ~ HILIGHT=UNDERLINE). The five display-edited amount fields remain read-only
+  ~ display strings and are never modeled as numeric/BigDecimal on the screen.
+-->
+<html lang="en" xmlns:th="http://www.thymeleaf.org">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Update Account - CardDemo</title>
+    <!--
+      Inline (in-document) stylesheet only: no external CSS, no JS libraries.
+      Shared, reusable rules live here; the unique per-element grid coordinates
+      (left/top/width) are supplied via inline style attributes because each of
+      the 54 fields occupies a distinct (row, col) on the terminal grid.
+    -->
+    <style>
+        :root {
+            /* One monospace row height and font size drive the whole 24x80 grid. */
+            --lh: 21px;   /* height of one terminal row  */
+            --fs: 16px;   /* terminal font size          */
+            /* 3270 color palette mapped to inline hex (see agent prompt). */
+            --c-blue:  #0000CD;
+            --c-yellow:#CCCC00;
+            --c-turq:  #00CDCD;
+            --c-green: #00CD00;
+            --c-red:   #CD0000;
+            --c-neu:   #FFFFFF;
+            --c-bg:    #000000;
+        }
+
+        * { box-sizing: border-box; }
+
+        html { -webkit-text-size-adjust: 100%; }
+
+        body {
+            margin: 0;
+            padding: 16px;
+            min-height: 100vh;
+            background: #111111;
+            color: var(--c-green);
+            font-family: "Courier New", Courier, "DejaVu Sans Mono", monospace;
+            display: flex;
+            justify-content: center;
+            align-items: flex-start;
+        }
+
+        /* Screen-reader-only content: present for assistive tech, no visual box. */
+        .sr-only {
+            position: absolute !important;
+            width: 1px; height: 1px;
+            padding: 0; margin: -1px;
+            overflow: hidden;
+            clip: rect(0, 0, 0, 0);
+            white-space: nowrap;
+            border: 0;
+        }
+
+        /* The 24x80 terminal screen: relative box that anchors absolute cells. */
+        .scr {
+            position: relative;
+            width: 80ch;
+            height: calc(24 * var(--lh));
+            background: var(--c-bg);
+            color: var(--c-green);
+            font-size: var(--fs);
+            line-height: var(--lh);
+            letter-spacing: 0;
+            border: 1px solid #003300;
+            box-shadow: 0 0 8px rgba(0, 205, 0, 0.25);
+            overflow: hidden;
+        }
+
+        /* Every positioned display cell (constant label, header value, message). */
+        .c {
+            position: absolute;
+            height: var(--lh);
+            line-height: var(--lh);
+            white-space: pre;          /* preserve the exact spacing of BMS labels */
+            margin: 0;
+            padding: 0;
+            font-family: inherit;
+            font-size: inherit;
+            pointer-events: none;      /* labels never intercept clicks from fields */
+        }
+
+        /* 3270 color classes. */
+        .blue { color: var(--c-blue); }
+        .yel  { color: var(--c-yellow); }
+        .turq { color: var(--c-turq); }
+        .grn  { color: var(--c-green); }
+        .red  { color: var(--c-red); }
+        .neu  { color: var(--c-neu); }
+
+        /* Editable (UNPROT) entry fields: green text, underline highlight, faint
+           box so the field extent is visible even when empty (like a 3270 field). */
+        input.f {
+            position: absolute;
+            height: var(--lh);
+            line-height: var(--lh);
+            margin: 0;
+            padding: 0;
+            border: 0;
+            background: rgba(0, 205, 0, 0.10);
+            color: var(--c-green);
+            font-family: inherit;
+            font-size: inherit;
+            text-decoration: underline;   /* BMS HILIGHT=UNDERLINE */
+            caret-color: var(--c-green);
+            text-transform: uppercase;    /* 3270 entry fields display uppercase */
+        }
+        input.f:focus-visible {
+            outline: 2px solid var(--c-yellow);
+            outline-offset: 0;
+            background: rgba(204, 204, 0, 0.18);
+        }
+        /* Right-justified entry fields (BMS JUSTIFY=RIGHT): date and phone parts. */
+        input.rj { text-align: right; }
+
+        /* Read-only display-edited money strings: green, underlined, right-aligned.
+           Rendered as text (never inputs, never BigDecimal) per the migration spec. */
+        .m {
+            color: var(--c-green);
+            text-decoration: underline;
+            text-align: right;
+        }
+
+        /* Error line (BMS ATTRB=BRT => bold). */
+        .err { color: var(--c-red); font-weight: bold; }
+
+        /* PF-key legend rendered as flat, clickable yellow submit controls that
+           replace the physical 3270 PF keys. They look like the terminal legend
+           text but submit the form with the matching pfkey request parameter. */
+        button.pf {
+            position: absolute;
+            height: var(--lh);
+            line-height: var(--lh);
+            margin: 0;
+            padding: 0;
+            border: 0;
+            background: transparent;
+            color: var(--c-yellow);
+            font-family: inherit;
+            font-size: inherit;
+            text-align: left;
+            white-space: pre;
+            cursor: pointer;
+        }
+        button.pf:hover { text-decoration: underline; }
+        button.pf:focus-visible {
+            outline: 2px solid var(--c-yellow);
+            outline-offset: 0;
+        }
+        /* Transparent overlay control (the "F3=Exit" hotspot that shares the
+           fkeys legend region): invisible but keyboard/pointer operable. */
+        button.pf-overlay {
+            color: transparent;
+            background: transparent;
+            z-index: 2;
+        }
+        button.pf-overlay:focus-visible {
+            outline: 2px solid var(--c-yellow);
+            outline-offset: 0;
+        }
+    </style>
+</head>
+<body>
+<main>
+    <!-- Accessible page heading (visual title is the positioned cell at row 4). -->
+    <h1 class="sr-only">Update Account</h1>
+
+    <!--
+      CSRF is enabled: using th:action lets Spring Security's request-data-value
+      processor inject the hidden _csrf token automatically. Never a plain action.
+    -->
+    <form class="scr" th:object="${form}" th:action="@{/account/update}" method="post" autocomplete="off">
+
+        <!-- ============================ Header ============================ -->
+        <!-- Row 1: Tran id (left) and current date (right). -->
+        <span class="c blue" style="left:0ch;top:0">Tran:</span>
+        <span class="c blue" style="left:6ch;top:0;width:4ch" th:text="*{trnname}">CAUP</span>
+        <span class="c yel"  style="left:20ch;top:0;width:40ch" th:text="*{title01}"></span>
+        <span class="c blue" style="left:64ch;top:0">Date:</span>
+        <span class="c blue" style="left:70ch;top:0;width:8ch" th:text="*{curdate} ?: 'mm/dd/yy'">mm/dd/yy</span>
+
+        <!-- Row 2: Program name (left) and current time (right). -->
+        <span class="c blue" style="left:0ch;top:calc(1*var(--lh))">Prog:</span>
+        <span class="c blue" style="left:6ch;top:calc(1*var(--lh));width:8ch" th:text="*{pgmname}">COACTUPC</span>
+        <span class="c yel"  style="left:20ch;top:calc(1*var(--lh));width:40ch" th:text="*{title02}"></span>
+        <span class="c blue" style="left:64ch;top:calc(1*var(--lh))">Time:</span>
+        <span class="c blue" style="left:70ch;top:calc(1*var(--lh));width:8ch" th:text="*{curtime} ?: 'hh:mm:ss'">hh:mm:ss</span>
+
+        <!-- Row 4: Screen title (NEUTRAL bright), centered at column 33. -->
+        <span class="c neu" style="left:32ch;top:calc(3*var(--lh))">Update Account</span>
+
+        <!-- ========================= Account block ========================= -->
+        <!-- Row 5: Account number (autofocus, BMS IC) and active status. -->
+        <span class="c turq" style="left:18ch;top:calc(4*var(--lh))">Account Number :</span>
+        <input class="f" type="text" th:field="*{acctsid}" maxlength="11" autofocus="autofocus"
+               aria-label="Account Number" style="left:37ch;top:calc(4*var(--lh));width:11ch" />
+        <span class="c turq" style="left:56ch;top:calc(4*var(--lh))">Active Y/N: </span>
+        <input class="f" type="text" th:field="*{acsttus}" maxlength="1"
+               aria-label="Active status, Y or N" style="left:69ch;top:calc(4*var(--lh));width:1ch" />
+
+        <!-- Row 6: Opened date (year-month-day) and Credit Limit (display). -->
+        <span class="c turq" style="left:7ch;top:calc(5*var(--lh))">Opened :</span>
+        <input class="f rj" type="text" th:field="*{opnyear}" maxlength="4"
+               aria-label="Opened date year" style="left:16ch;top:calc(5*var(--lh));width:4ch" />
+        <span class="c grn" style="left:21ch;top:calc(5*var(--lh))">-</span>
+        <input class="f rj" type="text" th:field="*{opnmon}" maxlength="2"
+               aria-label="Opened date month" style="left:23ch;top:calc(5*var(--lh));width:2ch" />
+        <span class="c grn" style="left:26ch;top:calc(5*var(--lh))">-</span>
+        <input class="f rj" type="text" th:field="*{opnday}" maxlength="2"
+               aria-label="Opened date day" style="left:28ch;top:calc(5*var(--lh));width:2ch" />
+        <span class="c turq" style="left:38ch;top:calc(5*var(--lh))">Credit Limit        :</span>
+        <span class="c m" style="left:60ch;top:calc(5*var(--lh));width:15ch" th:text="*{acrdlim}"></span>
+
+        <!-- Row 7: Expiry date (year-month-day) and Cash credit Limit (display). -->
+        <span class="c turq" style="left:7ch;top:calc(6*var(--lh))">Expiry :</span>
+        <input class="f rj" type="text" th:field="*{expyear}" maxlength="4"
+               aria-label="Expiry date year" style="left:16ch;top:calc(6*var(--lh));width:4ch" />
+        <span class="c grn" style="left:21ch;top:calc(6*var(--lh))">-</span>
+        <input class="f rj" type="text" th:field="*{expmon}" maxlength="2"
+               aria-label="Expiry date month" style="left:23ch;top:calc(6*var(--lh));width:2ch" />
+        <span class="c grn" style="left:26ch;top:calc(6*var(--lh))">-</span>
+        <input class="f rj" type="text" th:field="*{expday}" maxlength="2"
+               aria-label="Expiry date day" style="left:28ch;top:calc(6*var(--lh));width:2ch" />
+        <span class="c turq" style="left:38ch;top:calc(6*var(--lh))">Cash credit Limit   :</span>
+        <span class="c m" style="left:60ch;top:calc(6*var(--lh));width:15ch" th:text="*{acshlim}"></span>
+
+        <!-- Row 8: Reissue date (year-month-day) and Current Balance (display). -->
+        <span class="c turq" style="left:7ch;top:calc(7*var(--lh))">Reissue:</span>
+        <input class="f rj" type="text" th:field="*{risyear}" maxlength="4"
+               aria-label="Reissue date year" style="left:16ch;top:calc(7*var(--lh));width:4ch" />
+        <span class="c grn" style="left:21ch;top:calc(7*var(--lh))">-</span>
+        <input class="f rj" type="text" th:field="*{rismon}" maxlength="2"
+               aria-label="Reissue date month" style="left:23ch;top:calc(7*var(--lh));width:2ch" />
+        <span class="c grn" style="left:26ch;top:calc(7*var(--lh))">-</span>
+        <input class="f rj" type="text" th:field="*{risday}" maxlength="2"
+               aria-label="Reissue date day" style="left:28ch;top:calc(7*var(--lh));width:2ch" />
+        <span class="c turq" style="left:38ch;top:calc(7*var(--lh))">Current Balance     :</span>
+        <span class="c m" style="left:60ch;top:calc(7*var(--lh));width:15ch" th:text="*{acurbal}"></span>
+
+        <!-- Row 9: Current Cycle Credit (display). -->
+        <span class="c turq" style="left:38ch;top:calc(8*var(--lh))">Current Cycle Credit:</span>
+        <span class="c m" style="left:60ch;top:calc(8*var(--lh));width:15ch" th:text="*{acrcycr}"></span>
+
+        <!-- Row 10: Account Group (entry) and Current Cycle Debit (display). -->
+        <span class="c turq" style="left:7ch;top:calc(9*var(--lh))">Account Group:</span>
+        <input class="f" type="text" th:field="*{aaddgrp}" maxlength="10"
+               aria-label="Account Group" style="left:22ch;top:calc(9*var(--lh));width:10ch" />
+        <span class="c turq" style="left:38ch;top:calc(9*var(--lh))">Current Cycle Debit :</span>
+        <span class="c m" style="left:60ch;top:calc(9*var(--lh));width:15ch" th:text="*{acrcydb}"></span>
+
+        <!-- ======================= Customer block ======================= -->
+        <!-- Row 11: Customer Details heading (NEUTRAL bright). -->
+        <span class="c neu" style="left:31ch;top:calc(10*var(--lh))">Customer Details</span>
+
+        <!-- Row 12: Customer id and SSN (three parts separated by '-'). -->
+        <span class="c turq" style="left:7ch;top:calc(11*var(--lh))">Customer id  :</span>
+        <input class="f" type="text" th:field="*{acstnum}" maxlength="9"
+               aria-label="Customer id" style="left:22ch;top:calc(11*var(--lh));width:9ch" />
+        <span class="c turq" style="left:48ch;top:calc(11*var(--lh))">SSN:</span>
+        <input class="f" type="text" th:field="*{actssn1}" maxlength="3"
+               aria-label="SSN area number" style="left:54ch;top:calc(11*var(--lh));width:3ch" />
+        <span class="c grn" style="left:58ch;top:calc(11*var(--lh))">-</span>
+        <input class="f" type="text" th:field="*{actssn2}" maxlength="2"
+               aria-label="SSN group number" style="left:60ch;top:calc(11*var(--lh));width:2ch" />
+        <span class="c grn" style="left:63ch;top:calc(11*var(--lh))">-</span>
+        <input class="f" type="text" th:field="*{actssn3}" maxlength="4"
+               aria-label="SSN serial number" style="left:65ch;top:calc(11*var(--lh));width:4ch" />
+
+        <!-- Row 13: Date of birth (year-month-day) and FICO score. -->
+        <span class="c turq" style="left:7ch;top:calc(12*var(--lh))">Date of birth:</span>
+        <input class="f rj" type="text" th:field="*{dobyear}" maxlength="4"
+               aria-label="Date of birth year" style="left:22ch;top:calc(12*var(--lh));width:4ch" />
+        <span class="c grn" style="left:27ch;top:calc(12*var(--lh))">-</span>
+        <input class="f rj" type="text" th:field="*{dobmon}" maxlength="2"
+               aria-label="Date of birth month" style="left:29ch;top:calc(12*var(--lh));width:2ch" />
+        <span class="c grn" style="left:32ch;top:calc(12*var(--lh))">-</span>
+        <input class="f rj" type="text" th:field="*{dobday}" maxlength="2"
+               aria-label="Date of birth day" style="left:34ch;top:calc(12*var(--lh));width:2ch" />
+        <span class="c turq" style="left:48ch;top:calc(12*var(--lh))">FICO Score:</span>
+        <input class="f" type="text" th:field="*{acstfco}" maxlength="3"
+               aria-label="FICO Score" style="left:61ch;top:calc(12*var(--lh));width:3ch" />
+
+        <!-- Row 14: Name column labels. -->
+        <span class="c turq" style="left:0ch;top:calc(13*var(--lh))">First Name</span>
+        <span class="c turq" style="left:27ch;top:calc(13*var(--lh))">Middle Name: </span>
+        <span class="c turq" style="left:54ch;top:calc(13*var(--lh))">Last Name : </span>
+
+        <!-- Row 15: Name entry fields. -->
+        <input class="f" type="text" th:field="*{acsfnam}" maxlength="25"
+               aria-label="First Name" style="left:0ch;top:calc(14*var(--lh));width:25ch" />
+        <input class="f" type="text" th:field="*{acsmnam}" maxlength="25"
+               aria-label="Middle Name" style="left:27ch;top:calc(14*var(--lh));width:25ch" />
+        <input class="f" type="text" th:field="*{acslnam}" maxlength="25"
+               aria-label="Last Name" style="left:54ch;top:calc(14*var(--lh));width:25ch" />
+
+        <!-- Row 16: Address line 1 and State. -->
+        <span class="c turq" style="left:0ch;top:calc(15*var(--lh))">Address:</span>
+        <input class="f" type="text" th:field="*{acsadl1}" maxlength="50"
+               aria-label="Address line 1" style="left:9ch;top:calc(15*var(--lh));width:50ch" />
+        <span class="c turq" style="left:62ch;top:calc(15*var(--lh))">State </span>
+        <input class="f" type="text" th:field="*{acsstte}" maxlength="2"
+               aria-label="State" style="left:72ch;top:calc(15*var(--lh));width:2ch" />
+
+        <!-- Row 17: Address line 2 and Zip. -->
+        <input class="f" type="text" th:field="*{acsadl2}" maxlength="50"
+               aria-label="Address line 2" style="left:9ch;top:calc(16*var(--lh));width:50ch" />
+        <span class="c turq" style="left:62ch;top:calc(16*var(--lh))">Zip</span>
+        <input class="f" type="text" th:field="*{acszipc}" maxlength="5"
+               aria-label="Zip code" style="left:72ch;top:calc(16*var(--lh));width:5ch" />
+
+        <!-- Row 18: City and Country. -->
+        <span class="c turq" style="left:0ch;top:calc(17*var(--lh))">City </span>
+        <input class="f" type="text" th:field="*{acscity}" maxlength="50"
+               aria-label="City" style="left:9ch;top:calc(17*var(--lh));width:50ch" />
+        <span class="c turq" style="left:62ch;top:calc(17*var(--lh))">Country</span>
+        <input class="f" type="text" th:field="*{acsctry}" maxlength="3"
+               aria-label="Country" style="left:72ch;top:calc(17*var(--lh));width:3ch" />
+
+        <!-- Row 19: Phone 1 (area/prefix/line) and Government Issued Id Ref. -->
+        <span class="c turq" style="left:0ch;top:calc(18*var(--lh))">Phone 1:</span>
+        <input class="f rj" type="text" th:field="*{acsph1a}" maxlength="3"
+               aria-label="Phone 1 area code" style="left:9ch;top:calc(18*var(--lh));width:3ch" />
+        <input class="f rj" type="text" th:field="*{acsph1b}" maxlength="3"
+               aria-label="Phone 1 prefix" style="left:13ch;top:calc(18*var(--lh));width:3ch" />
+        <input class="f rj" type="text" th:field="*{acsph1c}" maxlength="4"
+               aria-label="Phone 1 line number" style="left:17ch;top:calc(18*var(--lh));width:4ch" />
+        <span class="c turq" style="left:23ch;top:calc(18*var(--lh))">Government Issued Id Ref    : </span>
+        <input class="f" type="text" th:field="*{acsgovt}" maxlength="20"
+               aria-label="Government Issued Id Ref" style="left:57ch;top:calc(18*var(--lh));width:20ch" />
+
+        <!-- Row 20: Phone 2 (area/prefix/line), EFT Account Id, Primary Card Holder. -->
+        <span class="c turq" style="left:0ch;top:calc(19*var(--lh))">Phone 2:</span>
+        <input class="f rj" type="text" th:field="*{acsph2a}" maxlength="3"
+               aria-label="Phone 2 area code" style="left:9ch;top:calc(19*var(--lh));width:3ch" />
+        <input class="f rj" type="text" th:field="*{acsph2b}" maxlength="3"
+               aria-label="Phone 2 prefix" style="left:13ch;top:calc(19*var(--lh));width:3ch" />
+        <input class="f rj" type="text" th:field="*{acsph2c}" maxlength="4"
+               aria-label="Phone 2 line number" style="left:17ch;top:calc(19*var(--lh));width:4ch" />
+        <span class="c turq" style="left:23ch;top:calc(19*var(--lh))">EFT Account Id: </span>
+        <input class="f" type="text" th:field="*{acseftc}" maxlength="10"
+               aria-label="EFT Account Id" style="left:40ch;top:calc(19*var(--lh));width:10ch" />
+        <span class="c turq" style="left:52ch;top:calc(19*var(--lh))">Primary Card Holder Y/N:</span>
+        <input class="f" type="text" th:field="*{acspflg}" maxlength="1"
+               aria-label="Primary Card Holder, Y or N" style="left:77ch;top:calc(19*var(--lh));width:1ch" />
+
+        <!-- ===================== Messages & legend ===================== -->
+        <!-- Row 22: Informational message (NEUTRAL). -->
+        <span class="c neu" style="left:22ch;top:calc(21*var(--lh));width:45ch" th:text="*{infomsg}"></span>
+
+        <!-- Row 23: Error message (RED, bold) - rendered only when populated. -->
+        <span class="c err" style="left:0ch;top:calc(22*var(--lh));width:78ch"
+              th:if="${!#strings.isEmpty(form.errmsg)}" th:text="*{errmsg}"></span>
+
+        <!-- Row 24: PF-key legend as submit controls (physical PF keys -> buttons).
+             The controller inspects the "pfkey" request parameter: ENTER, PF3, PF5,
+             PF12. The fkeys legend field spans "ENTER=Process F3=Exit"; the ENTER
+             action covers it and a transparent overlay exposes the F3=Exit hotspot.
+             The ENTER button is first in document order so pressing Enter in any
+             field submits with pfkey=ENTER, matching the 3270 "ENTER=Process". -->
+        <button class="pf" type="submit" name="pfkey" value="ENTER"
+                style="left:0ch;top:calc(23*var(--lh));width:21ch"
+                th:text="*{fkeys} ?: 'ENTER=Process F3=Exit'">ENTER=Process F3=Exit</button>
+        <button class="pf pf-overlay" type="submit" name="pfkey" value="PF3"
+                aria-label="F3 Exit"
+                style="left:14ch;top:calc(23*var(--lh));width:7ch">F3=Exit</button>
+        <button class="pf" type="submit" name="pfkey" value="PF5"
+                style="left:22ch;top:calc(23*var(--lh));width:7ch"
+                th:text="*{fkey05} ?: 'F5=Save'">F5=Save</button>
+        <button class="pf" type="submit" name="pfkey" value="PF12"
+                style="left:30ch;top:calc(23*var(--lh));width:10ch"
+                th:text="*{fkey12} ?: 'F12=Cancel'">F12=Cancel</button>
+    </form>
+</main>
+</body>
+</html>

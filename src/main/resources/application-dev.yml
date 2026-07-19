@@ -1,0 +1,114 @@
+# =============================================================================
+# AWS CardDemo - 'dev' profile overrides (local development)
+# -----------------------------------------------------------------------------
+# Net-new, framework-mandated deliverable for the COBOL -> Java/Spring Boot
+# migration (Spring Boot 3.5.16 / Java 25). There is no COBOL source equivalent.
+#
+# This file is layered ON TOP OF the base application.yml (same directory) and
+# is activated for local development via either:
+#     ./mvnw spring-boot:run -Dspring-boot.run.profiles=dev
+#   or
+#     SPRING_PROFILES_ACTIVE=dev   (environment variable)
+#
+# Purpose (Onboarding rule, AAP 0.7.2): let a clean local machine reach a
+# RUNNING, INSPECTABLE application against a locally-running PostgreSQL, with
+# verbose SQL/diagnostics and live template reloading. Every key the base
+# already defines is INHERITED; this profile overrides ONLY what must differ
+# for local development.
+#
+# Merge semantics: Spring Boot flattens YAML to individual leaf properties, and
+# a profile-specific document overrides the base ONLY at the leaf level. So the
+# base values NOT restated here remain in effect - in particular:
+#   * spring.jpa.hibernate.ddl-auto                  stays 'validate' (Flyway owns DDL)
+#   * spring.batch.job.enabled                        stays false      (no job auto-run)
+#   * spring.datasource credentials                   come from env ONLY (no defaults)
+#   * spring.jpa.properties.hibernate.jdbc.time_zone  stays 'UTC'
+#
+# Scope guard (AAP 0.2.2 - no feature expansion): dev diagnostics only. No new
+# infrastructure (no MQ/JMS, Kafka, Redis, Db2, IMS, FTP/SFTP, or REST/SOAP) is
+# introduced here, consistent with the base profile.
+#
+# Format: YAML, 2-space indentation, UTF-8, no tabs.
+# =============================================================================
+
+spring:
+  datasource:
+    # Convenience localhost default for local development. This is a NON-SECRET
+    # connection URL only; it is identical to the base default and is restated
+    # here so the dev target is explicit and self-documenting.
+    #
+    # NO HARDCODED CREDENTIALS (AAP 0.7.1): datasource credentials are NOT set in
+    # this file and carry no defaults. They are supplied exclusively via the
+    # environment, exactly as documented in the base application.yml (see the dev
+    # environment's /etc/profile.d/10-carddemo-env.sh). Only the non-secret URL
+    # below is overridden here; no credential keys are added to this file.
+    url: ${SPRING_DATASOURCE_URL:jdbc:postgresql://localhost:5432/carddemo}
+
+  jpa:
+    # Echo every executed SQL statement to the log so developers can see exactly
+    # what Hibernate issues (the base keeps this quiet with show-sql=false).
+    show-sql: true
+    properties:
+      hibernate:
+        # Pretty-print the logged SQL for readability. This is a DISTINCT leaf
+        # key from the base's spring.jpa.properties.hibernate.jdbc.time_zone, so
+        # both survive the profile merge (the UTC time zone is retained).
+        format_sql: true
+    # NOTE: spring.jpa.hibernate.ddl-auto is intentionally NOT overridden here.
+    # It remains 'validate' (inherited from base): Flyway is the single source of
+    # truth for DDL and Hibernate must never create/alter/drop schema.
+
+  flyway:
+    # Inherited 'true' from the base; restated explicitly so it is unmistakable
+    # that Flyway migrations (V0 batch metadata, then V1 schema -> V2 reference
+    # data -> V3 indexes) run on the dev profile.
+    enabled: true
+    # SAFETY: never permit `flyway clean` (which would drop the entire schema).
+    # Guards a developer, or an accidental automation, from wiping the local
+    # database. This is a hard block regardless of any other configuration.
+    clean-disabled: true
+
+  batch:
+    jdbc:
+      # DELIBERATE, DOCUMENTED DECISION (review finding F2):
+      # The Spring Batch metadata tables (BATCH_*) and sequences are created
+      # EXCLUSIVELY by the Flyway migration db/migration/V0__spring_batch_metadata.sql,
+      # the single source of truth for that DDL - consistent with
+      # spring.jpa.hibernate.ddl-auto=validate. That migration uses plain
+      # CREATE TABLE statements (no IF NOT EXISTS).
+      #
+      # Therefore this MUST remain 'never' on the dev profile too. Setting it to
+      # 'always' would make Boot's BatchDataSourceScriptDatabaseInitializer replay
+      # CREATE TABLE BATCH_* on top of the tables Flyway V0 already created,
+      # raising "relation already exists" and FAILING application startup - which
+      # would defeat this profile's entire purpose (a running local app).
+      #
+      # The intent behind the original 'always' request ("batch metadata tables
+      # exist locally") is fully satisfied by Flyway V0 running under this profile.
+      initialize-schema: never
+    # NOTE: spring.batch.job.enabled is intentionally NOT overridden here. It
+    # remains false (inherited from base) so the migrated JCL-equivalent jobs do
+    # not auto-run at startup; they are launched explicitly on demand.
+
+  thymeleaf:
+    # Disable template caching so edits to src/main/resources/templates/*.html
+    # are picked up live, without an application restart (the base caches
+    # compiled templates for production performance).
+    cache: false
+
+# -----------------------------------------------------------------------------
+# Verbose local logging. Only the leaf levels below are overridden/added; the
+# base root level (INFO) is inherited. Together these give developers full
+# visibility of application flow, JDBC operations, generated SQL, and the Flyway
+# migration steps.
+# -----------------------------------------------------------------------------
+logging:
+  level:
+    # Application packages at DEBUG (the base sets com.aws.carddemo=INFO).
+    com.aws.carddemo: DEBUG
+    # Spring JDBC core operations (statement execution, batch updates).
+    org.springframework.jdbc.core: DEBUG
+    # Hibernate-generated SQL statements (pairs with spring.jpa.show-sql above).
+    org.hibernate.SQL: DEBUG
+    # Flyway migration lifecycle (which versioned migrations apply, in order).
+    org.flywaydb: INFO

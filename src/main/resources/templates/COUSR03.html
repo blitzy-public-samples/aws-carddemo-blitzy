@@ -1,0 +1,276 @@
+<!DOCTYPE html>
+<html lang="en" xmlns:th="http://www.thymeleaf.org">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>CardDemo - Delete User (CU03)</title>
+    <!--/*
+      Server-rendered Thymeleaf view for the AWS CardDemo "Delete User" screen.
+      Origin (read-only): legacy/bms/COUSR03.bms + legacy/cpy-bms/COUSR03.CPY
+      (BMS mapset COUSR03 / map COUSR3A). Rendered by
+      com.aws.carddemo.web.controller.UserAdminController (CICS transaction CU03,
+      program COUSR03C); view name "COUSR03". Admin-only.
+
+      The original 3270 map is reproduced one-for-one on a fixed 24x80 monospaced
+      character grid: each BMS field is placed at its exact POS=(row,col) via
+      absolute positioning (top = (row-1) * one row-height; left = col * 1ch,
+      because the BMS attribute byte occupies column `col` and the field content
+      begins at column `col`+1). This is the ONLY user screen with no password
+      field: the operator keys a user id, the record is fetched and its details
+      shown read-only, then F5 deletes it.
+    */-->
+    <style>
+        /*
+         * Design source of truth: legacy/bms/COUSR03.bms. Colour names below map
+         * to the BMS COLOR= attributes, rendered as their conventional 3270 hues.
+         *
+         * BLITZY [A11Y]: The 3270/BMS palette is rendered verbatim on a dark
+         * background (e.g. BLUE #0000CD, GREEN #00CD00, RED #CD0000). Some pairings
+         * compute below the WCAG AA 4.5:1 text-contrast recommendation. Per the
+         * design-source-authoritative directive the BMS values are implemented
+         * exactly as specified and flagged here for designer review rather than
+         * silently darkened/lightened.
+         */
+        :root {
+            --scr-blue: #0000CD;
+            --scr-yellow: #CCCC00;
+            --scr-turquoise: #00CDCD;
+            --scr-green: #00CD00;
+            --scr-red: #CD0000;
+            --scr-neutral: #FFFFFF;
+            --scr-bg: #000000;
+            --scr-page-bg: #101418;
+            /* one character cell height (row pitch of the 24-line grid) */
+            --rh: 1.25rem;
+        }
+
+        *,
+        *::before,
+        *::after {
+            box-sizing: border-box;
+        }
+
+        html {
+            font-size: 16px;
+        }
+
+        body {
+            margin: 0;
+            min-height: 100vh;
+            padding: 1rem;
+            background-color: var(--scr-page-bg);
+            /* Fixed-dimension 80-col artboard: allow horizontal scroll on narrow
+               viewports rather than reflowing the terminal grid (UI4). */
+            display: flex;
+            align-items: flex-start;
+            justify-content: center;
+            overflow-x: auto;
+            font-family: "Courier New", "Liberation Mono", "DejaVu Sans Mono", monospace;
+        }
+
+        /* The 24x80 terminal surface. */
+        .screen {
+            position: relative;
+            width: 80ch;
+            height: calc(24 * var(--rh));
+            flex: 0 0 auto;
+            background-color: var(--scr-bg);
+            color: var(--scr-neutral);
+            font-size: 1rem;
+            line-height: var(--rh);
+            border: 2px solid #2a2f36;
+            border-radius: 4px;
+        }
+
+        .map {
+            position: absolute;
+            inset: 0;
+            margin: 0;
+            padding: 0;
+        }
+
+        /* A single positioned field/label on the character grid. */
+        .cell {
+            position: absolute;
+            height: var(--rh);
+            line-height: var(--rh);
+            margin: 0;
+            padding: 0;
+            white-space: pre;
+        }
+
+        /* Clip value fields to their exact BMS length. */
+        .clip {
+            overflow: hidden;
+        }
+
+        /* BMS COLOR= attribute mapping. */
+        .c-blue      { color: var(--scr-blue); }
+        .c-yellow    { color: var(--scr-yellow); }
+        .c-turquoise { color: var(--scr-turquoise); }
+        .c-green     { color: var(--scr-green); }
+        .c-red       { color: var(--scr-red); }
+        .c-neutral   { color: var(--scr-neutral); }
+
+        /* BMS BRT (bright) attribute. */
+        .brt {
+            font-weight: 700;
+        }
+
+        /* Unprotected entry field (BMS UNPROT + HILIGHT=UNDERLINE). */
+        .field-in {
+            position: absolute;
+            height: var(--rh);
+            line-height: var(--rh);
+            font: inherit;
+            color: var(--scr-green);
+            background-color: transparent;
+            border: none;
+            border-bottom: 1px solid var(--scr-green);
+            padding: 0;
+            margin: 0;
+            caret-color: var(--scr-green);
+            white-space: pre;
+        }
+
+        .field-in:focus-visible {
+            outline: 2px solid var(--scr-neutral);
+            outline-offset: 1px;
+        }
+
+        /* Protected display field (BMS ASKIP + HILIGHT=UNDERLINE). */
+        .field-out {
+            position: absolute;
+            display: inline-block;
+            height: var(--rh);
+            line-height: var(--rh);
+            color: var(--scr-blue);
+            border-bottom: 1px solid var(--scr-blue);
+            white-space: pre;
+            overflow: hidden;
+        }
+
+        /* Row 24 PF-key legend. Buttons are styled as plain monospaced text so the
+           rendered line reads exactly like the BMS legend while remaining real,
+           keyboard-operable submit controls.
+           BLITZY [A11Y]: these targets are text-sized (< 44x44px) to preserve the
+           single-line 24x80 legend; intentional per the BMS contract and flagged. */
+        .legend {
+            position: absolute;
+            height: var(--rh);
+            line-height: var(--rh);
+            white-space: pre;
+        }
+
+        .pfk {
+            font: inherit;
+            color: var(--scr-yellow);
+            background-color: transparent;
+            border: none;
+            padding: 0;
+            margin: 0;
+            cursor: pointer;
+            vertical-align: baseline;
+        }
+
+        .pfk:focus-visible {
+            outline: 2px solid var(--scr-neutral);
+            outline-offset: 1px;
+        }
+
+        @media (hover: hover) {
+            .pfk:hover {
+                text-decoration: underline;
+            }
+        }
+
+        /* Invisible accessibility: keyboard skip link, hidden until focused. */
+        .skip-link {
+            position: absolute;
+            left: -9999px;
+            top: 0;
+            z-index: 10;
+            background-color: #000000;
+            color: #FFFFFF;
+            padding: 0.25rem 0.5rem;
+        }
+
+        .skip-link:focus {
+            left: 0.5rem;
+            top: 0.5rem;
+        }
+
+        #main:focus {
+            outline: none;
+        }
+    </style>
+</head>
+<body>
+    <a class="skip-link" href="#main">Skip to Delete User form</a>
+
+    <main id="main" class="screen" tabindex="-1" aria-label="Delete User screen, transaction CU03">
+        <form class="map" th:object="${form}" th:action="@{/admin/users/delete}" method="post">
+
+            <!--/* ===================== Header line 1 (BMS row 1) ===================== */-->
+            <span class="cell c-blue" style="top: 0; left: 1ch;">Tran:</span>
+            <span class="cell c-blue clip" style="top: 0; left: 7ch; width: 4ch;" th:text="*{trnname}"></span>
+            <span class="cell c-yellow clip" style="top: 0; left: 21ch; width: 40ch;" th:text="*{title01}"></span>
+            <span class="cell c-blue" style="top: 0; left: 65ch;">Date:</span>
+            <span class="cell c-blue clip" style="top: 0; left: 71ch; width: 8ch;" th:text="*{curdate}"></span>
+
+            <!--/* ===================== Header line 2 (BMS row 2) ===================== */-->
+            <span class="cell c-blue" style="top: calc(1 * var(--rh)); left: 1ch;">Prog:</span>
+            <span class="cell c-blue clip" style="top: calc(1 * var(--rh)); left: 7ch; width: 8ch;" th:text="*{pgmname}"></span>
+            <span class="cell c-yellow clip" style="top: calc(1 * var(--rh)); left: 21ch; width: 40ch;" th:text="*{title02}"></span>
+            <span class="cell c-blue" style="top: calc(1 * var(--rh)); left: 65ch;">Time:</span>
+            <span class="cell c-blue clip" style="top: calc(1 * var(--rh)); left: 71ch; width: 8ch;" th:text="*{curtime}"></span>
+
+            <!--/* ===================== Screen title (BMS row 4) ====================== */-->
+            <span class="cell c-neutral brt" style="top: calc(3 * var(--rh)); left: 35ch;">Delete User</span>
+
+            <!--/* ============== User-id entry field (BMS row 6) ====================== */-->
+            <label class="cell c-green" style="top: calc(5 * var(--rh)); left: 6ch;" for="usridin">Enter User ID:</label>
+            <!--/* th:field generates id="usridin" + name="usridin"; the visible
+                 <label for="usridin"> above supplies the accessible name. */-->
+            <input type="text"
+                   class="field-in"
+                   style="top: calc(5 * var(--rh)); left: 21ch; width: 8ch;"
+                   th:field="*{usridin}"
+                   maxlength="8"
+                   size="8"
+                   autofocus
+                   autocomplete="off"
+                   spellcheck="false">
+
+            <!--/* ============== Separator (BMS row 8) - 70 asterisks ================= */-->
+            <span class="cell c-yellow" style="top: calc(7 * var(--rh)); left: 6ch;">**********************************************************************</span>
+
+            <!--/* ============== Fetched user details, read-only (BMS rows 11/13/15) == */-->
+            <span class="cell c-turquoise" style="top: calc(10 * var(--rh)); left: 6ch;">First Name:</span>
+            <span class="field-out" style="top: calc(10 * var(--rh)); left: 18ch; width: 20ch;" th:text="*{fname}"></span>
+
+            <span class="cell c-turquoise" style="top: calc(12 * var(--rh)); left: 6ch;">Last Name:</span>
+            <span class="field-out" style="top: calc(12 * var(--rh)); left: 18ch; width: 20ch;" th:text="*{lname}"></span>
+
+            <span class="cell c-turquoise" style="top: calc(14 * var(--rh)); left: 6ch;">User Type: </span>
+            <span class="field-out" style="top: calc(14 * var(--rh)); left: 17ch; width: 1ch;" th:text="*{usrtype}"></span>
+            <span class="cell c-blue" style="top: calc(14 * var(--rh)); left: 19ch;">(A=Admin, U=User)</span>
+
+            <!--/* ============== Error message line (BMS row 23), conditional ========= */-->
+            <span class="cell c-red brt clip"
+                  style="top: calc(22 * var(--rh)); left: 1ch; width: 78ch;"
+                  th:if="${!#strings.isEmpty(form.errmsg)}"
+                  th:text="*{errmsg}"
+                  role="alert"></span>
+
+            <!--/* ============== PF-key legend (BMS row 24) =========================== */-->
+            <!--/* Kept on ONE physical source line (container is white-space: pre) so the
+                 two-space gaps render exactly as 'ENTER=Fetch  F3=Back  F4=Clear  F5=Delete'.
+                 ENTER is the first submit button so pressing Enter in the user-id field
+                 performs the Fetch action (pfkey=ENTER). */-->
+            <div class="legend c-yellow" style="top: calc(23 * var(--rh)); left: 1ch;" role="group" aria-label="Function keys"><button type="submit" class="pfk" name="pfkey" value="ENTER">ENTER=Fetch</button>  <button type="submit" class="pfk" name="pfkey" value="PF3">F3=Back</button>  <button type="submit" class="pfk" name="pfkey" value="PF4">F4=Clear</button>  <button type="submit" class="pfk" name="pfkey" value="PF5">F5=Delete</button></div>
+
+        </form>
+    </main>
+</body>
+</html>

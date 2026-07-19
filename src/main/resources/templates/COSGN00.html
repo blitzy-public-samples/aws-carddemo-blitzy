@@ -1,0 +1,191 @@
+<!DOCTYPE html>
+<html lang="en" xmlns:th="http://www.thymeleaf.org">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>CardDemo - Sign On</title>
+  <!--
+    Sign-on screen (CICS transaction CC00, program COSGN00C).
+    Origin (read-only): legacy/bms/COSGN00.bms (BMS mapset COSGN00 / map COSGN0A)
+                        legacy/cpy-bms/COSGN00.CPY (symbolic map COSGN0AI/COSGN0AO)
+    Server-rendered Thymeleaf reproduction of the 24x80 3270 screen. Field
+    positions (POS), lengths (LENGTH), colors (COLOR) and literal text
+    (INITIAL clauses) are preserved one-for-one from the BMS source. Backing
+    bean: com.aws.carddemo.dto.screen.COSGN00Form (model attribute "form").
+
+    BLITZY [A11Y]: This screen faithfully reproduces the legacy 3270 color
+    palette on a black background exactly as declared by the authoritative BMS
+    COLOR clauses (e.g. BLUE #0000CD on #000000 computes ~2.4:1, below the WCAG
+    AA 4.5:1 text minimum) and renders the PF-key legend at the single-row
+    terminal height (below the 44x44px touch-target guideline). These values
+    are implemented exactly as designed and are flagged here for designer
+    review rather than silently auto-corrected, because faithful reproduction
+    of the BMS contract takes precedence (AAP fidelity mandate).
+  -->
+  <style>
+    *, *::before, *::after { box-sizing: border-box; }
+
+    html, body {
+      margin: 0;
+      padding: 0;
+      background-color: #000000;
+    }
+
+    body {
+      min-height: 100vh;
+      display: flex;
+      justify-content: center;
+      align-items: flex-start;
+      overflow-x: auto;
+      padding: 0.75rem 0;
+    }
+
+    /* 3270-style fixed 24x80 monospace screen. */
+    .terminal {
+      flex: 0 0 auto;
+      color: #FFFFFF;
+      background-color: #000000;
+      font-family: "Courier New", "DejaVu Sans Mono", "Liberation Mono", Consolas, monospace;
+      font-size: clamp(0.5rem, 1.9vw, 1rem);
+      line-height: 1.2;
+      letter-spacing: 0;
+      border: 1px solid #1a1a1a;
+    }
+
+    /* Each grid column is exactly one character cell (1ch) so BMS POS columns
+       and LENGTH values map straight onto grid-column-start / span. */
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(80, 1ch);
+      grid-template-rows: repeat(24, 1.2em);
+      width: 80ch;
+    }
+
+    /* white-space:pre preserves the multiple consecutive spaces present in the
+       BMS labels and ASCII art; overflow:hidden guards the fixed grid. */
+    .cell {
+      white-space: pre;
+      overflow: hidden;
+      align-self: center;
+      min-width: 0;
+    }
+
+    /* BMS COLOR -> CSS hex. */
+    .c-blue   { color: #0000CD; }
+    .c-yellow { color: #CCCC00; }
+    .c-turq   { color: #00CDCD; }
+    .c-green  { color: #00CD00; }
+    .c-white  { color: #FFFFFF; }
+    .err      { color: #CD0000; font-weight: bold; }
+
+    /* Entry fields (USERID / PASSWD): BMS COLOR=GREEN, sized to their 8ch cell. */
+    .field {
+      font: inherit;
+      color: #00CD00;
+      background-color: rgba(255, 255, 255, 0.10);
+      border: 0;
+      padding: 0;
+      margin: 0;
+      width: 100%;
+      height: 100%;
+      letter-spacing: 0;
+      caret-color: #00CD00;
+    }
+    .field:focus-visible {
+      outline: 2px solid #00CDCD;
+      outline-offset: -2px;
+    }
+
+    /* PF-key legend rendered as real submit buttons styled as terminal text. */
+    .pfkey {
+      font: inherit;
+      color: #CCCC00;
+      background: transparent;
+      border: 0;
+      padding: 0;
+      margin: 0;
+      cursor: pointer;
+      white-space: pre;
+    }
+    .pfkey:focus-visible {
+      outline: 2px solid #CCCC00;
+      outline-offset: 0;
+    }
+
+    /* Skip-navigation link: off-screen until focused. */
+    .skip-link {
+      position: absolute;
+      left: -9999px;
+      top: 0;
+    }
+    .skip-link:focus {
+      left: 0;
+      z-index: 1;
+      color: #00CDCD;
+      background: #000000;
+      padding: 0.25rem;
+    }
+  </style>
+</head>
+<body>
+  <a class="skip-link" href="#userid">Skip to sign-on form</a>
+  <main class="terminal">
+    <form th:object="${form}" th:action="@{/signon}" method="post">
+      <div class="grid">
+        <!-- Row 1: Tran / Title 1 / Date -->
+        <span class="cell c-blue" style="grid-row: 1; grid-column: 1 / span 6;">Tran :</span>
+        <span class="cell c-blue" style="grid-row: 1; grid-column: 8 / span 4;" th:text="${form.trnname}"></span>
+        <span class="cell c-yellow" style="grid-row: 1; grid-column: 21 / span 40;" th:text="${form.title01}"></span>
+        <span class="cell c-blue" style="grid-row: 1; grid-column: 64 / span 6;">Date :</span>
+        <span class="cell c-blue" style="grid-row: 1; grid-column: 71 / span 8;" th:text="${form.curdate}"></span>
+
+        <!-- Row 2: Prog / Title 2 / Time -->
+        <span class="cell c-blue" style="grid-row: 2; grid-column: 1 / span 6;">Prog :</span>
+        <span class="cell c-blue" style="grid-row: 2; grid-column: 8 / span 8;" th:text="${form.pgmname}"></span>
+        <span class="cell c-yellow" style="grid-row: 2; grid-column: 21 / span 40;" th:text="${form.title02}"></span>
+        <span class="cell c-blue" style="grid-row: 2; grid-column: 64 / span 6;">Time :</span>
+        <span class="cell c-blue" style="grid-row: 2; grid-column: 71 / span 9;" th:text="${form.curtime}"></span>
+
+        <!-- Row 3: AppID / SysID -->
+        <span class="cell c-blue" style="grid-row: 3; grid-column: 1 / span 6;">AppID:</span>
+        <span class="cell c-blue" style="grid-row: 3; grid-column: 8 / span 8;" th:text="${form.applid}"></span>
+        <span class="cell c-blue" style="grid-row: 3; grid-column: 64 / span 6;">SysID:</span>
+        <span class="cell c-blue" style="grid-row: 3; grid-column: 71 / span 8;" th:text="${form.sysid}"></span>
+
+        <!-- Row 5: introduction (BMS COLOR=NEUTRAL) -->
+        <span class="cell c-white" style="grid-row: 5; grid-column: 6 / span 66;">This is a Credit Card Demo Application for Mainframe Modernization</span>
+
+        <!-- Rows 7-15: decorative dollar-bill ASCII art, verbatim (BMS COLOR=BLUE) -->
+        <span class="cell c-blue" style="grid-row: 7; grid-column: 21 / span 42;">+========================================+</span>
+        <span class="cell c-blue" style="grid-row: 8; grid-column: 21 / span 42;">|%%%%%%%  NATIONAL RESERVE NOTE  %%%%%%%%|</span>
+        <span class="cell c-blue" style="grid-row: 9; grid-column: 21 / span 42;">|%(1)  THE UNITED STATES OF KICSLAND (1)%|</span>
+        <span class="cell c-blue" style="grid-row: 10; grid-column: 21 / span 42;">|%$$              ___       ********  $$%|</span>
+        <span class="cell c-blue" style="grid-row: 11; grid-column: 21 / span 42;">|%$    {x}       (o o)                 $%|</span>
+        <span class="cell c-blue" style="grid-row: 12; grid-column: 21 / span 42;">|%$     ******  (  V  )      O N E     $%|</span>
+        <span class="cell c-blue" style="grid-row: 13; grid-column: 21 / span 42;">|%(1)          ---m-m---             (1)%|</span>
+        <span class="cell c-blue" style="grid-row: 14; grid-column: 21 / span 42;">|%%~~~~~~~~~~~ ONE DOLLAR ~~~~~~~~~~~~~%%|</span>
+        <span class="cell c-blue" style="grid-row: 15; grid-column: 21 / span 42;">+========================================+</span>
+
+        <!-- Row 17: prompt (BMS COLOR=TURQUOISE) -->
+        <span class="cell c-turq" style="grid-row: 17; grid-column: 16 / span 49;">Type your User ID and Password, then press ENTER:</span>
+
+        <!-- Row 19: User ID entry -->
+        <label class="cell c-turq" style="grid-row: 19; grid-column: 29 / span 13;" for="userid">User ID     :</label>
+        <input class="field" style="grid-row: 19; grid-column: 43 / span 8;" type="text" th:field="*{userid}" maxlength="8" size="8" autofocus autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false">
+        <span class="cell c-blue" style="grid-row: 19; grid-column: 52 / span 8;">(8 Char)</span>
+
+        <!-- Row 20: Password entry (BMS DRK -> masked) -->
+        <label class="cell c-turq" style="grid-row: 20; grid-column: 29 / span 13;" for="passwd">Password    :</label>
+        <input class="field" style="grid-row: 20; grid-column: 43 / span 8;" type="password" th:field="*{passwd}" maxlength="8" size="8" autocomplete="off">
+        <span class="cell c-blue" style="grid-row: 20; grid-column: 52 / span 8;">(8 Char)</span>
+
+        <!-- Row 23: error message line (BMS COLOR=RED, BRT); shown only when present -->
+        <span class="cell err" style="grid-row: 23; grid-column: 1 / span 78;" th:if="${form.errmsg != null and !form.errmsg.trim().isEmpty()}" th:text="${form.errmsg}"></span>
+
+        <!-- Row 24: PF-key legend as submit buttons; ENTER is first so the Enter key posts pfkey=ENTER -->
+        <div class="cell" style="grid-row: 24; grid-column: 1 / span 22;"><button type="submit" name="pfkey" value="ENTER" class="pfkey">ENTER=Sign-on</button>  <button type="submit" name="pfkey" value="PF3" class="pfkey">F3=Exit</button></div>
+      </div>
+    </form>
+  </main>
+</body>
+</html>

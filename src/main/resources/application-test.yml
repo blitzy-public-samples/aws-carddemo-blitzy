@@ -1,0 +1,81 @@
+# =============================================================================
+# AWS CardDemo - 'test' profile overrides (automated Testcontainers suite)
+# -----------------------------------------------------------------------------
+# Net-new, framework-mandated deliverable for the COBOL -> Java/Spring Boot
+# migration (Spring Boot 3.5.16 / Java 25). There is no COBOL source equivalent.
+#
+# Activated automatically for the 'test' profile (Spring resolves this file by
+# its name, application-test.yml) and layered ON TOP OF the base application.yml.
+# It supports the Testcontainers PostgreSQL integration/parity suite under
+# src/test/java/com/aws/carddemo/** (>=80% line-coverage goal, AAP 0.7.1).
+#
+# CRITICAL - this profile intentionally defines NO database-connection settings
+# (AAP 0.7.1, "no hardcoded credentials"). The Testcontainers lifecycle supplies
+# the live JDBC coordinates dynamically at runtime via @DynamicPropertySource
+# (or Spring Boot @ServiceConnection) from the started PostgreSQLContainer, and
+# those dynamic values take precedence over static configuration. A typical test
+# uses @Testcontainers + a @Container static PostgreSQLContainer<>("postgres:18-alpine")
+# and binds the connection coordinates at runtime, so this file must leave them
+# unset for the dynamic values to win.
+#
+# PARITY GUARD (AAP 0.6.x): the suite runs against a REAL PostgreSQL container
+# with the REAL Flyway schema (V0 batch metadata -> V1 schema -> V2 reference
+# data -> V3 indexes). No in-memory database and no auto-generated schema are
+# used, so integration tests exercise exactly the same DDL and reference data as
+# production.
+# =============================================================================
+
+spring:
+  jpa:
+    hibernate:
+      # Parity-critical (AAP 0.6.2): Flyway owns ALL DDL. Hibernate must never
+      # create/alter/drop tables; 'validate' only checks that the JPA entity
+      # mappings match the Flyway-created schema in the container.
+      ddl-auto: validate
+    # Keep test output readable - SQL echo stays off (enable ad hoc per test if
+    # a specific assertion needs it).
+    show-sql: false
+
+  flyway:
+    # Run the REAL versioned migrations into the container so tests hit the true
+    # schema: V0 (Spring Batch metadata) -> V1 (business schema) -> V2 (reference
+    # data) -> V3 (indexes). Migration locations are inherited from the base
+    # profile (classpath:db/migration).
+    enabled: true
+    # Safety: forbid Flyway 'clean' from ever wiping the container database during
+    # a test run (the default is already true; stated explicitly as a hard guard).
+    clean-disabled: true
+
+  batch:
+    job:
+      # Do NOT auto-run the migrated batch jobs at context startup; the batch
+      # integration tests launch them explicitly through JobLauncherTestUtils.
+      enabled: false
+    jdbc:
+      # Single-authority alignment (review finding F2 - see
+      # db/migration/V0__spring_batch_metadata.sql and the base application.yml):
+      # the Spring Batch BATCH_* metadata tables are created EXCLUSIVELY by the
+      # Flyway V0 migration, which is the one source of truth for that DDL on
+      # EVERY profile. Because Flyway is enabled above, V0 creates those tables in
+      # the container; letting Boot ALSO initialize the batch schema would re-run
+      # CREATE TABLE against tables that already exist (the V0 script deliberately
+      # carries no idempotency guards) and would abort context startup. 'never'
+      # keeps exactly one authority and lets the Testcontainers context boot
+      # cleanly. This intentionally supersedes the initial spec value of 'always',
+      # which pre-dated the F2 resolution (documented for Explainability, AAP 0.7.2).
+      initialize-schema: never
+
+  thymeleaf:
+    # Disable compiled-template caching so screen-template edits are picked up
+    # immediately during test runs (the base/prod profile keeps caching on).
+    cache: false
+
+logging:
+  level:
+    # Verbose application logging to aid debugging of integration and parity tests.
+    com.aws.carddemo: DEBUG
+    # Keep container-orchestration output readable: quiet the docker-java client
+    # and show concise Testcontainers and Flyway progress.
+    org.testcontainers: INFO
+    com.github.dockerjava: WARN
+    org.flywaydb: INFO

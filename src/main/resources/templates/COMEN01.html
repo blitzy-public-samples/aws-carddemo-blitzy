@@ -1,0 +1,273 @@
+<!DOCTYPE html>
+<!--
+  ~ Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+  ~ Licensed under the Apache License, Version 2.0 (the "License").
+  ~
+  ~ Origin (read-only): legacy/bms/COMEN01.bms + legacy/cpy-bms/COMEN01.CPY
+  ~   BMS mapset COMEN01 / map COMEN1A (24x80, 3270 terminal).
+  ~ Rendered by: com.aws.carddemo.web.controller.MenuController
+  ~   CICS transaction CM00 -> program COMEN01C. Spring MVC view name "COMEN01".
+  ~ Routes: GET /menu (display), POST /menu (submit selected option / PF key).
+  ~ Backing bean: com.aws.carddemo.dto.screen.COMEN01Form (model attribute "form").
+  ~
+  ~ This server-rendered Thymeleaf template reproduces the original 3270/BMS Main
+  ~ Menu screen one-for-one, preserving the field/label/length/color/PF-key
+  ~ contract on a fixed 24-row x 80-column monospaced grid.
+-->
+<html lang="en" xmlns:th="http://www.thymeleaf.org">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Main Menu - AWS CardDemo</title>
+    <!--
+      BLITZY [A11Y]: The 3270 color palette is mapped verbatim from the AAP/BMS
+      color contract (BLUE #0000CD, YELLOW #CCCC00, TURQUOISE #00CDCD, GREEN
+      #00CD00, RED #CD0000, NEUTRAL #FFFFFF) on a black screen. Blue and red text
+      on black compute below the WCAG AA 4.5:1 contrast minimum. The BMS/AAP
+      color contract is authoritative here (faithful terminal reproduction), so
+      the palette is implemented exactly as specified and flagged for designer
+      review rather than silently adjusted.
+    -->
+    <style>
+        :root {
+            --blue: #0000CD;
+            --yellow: #CCCC00;
+            --turquoise: #00CDCD;
+            --green: #00CD00;
+            --red: #CD0000;
+            --neutral: #FFFFFF;
+            --screen-bg: #000000;
+            --page-bg: #101418;
+            --frame-border: #333333;
+            --row-height: 1.25rem;
+        }
+
+        *, *::before, *::after {
+            box-sizing: border-box;
+        }
+
+        html {
+            font-size: 16px;
+        }
+
+        body {
+            margin: 0;
+            min-height: 100vh;
+            background: var(--page-bg);
+            color: var(--neutral);
+            font-family: "Courier New", "DejaVu Sans Mono", Consolas, monospace;
+            display: flex;
+            justify-content: center;
+            align-items: flex-start;
+        }
+
+        main {
+            margin: 1.5rem 1rem;
+        }
+
+        /* The terminal frame: dark screen background with a thin bezel. */
+        .frame {
+            background: var(--screen-bg);
+            border: 1px solid var(--frame-border);
+            padding: 1rem;
+            box-shadow: 0 0 0.5rem rgba(0, 0, 0, 0.6);
+        }
+
+        /* Fixed 24 x 80 character grid; each column is exactly one character. */
+        .screen {
+            display: grid;
+            grid-template-columns: repeat(80, 1ch);
+            grid-template-rows: repeat(24, var(--row-height));
+            align-items: center;
+            width: 80ch;
+            font-size: 1rem;
+            line-height: var(--row-height);
+        }
+
+        /* Base for every character-grid cell: no wrap, clip overflow to width. */
+        .cell {
+            white-space: pre;
+            overflow: hidden;
+            min-width: 0;
+        }
+
+        /* ---- 3270 color attributes (verbatim from the BMS COLOR= clauses) ---- */
+        .blue { color: var(--blue); }
+        .yellow { color: var(--yellow); }
+        .turquoise { color: var(--turquoise); }
+        .green { color: var(--green); }
+        .red { color: var(--red); }
+        .neutral { color: var(--neutral); }
+
+        /* ---- Row placement (BMS POS line) ---- */
+        .r1 { grid-row: 1; }
+        .r2 { grid-row: 2; }
+        .r4 { grid-row: 4; }
+        .r6 { grid-row: 6; }
+        .r7 { grid-row: 7; }
+        .r8 { grid-row: 8; }
+        .r9 { grid-row: 9; }
+        .r10 { grid-row: 10; }
+        .r11 { grid-row: 11; }
+        .r12 { grid-row: 12; }
+        .r13 { grid-row: 13; }
+        .r14 { grid-row: 14; }
+        .r15 { grid-row: 15; }
+        .r16 { grid-row: 16; }
+        .r17 { grid-row: 17; }
+        .r20 { grid-row: 20; }
+        .r23 { grid-row: 23; }
+        .r24 { grid-row: 24; }
+
+        /* ---- Column start (BMS POS column) ---- */
+        .col1 { grid-column-start: 1; }
+        .col7 { grid-column-start: 7; }
+        .col15 { grid-column-start: 15; }
+        .col20 { grid-column-start: 20; }
+        .col21 { grid-column-start: 21; }
+        .col35 { grid-column-start: 35; }
+        .col41 { grid-column-start: 41; }
+        .col65 { grid-column-start: 65; }
+        .col71 { grid-column-start: 71; }
+
+        /* ---- Column span (BMS LENGTH) ---- */
+        .w2 { grid-column-end: span 2; }
+        .w4 { grid-column-end: span 4; }
+        .w5 { grid-column-end: span 5; }
+        .w8 { grid-column-end: span 8; }
+        .w9 { grid-column-end: span 9; }
+        .w25 { grid-column-end: span 25; }
+        .w40 { grid-column-end: span 40; }
+        .w78 { grid-column-end: span 78; }
+
+        /* Line-4 screen title (BMS ATTRB=BRT, COLOR=NEUTRAL): bright white, bold. */
+        .title-main {
+            margin: 0;
+            font-size: 1rem;
+            font-weight: 700;
+        }
+
+        /* Menu option display lines: <ul> collapses so <li> items are grid cells. */
+        .opt-list {
+            display: contents;
+        }
+        .opt-line {
+            list-style: none;
+        }
+
+        /* Option input (BMS UNPROT, NUM, IC, HILIGHT=UNDERLINE, JUSTIFY=RIGHT). */
+        .opt-input {
+            width: 100%;
+            min-width: 0;
+            padding: 0;
+            margin: 0;
+            font: inherit;
+            color: var(--green);
+            background: transparent;
+            border: none;
+            border-bottom: 1px solid var(--green);
+            text-align: right;
+        }
+        .opt-input:focus-visible {
+            outline: 1px solid var(--neutral);
+            outline-offset: 0;
+        }
+
+        /* Error / informational message (BMS ATTRB=BRT, COLOR=RED): bold red. */
+        .errmsg {
+            font-weight: 700;
+        }
+
+        /* PF-key legend rendered as real submit buttons styled as terminal text. */
+        .pfkey {
+            font: inherit;
+            color: inherit;
+            background: transparent;
+            border: none;
+            padding: 0;
+            margin: 0;
+            cursor: pointer;
+        }
+        .pfkey:focus-visible {
+            outline: 1px solid var(--yellow);
+            outline-offset: 0;
+        }
+        @media (hover: hover) {
+            .pfkey:hover {
+                text-decoration: underline;
+            }
+        }
+    </style>
+</head>
+<body>
+<main>
+    <!--
+      A single POST form wraps the whole screen. th:action="@{/menu}" emits the
+      Spring Security CSRF hidden field automatically; never use a plain action=.
+    -->
+    <form th:object="${form}" th:action="@{/menu}" method="post" novalidate>
+        <div class="frame">
+            <div class="screen">
+                <!-- ================= Header line 1 ================= -->
+                <span class="cell blue r1 col1 w5">Tran:</span>
+                <span class="cell blue r1 col7 w4" th:text="*{trnname}"></span>
+                <span class="cell yellow r1 col21 w40" th:text="*{title01}"></span>
+                <span class="cell blue r1 col65 w5">Date:</span>
+                <span class="cell blue r1 col71 w8" th:text="*{curdate}"></span>
+
+                <!-- ================= Header line 2 ================= -->
+                <span class="cell blue r2 col1 w5">Prog:</span>
+                <span class="cell blue r2 col7 w8" th:text="*{pgmname}"></span>
+                <span class="cell yellow r2 col21 w40" th:text="*{title02}"></span>
+                <span class="cell blue r2 col65 w5">Time:</span>
+                <span class="cell blue r2 col71 w8" th:text="*{curtime}"></span>
+
+                <!-- ================= Screen title (line 4) ================= -->
+                <h1 class="cell neutral title-main r4 col35 w9">Main Menu</h1>
+
+                <!-- ============ Menu option display lines (rows 6-17) ============ -->
+                <!-- Runtime-filled by the service (COMEN02Y options); blanks render empty. -->
+                <ul class="opt-list" role="list">
+                    <li class="cell blue opt-line r6 col20 w40" th:text="*{optn001}"></li>
+                    <li class="cell blue opt-line r7 col20 w40" th:text="*{optn002}"></li>
+                    <li class="cell blue opt-line r8 col20 w40" th:text="*{optn003}"></li>
+                    <li class="cell blue opt-line r9 col20 w40" th:text="*{optn004}"></li>
+                    <li class="cell blue opt-line r10 col20 w40" th:text="*{optn005}"></li>
+                    <li class="cell blue opt-line r11 col20 w40" th:text="*{optn006}"></li>
+                    <li class="cell blue opt-line r12 col20 w40" th:text="*{optn007}"></li>
+                    <li class="cell blue opt-line r13 col20 w40" th:text="*{optn008}"></li>
+                    <li class="cell blue opt-line r14 col20 w40" th:text="*{optn009}"></li>
+                    <li class="cell blue opt-line r15 col20 w40" th:text="*{optn010}"></li>
+                    <li class="cell blue opt-line r16 col20 w40" th:text="*{optn011}"></li>
+                    <li class="cell blue opt-line r17 col20 w40" th:text="*{optn012}"></li>
+                </ul>
+
+                <!-- ================= Prompt + option input (row 20) ================= -->
+                <label class="cell turquoise r20 col15 w25" for="option">Please select an option :</label>
+                <input type="text"
+                       class="opt-input r20 col41 w2"
+                       th:field="*{option}"
+                       inputmode="numeric"
+                       pattern="[0-9]{0,2}"
+                       maxlength="2"
+                       size="2"
+                       autocomplete="off"
+                       autofocus>
+
+                <!-- ================= Error message (row 23, conditional) ================= -->
+                <div class="cell red errmsg r23 col1 w78"
+                     role="alert"
+                     th:if="${!#strings.isEmpty(form.errmsg)}"
+                     th:text="*{errmsg}"></div>
+
+                <!-- ================= PF-key legend (row 24) ================= -->
+                <!-- Verbatim BMS text "ENTER=Continue  F3=Exit" (two spaces), rendered
+                     as submit buttons so ENTER (default submit) posts pfkey=ENTER and
+                     F3=Exit posts pfkey=PF3. Whitespace is preserved by .cell (pre). -->
+                <div class="cell yellow r24 col1 w78"><button type="submit" class="pfkey" name="pfkey" value="ENTER">ENTER=Continue</button>  <button type="submit" class="pfkey" name="pfkey" value="PF3">F3=Exit</button></div>
+            </div>
+        </div>
+    </form>
+</main>
+</body>
+</html>
