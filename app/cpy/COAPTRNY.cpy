@@ -25,6 +25,7 @@
            05  TRAN-LIST-TRUNCATED        PIC X(01).
            88  TRAN-LIST-COMPLETE  VALUE 'N'.
            88  TRAN-LIST-WAS-TRUNCATED  VALUE 'Y'.
+           05  TRAN-LIST-ACCT-ID          PIC 9(11).
            05  TRAN-LIST-ENTRY OCCURS 0 TO 500 TIMES
                                DEPENDING ON TRAN-LIST-COUNT.
                10  TRNL-ID                PIC X(16).
@@ -40,3 +41,16 @@
                10  TRNL-CARD-NUM-MASKED   PIC X(16).
                10  TRNL-ORIG-TS           PIC X(26).
                10  TRNL-PROC-TS           PIC X(26).
+      *  Container transport contract (COTRSVCC <-> COAPIRTR) on
+      *  channel CDEMOAPILISTCH - shared so the producer service and
+      *  the router use ONE layout (no hand-recreated structures):
+      *    TRANLISTREQ = API-TRAN-LIST-REQUEST  (11 bytes)
+      *    TRANLISTRSP = API-TRAN-LIST          (header + used ODO)
+      *    TRANLISTSTA = API-TRAN-LIST-STATUS   (135 bytes)
+       01  API-TRAN-LIST-REQUEST.
+           05  TRLR-ACCT-ID               PIC 9(11).
+       01  API-TRAN-LIST-STATUS.
+           05  TRLS-HTTP-STATUS           PIC 9(03).
+           05  TRLS-RETURN-CODE           PIC S9(04).
+           05  TRLS-ERR-CODE              PIC X(08).
+           05  TRLS-ERR-MESSAGE           PIC X(120).

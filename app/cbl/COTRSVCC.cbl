@@ -63,12 +63,14 @@
            05  WS-PGMNAME           PIC X(08) VALUE 'COTRSVCC'.
            05  WS-TRANSACT-FILE     PIC X(08) VALUE 'TRANSACT'.
            05  WS-CXACAIX-FILE      PIC X(08) VALUE 'CXACAIX '.
+           05  WS-ACCTDAT-FILE      PIC X(08) VALUE 'ACCTDAT '.
            05  WS-LIST-CHANNEL      PIC X(16) VALUE 'CDEMOAPILISTCH'.
            05  WS-RESP-CD           PIC S9(09) COMP VALUE ZEROS.
            05  WS-REAS-CD           PIC S9(09) COMP VALUE ZEROS.
            05  WS-TRAN-KEY          PIC X(16) VALUE SPACES.
            05  WS-CHANNEL-NAME      PIC X(16) VALUE SPACES.
            05  WS-CXREF-KEY         PIC X(11) VALUE SPACES.
+           05  WS-ACCT-KEY          PIC X(11) VALUE SPACES.
            05  WS-CONT-LEN          PIC S9(08) COMP VALUE ZEROS.
            05  WS-LIST-LEN          PIC S9(08) COMP VALUE ZEROS.
            05  WS-PAN-INPUT         PIC X(16) VALUE SPACES.
@@ -89,27 +91,37 @@
            05  WS-BROWSE-ERR-FLG    PIC X(01) VALUE 'N'.
                88  WS-BROWSE-ERROR            VALUE 'Y'.
                88  WS-BROWSE-NO-ERROR         VALUE 'N'.
+      *
+      * Named capacity / guard limits (no magic numbers). WS-MAX-CARDS
+      * MUST equal the WS-CT-CARD-NUM OCCURS count below. Exceeding any
+      * limit surfaces a deterministic 500 - never a silent stop or an
+      * undisclosed partial result.
+           05  WS-MAX-CARDS         PIC 9(03) VALUE 50.
+           05  WS-MAX-TRANS         PIC 9(04) VALUE 500.
+           05  WS-MAX-SCAN          PIC 9(09) VALUE 1000000.
+           05  WS-SCAN-COUNT        PIC 9(09) VALUE ZEROS.
+           05  WS-PUT-ERR-FLG       PIC X(01) VALUE 'N'.
+               88  WS-PUT-ERROR               VALUE 'Y'.
+               88  WS-PUT-NO-ERROR            VALUE 'N'.
+           05  WS-ACCT-CHK-FLG      PIC X(01) VALUE 'N'.
+               88  WS-ACCT-OK                 VALUE 'Y'.
+               88  WS-ACCT-NOT-OK             VALUE 'N'.
            05  WS-CARD-TABLE.
                10  WS-CT-CARD-NUM     PIC X(16) OCCURS 50 TIMES.
       *
-      * Request container payload (router -> service, list mode)
-       01  WS-LIST-REQUEST.
-           05  WS-LR-ACCT-ID        PIC 9(11) VALUE ZEROS.
-           05  WS-LR-ACCT-ID-X REDEFINES WS-LR-ACCT-ID
-                                    PIC X(11).
-      *
-      * Status container payload (service -> router, list mode)
-       01  WS-LIST-STATUS.
-           05  WS-LS-HTTP-STATUS    PIC 9(03) VALUE 200.
-           05  WS-LS-RETURN-CODE    PIC S9(04) VALUE ZEROS.
-           05  WS-LS-ERR-CODE       PIC X(08) VALUE SPACES.
-           05  WS-LS-ERR-MESSAGE    PIC X(120) VALUE SPACES.
+      * The list request (TRLR-ACCT-ID) and status (TRLS-*) container
+      * layouts come from COAPTRNY - shared, not redefined here - so
+      * this producer and the COAPIRTR consumer bind one identical
+      * copy of each contract (see F02 reconciliation).
       *
       * Transaction record layout (base TRANSACT / browse target)
            COPY CVTRA05Y.
       *
       * Card cross-reference layout (CXACAIX account path)
            COPY CVACT03Y.
+      *
+      * Account record layout (ACCTDAT read-only existence proof, list)
+           COPY CVACT01Y.
       *
       * API transaction detail + list response contracts
            COPY COAPTRNY.
@@ -119,36 +131,58 @@
       *--------------------------------------------------------*
        LINKAGE SECTION.
       *
-      * Detail-mode COMMAREA contract (absent in list mode)
+      * DFHCOMMAREA is the CICS-addressed anchor for the COMMAREA the
+      * router passes on EXEC CICS LINK for a DETAIL call. In LIST mode
+      * the service is LINKed with a channel and NO commarea, so the
+      * commarea is never addressed. COPY COAPICOM brings in
+      * 01 API-COMMAREA; detail mode overlays it onto DFHCOMMAREA only
+      * after EIBCALEN proves the full 1334-byte contract is present.
+       01  DFHCOMMAREA                 PIC X(01).
+      *
            COPY COAPICOM.
       *
       *--------------------------------------------------------*
       *                       PROCEDURE DIVISION
       *--------------------------------------------------------*
-       PROCEDURE DIVISION USING API-COMMAREA.
+       PROCEDURE DIVISION.
       *
       *--------------------------------------------------------*
       * 0000-MAIN : mode detection and dispatch
       *--------------------------------------------------------*
        0000-MAIN.
       *
-      * Determine the invocation transport. A list request arrives on
-      * the CDEMOAPILISTCH channel; a detail request arrives with a
-      * COMMAREA (EIBCALEN > 0). Anything else is ignored safely.
+      * Determine the invocation transport. A LIST request arrives on
+      * the CDEMOAPILISTCH channel; a DETAIL request arrives with the
+      * full API-COMMAREA and no channel. The ASSIGN response is
+      * checked (F51): only a NORMAL response lets the returned channel
+      * name be trusted, so a failed ASSIGN can never be mistaken for a
+      * list call.
+           MOVE SPACES TO WS-CHANNEL-NAME
            EXEC CICS ASSIGN
                 CHANNEL   (WS-CHANNEL-NAME)
                 RESP      (WS-RESP-CD)
+                RESP2     (WS-REAS-CD)
            END-EXEC
       *
-           IF WS-CHANNEL-NAME = WS-LIST-CHANNEL
+           IF WS-RESP-CD = DFHRESP(NORMAL)
+               AND WS-CHANNEL-NAME = WS-LIST-CHANNEL
                PERFORM 3000-LIST-MODE
            ELSE
-               IF EIBCALEN > 0
+      *
+      * DETAIL mode requires the exact 1334-byte contract before the
+      * commarea is made addressable; any other length is rejected
+      * without ever dereferencing DFHCOMMAREA (F50).
+               IF EIBCALEN = LENGTH OF API-COMMAREA
+                  SET ADDRESS OF API-COMMAREA TO ADDRESS OF DFHCOMMAREA
                   PERFORM 1000-DETAIL-MODE
                ELSE
                   PERFORM 1900-INVALID-CALL
                END-IF
            END-IF
+      *
+      * Scrub every work area that held a full card number or a raw
+      * VSAM record before returning to the caller (F60).
+           PERFORM 9000-SCRUB-WORKAREAS
       *
            EXEC CICS RETURN
            END-EXEC
@@ -159,36 +193,64 @@
       *--------------------------------------------------------*
        1000-DETAIL-MODE.
       *
-           MOVE API-REQ-TRAN-ID TO WS-TRAN-KEY
+      * F56: begin from a clean, known output state so a 400 / 404 / 500
+      * can never inherit a previous payload or error text.
+           PERFORM 1050-INIT-DETAIL-OUT
       *
-           EXEC CICS READ
-                DATASET   (WS-TRANSACT-FILE)
-                INTO      (TRAN-RECORD)
-                LENGTH    (LENGTH OF TRAN-RECORD)
-                RIDFLD    (WS-TRAN-KEY)
-                KEYLENGTH (LENGTH OF WS-TRAN-KEY)
-                RESP      (WS-RESP-CD)
-                RESP2     (WS-REAS-CD)
-           END-EXEC
+      * F52: the transaction id must be exactly sixteen numeric digits
+      * before any file access; a malformed id is a 400, not a lookup.
+           IF API-REQ-TRAN-ID IS NOT NUMERIC
+               SET API-HTTP-BAD-REQUEST TO TRUE
+               MOVE +4 TO API-RETURN-CODE
+               SET API-ERR-BAD-REQUEST TO TRUE
+               MOVE 'Transaction id must be 16 numeric digits'
+                   TO API-ERR-MESSAGE
+           ELSE
+               MOVE API-REQ-TRAN-ID TO WS-TRAN-KEY
+               EXEC CICS READ
+                    DATASET   (WS-TRANSACT-FILE)
+                    INTO      (TRAN-RECORD)
+                    LENGTH    (LENGTH OF TRAN-RECORD)
+                    RIDFLD    (WS-TRAN-KEY)
+                    KEYLENGTH (LENGTH OF WS-TRAN-KEY)
+                    RESP      (WS-RESP-CD)
+                    RESP2     (WS-REAS-CD)
+               END-EXEC
       *
-           EVALUATE WS-RESP-CD
-               WHEN DFHRESP(NORMAL)
-                  PERFORM 1100-MAP-DETAIL
-                  SET API-HTTP-OK TO TRUE
-                  MOVE ZERO TO API-RETURN-CODE
-               WHEN DFHRESP(NOTFND)
-                  SET API-HTTP-NOT-FOUND TO TRUE
-                  MOVE +4 TO API-RETURN-CODE
-                  MOVE 'NOTFOUND' TO API-ERR-CODE
-                  MOVE 'Transaction not found'
-                      TO API-ERR-MESSAGE
-               WHEN OTHER
-                  SET API-HTTP-SERVER-ERROR TO TRUE
-                  MOVE -1 TO API-RETURN-CODE
-                  MOVE 'APIERR' TO API-ERR-CODE
-                  MOVE 'Internal server error'
-                      TO API-ERR-MESSAGE
-           END-EVALUATE
+               EVALUATE WS-RESP-CD
+                   WHEN DFHRESP(NORMAL)
+                      PERFORM 1100-MAP-DETAIL
+                      SET API-HTTP-OK TO TRUE
+                      MOVE ZERO TO API-RETURN-CODE
+                   WHEN DFHRESP(NOTFND)
+                      SET API-HTTP-NOT-FOUND TO TRUE
+                      MOVE +4 TO API-RETURN-CODE
+                      SET API-ERR-NOT-FOUND TO TRUE
+                      MOVE 'Transaction not found'
+                          TO API-ERR-MESSAGE
+                   WHEN OTHER
+                      SET API-HTTP-SERVER-ERROR TO TRUE
+                      MOVE -1 TO API-RETURN-CODE
+                      SET API-ERR-SERVER-ERROR TO TRUE
+                      MOVE 'Internal server error'
+                          TO API-ERR-MESSAGE
+               END-EVALUATE
+           END-IF
+           .
+      *
+      *--------------------------------------------------------*
+      * 1050-INIT-DETAIL-OUT : reset the COMMAREA response status,
+      * error envelope and payload to a clean state at the start of
+      * every detail call. The router-owned request id is deliberately
+      * left untouched (F56, F36).
+      *--------------------------------------------------------*
+       1050-INIT-DETAIL-OUT.
+      *
+           SET API-HTTP-OK TO TRUE
+           MOVE ZERO TO API-RETURN-CODE
+           MOVE SPACES TO API-ERR-CODE
+           MOVE SPACES TO API-ERR-MESSAGE
+           MOVE SPACES TO API-PAYLOAD
            .
       *
       *--------------------------------------------------------*
@@ -239,18 +301,33 @@
       *--------------------------------------------------------*
        2100-MASK-PAN.
       *
+      * Always start fully masked. Only when the source PAN is exactly
+      * sixteen numeric digits are the last four revealed; any other
+      * shape (spaces, low-values, short or non-numeric data) stays
+      * fully masked so a malformed value can never leak digits (F44).
            MOVE ALL '*' TO WS-MASKED-PAN
-           MOVE WS-PAN-INPUT(13:4) TO WS-PAN-LAST4
-           MOVE WS-PAN-LAST4 TO WS-MASKED-PAN(13:4)
+           IF WS-PAN-INPUT IS NUMERIC
+               MOVE WS-PAN-INPUT(13:4) TO WS-PAN-LAST4
+               MOVE WS-PAN-LAST4 TO WS-MASKED-PAN(13:4)
+           ELSE
+               MOVE SPACES TO WS-PAN-LAST4
+           END-IF
            .
       *
       *--------------------------------------------------------*
-      * 1900-INVALID-CALL : neither a list channel nor a COMMAREA was
-      * supplied. No response area is addressable, so return quietly.
+      * 1900-INVALID-CALL : neither the list channel nor a full detail
+      * COMMAREA was supplied, so no response area is addressable. A
+      * silent return would hide a broken router contract; instead the
+      * task ends deterministically with a controlled ABEND so the
+      * mis-call is visible and auditable (F59). No dump is taken and
+      * no storage is dereferenced.
       *--------------------------------------------------------*
        1900-INVALID-CALL.
       *
-           CONTINUE
+           EXEC CICS ABEND
+                ABCODE ('TSNC')
+                NODUMP
+           END-EXEC
            .
       *
       *--------------------------------------------------------*
@@ -258,45 +335,68 @@
       *--------------------------------------------------------*
        3000-LIST-MODE.
       *
-      * Initialise the response and status blocks for a clean 200
-           MOVE 200 TO WS-LS-HTTP-STATUS
-           MOVE ZERO TO WS-LS-RETURN-CODE
-           MOVE SPACES TO WS-LS-ERR-CODE
-           MOVE SPACES TO WS-LS-ERR-MESSAGE
+      * Initialise the response and status blocks for a clean 200 and
+      * reset every guard counter / flag used by the browse.
+           MOVE 200 TO TRLS-HTTP-STATUS
+           MOVE ZERO TO TRLS-RETURN-CODE
+           MOVE SPACES TO TRLS-ERR-CODE
+           MOVE SPACES TO TRLS-ERR-MESSAGE
            MOVE ZERO TO TRAN-LIST-COUNT
+           MOVE ZERO TO TRAN-LIST-ACCT-ID
            MOVE ZERO TO WS-CARD-COUNT
+           MOVE ZERO TO WS-SCAN-COUNT
            SET TRAN-LIST-COMPLETE TO TRUE
            SET WS-BROWSE-NO-ERROR TO TRUE
+           SET WS-PUT-NO-ERROR TO TRUE
+           MOVE ZEROS TO TRLR-ACCT-ID
       *
-      * Read the requested account id from the input container
-           MOVE LENGTH OF WS-LIST-REQUEST TO WS-CONT-LEN
+      * Read the requested account id from the input container. The
+      * request container is entirely the caller's responsibility, so a
+      * missing, wrong-length or non-numeric account id is a 400 - the
+      * FLENGTH must equal the 11-byte contract and the id must be
+      * numeric before any file access (F52).
+           MOVE LENGTH OF API-TRAN-LIST-REQUEST TO WS-CONT-LEN
            EXEC CICS GET
                 CONTAINER ('TRANLISTREQ')
                 CHANNEL   ('CDEMOAPILISTCH')
-                INTO      (WS-LIST-REQUEST)
+                INTO      (API-TRAN-LIST-REQUEST)
                 FLENGTH   (WS-CONT-LEN)
                 RESP      (WS-RESP-CD)
                 RESP2     (WS-REAS-CD)
            END-EXEC
       *
-           EVALUATE WS-RESP-CD
-               WHEN DFHRESP(NORMAL)
-                  PERFORM 3100-RESOLVE-CARDS
-                  IF WS-BROWSE-ERROR
-                      PERFORM 3900-SET-LIST-ERROR
-                  ELSE
-                      IF WS-CARD-COUNT > ZERO
-                          PERFORM 3200-BROWSE-TRANS
-                          IF WS-BROWSE-ERROR
-                              PERFORM 3900-SET-LIST-ERROR
-                          END-IF
-                      END-IF
-                  END-IF
-               WHEN OTHER
-                  PERFORM 3900-SET-LIST-ERROR
-           END-EVALUATE
+           IF WS-RESP-CD NOT = DFHRESP(NORMAL)
+               PERFORM 3910-SET-LIST-BADREQ
+           ELSE
+               IF WS-CONT-LEN NOT = LENGTH OF API-TRAN-LIST-REQUEST
+                   OR TRLR-ACCT-ID IS NOT NUMERIC
+                   PERFORM 3910-SET-LIST-BADREQ
+               ELSE
       *
-      * Return the list contract (only the used ODO length) and status
+      * Echo the resolved account id into the list contract (F06), then
+      * prove the account exists before listing anything (F53).
+                   MOVE TRLR-ACCT-ID TO TRAN-LIST-ACCT-ID
+                   PERFORM 3050-CHECK-ACCT
+                   IF WS-ACCT-OK
+                       PERFORM 3100-RESOLVE-CARDS
+                       IF WS-BROWSE-ERROR
+                           PERFORM 3900-SET-LIST-ERROR
+                       ELSE
+                           IF WS-CARD-COUNT > ZERO
+                               PERFORM 3200-BROWSE-TRANS
+                               IF WS-BROWSE-ERROR
+                                   PERFORM 3900-SET-LIST-ERROR
+                               END-IF
+                           END-IF
+                       END-IF
+                   END-IF
+               END-IF
+           END-IF
+      *
+      * Return the list contract (only the used ODO length). A failed
+      * response PUT is downgraded to a 500 before the status container
+      * is written; 3900 never downgrades an existing error, so the
+      * first failure is preserved (F51).
            MOVE LENGTH OF API-TRAN-LIST TO WS-LIST-LEN
            EXEC CICS PUT
                 CONTAINER ('TRANLISTRSP')
@@ -306,16 +406,52 @@
                 RESP      (WS-RESP-CD)
                 RESP2     (WS-REAS-CD)
            END-EXEC
+           IF WS-RESP-CD NOT = DFHRESP(NORMAL)
+               SET WS-PUT-ERROR TO TRUE
+               PERFORM 3900-SET-LIST-ERROR
+           END-IF
       *
-           MOVE LENGTH OF WS-LIST-STATUS TO WS-CONT-LEN
+           MOVE LENGTH OF API-TRAN-LIST-STATUS TO WS-CONT-LEN
            EXEC CICS PUT
                 CONTAINER ('TRANLISTSTA')
                 CHANNEL   ('CDEMOAPILISTCH')
-                FROM      (WS-LIST-STATUS)
+                FROM      (API-TRAN-LIST-STATUS)
                 FLENGTH   (WS-CONT-LEN)
                 RESP      (WS-RESP-CD)
                 RESP2     (WS-REAS-CD)
            END-EXEC
+           .
+      *
+      *--------------------------------------------------------*
+      * 3050-CHECK-ACCT : prove the account exists (read-only) before
+      * returning a list. A missing account is a 404; any other CICS
+      * response is a 500. An account that exists but has no matching
+      * transactions still returns 200 with an empty list, but only
+      * after its existence is confirmed here (F53).
+      *--------------------------------------------------------*
+       3050-CHECK-ACCT.
+      *
+           SET WS-ACCT-NOT-OK TO TRUE
+           MOVE TRLR-ACCT-ID TO WS-ACCT-KEY
+      *
+           EXEC CICS READ
+                DATASET   (WS-ACCTDAT-FILE)
+                INTO      (ACCOUNT-RECORD)
+                LENGTH    (LENGTH OF ACCOUNT-RECORD)
+                RIDFLD    (WS-ACCT-KEY)
+                KEYLENGTH (LENGTH OF WS-ACCT-KEY)
+                RESP      (WS-RESP-CD)
+                RESP2     (WS-REAS-CD)
+           END-EXEC
+      *
+           EVALUATE WS-RESP-CD
+               WHEN DFHRESP(NORMAL)
+                  SET WS-ACCT-OK TO TRUE
+               WHEN DFHRESP(NOTFND)
+                  PERFORM 3920-SET-LIST-NOTFOUND
+               WHEN OTHER
+                  PERFORM 3900-SET-LIST-ERROR
+           END-EVALUATE
            .
       *
       *--------------------------------------------------------*
@@ -326,7 +462,7 @@
        3100-RESOLVE-CARDS.
       *
            SET WS-XREF-NOT-DONE TO TRUE
-           MOVE WS-LR-ACCT-ID TO WS-CXREF-KEY
+           MOVE TRLR-ACCT-ID TO WS-CXREF-KEY
       *
            EXEC CICS STARTBR
                 DATASET   (WS-CXACAIX-FILE)
@@ -346,6 +482,9 @@
                        RESP      (WS-RESP-CD)
                        RESP2     (WS-REAS-CD)
                   END-EXEC
+                  IF WS-RESP-CD NOT = DFHRESP(NORMAL)
+                      SET WS-BROWSE-ERROR TO TRUE
+                  END-IF
                WHEN DFHRESP(NOTFND)
                   CONTINUE
                WHEN DFHRESP(ENDFILE)
@@ -372,10 +511,16 @@
                 RESP2     (WS-REAS-CD)
            END-EXEC
       *
+      * CXACAIX is a NON-UNIQUE account-path index: the second and
+      * subsequent card records for a multi-card account are returned
+      * with a DUPKEY response, which is a normal browse condition here
+      * and MUST be handled exactly like NORMAL - otherwise multi-card
+      * accounts fail with a spurious 500 (F58).
            EVALUATE WS-RESP-CD
                WHEN DFHRESP(NORMAL)
+               WHEN DFHRESP(DUPKEY)
                   IF XREF-ACCT-ID OF CARD-XREF-RECORD
-                      = WS-LR-ACCT-ID
+                      = TRLR-ACCT-ID
                       PERFORM 3120-APPEND-CARD
                   ELSE
                       SET WS-XREF-DONE TO TRUE
@@ -389,16 +534,20 @@
            .
       *
       *--------------------------------------------------------*
-      * 3120-APPEND-CARD : add a card number to the working table,
-      * capped at the table size (50).
+      * 3120-APPEND-CARD : add a card number to the working table. The
+      * table holds WS-MAX-CARDS entries; an account with more cards
+      * than that cannot be listed correctly, so rather than silently
+      * dropping cards (and their transactions) the request fails with
+      * a deterministic 500 (F54).
       *--------------------------------------------------------*
        3120-APPEND-CARD.
       *
-           IF WS-CARD-COUNT < 50
+           IF WS-CARD-COUNT < WS-MAX-CARDS
                ADD 1 TO WS-CARD-COUNT
                MOVE XREF-CARD-NUM OF CARD-XREF-RECORD
                   TO WS-CT-CARD-NUM (WS-CARD-COUNT)
            ELSE
+               SET WS-BROWSE-ERROR TO TRUE
                SET WS-XREF-DONE TO TRUE
            END-IF
            .
@@ -431,6 +580,9 @@
                        RESP      (WS-RESP-CD)
                        RESP2     (WS-REAS-CD)
                   END-EXEC
+                  IF WS-RESP-CD NOT = DFHRESP(NORMAL)
+                      SET WS-BROWSE-ERROR TO TRUE
+                  END-IF
                WHEN DFHRESP(NOTFND)
                   CONTINUE
                WHEN DFHRESP(ENDFILE)
@@ -456,9 +608,19 @@
                 RESP2     (WS-REAS-CD)
            END-EXEC
       *
+      * A scan guard bounds the full base-file browse: because there is
+      * no account-keyed transaction path, every record is examined, so
+      * an unbounded loop is capped at WS-MAX-SCAN and a breach fails
+      * fast with a 500 rather than running without limit (F57).
            EVALUATE WS-RESP-CD
                WHEN DFHRESP(NORMAL)
-                  PERFORM 3220-FILTER-AND-ADD
+                  ADD 1 TO WS-SCAN-COUNT
+                  IF WS-SCAN-COUNT > WS-MAX-SCAN
+                      SET WS-BROWSE-ERROR TO TRUE
+                      SET WS-BROWSE-DONE TO TRUE
+                  ELSE
+                      PERFORM 3220-FILTER-AND-ADD
+                  END-IF
                WHEN DFHRESP(ENDFILE)
                   SET WS-BROWSE-DONE TO TRUE
                WHEN OTHER
@@ -484,9 +646,14 @@
                END-IF
            END-PERFORM
       *
+      * A matching record beyond the supported list size cannot be
+      * represented in the fixed ODO table. Returning a silently
+      * truncated list would misrepresent the account, so the request
+      * fails deterministically with a 500 instead of an undisclosed
+      * partial result (F55).
            IF WS-CARD-MATCHED
-               IF TRAN-LIST-COUNT >= 500
-                  SET TRAN-LIST-WAS-TRUNCATED TO TRUE
+               IF TRAN-LIST-COUNT >= WS-MAX-TRANS
+                  SET WS-BROWSE-ERROR TO TRUE
                   SET WS-BROWSE-DONE TO TRUE
                ELSE
                   ADD 1 TO TRAN-LIST-COUNT
@@ -536,16 +703,69 @@
       *
       *--------------------------------------------------------*
       * 3900-SET-LIST-ERROR : uniform 500 for the list transport. The
-      * list is emptied and no RESP2 value is exposed.
+      * list is emptied, the canonical 'INTERNAL' code is published and
+      * no RESP2 value is ever exposed. 3900 only ever raises severity
+      * to 500, so an earlier error is never downgraded (F51). The code
+      * strings mirror the API-ERR-CODE canonical vocabulary (F36).
       *--------------------------------------------------------*
        3900-SET-LIST-ERROR.
       *
-           MOVE 500 TO WS-LS-HTTP-STATUS
-           MOVE -1 TO WS-LS-RETURN-CODE
-           MOVE 'APIERR' TO WS-LS-ERR-CODE
-           MOVE 'Internal server error' TO WS-LS-ERR-MESSAGE
+           MOVE 500 TO TRLS-HTTP-STATUS
+           MOVE -1 TO TRLS-RETURN-CODE
+           MOVE 'INTERNAL' TO TRLS-ERR-CODE
+           MOVE 'Internal server error' TO TRLS-ERR-MESSAGE
            MOVE ZERO TO TRAN-LIST-COUNT
            SET TRAN-LIST-COMPLETE TO TRUE
+           .
+      *
+      *--------------------------------------------------------*
+      * 3910-SET-LIST-BADREQ : 400 for a malformed list request (a
+      * missing / wrong-length request container or a non-numeric
+      * account id). The list is emptied; the canonical 'BADREQ' code
+      * is published (F52, F36).
+      *--------------------------------------------------------*
+       3910-SET-LIST-BADREQ.
+      *
+           MOVE 400 TO TRLS-HTTP-STATUS
+           MOVE +4 TO TRLS-RETURN-CODE
+           MOVE 'BADREQ' TO TRLS-ERR-CODE
+           MOVE 'Account id must be 11 numeric digits'
+               TO TRLS-ERR-MESSAGE
+           MOVE ZERO TO TRAN-LIST-COUNT
+           SET TRAN-LIST-COMPLETE TO TRUE
+           .
+      *
+      *--------------------------------------------------------*
+      * 3920-SET-LIST-NOTFOUND : 404 when the requested account does
+      * not exist. The list is emptied; the canonical 'NOTFOUND' code
+      * is published (F53, F36).
+      *--------------------------------------------------------*
+       3920-SET-LIST-NOTFOUND.
+      *
+           MOVE 404 TO TRLS-HTTP-STATUS
+           MOVE +4 TO TRLS-RETURN-CODE
+           MOVE 'NOTFOUND' TO TRLS-ERR-CODE
+           MOVE 'Account not found' TO TRLS-ERR-MESSAGE
+           MOVE ZERO TO TRAN-LIST-COUNT
+           SET TRAN-LIST-COMPLETE TO TRUE
+           .
+      *
+      *--------------------------------------------------------*
+      * 9000-SCRUB-WORKAREAS : before returning to the router, clear
+      * every work area that held a full (unmasked) card number or a
+      * raw VSAM record so no sensitive data lingers in this program's
+      * storage across the pseudo-conversational return (F60).
+      *--------------------------------------------------------*
+       9000-SCRUB-WORKAREAS.
+      *
+           MOVE LOW-VALUES TO TRAN-RECORD
+           MOVE LOW-VALUES TO CARD-XREF-RECORD
+           MOVE LOW-VALUES TO ACCOUNT-RECORD
+           MOVE SPACES TO WS-CARD-TABLE
+           MOVE SPACES TO WS-PAN-INPUT
+           MOVE SPACES TO WS-MASKED-PAN
+           MOVE SPACES TO WS-PAN-LAST4
+           MOVE SPACES TO WS-TRAN-KEY
            .
       *
       * Ver: CardDemo_v1.0 REST/JSON API layer - COTRSVCC

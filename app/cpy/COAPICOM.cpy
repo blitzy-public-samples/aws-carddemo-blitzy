@@ -32,8 +32,21 @@
                88  API-TOKEN-USER  VALUE 'U'.
                10  API-TOKEN-EXPIRY-TS    PIC X(26).
       *  Error envelope: JSON code / message / requestId
+      *  API-ERR-CODE carries ONE canonical internal vocabulary shared
+      *  by every service. Each 8-char token maps to the public OpenAPI
+      *  error code the router (COAPIRTR) emits in JSON:
+      *    'BADREQ'   -> BAD_REQUEST     (HTTP 400)
+      *    'UNAUTH'   -> UNAUTHORIZED    (HTTP 401)
+      *    'NOTFOUND' -> NOT_FOUND       (HTTP 404)
+      *    'INTERNAL' -> INTERNAL_ERROR  (HTTP 500)
+      *  API-ERR-REQUEST-ID is owned and populated by the router
+      *  (COAPIRTR); service programs must never set it.
            05  API-ERROR.
                10  API-ERR-CODE           PIC X(08).
+               88  API-ERR-BAD-REQUEST  VALUE 'BADREQ'.
+               88  API-ERR-UNAUTHORIZED  VALUE 'UNAUTH'.
+               88  API-ERR-NOT-FOUND  VALUE 'NOTFOUND'.
+               88  API-ERR-SERVER-ERROR  VALUE 'INTERNAL'.
                10  API-ERR-MESSAGE        PIC X(120).
                10  API-ERR-REQUEST-ID     PIC X(36).
       *  Generic single-record response payload buffer;
