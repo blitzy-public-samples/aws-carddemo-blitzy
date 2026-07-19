@@ -1,0 +1,88 @@
+-- =============================================================================
+-- V3__indexes.sql
+--
+-- AWS CardDemo secondary (non-unique) indexes: the legacy VSAM ALTERNATE INDEXes
+-- re-expressed as PostgreSQL B-tree indexes. This is the third and final Flyway
+-- migration of the COBOL -> Java 25 / Spring Boot 3.5.16 migration (AAP 0.4.1,
+-- 0.6.2). Flyway applies migrations in version order:
+--   V0 (Spring Batch metadata) -> V1 (business schema) -> V2 (reference/seed data)
+--   -> V3 (this file, secondary indexes)
+-- V3 runs AFTER the base tables exist (V1) and BEFORE Hibernate ddl-auto=validate
+-- verifies the JPA entity mappings, so these indexes are present for the runtime.
+--
+-- PURPOSE: every index below reproduces a legacy VSAM alternate index (AIX) and
+-- backs a confirmed Spring Data JPA derived-query method on the repositories in
+-- src/main/java/com/aws/carddemo/repository/**. Reproducing the AIX access paths
+-- as secondary indexes preserves the legacy non-unique browse-by-key behavior and
+-- keeps the derived queries index-backed (AAP 0.3.3, 0.4.2). No feature expansion:
+-- only the existing VSAM access paths are reproduced (AAP 0.7.1).
+--
+-- SCOPE (DDL only): this file creates ONLY secondary indexes. It creates NO
+-- tables, columns, seed rows, primary/unique/foreign-key constraints, Flyway
+-- callbacks, repeatable scripts, or undo scripts. Primary keys already own
+-- implicit unique indexes from V1 (including the composite PKs on card_xref,
+-- transaction_category_balance, disclosure_group, transaction_category), so PK /
+-- leftmost-PK access paths (e.g. CardXrefRepository.findByXrefCardNum on the
+-- leftmost PK column xref_card_num, and UserSecurityRepository.findByUsrId on the
+-- usr_id PK) are already indexed and are intentionally NOT duplicated here. The
+-- six inherited-CRUD-only repositories (Account, Customer, DisclosureGroup,
+-- TransactionCategoryBalance, TransactionCategory, TransactionType) declare no
+-- custom finders and therefore need no secondary index.
+--
+-- COLLATION (AAP 0.6.6): collation is NOT re-declared here. The COLLATE "C"
+-- (bytewise EBCDIC/VSAM ordering) applied to the CHAR key columns in V1__schema.sql
+-- is inherited by these B-tree indexes automatically, so ordered derived queries
+-- (findByCardAcctIdOrderByCardNumAsc, findByCardNumOrderByTranIdAsc) reproduce the
+-- legacy SORT FIELDS=(TRAN-ID,A) ordering. Rationale recorded in docs/decision-log.md.
+--
+-- SOURCE LINEAGE (retained read-only under legacy/**): VSAM DEFINE ALTERNATEINDEX
+-- jobs legacy/jcl/TRANIDX.jcl (KEYS(26 304)), legacy/jcl/CARDFILE.jcl (CARDAIX,
+-- KEYS(11 16)), legacy/jcl/XREFFILE.jcl (CXACAIX, KEYS(11,25)); AIX key positions
+-- corroborated by legacy/catlg/LISTCAT.txt (AXRKP 16, 25, 304). Backs the
+-- destination derived queries in
+-- src/main/java/com/aws/carddemo/repository/{CardRepository,CardXrefRepository,
+-- TransactionRepository}.java. Cross-referenced by docs/traceability-matrix.md
+-- (TRANIDX / CARDAIX / CXACAIX -> V3).
+-- =============================================================================
+
+-- ============ 1. transaction (card_num) ============
+-- Backs TransactionRepository.findByCardNum(String) and
+-- findByCardNumOrderByTranIdAsc(String): the AAP-mandated transaction-by-card
+-- lookup used by statement/report generation (CBSTM03A / CBSTM03B). Non-unique:
+-- one card has many transactions. See the reconciliation note below regarding the
+-- relationship of this functional index to the literal TRANIDX alternate index.
+CREATE INDEX idx_transaction_card_num ON transaction (card_num);
+
+-- ============ 2. card (card_acct_id) ============
+-- Backs CardRepository.findByCardAcctId(Long) and
+-- findByCardAcctIdOrderByCardNumAsc(Long). Reproduces the legacy VSAM alternate
+-- index CARDAIX on CARD-ACCT-ID (legacy/jcl/CARDFILE.jcl: DEFINE ALTERNATEINDEX
+-- KEYS(11 16) NONUNIQUEKEY, i.e. KEYLEN 11 at AXRKP 16). Non-unique: one account
+-- may own several cards.
+CREATE INDEX idx_card_card_acct_id ON card (card_acct_id);
+
+-- ============ 3. card_xref (xref_acct_id) ============
+-- Backs CardXrefRepository.findByXrefAcctId(Long). Reproduces the legacy VSAM
+-- alternate index CXACAIX on XREF-ACCT-ID (legacy/jcl/XREFFILE.jcl: DEFINE
+-- ALTERNATEINDEX KEYS(11,25) NONUNIQUEKEY, i.e. KEYLEN 11 at AXRKP 25). Non-unique:
+-- one account may own several cross-reference rows. (Lookup by the leftmost PK
+-- column xref_card_num via findByXrefCardNum is already served by the composite
+-- PRIMARY KEY index from V1 and is not duplicated here.)
+CREATE INDEX idx_card_xref_xref_acct_id ON card_xref (xref_acct_id);
+
+-- ============ 4. transaction (tran_proc_ts) -- literal TRANIDX AIX mirror ============
+-- RECONCILIATION NOTE (card_num vs tran_proc_ts) -- see docs/decision-log.md (F7)
+-- and docs/traceability-matrix.md (TRANIDX -> V3):
+--   The PHYSICAL legacy alternate index in legacy/jcl/TRANIDX.jcl is defined as
+--   DEFINE ALTERNATEINDEX ... KEYS(26 304) NONUNIQUEKEY -- KEYLEN 26 at AXRKP 304,
+--   which is TRAN-PROC-TS (the processed timestamp), NOT the card number. The
+--   AAP-mandated functional requirement and the repository contract, however, is
+--   TransactionRepository.findByCardNum, which needs an index on
+--   transaction(card_num) (created as index 1 above). These are treated as two
+--   distinct access paths: idx_transaction_card_num is the functional
+--   card-scoped access path, while idx_transaction_proc_ts below faithfully
+--   mirrors the literal TRANIDX AIX and preserves processed-timestamp ordering
+--   parity. The discrepancy is documented in docs/decision-log.md; do not
+--   conflate the two (conflating them would silently drop the legacy proc_ts
+--   access path). Non-unique: many transactions can share a processed timestamp.
+CREATE INDEX idx_transaction_proc_ts ON transaction (tran_proc_ts);
