@@ -26,6 +26,9 @@ import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
+import io.swagger.v3.oas.annotations.Operation;
+import io.swagger.v3.oas.annotations.tags.Tag;
+
 import com.aws.carddemo.domain.UserSecurity;
 import com.aws.carddemo.dto.PfKeyAction;
 import com.aws.carddemo.dto.UserUpdateRequest;
@@ -110,6 +113,8 @@ import jakarta.validation.Valid;
  */
 @RestController
 @RequestMapping("/api/v1/admin/users/update")
+@Tag(name = "User Update",
+        description = "User Update screen (COBOL COUSR02C / CICS transaction CU02): view and modify an application user. Requires the ADMIN role.")
 @PreAuthorize("hasRole('ADMIN')")
 public class UserUpdateController {
 
@@ -225,6 +230,8 @@ public class UserUpdateController {
      *         are empty and whose header carries the current date/time
      */
     @GetMapping
+    @Operation(summary = "Blank User Update screen",
+            description = "First-entry screen prompting for the user id to update (COBOL COUSR02C initial SEND MAP). Requires the ADMIN role.")
     public ResponseEntity<UserUpdateResponse> showUpdateUserScreen() {
         return ResponseEntity.ok(blankScreen(LocalDateTime.now(), null));
     }
@@ -256,6 +263,8 @@ public class UserUpdateController {
      *         navigation headers for the cancel/back keys
      */
     @PostMapping
+    @Operation(summary = "Submit the User Update screen",
+            description = "Reproduces the COUSR02C flow: fetch, validate, and rewrite the user record.")
     public ResponseEntity<UserUpdateResponse> update(@Valid @RequestBody UserUpdateRequest request) {
         LocalDateTime now = LocalDateTime.now();
         PfKeyAction action = (request.action() == null) ? PfKeyAction.ENTER : request.action();

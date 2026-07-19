@@ -798,6 +798,246 @@ class StatementGenerationJobTest {
         verify(statementFileService, atLeastOnce()).readTransactionsForCard(CARD_NUM);
     }
 
+    /**
+     * Security + charset regression guard for the generated HTML statement (QA Issue&nbsp;1 &mdash;
+     * CWE-79 stored XSS, and QA Issue&nbsp;3 &mdash; ISO-8859-1 bytes under a {@code charset=utf-8}
+     * meta tag). Seeds free-text customer and transaction fields with (a) an HTML {@code <script>}
+     * payload &mdash; the exact vector reachable through {@code POST /api/v1/transactions/add} &mdash;
+     * and (b) Latin-1 accented characters ({@code é}, {@code ñ}, {@code ü}, {@code ä}), then launches
+     * the real {@code statementGenerationJob} and asserts the produced HTML neutralises every payload.
+     *
+     * <p>This is the durable counterpart to the byte-exact golden guards: those prove that
+     * <em>metacharacter-free</em> statement data is emitted byte-for-byte (the escape is a proven
+     * no-op for the golden fixtures, see D43/D44); this proves that <em>hostile</em> data is escaped
+     * per-field before HTML assembly (D44 revised; the field-level HTML escape is a documented
+     * security improvement, not a behavioural regression).</p>
+     *
+     * <p>Assertions:
+     * <ul>
+     *   <li>the executable {@code <script>} tag never appears raw &mdash; only its inert
+     *       {@code &lt;script&gt;} form does, with the {@code '} inside {@code alert('xss')} rendered
+     *       as {@code &#39;};</li>
+     *   <li>Latin-1 name/description characters appear as charset-independent numeric character
+     *       references ({@code &#233;}, {@code &#241;}, {@code &#252;}, {@code &#228;}), and the
+     *       ampersand as {@code &amp;};</li>
+     *   <li>an address-embedded {@code <Home>} is escaped to {@code &lt;Home&gt;};</li>
+     *   <li>the whole HTML file is <strong>pure ASCII</strong> (every byte &lt; 0x80): because each
+     *       non-ASCII codepoint is emitted as a numeric reference, the legacy {@code charset=utf-8}
+     *       meta tag no longer disagrees with the ISO-8859-1 byte stream &mdash; Issue&nbsp;3 is
+     *       resolved without editing the byte-exact meta line;</li>
+     *   <li>the fixed-width framing is preserved &mdash; the file length is an exact multiple of the
+     *       100-byte HTML record width even for hostile, escape-expanded content.</li>
+     * </ul>
+     * The seeded data uses only code points &le; 0xFF, so the (pre-Issue&nbsp;2-fix) ISO-8859-1
+     * writer does not abort; the multibyte writer-robustness path is exercised separately.</p>
+     *
+     * @throws Exception if the job launch or file read fails
+     */
+    @Test
+    @DisplayName("HTML statement escapes hostile <script>/Latin-1 field data (XSS + charset safety)")
+    void htmlStatementEscapesHostileFieldData() throws Exception {
+        // Replace the golden scenario seeded by @BeforeEach with hostile/Latin-1 field values.
+        cleanBusinessData();
+        Files.deleteIfExists(textFile());
+        Files.deleteIfExists(htmlFile());
+
+        // Latin-1 name (é, ñ, ü) and an address line carrying HTML metacharacters. Unicode escapes
+        // keep the source file's own encoding irrelevant to the assertion.
+        jdbcTemplate.update(
+                "INSERT INTO customer (cust_id, cust_first_name, cust_middle_name, cust_last_name, "
+                        + "cust_addr_line_1, cust_addr_line_2, cust_addr_line_3, cust_addr_state_cd, "
+                        + "cust_addr_country_cd, cust_addr_zip, cust_fico_credit_score) "
+                        + "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                CUST_ID, "Jos\u00e9", "Pe\u00f1a", "M\u00fcller",
+                "1 <Home> Rd", "Apt 4B", "Seattle", "WA",
+                "USA", "98101", FICO_SCORE);
+
+        jdbcTemplate.update(
+                "INSERT INTO account (acct_id, acct_active_status, curr_bal, group_id) "
+                        + "VALUES (?, ?, ?, ?)",
+                ACCT_ID, "Y", CURR_BAL, GROUP_ID);
+
+        jdbcTemplate.update(
+                "INSERT INTO card (card_num, acct_id, card_active_status) VALUES (?, ?, ?)",
+                CARD_NUM, ACCT_ID, "Y");
+
+        cardXrefRepository.save(new CardXref(CARD_NUM, CUST_ID, ACCT_ID));
+
+        // Transaction 1: the exact stored-XSS payload reachable via POST /api/v1/transactions/add.
+        // Transaction 2: a Latin-1 + ampersand description (Café & Bränd).
+        transactionRepository.saveAll(List.of(
+                newTransaction(TRAN_ID_1, "<script>alert('xss')</script>", new BigDecimal("10.00"),
+                        "2025-01-01-00.00.00.000000"),
+                newTransaction(TRAN_ID_2, "Caf\u00e9 & Br\u00e4nd", new BigDecimal("20.00"),
+                        "2025-02-01-00.00.00.000000")));
+
+        launchCompletedJob();
+
+        byte[] htmlBytes = Files.readAllBytes(htmlFile());
+        String html = new String(htmlBytes, StandardCharsets.ISO_8859_1);
+
+        // Fixed-width framing preserved even for escape-expanded hostile content.
+        assertThat(htmlBytes.length % HTML_RECORD_LENGTH)
+                .as("HTML file length must stay an exact multiple of the %d-byte record width",
+                        HTML_RECORD_LENGTH)
+                .isZero();
+
+        // XSS neutralised: the executable tag never appears raw; only its inert entity form does.
+        assertThat(html)
+                .as("raw <script tag must never appear in the generated HTML")
+                .doesNotContain("<script");
+        assertThat(html).contains("&lt;script&gt;");
+        assertThat(html).contains("&lt;/script&gt;");
+        assertThat(html)
+                .as("the single quote inside alert('xss') must be entity-encoded")
+                .contains("&#39;");
+
+        // Address-embedded metacharacters escaped.
+        assertThat(html).contains("&lt;Home&gt;");
+
+        // Latin-1 characters emitted as charset-independent numeric references (Issue 3 fix).
+        assertThat(html).contains("Jos&#233;");   // é -> &#233;
+        assertThat(html).contains("Pe&#241;a");    // ñ -> &#241;
+        assertThat(html).contains("M&#252;ller");  // ü -> &#252;
+        assertThat(html).contains("Br&#228;nd");   // ä -> &#228;
+        assertThat(html).contains("&amp;");         // & -> &amp;
+
+        // Definitive Issue-3 proof: every non-ASCII codepoint is a numeric reference, so the whole
+        // HTML byte stream is pure ASCII and the legacy charset=utf-8 meta tag no longer disagrees
+        // with the ISO-8859-1 bytes. No raw high byte (e.g. 0xE9 for é) may survive.
+        for (byte b : htmlBytes) {
+            assertThat(b & 0xFF)
+                    .as("generated HTML must be pure ASCII (no byte >= 0x80)")
+                    .isLessThan(0x80);
+        }
+
+        // The plain-text statement is produced too (text is not HTML: it is not escaped, and the
+        // Latin-1 bytes round-trip through the ISO-8859-1 text file unharmed).
+        assertThat(Files.exists(textFile()))
+                .as("the plain-text statement must also be produced")
+                .isTrue();
+    }
+
+    /**
+     * QA Issue&nbsp;2 (MAJOR) regression guard at the job level: a transaction description carrying a
+     * code point outside ISO-8859-1 must NOT abort the whole job.
+     *
+     * <p>Before the fix, the statement writer opened its files with the JDK-default THROWING
+     * ISO-8859-1 encoder. A single character above U+00FF anywhere in the seed data raised
+     * {@code UnmappableCharacterException}, failing the step and the job with return code&nbsp;8 and
+     * producing <strong>zero output for every account</strong>. The fix (decision-log D56) opens both
+     * writers through a substituting encoder and pre-substitutes each unmappable char individually via
+     * {@code toLatin1Record}, so the job completes and the delimiter-less {@code RECFM=FB} framing is
+     * preserved even for a supplementary emoji (a two-char surrogate pair).</p>
+     *
+     * <p>This test seeds a SUPPLEMENTARY emoji (U+1F600) and a BMP CJK ideograph (U+4E00) in two
+     * transaction descriptions and asserts that:</p>
+     * <ul>
+     *   <li>the job reaches {@code COMPLETED} (via {@link #launchCompletedJob()}) — the core symptom;</li>
+     *   <li>both output files are produced and non-empty (never the zero-output failure mode);</li>
+     *   <li>fixed-width framing is intact in both files;</li>
+     *   <li>the un-escaped plain-text path substitutes each unmappable char with {@code '?'} (proving
+     *       {@code toLatin1Record} runs in the writer and that a surrogate pair becomes TWO bytes,
+     *       not one), and the text stream stays pure ASCII;</li>
+     *   <li>the escaped HTML path renders the same code points as charset-independent numeric
+     *       references ({@code &#128512;}, {@code &#19968;}), cross-confirming the code-point-aware
+     *       {@code escapeHtml} handles supplementary characters.</li>
+     * </ul>
+     *
+     * @throws Exception if the job launch or file read fails
+     */
+    @Test
+    @DisplayName("Issue 2: a transaction description outside ISO-8859-1 (emoji/CJK) does not abort the job")
+    void jobCompletesWhenTransactionDescriptionHasUnmappableCharacters() throws Exception {
+        // Replace the golden scenario with clean ASCII customer/account data so the ONLY code points
+        // outside ISO-8859-1 live in the transaction descriptions — isolating the writer robustness path.
+        cleanBusinessData();
+        Files.deleteIfExists(textFile());
+        Files.deleteIfExists(htmlFile());
+
+        jdbcTemplate.update(
+                "INSERT INTO customer (cust_id, cust_first_name, cust_middle_name, cust_last_name, "
+                        + "cust_addr_line_1, cust_addr_line_2, cust_addr_line_3, cust_addr_state_cd, "
+                        + "cust_addr_country_cd, cust_addr_zip, cust_fico_credit_score) "
+                        + "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                CUST_ID, "Ada", "B", "Lovelace",
+                "1 Analytical Way", "Apt 0", "London", "WA",
+                "USA", "98101", FICO_SCORE);
+
+        jdbcTemplate.update(
+                "INSERT INTO account (acct_id, acct_active_status, curr_bal, group_id) "
+                        + "VALUES (?, ?, ?, ?)",
+                ACCT_ID, "Y", CURR_BAL, GROUP_ID);
+
+        jdbcTemplate.update(
+                "INSERT INTO card (card_num, acct_id, card_active_status) VALUES (?, ?, ?)",
+                CARD_NUM, ACCT_ID, "Y");
+
+        cardXrefRepository.save(new CardXref(CARD_NUM, CUST_ID, ACCT_ID));
+
+        // Transaction 1: a SUPPLEMENTARY emoji U+1F600 ("\uD83D\uDE00", two Java chars).
+        // Transaction 2: a BMP CJK ideograph string U+4E00 U+4E8C U+4E09 ("一二三", one char each).
+        transactionRepository.saveAll(List.of(
+                newTransaction(TRAN_ID_1, "Pay \uD83D\uDE00 tip", new BigDecimal("10.00"),
+                        "2025-01-01-00.00.00.000000"),
+                newTransaction(TRAN_ID_2, "\u4E00\u4E8C\u4E09 mart", new BigDecimal("20.00"),
+                        "2025-02-01-00.00.00.000000")));
+
+        // Core proof: the job COMPLETES. Before the fix this threw and the job ended with RC8.
+        launchCompletedJob();
+
+        byte[] textBytes = Files.readAllBytes(textFile());
+        byte[] htmlBytes = Files.readAllBytes(htmlFile());
+
+        // Never the zero-output failure mode: both files are produced and non-empty.
+        assertThat(textBytes.length)
+                .as("plain-text statement must be produced with content (not the zero-output failure)")
+                .isGreaterThan(0);
+        assertThat(htmlBytes.length)
+                .as("HTML statement must be produced with content (not the zero-output failure)")
+                .isGreaterThan(0);
+
+        // Fixed-width framing intact in both files despite the multibyte input.
+        assertThat(textBytes.length % TEXT_RECORD_LENGTH)
+                .as("text file length must stay an exact multiple of the %d-byte record width",
+                        TEXT_RECORD_LENGTH)
+                .isZero();
+        assertThat(htmlBytes.length % HTML_RECORD_LENGTH)
+                .as("HTML file length must stay an exact multiple of the %d-byte record width",
+                        HTML_RECORD_LENGTH)
+                .isZero();
+
+        // Plain-text path (NOT HTML-escaped): each unmappable char is substituted with '?'. The
+        // supplementary emoji (two Java chars) becomes TWO '?' bytes, so framing cannot drift.
+        String text = new String(textBytes, StandardCharsets.ISO_8859_1);
+        assertThat(text)
+                .as("emoji is substituted char-for-char on the un-escaped text path (2 chars -> \"??\")")
+                .contains("Pay ?? tip");
+        assertThat(text)
+                .as("each CJK ideograph is substituted with a single '?' on the text path")
+                .contains("??? mart");
+        for (byte b : textBytes) {
+            assertThat(b & 0xFF)
+                    .as("text statement must stay pure ASCII (no raw multibyte byte leaked into a frame)")
+                    .isLessThan(0x80);
+        }
+
+        // HTML path (escaped by the code-point-aware escapeHtml): the same code points render as
+        // charset-independent numeric references, and the whole HTML stream is pure ASCII.
+        String html = new String(htmlBytes, StandardCharsets.ISO_8859_1);
+        assertThat(html)
+                .as("supplementary emoji U+1F600 renders as numeric reference &#128512;")
+                .contains("&#128512;");
+        assertThat(html)
+                .as("CJK ideograph U+4E00 renders as numeric reference &#19968;")
+                .contains("&#19968;");
+        for (byte b : htmlBytes) {
+            assertThat(b & 0xFF)
+                    .as("generated HTML must be pure ASCII (no byte >= 0x80)")
+                    .isLessThan(0x80);
+        }
+    }
+
 
     // ------------------------------------------------------------------------
     // Helpers

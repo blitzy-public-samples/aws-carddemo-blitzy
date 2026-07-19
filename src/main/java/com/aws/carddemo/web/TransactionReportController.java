@@ -31,6 +31,9 @@ import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
+import io.swagger.v3.oas.annotations.Operation;
+import io.swagger.v3.oas.annotations.tags.Tag;
+
 import com.aws.carddemo.dto.PfKeyAction;
 import com.aws.carddemo.dto.TransactionReportRequest;
 import com.aws.carddemo.dto.TransactionReportResponse;
@@ -113,6 +116,8 @@ import com.aws.carddemo.service.ReportService.ReportType;
  */
 @RestController
 @RequestMapping("/api/v1/reports/transactions")
+@Tag(name = "Transaction Report",
+        description = "Transaction Report screen (COBOL CORPT00C / CICS transaction CR00): request a transaction report over a chosen date range.")
 public class TransactionReportController {
 
     /**
@@ -190,6 +195,8 @@ public class TransactionReportController {
      * @return {@code 200 OK} with the blank report-request screen projection
      */
     @GetMapping
+    @Operation(summary = "Blank Transaction Report request screen",
+            description = "First-entry screen for choosing the report type and date range (COBOL CORPT00C initial SEND MAP).")
     public ResponseEntity<TransactionReportResponse> showReportRequestScreen() {
         return ResponseEntity.ok(reportMapper.toResponse(null, LocalDateTime.now()));
     }
@@ -207,6 +214,8 @@ public class TransactionReportController {
      *         navigation headers pointing at {@link #MENU_PROGRAM} / {@link #MENU_TRANSACTION}
      */
     @PostMapping
+    @Operation(summary = "Submit the Transaction Report request",
+            description = "Reproduces the CORPT00C flow: validate the selection and submit the transaction report request.")
     public ResponseEntity<TransactionReportResponse> requestReport(
             @Valid @RequestBody TransactionReportRequest request) {
         final PfKeyAction action = request.action();

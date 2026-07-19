@@ -364,11 +364,14 @@ public class StatementProcessor
      */
     private void appendHtmlNameAddressBasic(List<String> html, String rawName, String add1Field,
             String add2Field, String add3Field, String acctField, String currBalEdited, String ficoField) {
-        // Name + address block (HTML-L23 / HTML-ADDR-LN, DELIMITED BY '  ').
-        html.add("<p style=\"font-size:16px\">" + upToDoubleSpace(fit(rawName, 50)) + "  </p>");      // L23-NAME
-        html.add("<p>" + upToDoubleSpace(add1Field) + "  </p>");                                      // HTML-ADDR-LN (ADD1)
-        html.add("<p>" + upToDoubleSpace(add2Field) + "  </p>");                                      // HTML-ADDR-LN (ADD2)
-        html.add("<p>" + upToDoubleSpace(add3Field) + "  </p>");                                      // HTML-ADDR-LN (ADD3)
+        // Name + address block (HTML-L23 / HTML-ADDR-LN, DELIMITED BY '  '). The trimmed data value is
+        // HTML-escaped (see escapeHtml / decision log D43-D44) so customer-sourced text renders as inert
+        // literal text in a browser that opens this artifact; escaping is a no-op for the metacharacter-
+        // free data of the golden fixture, so byte-exact parity is preserved.
+        html.add("<p style=\"font-size:16px\">" + escapeHtml(upToDoubleSpace(fit(rawName, 50))) + "  </p>"); // L23-NAME
+        html.add("<p>" + escapeHtml(upToDoubleSpace(add1Field)) + "  </p>");                          // HTML-ADDR-LN (ADD1)
+        html.add("<p>" + escapeHtml(upToDoubleSpace(add2Field)) + "  </p>");                          // HTML-ADDR-LN (ADD2)
+        html.add("<p>" + escapeHtml(upToDoubleSpace(add3Field)) + "  </p>");                          // HTML-ADDR-LN (ADD3)
         html.add(HTML_TD_CLOSE);                                                                     // HTML-LTDE
         html.add(HTML_TR_CLOSE);                                                                     // HTML-LTRE
         html.add(HTML_TR_OPEN);                                                                      // HTML-LTRS
@@ -416,10 +419,12 @@ public class StatementProcessor
             String tranAmtEdited) {
         html.add(HTML_TR_OPEN);                                                                      // HTML-LTRS
         html.add("<td style=\"width:25%; padding:0px 5px; background-color:#f2f2f2; text-align:left;\">");  // HTML-L58
-        html.add("<p>" + tranIdField + "</p>");                                                      // HTML-TRAN-LN (ID)
+        // Transaction-sourced values are HTML-escaped (see escapeHtml / decision log D43-D44) so an
+        // injected tag/script in a description renders as inert literal text; no-op for clean data.
+        html.add("<p>" + escapeHtml(tranIdField) + "</p>");                                          // HTML-TRAN-LN (ID)
         html.add(HTML_TD_CLOSE);                                                                     // HTML-LTDE
         html.add("<td style=\"width:55%; padding:0px 5px; background-color:#f2f2f2; text-align:left;\">");  // HTML-L61
-        html.add("<p>" + tranDescField + "</p>");                                                    // HTML-TRAN-LN (DESC)
+        html.add("<p>" + escapeHtml(tranDescField) + "</p>");                                        // HTML-TRAN-LN (DESC)
         html.add(HTML_TD_CLOSE);                                                                     // HTML-LTDE
         html.add("<td style=\"width:20%; padding:0px 5px; background-color:#f2f2f2; text-align:right;\">"); // HTML-L64
         html.add("<p>" + tranAmtEdited + "</p>");                                                    // HTML-TRAN-LN (AMT)
@@ -639,6 +644,92 @@ public class StatementProcessor
      */
     private static String nz(String s) {
         return (s == null) ? "" : s;
+    }
+
+    /**
+     * HTML-escapes a data-derived field value before it is concatenated into the statement HTML
+     * template, so that customer- and transaction-sourced text can never be interpreted as markup or
+     * script by a browser that opens the generated {@code HTMLFILE} artifact. This hardens the
+     * statement HTML browser surface against stored cross-site scripting (CWE-79) while preserving the
+     * byte-exact golden-file contract, because it is applied <em>only</em> to the free-text data values
+     * (name, address lines, transaction id and description) and is a strict no-op for the
+     * metacharacter-free ASCII data that faithfully-decoded statement fields — and the golden fixtures —
+     * contain. The disposition and its parity analysis are recorded in decision log D43 / D44.
+     *
+     * <p>Two transformations are applied, iterating by Unicode code point:</p>
+     * <ul>
+     *   <li>The five HTML-significant characters {@code & < > " '} are replaced with their entities
+     *       ({@code &amp; &lt; &gt; &quot; &#39;}) — the standard output-encoding set — so an injected
+     *       tag, attribute or entity renders as inert literal text rather than active markup.</li>
+     *   <li>Every non-ASCII code point ({@code >= 0x80}) is replaced with a numeric character reference
+     *       {@code &#nnn;}. Numeric references are charset-independent, so a Latin-1 accented character
+     *       (e.g. {@code é}) renders correctly in the browser regardless of the byte-exact legacy
+     *       {@code <meta charset="utf-8">} declaration — resolving the charset-mislabel rendering defect
+     *       without altering the frozen meta tag or the ISO-8859-1 record encoding. A supplementary-plane
+     *       code point (e.g. an emoji surrogate pair) is emitted as one reference.</li>
+     * </ul>
+     *
+     * <p>All other characters (printable ASCII {@code 0x20}-{@code 0x7E} except the five above, and any
+     * control characters — which the writer separately sanitises) pass through unchanged, so clean data
+     * — including every value in the golden scenario — is returned byte-identical and the fixed-width
+     * record framing is preserved (the assembled line is still truncated/padded to its exact record
+     * width downstream).</p>
+     *
+     * @param value the raw data field value (never {@code null} at the call sites; {@code null} is
+     *              tolerated and treated as the empty string)
+     * @return the HTML-safe rendering of {@code value}
+     */
+    private static String escapeHtml(String value) {
+        if (value == null) {
+            return "";
+        }
+        // Fast path: clean ASCII data (the overwhelming majority, including the golden scenario) needs
+        // no rewriting, so it is returned unchanged with no allocation — guaranteeing byte-exact parity.
+        if (isHtmlClean(value)) {
+            return value;
+        }
+        StringBuilder sb = new StringBuilder(value.length() + 16);
+        int index = 0;
+        final int length = value.length();
+        while (index < length) {
+            int cp = value.codePointAt(index);
+            switch (cp) {
+                case '&' -> sb.append("&amp;");
+                case '<' -> sb.append("&lt;");
+                case '>' -> sb.append("&gt;");
+                case '"' -> sb.append("&quot;");
+                case '\'' -> sb.append("&#39;");
+                default -> {
+                    if (cp >= 0x80) {
+                        // Charset-independent numeric character reference (fixes browser mojibake and
+                        // renders code points > 0xFF without relying on the output byte encoding).
+                        sb.append("&#").append(cp).append(';');
+                    } else {
+                        sb.appendCodePoint(cp);
+                    }
+                }
+            }
+            index += Character.charCount(cp);
+        }
+        return sb.toString();
+    }
+
+    /**
+     * Returns {@code true} when {@code value} contains no character that {@link #escapeHtml(String)}
+     * would rewrite — i.e. none of {@code & < > " '} and no non-ASCII code unit. Used as the escape
+     * fast path so clean data is returned verbatim, guaranteeing a byte-identical golden statement.
+     *
+     * @param value the value to inspect (never {@code null})
+     * @return {@code true} if the value can be emitted verbatim; {@code false} if it needs escaping
+     */
+    private static boolean isHtmlClean(String value) {
+        for (int i = 0; i < value.length(); i++) {
+            char c = value.charAt(i);
+            if (c >= 0x80 || c == '&' || c == '<' || c == '>' || c == '"' || c == '\'') {
+                return false;
+            }
+        }
+        return true;
     }
 
     // ==========================================================================================

@@ -443,12 +443,21 @@ requires are:
 | `dailyTransactionPostingJob` | Post staged daily transactions and write rejects (POSTTRAN/CBTRN02C) | none (reads staged `daily_transaction` rows) | `./target/batch/DALYREJS.dat` |
 | `interestCalculationJob` | Monthly interest calculation (INTCALC/CBACT04C) | `parmDate=<YYYYMMDDHH>` (10 chars, e.g. `2022071800`; required — D33) | `./target/batch/SYSTRAN.dat` |
 | `transactionReportJob` | Date-range transaction report (TRANREPT/CBTRN03C) | `startDate=<YYYY-MM-DD>` `endDate=<YYYY-MM-DD>` (inclusive) | `./target/batch/DALYREPT.txt` |
+| `statementGenerationJob` | Generate one statement per account/card cross-reference from posted history (CREASTMT/CBSTM03A+CBSTM03B) | none (reads posted `transaction` rows) | `./target/batch/statements.txt` + `./target/batch/statements.html` |
 
 > `interestCalculationJob` and `dailyTransactionLoadJob` **fail fast** if their required parameter is
 > missing or blank (job-parameter validators — D33 / D30), so an empty launch surfaces a clear error
 > rather than corrupt output. This is also why these jobs are not part of the CI nightly
 > correlationId-only smoke loop (decision-log D14); they are exercised by the Testcontainers
 > integration-test suite instead.
+
+> `statementGenerationJob` takes **no** parameters: it reads the posted `transaction` history (which the
+> `local` profile seeds, so the statement job has data out of the box) and writes one statement per
+> account/card cross-reference to `statements.txt` (plain text) and `statements.html` (HTML). Like the
+> other no-parameter jobs (`validate`, `post`), every empty-parameter launch is the **same** Spring
+> Batch job instance — so a completed no-parameter job will not re-run. To launch it **again** (for
+> example after regenerating output to inspect it), pass any unique job parameter, e.g.
+> `stamp=$(date +%s)`, which creates a fresh job instance.
 
 ### Supply your own DALYTRAN fixture
 
@@ -476,7 +485,7 @@ The five commands below walk the whole pipeline and demonstrate the **launch mec
 name, parameters, and the exit-code contract:
 
 ```shell
-# load -> validate -> post -> interest -> report
+# load -> validate -> post -> interest -> report -> statement
 J="java -jar target/carddemo-1.0.0.jar --spring.main.web-application-type=none --spring.batch.job.enabled=true"
 
 $J --spring.batch.job.name=dailyTransactionLoadJob \
@@ -485,6 +494,7 @@ $J --spring.batch.job.name=dailyTransactionValidateJob
 $J --spring.batch.job.name=dailyTransactionPostingJob      # on the SEEDED db this abends (exit 8) - see the note below
 $J --spring.batch.job.name=interestCalculationJob parmDate=2022071800
 $J --spring.batch.job.name=transactionReportJob startDate=2022-07-01 endDate=2022-07-31
+$J --spring.batch.job.name=statementGenerationJob          # no parameters; writes statements.txt + statements.html
 ```
 
 > **The posting step abends on the freshly-seeded database — and that is correct.** The `local`
@@ -541,9 +551,11 @@ below). List and inspect them after a run:
 
 ```shell
 ls -l ./target/batch
-# DALYREJS.dat  — rejected postings (430-byte record + trailing LF; reason codes 100/101/102/103)
-# SYSTRAN.dat   — interest transactions (350-byte records; TRAN-ID = parmDate + 6-digit suffix)
-# DALYREPT.txt  — transaction report (fixed-width 133-byte lines; card control-break + totals)
+# DALYREJS.dat    — rejected postings (430-byte record + trailing LF; reason codes 100/101/102/103)
+# SYSTRAN.dat     — interest transactions (350-byte records; TRAN-ID = parmDate + 6-digit suffix)
+# DALYREPT.txt    — transaction report (fixed-width 133-byte lines; card control-break + totals)
+# statements.txt  — per-account statements, plain text (80-byte fixed-width records; RECFM=FB, no delimiter)
+# statements.html — per-account statements, HTML (100-byte fixed-width records; open in a browser)
 ```
 
 Override the output locations with these properties (command-line `--key=value`, environment
@@ -554,6 +566,7 @@ variable, or `application.yml`) — no paths are hardcoded:
 | `carddemo.batch.posting.reject-directory` / `carddemo.batch.posting.reject-file` | `./target/batch` / `DALYREJS.dat` |
 | `carddemo.batch.interest.output-directory` / `carddemo.batch.interest.output-file` | `./target/batch` / `SYSTRAN.dat` |
 | `carddemo.batch.report.output-directory` / `carddemo.batch.report.output-file` | `./target/batch` / `DALYREPT.txt` |
+| `carddemo.batch.statement.output-directory` / `carddemo.batch.statement.text-file` / `carddemo.batch.statement.html-file` | `./target/batch` / `statements.txt` / `statements.html` |
 
 The same launch-by-name mechanism is what the CI workflow's scheduled batch job invokes for the
 read-only master-print and backup jobs (`accountMasterPrintJob`, `cardMasterPrintJob`,

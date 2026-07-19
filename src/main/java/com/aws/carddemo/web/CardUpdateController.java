@@ -26,6 +26,9 @@ import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
+import io.swagger.v3.oas.annotations.Operation;
+import io.swagger.v3.oas.annotations.tags.Tag;
+
 import com.aws.carddemo.domain.Card;
 import com.aws.carddemo.dto.CardUpdateRequest;
 import com.aws.carddemo.dto.CardUpdateResponse;
@@ -105,6 +108,8 @@ import com.aws.carddemo.service.CardService;
  */
 @RestController
 @RequestMapping("/api/v1/cards/update")
+@Tag(name = "Card Update",
+        description = "Card Update screen (COBOL COCRDUPC / CICS transaction CCUP): view and modify card detail with field-level edit validation.")
 public class CardUpdateController {
 
     /** This program's identifier, shown in the screen header ({@code PGMNAMEO}). */
@@ -206,6 +211,8 @@ public class CardUpdateController {
      *         key-entry prompt and the function-key legend
      */
     @GetMapping
+    @Operation(summary = "Blank Card Update screen",
+            description = "First-entry screen prompting for the card key (COBOL COCRDUPC initial SEND MAP).")
     public ResponseEntity<CardUpdateResponse> showUpdateScreen() {
         return ResponseEntity.ok(blankScreen(MSG_PROMPT_SEARCH_KEYS, ""));
     }
@@ -231,6 +238,8 @@ public class CardUpdateController {
      *         outcomes propagate as 404 / 409 from the service)
      */
     @PostMapping
+    @Operation(summary = "Submit the Card Update screen",
+            description = "Reproduces the COCRDUPC flow: fetch, validate, and rewrite the card detail.")
     public ResponseEntity<CardUpdateResponse> update(@Valid @RequestBody CardUpdateRequest request) {
         PfKeyAction action = (request.action() == null) ? PfKeyAction.ENTER : request.action();
         return switch (action) {

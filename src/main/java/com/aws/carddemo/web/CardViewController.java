@@ -32,6 +32,9 @@ import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
+import io.swagger.v3.oas.annotations.Operation;
+import io.swagger.v3.oas.annotations.tags.Tag;
+
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 
@@ -118,6 +121,8 @@ import java.time.format.DateTimeFormatter;
  */
 @RestController
 @RequestMapping("/api/v1/cards/view")
+@Tag(name = "Card View",
+        description = "Card View screen (COBOL COCRDSLC / CICS transaction CCDL): view a single card's detail.")
 public class CardViewController {
 
     /** This program's identifier &mdash; COBOL {@code LIT-THISPGM} ({@code 'COCRDSLC'}). */
@@ -233,6 +238,8 @@ public class CardViewController {
      *         prompt as its informational message
      */
     @GetMapping
+    @Operation(summary = "Blank Card View screen",
+            description = "First-entry screen prompting for the card key (COBOL COCRDSLC initial SEND MAP).")
     public ResponseEntity<CardViewResponse> view() {
         return ResponseEntity.ok(
                 blankScreen(null, null, MSG_PROMPT_FOR_INPUT, null, LocalDateTime.now()));
@@ -267,6 +274,8 @@ public class CardViewController {
      * @return the {@code 200 OK} card-view response for the selected branch
      */
     @PostMapping
+    @Operation(summary = "Submit the Card View screen",
+            description = "Reproduces the COCRDSLC lookup: fetch and display the requested card detail.")
     public ResponseEntity<CardViewResponse> view(
             @Valid @RequestBody CardViewRequest request,
             @RequestHeader(value = HEADER_FROM_PROGRAM, required = false) String fromProgram,

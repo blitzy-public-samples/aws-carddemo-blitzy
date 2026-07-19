@@ -269,8 +269,11 @@ job against your scaled database and watch the aggregate the report quotes:
 # web server off so the process exit code == the Spring Batch return code
 java -jar target/carddemo-*.jar \
   --spring.batch.job.name=statementGenerationJob \
-  --spring.main.web-application-type=none \
-  # ... plus the job's date/output parameters (see getting-started.md §8)
+  --spring.main.web-application-type=none
+  # statementGenerationJob takes NO required (and no date) parameters - it reads posted transaction
+  # history; override output paths with the carddemo.batch.statement.* properties. To re-run a
+  # completed no-parameter job, add a unique job parameter, e.g. stamp=$(date +%s).
+  # Full launch + config reference: getting-started.md section 8 "Run the batch jobs".
 ```
 
 With `pg_stat_statements` reset immediately before the run (see §2), the per-card
@@ -339,7 +342,8 @@ cache.
 - [`./perf/scale-dataset.sql`](./perf/scale-dataset.sql) — the generator, with its
   full key-disjointness rationale in the header.
 - [`./getting-started.md`](./getting-started.md) — the functional setup this guide
-  builds on, including §8 on launching the batch jobs.
+  builds on, including [§8 "Run the batch jobs"](./getting-started.md#8-run-the-batch-jobs)
+  (statement-job launch, no-parameter re-run note, and the `carddemo.batch.statement.*` output keys).
 - [`./extending.md`](./extending.md) — the idiomatic way to add a query or index
   (write the migration, then verify the plan with this guide).
 - [`../architecture.md`](../architecture.md) — where the data-tier indexes and the

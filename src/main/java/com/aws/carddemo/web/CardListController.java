@@ -30,6 +30,9 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
+import io.swagger.v3.oas.annotations.Operation;
+import io.swagger.v3.oas.annotations.tags.Tag;
+
 import jakarta.validation.Valid;
 
 import com.aws.carddemo.domain.Card;
@@ -104,6 +107,8 @@ import com.aws.carddemo.service.CardService;
  */
 @RestController
 @RequestMapping("/api/v1/cards")
+@Tag(name = "Card List",
+        description = "Card List screen (COBOL COCRDLIC / CICS transaction CCLI): browse the cards for an account with PF7/PF8 paging.")
 public class CardListController {
 
     // ------------------------------------------------------------------
@@ -305,6 +310,8 @@ public class CardListController {
      * @return {@code 200 OK} with the first {@link CardListResponse} page
      */
     @GetMapping
+    @Operation(summary = "First page of the Card List",
+            description = "First-entry screen listing the initial page of cards (COBOL COCRDLIC initial browse).")
     public ResponseEntity<CardListResponse> firstPage() {
         Page<Card> page = query(null, null, 0);
         return okResponse(page, null);
@@ -340,6 +347,8 @@ public class CardListController {
      *         selection or PF3 additionally sets the navigation headers
      */
     @PostMapping
+    @Operation(summary = "Page the Card List",
+            description = "Reproduces the COCRDLIC EVALUATE EIBAID paging: PF7/PF8 browse the card list backward and forward.")
     public ResponseEntity<CardListResponse> browse(
             @Valid @RequestBody CardListRequest request,
             @RequestParam(name = "page", defaultValue = "1") int page) {

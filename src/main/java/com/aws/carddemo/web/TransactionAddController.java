@@ -28,6 +28,9 @@ import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
+import io.swagger.v3.oas.annotations.Operation;
+import io.swagger.v3.oas.annotations.tags.Tag;
+
 import jakarta.validation.Valid;
 
 import com.aws.carddemo.domain.Transaction;
@@ -137,6 +140,8 @@ import com.aws.carddemo.service.TransactionService.TransactionValidationExceptio
  */
 @RestController
 @RequestMapping("/api/v1/transactions/add")
+@Tag(name = "Transaction Add",
+        description = "Transaction Add screen (COBOL COTRN02C / CICS transaction CT02): capture and post a new transaction, generating the next transaction id.")
 public class TransactionAddController {
 
     /**
@@ -252,6 +257,8 @@ public class TransactionAddController {
      * @return {@code 200 OK} with a blank {@link TransactionAddResponse}
      */
     @GetMapping
+    @Operation(summary = "Blank Transaction Add screen",
+            description = "First-entry screen for entering a new transaction (COBOL COTRN02C initial SEND MAP).")
     public ResponseEntity<TransactionAddResponse> addForm() {
         LocalDateTime now = LocalDateTime.now();
         return ResponseEntity.ok(transactionMapper.toAddResponse(blankRequest(), null, now));
@@ -269,6 +276,8 @@ public class TransactionAddController {
      *         propagate to the global handler (404/409)
      */
     @PostMapping
+    @Operation(summary = "Submit the Transaction Add screen",
+            description = "Reproduces the COTRN02C confirmation flow: on confirm, generate the next transaction id and post the transaction.")
     public ResponseEntity<TransactionAddResponse> add(@Valid @RequestBody TransactionAddRequest request) {
         LocalDateTime now = LocalDateTime.now();
         PfKeyAction action = (request.action() == null) ? PfKeyAction.ENTER : request.action();

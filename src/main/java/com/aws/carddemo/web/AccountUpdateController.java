@@ -29,6 +29,9 @@ import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
+import io.swagger.v3.oas.annotations.Operation;
+import io.swagger.v3.oas.annotations.tags.Tag;
+
 import com.aws.carddemo.domain.Account;
 import com.aws.carddemo.domain.Customer;
 import com.aws.carddemo.dto.AccountUpdateRequest;
@@ -116,6 +119,8 @@ import com.aws.carddemo.service.AccountService.Status;
  */
 @RestController
 @RequestMapping("/api/v1/accounts/update")
+@Tag(name = "Account Update",
+        description = "Account update (COBOL COACTUPC / CICS transaction CAUP): view and modify account and customer detail with field-level edit validation.")
 public class AccountUpdateController {
 
     // ------------------------------------------------------------------------------------
@@ -235,6 +240,8 @@ public class AccountUpdateController {
      * @return {@code 200 OK} with a blank screen carrying the search-key prompt
      */
     @GetMapping
+    @Operation(summary = "Blank Account Update screen",
+            description = "First-entry screen prompting for an account id (COBOL COACTUPC initial SEND MAP).")
     public ResponseEntity<AccountUpdateResponse> showBlankScreen() {
         return ResponseEntity.ok(blankResponse(null, MSG_PROMPT_SEARCH_KEYS, null));
     }
@@ -271,6 +278,8 @@ public class AccountUpdateController {
      *         sets the back-navigation headers
      */
     @PostMapping
+    @Operation(summary = "Submit the Account Update screen",
+            description = "Reproduces the COACTUPC EVALUATE EIBAID routing: fetch, validate, and rewrite the account and customer detail.")
     public ResponseEntity<AccountUpdateResponse> update(
             @Valid @RequestBody AccountUpdateRequest request,
             @RequestHeader(name = HEADER_PRIOR_STATUS, required = false) String priorStatusHeader,

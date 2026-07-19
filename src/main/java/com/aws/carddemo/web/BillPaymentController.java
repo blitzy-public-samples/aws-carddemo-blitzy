@@ -26,6 +26,9 @@ import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
+import io.swagger.v3.oas.annotations.Operation;
+import io.swagger.v3.oas.annotations.tags.Tag;
+
 import com.aws.carddemo.dto.BillPaymentRequest;
 import com.aws.carddemo.dto.BillPaymentResponse;
 import com.aws.carddemo.dto.PfKeyAction;
@@ -98,6 +101,8 @@ import com.aws.carddemo.service.BillPaymentService.BillPaymentResult;
  */
 @RestController
 @RequestMapping("/api/v1/billpay")
+@Tag(name = "Bill Payment",
+        description = "Bill Payment screen (COBOL COBIL00C / CICS transaction CB00): pay the full account balance and post the resulting payment transaction.")
 public class BillPaymentController {
 
     /**
@@ -200,6 +205,8 @@ public class BillPaymentController {
      * @return HTTP {@code 200 OK} with a blank {@link BillPaymentResponse}
      */
     @GetMapping
+    @Operation(summary = "Blank Bill Payment screen",
+            description = "First-entry screen prompting for an account id (COBOL COBIL00C initial SEND MAP).")
     public ResponseEntity<BillPaymentResponse> billPaymentScreen() {
         return ResponseEntity.ok(blankScreen(LocalDateTime.now()));
     }
@@ -243,6 +250,8 @@ public class BillPaymentController {
      * @return HTTP {@code 200 OK} with the next {@link BillPaymentResponse} to render
      */
     @PostMapping
+    @Operation(summary = "Submit the Bill Payment screen",
+            description = "Reproduces the COBIL00C confirmation flow: on confirm, post a full-balance payment transaction and update the account balance.")
     public ResponseEntity<BillPaymentResponse> payBill(@Valid @RequestBody BillPaymentRequest request) {
         LocalDateTime now = LocalDateTime.now();
         PfKeyAction action = request.action();

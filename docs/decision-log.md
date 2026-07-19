@@ -77,7 +77,7 @@ its Java target, while this log explains the reasoning behind the design those m
 | [D41](#d41--statement-output-files-carry-no-in-band-delimiter-pure-recfmfb-image) | I. Batch Parity & Robustness | Statement output files carry no in-band delimiter (pure RECFM=FB image) | Contract preservation |
 | [D42](#d42--atomic-statement-file-publish-with-owner-only-temporary-work-files) | I. Batch Parity & Robustness | Atomic statement-file publish with owner-only temporary work files | **Intentional improvement** |
 | [D43](#d43--statement-html-is-a-byte-exact-batch-artifact-not-a-served-web-view-f29f32-disposition) | I. Batch Parity & Robustness | Statement HTML is a byte-exact batch artifact, not a served web view (F29/F32) | **Documented disposition** |
-| [D44](#d44--statement-html-fields-are-emitted-unescaped-faithful-cbstm03a-byte-move-parity) | I. Batch Parity & Robustness | Statement HTML fields emitted unescaped (faithful CBSTM03A byte-move) | **Intentional parity anti-pattern** |
+| [D44](#d44--statement-html-fields-are-html-escaped-per-field-parity-preserved-for-metacharacter-free-data) | I. Batch Parity & Robustness | Statement HTML fields HTML-escaped per field; XSS + charset closed, golden byte-parity preserved | **Security improvement** |
 | [D45](#d45--batch-process-exit-code-equals-the-spring-batch-return-code-jcl-condition-code-parity) | I. Batch Parity & Robustness | Batch process exit code equals the Spring Batch return code (JCL condition-code parity) | Behavior preservation (parity) |
 | [D46](#d46--combtran-reproduces-idcams-repro-without-replace-reject-duplicates-preserve-stale-rows-rc-4) | I. Batch Parity & Robustness | COMBTRAN reproduces IDCAMS `REPRO`-without-`REPLACE` (reject duplicates, preserve stale rows, RC 4) | Behavior preservation (parity) |
 | [D47](#d47--combtran-requires-at-least-one-existing-sortin-member-missing-input-fail-fast) | I. Batch Parity & Robustness | COMBTRAN requires at least one existing SORTIN member (missing-input fail-fast) | Behavior preservation (parity) |
@@ -89,6 +89,7 @@ its Java target, while this log explains the reasoning behind the design those m
 | [D53](#d53--menu-option-numeric-shape-check-runs-in-the-service-not-the-transport-boundary) | J. Online Parity Corrections | Menu option numeric-shape check runs in the service (F-MENU-1) | Behavior preservation (parity fix) |
 | [D54](#d54--concurrent-update-maps-to-http-409-across-the-concurrency-exception-family) | J. Online Parity Corrections | Concurrent update maps to HTTP 409 across the concurrency-exception family (F-CAUP-3) | Robustness (extends D18/D15) |
 | [D55](#d55--combine-job-global-sort-is-in-memory-and-buffered-a-documented-daily-volume-ceiling) | I. Batch Parity & Robustness | Combine-job global sort is in-memory and buffered | Constraint documented |
+| [D56](#d56--statement-writer-uses-a-substituting-iso-8859-1-encoder-no-whole-job-abort-on-unmappable-input) | I. Batch Parity & Robustness | Statement writer uses a substituting ISO-8859-1 encoder; no whole-job abort on unmappable input | **Intentional improvement** |
 
 ---
 
@@ -1688,28 +1689,40 @@ reviewable rationale (Explainability rule, §0.8.2).
 
 ### D43 — Statement HTML is a byte-exact batch artifact, not a served web view (F29/F32 disposition)
 
-- **Status:** Accepted
-- **Type:** Documented disposition (parity precedence; no code change)
+- **Status:** Accepted — **revised** (per-field HTML escaping now applied; see D44)
+- **Type:** Documented disposition, revised — the byte-exact file contract is preserved **and** per-field HTML escaping is now applied as a security improvement (F29 / CWE-79); the two are compatible because escaping is a provable no-op for the metacharacter-free golden/real statement data
 - **AAP references:** G3 (identical external interface contracts), G7 (no feature expansion), §0.3.3
   (3270/BMS screen rendering and new web UI explicitly out of scope), §0.7.1 / H3 (fixed-width record
   fidelity), §0.9.6 (external file contracts byte/semantically preserved)
 - **Decision:** The HTML statement file (`HTMLFILE` / `FD-HTMLFILE-REC PIC X(100)`) is preserved as a
   **byte-exact reproduction of the legacy CBSTM03A HTML output**. QA raised the persisted-value HTML
   concatenation as a stored-XSS concern (F29) and the statement markup as an accessibility/UI concern
-  (F32). Both are **dispositioned as preserve-parity-and-document** rather than code-changed at this
-  boundary, because the HTML statement is a frozen external **file** contract, not a served web page.
-- **Rationale (why the parity artifact is kept as-is):**
-  - **It is a batch file, not an executable web response.** The HTML statement is written to the
+  (F32). The **F29 stored-XSS concern is now code-changed** via per-field HTML escaping applied inside
+  `StatementProcessor` (recorded in detail in [D44](#d44--statement-html-fields-are-html-escaped-per-field-parity-preserved-for-metacharacter-free-data));
+  the **F32 accessibility/UI restructuring remains dispositioned as out-of-scope** (a re-rendered,
+  semantically-restructured statement view would be feature expansion, G7 / §0.3.3). The byte-exact
+  **file** contract is retained throughout: escaping the free-text data values is a no-op for the
+  metacharacter-free golden/real data, so the fixed 100-byte record image and the pinned golden SHA-256
+  are unchanged.
+- **Rationale (why the parity artifact is kept byte-exact while escaping hostile input):**
+  - **It is a batch file, but it can still be opened in a browser.** The HTML statement is written to the
     `HTMLFILE` DD image by the batch writer and asserted byte-for-byte against the golden fixture. No
-    controller serves this artifact as an executable `text/html` response, so the persisted markup is not
-    rendered in a browser trust context by the application. This satisfies F29's own accepted alternative
-    — *"keep the raw parity output non-executable"* — and CWE-79 does not arise for a file that the
-    application never serves executably.
-  - **HTML-escaping the field values would break byte parity.** Escaping (`&`, `<`, `>`, `"`) changes the
-    field bytes and therefore the fixed 100-byte record image and the pinned golden SHA-256, violating G3
-    and §0.9.6 ("fixed-width layouts byte/semantically preserved"). Under the precedence rules the frozen
-    external-file contract wins over a generic output-encoding heuristic for an artifact the application
-    does not execute.
+    controller serves it as an executable `text/html` response — but QA demonstrated that a data field
+    reaching the statement (a transaction description supplied through `POST /api/v1/transactions/add`)
+    can carry a `<script>` payload, and that opening the *produced file* in a browser executes it. Relying
+    on "the application never serves it" is therefore insufficient defence-in-depth, so per-field escaping
+    is applied at emission (D44). The earlier "CWE-79 does not arise" reading is **retracted** as too
+    narrow.
+  - **Per-field escaping does NOT break byte parity for the faithful case.** Escaping is applied only to
+    the **free-text data values** (name, address lines, transaction id/description) *before* they are
+    concatenated into the HTML template — never to the template literals or the numeric-edited fields.
+    Escaping changes bytes **only when a field actually contains** `&`, `<`, `>`, `"`, `'` or a non-ASCII
+    code point; the golden fixtures and the real seed/transaction pipeline contain **none** of these in
+    those fields, so the emitted bytes are identical. This is verified empirically:
+    `StatementGenerationJobTest.htmlStatementMatchesGolden` still passes `containsExactlyElementsOf(golden)`
+    plus the byte-exact file size and the pinned `GOLDEN_HTML_SHA256`, and
+    `htmlStatementEscapesHostileFieldData` proves hostile input is neutralised — both green in the same
+    build. The frozen external-file contract (G3, §0.9.6) is thus honoured while CWE-79 is closed.
   - **A separate accessible/escaped rendering is feature expansion.** Producing a second, escaped and
     accessibility-restructured HTML view (semantic landmarks, viewport, contrast-adjusted styling) would
     add a capability beyond the existing COBOL scope — explicitly excluded by G7 and by §0.3.3, which
@@ -1719,71 +1732,89 @@ reviewable rationale (Explainability rule, §0.8.2).
   [D22](#d22--password-hashing-and-cvv-hardening) and
   [D34](#d34--card-pan-masked-in-batch-operational-logs-pci-dss-first-6last-4).
 - **Alternatives:**
-  1. *HTML-escape the concatenated field values.* **Rejected here:** breaks the byte-exact statement
-     contract (G3, §0.9.6) for an artifact the application does not serve executably; F29's non-executable
-     alternative is the applicable resolution.
+  1. *HTML-escape the free-text data values before concatenation.* **Adopted (field-level).** This is the
+     implemented resolution (D44): only the data values are escaped, not the template or numeric-edited
+     fields, so byte parity is preserved for the metacharacter-free golden/real data while hostile input is
+     neutralised. The earlier position that escaping *unconditionally* breaks parity was over-broad — it is
+     true only for data that actually contains a reserved character, which is exactly the injection case.
   2. *Add an approved, escaped, accessible statement view alongside the parity artifact.* **Deferred as
-     out of scope:** a new rendered view is feature expansion (G7, §0.3.3). Recorded here as the sanctioned
-     forward path if a served statement view is ever in scope, at which point escaping and accessibility
-     would be mandatory for that *served* surface.
-- **Risk & mitigation:** If a future component were to serve this file as executable HTML, the persisted
-  markup would need output-encoding at that serving boundary. *Mitigation:* the artifact is a batch file
-  only; this constraint (escape at any future serving boundary) is recorded here so the parity artifact is
-  never mistaken for a safe-to-serve web response.
-### D44 — Statement HTML fields are emitted unescaped (faithful CBSTM03A byte-move parity)
+     out of scope:** a new rendered/restructured view is feature expansion (G7, §0.3.3). This covers the
+     F32 accessibility restructuring only; the F29 escaping is handled by alternative 1 above.
+- **Risk & mitigation:** Field-level escaping expands a field's byte length when it contains a reserved
+  character; on the fixed 100-byte HTML record a pathologically metacharacter-dense field could therefore
+  be truncated by the writer. *Mitigation:* truncation can only **drop** trailing bytes, never synthesise a
+  `<`, so a truncated entity (`&lt;scrip…`) remains inert — the security property holds regardless; and
+  `htmlStatementEscapesHostileFieldData` asserts the 100-byte framing (file length an exact multiple of
+  the record width) is preserved for hostile input. The metacharacter-free golden/real data never expands,
+  so normal statements are byte-identical to the golden fixture.
+### D44 — Statement HTML fields are HTML-escaped per field (parity preserved for metacharacter-free data)
 
-- **Status:** Accepted
-- **Type:** Intentional legacy anti-pattern preserved for parity (no code change; parity decision made explicit)
-- **AAP references:** §0.9.2 (batch outputs compared **row-for-row** against golden fixtures; interest/statement/report byte parity), §0.7.3 / L1 (CardDemo's **intentional legacy anti-patterns** are preserved by design), §0.3.3 (RACF / mainframe-security replatform and new features are **out of scope**), §0.8.2 (Explainability rule — intentional anti-patterns are recorded here with rationale, alternatives, and risk)
-- **Decision:** The HTML statement produced by `batch/processor/StatementProcessor` (the parity analog of
-  legacy `CBSTM03A`, paragraphs `5000-CREATE-STATEMENT` / `5100-WRITE-HTML-HEADER` /
-  `5200-WRITE-HTML-NMADBS` / `6000-WRITE-TRANS`) writes customer, account and transaction field values
-  **verbatim** into the HTML template by raw string concatenation (`appendHtmlNameAddressBasic`,
-  `appendHtmlTransactionRow`). No HTML entity-escaping (`<`&rarr;`&lt;`, `&`&rarr;`&amp;`, etc.) is
-  applied. This exactly reproduces the mainframe program's `MOVE`/`STRING` of fixed-width field bytes
-  into the HTML skeleton, which likewise performed no escaping. The escaping-free path is therefore
-  **preserved deliberately**, not by oversight.
-- **Consequence:** A reserved HTML character carried inside a data field would be interpreted as markup
-  by a browser rather than shown literally. In normal flows this cannot arise: statement fields are
-  **controlled fixed-width** values sourced from the seed/transaction pipeline, and the in-scope
-  special-character set exercised by QA (`& ' " - # % /`) renders as **literal text with zero broken
-  markup**. The only way to inject active markup is **synthetic** data hand-crafted outside the
-  fixed-width contract (e.g. an injected `<script>`), which does not occur for real statement inputs.
+- **Status:** Accepted — **revised** (supersedes the earlier "emitted unescaped" disposition)
+- **Type:** Security improvement (F29 / CWE-79 stored XSS + Issue 3 charset mojibake), implemented with byte-exact golden parity preserved — documented deviation from a literal byte-move, in the same class as [D22](#d22--password-hashing-and-cvv-hardening)
+- **AAP references:** §0.9.2 (batch outputs compared **row-for-row** against golden fixtures; statement byte parity), G3 / §0.9.6 (fixed-width record layouts byte/semantically preserved), §0.7.3 / L1 & [D22](#d22--password-hashing-and-cvv-hardening) (intentional legacy anti-patterns are **hardened as documented improvements**, not silently preserved when they are genuinely exploitable), §0.3.3 (a re-rendered/accessibility-restructured statement view remains out of scope), §0.8.2 (Explainability — this deviation is recorded here with rationale, alternatives and risk)
+- **Decision:** The HTML statement produced by `batch/processor/StatementProcessor` (parity analog of legacy
+  `CBSTM03A`, paragraphs `5000-CREATE-STATEMENT` / `5100-WRITE-HTML-HEADER` / `5200-WRITE-HTML-NMADBS` /
+  `6000-WRITE-TRANS`) now **HTML-escapes each free-text data value** before it is concatenated into the HTML
+  template. A private `escapeHtml` helper (invoked from `appendHtmlNameAddressBasic` and
+  `appendHtmlTransactionRow`) maps `&`&rarr;`&amp;`, `<`&rarr;`&lt;`, `>`&rarr;`&gt;`, `"`&rarr;`&quot;`,
+  `'`&rarr;`&#39;`, and any code point &ge; `0x80` &rarr; a numeric character reference (`&#nnn;`). It is
+  applied **only to the customer/transaction data values** (name, address lines, transaction id and
+  description) — never to the HTML template literals and never to the numeric-edited fields
+  (account, balance, FICO, amount), which are structurally metacharacter-free. The **plain-text** statement
+  is unchanged (it is not HTML and carries no injection or charset ambiguity), so `ST-*` text output stays
+  byte-exact.
+- **Why this preserves parity (the earlier "escaping breaks parity" claim was over-broad):** escaping only
+  changes bytes when a data field **actually contains** one of the reserved characters or a non-ASCII code
+  point. The golden fixtures and the real seed/transaction pipeline contain **none** of these in the
+  escaped fields, so the emitted byte stream — the fixed `FD-HTMLFILE-REC PIC X(100)` record image and its
+  pinned `GOLDEN_HTML_SHA256` — is identical. This is proven in the same test build:
+  `StatementGenerationJobTest.htmlStatementMatchesGolden` still asserts
+  `containsExactlyElementsOf(golden)` + byte-exact size + pinned SHA-256 (a no-op escape), while
+  `htmlStatementEscapesHostileFieldData` seeds a `<script>` payload and Latin-1 data and asserts the raw
+  tag never appears (only `&lt;script&gt;`), the framing stays a multiple of 100 bytes, and the whole file
+  is pure ASCII.
+- **Correction of the prior consequence claim (empirically false):** the superseded D44 stated that active
+  markup injection "does not occur for real statement inputs" and required "synthetic data hand-crafted
+  outside the fixed-width contract." QA disproved this: a transaction **description** supplied through the
+  real REST path `POST /api/v1/transactions/add` (authenticated) flows into `TRAN-DESC` and is rendered on
+  the statement, so `description=<script>alert('xss')</script>` reaches the HTML through a supported,
+  in-contract input. The stored-XSS exposure was therefore real, not hypothetical, and is now closed.
+- **Charset (Issue 3) resolved without touching the byte-exact meta line:** the legacy
+  `HTML-L04 VALUE '<meta charset="utf-8">'` (`legacy/cbl/CBSTM03A.CBL:L153`) is reproduced byte-for-byte,
+  yet the file is written in ISO-8859-1 — so a Latin-1 name byte (e.g. `0xE9` for `é`) previously rendered
+  as the U+FFFD replacement glyph. Because every code point &ge; `0x80` is now emitted as a numeric
+  character reference, the produced HTML is **pure ASCII**; ASCII is valid under both UTF-8 and ISO-8859-1,
+  so the `charset=utf-8` meta tag no longer disagrees with the bytes. The mojibake is eliminated **without**
+  editing the byte-exact meta record, preserving that line's golden parity.
 - **Alternatives:**
-  1. *HTML-escape every data field before emission.* **Rejected:** escaping changes the emitted byte
-     stream (for example `&`&rarr;`&amp;` widens the field) and would immediately break the **row-for-row
-     / byte-exact golden-file parity** asserted by `StatementGenerationJobTest.htmlStatementMatchesGolden`
-     (`containsExactlyElementsOf(golden)` plus a byte-exact file size and the `FD-HTMLFILE-REC PIC X(100)`
-     fixed-width record contract). That directly contradicts the AAP's #1 mandate (§0.9.2) and would be a
-     behavioural regression, not a fix.
-  2. *Add a separate "hardened" (escaped) statement output mode alongside the faithful one.* **Rejected
-     for this checkpoint (recorded as the clean forward path):** a second, non-parity output variant is
-     **feature expansion** (§0.3.3) and dilutes the single faithful contract. It is the correct place to
-     add context-appropriate output encoding **if and when** a genuinely browser-facing, user-controlled
-     statement surface is ever introduced — at which point the encoding would be a deliberate, documented
-     deviation weighed against parity.
-  3. *Constrain field content at the data layer.* **Already the effective state:** the fixed-width
-     `COBOL PIC` field widths and the seed/transaction ingestion pipeline already bound what statement
-     fields can contain, so faithfully decoded data does not carry active HTML/script content.
-- **Rationale:** Faithful behavioural parity is the project's primary constraint, and statement output is
-  a **golden-file-verified batch artifact**, not a live web page. Preserving the legacy byte-move keeps
-  the statement byte-identical to the reference and keeps the fixed-width record contract intact. This is
-  the same class of preserved-legacy anti-pattern as the plaintext-password / unencrypted-CVV demonstration
-  behaviour catalogued in [D22](#d22--password-hashing-and-cvv-hardening) and AAP §0.7.3 (L1); unlike
-  passwords and the CVV — which are hardened because they are **never** part of the faithful output byte
-  stream and are never logged or returned — statement field escaping **is** part of the output byte
-  stream, so hardening it would break parity and is therefore intentionally not applied. Recording it here
-  satisfies the Explainability rule and gives security / decision-log reviewers an explicit home for the
-  disposition (rather than leaving it implicit in code Javadoc).
-- **Risk & mitigation:** A hypothetical future consumer that renders this statement HTML in a browser
-  with **attacker-controlled** field content would inherit the legacy program's HTML/script-injection
-  exposure. *Mitigation:* statements are generated fixed-width batch files rather than a user-facing web
-  surface; field content originates from controlled fixed-width seed/transaction data; the CVV is never
-  rendered and passwords are never emitted (see [D22](#d22--password-hashing-and-cvv-hardening)); and the
-  exposure is now recorded here so that any future browser-facing statement-rendering path can introduce
-  context-appropriate output encoding as a deliberate, documented deviation — explicitly weighed against
-  the row-for-row golden-file parity requirement of [D21](#d21--testing-strategy-testcontainers-jacoco-80-golden-file-parity)
-  and AAP §0.9.2.
+  1. *Keep emitting fields unescaped (the previous decision).* **Rejected / superseded:** proven exploitable
+     through a supported REST input, and the parity argument for keeping it was over-broad (escaping is a
+     no-op for the metacharacter-free faithful data, so parity is not the cost it was assumed to be).
+  2. *Escape the entire concatenated line (template + data).* **Rejected:** double-escaping the structural
+     markup (`<p>` &rarr; `&lt;p&gt;`) would destroy the HTML and break the golden fixture; only the data
+     values need encoding.
+  3. *Fix the charset by rewriting the meta tag to `iso-8859-1` (or writing the file as UTF-8).* **Rejected:**
+     editing `HTML-L04` breaks the byte-exact meta record (G3, §0.9.6), and writing UTF-8 would change every
+     multibyte field's byte length and break the fixed 100-byte record image. Numeric character references
+     make the whole file ASCII, which is charset-agnostic and keeps every golden byte intact.
+- **Rationale:** Faithful behavioural parity remains the primary constraint, and it is **fully preserved**:
+  the statement is still a golden-file-verified fixed-width batch artifact whose metacharacter-free output is
+  byte-identical to the reference. Escaping is layered on top as a documented security/robustness improvement
+  — precisely the treatment §0.7.3 / L1 and [D22](#d22--password-hashing-and-cvv-hardening) prescribe for an
+  intentional legacy anti-pattern that turns out to be genuinely exploitable (here via a real REST input),
+  rather than a benign demonstration. It is not feature expansion: no new endpoint, view, or capability is
+  added; only the emission encoding of existing fields is hardened.
+- **Risk & mitigation:** field-level escaping expands a field's byte length when it contains a reserved
+  character, so on the fixed 100-byte HTML record a pathologically metacharacter-dense field could be
+  truncated by the writer. *Mitigation:* truncation can only **drop** trailing bytes and can never synthesise
+  a `<`, so a truncated entity (`&lt;scrip…`) stays inert — the XSS-safety property holds unconditionally;
+  `htmlStatementEscapesHostileFieldData` asserts the 100-byte framing is preserved for hostile input; and the
+  metacharacter-free golden/real data never expands, keeping normal statements byte-identical to
+  [D21](#d21--testing-strategy-testcontainers-jacoco-80-golden-file-parity)'s golden fixture and AAP §0.9.2.
+  The CVV is never rendered and passwords are never emitted (see [D22](#d22--password-hashing-and-cvv-hardening));
+  the batch statement **writer**'s complementary encoding-robustness (unmappable code points &gt; `0xFF`) is
+  covered by [D56](#d56--statement-writer-uses-a-substituting-iso-8859-1-encoder-no-whole-job-abort-on-unmappable-input).
+
 ### D45 — Batch process exit code equals the Spring Batch return code (JCL condition-code parity)
 
 - **Status:** Accepted
@@ -2225,6 +2256,84 @@ decision-log entry" requirement is met for every checkpoint finding, and each is
   so the remediation path (external merge, or database `ORDER BY` once inputs are table-resident) is
   pre-identified; the golden-file combine test guards the ordering contract so any future swap must
   reproduce the same byte output.
+
+---
+
+### D56 — Statement writer uses a substituting ISO-8859-1 encoder (no whole-job abort on unmappable input)
+
+- **Status:** Accepted
+- **Type:** Intentional improvement (robustness; no behavioral or layout change on clean data)
+- **AAP references:** §0.3.1 / §0.5.4 (statement external file contract — `StatementGenerationJob` &larr;
+  `CBSTM03A`/`CBSTM03B`), §0.7.1 / H3 & §0.7.2 / M2 (external fixed-width file contracts preserved),
+  §0.9.6 (external file contracts byte/semantically preserved), §0.8.2 (Explainability — this deviation
+  is recorded here with rationale, alternatives and risk)
+- **Decision:** `batch/writer/StatementItemWriter` opens **both** statement work files — the plain-text
+  statement (`STMTFILE`, 80-byte records) and the HTML statement (`HTMLFILE`, 100-byte records) — through a
+  `BufferedWriter` wrapping an `OutputStreamWriter` whose ISO-8859-1 `CharsetEncoder` is configured with
+  `onUnmappableCharacter(REPLACE)` and `onMalformedInput(REPLACE)` (the private `newSubstitutingWriter`
+  helper), mirroring the reject-file encoder established in
+  [D35](#d35--atomic-reject-file-publish-with-a-substituting-iso-8859-1-encoder). In addition — and unlike
+  D35 — each fully-formatted fixed-width record is passed through a private `toLatin1Record` helper that
+  replaces **each** character &gt; `0xFF` individually with `'?'` **before** the record reaches the encoder.
+  Owner-only temp-file creation (`rw-------` where POSIX is supported), `TRUNCATE_EXISTING`, and the
+  delimiter-less byte framing established in
+  [D41](#d41--statement-output-files-carry-no-in-band-delimiter-pure-recfmfb-image) are all preserved.
+- **Why the substituting encoder alone is insufficient here (the critical difference from D35):** D35's
+  DALYREJS records are **LF-framed** (a trailing `0x0A` after every fixed-length record, per
+  [D36](#d36--fixed-width-records-are-lf-framed-and-embedded-delimiters-are-sanitized)), so even if the
+  substituting encoder collapsed a surrogate pair into a single replacement byte, the trailing line-feed
+  re-synchronises the following record. Statement files are **pure `RECFM=FB` with no in-band delimiter**
+  (D41): framing depends entirely on the invariant **1 character = 1 byte**. A supplementary code point
+  (for example an emoji, U+1F600) is **two** Java `char`s (a surrogate pair) but the substituting encoder
+  emits only **one** replacement byte for the pair — shearing the delimiter-less frame by one byte and
+  corrupting every subsequent record. `toLatin1Record` restores the invariant by substituting per
+  `char` (a surrogate pair &rarr; `"??"` = two bytes; a BMP CJK ideograph &rarr; one `'?'`), so every
+  record stays **exactly** its fixed length. This surrogate-pair-collapses-to-one-byte behavior was
+  confirmed empirically before choosing the dual approach.
+- **Alternatives:**
+  1. *Keep the previous `Files.newBufferedWriter(path, ISO_8859_1)` with default options.* **Rejected:**
+     the JDK-default reporting encoder throws `UnmappableCharacterException` on the first character
+     &gt; `0xFF`. QA reproduced a single multibyte character in a transaction description aborting the
+     **entire** `StatementGenerationJob` with return code&nbsp;8 and producing **zero output for every
+     account** (60+ statements denied because of one field) — a MAJOR availability failure.
+  2. *Use only the substituting encoder (exactly as D35 does), without `toLatin1Record`.* **Rejected for
+     the statement writer:** correct for the LF-framed DALYREJS file, but insufficient for the
+     delimiter-less statement image — a supplementary code point's surrogate pair collapses to a single
+     byte and shears the fixed frame, so the encoder-only fix trades a hard abort for silent record
+     corruption. The per-character pre-substitution is required precisely because there is no delimiter to
+     re-synchronise on.
+  3. *Catch the encoding exception and skip the offending account.* **Rejected:** silently dropping an
+     account's statement breaks the row-for-row statement parity and hides data; substitution preserves the
+     record and its 80/100-byte framing while flagging the anomaly with the charset replacement character.
+  4. *Switch the statement files to UTF-8.* **Rejected:** the statement contract is a fixed
+     one-byte-per-position ISO-8859-1 image (`FD-STMTFILE-REC PIC X(80)` / `FD-HTMLFILE-REC PIC X(100)`);
+     UTF-8 would make a multi-byte character break column alignment, the fixed record length, and the
+     pinned `GOLDEN_TEXT_SHA256` / `GOLDEN_HTML_SHA256`.
+- **Relationship to [D44](#d44--statement-html-fields-are-html-escaped-per-field-parity-preserved-for-metacharacter-free-data):**
+  D44 hardens the **processor** — the HTML path's data values are HTML-escaped (every code point &ge; `0x80`
+  becomes a numeric character reference), so the HTML byte stream is already pure ASCII before it reaches the
+  writer. D56 hardens the **writer**: it protects the **plain-text** statement (which is deliberately *not*
+  HTML-escaped, being COBOL-faithful text) and provides defense-in-depth for any code point &gt; `0xFF` on
+  either stream. Together the two decisions make both statement artifacts robust to unmappable input with no
+  parity loss.
+- **Rationale:** For faithfully decoded CardDemo data every character is already representable in
+  ISO-8859-1, so neither the encoder substitution nor `toLatin1Record` ever fires and the published bytes —
+  text and HTML — are byte-identical to before (a fast path in `toLatin1Record` returns the record
+  unchanged when it contains no character &gt; `0xFF`, with no allocation). The golden text and HTML
+  fixtures and their pinned SHA-256 hashes are unchanged. The change purely removes a whole-job abort
+  failure mode required by the availability of the batch: one unmappable character in one account's data no
+  longer denies statements to all accounts.
+- **Risk & mitigation:** the replacement character (`?`) is indistinguishable from a literal `?` in the
+  data. *Mitigation:* this can only occur for a code point &gt; `0xFF`, which cannot arise from correctly
+  decoded CardDemo staging/transaction data; the substitution is documented here and covered by two tests —
+  a writer unit test (`StatementItemWriterTest.substitutesUnmappableCharactersWithoutAbortingAndPreservesFraming`)
+  injects a supplementary emoji **and** a CJK ideograph and asserts the write does not abort, each file stays
+  an exact multiple of its fixed record width (the surrogate pair yields **two** `?` bytes), and the
+  substitution bytes land at the expected offsets; a job-level test
+  (`StatementGenerationJobTest.jobCompletesWhenTransactionDescriptionHasUnmappableCharacters`) seeds an
+  emoji/CJK transaction description and asserts the job reaches `COMPLETED` with non-empty output and intact
+  framing on both files. The golden-parity tests assert that clean-data bytes are unchanged, so the
+  robustness hardening is proven to be a no-op on the faithful path.
 
 ---
 

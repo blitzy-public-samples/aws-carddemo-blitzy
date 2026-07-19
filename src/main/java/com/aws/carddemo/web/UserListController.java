@@ -26,6 +26,9 @@ import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
+import io.swagger.v3.oas.annotations.Operation;
+import io.swagger.v3.oas.annotations.tags.Tag;
+
 import jakarta.validation.Valid;
 
 import java.time.LocalDateTime;
@@ -107,6 +110,8 @@ import com.aws.carddemo.service.UserService;
  */
 @RestController
 @RequestMapping("/api/v1/admin/users")
+@Tag(name = "User List",
+        description = "User List screen (COBOL COUSR00C / CICS transaction CU00): browse application users with PF7/PF8 paging. Requires the ADMIN role.")
 @PreAuthorize("hasRole('ADMIN')")
 public class UserListController {
 
@@ -204,6 +209,8 @@ public class UserListController {
      *         number {@code "1"}, up to ten rows, no error message)
      */
     @GetMapping
+    @Operation(summary = "First page of the User List",
+            description = "First-entry screen listing the initial page of users (COBOL COUSR00C initial browse). Requires the ADMIN role.")
     public ResponseEntity<UserListResponse> firstPage() {
         LocalDateTime now = LocalDateTime.now();
         return ResponseEntity.ok(buildResponse(page(null, 0), null, now));
@@ -229,6 +236,8 @@ public class UserListController {
      *         program/transaction
      */
     @PostMapping("/list")
+    @Operation(summary = "Page the User List",
+            description = "Reproduces the COUSR00C EVALUATE EIBAID paging: PF7/PF8 browse the user list backward and forward.")
     public ResponseEntity<UserListResponse> list(@Valid @RequestBody UserListRequest request) {
         LocalDateTime now = LocalDateTime.now();
         PfKeyAction action = (request.action() == null) ? PfKeyAction.ENTER : request.action();

@@ -694,8 +694,10 @@ class UserDeleteControllerTest {
                 .as("the problem body echoes the same correlation id as the response header")
                 .contains("\"correlationId\":\"" + correlationId + "\"");
         assertThat(result.getResponse().getHeader(HEADER_WWW_AUTHENTICATE))
-                .as("HTTP Basic challenge is present on the 401")
-                .contains("Basic");
+                .as("the 401 emits no browser-triggering WWW-Authenticate: Basic challenge (finding F4), "
+                        + "so Swagger UI can render the problem body inline instead of hanging on the "
+                        + "browser's native credential dialog")
+                .isNull();
         assertHardeningHeaders(result);
 
         verify(userService, never()).listUsers(any(), any());

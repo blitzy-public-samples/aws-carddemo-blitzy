@@ -42,8 +42,10 @@ import org.springframework.security.core.AuthenticationException;
  * raised inside the security filter chain &mdash; beyond the reach of the
  * {@code @RestControllerAdvice GlobalExceptionHandler} &mdash; must still carry the same
  * problem-detail shape (including the per-request {@code correlationId}) as every other
- * error surface of the API, while preserving the HTTP&nbsp;Basic {@code WWW-Authenticate}
- * challenge.</p>
+ * error surface of the API. They also lock down the Swagger-UX fix (finding F4): the 401
+ * must <em>not</em> carry a {@code WWW-Authenticate: Basic} challenge, because a browser
+ * would intercept that standard challenge with its own native credential dialog and
+ * prevent XHR/{@code fetch} clients (Swagger UI) from rendering the problem body inline.</p>
  *
  * <p>The {@link ObjectMapper} under test is built with {@link Jackson2ObjectMapperBuilder}
  * exactly as Spring Boot builds the application mapper, so it registers the
@@ -69,7 +71,7 @@ class ProblemDetailAuthenticationEntryPointTest {
     }
 
     @Test
-    @DisplayName("writes an RFC-7807 401 body with the correlation ID and Basic challenge")
+    @DisplayName("writes an RFC-7807 401 body with the correlation ID and no browser Basic challenge")
     void writesRfc7807UnauthorizedWithCorrelationId() throws Exception {
         MDC.put(CORRELATION_ID_MDC_KEY, "corr-401-abc");
         MockHttpServletRequest request = new MockHttpServletRequest("GET", "/api/v1/menu");
@@ -81,7 +83,9 @@ class ProblemDetailAuthenticationEntryPointTest {
         assertThat(response.getStatus()).isEqualTo(401);
         assertThat(response.getContentType()).startsWith(MediaType.APPLICATION_PROBLEM_JSON_VALUE);
         assertThat(response.getCharacterEncoding()).isEqualToIgnoringCase("UTF-8");
-        assertThat(response.getHeader(HttpHeaders.WWW_AUTHENTICATE)).isEqualTo("Basic realm=\"CardDemo\"");
+        // F4: no WWW-Authenticate: Basic challenge, so browsers do not pop the native
+        // credential dialog that blocks Swagger UI from rendering this body inline.
+        assertThat(response.getHeader(HttpHeaders.WWW_AUTHENTICATE)).isNull();
 
         JsonNode body = objectMapper.readTree(response.getContentAsString());
         assertThat(body.path("type").asText()).isEqualTo("about:blank");
@@ -108,13 +112,18 @@ class ProblemDetailAuthenticationEntryPointTest {
     }
 
     @Test
-    @DisplayName("preserves the HTTP Basic WWW-Authenticate challenge header")
-    void preservesBasicChallengeHeader() throws Exception {
+    @DisplayName("omits the browser-triggering WWW-Authenticate: Basic challenge header (finding F4)")
+    void omitsBrowserBasicChallengeHeader() throws Exception {
         MockHttpServletRequest request = new MockHttpServletRequest("POST", "/api/v1/cards");
         MockHttpServletResponse response = new MockHttpServletResponse();
 
         entryPoint.commence(request, response, new BadCredentialsException("bad"));
 
-        assertThat(response.getHeader(HttpHeaders.WWW_AUTHENTICATE)).isEqualTo("Basic realm=\"CardDemo\"");
+        // The 401 is still well-formed (correct status + RFC-7807 body), but it carries no
+        // WWW-Authenticate: Basic challenge. That challenge would make a browser show its own
+        // native credential prompt, which blocks Swagger UI's XHR from reading the response and
+        // leaves "Try it out" hanging in a perpetual loading state (finding F4).
+        assertThat(response.getStatus()).isEqualTo(401);
+        assertThat(response.getHeader(HttpHeaders.WWW_AUTHENTICATE)).isNull();
     }
 }

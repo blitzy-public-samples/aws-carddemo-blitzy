@@ -29,6 +29,9 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
+import io.swagger.v3.oas.annotations.Operation;
+import io.swagger.v3.oas.annotations.tags.Tag;
+
 import com.aws.carddemo.domain.Transaction;
 import com.aws.carddemo.dto.PfKeyAction;
 import com.aws.carddemo.dto.TransactionListRequest;
@@ -114,6 +117,8 @@ import jakarta.validation.Valid;
  */
 @RestController
 @RequestMapping("/api/v1/transactions")
+@Tag(name = "Transaction List",
+        description = "Transaction List screen (COBOL COTRN00C / CICS transaction CT00): browse transactions chronologically with PF7/PF8 paging.")
 public class TransactionListController {
 
     /** Fixed page size &mdash; the ten row slots ({@code SEL0001}..{@code SEL0010}) of map {@code COTRN00}. */
@@ -189,6 +194,8 @@ public class TransactionListController {
      * @return {@code 200 OK} with the first page (up to ten rows) in {@code tranId} order
      */
     @GetMapping
+    @Operation(summary = "First page of the Transaction List",
+            description = "First-entry screen listing the initial page of transactions (COBOL COTRN00C initial browse).")
     public ResponseEntity<TransactionListResponse> firstPage() {
         return ResponseEntity.ok(body(query(1, null), null));
     }
@@ -205,6 +212,8 @@ public class TransactionListController {
      *         the {@code X-CardDemo-Next-*} headers naming the screen to enter next
      */
     @PostMapping
+    @Operation(summary = "Page the Transaction List",
+            description = "Reproduces the COTRN00C EVALUATE EIBAID paging: PF7/PF8 browse the transaction list backward and forward.")
     public ResponseEntity<TransactionListResponse> list(
             @Valid @RequestBody TransactionListRequest request,
             @RequestParam(name = "page", defaultValue = "1") int page) {

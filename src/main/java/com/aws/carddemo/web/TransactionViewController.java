@@ -26,6 +26,9 @@ import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
+import io.swagger.v3.oas.annotations.Operation;
+import io.swagger.v3.oas.annotations.tags.Tag;
+
 import jakarta.validation.Valid;
 
 import com.aws.carddemo.domain.Transaction;
@@ -141,6 +144,8 @@ import com.aws.carddemo.service.TransactionService;
  */
 @RestController
 @RequestMapping("/api/v1/transactions/view")
+@Tag(name = "Transaction View",
+        description = "Transaction View screen (COBOL COTRN01C / CICS transaction CT01): view a single transaction's detail.")
 public class TransactionViewController {
 
     /**
@@ -259,6 +264,8 @@ public class TransactionViewController {
      * @return {@code 200 OK} carrying a blank transaction-view screen
      */
     @GetMapping
+    @Operation(summary = "Blank Transaction View screen",
+            description = "First-entry screen prompting for a transaction id (COBOL COTRN01C initial SEND MAP).")
     public ResponseEntity<TransactionViewResponse> initialScreen() {
         return ResponseEntity.ok(blankScreen(null, LocalDateTime.now()));
     }
@@ -285,6 +292,8 @@ public class TransactionViewController {
      *         lookup instead propagates to become {@code 404})
      */
     @PostMapping
+    @Operation(summary = "Submit the Transaction View screen",
+            description = "Reproduces the COTRN01C lookup: fetch and display the requested transaction detail.")
     public ResponseEntity<TransactionViewResponse> view(@Valid @RequestBody TransactionViewRequest request) {
         LocalDateTime now = LocalDateTime.now();
         PfKeyAction action = request.action();

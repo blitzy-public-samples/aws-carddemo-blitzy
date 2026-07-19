@@ -35,19 +35,65 @@ servers:
 security:
 - basicAuth: []
 tags:
+- name: Bill Payment
+  description: "Bill Payment screen (COBOL COBIL00C / CICS transaction CB00): pay\
+    \ the full account balance and post the resulting payment transaction."
+- name: Card List
+  description: "Card List screen (COBOL COCRDLIC / CICS transaction CCLI): browse\
+    \ the cards for an account with PF7/PF8 paging."
 - name: Main Menu
   description: "Main Menu screen (COBOL COMEN01C / CICS transaction CM00): lists the\
     \ ten main-menu options and routes the selected option to its target program."
+- name: Transaction Add
+  description: "Transaction Add screen (COBOL COTRN02C / CICS transaction CT02): capture\
+    \ and post a new transaction, generating the next transaction id."
+- name: User Delete
+  description: "User Delete screen (COBOL COUSR03C / CICS transaction CU03): delete\
+    \ an application user. Requires the ADMIN role."
+- name: Card Update
+  description: "Card Update screen (COBOL COCRDUPC / CICS transaction CCUP): view\
+    \ and modify card detail with field-level edit validation."
+- name: User List
+  description: "User List screen (COBOL COUSR00C / CICS transaction CU00): browse\
+    \ application users with PF7/PF8 paging. Requires the ADMIN role."
+- name: User Update
+  description: "User Update screen (COBOL COUSR02C / CICS transaction CU02): view\
+    \ and modify an application user. Requires the ADMIN role."
+- name: Card View
+  description: "Card View screen (COBOL COCRDSLC / CICS transaction CCDL): view a\
+    \ single card's detail."
+- name: User Add
+  description: "User Add screen (COBOL COUSR01C / CICS transaction CU01): create a\
+    \ new application user. Requires the ADMIN role."
+- name: Transaction Report
+  description: "Transaction Report screen (COBOL CORPT00C / CICS transaction CR00):\
+    \ request a transaction report over a chosen date range."
 - name: Account View
   description: "Account inquiry (COBOL COACTVWC / CICS transaction CAVW): view merged\
     \ account and customer detail."
+- name: Transaction List
+  description: "Transaction List screen (COBOL COTRN00C / CICS transaction CT00):\
+    \ browse transactions chronologically with PF7/PF8 paging."
+- name: Account Update
+  description: "Account update (COBOL COACTUPC / CICS transaction CAUP): view and\
+    \ modify account and customer detail with field-level edit validation."
+- name: Admin Menu
+  description: "Admin Menu screen (COBOL COADM01C / CICS transaction CA00): lists\
+    \ the administrative options and routes the selected option to its target program.\
+    \ Requires the ADMIN role."
 - name: Sign-on
   description: COSGN00C / CC00 — CardDemo authentication entry screen
+- name: Transaction View
+  description: "Transaction View screen (COBOL COTRN01C / CICS transaction CT01):\
+    \ view a single transaction's detail."
 paths:
   /api/v1/transactions:
     get:
       tags:
-      - transaction-list-controller
+      - Transaction List
+      summary: First page of the Transaction List
+      description: First-entry screen listing the initial page of transactions (COBOL
+        COTRN00C initial browse).
       operationId: firstPage
       responses:
         "200":
@@ -56,9 +102,47 @@ paths:
             '*/*':
               schema:
                 $ref: "#/components/schemas/TransactionListResponse"
+        "400":
+          description: "Bad Request: the request was malformed or failed input validation\
+            \ (RFC 7807 problem+json)."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+        "401":
+          description: "Unauthorized: authentication is required and was missing or\
+            \ invalid (RFC 7807 problem+json)."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+        "404":
+          description: "Not Found: the requested resource or record does not exist\
+            \ (RFC 7807 problem+json)."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+        "405":
+          description: "Method Not Allowed: the HTTP method is not supported for this\
+            \ resource (RFC 7807 problem+json)."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+        "500":
+          description: "Internal Server Error: an unexpected error occurred (RFC 7807\
+            \ problem+json)."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
     post:
       tags:
-      - transaction-list-controller
+      - Transaction List
+      summary: Page the Transaction List
+      description: "Reproduces the COTRN00C EVALUATE EIBAID paging: PF7/PF8 browse\
+        \ the transaction list backward and forward."
       operationId: list
       parameters:
       - name: page
@@ -81,10 +165,55 @@ paths:
             '*/*':
               schema:
                 $ref: "#/components/schemas/TransactionListResponse"
+        "400":
+          description: "Bad Request: the request was malformed or failed input validation\
+            \ (RFC 7807 problem+json)."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+        "401":
+          description: "Unauthorized: authentication is required and was missing or\
+            \ invalid (RFC 7807 problem+json)."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+        "404":
+          description: "Not Found: the requested resource or record does not exist\
+            \ (RFC 7807 problem+json)."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+        "405":
+          description: "Method Not Allowed: the HTTP method is not supported for this\
+            \ resource (RFC 7807 problem+json)."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+        "415":
+          description: "Unsupported Media Type: the request body is not application/json\
+            \ (RFC 7807 problem+json)."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+        "500":
+          description: "Internal Server Error: an unexpected error occurred (RFC 7807\
+            \ problem+json)."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
   /api/v1/transactions/view:
     get:
       tags:
-      - transaction-view-controller
+      - Transaction View
+      summary: Blank Transaction View screen
+      description: First-entry screen prompting for a transaction id (COBOL COTRN01C
+        initial SEND MAP).
       operationId: initialScreen
       responses:
         "200":
@@ -93,9 +222,47 @@ paths:
             '*/*':
               schema:
                 $ref: "#/components/schemas/TransactionViewResponse"
+        "400":
+          description: "Bad Request: the request was malformed or failed input validation\
+            \ (RFC 7807 problem+json)."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+        "401":
+          description: "Unauthorized: authentication is required and was missing or\
+            \ invalid (RFC 7807 problem+json)."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+        "404":
+          description: "Not Found: the requested resource or record does not exist\
+            \ (RFC 7807 problem+json)."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+        "405":
+          description: "Method Not Allowed: the HTTP method is not supported for this\
+            \ resource (RFC 7807 problem+json)."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+        "500":
+          description: "Internal Server Error: an unexpected error occurred (RFC 7807\
+            \ problem+json)."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
     post:
       tags:
-      - transaction-view-controller
+      - Transaction View
+      summary: Submit the Transaction View screen
+      description: "Reproduces the COTRN01C lookup: fetch and display the requested\
+        \ transaction detail."
       operationId: view
       requestBody:
         content:
@@ -110,10 +277,55 @@ paths:
             '*/*':
               schema:
                 $ref: "#/components/schemas/TransactionViewResponse"
+        "400":
+          description: "Bad Request: the request was malformed or failed input validation\
+            \ (RFC 7807 problem+json)."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+        "401":
+          description: "Unauthorized: authentication is required and was missing or\
+            \ invalid (RFC 7807 problem+json)."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+        "404":
+          description: "Not Found: the requested resource or record does not exist\
+            \ (RFC 7807 problem+json)."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+        "405":
+          description: "Method Not Allowed: the HTTP method is not supported for this\
+            \ resource (RFC 7807 problem+json)."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+        "415":
+          description: "Unsupported Media Type: the request body is not application/json\
+            \ (RFC 7807 problem+json)."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+        "500":
+          description: "Internal Server Error: an unexpected error occurred (RFC 7807\
+            \ problem+json)."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
   /api/v1/transactions/add:
     get:
       tags:
-      - transaction-add-controller
+      - Transaction Add
+      summary: Blank Transaction Add screen
+      description: First-entry screen for entering a new transaction (COBOL COTRN02C
+        initial SEND MAP).
       operationId: addForm
       responses:
         "200":
@@ -122,9 +334,47 @@ paths:
             '*/*':
               schema:
                 $ref: "#/components/schemas/TransactionAddResponse"
+        "400":
+          description: "Bad Request: the request was malformed or failed input validation\
+            \ (RFC 7807 problem+json)."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+        "401":
+          description: "Unauthorized: authentication is required and was missing or\
+            \ invalid (RFC 7807 problem+json)."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+        "404":
+          description: "Not Found: the requested resource or record does not exist\
+            \ (RFC 7807 problem+json)."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+        "405":
+          description: "Method Not Allowed: the HTTP method is not supported for this\
+            \ resource (RFC 7807 problem+json)."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+        "500":
+          description: "Internal Server Error: an unexpected error occurred (RFC 7807\
+            \ problem+json)."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
     post:
       tags:
-      - transaction-add-controller
+      - Transaction Add
+      summary: Submit the Transaction Add screen
+      description: "Reproduces the COTRN02C confirmation flow: on confirm, generate\
+        \ the next transaction id and post the transaction."
       operationId: add
       requestBody:
         content:
@@ -139,10 +389,62 @@ paths:
             '*/*':
               schema:
                 $ref: "#/components/schemas/TransactionAddResponse"
+        "400":
+          description: "Bad Request: the request was malformed or failed input validation\
+            \ (RFC 7807 problem+json)."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+        "401":
+          description: "Unauthorized: authentication is required and was missing or\
+            \ invalid (RFC 7807 problem+json)."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+        "404":
+          description: "Not Found: the requested resource or record does not exist\
+            \ (RFC 7807 problem+json)."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+        "405":
+          description: "Method Not Allowed: the HTTP method is not supported for this\
+            \ resource (RFC 7807 problem+json)."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+        "409":
+          description: "Conflict: the change violates a uniqueness constraint or lost\
+            \ an optimistic-lock race (RFC 7807 problem+json)."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+        "415":
+          description: "Unsupported Media Type: the request body is not application/json\
+            \ (RFC 7807 problem+json)."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+        "500":
+          description: "Internal Server Error: an unexpected error occurred (RFC 7807\
+            \ problem+json)."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
   /api/v1/reports/transactions:
     get:
       tags:
-      - transaction-report-controller
+      - Transaction Report
+      summary: Blank Transaction Report request screen
+      description: First-entry screen for choosing the report type and date range
+        (COBOL CORPT00C initial SEND MAP).
       operationId: showReportRequestScreen
       responses:
         "200":
@@ -151,9 +453,47 @@ paths:
             '*/*':
               schema:
                 $ref: "#/components/schemas/TransactionReportResponse"
+        "400":
+          description: "Bad Request: the request was malformed or failed input validation\
+            \ (RFC 7807 problem+json)."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+        "401":
+          description: "Unauthorized: authentication is required and was missing or\
+            \ invalid (RFC 7807 problem+json)."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+        "404":
+          description: "Not Found: the requested resource or record does not exist\
+            \ (RFC 7807 problem+json)."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+        "405":
+          description: "Method Not Allowed: the HTTP method is not supported for this\
+            \ resource (RFC 7807 problem+json)."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+        "500":
+          description: "Internal Server Error: an unexpected error occurred (RFC 7807\
+            \ problem+json)."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
     post:
       tags:
-      - transaction-report-controller
+      - Transaction Report
+      summary: Submit the Transaction Report request
+      description: "Reproduces the CORPT00C flow: validate the selection and submit\
+        \ the transaction report request."
       operationId: requestReport
       requestBody:
         content:
@@ -168,6 +508,48 @@ paths:
             '*/*':
               schema:
                 $ref: "#/components/schemas/TransactionReportResponse"
+        "400":
+          description: "Bad Request: the request was malformed or failed input validation\
+            \ (RFC 7807 problem+json)."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+        "401":
+          description: "Unauthorized: authentication is required and was missing or\
+            \ invalid (RFC 7807 problem+json)."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+        "404":
+          description: "Not Found: the requested resource or record does not exist\
+            \ (RFC 7807 problem+json)."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+        "405":
+          description: "Method Not Allowed: the HTTP method is not supported for this\
+            \ resource (RFC 7807 problem+json)."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+        "415":
+          description: "Unsupported Media Type: the request body is not application/json\
+            \ (RFC 7807 problem+json)."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+        "500":
+          description: "Internal Server Error: an unexpected error occurred (RFC 7807\
+            \ problem+json)."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
   /api/v1/menu:
     get:
       tags:
@@ -184,6 +566,41 @@ paths:
             '*/*':
               schema:
                 $ref: "#/components/schemas/MainMenuResponse"
+        "400":
+          description: "Bad Request: the request was malformed or failed input validation\
+            \ (RFC 7807 problem+json)."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+        "401":
+          description: "Unauthorized: authentication is required and was missing or\
+            \ invalid (RFC 7807 problem+json)."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+        "404":
+          description: "Not Found: the requested resource or record does not exist\
+            \ (RFC 7807 problem+json)."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+        "405":
+          description: "Method Not Allowed: the HTTP method is not supported for this\
+            \ resource (RFC 7807 problem+json)."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+        "500":
+          description: "Internal Server Error: an unexpected error occurred (RFC 7807\
+            \ problem+json)."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
     post:
       tags:
       - Main Menu
@@ -205,10 +622,55 @@ paths:
             '*/*':
               schema:
                 $ref: "#/components/schemas/MainMenuResponse"
+        "400":
+          description: "Bad Request: the request was malformed or failed input validation\
+            \ (RFC 7807 problem+json)."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+        "401":
+          description: "Unauthorized: authentication is required and was missing or\
+            \ invalid (RFC 7807 problem+json)."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+        "404":
+          description: "Not Found: the requested resource or record does not exist\
+            \ (RFC 7807 problem+json)."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+        "405":
+          description: "Method Not Allowed: the HTTP method is not supported for this\
+            \ resource (RFC 7807 problem+json)."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+        "415":
+          description: "Unsupported Media Type: the request body is not application/json\
+            \ (RFC 7807 problem+json)."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+        "500":
+          description: "Internal Server Error: an unexpected error occurred (RFC 7807\
+            \ problem+json)."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
   /api/v1/cards:
     get:
       tags:
-      - card-list-controller
+      - Card List
+      summary: First page of the Card List
+      description: First-entry screen listing the initial page of cards (COBOL COCRDLIC
+        initial browse).
       operationId: firstPage_1
       responses:
         "200":
@@ -217,9 +679,47 @@ paths:
             '*/*':
               schema:
                 $ref: "#/components/schemas/CardListResponse"
+        "400":
+          description: "Bad Request: the request was malformed or failed input validation\
+            \ (RFC 7807 problem+json)."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+        "401":
+          description: "Unauthorized: authentication is required and was missing or\
+            \ invalid (RFC 7807 problem+json)."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+        "404":
+          description: "Not Found: the requested resource or record does not exist\
+            \ (RFC 7807 problem+json)."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+        "405":
+          description: "Method Not Allowed: the HTTP method is not supported for this\
+            \ resource (RFC 7807 problem+json)."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+        "500":
+          description: "Internal Server Error: an unexpected error occurred (RFC 7807\
+            \ problem+json)."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
     post:
       tags:
-      - card-list-controller
+      - Card List
+      summary: Page the Card List
+      description: "Reproduces the COCRDLIC EVALUATE EIBAID paging: PF7/PF8 browse\
+        \ the card list backward and forward."
       operationId: browse
       parameters:
       - name: page
@@ -242,10 +742,55 @@ paths:
             '*/*':
               schema:
                 $ref: "#/components/schemas/CardListResponse"
+        "400":
+          description: "Bad Request: the request was malformed or failed input validation\
+            \ (RFC 7807 problem+json)."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+        "401":
+          description: "Unauthorized: authentication is required and was missing or\
+            \ invalid (RFC 7807 problem+json)."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+        "404":
+          description: "Not Found: the requested resource or record does not exist\
+            \ (RFC 7807 problem+json)."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+        "405":
+          description: "Method Not Allowed: the HTTP method is not supported for this\
+            \ resource (RFC 7807 problem+json)."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+        "415":
+          description: "Unsupported Media Type: the request body is not application/json\
+            \ (RFC 7807 problem+json)."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+        "500":
+          description: "Internal Server Error: an unexpected error occurred (RFC 7807\
+            \ problem+json)."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
   /api/v1/cards/view:
     get:
       tags:
-      - card-view-controller
+      - Card View
+      summary: Blank Card View screen
+      description: First-entry screen prompting for the card key (COBOL COCRDSLC initial
+        SEND MAP).
       operationId: view_1
       responses:
         "200":
@@ -254,9 +799,47 @@ paths:
             '*/*':
               schema:
                 $ref: "#/components/schemas/CardViewResponse"
+        "400":
+          description: "Bad Request: the request was malformed or failed input validation\
+            \ (RFC 7807 problem+json)."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+        "401":
+          description: "Unauthorized: authentication is required and was missing or\
+            \ invalid (RFC 7807 problem+json)."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+        "404":
+          description: "Not Found: the requested resource or record does not exist\
+            \ (RFC 7807 problem+json)."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+        "405":
+          description: "Method Not Allowed: the HTTP method is not supported for this\
+            \ resource (RFC 7807 problem+json)."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+        "500":
+          description: "Internal Server Error: an unexpected error occurred (RFC 7807\
+            \ problem+json)."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
     post:
       tags:
-      - card-view-controller
+      - Card View
+      summary: Submit the Card View screen
+      description: "Reproduces the COCRDSLC lookup: fetch and display the requested\
+        \ card detail."
       operationId: view_2
       parameters:
       - name: X-CardDemo-From-Program
@@ -282,10 +865,55 @@ paths:
             '*/*':
               schema:
                 $ref: "#/components/schemas/CardViewResponse"
+        "400":
+          description: "Bad Request: the request was malformed or failed input validation\
+            \ (RFC 7807 problem+json)."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+        "401":
+          description: "Unauthorized: authentication is required and was missing or\
+            \ invalid (RFC 7807 problem+json)."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+        "404":
+          description: "Not Found: the requested resource or record does not exist\
+            \ (RFC 7807 problem+json)."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+        "405":
+          description: "Method Not Allowed: the HTTP method is not supported for this\
+            \ resource (RFC 7807 problem+json)."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+        "415":
+          description: "Unsupported Media Type: the request body is not application/json\
+            \ (RFC 7807 problem+json)."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+        "500":
+          description: "Internal Server Error: an unexpected error occurred (RFC 7807\
+            \ problem+json)."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
   /api/v1/cards/update:
     get:
       tags:
-      - card-update-controller
+      - Card Update
+      summary: Blank Card Update screen
+      description: First-entry screen prompting for the card key (COBOL COCRDUPC initial
+        SEND MAP).
       operationId: showUpdateScreen
       responses:
         "200":
@@ -294,9 +922,47 @@ paths:
             '*/*':
               schema:
                 $ref: "#/components/schemas/CardUpdateResponse"
+        "400":
+          description: "Bad Request: the request was malformed or failed input validation\
+            \ (RFC 7807 problem+json)."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+        "401":
+          description: "Unauthorized: authentication is required and was missing or\
+            \ invalid (RFC 7807 problem+json)."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+        "404":
+          description: "Not Found: the requested resource or record does not exist\
+            \ (RFC 7807 problem+json)."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+        "405":
+          description: "Method Not Allowed: the HTTP method is not supported for this\
+            \ resource (RFC 7807 problem+json)."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+        "500":
+          description: "Internal Server Error: an unexpected error occurred (RFC 7807\
+            \ problem+json)."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
     post:
       tags:
-      - card-update-controller
+      - Card Update
+      summary: Submit the Card Update screen
+      description: "Reproduces the COCRDUPC flow: fetch, validate, and rewrite the\
+        \ card detail."
       operationId: update
       requestBody:
         content:
@@ -311,10 +977,62 @@ paths:
             '*/*':
               schema:
                 $ref: "#/components/schemas/CardUpdateResponse"
+        "400":
+          description: "Bad Request: the request was malformed or failed input validation\
+            \ (RFC 7807 problem+json)."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+        "401":
+          description: "Unauthorized: authentication is required and was missing or\
+            \ invalid (RFC 7807 problem+json)."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+        "404":
+          description: "Not Found: the requested resource or record does not exist\
+            \ (RFC 7807 problem+json)."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+        "405":
+          description: "Method Not Allowed: the HTTP method is not supported for this\
+            \ resource (RFC 7807 problem+json)."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+        "409":
+          description: "Conflict: the change violates a uniqueness constraint or lost\
+            \ an optimistic-lock race (RFC 7807 problem+json)."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+        "415":
+          description: "Unsupported Media Type: the request body is not application/json\
+            \ (RFC 7807 problem+json)."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+        "500":
+          description: "Internal Server Error: an unexpected error occurred (RFC 7807\
+            \ problem+json)."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
   /api/v1/billpay:
     get:
       tags:
-      - bill-payment-controller
+      - Bill Payment
+      summary: Blank Bill Payment screen
+      description: First-entry screen prompting for an account id (COBOL COBIL00C
+        initial SEND MAP).
       operationId: billPaymentScreen
       responses:
         "200":
@@ -323,9 +1041,47 @@ paths:
             '*/*':
               schema:
                 $ref: "#/components/schemas/BillPaymentResponse"
+        "400":
+          description: "Bad Request: the request was malformed or failed input validation\
+            \ (RFC 7807 problem+json)."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+        "401":
+          description: "Unauthorized: authentication is required and was missing or\
+            \ invalid (RFC 7807 problem+json)."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+        "404":
+          description: "Not Found: the requested resource or record does not exist\
+            \ (RFC 7807 problem+json)."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+        "405":
+          description: "Method Not Allowed: the HTTP method is not supported for this\
+            \ resource (RFC 7807 problem+json)."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+        "500":
+          description: "Internal Server Error: an unexpected error occurred (RFC 7807\
+            \ problem+json)."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
     post:
       tags:
-      - bill-payment-controller
+      - Bill Payment
+      summary: Submit the Bill Payment screen
+      description: "Reproduces the COBIL00C confirmation flow: on confirm, post a\
+        \ full-balance payment transaction and update the account balance."
       operationId: payBill
       requestBody:
         content:
@@ -340,6 +1096,55 @@ paths:
             '*/*':
               schema:
                 $ref: "#/components/schemas/BillPaymentResponse"
+        "400":
+          description: "Bad Request: the request was malformed or failed input validation\
+            \ (RFC 7807 problem+json)."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+        "401":
+          description: "Unauthorized: authentication is required and was missing or\
+            \ invalid (RFC 7807 problem+json)."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+        "404":
+          description: "Not Found: the requested resource or record does not exist\
+            \ (RFC 7807 problem+json)."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+        "405":
+          description: "Method Not Allowed: the HTTP method is not supported for this\
+            \ resource (RFC 7807 problem+json)."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+        "409":
+          description: "Conflict: the change violates a uniqueness constraint or lost\
+            \ an optimistic-lock race (RFC 7807 problem+json)."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+        "415":
+          description: "Unsupported Media Type: the request body is not application/json\
+            \ (RFC 7807 problem+json)."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+        "500":
+          description: "Internal Server Error: an unexpected error occurred (RFC 7807\
+            \ problem+json)."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
   /api/v1/auth/signon:
     get:
       tags:
@@ -355,6 +1160,34 @@ paths:
             '*/*':
               schema:
                 $ref: "#/components/schemas/SignonResponse"
+        "400":
+          description: "Bad Request: the request was malformed or failed input validation\
+            \ (RFC 7807 problem+json)."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+        "404":
+          description: "Not Found: the requested resource or record does not exist\
+            \ (RFC 7807 problem+json)."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+        "405":
+          description: "Method Not Allowed: the HTTP method is not supported for this\
+            \ resource (RFC 7807 problem+json)."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+        "500":
+          description: "Internal Server Error: an unexpected error occurred (RFC 7807\
+            \ problem+json)."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
     post:
       tags:
       - Sign-on
@@ -376,10 +1209,48 @@ paths:
             '*/*':
               schema:
                 $ref: "#/components/schemas/SignonResponse"
+        "400":
+          description: "Bad Request: the request was malformed or failed input validation\
+            \ (RFC 7807 problem+json)."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+        "404":
+          description: "Not Found: the requested resource or record does not exist\
+            \ (RFC 7807 problem+json)."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+        "405":
+          description: "Method Not Allowed: the HTTP method is not supported for this\
+            \ resource (RFC 7807 problem+json)."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+        "415":
+          description: "Unsupported Media Type: the request body is not application/json\
+            \ (RFC 7807 problem+json)."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+        "500":
+          description: "Internal Server Error: an unexpected error occurred (RFC 7807\
+            \ problem+json)."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
   /api/v1/admin/users/update:
     get:
       tags:
-      - user-update-controller
+      - User Update
+      summary: Blank User Update screen
+      description: First-entry screen prompting for the user id to update (COBOL COUSR02C
+        initial SEND MAP). Requires the ADMIN role.
       operationId: showUpdateUserScreen
       responses:
         "200":
@@ -388,9 +1259,54 @@ paths:
             '*/*':
               schema:
                 $ref: "#/components/schemas/UserUpdateResponse"
+        "400":
+          description: "Bad Request: the request was malformed or failed input validation\
+            \ (RFC 7807 problem+json)."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+        "401":
+          description: "Unauthorized: authentication is required and was missing or\
+            \ invalid (RFC 7807 problem+json)."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+        "403":
+          description: "Forbidden: the authenticated user lacks the ADMIN role required\
+            \ for this operation (RFC 7807 problem+json)."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+        "404":
+          description: "Not Found: the requested resource or record does not exist\
+            \ (RFC 7807 problem+json)."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+        "405":
+          description: "Method Not Allowed: the HTTP method is not supported for this\
+            \ resource (RFC 7807 problem+json)."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+        "500":
+          description: "Internal Server Error: an unexpected error occurred (RFC 7807\
+            \ problem+json)."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
     post:
       tags:
-      - user-update-controller
+      - User Update
+      summary: Submit the User Update screen
+      description: "Reproduces the COUSR02C flow: fetch, validate, and rewrite the\
+        \ user record."
       operationId: update_1
       requestBody:
         content:
@@ -405,10 +1321,69 @@ paths:
             '*/*':
               schema:
                 $ref: "#/components/schemas/UserUpdateResponse"
+        "400":
+          description: "Bad Request: the request was malformed or failed input validation\
+            \ (RFC 7807 problem+json)."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+        "401":
+          description: "Unauthorized: authentication is required and was missing or\
+            \ invalid (RFC 7807 problem+json)."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+        "403":
+          description: "Forbidden: the authenticated user lacks the ADMIN role required\
+            \ for this operation (RFC 7807 problem+json)."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+        "404":
+          description: "Not Found: the requested resource or record does not exist\
+            \ (RFC 7807 problem+json)."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+        "405":
+          description: "Method Not Allowed: the HTTP method is not supported for this\
+            \ resource (RFC 7807 problem+json)."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+        "409":
+          description: "Conflict: the change violates a uniqueness constraint or lost\
+            \ an optimistic-lock race (RFC 7807 problem+json)."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+        "415":
+          description: "Unsupported Media Type: the request body is not application/json\
+            \ (RFC 7807 problem+json)."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+        "500":
+          description: "Internal Server Error: an unexpected error occurred (RFC 7807\
+            \ problem+json)."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
   /api/v1/admin/users/list:
     post:
       tags:
-      - user-list-controller
+      - User List
+      summary: Page the User List
+      description: "Reproduces the COUSR00C EVALUATE EIBAID paging: PF7/PF8 browse\
+        \ the user list backward and forward."
       operationId: list_1
       requestBody:
         content:
@@ -423,10 +1398,62 @@ paths:
             '*/*':
               schema:
                 $ref: "#/components/schemas/UserListResponse"
+        "400":
+          description: "Bad Request: the request was malformed or failed input validation\
+            \ (RFC 7807 problem+json)."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+        "401":
+          description: "Unauthorized: authentication is required and was missing or\
+            \ invalid (RFC 7807 problem+json)."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+        "403":
+          description: "Forbidden: the authenticated user lacks the ADMIN role required\
+            \ for this operation (RFC 7807 problem+json)."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+        "404":
+          description: "Not Found: the requested resource or record does not exist\
+            \ (RFC 7807 problem+json)."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+        "405":
+          description: "Method Not Allowed: the HTTP method is not supported for this\
+            \ resource (RFC 7807 problem+json)."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+        "415":
+          description: "Unsupported Media Type: the request body is not application/json\
+            \ (RFC 7807 problem+json)."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+        "500":
+          description: "Internal Server Error: an unexpected error occurred (RFC 7807\
+            \ problem+json)."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
   /api/v1/admin/users/delete:
     get:
       tags:
-      - user-delete-controller
+      - User Delete
+      summary: Blank User Delete screen
+      description: First-entry screen prompting for the user id to delete (COBOL COUSR03C
+        initial SEND MAP). Requires the ADMIN role.
       operationId: getDeleteScreen
       responses:
         "200":
@@ -435,9 +1462,54 @@ paths:
             '*/*':
               schema:
                 $ref: "#/components/schemas/UserDeleteResponse"
+        "400":
+          description: "Bad Request: the request was malformed or failed input validation\
+            \ (RFC 7807 problem+json)."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+        "401":
+          description: "Unauthorized: authentication is required and was missing or\
+            \ invalid (RFC 7807 problem+json)."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+        "403":
+          description: "Forbidden: the authenticated user lacks the ADMIN role required\
+            \ for this operation (RFC 7807 problem+json)."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+        "404":
+          description: "Not Found: the requested resource or record does not exist\
+            \ (RFC 7807 problem+json)."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+        "405":
+          description: "Method Not Allowed: the HTTP method is not supported for this\
+            \ resource (RFC 7807 problem+json)."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+        "500":
+          description: "Internal Server Error: an unexpected error occurred (RFC 7807\
+            \ problem+json)."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
     post:
       tags:
-      - user-delete-controller
+      - User Delete
+      summary: Submit the User Delete screen
+      description: "Reproduces the COUSR03C flow: look up and delete the requested\
+        \ user record."
       operationId: delete
       requestBody:
         content:
@@ -452,10 +1524,69 @@ paths:
             '*/*':
               schema:
                 $ref: "#/components/schemas/UserDeleteResponse"
+        "400":
+          description: "Bad Request: the request was malformed or failed input validation\
+            \ (RFC 7807 problem+json)."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+        "401":
+          description: "Unauthorized: authentication is required and was missing or\
+            \ invalid (RFC 7807 problem+json)."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+        "403":
+          description: "Forbidden: the authenticated user lacks the ADMIN role required\
+            \ for this operation (RFC 7807 problem+json)."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+        "404":
+          description: "Not Found: the requested resource or record does not exist\
+            \ (RFC 7807 problem+json)."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+        "405":
+          description: "Method Not Allowed: the HTTP method is not supported for this\
+            \ resource (RFC 7807 problem+json)."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+        "409":
+          description: "Conflict: the change violates a uniqueness constraint or lost\
+            \ an optimistic-lock race (RFC 7807 problem+json)."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+        "415":
+          description: "Unsupported Media Type: the request body is not application/json\
+            \ (RFC 7807 problem+json)."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+        "500":
+          description: "Internal Server Error: an unexpected error occurred (RFC 7807\
+            \ problem+json)."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
   /api/v1/admin/users/add:
     get:
       tags:
-      - user-add-controller
+      - User Add
+      summary: Blank User Add screen
+      description: First-entry screen for entering a new user (COBOL COUSR01C initial
+        SEND MAP). Requires the ADMIN role.
       operationId: addUserForm
       responses:
         "200":
@@ -464,9 +1595,54 @@ paths:
             '*/*':
               schema:
                 $ref: "#/components/schemas/UserAddResponse"
+        "400":
+          description: "Bad Request: the request was malformed or failed input validation\
+            \ (RFC 7807 problem+json)."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+        "401":
+          description: "Unauthorized: authentication is required and was missing or\
+            \ invalid (RFC 7807 problem+json)."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+        "403":
+          description: "Forbidden: the authenticated user lacks the ADMIN role required\
+            \ for this operation (RFC 7807 problem+json)."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+        "404":
+          description: "Not Found: the requested resource or record does not exist\
+            \ (RFC 7807 problem+json)."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+        "405":
+          description: "Method Not Allowed: the HTTP method is not supported for this\
+            \ resource (RFC 7807 problem+json)."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+        "500":
+          description: "Internal Server Error: an unexpected error occurred (RFC 7807\
+            \ problem+json)."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
     post:
       tags:
-      - user-add-controller
+      - User Add
+      summary: Submit the User Add screen
+      description: "Reproduces the COUSR01C flow: validate and insert the new user\
+        \ record."
       operationId: add_1
       requestBody:
         content:
@@ -481,10 +1657,69 @@ paths:
             '*/*':
               schema:
                 $ref: "#/components/schemas/UserAddResponse"
+        "400":
+          description: "Bad Request: the request was malformed or failed input validation\
+            \ (RFC 7807 problem+json)."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+        "401":
+          description: "Unauthorized: authentication is required and was missing or\
+            \ invalid (RFC 7807 problem+json)."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+        "403":
+          description: "Forbidden: the authenticated user lacks the ADMIN role required\
+            \ for this operation (RFC 7807 problem+json)."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+        "404":
+          description: "Not Found: the requested resource or record does not exist\
+            \ (RFC 7807 problem+json)."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+        "405":
+          description: "Method Not Allowed: the HTTP method is not supported for this\
+            \ resource (RFC 7807 problem+json)."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+        "409":
+          description: "Conflict: the change violates a uniqueness constraint or lost\
+            \ an optimistic-lock race (RFC 7807 problem+json)."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+        "415":
+          description: "Unsupported Media Type: the request body is not application/json\
+            \ (RFC 7807 problem+json)."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+        "500":
+          description: "Internal Server Error: an unexpected error occurred (RFC 7807\
+            \ problem+json)."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
   /api/v1/admin/menu:
     get:
       tags:
-      - admin-menu-controller
+      - Admin Menu
+      summary: Display the admin menu
+      description: First-entry admin menu listing the administrative options (COBOL
+        COADM01C initial SEND MAP). Requires the ADMIN role.
       operationId: menu_1
       responses:
         "200":
@@ -493,9 +1728,54 @@ paths:
             '*/*':
               schema:
                 $ref: "#/components/schemas/AdminMenuResponse"
+        "400":
+          description: "Bad Request: the request was malformed or failed input validation\
+            \ (RFC 7807 problem+json)."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+        "401":
+          description: "Unauthorized: authentication is required and was missing or\
+            \ invalid (RFC 7807 problem+json)."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+        "403":
+          description: "Forbidden: the authenticated user lacks the ADMIN role required\
+            \ for this operation (RFC 7807 problem+json)."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+        "404":
+          description: "Not Found: the requested resource or record does not exist\
+            \ (RFC 7807 problem+json)."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+        "405":
+          description: "Method Not Allowed: the HTTP method is not supported for this\
+            \ resource (RFC 7807 problem+json)."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+        "500":
+          description: "Internal Server Error: an unexpected error occurred (RFC 7807\
+            \ problem+json)."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
     post:
       tags:
-      - admin-menu-controller
+      - Admin Menu
+      summary: Submit an admin-menu selection
+      description: Reproduces the COADM01C EVALUATE EIBAID routing of the selected
+        administrative option.
       operationId: select_1
       requestBody:
         content:
@@ -510,6 +1790,55 @@ paths:
             '*/*':
               schema:
                 $ref: "#/components/schemas/AdminMenuResponse"
+        "400":
+          description: "Bad Request: the request was malformed or failed input validation\
+            \ (RFC 7807 problem+json)."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+        "401":
+          description: "Unauthorized: authentication is required and was missing or\
+            \ invalid (RFC 7807 problem+json)."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+        "403":
+          description: "Forbidden: the authenticated user lacks the ADMIN role required\
+            \ for this operation (RFC 7807 problem+json)."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+        "404":
+          description: "Not Found: the requested resource or record does not exist\
+            \ (RFC 7807 problem+json)."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+        "405":
+          description: "Method Not Allowed: the HTTP method is not supported for this\
+            \ resource (RFC 7807 problem+json)."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+        "415":
+          description: "Unsupported Media Type: the request body is not application/json\
+            \ (RFC 7807 problem+json)."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+        "500":
+          description: "Internal Server Error: an unexpected error occurred (RFC 7807\
+            \ problem+json)."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
   /api/v1/accounts/view:
     get:
       tags:
@@ -525,6 +1854,41 @@ paths:
             '*/*':
               schema:
                 $ref: "#/components/schemas/AccountViewResponse"
+        "400":
+          description: "Bad Request: the request was malformed or failed input validation\
+            \ (RFC 7807 problem+json)."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+        "401":
+          description: "Unauthorized: authentication is required and was missing or\
+            \ invalid (RFC 7807 problem+json)."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+        "404":
+          description: "Not Found: the requested resource or record does not exist\
+            \ (RFC 7807 problem+json)."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+        "405":
+          description: "Method Not Allowed: the HTTP method is not supported for this\
+            \ resource (RFC 7807 problem+json)."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+        "500":
+          description: "Internal Server Error: an unexpected error occurred (RFC 7807\
+            \ problem+json)."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
     post:
       tags:
       - Account View
@@ -556,10 +1920,55 @@ paths:
             '*/*':
               schema:
                 $ref: "#/components/schemas/AccountViewResponse"
+        "400":
+          description: "Bad Request: the request was malformed or failed input validation\
+            \ (RFC 7807 problem+json)."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+        "401":
+          description: "Unauthorized: authentication is required and was missing or\
+            \ invalid (RFC 7807 problem+json)."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+        "404":
+          description: "Not Found: the requested resource or record does not exist\
+            \ (RFC 7807 problem+json)."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+        "405":
+          description: "Method Not Allowed: the HTTP method is not supported for this\
+            \ resource (RFC 7807 problem+json)."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+        "415":
+          description: "Unsupported Media Type: the request body is not application/json\
+            \ (RFC 7807 problem+json)."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+        "500":
+          description: "Internal Server Error: an unexpected error occurred (RFC 7807\
+            \ problem+json)."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
   /api/v1/accounts/update:
     get:
       tags:
-      - account-update-controller
+      - Account Update
+      summary: Blank Account Update screen
+      description: First-entry screen prompting for an account id (COBOL COACTUPC
+        initial SEND MAP).
       operationId: showBlankScreen
       responses:
         "200":
@@ -568,9 +1977,47 @@ paths:
             '*/*':
               schema:
                 $ref: "#/components/schemas/AccountUpdateResponse"
+        "400":
+          description: "Bad Request: the request was malformed or failed input validation\
+            \ (RFC 7807 problem+json)."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+        "401":
+          description: "Unauthorized: authentication is required and was missing or\
+            \ invalid (RFC 7807 problem+json)."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+        "404":
+          description: "Not Found: the requested resource or record does not exist\
+            \ (RFC 7807 problem+json)."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+        "405":
+          description: "Method Not Allowed: the HTTP method is not supported for this\
+            \ resource (RFC 7807 problem+json)."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+        "500":
+          description: "Internal Server Error: an unexpected error occurred (RFC 7807\
+            \ problem+json)."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
     post:
       tags:
-      - account-update-controller
+      - Account Update
+      summary: Submit the Account Update screen
+      description: "Reproduces the COACTUPC EVALUATE EIBAID routing: fetch, validate,\
+        \ and rewrite the account and customer detail."
       operationId: update_2
       parameters:
       - name: X-CardDemo-Prior-Status
@@ -606,10 +2053,62 @@ paths:
             '*/*':
               schema:
                 $ref: "#/components/schemas/AccountUpdateResponse"
+        "400":
+          description: "Bad Request: the request was malformed or failed input validation\
+            \ (RFC 7807 problem+json)."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+        "401":
+          description: "Unauthorized: authentication is required and was missing or\
+            \ invalid (RFC 7807 problem+json)."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+        "404":
+          description: "Not Found: the requested resource or record does not exist\
+            \ (RFC 7807 problem+json)."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+        "405":
+          description: "Method Not Allowed: the HTTP method is not supported for this\
+            \ resource (RFC 7807 problem+json)."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+        "409":
+          description: "Conflict: the change violates a uniqueness constraint or lost\
+            \ an optimistic-lock race (RFC 7807 problem+json)."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+        "415":
+          description: "Unsupported Media Type: the request body is not application/json\
+            \ (RFC 7807 problem+json)."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+        "500":
+          description: "Internal Server Error: an unexpected error occurred (RFC 7807\
+            \ problem+json)."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
   /api/v1/admin/users:
     get:
       tags:
-      - user-list-controller
+      - User List
+      summary: First page of the User List
+      description: First-entry screen listing the initial page of users (COBOL COUSR00C
+        initial browse). Requires the ADMIN role.
       operationId: firstPage_2
       responses:
         "200":
@@ -618,6 +2117,48 @@ paths:
             '*/*':
               schema:
                 $ref: "#/components/schemas/UserListResponse"
+        "400":
+          description: "Bad Request: the request was malformed or failed input validation\
+            \ (RFC 7807 problem+json)."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+        "401":
+          description: "Unauthorized: authentication is required and was missing or\
+            \ invalid (RFC 7807 problem+json)."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+        "403":
+          description: "Forbidden: the authenticated user lacks the ADMIN role required\
+            \ for this operation (RFC 7807 problem+json)."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+        "404":
+          description: "Not Found: the requested resource or record does not exist\
+            \ (RFC 7807 problem+json)."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+        "405":
+          description: "Method Not Allowed: the HTTP method is not supported for this\
+            \ resource (RFC 7807 problem+json)."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+        "500":
+          description: "Internal Server Error: an unexpected error occurred (RFC 7807\
+            \ problem+json)."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
 components:
   schemas:
     TransactionListRequest:
@@ -817,7 +2358,6 @@ components:
           type: string
           maxLength: 1
           minLength: 0
-          pattern: "^[YyNn ]?$"
         action:
           type: string
           enum:
@@ -931,7 +2471,6 @@ components:
           type: string
           maxLength: 1
           minLength: 0
-          pattern: "^[YyNn ]?$"
         action:
           type: string
           enum:
@@ -975,7 +2514,7 @@ components:
           type: string
           maxLength: 2
           minLength: 0
-          pattern: "^\\d{0,2}$"
+          pattern: "^.{0,2}$"
         action:
           type: string
           enum:
@@ -1171,7 +2710,6 @@ components:
           type: string
           maxLength: 1
           minLength: 0
-          pattern: "^[YN ]?$"
         expiryMonth:
           type: string
           maxLength: 2
@@ -1250,7 +2788,6 @@ components:
           type: string
           maxLength: 1
           minLength: 0
-          pattern: "^[YyNn ]?$"
         action:
           type: string
           enum:
@@ -1392,8 +2929,6 @@ components:
           - PF10
           - PF11
           - PF12
-      required:
-      - userId
     UserUpdateResponse:
       type: object
       properties:
@@ -1511,8 +3046,6 @@ components:
           - PF10
           - PF11
           - PF12
-      required:
-      - userId
     UserDeleteResponse:
       type: object
       properties:
@@ -1562,7 +3095,7 @@ components:
           type: string
           maxLength: 1
           minLength: 0
-          pattern: "^[AUau]$"
+          pattern: "^[AUau ]?$"
         action:
           type: string
           enum:
@@ -1582,12 +3115,6 @@ components:
           - PF10
           - PF11
           - PF12
-      required:
-      - firstName
-      - lastName
-      - password
-      - userId
-      - userType
     UserAddResponse:
       type: object
       properties:
@@ -1612,7 +3139,7 @@ components:
           type: string
           maxLength: 2
           minLength: 0
-          pattern: "^\\d{0,2}$"
+          pattern: "^.{0,2}$"
         action:
           type: string
           enum:
@@ -2077,6 +3604,33 @@ components:
           type: string
         functionKeyCancel:
           type: string
+    ProblemDetail:
+      type: object
+      description: RFC 7807 problem detail returned as application/problem+json for
+        every error response emitted by the API.
+      properties:
+        type:
+          type: string
+          format: uri
+          example: about:blank
+        title:
+          type: string
+          example: Not Found
+        status:
+          type: integer
+          format: int32
+          example: 404
+        detail:
+          type: string
+          example: The requested account was not found.
+        instance:
+          type: string
+          format: uri
+          example: /api/v1/accounts/view
+        correlationId:
+          type: string
+          description: Request correlation id echoed from the X-Correlation-Id header
+            / MDC.
   securitySchemes:
     basicAuth:
       type: http

@@ -17,7 +17,11 @@ package com.aws.carddemo.batch.writer;
 
 import java.io.BufferedWriter;
 import java.io.IOException;
+import java.io.OutputStream;
+import java.io.OutputStreamWriter;
 import java.nio.charset.Charset;
+import java.nio.charset.CharsetEncoder;
+import java.nio.charset.CodingErrorAction;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.AtomicMoveNotSupportedException;
 import java.nio.file.FileSystems;
@@ -278,11 +282,12 @@ public class StatementItemWriter
             this.textTempPath = createTempWorkFile(outputDir, textFileName);
             this.htmlTempPath = createTempWorkFile(outputDir, htmlFileName);
             // OPEN OUTPUT STMT-FILE HTML-FILE (L293): text first, then HTML. Truncate the freshly created
-            // (empty) work files so an empty run still yields a valid, empty file to publish.
-            this.textWriter = Files.newBufferedWriter(textTempPath, OUTPUT_CHARSET,
-                    StandardOpenOption.TRUNCATE_EXISTING, StandardOpenOption.WRITE);
-            this.htmlWriter = Files.newBufferedWriter(htmlTempPath, OUTPUT_CHARSET,
-                    StandardOpenOption.TRUNCATE_EXISTING, StandardOpenOption.WRITE);
+            // (empty) work files so an empty run still yields a valid, empty file to publish. Both writers
+            // use a SUBSTITUTING ISO-8859-1 encoder (see newSubstitutingWriter / decision log D56) so a
+            // single un-encodable character degrades to one replacement byte instead of aborting the whole
+            // job (RC 8) and losing statement output for every account.
+            this.textWriter = newSubstitutingWriter(textTempPath);
+            this.htmlWriter = newSubstitutingWriter(htmlTempPath);
         } catch (IOException ex) {
             this.ioError = true;
             // Best-effort cleanup: the text stream/temp may exist before the HTML open failed. Never
@@ -324,6 +329,80 @@ public class StatementItemWriter
             return Files.createTempFile(outputDir, prefix, TEMP_SUFFIX, ownerOnly);
         }
         return Files.createTempFile(outputDir, prefix, TEMP_SUFFIX, new FileAttribute<?>[0]);
+    }
+
+    /**
+     * Opens a buffered writer over {@code path} using a <strong>substituting</strong>
+     * {@link #OUTPUT_CHARSET ISO-8859-1} encoder: any character not representable in ISO-8859-1 (code
+     * point &gt; {@code 0xFF}) and any malformed input is replaced with the charset replacement byte
+     * ({@code '?'}) rather than throwing {@code UnmappableCharacterException}/{@code MalformedInputException}.
+     * This mirrors the sibling {@code DailyTransactionPostingWriter} (decision log D35): a single
+     * un-encodable character in a name or transaction description degrades to one replacement instead of
+     * aborting the entire statement job (batch RC 8) and producing ZERO output for every account. The
+     * default {@link Files#newBufferedWriter(Path, Charset, java.nio.file.OpenOption...)} encoder
+     * <em>reports</em> (throws) on such input &mdash; the defect this replaces. See decision log D56.
+     *
+     * <p>The freshly-created (empty) temporary work file is truncated on open so an empty run still
+     * yields a valid, empty file to publish. Byte-level record framing is additionally guaranteed by
+     * {@link #toLatin1Record(String)} at write time (the statement files carry <em>no</em> in-band
+     * delimiter, so a supplementary code point that the encoder would collapse from two chars to one
+     * byte must be replaced char-for-char instead &mdash; see that method and D56).</p>
+     *
+     * @param path the temporary work file to open for writing
+     * @return a buffered writer backed by the substituting encoder
+     * @throws IOException if the file cannot be opened for writing
+     */
+    private static BufferedWriter newSubstitutingWriter(Path path) throws IOException {
+        CharsetEncoder encoder = OUTPUT_CHARSET.newEncoder()
+                .onUnmappableCharacter(CodingErrorAction.REPLACE)
+                .onMalformedInput(CodingErrorAction.REPLACE);
+        OutputStream out = Files.newOutputStream(path,
+                StandardOpenOption.TRUNCATE_EXISTING, StandardOpenOption.WRITE);
+        return new BufferedWriter(new OutputStreamWriter(out, encoder));
+    }
+
+    /**
+     * Maps a fixed-width record string to a byte-framing-safe ISO-8859-1 form by replacing every
+     * character that is not representable in a single ISO-8859-1 byte (code point &gt; {@code 0xFF},
+     * which includes both non-Latin-1 BMP characters and each half of a surrogate pair) with the
+     * replacement character {@code '?'}. Latin-1 characters ({@code 0x00}-{@code 0xFF}, e.g. accented
+     * letters) pass through unchanged.
+     *
+     * <p><strong>Why this is needed for the statement files specifically.</strong> The statement text
+     * and HTML files are pure {@code RECFM=FB} images with <em>no</em> in-band delimiter (decision log
+     * D41), so a record of <var>N</var> characters must serialise to exactly <var>N</var> bytes or every
+     * following record is mis-framed. The substituting {@link #newSubstitutingWriter(Path) encoder}
+     * alone does not guarantee this: it collapses a valid surrogate <em>pair</em> (one supplementary
+     * code point, e.g. an emoji &mdash; two Java {@code char}s) into a <em>single</em> replacement byte,
+     * which would shorten the record by one byte. Replacing each offending {@code char} individually
+     * here keeps the char-count and byte-count equal (a two-char emoji becomes {@code "??"} &mdash; two
+     * bytes), preserving the fixed-block framing. This differs from the sibling reject writer (D35),
+     * whose records are newline-<em>delimited</em> and therefore self-re-synchronising.</p>
+     *
+     * <p>This is a strict no-op for the ASCII/Latin-1 data of the golden fixtures and the real seed and
+     * transaction pipeline (every character is already {@code <= 0xFF}), so byte-exact golden parity is
+     * unaffected. See decision log D56.</p>
+     *
+     * @param record the exact-width record produced by {@link FixedWidthCodec#writeAlphanumeric(String, int)}
+     * @return an equal-length string in which every char is representable as one ISO-8859-1 byte
+     */
+    private static String toLatin1Record(String record) {
+        int index = 0;
+        final int length = record.length();
+        // Fast path: scan for the first offending char; if none, return the input unchanged (no alloc).
+        while (index < length && record.charAt(index) <= 0xFF) {
+            index++;
+        }
+        if (index == length) {
+            return record;
+        }
+        char[] chars = record.toCharArray();
+        for (int i = index; i < length; i++) {
+            if (chars[i] > 0xFF) {
+                chars[i] = '?';
+            }
+        }
+        return new String(chars);
     }
 
     /**
@@ -381,8 +460,10 @@ public class StatementItemWriter
         }
         for (String line : lines) {
             // FixedWidthCodec guarantees a String of exactly TEXT_RECORD_LENGTH characters. No delimiter
-            // is written: fixed-length records are self-delimiting (RECFM=FB).
-            textWriter.write(FixedWidthCodec.writeAlphanumeric(line, TEXT_RECORD_LENGTH));
+            // is written: fixed-length records are self-delimiting (RECFM=FB). toLatin1Record keeps the
+            // char-count == byte-count (a supplementary code point becomes two '?' bytes, not one),
+            // preserving the fixed-block framing of this delimiter-less file (D56).
+            textWriter.write(toLatin1Record(FixedWidthCodec.writeAlphanumeric(line, TEXT_RECORD_LENGTH)));
             textRecordCount++;
         }
     }
@@ -406,8 +487,11 @@ public class StatementItemWriter
         }
         for (String line : lines) {
             // FixedWidthCodec guarantees a String of exactly HTML_RECORD_LENGTH characters. No delimiter
-            // is written: fixed-length records are self-delimiting (RECFM=FB).
-            htmlWriter.write(FixedWidthCodec.writeAlphanumeric(line, HTML_RECORD_LENGTH));
+            // is written: fixed-length records are self-delimiting (RECFM=FB). toLatin1Record keeps the
+            // char-count == byte-count (a supplementary code point becomes two '?' bytes, not one),
+            // preserving the fixed-block framing of this delimiter-less file (D56). On the HTML path the
+            // processor already emits non-ASCII as numeric character references, so this is defensive.
+            htmlWriter.write(toLatin1Record(FixedWidthCodec.writeAlphanumeric(line, HTML_RECORD_LENGTH)));
             htmlRecordCount++;
         }
     }

@@ -34,6 +34,9 @@ import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
+import io.swagger.v3.oas.annotations.Operation;
+import io.swagger.v3.oas.annotations.tags.Tag;
+
 import java.time.LocalDateTime;
 
 /**
@@ -100,6 +103,8 @@ import java.time.LocalDateTime;
  */
 @RestController
 @RequestMapping("/api/v1/admin/users/delete")
+@Tag(name = "User Delete",
+        description = "User Delete screen (COBOL COUSR03C / CICS transaction CU03): delete an application user. Requires the ADMIN role.")
 @PreAuthorize("hasRole('ADMIN')")
 public class UserDeleteController {
 
@@ -205,6 +210,8 @@ public class UserDeleteController {
      * @return HTTP {@code 200 OK} with a blank {@link UserDeleteResponse}
      */
     @GetMapping
+    @Operation(summary = "Blank User Delete screen",
+            description = "First-entry screen prompting for the user id to delete (COBOL COUSR03C initial SEND MAP). Requires the ADMIN role.")
     public ResponseEntity<UserDeleteResponse> getDeleteScreen() {
         UserDeleteResponse body = userMapper.toDeleteResponse(
                 null, null, LocalDateTime.now(),
@@ -238,6 +245,8 @@ public class UserDeleteController {
      *         selected branch
      */
     @PostMapping
+    @Operation(summary = "Submit the User Delete screen",
+            description = "Reproduces the COUSR03C flow: look up and delete the requested user record.")
     public ResponseEntity<UserDeleteResponse> delete(@Valid @RequestBody UserDeleteRequest request) {
         LocalDateTime now = LocalDateTime.now();
         return switch (request.action()) {

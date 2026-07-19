@@ -23,6 +23,9 @@ import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
+import io.swagger.v3.oas.annotations.Operation;
+import io.swagger.v3.oas.annotations.tags.Tag;
+
 import com.aws.carddemo.dto.PfKeyAction;
 import com.aws.carddemo.dto.UserAddRequest;
 import com.aws.carddemo.dto.UserAddResponse;
@@ -87,6 +90,8 @@ import java.util.Objects;
  */
 @RestController
 @RequestMapping(UserAddController.BASE_PATH)
+@Tag(name = "User Add",
+        description = "User Add screen (COBOL COUSR01C / CICS transaction CU01): create a new application user. Requires the ADMIN role.")
 @PreAuthorize("hasRole('ADMIN')")
 public class UserAddController {
 
@@ -194,6 +199,8 @@ public class UserAddController {
      * @return {@code 200 OK} with a blank {@link UserAddResponse}
      */
     @GetMapping
+    @Operation(summary = "Blank User Add screen",
+            description = "First-entry screen for entering a new user (COBOL COUSR01C initial SEND MAP). Requires the ADMIN role.")
     public ResponseEntity<UserAddResponse> addUserForm() {
         return ResponseEntity.ok(currentScreen(BLANK_MESSAGE));
     }
@@ -226,6 +233,8 @@ public class UserAddController {
      *         {@code 409 Conflict}
      */
     @PostMapping
+    @Operation(summary = "Submit the User Add screen",
+            description = "Reproduces the COUSR01C flow: validate and insert the new user record.")
     public ResponseEntity<UserAddResponse> add(@Valid @RequestBody UserAddRequest request) {
         PfKeyAction action = (request.action() == null) ? PfKeyAction.ENTER : request.action();
         return switch (action) {

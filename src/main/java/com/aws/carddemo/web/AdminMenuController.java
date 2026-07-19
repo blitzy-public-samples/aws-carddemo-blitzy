@@ -28,6 +28,9 @@ import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
+import io.swagger.v3.oas.annotations.Operation;
+import io.swagger.v3.oas.annotations.tags.Tag;
+
 import jakarta.validation.Valid;
 
 import com.aws.carddemo.dto.AdminMenuRequest;
@@ -88,6 +91,8 @@ import com.aws.carddemo.service.MenuService.MenuRouting;
  */
 @RestController
 @RequestMapping("/api/v1/admin/menu")
+@Tag(name = "Admin Menu",
+        description = "Admin Menu screen (COBOL COADM01C / CICS transaction CA00): lists the administrative options and routes the selected option to its target program. Requires the ADMIN role.")
 @PreAuthorize("hasRole('ADMIN')")
 public class AdminMenuController {
 
@@ -208,6 +213,8 @@ public class AdminMenuController {
      * @return the populated {@link AdminMenuResponse} (HTTP {@code 200 OK})
      */
     @GetMapping
+    @Operation(summary = "Display the admin menu",
+            description = "First-entry admin menu listing the administrative options (COBOL COADM01C initial SEND MAP). Requires the ADMIN role.")
     public AdminMenuResponse menu() {
         return buildMenuResponse(null);
     }
@@ -253,6 +260,8 @@ public class AdminMenuController {
      *         (HTTP {@code 200 OK})
      */
     @PostMapping
+    @Operation(summary = "Submit an admin-menu selection",
+            description = "Reproduces the COADM01C EVALUATE EIBAID routing of the selected administrative option.")
     public ResponseEntity<AdminMenuResponse> select(
             @Valid @RequestBody AdminMenuRequest request,
             @AuthenticationPrincipal CardDemoUserDetails user) {

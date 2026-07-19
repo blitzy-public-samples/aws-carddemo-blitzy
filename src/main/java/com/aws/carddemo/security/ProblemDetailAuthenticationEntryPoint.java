@@ -18,7 +18,6 @@ package com.aws.carddemo.security;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 
-import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
 import org.springframework.security.core.AuthenticationException;
 import org.springframework.security.web.AuthenticationEntryPoint;
@@ -41,23 +40,25 @@ import java.io.IOException;
  * problem-detail body &mdash; including the per-request {@code correlationId} &mdash;
  * as the rest of the CardDemo API.</p>
  *
- * <p>Because the API authenticates with HTTP&nbsp;Basic, the standard
- * {@code WWW-Authenticate: Basic} challenge header is preserved so the response
- * remains a well-formed {@code 401} (RFC&nbsp;7235); only the previously empty body is
- * augmented. No credential, and no client-supplied value, is echoed into the body or
- * any log line.</p>
+ * <p>The API authenticates with HTTP&nbsp;Basic, but this entry point deliberately does
+ * <em>not</em> emit a {@code WWW-Authenticate: Basic} challenge header on the 401. A
+ * browser treats that standard challenge as an instruction to display its own native
+ * credential dialog, which intercepts the response before an XHR-based client (most
+ * visibly the springdoc Swagger UI) can read it &mdash; the "Try it out" call then hangs
+ * in a perpetual loading state until the native dialog is dismissed. Omitting the
+ * challenge lets Swagger UI (and any {@code fetch}/XHR consumer) render this RFC&nbsp;7807
+ * {@code 401} body inline exactly as it renders the 403/404/400 problem responses, while
+ * the legitimate HTTP&nbsp;Basic clients are unaffected: they send the {@code Authorization}
+ * header proactively (the Swagger "Authorize" dialog and {@code curl -u} do not rely on a
+ * server challenge to decide to authenticate). The {@code 401} therefore carries the same
+ * problem-detail body &mdash; including the per-request {@code correlationId} &mdash; as
+ * the rest of the API, only without the browser-triggering challenge. No credential, and
+ * no client-supplied value, is echoed into the body or any log line.</p>
  *
  * @see ProblemDetailAccessDeniedHandler
  * @see ProblemDetailHttpWriter
  */
 public class ProblemDetailAuthenticationEntryPoint implements AuthenticationEntryPoint {
-
-    /**
-     * The HTTP&nbsp;Basic authentication realm advertised in the
-     * {@code WWW-Authenticate} challenge. A fixed, non-sensitive label identifying the
-     * protection space.
-     */
-    private static final String REALM = "CardDemo";
 
     /**
      * Boot-configured Jackson mapper used to serialize the {@code ProblemDetail}. It
@@ -76,9 +77,15 @@ public class ProblemDetailAuthenticationEntryPoint implements AuthenticationEntr
     }
 
     /**
-     * Commences an authentication scheme: sets the HTTP&nbsp;Basic
-     * {@code WWW-Authenticate} challenge header and writes an RFC&nbsp;7807
+     * Commences the authentication failure response: writes an RFC&nbsp;7807
      * {@code 401 Unauthorized} problem-detail body carrying the correlation ID.
+     *
+     * <p>No {@code WWW-Authenticate: Basic} challenge header is set: a browser would
+     * otherwise intercept the standard Basic challenge with its own native credential
+     * dialog and block XHR/{@code fetch} consumers (e.g. Swagger UI's "Try it out") from
+     * ever reading this body. Suppressing the challenge lets those clients render the
+     * problem detail inline; genuine HTTP&nbsp;Basic clients send the {@code Authorization}
+     * header proactively and do not depend on the challenge (see the class Javadoc).</p>
      *
      * @param request       the request that failed authentication
      * @param response      the response to render the 401 onto
@@ -88,7 +95,6 @@ public class ProblemDetailAuthenticationEntryPoint implements AuthenticationEntr
     @Override
     public void commence(HttpServletRequest request, HttpServletResponse response,
                          AuthenticationException authException) throws IOException {
-        response.setHeader(HttpHeaders.WWW_AUTHENTICATE, "Basic realm=\"" + REALM + "\"");
         ProblemDetailHttpWriter.write(request, response, objectMapper, HttpStatus.UNAUTHORIZED,
                 "Unauthorized", "Authentication is required to access this resource.");
     }

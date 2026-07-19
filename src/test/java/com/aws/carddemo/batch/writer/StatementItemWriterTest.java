@@ -16,6 +16,7 @@
 package com.aws.carddemo.batch.writer;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
@@ -342,6 +343,66 @@ class StatementItemWriterTest {
         // The single content byte is followed only by ISO-8859-1 space padding (0x20), never a delimiter.
         assertThat(textBytes[1]).isEqualTo((byte) 0x20);
         assertThat(htmlBytes[1]).isEqualTo((byte) 0x20);
+    }
+
+    // ------------------------------------------------------------------------
+    // Case 11b — a character outside ISO-8859-1 (emoji / CJK) is substituted,
+    //            the write never aborts, and fixed-width framing is preserved.
+    //            Regression guard for QA Issue 2 (MAJOR) — see decision-log D56.
+    // ------------------------------------------------------------------------
+
+    @Test
+    @DisplayName(
+        "A char outside ISO-8859-1 (supplementary emoji + CJK) is substituted, the write never "
+            + "aborts, and RECFM=FB framing is preserved (1 char -> 1 byte)")
+    void substitutesUnmappableCharactersWithoutAbortingAndPreservesFraming() throws Exception {
+        StatementItemWriter writer = newWriter();
+        StepExecution se = newStep();
+        writer.beforeStep(se);
+
+        // Content mixes plain ASCII with a SUPPLEMENTARY emoji (U+1F600 = surrogate pair
+        // "\uD83D\uDE00", two Java chars) and a BMP CJK ideograph (U+4E00, one Java char). Both
+        // code points lie outside ISO-8859-1 and would raise UnmappableCharacterException under the
+        // JDK-default THROWING encoder — the exact condition that aborted the whole job (RC8, zero
+        // output for every account) in QA Issue 2.
+        String line = "AB\uD83D\uDE00C\u4E00D";
+
+        // The write MUST complete: the substituting encoder (D56, mirroring D35) prevents the abort.
+        assertThatCode(() -> writer.write(Chunk.of(doc(List.of(line), List.of(line)))))
+            .doesNotThrowAnyException();
+        writer.afterStep(se);
+
+        byte[] textBytes = Files.readAllBytes(textPath());
+        byte[] htmlBytes = Files.readAllBytes(htmlPath());
+
+        // Framing preserved: each file is EXACTLY one fixed-width record. This is the crux of the
+        // dual fix. The substituting encoder ALONE would collapse the supplementary emoji's two Java
+        // chars into a SINGLE replacement byte, yielding 79 / 99 bytes and shearing the delimiter-less
+        // RECFM=FB frame by one. toLatin1Record substitutes each unmappable char INDIVIDUALLY before
+        // the encoder runs (surrogate pair -> "??" = two bytes), so 1 char == 1 byte always holds.
+        assertThat(textBytes).hasSize(TEXT_WIDTH);
+        assertThat(htmlBytes).hasSize(HTML_WIDTH);
+        assertThat(textBytes.length % TEXT_WIDTH).isZero();
+        assertThat(htmlBytes.length % HTML_WIDTH).isZero();
+
+        // The three unmappable chars became three '?' (0x3F) substitution bytes at positions 2,3,5:
+        //   index 0='A' 1='B' 2,3=emoji surrogate pair -> "??" 4='C' 5=CJK -> '?' 6='D'
+        assertThat(textBytes[2]).isEqualTo((byte) 0x3F);
+        assertThat(textBytes[3]).isEqualTo((byte) 0x3F);
+        assertThat(textBytes[5]).isEqualTo((byte) 0x3F);
+        assertThat(htmlBytes[2]).isEqualTo((byte) 0x3F);
+        assertThat(htmlBytes[3]).isEqualTo((byte) 0x3F);
+        assertThat(htmlBytes[5]).isEqualTo((byte) 0x3F);
+
+        // The surrounding ASCII survives untouched, confirming only the unmappable chars are replaced.
+        assertThat(readTextRecords().get(0)).startsWith("AB??C?D");
+        assertThat(readHtmlRecords().get(0)).startsWith("AB??C?D");
+
+        // Every byte is a valid single-byte ISO-8859-1 unit (no stray multi-byte UTF-8 sequence leaked
+        // through), reinforcing that framing cannot drift.
+        for (byte b : textBytes) {
+            assertThat(b & 0xFF).isLessThanOrEqualTo(0xFF);
+        }
     }
 
     // ------------------------------------------------------------------------
