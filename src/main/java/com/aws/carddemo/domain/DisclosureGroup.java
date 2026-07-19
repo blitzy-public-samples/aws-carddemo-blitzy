@@ -61,6 +61,7 @@ public class DisclosureGroup {
      * {@code CHAR(10)} to preserve trailing-space semantics.
      */
     @Id
+    @JdbcTypeCode(SqlTypes.CHAR)
     @Column(name = "dis_acct_group_id", length = 10)
     private String acctGroupId;
 
@@ -69,6 +70,7 @@ public class DisclosureGroup {
      * Legacy: {@code DIS-TRAN-TYPE-CD PIC X(02)} &rarr; {@code CHAR(2)}.
      */
     @Id
+    @JdbcTypeCode(SqlTypes.CHAR)
     @Column(name = "dis_tran_type_cd", length = 2)
     private String tranTypeCd;
 

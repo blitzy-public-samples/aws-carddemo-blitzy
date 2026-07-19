@@ -73,6 +73,7 @@ public class CardXref {
      * Fixed-width 16-character card number; part of the composite primary key.
      */
     @Id
+    @JdbcTypeCode(SqlTypes.CHAR)
     @Column(name = "xref_card_num", length = 16)
     private String xrefCardNum;
 

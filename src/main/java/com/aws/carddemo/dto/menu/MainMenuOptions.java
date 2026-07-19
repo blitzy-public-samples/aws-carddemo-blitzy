@@ -2,6 +2,8 @@ package com.aws.carddemo.dto.menu;
 
 import java.util.List;
 
+import org.springframework.stereotype.Component;
+
 /**
  * Main-menu option list for CardDemo.
  *
@@ -39,6 +41,7 @@ import java.util.List;
  * <p>This is a plain-Java model with explicit accessors (no Lombok) and depends
  * only on {@link java.util.List}.</p>
  */
+@Component
 public final class MainMenuOptions {
 
     /** Array capacity from COBOL {@code CDEMO-MENU-OPT OCCURS 12 TIMES}. */

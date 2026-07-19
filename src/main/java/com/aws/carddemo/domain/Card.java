@@ -54,6 +54,7 @@ public class Card {
      * so no {@code @GeneratedValue} strategy is applied.
      */
     @Id
+    @JdbcTypeCode(SqlTypes.CHAR)
     @Column(name = "card_num", length = 16)
     private String cardNum;
 
@@ -83,6 +84,7 @@ public class Card {
     /**
      * Embossed cardholder name ({@code CARD-EMBOSSED-NAME PIC X(50)}).
      */
+    @JdbcTypeCode(SqlTypes.CHAR)
     @Column(name = "card_embossed_name", length = 50)
     private String cardEmbossedName;
 
@@ -97,6 +99,7 @@ public class Card {
      * Active-status flag ({@code CARD-ACTIVE-STATUS PIC X(01)}), typically {@code "Y"} or
      * {@code "N"}.
      */
+    @JdbcTypeCode(SqlTypes.CHAR)
     @Column(name = "card_active_status", length = 1)
     private String cardActiveStatus;
 

@@ -19,6 +19,8 @@ import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
 import jakarta.persistence.Id;
 import jakarta.persistence.Table;
+import org.hibernate.annotations.JdbcTypeCode;
+import org.hibernate.type.SqlTypes;
 
 /**
  * JPA entity for the CardDemo signon / authorization user store.
@@ -73,18 +75,21 @@ public class UserSecurity {
      * User id and primary key. Origin {@code SEC-USR-ID PIC X(08)} (8 bytes); the VSAM KSDS key.
      */
     @Id
+    @JdbcTypeCode(SqlTypes.CHAR)
     @Column(name = "usr_id", length = 8)
     private String usrId;
 
     /**
      * User first name. Origin {@code SEC-USR-FNAME PIC X(20)} (20 bytes).
      */
+    @JdbcTypeCode(SqlTypes.CHAR)
     @Column(name = "usr_fname", length = 20)
     private String usrFname;
 
     /**
      * User last name. Origin {@code SEC-USR-LNAME PIC X(20)} (20 bytes).
      */
+    @JdbcTypeCode(SqlTypes.CHAR)
     @Column(name = "usr_lname", length = 20)
     private String usrLname;
 
@@ -92,6 +97,7 @@ public class UserSecurity {
      * User password, stored as cleartext for parity with the legacy {@code USRSEC} store. Origin
      * {@code SEC-USR-PWD PIC X(08)} (8 bytes). Never logged and never emitted by {@link #toString()}.
      */
+    @JdbcTypeCode(SqlTypes.CHAR)
     @Column(name = "usr_pwd", length = 8)
     private String usrPwd;
 
@@ -99,6 +105,7 @@ public class UserSecurity {
      * User type / role flag. Origin {@code SEC-USR-TYPE PIC X(01)} (1 byte). {@code "A"} maps to
      * {@code ROLE_ADMIN} and {@code "U"} maps to {@code ROLE_USER} in Spring Security.
      */
+    @JdbcTypeCode(SqlTypes.CHAR)
     @Column(name = "usr_type", length = 1)
     private String usrType;
 

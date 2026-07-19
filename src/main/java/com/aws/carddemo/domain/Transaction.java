@@ -48,10 +48,12 @@ public class Transaction {
 
     /** Transaction id &mdash; {@code TRAN-ID PIC X(16)}; primary key of the {@code TRANSACT} KSDS. */
     @Id
+    @JdbcTypeCode(SqlTypes.CHAR)
     @Column(name = "tran_id", length = 16)
     private String tranId;
 
     /** Transaction type code &mdash; {@code TRAN-TYPE-CD PIC X(02)}. */
+    @JdbcTypeCode(SqlTypes.CHAR)
     @Column(name = "tran_type_cd", length = 2)
     private String tranTypeCd;
 
@@ -65,10 +67,12 @@ public class Transaction {
     private Integer tranCatCd;
 
     /** Transaction source &mdash; {@code TRAN-SOURCE PIC X(10)}. */
+    @JdbcTypeCode(SqlTypes.CHAR)
     @Column(name = "tran_source", length = 10)
     private String tranSource;
 
     /** Transaction description &mdash; {@code TRAN-DESC PIC X(100)}. */
+    @JdbcTypeCode(SqlTypes.CHAR)
     @Column(name = "tran_desc", length = 100)
     private String tranDesc;
 
@@ -90,14 +94,17 @@ public class Transaction {
     private Long merchantId;
 
     /** Merchant name &mdash; {@code TRAN-MERCHANT-NAME PIC X(50)}. */
+    @JdbcTypeCode(SqlTypes.CHAR)
     @Column(name = "tran_merchant_name", length = 50)
     private String merchantName;
 
     /** Merchant city &mdash; {@code TRAN-MERCHANT-CITY PIC X(50)}. */
+    @JdbcTypeCode(SqlTypes.CHAR)
     @Column(name = "tran_merchant_city", length = 50)
     private String merchantCity;
 
     /** Merchant ZIP &mdash; {@code TRAN-MERCHANT-ZIP PIC X(10)}. */
+    @JdbcTypeCode(SqlTypes.CHAR)
     @Column(name = "tran_merchant_zip", length = 10)
     private String merchantZip;
 
@@ -109,6 +116,7 @@ public class Transaction {
      * index, which is on {@code TRAN-PROC-TS} (see the class-level key-semantics note; review finding
      * F7).
      */
+    @JdbcTypeCode(SqlTypes.CHAR)
     @Column(name = "card_num", length = 16)
     private String cardNum;
 

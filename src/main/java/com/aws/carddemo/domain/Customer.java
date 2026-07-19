@@ -56,46 +56,57 @@ public class Customer {
     private Long custId;
 
     /** Customer first name. COBOL {@code CUST-FIRST-NAME PIC X(25)}. */
+    @JdbcTypeCode(SqlTypes.CHAR)
     @Column(name = "cust_first_name", length = 25)
     private String firstName;
 
     /** Customer middle name. COBOL {@code CUST-MIDDLE-NAME PIC X(25)}. */
+    @JdbcTypeCode(SqlTypes.CHAR)
     @Column(name = "cust_middle_name", length = 25)
     private String middleName;
 
     /** Customer last name. COBOL {@code CUST-LAST-NAME PIC X(25)}. */
+    @JdbcTypeCode(SqlTypes.CHAR)
     @Column(name = "cust_last_name", length = 25)
     private String lastName;
 
     /** Address line 1. COBOL {@code CUST-ADDR-LINE-1 PIC X(50)}. */
+    @JdbcTypeCode(SqlTypes.CHAR)
     @Column(name = "cust_addr_line_1", length = 50)
     private String addrLine1;
 
     /** Address line 2. COBOL {@code CUST-ADDR-LINE-2 PIC X(50)}. */
+    @JdbcTypeCode(SqlTypes.CHAR)
     @Column(name = "cust_addr_line_2", length = 50)
     private String addrLine2;
 
     /** Address line 3. COBOL {@code CUST-ADDR-LINE-3 PIC X(50)}. */
+    @JdbcTypeCode(SqlTypes.CHAR)
     @Column(name = "cust_addr_line_3", length = 50)
     private String addrLine3;
 
     /** Address state code. COBOL {@code CUST-ADDR-STATE-CD PIC X(02)}. */
+    @JdbcTypeCode(SqlTypes.CHAR)
     @Column(name = "cust_addr_state_cd", length = 2)
     private String addrStateCd;
 
     /** Address country code. COBOL {@code CUST-ADDR-COUNTRY-CD PIC X(03)}. */
+    @JdbcTypeCode(SqlTypes.CHAR)
     @Column(name = "cust_addr_country_cd", length = 3)
     private String addrCountryCd;
 
     /** Address ZIP code. COBOL {@code CUST-ADDR-ZIP PIC X(10)}. */
+    @JdbcTypeCode(SqlTypes.CHAR)
     @Column(name = "cust_addr_zip", length = 10)
     private String addrZip;
 
     /** Primary phone number. COBOL {@code CUST-PHONE-NUM-1 PIC X(15)}. */
+    @JdbcTypeCode(SqlTypes.CHAR)
     @Column(name = "cust_phone_num_1", length = 15)
     private String phoneNum1;
 
     /** Secondary phone number. COBOL {@code CUST-PHONE-NUM-2 PIC X(15)}. */
+    @JdbcTypeCode(SqlTypes.CHAR)
     @Column(name = "cust_phone_num_2", length = 15)
     private String phoneNum2;
 
@@ -112,6 +123,7 @@ public class Customer {
     private Long ssn;
 
     /** Government-issued identifier. COBOL {@code CUST-GOVT-ISSUED-ID PIC X(20)}. */
+    @JdbcTypeCode(SqlTypes.CHAR)
     @Column(name = "cust_govt_issued_id", length = 20)
     private String govtIssuedId;
 
@@ -124,10 +136,12 @@ public class Customer {
     private LocalDate dateOfBirth;
 
     /** Electronic funds transfer account identifier. COBOL {@code CUST-EFT-ACCOUNT-ID PIC X(10)}. */
+    @JdbcTypeCode(SqlTypes.CHAR)
     @Column(name = "cust_eft_account_id", length = 10)
     private String eftAccountId;
 
     /** Primary card holder indicator. COBOL {@code CUST-PRI-CARD-HOLDER-IND PIC X(01)}. */
+    @JdbcTypeCode(SqlTypes.CHAR)
     @Column(name = "cust_pri_card_holder_ind", length = 1)
     private String priCardHolderInd;
 

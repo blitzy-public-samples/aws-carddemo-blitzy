@@ -61,6 +61,7 @@ public class TransactionCategoryBalance {
      * Second component of the composite primary key ({@code CHAR(2)}).
      */
     @Id
+    @JdbcTypeCode(SqlTypes.CHAR)
     @Column(name = "trancat_type_cd", length = 2)
     private String typeCd;
 

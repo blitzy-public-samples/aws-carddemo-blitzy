@@ -48,6 +48,7 @@ public class TransactionCategory {
      * first component of the composite primary key {@code TRAN-CAT-KEY}.
      */
     @Id
+    @JdbcTypeCode(SqlTypes.CHAR)
     @Column(name = "tran_type_cd", length = 2)
     private String typeCd;
 
@@ -69,6 +70,7 @@ public class TransactionCategory {
      * Human-readable description of the (type, category) pair. Legacy field
      * {@code TRAN-CAT-TYPE-DESC PIC X(50)}.
      */
+    @JdbcTypeCode(SqlTypes.CHAR)
     @Column(name = "tran_cat_type_desc", length = 50)
     private String description;
 

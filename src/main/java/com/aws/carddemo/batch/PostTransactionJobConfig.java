@@ -282,7 +282,7 @@ public class PostTransactionJobConfig {
      */
     @Bean
     @StepScope
-    public PostTransactionWriter postTransactionWriter(
+    public ItemWriter<PostingOutcome> postTransactionWriter(
             @Value("#{stepExecution}") StepExecution stepExecution) {
         return new PostTransactionWriter(transactionRepository, accountRepository,
                 transactionCategoryBalanceRepository, rejectItemWriter(null, null), stepExecution);

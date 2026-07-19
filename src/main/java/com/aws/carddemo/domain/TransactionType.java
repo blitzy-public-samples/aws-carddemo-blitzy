@@ -4,6 +4,8 @@ import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
 import jakarta.persistence.Id;
 import jakarta.persistence.Table;
+import org.hibernate.annotations.JdbcTypeCode;
+import org.hibernate.type.SqlTypes;
 
 /**
  * JPA entity mapping the AWS CardDemo transaction-type reference table.
@@ -31,6 +33,7 @@ public class TransactionType {
      * <p>Maps COBOL {@code TRAN-TYPE PIC X(02)}; column {@code tran_type} (2 characters).</p>
      */
     @Id
+    @JdbcTypeCode(SqlTypes.CHAR)
     @Column(name = "tran_type", length = 2)
     private String tranType;
 
@@ -40,6 +43,7 @@ public class TransactionType {
      * <p>Maps COBOL {@code TRAN-TYPE-DESC PIC X(50)}; column {@code tran_type_desc}
      * (50 characters).</p>
      */
+    @JdbcTypeCode(SqlTypes.CHAR)
     @Column(name = "tran_type_desc", length = 50)
     private String tranTypeDesc;
 

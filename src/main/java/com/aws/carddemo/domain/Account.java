@@ -56,6 +56,7 @@ public class Account {
     private Long acctId;
 
     /** {@code ACCT-ACTIVE-STATUS PIC X(01)} — single-character active flag. */
+    @JdbcTypeCode(SqlTypes.CHAR)
     @Column(name = "acct_active_status", length = 1)
     private String activeStatus;
 
@@ -96,6 +97,7 @@ public class Account {
     private BigDecimal currCycDebit;
 
     /** {@code ACCT-ADDR-ZIP PIC X(10)} — account holder postal ZIP code. */
+    @JdbcTypeCode(SqlTypes.CHAR)
     @Column(name = "acct_addr_zip", length = 10)
     private String addrZip;
 
@@ -107,6 +109,7 @@ public class Account {
      * deliberately NOT modelled as a JPA association, mirroring the VSAM design in which no
      * enforced referential relationship existed.</p>
      */
+    @JdbcTypeCode(SqlTypes.CHAR)
     @Column(name = "acct_group_id", length = 10)
     private String groupId;
 

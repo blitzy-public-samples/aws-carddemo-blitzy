@@ -2,6 +2,8 @@ package com.aws.carddemo.dto.menu;
 
 import java.util.List;
 
+import org.springframework.stereotype.Component;
+
 /**
  * Admin-menu option list for CardDemo.
  *
@@ -36,6 +38,7 @@ import java.util.List;
  * only four rows are populated (see {@link #OPTION_COUNT}); the four seeded
  * rows are preserved here in their original order and numbering.</p>
  */
+@Component
 public final class AdminMenuOptions {
 
     /** Array capacity from COBOL {@code CDEMO-ADMIN-OPT OCCURS 9 TIMES}. */
