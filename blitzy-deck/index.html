@@ -1,0 +1,817 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>CardDemo Modernization &mdash; Executive Summary | Blitzy</title>
+  <meta name="description" content="Executive summary of the AWS CardDemo mainframe COBOL to Java 25 and Spring Boot migration, delivered by Blitzy with 100% behavioral parity.">
+  <!-- Inline empty-data-URI favicon: keeps the deck self-contained and prevents a
+       stray /favicon.ico network request (and its console 404). -->
+  <link rel="icon" href="data:,">
+
+  <!-- Pinned reveal.js core stylesheets (exact versions) -->
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/reveal.js@5.1.0/dist/reset.css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/reveal.js@5.1.0/dist/reveal.css">
+  <!-- Blitzy brand theme MUST come after reveal.css so it takes precedence -->
+  <link rel="stylesheet" href="references/blitzy-reveal-theme.css">
+
+  <!--
+    Slide-layout helpers ONLY. Every declaration references the Blitzy theme
+    custom properties (var(--blitzy-*)) defined in references/blitzy-reveal-theme.css.
+    No competing brand hex values are declared here; colors are the theme's job.
+    This block is intentionally loaded AFTER the theme so a couple of grid-column
+    modifiers can layer on top of the theme's responsive card grid.
+  -->
+  <style>
+    /* reveal.js marks the active slide section display:block with a higher-specificity
+       rule than the theme's display:flex on the hero/divider slide types, which
+       would defeat the theme's vertical centering (justify-content:center). Restore
+       flex here (layout only, no color) so those slides center as the theme intends.
+       Scoped to the three centered slide types only; content slides stay block flow. */
+    .reveal .slides > section.slide-title,
+    .reveal .slides > section.slide-closing,
+    .reveal .slides > section.slide-section { display: flex !important; }
+
+    /* Fixed-column modifiers for the theme's .blitzy-card-grid (override only the
+       track template; inherit the theme's stretch/gap/spacing so cards stay equal-height). */
+    .reveal .blitzy-card-grid.fixed-3 { grid-template-columns: repeat(3, 1fr); }
+    .reveal .blitzy-card-grid.fixed-4 { grid-template-columns: repeat(4, 1fr); }
+
+    /* Dense modifier for a two-row 8-card grid (slide 8): tighten the grid gap and
+       per-card padding so both rows plus the heading and two-line lead fit the
+       720px canvas without clipping the bottom row. Spacing only - the theme keeps
+       ownership of color, border, radius, shadow and typography. */
+    .reveal .blitzy-card-grid.is-dense { gap: 0.55em; }
+    .reveal .blitzy-card-grid.is-dense .blitzy-card { padding: 0.6em 0.9em; gap: 0.25em; }
+
+    /* Title/closing hero: small eyebrow label + tagline (theme tokens only). */
+    .reveal .eyebrow {
+      text-transform: uppercase;
+      letter-spacing: 0.24em;
+      font-size: 0.5em;
+      font-weight: 700;
+      color: var(--blitzy-primary-bright);
+    }
+    .reveal .hero-tagline {
+      color: var(--blitzy-text-muted);
+      font-size: 0.66em;
+      margin-top: 0.2em;
+    }
+
+    /* Mapping table (slide 10): icon + term cell alignment. */
+    .reveal .map-cell { display: flex; align-items: center; gap: 0.5em; }
+    .reveal .map-cell svg.lucide,
+    .reveal .map-cell [data-lucide] {
+      width: 1.05em; height: 1.05em; flex: none;
+      color: var(--blitzy-primary-bright);
+    }
+
+    /* Observability pipeline node (slide 13): the theme styles .pipeline and the
+       connector arrows; the node card itself is added here using theme tokens. */
+    .reveal .pipeline-node {
+      display: flex; flex-direction: column; align-items: center;
+      gap: 0.3em; text-align: center;
+      background: var(--blitzy-surface);
+      border: 1px solid var(--blitzy-border);
+      border-radius: var(--blitzy-radius-sm);
+      padding: 0.7em 0.8em;
+      min-width: 8.2em;
+      box-shadow: var(--blitzy-shadow-soft);
+    }
+    .reveal .pipeline-node svg.lucide,
+    .reveal .pipeline-node [data-lucide] {
+      width: 1.7em; height: 1.7em;
+      color: var(--blitzy-primary-bright);
+    }
+    .reveal .pipeline-node .pn-label {
+      font-size: 0.66em; font-weight: 600; line-height: 1.3;
+      color: var(--blitzy-text);
+    }
+
+    /* Risk matrix (slide 14): keep the icon+text cell tidy and vertically aligned. */
+    .reveal .risk-table td, .reveal .risk-table th { vertical-align: middle; }
+    .reveal .risk-cell { display: flex; align-items: flex-start; gap: 0.5em; }
+    .reveal .risk-cell svg.lucide,
+    .reveal .risk-cell [data-lucide] {
+      flex: none; margin-top: 0.08em;
+      color: var(--blitzy-primary-bright);
+    }
+
+    /* Compact metric card variant so a 4-up row + coverage meter fits the canvas. */
+    .reveal .metric-compact .blitzy-card { padding: 0.75em 0.85em; }
+    .reveal .coverage-wrap { margin-top: 0.7em; }
+
+    /* Onboarding timeline (slide 15): wrap the theme's horizontal flex timeline into
+       a compact 3-across, 2-row layout that fits the 1280x720 canvas.
+       - flex-wrap + a sub-third basis (with border-box so the theme's padding is
+         included) guarantees exactly three steps per row, then a second row.
+       - min-width:0 + overflow-wrap lets mono <code> tokens and the datasource
+         env-var name wrap instead of forcing an over-wide single 6-up row.
+       - a reduced timeline font-size shrinks every em-based dimension (padding,
+         numbered badge, icon, text) so two rows plus the heading and docs line
+         stay within the slide height.
+       Layout/sizing only (flex/wrap/basis/font-size) - all color/surface styling
+       stays in the theme. */
+    .reveal .blitzy-timeline.timeline-wrap {
+      flex-wrap: wrap;
+      gap: 0.7em;
+      font-size: 0.72em;
+    }
+    .reveal .blitzy-timeline.timeline-wrap > .blitzy-step {
+      flex: 1 1 28%;
+      min-width: 0;
+      box-sizing: border-box;
+    }
+    .reveal .blitzy-timeline.timeline-wrap .step-title,
+    .reveal .blitzy-timeline.timeline-wrap .step-desc { overflow-wrap: anywhere; }
+    .reveal .blitzy-timeline.timeline-wrap > .blitzy-step > svg.lucide,
+    .reveal .blitzy-timeline.timeline-wrap > .blitzy-step > [data-lucide] {
+      width: 1.4em; height: 1.4em;
+    }
+
+    /* Closing stat-strip items reuse .blitzy-stat; give them a comfortable min-width. */
+    .reveal .slide-closing .stat-strip .blitzy-stat { min-width: 8.5em; }
+
+    /* Accent icon shown above the big numeral on stat cards. */
+    .reveal .blitzy-stat .stat-icon {
+      color: var(--blitzy-primary-bright);
+      line-height: 0;
+      margin-bottom: 0.15em;
+    }
+    .reveal .blitzy-stat .stat-icon svg.lucide,
+    .reveal .blitzy-stat .stat-icon [data-lucide] { width: 1.5em; height: 1.5em; }
+  </style>
+</head>
+<body>
+  <div class="reveal">
+    <div class="slides">
+
+      <!-- ===================================================================
+           SLIDE 1 - TITLE
+           Visual: gradient hero (gradient-text title + gradient accent band)
+                   and a three-icon hero row.
+           =================================================================== -->
+      <section class="slide-title" data-slide-type="title">
+        <span class="eyebrow">Executive Summary</span>
+        <h1 class="blitzy-gradient-text">CardDemo Modernization</h1>
+        <p class="subtitle">Mainframe COBOL &rarr; Java 25 + Spring Boot</p>
+        <div class="accent-band" aria-hidden="true"></div>
+        <div class="icon-row" aria-hidden="true">
+          <i data-lucide="zap"></i>
+          <i data-lucide="server"></i>
+          <i data-lucide="coffee"></i>
+        </div>
+        <p class="hero-tagline">Autonomous migration by Blitzy &bull; 100% behavioral parity</p>
+        <p class="wordmark blitzy-gradient-text">Blitzy</p>
+      </section>
+
+      <!-- ===================================================================
+           SLIDE 2 - AGENDA
+           Visual: numbered chip cards, each with a Lucide icon.
+           =================================================================== -->
+      <section class="slide-agenda" data-slide-type="agenda">
+        <h2>Agenda</h2>
+        <div class="blitzy-card-grid fixed-3 is-dense">
+          <div class="blitzy-card">
+            <span class="blitzy-chip">01</span>
+            <div class="card-icon"><i data-lucide="help-circle"></i></div>
+            <div class="card-title">Why modernize</div>
+            <div class="card-desc">The case for moving off the mainframe</div>
+          </div>
+          <div class="blitzy-card">
+            <span class="blitzy-chip">02</span>
+            <div class="card-icon"><i data-lucide="landmark"></i></div>
+            <div class="card-title">The legacy system</div>
+            <div class="card-desc">What COBOL, CICS and VSAM delivered</div>
+          </div>
+          <div class="blitzy-card">
+            <span class="blitzy-chip">03</span>
+            <div class="card-icon"><i data-lucide="layout-template"></i></div>
+            <div class="card-title">The target architecture</div>
+            <div class="card-desc">Idiomatic Java 25 and Spring Boot</div>
+          </div>
+          <div class="blitzy-card">
+            <span class="blitzy-chip">04</span>
+            <div class="card-icon"><i data-lucide="shield-check"></i></div>
+            <div class="card-title">How parity is guaranteed</div>
+            <div class="card-desc">Behavior preserved, one construct at a time</div>
+          </div>
+          <div class="blitzy-card">
+            <span class="blitzy-chip">05</span>
+            <div class="card-icon"><i data-lucide="gauge"></i></div>
+            <div class="card-title">Quality, observability &amp; risks</div>
+            <div class="card-desc">Gates met and risks flagged openly</div>
+          </div>
+          <div class="blitzy-card">
+            <span class="blitzy-chip">06</span>
+            <div class="card-icon"><i data-lucide="rocket"></i></div>
+            <div class="card-title">Onboarding &amp; next steps</div>
+            <div class="card-desc">From clean machine to running app</div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ===================================================================
+           SLIDE 3 - SECTION DIVIDER (01)
+           Visual: oversized Lucide icon + large gradient numeral.
+           =================================================================== -->
+      <section class="slide-section" data-slide-type="section">
+        <div class="section-icon" aria-hidden="true"><i data-lucide="help-circle"></i></div>
+        <div class="section-number">01</div>
+        <h2 class="section-title">Why Modernize</h2>
+        <p class="section-desc">Reduce mainframe risk and cost and unlock modern tooling &mdash; without changing behavior.</p>
+      </section>
+
+      <!-- ===================================================================
+           SLIDE 4 - CONTENT: Business context
+           Visual: row of stat cards with big numbers and Lucide icons.
+           =================================================================== -->
+      <section class="slide-content" data-slide-type="content">
+        <h2>What Is CardDemo?</h2>
+        <p class="content-lead">A credit-card management demo: accounts, cards, customers, transactions, bill pay, reporting and user administration &mdash; migrated whole, in a single phase.</p>
+        <div class="blitzy-card-grid fixed-4">
+          <div class="blitzy-stat">
+            <div class="stat-icon" aria-hidden="true"><i data-lucide="files"></i></div>
+            <span class="blitzy-stat-num">148</span>
+            <span class="blitzy-stat-label">source files migrated</span>
+          </div>
+          <div class="blitzy-stat">
+            <div class="stat-icon" aria-hidden="true"><i data-lucide="file-code"></i></div>
+            <span class="blitzy-stat-num">28</span>
+            <span class="blitzy-stat-label">COBOL programs</span>
+          </div>
+          <div class="blitzy-stat">
+            <div class="stat-icon" aria-hidden="true"><i data-lucide="monitor"></i></div>
+            <span class="blitzy-stat-num">18</span>
+            <span class="blitzy-stat-label">online transactions</span>
+          </div>
+          <div class="blitzy-stat">
+            <div class="stat-icon" aria-hidden="true"><i data-lucide="calendar-clock"></i></div>
+            <span class="blitzy-stat-num">10</span>
+            <span class="blitzy-stat-label">batch jobs</span>
+          </div>
+        </div>
+        <p class="muted mt-2">Business behavior must be preserved exactly &mdash; no new features, no regressions.</p>
+      </section>
+
+      <!-- ===================================================================
+           SLIDE 5 - CONTENT: Legacy stack
+           Visual: icon card grid of the legacy technologies with counts.
+           =================================================================== -->
+      <section class="slide-content" data-slide-type="content">
+        <h2>The Legacy Stack</h2>
+        <p class="content-lead">A classic IBM z/OS three-tier application &mdash; proven, but increasingly costly and scarce in skills.</p>
+        <div class="blitzy-card-grid fixed-3">
+          <div class="blitzy-card">
+            <div class="card-icon"><i data-lucide="file-code"></i></div>
+            <div class="card-title">COBOL</div>
+            <div class="card-desc">28 programs &mdash; 18 online, 10 batch</div>
+          </div>
+          <div class="blitzy-card">
+            <div class="card-icon"><i data-lucide="monitor"></i></div>
+            <div class="card-title">CICS online</div>
+            <div class="card-desc">Pseudo-conversational 3270 transactions</div>
+          </div>
+          <div class="blitzy-card">
+            <div class="card-icon"><i data-lucide="database"></i></div>
+            <div class="card-title">VSAM</div>
+            <div class="card-desc">8 indexed KSDS files with alternate indexes</div>
+          </div>
+          <div class="blitzy-card">
+            <div class="card-icon"><i data-lucide="calendar-clock"></i></div>
+            <div class="card-title">JCL / JES2 batch</div>
+            <div class="card-desc">29 jobs and 2 procedures</div>
+          </div>
+          <div class="blitzy-card">
+            <div class="card-icon"><i data-lucide="layout-grid"></i></div>
+            <div class="card-title">BMS 3270 screens</div>
+            <div class="card-desc">17 maps on a 24&times;80 character grid</div>
+          </div>
+          <div class="blitzy-card">
+            <div class="card-icon"><i data-lucide="lock"></i></div>
+            <div class="card-title">RACF security</div>
+            <div class="card-desc">Sign-on plus dataset authorization</div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ===================================================================
+           SLIDE 6 - CONTENT: BEFORE architecture (Mermaid)
+           Visual: Mermaid graph of the four z/OS tiers. Title above, legend below.
+           =================================================================== -->
+      <section class="slide-content" data-slide-type="content">
+        <p class="diagram-title">Before &mdash; AWS CardDemo z/OS Mainframe Architecture</p>
+        <pre class="mermaid">
+graph TD
+  subgraph PRES["Presentation - 3270 / BMS"]
+    T1["3270 Terminal 24x80"]
+    BMS["17 BMS Maps"]
+  end
+  subgraph APP["Application - CICS Region"]
+    ONL["18 Online COBOL Programs"]
+    CA["COMMAREA COCOM01Y"]
+  end
+  subgraph BAT["Batch - JES2 / JCL"]
+    JCL["29 JCL Jobs + 2 PROCs"]
+    BATP["10 Batch COBOL Programs"]
+  end
+  subgraph DAT["Data Tier"]
+    VSAM["VSAM KSDS (8 files)"]
+    SEQ["Sequential DALYTRAN / DALYREJS"]
+  end
+  SEC["RACF + App Signon"]
+  T1 --> BMS --> ONL
+  ONL <--> CA
+  ONL -->|"EXEC CICS READ/WRITE"| VSAM
+  JCL --> BATP
+  BATP -->|"FILE STATUS I/O"| VSAM
+  BATP --> SEQ
+  SEC -.->|"authorize"| ONL
+  SEC -.->|"protect datasets"| VSAM
+        </pre>
+        <p class="diagram-legend">Solid = runtime data / control flow &bull; Dashed = security / authorization</p>
+      </section>
+
+      <!-- ===================================================================
+           SLIDE 7 - SECTION DIVIDER (02)
+           Visual: oversized Lucide icon + large gradient numeral.
+           =================================================================== -->
+      <section class="slide-section" data-slide-type="section">
+        <div class="section-icon" aria-hidden="true"><i data-lucide="layout-template"></i></div>
+        <div class="section-number">02</div>
+        <h2 class="section-title">The Solution</h2>
+        <p class="section-desc">Idiomatic Spring Boot &mdash; the same behavior, expressed in a modern, locally testable stack.</p>
+      </section>
+
+      <!-- ===================================================================
+           SLIDE 8 - CONTENT: Target stack
+           Visual: icon card grid of the target technologies with pinned versions.
+           =================================================================== -->
+      <section class="slide-content" data-slide-type="content">
+        <h2>The Target Stack</h2>
+        <p class="content-lead">Same repository; the original COBOL is retained read-only under <code>legacy/</code> for reference and traceability.</p>
+        <div class="blitzy-card-grid fixed-4 is-dense">
+          <div class="blitzy-card">
+            <div class="card-icon"><i data-lucide="coffee"></i></div>
+            <div class="card-title">Java 25 LTS</div>
+            <div class="card-desc">Language and runtime</div>
+          </div>
+          <div class="blitzy-card">
+            <div class="card-icon"><i data-lucide="leaf"></i></div>
+            <div class="card-title">Spring Boot 3.5.16</div>
+            <div class="card-desc">Application framework</div>
+          </div>
+          <div class="blitzy-card">
+            <div class="card-icon"><i data-lucide="database"></i></div>
+            <div class="card-title">PostgreSQL 18.4</div>
+            <div class="card-desc">Relational store (floor 16)</div>
+          </div>
+          <div class="blitzy-card">
+            <div class="card-icon"><i data-lucide="layers"></i></div>
+            <div class="card-title">Flyway</div>
+            <div class="card-desc">Schema and seed migrations</div>
+          </div>
+          <div class="blitzy-card">
+            <div class="card-icon"><i data-lucide="workflow"></i></div>
+            <div class="card-title">Spring Batch</div>
+            <div class="card-desc">Chunked batch jobs</div>
+          </div>
+          <div class="blitzy-card">
+            <div class="card-icon"><i data-lucide="shield"></i></div>
+            <div class="card-title">Spring Security</div>
+            <div class="card-desc">Role-based authorization</div>
+          </div>
+          <div class="blitzy-card">
+            <div class="card-icon"><i data-lucide="layout"></i></div>
+            <div class="card-title">Thymeleaf</div>
+            <div class="card-desc">Server-rendered screens</div>
+          </div>
+          <div class="blitzy-card">
+            <div class="card-icon"><i data-lucide="package"></i></div>
+            <div class="card-title">Maven 3.9.9</div>
+            <div class="card-desc">Build via wrapper</div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ===================================================================
+           SLIDE 9 - CONTENT: AFTER architecture (Mermaid)
+           Visual: Mermaid graph of the Spring layers. Title above, legend below.
+           =================================================================== -->
+      <section class="slide-content" data-slide-type="content">
+        <p class="diagram-title">After &mdash; Java 25 + Spring Boot Layered Architecture</p>
+        <pre class="mermaid">
+graph TD
+  subgraph WEB["Web - Spring MVC"]
+    BR["Browser"]
+    CTRL["Controllers (18 routes)"]
+    TPL["Thymeleaf Screens"]
+  end
+  subgraph SVC["Service Tier"]
+    SVCS["@Service Classes"]
+    CTX["CardDemoContext (HttpSession)"]
+  end
+  subgraph BJOB["Batch - Spring Batch"]
+    JOBS["Spring Batch Jobs"]
+  end
+  subgraph PER["Persistence Tier"]
+    REPOS["JPA Repositories"]
+    PG["PostgreSQL 18 (Flyway)"]
+    FILES["FlatFile Reader / Writer"]
+  end
+  SECX["Spring Security Roles"]
+  OBS["Observability Stack"]
+  BR --> CTRL --> TPL
+  CTRL --> SVCS
+  SVCS <--> CTX
+  SVCS --> REPOS
+  JOBS --> REPOS
+  JOBS --> FILES
+  REPOS --> PG
+  SECX -.->|"authenticate"| CTRL
+  OBS -.->|"instrument"| SVCS
+  OBS -.->|"instrument"| JOBS
+        </pre>
+        <p class="diagram-legend">Solid = runtime data / control flow &bull; Dashed = cross-cutting concerns: security, observability</p>
+      </section>
+
+      <!-- ===================================================================
+           SLIDE 10 - COMPARISON: Deterministic mapping
+           Visual: two-column mapping table with an arrow column and Lucide icons.
+           =================================================================== -->
+      <section class="slide-comparison" data-slide-type="comparison">
+        <h2>Deterministic Mapping</h2>
+        <p class="content-lead">Every construct maps one-for-one &mdash; enabling 100% traceability.</p>
+        <table class="blitzy-table">
+          <thead>
+            <tr>
+              <th>COBOL / z/OS</th>
+              <th class="arrow">to</th>
+              <th>Java / Spring Boot</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><span class="map-cell"><i data-lucide="file-code"></i> Copybook 01 record</span></td>
+              <td class="arrow" aria-hidden="true"><i data-lucide="arrow-right"></i></td>
+              <td>JPA <code>@Entity</code> (BigDecimal for money)</td>
+            </tr>
+            <tr>
+              <td><span class="map-cell"><i data-lucide="code"></i> PARAGRAPH / SECTION</span></td>
+              <td class="arrow" aria-hidden="true"><i data-lucide="arrow-right"></i></td>
+              <td>Service method (control flow preserved)</td>
+            </tr>
+            <tr>
+              <td><span class="map-cell"><i data-lucide="database"></i> VSAM FILE SECTION</span></td>
+              <td class="arrow" aria-hidden="true"><i data-lucide="arrow-right"></i></td>
+              <td>Spring Data repository</td>
+            </tr>
+            <tr>
+              <td><span class="map-cell"><i data-lucide="calendar-clock"></i> JCL job</span></td>
+              <td class="arrow" aria-hidden="true"><i data-lucide="arrow-right"></i></td>
+              <td>Spring Batch job</td>
+            </tr>
+            <tr>
+              <td><span class="map-cell"><i data-lucide="monitor"></i> CICS transaction id</span></td>
+              <td class="arrow" aria-hidden="true"><i data-lucide="arrow-right"></i></td>
+              <td>Controller route</td>
+            </tr>
+            <tr>
+              <td><span class="map-cell"><i data-lucide="layout-grid"></i> BMS map</span></td>
+              <td class="arrow" aria-hidden="true"><i data-lucide="arrow-right"></i></td>
+              <td>Thymeleaf template</td>
+            </tr>
+            <tr>
+              <td><span class="map-cell"><i data-lucide="lock"></i> Sign-on + RACF</span></td>
+              <td class="arrow" aria-hidden="true"><i data-lucide="arrow-right"></i></td>
+              <td>Spring Security roles</td>
+            </tr>
+            <tr>
+              <td><span class="map-cell"><i data-lucide="alert-triangle"></i> FILE STATUS codes</span></td>
+              <td class="arrow" aria-hidden="true"><i data-lucide="arrow-right"></i></td>
+              <td>Typed exception hierarchy</td>
+            </tr>
+          </tbody>
+        </table>
+      </section>
+
+      <!-- ===================================================================
+           SLIDE 11 - CONTENT: Parity guarantees
+           Visual: icon card grid of parity mechanisms.
+           =================================================================== -->
+      <section class="slide-content" data-slide-type="content">
+        <h2>Parity Guarantees</h2>
+        <p class="content-lead">How identical behavior is engineered, not assumed.</p>
+        <div class="blitzy-card-grid fixed-3">
+          <div class="blitzy-card">
+            <div class="card-icon"><i data-lucide="calculator"></i></div>
+            <div class="card-title">Decimal fidelity</div>
+            <div class="card-desc">BigDecimal for money &mdash; no floating point; rounding matched per statement</div>
+          </div>
+          <div class="blitzy-card">
+            <div class="card-icon"><i data-lucide="ruler"></i></div>
+            <div class="card-title">Byte-level layouts</div>
+            <div class="card-desc">Flat files preserved &mdash; DALYTRAN 350B, DALYREJS 430B</div>
+          </div>
+          <div class="blitzy-card">
+            <div class="card-icon"><i data-lucide="key"></i></div>
+            <div class="card-title">Keys preserved</div>
+            <div class="card-desc">VSAM primary keys and alternate indexes as derived queries</div>
+          </div>
+          <div class="blitzy-card">
+            <div class="card-icon"><i data-lucide="history"></i></div>
+            <div class="card-title">Session context</div>
+            <div class="card-desc">COMMAREA becomes a server-side session object</div>
+          </div>
+          <div class="blitzy-card">
+            <div class="card-icon"><i data-lucide="alert-triangle"></i></div>
+            <div class="card-title">Typed exceptions</div>
+            <div class="card-desc">FILE STATUS and CICS RESP mapped to one hierarchy</div>
+          </div>
+          <div class="blitzy-card">
+            <div class="card-icon"><i data-lucide="git-compare"></i></div>
+            <div class="card-title">100% traceability</div>
+            <div class="card-desc">Every construct recorded in the traceability matrix</div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ===================================================================
+           SLIDE 12 - CONTENT: Quality &amp; validation
+           Visual: metric cards + a coverage progress meter.
+           =================================================================== -->
+      <section class="slide-content" data-slide-type="content">
+        <h2>Quality &amp; Validation</h2>
+        <p class="content-lead">Validated locally &mdash; no mainframe required.</p>
+        <div class="blitzy-card-grid fixed-4 metric-compact">
+          <div class="blitzy-card">
+            <div class="card-icon"><i data-lucide="gauge"></i></div>
+            <div class="card-title">&ge;80% line coverage</div>
+            <div class="card-desc">Enforced by the JaCoCo gate</div>
+          </div>
+          <div class="blitzy-card">
+            <div class="card-icon"><i data-lucide="shield-check"></i></div>
+            <div class="card-title">OWASP clean</div>
+            <div class="card-desc">Zero critical / high CVEs</div>
+          </div>
+          <div class="blitzy-card">
+            <div class="card-icon"><i data-lucide="check-circle"></i></div>
+            <div class="card-title">Zero-warning build</div>
+            <div class="card-desc">Compiles cleanly end to end</div>
+          </div>
+          <div class="blitzy-card">
+            <div class="card-icon"><i data-lucide="flask-conical"></i></div>
+            <div class="card-title">JUnit 5 + Testcontainers</div>
+            <div class="card-desc">Unit, integration and parity tests</div>
+          </div>
+        </div>
+        <div class="coverage-wrap">
+          <div class="blitzy-meter" role="img" aria-label="Line coverage at or above 80 percent">
+            <span class="blitzy-meter-fill"></span>
+          </div>
+          <span class="blitzy-meter-label">JaCoCo line-coverage gate: &ge;80%</span>
+        </div>
+      </section>
+
+      <!-- ===================================================================
+           SLIDE 13 - CONTENT: Observability &amp; operations
+           Visual: horizontal icon pipeline of the observability chain.
+           =================================================================== -->
+      <section class="slide-content" data-slide-type="content">
+        <h2>Observability &amp; Operations</h2>
+        <p class="content-lead">Operational readiness ships with the migration &mdash; a non-functional requirement, not a business feature.</p>
+        <div class="pipeline">
+          <div class="pipeline-node">
+            <i data-lucide="file-text"></i>
+            <span class="pn-label">Structured JSON logging + correlation IDs</span>
+          </div>
+          <span class="pipeline-arrow" aria-hidden="true"><i data-lucide="chevron-right"></i></span>
+          <div class="pipeline-node">
+            <i data-lucide="route"></i>
+            <span class="pn-label">Micrometer distributed tracing</span>
+          </div>
+          <span class="pipeline-arrow" aria-hidden="true"><i data-lucide="chevron-right"></i></span>
+          <div class="pipeline-node">
+            <i data-lucide="activity"></i>
+            <span class="pn-label">Prometheus metrics endpoint</span>
+          </div>
+          <span class="pipeline-arrow" aria-hidden="true"><i data-lucide="chevron-right"></i></span>
+          <div class="pipeline-node">
+            <i data-lucide="heart-pulse"></i>
+            <span class="pn-label">Actuator health / readiness</span>
+          </div>
+          <span class="pipeline-arrow" aria-hidden="true"><i data-lucide="chevron-right"></i></span>
+          <div class="pipeline-node">
+            <i data-lucide="bar-chart-3"></i>
+            <span class="pn-label">Grafana dashboard template</span>
+          </div>
+        </div>
+      </section>
+
+      <!-- ===================================================================
+           SLIDE 14 - CONTENT: Risks &amp; mitigations (MANDATORY risk slide)
+           Visual: risk matrix / severity-chip table with Lucide alert icons.
+           =================================================================== -->
+      <section class="slide-content" data-slide-type="content">
+        <h2>Risks &amp; Mitigations</h2>
+        <p class="content-lead">Flagged openly, each with a mitigation or suggested next step.</p>
+        <table class="blitzy-table risk-table">
+          <thead>
+            <tr>
+              <th>Risk</th>
+              <th>Severity</th>
+              <th>Mitigation / next step</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>
+                <span class="risk-cell"><i data-lucide="alert-triangle"></i>
+                  <span><strong>Spring Boot 3.5 OSS end-of-life 2026-06-30.</strong> Chosen to honor &ldquo;Spring Boot 3.x latest stable&rdquo; (3.5.16, the final 3.x). An EOL branch gets no future CVE patches, which interacts with the OWASP zero critical/high gate.</span>
+                </span>
+              </td>
+              <td><span class="sev-med">Elevated</span></td>
+              <td>Upgrade to Spring Boot 4.x &mdash; suggested next task.</td>
+            </tr>
+            <tr>
+              <td>
+                <span class="risk-cell"><i data-lucide="shield-alert"></i>
+                  <span><strong>Cleartext-password parity.</strong> The legacy password-comparison behavior is preserved for functional parity; hardcoded credentials are removed in favor of externalized configuration (environment variables).</span>
+                </span>
+              </td>
+              <td><span class="sev-med">Elevated</span></td>
+              <td>Introduce BCrypt password hashing &mdash; suggested next task.</td>
+            </tr>
+            <tr>
+              <td>
+                <span class="risk-cell"><i data-lucide="info"></i>
+                  <span><strong>Scope discipline &mdash; no feature expansion.</strong> MQ/JMS, Db2, IMS, FTP/SFTP, REST/SOAP APIs and a CI/CD pipeline are intentionally out of scope.</span>
+                </span>
+              </td>
+              <td><span class="sev-low">By design</span></td>
+              <td>Listed as future work &mdash; never presented as delivered.</td>
+            </tr>
+          </tbody>
+        </table>
+      </section>
+
+      <!-- ===================================================================
+           SLIDE 15 - CONTENT: Onboarding &amp; next steps
+           Visual: numbered timeline / step flow (auto-numbered by the theme).
+           =================================================================== -->
+      <section class="slide-content" data-slide-type="content">
+        <h2>Onboarding &amp; Next Steps</h2>
+        <p class="content-lead">From a clean machine to a running, modifiable application.</p>
+        <div class="blitzy-timeline timeline-wrap">
+          <div class="blitzy-step">
+            <i data-lucide="download"></i>
+            <span class="step-title">Install prerequisites</span>
+            <span class="step-desc">JDK 25 and Docker / PostgreSQL</span>
+          </div>
+          <div class="blitzy-step">
+            <i data-lucide="terminal"></i>
+            <span class="step-title"><code>./mvnw clean verify</code></span>
+            <span class="step-desc">Build, tests and quality gates</span>
+          </div>
+          <div class="blitzy-step">
+            <i data-lucide="play"></i>
+            <span class="step-title"><code>./mvnw spring-boot:run</code></span>
+            <span class="step-desc">Start the application</span>
+          </div>
+          <div class="blitzy-step">
+            <i data-lucide="key-round"></i>
+            <span class="step-title">Set datasource env vars</span>
+            <span class="step-desc">SPRING_DATASOURCE_URL / USERNAME / PASSWORD</span>
+          </div>
+          <div class="blitzy-step">
+            <i data-lucide="database"></i>
+            <span class="step-title">Flyway on startup</span>
+            <span class="step-desc">Schema and seed created automatically</span>
+          </div>
+          <div class="blitzy-step">
+            <i data-lucide="user-check"></i>
+            <span class="step-title">Demo logins</span>
+            <span class="step-desc">ADMIN001 / USER0001 from seed data</span>
+          </div>
+        </div>
+        <p class="muted mt-2"><strong>Docs:</strong> <code>README.md</code>, <code>docs/onboarding.md</code>, <code>docs/decision-log.md</code>, <code>docs/traceability-matrix.md</code>, <code>docs/architecture/</code>.
+        &nbsp;&bull;&nbsp; <strong>Suggested next tasks:</strong> Spring Boot 4.x upgrade, BCrypt hashing, CI/CD pipeline.</p>
+      </section>
+
+      <!-- ===================================================================
+           SLIDE 16 - CLOSING
+           Visual: gradient hero recap + wordmark + compact stat strip.
+           =================================================================== -->
+      <section class="slide-closing" data-slide-type="closing">
+        <div class="icon-row" aria-hidden="true"><i data-lucide="badge-check"></i></div>
+        <h1 class="blitzy-gradient-text">Migration Complete</h1>
+        <p class="subtitle">Behavior preserved &mdash; stack modernized.</p>
+        <div class="accent-band" aria-hidden="true"></div>
+        <div class="stat-strip">
+          <div class="blitzy-stat">
+            <span class="blitzy-stat-num">148</span>
+            <span class="blitzy-stat-label">files migrated</span>
+          </div>
+          <div class="blitzy-stat">
+            <span class="blitzy-stat-num">28</span>
+            <span class="blitzy-stat-label">programs</span>
+          </div>
+          <div class="blitzy-stat">
+            <span class="blitzy-stat-num">100%</span>
+            <span class="blitzy-stat-label">behavioral parity</span>
+          </div>
+          <div class="blitzy-stat">
+            <span class="blitzy-stat-num">&ge;80%</span>
+            <span class="blitzy-stat-label">line coverage</span>
+          </div>
+        </div>
+        <p class="hero-tagline">COBOL retained under <code>legacy/</code> for full traceability.</p>
+        <p class="wordmark blitzy-gradient-text">Powered by Blitzy</p>
+      </section>
+
+    </div>
+  </div>
+
+  <!-- Pinned presentation libraries (exact versions; UMD/global builds for file:// robustness) -->
+  <script src="https://cdn.jsdelivr.net/npm/reveal.js@5.1.0/dist/reveal.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/mermaid@11.4.0/dist/mermaid.min.js"></script>
+  <script src="https://unpkg.com/lucide@0.460.0"></script>
+  <script>
+    /* =====================================================================
+       Init: Mermaid (manual render), Reveal, and Lucide icons.
+       Mermaid uses startOnLoad:false and is rendered per-slide so diagrams on
+       initially-hidden slides are measured while visible (avoids the tiny-SVG
+       bug). themeVariables mirror the Blitzy dark palette declared in the theme.
+       ===================================================================== */
+    mermaid.initialize({
+      startOnLoad: false,
+      theme: 'base',
+      securityLevel: 'loose',
+      /* Force SVG <text> labels globally (Mermaid 11 honors the top-level flag). */
+      htmlLabels: false,
+      themeVariables: {
+        background: '#0A0A0F',
+        primaryColor: '#1C1930',
+        primaryBorderColor: '#7C5CFC',
+        primaryTextColor: '#F4F4FB',
+        secondaryColor: '#141221',
+        tertiaryColor: '#141221',
+        lineColor: '#9D7BFF',
+        clusterBkg: '#141221',
+        clusterBorder: '#2A2740',
+        fontFamily: 'Inter, system-ui, sans-serif'
+      },
+      /* htmlLabels:false renders node/edge labels as SVG <text> sized by the
+         browser's actual glyph metrics, avoiding the foreignObject clipping that
+         htmlLabels:true exhibits when the applied font is wider than Mermaid's
+         internal measurement. All labels here are single-line plain text. */
+      flowchart: { useMaxWidth: true, htmlLabels: false, curve: 'basis' }
+    });
+
+    /* Render only the diagrams on the given slide, then re-fit the layout. */
+    async function renderMermaidIn(slide) {
+      if (!slide) return;
+      const nodes = slide.querySelectorAll('.mermaid:not([data-processed])');
+      if (nodes.length) {
+        try {
+          await mermaid.run({ nodes: [...nodes] });
+        } catch (err) {
+          console.error('[deck] Mermaid render error:', err);
+        }
+        if (window.Reveal) Reveal.layout();
+      }
+    }
+
+    /* Resolve any <i data-lucide> placeholders into inline SVGs. */
+    function refreshIcons() {
+      if (window.lucide && typeof lucide.createIcons === 'function') {
+        lucide.createIcons();
+      }
+    }
+
+    Reveal.initialize({
+      width: 1280,
+      height: 720,
+      margin: 0.04,
+      hash: true,
+      controls: true,
+      progress: true,
+      center: true,
+      slideNumber: 'c/t',
+      transition: 'slide'
+    }).then(() => {
+      refreshIcons();
+      renderMermaidIn(Reveal.getCurrentSlide());
+    });
+
+    /* Render diagrams + re-resolve icons whenever a new slide is shown. */
+    Reveal.on('slidechanged', (event) => {
+      renderMermaidIn(event.currentSlide);
+      refreshIcons();
+    });
+
+    /* Also resolve static icons as soon as the DOM is ready. */
+    document.addEventListener('DOMContentLoaded', refreshIcons);
+  </script>
+</body>
+</html>
