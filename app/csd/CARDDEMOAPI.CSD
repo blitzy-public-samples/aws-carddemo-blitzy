@@ -3,17 +3,10 @@
 * New, parallel, read-only HTTP/JSON layer.  Design rationale and the
 * decision record live in docs/decision-log.md (not in this member).
 *
-* M24 network exposure: the HTTP listener binds to loopback only
-* (IPADDRESS 127.0.0.1).  It is a PLAINTEXT listener (SSL NO); it must
-* NOT be exposed directly to distributed clients.  Distributed access
-* has to be fronted by a TLS-terminating reverse proxy or an operator-
-* configured secure interface.  This member does not claim production
-* transport security - TLS/keyring is a documented follow-up.
-* M12 port: 3001 is the single authoritative listener port; the
-* run-api-tests.sh default is aligned to 3001.
-* I1 capacity: BACKLOG(5) and the COTRSVCC full-TRANSACT browse (cost
-* is O(transactions x cards)) are dev/test-sized.  Monitor, justify
-* and load-test with realistic data before scaling.
+* Security: the listener binds loopback-only and is PLAINTEXT (SSL NO);
+* front it with a TLS-terminating proxy - never expose it directly.
+* Port 3001/MAXDATALEN, transport posture, and capacity/BACKLOG
+* rationale: see docs/decision-log.md (D7, D17).
 *----------------------------------------------------------------------
  DEFINE TCPIPSERVICE(CDAPISVC) GROUP(CDEMOAPI)
  DESCRIPTION(CARDDEMO REST/JSON API HTTP LISTENER - CWS)
@@ -28,11 +21,9 @@
         TCPIPSERVICE(CDAPISVC) TRANSACTION(CAPI)
         PROGRAM(COAPIRTR) ANALYZER(NO) REDIRECTTYPE(NONE)
 *----------------------------------------------------------------------
-* C6 CWS wiring: the alias transaction runs the CICS-supplied web
-* attach program DFHWBA, which links the URIMAP PROGRAM (COAPIRTR).
-* C3 confidentiality: STORAGECLEAR(YES) clears freed task storage;
-* DUMP(NO)/TRACE(NO) suppress capture of token/PAN/credential bytes;
-* CONFDATA(YES) marks task data confidential for any residual trace.
+* Alias runs the CICS web-attach program DFHWBA, which links COAPIRTR.
+* Confidentiality attributes (STORAGECLEAR/DUMP/TRACE/CONFDATA)
+* rationale: see docs/decision-log.md (D16).
 *----------------------------------------------------------------------
  DEFINE TRANSACTION(CAPI) GROUP(CDEMOAPI)
  DESCRIPTION(CARDDEMO REST/JSON API ALIAS TRANSACTION)
@@ -45,9 +36,8 @@
         OTSTIMEOUT(NO) ACTION(BACKOUT) WAIT(YES) WAITTIME(0,0,0)
         RESSEC(NO) CMDSEC(NO)
 *----------------------------------------------------------------------
-* C3 confidentiality: every API program runs with CEDF(NO) so the
-* Execution Diagnostic Facility cannot display token/PAN/credential
-* working storage in flight.
+* Every API program runs CEDF(NO) for confidentiality; rationale:
+* see docs/decision-log.md (D16).
 *----------------------------------------------------------------------
  DEFINE PROGRAM(COAPIRTR) GROUP(CDEMOAPI)
  DESCRIPTION(REST API ROUTER / FRONT DOOR)
@@ -92,10 +82,10 @@
         EXECKEY(USER) CONCURRENCY(QUASIRENT) API(CICSAPI) DYNAMIC(NO)
         EXECUTIONSET(FULLAPI) JVM(NO)
 *----------------------------------------------------------------------
-* I2 build/linkage: COJSONUC is statically CALLed (compiled NODYNAM)
-* by the router and services.  After changing COJSONUC its callers
-* must be re-link-edited; a NEWCOPY of COJSONUC alone will not refresh
-* statically-bound callers.  The API build JCL performs the relink.
+* COJSONUC is statically bound (NODYNAM) into the router COAPIRTR:
+* after changing it, relink its caller via the API build JCL - a
+* COJSONUC-only NEWCOPY will not refresh statically-bound callers.
+* Linkage rationale: see docs/decision-log.md (D13).
 *----------------------------------------------------------------------
  DEFINE PROGRAM(COJSONUC) GROUP(CDEMOAPI)
  DESCRIPTION(REST API JSON SERIALIZER SUBPROGRAM)
@@ -104,29 +94,23 @@
         EXECKEY(USER) CONCURRENCY(QUASIRENT) API(CICSAPI) DYNAMIC(NO)
         EXECUTIONSET(FULLAPI) JVM(NO)
 *----------------------------------------------------------------------
-* M1 token lifecycle: bound the MAIN token-registry TSQs so expired
-* entries cannot accumulate.  COAPISEC names token queues with the
-* 'AT' prefix.  EXPIRYINT(20) lets CICS reclaim any token queue not
-* referenced for 20 minutes (token lifetime is 15 minutes).  MAIN +
-* RECOVERY(NO) are prerequisites for EXPIRYINT.
+* Token TSQ model: COAPISEC uses the 'AT' prefix; EXPIRYINT(20)
+* reclaims idle token queues (15-min token life); MAIN + RECOVERY(NO)
+* are prerequisites for EXPIRYINT.  Rationale: docs/decision-log.md
+* (D2).
 *----------------------------------------------------------------------
  DEFINE TSMODEL(CDAPITSM) GROUP(CDEMOAPI)
  DESCRIPTION(API TOKEN REGISTRY - BOUNDED MAIN TSQ LIFECYCLE)
         PREFIX(AT) LOCATION(MAIN) RECOVERY(NO) EXPIRYINT(20)
 *----------------------------------------------------------------------
-* C2 legacy continuity: the eight read-only VSAM FILE/AIX resources
-* (ACCTDAT, CARDAIX, CARDDAT, CCXREF, CUSTDAT, CXACAIX, TRANSACT and
-* USRSEC) are already installed region-wide by the legacy CARDDEMO
-* group and are intentionally NOT redefined here.  Redefining them
-* (even READ-only) would replace the active write-capable definitions
-* the 3270 flows depend on.  API read-only behavior is enforced inside
-* the service programs (READ/STARTBR/READNEXT/ENDBR only) and by
-* resource security, never by re-declaring global file resources.
+* No FILE/AIX resources are defined here: the CARDDEMO files are shared
+* as installed by the base group and are never redefined.  Read-only is
+* enforced in the service programs (READ/STARTBR/READNEXT/ENDBR only)
+* and by security.  Rationale/risk: see docs/decision-log.md (D14).
 *----------------------------------------------------------------------
-* M23 test harness: register the API test drivers so they install and
-* run as machine-observable CICS transactions (each driver reports via
-* RETURN-CODE / status).  Test-only; NOT part of the runtime ingress
-* chain.  Invoke locally after install: TAUT TACC TCUS TCRD TXRF TTRN.
+* Test drivers (test-only, not in the runtime ingress chain).  Invoke
+* after install: TAUT TACC TCUS TCRD TXRF TTRN.  Build/deploy rationale:
+* see docs/decision-log.md (D18).
 *----------------------------------------------------------------------
  DEFINE PROGRAM(TSTAUTH) GROUP(CDEMOAPI)
  DESCRIPTION(API TEST DRIVER - SIGNON / TOKEN)

@@ -82,15 +82,23 @@ The new group contains:
   `SSL(NO)`, and `AUTHENTICATE(NO)`.
 - `URIMAP(CDAPIURI)` for `/carddemo/api/v1/*`.
 - Alias `TRANSACTION(CAPI)` and router `PROGRAM(COAPIRTR)`.
-- Eight API PROGRAM definitions.
-- Read-only FILE definitions for `ACCTDAT`, `CARDAIX`, `CARDDAT`, `CCXREF`,
-  `CUSTDAT`, `CXACAIX`, `TRANSACT`, and `USRSEC`, each with
-  `READ(YES) BROWSE(YES) ADD(NO) UPDATE(NO) DELETE(NO)`.
+- Eight API PROGRAM definitions (the router, the security service, the five
+  inquiry services, and the `COJSONUC` serializer).
+- `TSMODEL(CDAPITSM)` backing the bearer-token temporary-storage queue.
+- Six test-driver PROGRAM definitions (`TST*`) and their transactions
+  (`TAUT`, `TACC`, `TCUS`, `TCRD`, `TXRF`, `TTRN`).
 
-Review `SYSPRINT` for rejected definitions and verify the install command in
-`CMDOUT`. If local controls do not permit `CEDA` through the console
-interface, run `CEDA INSTALL GROUP(CDEMOAPI)` from an authorized CICS
-terminal, or add `CDEMOAPI` to the region `GRPLIST` for the next startup.
+The group defines **no FILE resources**. The existing CARDDEMO VSAM files are
+shared exactly as the base region installs them and are never redefined here;
+read-only access is enforced in the service programs (which issue only
+`READ`/`STARTBR`/`READNEXT`) and by region security — not by a duplicate FILE
+definition that could override the base region's write-capable files. See
+[`docs/decision-log.md`](decision-log.md) (D14).
+
+Verify the install command in `CMDOUT`. Activate the group by adding
+`CDEMOAPI` to the region `GRPLIST` so it installs at the next startup
+(recommended), or run `CEDA INSTALL GROUP(CDEMOAPI)` from an authorized CICS
+terminal. See [`docs/decision-log.md`](decision-log.md) (D15).
 
 ## 3. Enable CICS Web Support and TCP/IP
 
@@ -109,8 +117,9 @@ installing it and pass the same value as `API_PORT` to the test harness.
 
 ### HTTP and contract tests
 
-The HTTP harness defaults to port `8080`, while the supplied CSD uses `3001`,
-so pass the port explicitly:
+The HTTP harness and the supplied CSD both default to port `3001`, so no port
+override is normally required. Pass `API_PORT` explicitly only when the
+operator installed the listener on a different port:
 
 ```bash
 cd app/test/api
@@ -150,33 +159,25 @@ Never place a real password or bearer token in source control or shared logs.
 
 ### Build, register, and run `TSTTRAN`
 
-The production `APIBUILD` member intentionally builds the eight runtime API
-programs. The six standalone COBOL drivers under `app/test/api/` are built
-only in a test region. For `TSTTRAN`:
+The production `APIBUILD` member intentionally builds only the eight runtime
+API programs. The six standalone COBOL drivers under `app/test/api/` are
+built by the dedicated QA job
+[`app/jcl/APITSTB.jcl`](../app/jcl/APITSTB.jcl), and their PROGRAM and
+TRANSACTION definitions install with the API group through
+[`app/jcl/APICSDIN.jcl`](../app/jcl/APICSDIN.jcl) — no manual `CEDA DEFINE`
+is required. To run the drivers:
 
-1. Transfer `app/test/api/TSTTRAN.cbl` as member `TSTTRAN` in
-   `AWS.M2.CARDDEMO.CBL`.
-2. Use the existing `samples/jcl/CICCMP.jcl` pattern with
-   `MEMNAME=TSTTRAN`, or submit a site job containing:
-
-   ```text
-   //   SET HLQ=AWS.M2
-   //CCLIBS JCLLIB ORDER=&HLQ..CARDDEMO.PRC.UTIL
-   //TSTTRN EXEC BUILDONL,MEM=TSTTRAN,HLQ=&HLQ
-   ```
-
-3. In the test region, define `PROGRAM(TSTTRAN)` and a collision-free local
-   transaction such as `TATR`, then install those test resources:
-
-   ```text
-   CEDA DEFINE PROGRAM(TSTTRAN) GROUP(CDEMOAPI) LANGUAGE(COBOL)
-   CEDA DEFINE TRANSACTION(TATR) GROUP(CDEMOAPI) PROGRAM(TSTTRAN)
-   CEDA INSTALL GROUP(CDEMOAPI)
-   CEMT SET PROGRAM(TSTTRAN) NEWCOPY
-   ```
-
+1. Transfer the six `app/test/api/TST*.cbl` members into
+   `AWS.M2.CARDDEMO.CBL` (`TSTAUTH`, `TSTACCT`, `TSTCUST`, `TSTCARD`,
+   `TSTXREF`, `TSTTRAN`).
+2. Submit [`app/jcl/APITSTB.jcl`](../app/jcl/APITSTB.jcl) to compile, link,
+   and `NEWCOPY` all six drivers into the CICS LOADLIB. See
+   [`docs/decision-log.md`](decision-log.md) (D18).
+3. Ensure `APICSDIN.jcl` has been run so the driver transactions are
+   installed — `TAUT`, `TACC`, `TCUS`, `TCRD`, `TXRF`, and `TTRN`, driving
+   `TSTAUTH` through `TSTTRAN` respectively.
 4. Prepare the valid-but-cardless account fixture as described below.
-5. Enter `TATR` on a CICS terminal.
+5. Enter `TTRN` on a CICS terminal (the transaction for driver `TSTTRAN`).
 6. Read the CICS region message output. A successful run reports seven PASS
    cases and ends with:
 
@@ -227,6 +228,29 @@ Use cloned VSAM datasets in a disposable region for these volume cases:
 | Money extrema | Valid maximum positive and negative amounts | Signed JSON strings retain exactly two decimal places |
 
 Restore the cloned datasets after every boundary test.
+
+## 5. Roll back / uninstall the API layer
+
+To remove the API layer, submit
+[`app/jcl/APICSDRB.jcl`](../app/jcl/APICSDRB.jcl). It reverses `APICSDIN.jcl`
+and touches only the `CDEMOAPI` group — never the base `CARDDEMO` group.
+
+1. Submit `APICSDRB.jcl`. Its DFHCSDUP step removes `CDEMOAPI` from the region
+   `GRPLIST` and deletes the group's CSD definitions. The job is idempotent: a
+   "not found" `RC=4` on a repeat run is expected and harmless.
+2. Complete the rollback in the running region by one of:
+   - **Restart pickup (recommended)** — because step 1 removed `CDEMOAPI` from
+     `GRPLIST`, a normal region restart comes up without the group.
+   - **Immediate discard** — from an authorized CICS terminal, close the
+     listener with `CEMT SET TCPIPSERVICE(CDAPISVC) CLOSED`, then `CEMT
+     DISCARD` the `TCPIPSERVICE`, `URIMAP`, `TRANSACTION`, `PROGRAM`, and
+     `TSMODEL` resources (including the `TST*` drivers if installed).
+3. **FILE restoration is not required.** Because `CDEMOAPI` defines no FILE
+   resources, the rollback cannot have altered any CARDDEMO file. Only if a
+   legacy pre-remediation install had redefined those files would you restore
+   them with `CEDA INSTALL GROUP(CARDDEMO)` from an authorized terminal.
+
+See [`docs/decision-log.md`](decision-log.md) (D19).
 
 ## Domain context
 
@@ -322,9 +346,11 @@ The following example is illustrative and is not shipped:
 3. Add the route to `COAPIRTR`: parse the path, validate the bearer token
    through `COAPISEC`, LINK the service, serialize the result, and issue
    `WEB SEND`.
-4. Add the PROGRAM definition to `CARDDEMOAPI.CSD` in group `CDEMOAPI`. If a
-   new FILE resource is unavoidable, define it with
-   `READ(YES) BROWSE(YES) ADD(NO) UPDATE(NO) DELETE(NO)`.
+4. Add the PROGRAM definition to `CARDDEMOAPI.CSD` in group `CDEMOAPI`. Reuse
+   the shared CARDDEMO files as the base region installs them; do not redefine
+   an existing FILE in this group. A genuinely new dataset (rare for a
+   read-only inquiry) would be defined read-only and recorded in the decision
+   log.
 5. Add a `BUILDONL` step and `NEWCOPY` command to `APIBUILD.jcl`; rerun
    `APICSDIN.jcl` when CSD resources change.
 6. Update `app/api/openapi.yaml`, add a COBOL driver under `app/test/api/`,

@@ -31,18 +31,34 @@
 //*********************************************************************
 //*  Compile & link each API program (one BUILDONL step per member)
 //*********************************************************************
-//CMPJSN  EXEC BUILDONL,MEM=COJSONUC,HLQ=&HLQ
-//CMPSEC  EXEC BUILDONL,MEM=COAPISEC,HLQ=&HLQ
-//CMPACS  EXEC BUILDONL,MEM=COACSVCC,HLQ=&HLQ
-//CMPCUS  EXEC BUILDONL,MEM=COCUSVCC,HLQ=&HLQ
-//CMPCRS  EXEC BUILDONL,MEM=COCRSVCC,HLQ=&HLQ
-//CMPXRS  EXEC BUILDONL,MEM=COXRSVCC,HLQ=&HLQ
-//CMPTRS  EXEC BUILDONL,MEM=COTRSVCC,HLQ=&HLQ
-//CMPRTR  EXEC BUILDONL,MEM=COAPIRTR,HLQ=&HLQ
+//*  PARM.LKED overrides the BUILDONL binder PARM to drop LET so an
+//*  unresolved external (e.g. COJSONUC under NODYNAM) fails RC>=8
+//*  instead of being masked as RC=4. COND=(4,LT) on the dependent
+//*  steps stops the build after any hard failure while admitting the
+//*  benign RC=4 (duplicate DFHEILID). See docs/decision-log.md (D13).
+//CMPJSN  EXEC BUILDONL,MEM=COJSONUC,HLQ=&HLQ,
+//         PARM.LKED='LIST,XREF,MAP,AMODE(31),RMODE(ANY)'
+//CMPSEC  EXEC BUILDONL,MEM=COAPISEC,HLQ=&HLQ,
+//         COND=(4,LT),PARM.LKED='LIST,XREF,MAP,AMODE(31),RMODE(ANY)'
+//CMPACS  EXEC BUILDONL,MEM=COACSVCC,HLQ=&HLQ,
+//         COND=(4,LT),PARM.LKED='LIST,XREF,MAP,AMODE(31),RMODE(ANY)'
+//CMPCUS  EXEC BUILDONL,MEM=COCUSVCC,HLQ=&HLQ,
+//         COND=(4,LT),PARM.LKED='LIST,XREF,MAP,AMODE(31),RMODE(ANY)'
+//CMPCRS  EXEC BUILDONL,MEM=COCRSVCC,HLQ=&HLQ,
+//         COND=(4,LT),PARM.LKED='LIST,XREF,MAP,AMODE(31),RMODE(ANY)'
+//CMPXRS  EXEC BUILDONL,MEM=COXRSVCC,HLQ=&HLQ,
+//         COND=(4,LT),PARM.LKED='LIST,XREF,MAP,AMODE(31),RMODE(ANY)'
+//CMPTRS  EXEC BUILDONL,MEM=COTRSVCC,HLQ=&HLQ,
+//         COND=(4,LT),PARM.LKED='LIST,XREF,MAP,AMODE(31),RMODE(ANY)'
+//CMPRTR  EXEC BUILDONL,MEM=COAPIRTR,HLQ=&HLQ,
+//         COND=(4,LT),PARM.LKED='LIST,XREF,MAP,AMODE(31),RMODE(ANY)'
 //*********************************************************************
 //*  Issue CICS NEWCOPY for each new program via SDSF batch /MODIFY
-//*  (region CICSAWSA, matching the sample). COND=(4,LT) skips this
-//*  step if any compile/link RC > 4.
+//*  (region CICSAWSA, matching the sample). With LET removed above,
+//*  an unresolved COJSONUC binds RC>=8; a clean COAPIRTR bind still
+//*  returns a benign RC=4 (duplicate DFHEILID via autocall), so
+//*  COND=(4,LT) admits a good build yet skips NEWCOPY on RC>=8.
+//*  Rationale/alternatives/risk: docs/decision-log.md (D13).
 //*********************************************************************
 //NEWCOPY EXEC PGM=SDSF,COND=(4,LT)
 //ISFOUT DD SYSOUT=*

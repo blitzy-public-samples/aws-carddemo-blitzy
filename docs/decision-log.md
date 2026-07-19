@@ -84,6 +84,48 @@ alternatives, the concrete constraint-driven rationale, and the residual risk.
 |---|---|---|---|
 | Maintain forward endpoint-to-router-to-service-to-VSAM traceability; do not create a migration-style bidirectional source/target matrix. | Build a full bidirectional migration matrix for every legacy field. | This feature is a net-new additive API, not a migration or refactor of the existing application. Forward traceability proves each public operation reaches the intended read-only implementation and record contract. | Field-level drift could still occur. Copybook-qualified moves and OpenAPI example validation provide the detailed controls. |
 
+### D13 — Static linkage under NODYNAM and binder NOLET for the API build
+
+| Decision | Alternatives considered | Rationale | Risk |
+|---|---|---|---|
+| Keep the shipped `NODYNAM` compile (so `COAPIRTR` statically `CALL`s `COJSONUC`) and override only the API build's binder PARM through `PARM.LKED` in `APIBUILD.jcl` and `APITSTB.jcl` to drop `LET`, so an unresolved external fails the bind with `RC>=8`. `COJSONUC` is built first into `LOADLIB`; `COAPIRTR` is built last and resolves it by autocall because `BUILDONL`'s `LKED SYSLIB` concatenates `&LOADLIB`. Keep `NEWCOPY COND=(4,LT)`. | Convert `COAPIRTR` to a dynamic `CALL`/`EXEC CICS LINK` for `COJSONUC`; edit `samples/proc/BUILDONL.prc` to remove `LET` globally; gate `NEWCOPY` with `COND=(3,LT)` or `COND=(0,NE)` as the QA report literally suggested. | Overriding `LET` only in the API build keeps the change additive and leaves the shared, out-of-scope proc untouched. A clean `COAPIRTR` bind legitimately returns `RC=4` (duplicate `DFHEILID` pulled in when `COJSONUC` is autocalled), so `COND=(4,LT)` admits a good build while `NOLET` turns a genuinely unresolved `COJSONUC` into `RC>=8`, which `COND=(4,LT)` then blocks. `COND=(3,LT)`/`(0,NE)` would wrongly skip `NEWCOPY` on the benign `RC=4`. | The definitive proof is the bind XREF plus a live JSON invocation, which require a z/OS/CICS region and cannot run in a Linux-only CI. The hardening prevents silent deployment of an unresolved module but does not by itself prove successful runtime execution. |
+
+### D14 — Shared read-only files instead of duplicate FILE definitions
+
+| Decision | Alternatives considered | Rationale | Risk |
+|---|---|---|---|
+| Group `CDEMOAPI` defines NO FILE resources. The API programs open the existing CARDDEMO VSAM files exactly as the base region installs them; read-only is enforced in code (only `READ`/`STARTBR`/`READNEXT`) and by region security. | Redefine `ACCTDAT`, `CARDAIX`, `CARDDAT`, `CCXREF`, `CUSTDAT`, `CXACAIX`, `TRANSACT`, and `USRSEC` inside `CDEMOAPI` with `ADD(NO) UPDATE(NO) DELETE(NO)`; rely on DFHCSDUP rejecting the duplicates as accidental safety. | A duplicate FILE installed from `CDEMOAPI` would override the base region's write-capable definitions region-wide — breaking the online application — or fail install; depending on rejection is not a demonstrably safe design. Sharing the installed files is the only additive, backward-compatible option. | The API depends on the base `CARDDEMO` group being installed first; onboarding states this ordering. The rollback job never touches the base files. |
+
+### D15 — Group activation: GRPLIST versus online CEDA INSTALL
+
+| Decision | Alternatives considered | Rationale | Risk |
+|---|---|---|---|
+| `APICSDIN.jcl` adds `CDEMOAPI` to the region `GRPLIST` (DFHCSDUP `ADD GROUP ... LIST`) for deterministic install at the next startup, and documents an immediate `CEDA INSTALL GROUP(CDEMOAPI)` from an authorized terminal (or CMCI/SPI) for a running region. It does not attempt an online install from batch. | Drive `CEDA INSTALL` from batch via an SDSF `/MODIFY` command (the original approach); rely solely on manual operator action with no `GRPLIST` wiring. | DFHCSDUP has no `INSTALL` verb and `CEDA` is a terminal transaction, so a batch `/MODIFY 'CEDA INSTALL...'` is unsupported and unreliable across regions. `GRPLIST` membership is the supported, auditable, restart-safe activation; the documented terminal/CMCI path covers immediate installs. | `GRPLIST` activation takes effect only at the next restart; immediate activation requires the documented terminal/CMCI path, and the default `GRPLIST` value must be changed to the region's real startup list. |
+
+### D16 — Diagnostic and confidentiality attributes on the API resources
+
+| Decision | Alternatives considered | Rationale | Risk |
+|---|---|---|---|
+| The alias and driver transactions use `STORAGECLEAR(YES)`, `DUMP(NO)`, `TRACE(NO)`, `CONFDATA(YES)`; every API and driver PROGRAM uses `CEDF(NO)`. | Ship the permissive defaults `STORAGECLEAR(NO)`, `DUMP(YES)`, `TRACE(YES)`, `CONFDATA(NO)`, `CEDF(YES)`. | The API handles credentials, bearer tokens, PANs, and PII. `STORAGECLEAR(YES)` prevents residual sensitive data in freed task storage; `CONFDATA(YES)` with `TRACE(NO)`/`DUMP(NO)` keeps confidential fields out of traces and dumps; `CEDF(NO)` stops the EDF debugger from exposing in-flight payloads. This aligns the deployed definitions with the masking/exclusion posture. | Diagnostics are intentionally reduced; debugging a production issue requires temporarily enabling tracing under change control rather than relying on defaults. |
+
+### D17 — Listener MAXDATALEN and loopback bind
+
+| Decision | Alternatives considered | Rationale | Risk |
+|---|---|---|---|
+| `TCPIPSERVICE(CDAPISVC)` uses `PORTNUMBER(3001)`, `IPADDRESS(127.0.0.1)`, `MAXDATALEN(32)`, `SSL(NO)`, `AUTHENTICATE(NO)`. | Bind `IPADDRESS(ANY)` with a larger/default `MAXDATALEN`; enable SSL/authentication in this increment. | A loopback bind limits exposure of the unauthenticated, non-TLS read-only listener to same-host callers (typically a co-located proxy/gateway) for this first increment. `MAXDATALEN(32)` (32 KB) bounds inbound request size for the small JSON inquiry bodies, while the large transaction-list response travels over channel/container rather than the COMMAREA. | Off-host access requires a co-located fronting proxy; `MAXDATALEN` must be raised if request bodies grow. Both are listed under onboarding "Suggested next tasks", alongside TLS/auth hardening. |
+
+### D18 — Test-driver deployment via a dedicated QA build
+
+| Decision | Alternatives considered | Rationale | Risk |
+|---|---|---|---|
+| Ship `APITSTB.jcl` to compile/link/`NEWCOPY` the six `TST*` drivers and install their PROGRAM/TRANSACTION defs with the API group through `APICSDIN.jcl`. Production `APIBUILD.jcl` builds only the eight runtime programs. | Add the drivers to `APIBUILD.jcl`; leave the drivers with no build job (manual hand-copy plus `CEDA DEFINE`); place the drivers in a separate QA-only CSD group. | Keeping drivers out of the production build avoids shipping test transactions into the runtime path while still giving QA one reproducible build-and-install. The drivers use `EXEC CICS LINK` (runtime-resolved), so they bind cleanly and independently; co-locating their defs in `CDEMOAPI` lets one install job provision a test region. | The driver transactions live in the same group as the production resources, so a region installing `CDEMOAPI` also gets the drivers. Splitting them into a QA-only group is the documented option if that is undesirable. |
+
+### D19 — Rollback / uninstall procedure
+
+| Decision | Alternatives considered | Rationale | Risk |
+|---|---|---|---|
+| Ship `APICSDRB.jcl` to remove `CDEMOAPI` from `GRPLIST` and `DELETE` the group's CSD definitions (idempotent), and document the operator `CEMT DISCARD` path for a running region. No FILE restoration is needed because the group defines no files. | Provide no rollback and rely on manual edits; attempt an online `DISABLE`/`DISCARD` from batch; always re-`INSTALL GROUP(CARDDEMO)` to restore clobbered files. | A scripted, idempotent CSD-level rollback plus a documented discard path gives clean recovery without destructive manual edits. Because `CDEMOAPI` never redefines the CARDDEMO files, there is nothing to restore; the base-group re-install is documented only as legacy recovery for a pre-remediation unsafe install. | Batch DFHCSDUP cannot discard resources already installed in a running region; full removal from a live region still needs the documented operator `CEMT DISCARD` or a restart. |
+
 ## Forward Traceability Matrix
 
 | # | Method and path | operationId | Router route | Service program | VSAM file(s) | Record copybook(s) | Response copybook |
