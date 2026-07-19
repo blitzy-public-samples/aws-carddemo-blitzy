@@ -14,6 +14,7 @@
     - [**Signon Screen**](#signon-screen)
     - [**Main Menu**](#main-menu)
     - [**Admin Menu**](#admin-menu)
+- [REST/JSON API layer](#restjson-api-layer)
 - [Support](#support)
 - [Roadmap](#roadmap)
 - [Contributing](#contributing)
@@ -273,6 +274,128 @@ The Regular user can perform the user functions and the Admin users can only per
 
 <br/>
 
+## REST/JSON API layer
+
+CardDemo now exposes a net-new, **read-only** REST/JSON API that makes its core inquiry functions available to distributed (off-mainframe) callers such as `curl`, Postman, or a partner application. The API is delivered entirely through **base CICS Web Support** -- no additional licensed products and no external API gateway -- and is served under the versioned base path `/carddemo/api/v1`. This layer is **purely additive**: it introduces new members only and makes **no changes** to the existing COBOL, BMS, CSD, or JCL source. All access to the existing VSAM datasets is strictly read-only (`READ`/`STARTBR`/`READNEXT`/`ENDBR` only -- there is no create, update, or delete path).
+
+### Endpoints
+
+All paths are prefixed with the versioned base path `/carddemo/api/v1` and are relative to the CICS Web Support host and port. Every endpoint except sign-on requires a bearer token (see [Using the API](#using-the-api)).
+
+| Method | Path | Description |
+| :----- | :--- | :---------- |
+| POST | `/carddemo/api/v1/signon` | Authenticate an existing CardDemo user id/password; returns a short-lived bearer token (validated against `USRSEC`). |
+| GET | `/carddemo/api/v1/accounts/{acctId}` | Account status, balances, limits, cycle credit/debit, dates, and group id (from `ACCTDAT`). |
+| GET | `/carddemo/api/v1/customers/{custId}` | Customer demographic/identification fields (from `CUSTDAT`; SSN and government-issued id minimized/masked by default). |
+| GET | `/carddemo/api/v1/cards/{cardNum}` | Card detail with PAN masked to last 4 and CVV excluded (from `CARDDAT`). |
+| GET | `/carddemo/api/v1/xref/{cardNum}` | Resolve a card to its account id and customer id (from `CCXREF`). |
+| GET | `/carddemo/api/v1/accounts/{acctId}/transactions` | List the transactions for an account (from `TRANSACT`). |
+| GET | `/carddemo/api/v1/transactions/{tranId}` | Single transaction detail (from `TRANSACT`). |
+
+### CICS components
+
+The HTTP/JSON front door runs entirely in-region and is defined in a **new** CSD group `CARDDEMOAPI` (the existing `CARDDEMO` group is untouched):
+
+* A new `TCPIPSERVICE` listening on an unused TCP port.
+* One or more `URIMAP`s bound to `/carddemo/api/v1/*`.
+* An alias `TRANSACTION` that attaches the router.
+* The router program `COAPIRTR`, which receives the request (`EXEC CICS WEB RECEIVE`), parses the route, enforces the bearer token, and dispatches (via `EXEC CICS LINK`) to the authentication program `COAPISEC` and the read-only service programs `COACSVCC` (accounts), `COCUSVCC` (customers), `COCRSVCC` (cards), `COXRSVCC` (cross-reference), and `COTRSVCC` (transactions), then serializes the JSON response (`EXEC CICS WEB SEND`).
+
+The `CARDDEMOAPI` group also `ADD`s references to the existing read-only files `ACCTDAT`, `CARDDAT`, `CCXREF`, `CUSTDAT`, `TRANSACT`, and `USRSEC` (plus the alternate-index paths `CARDAIX` and `CXACAIX`) so the new programs can open them; it does not redefine them.
+
+### Installing the API layer
+
+These steps are additive to the existing [Installation on the mainframe](#installation-on-the-mainframe) instructions and follow the same conventions. Edit the HLQs as required before running the jobs.
+
+1. Compile and link the new API programs (`COAPIRTR`, `COAPISEC`, `COACSVCC`, `COCUSVCC`, `COCRSVCC`, `COXRSVCC`, `COTRSVCC`) using the new API compile/link JCL, modeled on `samples/jcl/CICCMP.jcl` (the `BUILDONL` proc with `HLQ=AWS.M2`). Then pick up the new load modules in CICS:
+
+   ```shell
+   CEMT SET PROG(COAPIRTR) NEWCOPY
+   CEMT SET PROG(COAPISEC) NEWCOPY
+   ```
+
+2. Define and install the new `CARDDEMOAPI` CSD group using the new `DFHCSDUP` job. The group defines the `TCPIPSERVICE`, the `URIMAP`(s), the alias `TRANSACTION`, and one `PROGRAM` entry per new program, and it `ADD`s the existing read-only files `ACCTDAT`, `CARDDAT`, `CCXREF`, `CUSTDAT`, `TRANSACT`, and `USRSEC` (plus AIX paths `CARDAIX`, `CXACAIX`).
+
+   ```shell
+   CEDA INSTALL GROUP(CARDDEMOAPI)
+   ```
+
+3. Enable CICS Web Support / TCP/IP services in the CICS region. This is an operator/SIT action (for example, `TCPIP=YES` in the SIT or startup overrides), not a source edit; then install and open the `TCPIPSERVICE`.
+
+4. For full, detailed step-by-step onboarding -- CSD install, compile, CWS/TCP/IP enablement, domain context, common pitfalls (COMMAREA size, packed-decimal scaling, PAN/CVV handling), and how to extend the layer with a new endpoint -- see [`docs/onboarding-api.md`](./docs/onboarding-api.md).
+
+### Using the API
+
+The API is the programmatic equivalent of the existing 3270 inquiry screens (for example, the card-to-transactions drill-down below mirrors the `CCDL` -> `CT00` screen flow). All responses use `Content-Type: application/json`.
+
+First, sign on with an existing CardDemo user id/password to obtain a short-lived bearer token:
+
+```shell
+curl -s -X POST "http://<cics-host>:<port>/carddemo/api/v1/signon" \
+     -H "Content-Type: application/json" \
+     -d '{"userId":"USER0001","password":"<password>"}'
+```
+
+The sign-on response returns the token (and its expiry) inside the `data` envelope:
+
+```shell
+# HTTP 200
+# {
+#   "data": {
+#     "token": "<opaque-bearer-token>",
+#     "userId": "USER0001",
+#     "userType": "U",
+#     "expiresAt": "2026-07-19 08:15:00.000000"
+#   }
+# }
+```
+
+Then call any inquiry endpoint, passing the token in the `Authorization` header (Flow 1 -- authenticated account inquiry):
+
+```shell
+curl -s "http://<cics-host>:<port>/carddemo/api/v1/accounts/<acctId>" \
+     -H "Authorization: Bearer <opaque-bearer-token>"
+```
+
+To drill down from a card to its transactions (Flow 2), first resolve the card via the cross-reference, then list the resolved account's transactions:
+
+```shell
+# Resolve the card to its account id and customer id
+curl -s "http://<cics-host>:<port>/carddemo/api/v1/xref/<cardNum>" \
+     -H "Authorization: Bearer <opaque-bearer-token>"
+
+# List the transactions for the resolved account
+curl -s "http://<cics-host>:<port>/carddemo/api/v1/accounts/<acctId>/transactions" \
+     -H "Authorization: Bearer <opaque-bearer-token>"
+```
+
+### Response envelope and error contract
+
+Every response is JSON with a uniform envelope. Successful responses carry a top-level `data` object; failures carry a top-level `error` object with `code`, `message`, and `requestId`. The HTTP status map is fixed:
+
+| Status | Meaning |
+| :----- | :------ |
+| `200` | Success (including an empty list for a transaction query that matches no rows). |
+| `400` | Bad request or unknown route (for example, malformed JSON or an unrecognized path). |
+| `401` | Authentication failure (missing, invalid, or expired bearer token). |
+| `404` | The requested resource was not found. |
+| `500` | Internal error (returned without leaking CICS `RESP2` values). |
+
+### Security
+
+* The primary account number (PAN) is masked to the last four digits on both card and transaction responses; a full PAN never appears in any response or log.
+* The card security code (CVV) is never serialized.
+* Customer SSN and government-issued id are minimized/masked by default.
+* Authentication is a short-lived opaque bearer token, issued by `COAPISEC` and validated against the `USRSEC` security file (mirroring the `COSGN00C` sign-on pattern).
+
+Production hardening -- TLS/keyring, full RACF surrogate/resource security, OAuth/OIDC, and rate limiting -- is documented as future work and is **not** implemented in this increment.
+
+### API specification
+
+The authoritative, machine-readable contract is [`app/api/openapi.yaml`](./app/api/openapi.yaml) (OpenAPI 3.0). Use it to explore the endpoints, generate client SDKs, and drive contract tests.
+
+<br/>
+
 ## Support
 
 If you have questions or requests for improvement please raise an issue in the repository.
@@ -296,6 +419,8 @@ The following features are planned for upcoming releases
    * Message queue integration
    
    * Exposure of transactions for distributed application integration
+
+     * A first read-only REST/JSON increment is now delivered (see the [REST/JSON API layer](#restjson-api-layer) section).
 
 <br/>
 
