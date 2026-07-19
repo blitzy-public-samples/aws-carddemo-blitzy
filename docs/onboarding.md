@@ -24,19 +24,18 @@ and extension. It **complements — it does not duplicate — the root
 
 | Document | Use it for |
 | :------- | :--------- |
-| [`README.md`](../README.md) | Project overview, the target technology stack, and the full **Application Inventory** tables (every online transaction and batch job). The README also tags each subsection **(current)** or **(forthcoming)** to reflect the migration checkpoint status. |
+| [`README.md`](../README.md) | Project overview, the target technology stack, the build/run/test workflow, and the full **Application Inventory** tables (every online transaction and batch job). |
 | **This guide** (`docs/onboarding.md`) | Clean-machine setup, environment configuration, build/run/test workflow, common pitfalls, and how to extend the codebase. |
 | [`docs/decision-log.md`](./decision-log.md) | Every non-trivial migration decision with its alternatives, rationale, and risks (the *why* behind the design). |
 | [`docs/traceability-matrix.md`](./traceability-matrix.md) | The bidirectional COBOL-construct → Java-artifact mapping (programs, copybooks, BMS maps, JCL jobs). |
 | [`docs/architecture/`](./architecture/) | Mermaid **before / after** architecture diagrams — the original z/OS state and the target Spring Boot state. |
 | [`blitzy-deck/index.html`](../blitzy-deck/index.html) | A self-contained reveal.js executive-summary presentation of the migration. |
 
-> **Note on migration status.** CardDemo is being migrated in a single phase, and the
-> README tracks which artifacts are already generated **(current)** versus **(forthcoming)**
-> at each checkpoint. This onboarding guide describes the **intended end-to-end developer
-> workflow** for the migrated application; where a step depends on an artifact that is still
-> being generated, the README's status tags are the source of truth for exactly what runs
-> end-to-end today. The commands and paths below are the intended, stable contract.
+> **Note on migration status.** CardDemo was migrated in a single phase, and the Java
+> application has been generated in full: it builds, boots, applies its Flyway schema, and
+> serves the sign-on flow and all online/batch functions today. This onboarding guide describes
+> the **end-to-end developer workflow** for that migrated application. The commands and paths
+> below are the stable, runnable contract.
 
 ---
 
@@ -222,6 +221,16 @@ You do **not** run any DDL by hand. On startup the application applies its
 Because Flyway initializes everything, the **only** manual database step is creating an
 empty database ([§3.1](#31-start-postgresql)); a freshly created database is fully populated
 the first time the application starts.
+
+> **Common pitfall — a benign Flyway warning on PostgreSQL 18.** If you run against
+> PostgreSQL 18.x (the target server is 18.4), Flyway logs one informational line at startup:
+> *"Flyway upgrade recommended: PostgreSQL 18.4 is newer than this version of Flyway and support
+> has not been tested. The latest supported version of PostgreSQL is 17."* This is expected and
+> safe to ignore — the BOM-managed Flyway (11.7.2) is validation-tested only up to PostgreSQL 17,
+> but every migration (`V0`–`V3`) applies cleanly and idempotently on 18.4, and startup proceeds
+> normally. The warning does not appear on the supported floor (PostgreSQL 16/17) and is retired
+> by the Spring Boot 4.x upgrade (which advances Flyway). Rationale and risk/mitigation are
+> recorded in [`docs/decision-log.md`](./decision-log.md).
 
 ---
 

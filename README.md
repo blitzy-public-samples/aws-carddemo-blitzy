@@ -9,11 +9,11 @@
   - [Prerequisites](#prerequisites)
   - [Repository layout](#repository-layout)
   - [Configuration](#configuration)
-  - [Build](#build-current)
-  - [Run](#run-forthcoming)
-  - [Batch jobs](#batch-jobs-forthcoming)
+  - [Build](#build)
+  - [Run](#run)
+  - [Batch jobs](#batch-jobs)
   - [Observability](#observability)
-  - [Testing](#testing-forthcoming)
+  - [Testing](#testing)
 - [Documentation](#documentation)
 - [Legacy mainframe installation (reference)](#legacy-mainframe-installation-reference)
   - [Running full batch (legacy reference)](#running-full-batch-legacy-reference)
@@ -81,7 +81,7 @@ The migrated application is built on:
 
 The migration targets a Java application that builds and runs on any clean local machine; no mainframe or running COBOL environment is required.
 
-> **Implementation status at this checkpoint.** This section describes the **target** Java application. The migration has generated the **build baseline and a substantial foundation that compile cleanly today**: the Maven build (`pom.xml` + wrapper), all **10** JPA domain entities and the reference/enum layer, the DTO layer (session context, screen forms, menu and report models), the cross-cutting `config` / `exception` / `security` / `util` classes, the `application.yml` base config, structured logging (`logback-spring.xml`), the Spring Batch metadata migration (`V0`), and the admin-driver batch job. The **remaining layers are forthcoming** in the same generation phase: the Spring Data **repositories**, the online **services and controllers**, the business **Spring Batch jobs**, the **`SecurityConfig`** and role routing, the `V1`&ndash;`V3` **Flyway schema/seed/index** migrations, the **Thymeleaf templates**, the `dev` / `test` **profile files**, and the **`src/test/**`** test suites. Subsections below are tagged **(current)** where they work today and **(forthcoming)** where they describe target behavior that becomes available once those artifacts are generated; paths and commands in a *(forthcoming)* subsection are the intended contract, not a claim that they run end-to-end today.
+> **Implementation status.** This section describes the Java application, which **has been generated in full and builds, boots, and serves requests today.** Present and exercised at runtime: the Maven build (`pom.xml` + wrapper); all **10** JPA domain entities plus the reference/enum layer; the DTO layer (session context, screen forms, menu and report models); the **10** Spring Data **repositories**; the **17** online **services** and **9** MVC **controllers** covering all 18 CICS transaction ids; the **17** **Thymeleaf templates** preserving the BMS 24&times;80 contract; **`SecurityConfig`** with `CardDemoUserDetailsService` and role-based routing; the cross-cutting `config` / `exception` (including the `@ControllerAdvice` `GlobalExceptionHandler`) / `security` / `util` classes; the business **Spring Batch jobs** (`PostTransactionJob`, `InterestCalcJob`, `StatementJob`) alongside the utility/print jobs and the admin driver; the `application.yml` base config plus the `dev` and `test` **profile files**; structured logging (`logback-spring.xml`); the full Flyway migration set **`V0`&ndash;`V3`** (batch metadata, application schema, reference/seed data, and index equivalents); and the **`src/test/**`** JUnit 5 unit + Testcontainers integration + parity suites. The subsections below document commands and behavior that run end-to-end today.
 
 ### Prerequisites
 
@@ -94,36 +94,36 @@ The migration targets a Java application that builds and runs on any clean local
 
 ```
 carddemo/
-├── pom.xml                         Maven build (Spring Boot 3.5.16 parent BOM)                    [current]
-├── mvnw, mvnw.cmd, .mvn/           Maven Wrapper (pinned to Maven 3.9.9)                           [current]
+├── pom.xml                         Maven build (Spring Boot 3.5.16 parent BOM)
+├── mvnw, mvnw.cmd, .mvn/           Maven Wrapper (pinned to Maven 3.9.9)
 ├── src/main/java/com/aws/carddemo/
-│   ├── config/                     DataSource, Batch, Observability, Web config [current]; SecurityConfig [forthcoming]
-│   ├── domain/                     JPA entities (one per VSAM file) + enums                        [current]
-│   ├── dto/                        CardDemoContext (COMMAREA), screen forms, feed / report models  [current]
-│   ├── repository/                 Spring Data JPA repositories (one per VSAM file)                [forthcoming]
-│   ├── service/                    @Service classes (one per COBOL program; methods = paragraphs)  [forthcoming]
-│   ├── web/                        Spring MVC controllers (one route per CICS transaction id)      [forthcoming]
-│   ├── batch/                      Spring Batch @Configuration jobs; admin driver [current], business jobs [forthcoming]
-│   ├── exception/                  FILE STATUS exception type [current]; @ControllerAdvice handler [forthcoming]
-│   ├── security/                   User principal [current]; UserDetailsService + role wiring       [forthcoming]
-│   └── util/                       Date conversion, decimal helpers, fixed-width mappers           [current]
+│   ├── config/                     DataSource, Batch, Observability, Web, and Security config
+│   ├── domain/                     JPA entities (one per VSAM file) + enums
+│   ├── dto/                        CardDemoContext (COMMAREA), screen forms, feed / report models
+│   ├── repository/                 Spring Data JPA repositories (one per VSAM file)
+│   ├── service/                    @Service classes (one per COBOL program; methods = paragraphs)
+│   ├── web/                        Spring MVC controllers (one route per CICS transaction id)
+│   ├── batch/                      Spring Batch @Configuration jobs (business + utility + admin driver)
+│   ├── exception/                  FILE STATUS exception type + @ControllerAdvice handler
+│   ├── security/                   UserDetailsService, user principal, and role wiring
+│   └── util/                       Date conversion, decimal helpers, fixed-width mappers
 ├── src/main/resources/
-│   ├── application.yml             Base config [current]; application-dev.yml / -test.yml           [forthcoming]
-│   ├── db/migration/               Flyway: V0 batch metadata [current]; V1/V2/V3 schema/seed/index  [forthcoming]
-│   ├── logback-spring.xml          Structured JSON logging with correlation IDs                    [current]
-│   └── templates/                  Thymeleaf screens (preserve the BMS 24x80 contract)             [forthcoming]
-├── src/test/java/                  JUnit 5 unit + Testcontainers integration + parity tests         [forthcoming]
-├── legacy/                         Original COBOL / CICS / JCL / BMS / CPY / CSD / data (read-only)  [current]
-├── docs/                           Decision log + traceability [current]; onboarding + architecture [forthcoming]
-├── blitzy-deck/                    reveal.js deck: theme CSS [current]; index.html                  [forthcoming]
-├── observability/                  Grafana dashboard template                                      [current]
-├── diagrams/                       Legacy flow diagrams and screen captures                        [current]
-└── samples/                        Legacy sample JCL (reference only)                              [current]
+│   ├── application.yml             Base config + application-dev.yml / application-test.yml profiles
+│   ├── db/migration/               Flyway: V0 batch metadata; V1/V2/V3 schema/seed/index
+│   ├── logback-spring.xml          Structured JSON logging with correlation IDs
+│   └── templates/                  Thymeleaf screens (preserve the BMS 24x80 contract)
+├── src/test/java/                  JUnit 5 unit + Testcontainers integration + parity tests
+├── legacy/                         Original COBOL / CICS / JCL / BMS / CPY / CSD / data (read-only)
+├── docs/                           Decision log, traceability, onboarding, and architecture
+├── blitzy-deck/                    reveal.js deck: theme CSS + index.html
+├── observability/                  Grafana dashboard template
+├── diagrams/                       Legacy flow diagrams and screen captures
+└── samples/                        Legacy sample JCL (reference only)
 ```
 
 ### Configuration
 
-Configuration is environment-driven and contains **no hardcoded secrets**. The base `application.yml` is present now; two Spring profiles &mdash; `dev` (local development) and `test` (used by the integration-test suite) &mdash; are **forthcoming** as `application-dev.yml` / `application-test.yml`. The database connection is supplied entirely through environment variables:
+Configuration is environment-driven and contains **no hardcoded secrets**. The base `application.yml` is present, together with two Spring profiles &mdash; `dev` (local development) and `test` (used by the integration-test suite) &mdash; supplied as `application-dev.yml` / `application-test.yml`. The database connection is supplied entirely through environment variables:
 
 | Environment variable         | Purpose                             | Example (local dev)                         |
 | :--------------------------- | :---------------------------------- | :------------------------------------------ |
@@ -131,11 +131,13 @@ Configuration is environment-driven and contains **no hardcoded secrets**. The b
 | `SPRING_DATASOURCE_USERNAME` | Database user                       | supplied via environment / secret manager   |
 | `SPRING_DATASOURCE_PASSWORD` | Database password                   | supplied via environment / secret manager   |
 
-**Flyway** manages the database schema as versioned migrations. Present now is `V0__spring_batch_metadata.sql` (the Spring Batch metadata tables). **Forthcoming** in the same generation phase are `V1__schema.sql` (application schema), `V2__reference_data.sql` (reference and sample seed data), and `V3__indexes.sql` (alternate-index equivalents); once those land, a freshly created database is initialized on startup with no manual steps.
+**Flyway** manages the database schema as versioned migrations, applied automatically on startup so that a freshly created database is initialized with no manual steps. The full set is present: `V0__spring_batch_metadata.sql` (the Spring Batch metadata tables), `V1__schema.sql` (application schema), `V2__reference_data.sql` (reference and sample seed data), and `V3__indexes.sql` (alternate-index equivalents).
 
-### Build (current)
+> **Benign Flyway startup warning on PostgreSQL 18.** On the target PostgreSQL 18.4 server, Flyway logs one informational `WARN` at startup &mdash; *"Flyway upgrade recommended: PostgreSQL 18.4 is newer than this version of Flyway and support has not been tested. The latest supported version of PostgreSQL is 17."* This is expected and harmless: the BOM-managed Flyway (11.7.2) has been validation-tested only up to PostgreSQL 17, but all `V0`&ndash;`V3` migrations apply cleanly and idempotently on 18.4. The warning does not appear on the supported floor (PostgreSQL 16/17) and is retired by the Spring Boot 4.x upgrade (which advances Flyway); see the rationale and risk/mitigation in [`docs/decision-log.md`](./docs/decision-log.md).
 
-The generated foundation compiles cleanly today. To compile and package it:
+### Build
+
+The application compiles cleanly today. To compile and package it:
 
 ```shell
 ./mvnw -DskipTests package
@@ -143,69 +145,69 @@ The generated foundation compiles cleanly today. To compile and package it:
 
 This compiles the sources with `--release 25`. The build is **zero-warning**: the compiler runs with `-Xlint:all` and `failOnWarning`, and the Maven wrapper's `.mvn/jvm.config` passes `--sun-misc-unsafe-memory-access=allow` so the JVM emits no `sun.misc.Unsafe` deprecation warnings either &mdash; every prescribed `./mvnw` invocation on Java 25 is free of **both** compiler and JVM-runtime warnings.
 
-**Forthcoming.** Once the repository / service / web layers and the `src/test/**` suites are generated, the full verification lifecycle runs and enforces the quality gates &mdash; the **JaCoCo &ge; 80% line-coverage** gate and the **OWASP dependency-check zero critical / high CVE** gate:
+The full verification lifecycle runs the test suites and enforces the quality gates &mdash; the **JaCoCo &ge; 80% line-coverage** gate and the **OWASP dependency-check zero critical / high CVE** gate:
 
 ```shell
-./mvnw clean verify   # forthcoming: unit + Testcontainers integration tests, coverage gate, CVE gate
+./mvnw clean verify   # unit + Testcontainers integration tests, coverage gate, CVE gate
 ```
 
-### Run (forthcoming)
+### Run
 
-Running the application end-to-end &mdash; the browser sign-on flow and seeded logins &mdash; becomes available once the forthcoming web controllers, services, repositories, `SecurityConfig`, and the `V1` / `V2` migrations (schema + seed data) are generated. The intended commands are:
+Run the application end-to-end &mdash; the browser sign-on flow and seeded logins &mdash; with the web controllers, services, repositories, `SecurityConfig`, and the `V1` / `V2` migrations (schema + seed data) all in place. The commands are:
 
 ```shell
 ./mvnw spring-boot:run
 ```
 
-To activate the local development profile explicitly (once `application-dev.yml` is added):
+To activate the local development profile explicitly:
 
 ```shell
 ./mvnw spring-boot:run -Dspring-boot.run.profiles=dev
 ```
 
-You will then open the application in a browser and sign on. As in the legacy system, two demo logins will be provided as **seed data**:
+Open the application in a browser and sign on. As in the legacy system, two demo logins are provided as **seed data**:
 
 * `ADMIN001` &mdash; with the initially configured password &mdash; to manage users (admin functions).
 * `USER0001` &mdash; with the initially configured password &mdash; to access back-office (regular user) functions.
 
 These are seeded application user records. The **database** credentials, by contrast, are always supplied via the `SPRING_DATASOURCE_*` environment variables and are never embedded in source or configuration.
 
-### Batch jobs (forthcoming)
+### Batch jobs
 
-The batch workload that ran as JCL jobs on the mainframe will be implemented as **Spring Batch `Job`s** (chunk-oriented reader &rarr; processor &rarr; writer steps, with `Tasklet` steps for single-action utilities). At this checkpoint the admin-driver job (`CBADMCDJ` &rarr; a documented no-op `Tasklet`) and the Spring Batch metadata schema (`V0`) are present; the business jobs are forthcoming &mdash; `PostTransactionJob` (daily transaction posting), `InterestCalcJob` (monthly interest calculation), and `StatementJob` (statement generation). Job parameters &mdash; for example the interest-calculation processing date &mdash; will be supplied as Spring Batch `JobParameter`s, preserving the original JCL `PARM` semantics. See [`docs/traceability-matrix.md`](./docs/traceability-matrix.md) for the full JCL-job &rarr; Spring Batch job mapping.
+The batch workload that ran as JCL jobs on the mainframe is implemented as **Spring Batch `Job`s** (chunk-oriented reader &rarr; processor &rarr; writer steps, with `Tasklet` steps for single-action utilities). The business jobs are present &mdash; `PostTransactionJob` (daily transaction posting), `InterestCalcJob` (monthly interest calculation), and `StatementJob` (statement generation) &mdash; alongside the utility/print jobs, the admin-driver job (`CBADMCDJ` &rarr; a documented no-op `Tasklet`), and the Spring Batch metadata schema (`V0`). Job parameters &mdash; for example the interest-calculation processing date &mdash; are supplied as Spring Batch `JobParameter`s, preserving the original JCL `PARM` semantics. See [`docs/traceability-matrix.md`](./docs/traceability-matrix.md) for the full JCL-job &rarr; Spring Batch job mapping.
 
 ### Observability
 
-Observability is wired into the application from the start. The **configuration artifacts are present now**; the **live HTTP endpoints are exercised once the application runs** (see [Run](#run-forthcoming)):
+Observability is wired into the application from the start. The configuration artifacts are present and the live HTTP endpoints are exercised when the application runs (see [Run](#run)):
 
-* **Structured logging (current)** &mdash; JSON logging with correlation IDs is configured in [`src/main/resources/logback-spring.xml`](./src/main/resources/logback-spring.xml).
-* **Dashboard (current)** &mdash; a Grafana dashboard template is provided at [`observability/grafana-dashboard.json`](./observability/grafana-dashboard.json).
+* **Structured logging** &mdash; JSON logging with correlation IDs is configured in [`src/main/resources/logback-spring.xml`](./src/main/resources/logback-spring.xml).
+* **Dashboard** &mdash; a Grafana dashboard template is provided at [`observability/grafana-dashboard.json`](./observability/grafana-dashboard.json).
 * **Health / readiness (with the running app)** &mdash; `GET /actuator/health`.
 * **Metrics (Prometheus scrape, with the running app)** &mdash; `GET /actuator/prometheus`.
 
-### Testing (forthcoming)
+### Testing
 
-The `src/test/**` suites are generated later in the migration phase; until then these commands compile the project but execute no tests. The intended contract is:
+The `src/test/**` suites are present and run with the standard Maven commands:
 
 ```shell
-./mvnw test      # forthcoming: unit tests only
-./mvnw verify    # forthcoming: unit + Testcontainers integration + parity tests, plus the coverage and CVE gates
+./mvnw test      # unit tests only
+./mvnw verify    # unit + Testcontainers integration + parity tests, plus the coverage and CVE gates
 ```
 
-**Docker must be running** for the Testcontainers-based integration tests, which start a real PostgreSQL container. The parity tests will validate the Java results against the ASCII fixtures retained from the legacy system.
+**Docker must be running** for the Testcontainers-based integration tests, which start a real PostgreSQL container. The parity tests validate the Java results against the ASCII fixtures retained from the legacy system.
 
 <br/>
 
 ## Documentation
 
-Companion documentation for the migration lives under [`docs/`](./docs). Items marked **(forthcoming)** are generated later in the same migration phase; their links are intentionally left unlinked until the artifacts exist, so nothing here points at a missing file:
+Companion documentation for the migration lives under [`docs/`](./docs) and is present in full:
 
-* [`docs/decision-log.md`](./docs/decision-log.md) **(current)** &mdash; every non-trivial migration decision with its alternatives, rationale, and risks.
-* [`docs/traceability-matrix.md`](./docs/traceability-matrix.md) **(current)** &mdash; the bidirectional COBOL-construct &rarr; Java-artifact mapping (programs, copybooks, BMS maps, and JCL jobs).
-* `docs/onboarding.md` **(forthcoming)** &mdash; a clean-machine-to-running-application onboarding guide (setup, domain context, common pitfalls, how to extend the project, and suggested next tasks).
-* `docs/architecture/` **(forthcoming)** &mdash; Mermaid before / after architecture diagrams (the current z/OS state and the target Spring Boot state).
+* [`docs/decision-log.md`](./docs/decision-log.md) &mdash; every non-trivial migration decision with its alternatives, rationale, and risks.
+* [`docs/traceability-matrix.md`](./docs/traceability-matrix.md) &mdash; the bidirectional COBOL-construct &rarr; Java-artifact mapping (programs, copybooks, BMS maps, and JCL jobs).
+* [`docs/onboarding.md`](./docs/onboarding.md) &mdash; a clean-machine-to-running-application onboarding guide (setup, domain context, common pitfalls, how to extend the project, and suggested next tasks).
+* [`docs/architecture/architecture.md`](./docs/architecture/architecture.md) &mdash; Mermaid before / after architecture diagrams (the current z/OS state and the target Spring Boot state).
 
-A self-contained reveal.js executive-summary presentation at `blitzy-deck/index.html` is **(forthcoming)**; the canonical Blitzy reveal.js theme it depends on is already present at [`blitzy-deck/references/blitzy-reveal-theme.css`](./blitzy-deck/references/blitzy-reveal-theme.css).
+A self-contained reveal.js executive-summary presentation is present at [`blitzy-deck/index.html`](./blitzy-deck/index.html); the canonical Blitzy reveal.js theme it depends on is at [`blitzy-deck/references/blitzy-reveal-theme.css`](./blitzy-deck/references/blitzy-reveal-theme.css).
 
 <br/>
 
@@ -333,7 +335,7 @@ To install this repository on the mainframe please follow the following steps
 
 ## Running full batch (legacy reference)
 
-> **Note:** This section also applies to the original COBOL under [`legacy/`](./legacy) and is retained for reference only; in the migrated application the batch workload runs as Spring Batch jobs (see [Batch jobs](#batch-jobs-forthcoming)).
+> **Note:** This section also applies to the original COBOL under [`legacy/`](./legacy) and is retained for reference only; in the migrated application the batch workload runs as Spring Batch jobs (see [Batch jobs](#batch-jobs)).
 
   * Execute the following JCLs in order
 
