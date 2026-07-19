@@ -50,14 +50,17 @@
       *   for unknown user and wrong password) to avoid user
       *   enumeration. RESP/RESP2 are never surfaced to the caller.
       *
-      * TOKEN MODEL (demonstration-grade, no external crypto)
-      *   The token is a 64-char opaque, non-sequential string derived
-      *   from the absolute store clock, the CICS task number, the user
-      *   id and a per-position mixing function. It is NOT
-      *   cryptographically signed (no crypto library is permitted).
-      *   It is stored in a MAIN TSQ registry keyed by a short queue
-      *   name derived from a numeric hash of the token, making lookup
-      *   O(1) and the token opaque and revocable.
+      * TOKEN MODEL (opaque registry token, base-platform CSPRNG)
+      *   The 64-char opaque token is filled from cryptographically
+      *   strong random bytes obtained from the z/OS ICSF service
+      *   CSNBRNG (a site-approved base-platform CSPRNG, NOT a new
+      *   external library), each random byte mapped onto the 36-char
+      *   [0-9A-Z] alphabet. It is NOT a self-signed JWT (no signing
+      *   library is permitted). It is stored in a MAIN TSQ registry
+      *   keyed by a short queue-name hash of the token for O(1),
+      *   revocable, collision-safe lookup. Minting FAILS CLOSED
+      *   (HTTP 500) if ICSF or the store clock is unavailable, and a
+      *   live registry entry is never destructively overwritten.
       ******************************************************************
        IDENTIFICATION DIVISION.
        PROGRAM-ID. COAPISEC.
@@ -85,6 +88,25 @@
            88 AUTH-OK                         VALUE 'O'.
            88 AUTH-BAD                        VALUE 'B'.
            88 AUTH-ERROR                      VALUE 'E'.
+      *  M2 - Clock/format health. Any ASKTIME / FORMATTIME failure
+      *  sets TIME-BAD so mint and validate FAIL CLOSED (never issue or
+      *  honor a token with an unreliable timestamp).
+         05 WS-TIME-STATUS          PIC X(01) VALUE 'G'.
+           88 TIME-OK                         VALUE 'G'.
+           88 TIME-BAD                        VALUE 'B'.
+      *  M3 - Registry write outcome for the collision-safe mint loop.
+         05 WS-WRITE-STATUS         PIC X(01) VALUE 'P'.
+           88 WRITE-PENDING                   VALUE 'P'.
+           88 WRITE-DONE                      VALUE 'D'.
+           88 WRITE-COLLIDE                   VALUE 'C'.
+      *  M3 - Classification of an existing registry occupant.
+         05 WS-PROBE-STATUS         PIC X(01) VALUE 'A'.
+           88 PROBE-ABSENT                    VALUE 'A'.
+           88 PROBE-RECLAIMABLE               VALUE 'R'.
+           88 PROBE-COLLIDE-LIVE              VALUE 'L'.
+      *  C4/M3 - Bounded re-mint attempts on a live hash collision.
+         05 WS-MINT-ATTEMPT         PIC 9(02) VALUE ZEROS.
+         05 WS-MAX-ATTEMPTS         PIC 9(02) VALUE 8.
 
       *----------------------------------------------------------------*
       *  Token build / hash work area
@@ -93,19 +115,17 @@
          05 WS-TOKEN-VALUE          PIC X(64) VALUE SPACES.
          05 WS-ALPHABET             PIC X(36) VALUE
               '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ'.
-         05 WS-STATE                PIC 9(09) VALUE ZEROS.
          05 WS-IDX                  PIC 9(04) VALUE ZEROS.
          05 WS-POS                  PIC 9(04) VALUE ZEROS.
          05 WS-ORD                  PIC 9(05) VALUE ZEROS.
          05 WS-HASH                 PIC 9(14) VALUE ZEROS.
          05 WS-HASH-X               PIC 9(14) VALUE ZEROS.
          05 WS-QNAME                PIC X(16) VALUE SPACES.
-         05 WS-TASK-NUM             PIC 9(07) VALUE ZEROS.
-         05 WS-USERID-NUM           PIC 9(09) VALUE ZEROS.
-         05 WS-ABSTIME-9            PIC 9(15) VALUE ZEROS.
          05 WS-ONE-CHAR             PIC X(01) VALUE SPACES.
-      *  Halfword length work field for TSQ WRITEQ / READQ calls.
+      *  Halfword length work fields for TSQ WRITEQ / READQ calls.
+      *  WS-Q-LEN2 is used by the collision probe (M3) READQ.
          05 WS-Q-LEN                PIC S9(04) COMP VALUE ZEROS.
+         05 WS-Q-LEN2               PIC S9(04) COMP VALUE ZEROS.
 
       *----------------------------------------------------------------*
       *  Time / expiry work area. ABSTIME is milliseconds since 1900.
@@ -130,6 +150,35 @@
          05 TOK-USER-ID             PIC X(08) VALUE SPACES.
          05 TOK-USER-TYPE           PIC X(01) VALUE SPACES.
          05 TOK-EXPIRY-TS           PIC X(26) VALUE SPACES.
+
+      *----------------------------------------------------------------*
+      *  M3 - Probe copy of a registry occupant, read before writing so
+      *  a live (unexpired, different) token is never destructively
+      *  overwritten on a queue-name hash collision.
+      *----------------------------------------------------------------*
+       01 WS-PROBE-RECORD.
+         05 PRB-VALUE               PIC X(64) VALUE SPACES.
+         05 PRB-USER-ID             PIC X(08) VALUE SPACES.
+         05 PRB-USER-TYPE           PIC X(01) VALUE SPACES.
+         05 PRB-EXPIRY-TS           PIC X(26) VALUE SPACES.
+
+      *----------------------------------------------------------------*
+      *  C4 - ICSF CSNBRNG (Random Number Generate) call interface plus
+      *  the 64-byte random buffer used to build the opaque token. The
+      *  service returns 8 random bytes per call; eight calls fill the
+      *  64 positions, each mapped onto the [0-9A-Z] alphabet. A
+      *  non-zero ICSF return code fails minting closed (HTTP 500).
+      *----------------------------------------------------------------*
+       01 WS-RNG-WORK.
+         05 WS-RNG-RC               PIC S9(09) COMP VALUE 0.
+         05 WS-RNG-REASON           PIC S9(09) COMP VALUE 0.
+         05 WS-RNG-EXIT-LEN         PIC S9(09) COMP VALUE 0.
+         05 WS-RNG-EXIT-DATA        PIC X(04) VALUE SPACES.
+         05 WS-RNG-FORM             PIC X(08) VALUE 'RANDOM  '.
+         05 WS-RNG-CHUNK            PIC X(08) VALUE SPACES.
+         05 WS-RANDOM-BYTES         PIC X(64) VALUE SPACES.
+         05 WS-RNG-CALL             PIC 9(02) VALUE ZEROS.
+         05 WS-RNG-BASE             PIC 9(04) VALUE ZEROS.
 
       *  Security-user record layout (READ target for USRSEC).
        COPY CSUSR01Y.
@@ -169,6 +218,14 @@
                PERFORM 0100-DISPATCH
            END-IF
 
+      *    C3 - Scrub every working-storage copy of a credential, token
+      *    or PII field before the task returns and its storage is freed
+      *    or reused. This is the single exit funnel, so the scrub runs
+      *    on every path (issue ok/fail, validate ok/fail, bad request).
+      *    Commarea response fields (API-TOKEN-VALUE / API-PAYLOAD) are
+      *    intentionally preserved - the router owns their lifecycle.
+           PERFORM 0900-SCRUB-SENSITIVE
+
            EXEC CICS RETURN
            END-EXEC.
 
@@ -199,6 +256,36 @@
                                     TO API-ERR-MESSAGE.
 
       *----------------------------------------------------------------*
+      *                    0900-SCRUB-SENSITIVE
+      *  C3 - Overwrite every working-storage copy of a credential,
+      *  token, random seed or PII field so nothing sensitive survives
+      *  in this task's storage after RETURN (defends against CWE-226
+      *  storage reuse and CWE-532 dump/trace capture). The shared
+      *  COMMAREA response fields (API-TOKEN-VALUE / API-PAYLOAD) are
+      *  deliberately NOT cleared here - the router owns and scrubs them
+      *  once the HTTP response has been serialized.
+      *----------------------------------------------------------------*
+       0900-SCRUB-SENSITIVE.
+
+      *  Inbound / working credentials and the raw USRSEC record.
+           MOVE SPACES              TO WS-USER-ID
+           MOVE SPACES              TO WS-USER-PWD
+           MOVE SPACES              TO SEC-USER-DATA
+           MOVE SPACES              TO API-SIGNON-REQUEST
+
+      *  Working copies of the issued token (the COMMAREA copies in
+      *  API-TOKEN-VALUE / API-PAYLOAD are left for the router).
+           MOVE SPACES              TO WS-TOKEN-VALUE
+           MOVE SPACES              TO API-SIGNON-RESPONSE
+           MOVE SPACES              TO WS-TOKEN-RECORD
+           MOVE SPACES              TO WS-PROBE-RECORD
+
+      *  CSPRNG byte buffers.
+           MOVE SPACES              TO WS-RANDOM-BYTES
+           MOVE SPACES              TO WS-RNG-CHUNK.
+
+
+      *----------------------------------------------------------------*
       *                      1000-SIGNON-ISSUE
       *  Extract the sign-on request from API-PAYLOAD, validate the
       *  credentials against USRSEC (read-only) and, on success, mint
@@ -222,8 +309,7 @@
 
            EVALUATE TRUE
                WHEN AUTH-OK
-                   PERFORM 1200-MINT-TOKEN
-                   PERFORM 1300-WRITE-REGISTRY
+                   PERFORM 1150-MINT-AND-REGISTER
                    IF AUTH-OK
                        PERFORM 1400-BUILD-SIGNON-RSP
                    ELSE
@@ -271,52 +357,94 @@
            END-EVALUATE.
 
       *----------------------------------------------------------------*
+      *                    1150-MINT-AND-REGISTER
+      *  C4/M3 - Mint a CSPRNG token and register it, retrying with a
+      *  fresh token if the queue-name hash collides with a LIVE entry.
+      *  Bounded to WS-MAX-ATTEMPTS; exhaustion or any hard error fails
+      *  closed (AUTH-ERROR -> HTTP 500). A live token is never
+      *  destructively overwritten (see 1300 / 1310).
+      *----------------------------------------------------------------*
+       1150-MINT-AND-REGISTER.
+
+           SET WRITE-PENDING TO TRUE
+           PERFORM VARYING WS-MINT-ATTEMPT FROM 1 BY 1
+                   UNTIL WS-MINT-ATTEMPT > WS-MAX-ATTEMPTS
+                      OR WRITE-DONE
+                      OR AUTH-ERROR
+               PERFORM 1200-MINT-TOKEN
+               IF AUTH-OK
+                   PERFORM 1300-WRITE-REGISTRY
+               END-IF
+           END-PERFORM
+
+      *  All attempts collided with live entries -> fail closed (500).
+           IF AUTH-OK AND NOT WRITE-DONE
+               SET AUTH-ERROR TO TRUE
+           END-IF.
+
+      *----------------------------------------------------------------*
       *                      1200-MINT-TOKEN
-      *  Build a 64-char opaque, non-sequential bearer token and the
-      *  matching expiry timestamp. Demonstration-grade: derived from
-      *  the store clock, task number and user id (no crypto library).
+      *  C4 - Build a 64-char opaque bearer token from ICSF CSPRNG bytes
+      *  (CSNBRNG), each random byte mapped onto the [0-9A-Z] alphabet,
+      *  plus the matching expiry timestamp. M2 - a clock or ICSF
+      *  failure fails minting closed (AUTH-ERROR -> HTTP 500).
       *----------------------------------------------------------------*
        1200-MINT-TOKEN.
 
+           SET TIME-OK TO TRUE
            PERFORM 9100-CURRENT-ABSTIME
 
-      *  Derive a numeric contribution from the user id characters.
-           MOVE ZEROS               TO WS-USERID-NUM
-           PERFORM VARYING WS-POS FROM 1 BY 1 UNTIL WS-POS > 8
-               MOVE WS-USER-ID (WS-POS:1) TO WS-ONE-CHAR
-               COMPUTE WS-ORD = FUNCTION ORD (WS-ONE-CHAR)
-               COMPUTE WS-USERID-NUM =
-                   FUNCTION MOD (WS-USERID-NUM * 31 + WS-ORD,
-                                 1000000000)
+      *  C4 - Fill a 64-byte buffer from the ICSF CSPRNG, 8 bytes per
+      *  CSNBRNG call. A non-zero ICSF return code fails closed (500).
+           MOVE SPACES              TO WS-RANDOM-BYTES
+           PERFORM VARYING WS-RNG-CALL FROM 1 BY 1
+                   UNTIL WS-RNG-CALL > 8 OR AUTH-ERROR
+               CALL 'CSNBRNG' USING WS-RNG-RC
+                                    WS-RNG-REASON
+                                    WS-RNG-EXIT-LEN
+                                    WS-RNG-EXIT-DATA
+                                    WS-RNG-FORM
+                                    WS-RNG-CHUNK
+               IF WS-RNG-RC = 0
+                   COMPUTE WS-RNG-BASE = (WS-RNG-CALL - 1) * 8 + 1
+                   MOVE WS-RNG-CHUNK
+                     TO WS-RANDOM-BYTES (WS-RNG-BASE:8)
+               ELSE
+                   SET AUTH-ERROR TO TRUE
+               END-IF
            END-PERFORM
 
-      *  Seed a small linear-congruential mixer from time, task and id.
-           MOVE WS-ABSTIME          TO WS-ABSTIME-9
-           MOVE EIBTASKN            TO WS-TASK-NUM
-           COMPUTE WS-STATE =
-               FUNCTION MOD (WS-ABSTIME-9 + WS-TASK-NUM
-                             + WS-USERID-NUM, 1000003)
-
-      *  Fill 64 opaque, non-sequential alphanumeric positions.
-           PERFORM VARYING WS-POS FROM 1 BY 1 UNTIL WS-POS > 64
-               COMPUTE WS-STATE =
-                   FUNCTION MOD (WS-STATE * 8121 + 28411 + WS-POS,
-                                 1000003)
-               COMPUTE WS-IDX = FUNCTION MOD (WS-STATE, 36) + 1
-               MOVE WS-ALPHABET (WS-IDX:1)
+      *  Map each random byte onto the [0-9A-Z] alphabet, preserving the
+      *  64-char token contract the router enforces.
+           IF AUTH-OK
+               PERFORM VARYING WS-POS FROM 1 BY 1 UNTIL WS-POS > 64
+                   MOVE WS-RANDOM-BYTES (WS-POS:1) TO WS-ONE-CHAR
+                   COMPUTE WS-ORD = FUNCTION ORD (WS-ONE-CHAR)
+                   COMPUTE WS-IDX = FUNCTION MOD (WS-ORD - 1, 36) + 1
+                   MOVE WS-ALPHABET (WS-IDX:1)
                                     TO WS-TOKEN-VALUE (WS-POS:1)
-           END-PERFORM
+               END-PERFORM
+           END-IF
 
       *  Expiry timestamp = current time + the fixed token lifetime.
            COMPUTE WS-EXP-ABSTIME = WS-ABSTIME + WS-TOKEN-LIFE-MS
            MOVE WS-EXP-ABSTIME      TO WS-FMT-ABSTIME
-           PERFORM 9200-FORMAT-TS.
+           PERFORM 9200-FORMAT-TS
+
+      *  M2 - any clock/format failure during minting fails closed.
+           IF TIME-BAD
+               SET AUTH-ERROR TO TRUE
+           END-IF.
 
       *----------------------------------------------------------------*
       *                     1300-WRITE-REGISTRY
-      *  Store the token record in the MAIN Temporary Storage Queue.
-      *  This is TSQ I/O (permitted), NOT a VSAM write. The queue name
-      *  is derived from the token hash for O(1) lookup.
+      *  M3 - Register the token in the MAIN TSQ (permitted TSQ I/O, NOT
+      *  a VSAM write). Probe the target queue first: write only if it
+      *  is absent or holds an expired/identical token. A live
+      *  token (hash collision) yields WRITE-COLLIDE so the caller
+      *  re-mints - a live entry is never destroyed. M1 - the 'AT' queue
+      *  prefix is matched by the CARDDEMOAPI TSMODEL (EXPIRYINT) so
+      *  never-re-presented tokens are reaped on a bounded lifecycle.
       *----------------------------------------------------------------*
        1300-WRITE-REGISTRY.
 
@@ -328,32 +456,120 @@
            PERFORM 9000-HASH-QNAME
            MOVE LENGTH OF WS-TOKEN-RECORD TO WS-Q-LEN
 
-      *  Remove any stale item under this queue name before writing.
-           EXEC CICS DELETEQ TS
+           PERFORM 1310-PROBE-REGISTRY
+           IF AUTH-OK
+               EVALUATE TRUE
+                   WHEN PROBE-ABSENT
+                       PERFORM 1320-WRITE-NEW
+                   WHEN PROBE-RECLAIMABLE
+                       PERFORM 1330-WRITE-REPLACE
+                   WHEN PROBE-COLLIDE-LIVE
+                       SET WRITE-COLLIDE TO TRUE
+                   WHEN OTHER
+                       SET AUTH-ERROR TO TRUE
+               END-EVALUATE
+           END-IF.
+
+      *----------------------------------------------------------------*
+      *                     1310-PROBE-REGISTRY
+      *  M3 - Read any existing item under the token's queue name to
+      *  classify the occupant before writing. QIDERR/ITEMERR -> absent
+      *  (safe to create); NORMAL -> classify (1315); any other RESP
+      *  fails closed.
+      *----------------------------------------------------------------*
+       1310-PROBE-REGISTRY.
+
+           SET PROBE-ABSENT TO TRUE
+           MOVE LENGTH OF WS-PROBE-RECORD TO WS-Q-LEN2
+
+           EXEC CICS READQ TS
                 QUEUE     (WS-QNAME)
+                INTO      (WS-PROBE-RECORD)
+                LENGTH    (WS-Q-LEN2)
+                ITEM      (1)
                 RESP      (WS-RESP-CD)
                 RESP2     (WS-REAS-CD)
            END-EXEC
-      *  QIDERR (queue absent) is expected on first use - ignore it.
+
+           EVALUATE WS-RESP-CD
+               WHEN DFHRESP(NORMAL)
+                   PERFORM 1315-CLASSIFY-OCCUPANT
+               WHEN DFHRESP(QIDERR)
+                   SET PROBE-ABSENT TO TRUE
+               WHEN DFHRESP(ITEMERR)
+                   SET PROBE-ABSENT TO TRUE
+               WHEN OTHER
+                   SET AUTH-ERROR TO TRUE
+           END-EVALUATE.
+
+      *----------------------------------------------------------------*
+      *                    1315-CLASSIFY-OCCUPANT
+      *  An identical stored token is reclaimable (harmless re-issue).
+      *  Otherwise compare the occupant expiry to the current time:
+      *  expired -> reclaimable, live -> collision. A clock failure
+      *  (TIME-BAD) fails closed so a live token is never overwritten.
+      *----------------------------------------------------------------*
+       1315-CLASSIFY-OCCUPANT.
+
+           IF PRB-VALUE = WS-TOKEN-VALUE
+               SET PROBE-RECLAIMABLE TO TRUE
+           ELSE
+               SET TIME-OK TO TRUE
+               PERFORM 9100-CURRENT-ABSTIME
+               MOVE WS-ABSTIME      TO WS-FMT-ABSTIME
+               PERFORM 9200-FORMAT-TS
+               MOVE WS-TS-26        TO WS-TS-NOW
+               IF TIME-BAD
+                   SET AUTH-ERROR TO TRUE
+               ELSE
+                   IF WS-TS-NOW > PRB-EXPIRY-TS
+                       SET PROBE-RECLAIMABLE TO TRUE
+                   ELSE
+                       SET PROBE-COLLIDE-LIVE TO TRUE
+                   END-IF
+               END-IF
+           END-IF.
+
+      *----------------------------------------------------------------*
+      *                       1320-WRITE-NEW
+      *  Create the registry item (queue absent).
+      *----------------------------------------------------------------*
+       1320-WRITE-NEW.
+
+           EXEC CICS WRITEQ TS
+                QUEUE     (WS-QNAME)
+                FROM      (WS-TOKEN-RECORD)
+                LENGTH    (WS-Q-LEN)
+                MAIN
+                RESP      (WS-RESP-CD)
+                RESP2     (WS-REAS-CD)
+           END-EXEC
            IF WS-RESP-CD = DFHRESP(NORMAL)
-              OR WS-RESP-CD = DFHRESP(QIDERR)
-               CONTINUE
+               SET WRITE-DONE TO TRUE
            ELSE
                SET AUTH-ERROR TO TRUE
-           END-IF
+           END-IF.
 
-           IF AUTH-OK
-               EXEC CICS WRITEQ TS
-                    QUEUE     (WS-QNAME)
-                    FROM      (WS-TOKEN-RECORD)
-                    LENGTH    (WS-Q-LEN)
-                    MAIN
-                    RESP      (WS-RESP-CD)
-                    RESP2     (WS-REAS-CD)
-               END-EXEC
-               IF WS-RESP-CD NOT = DFHRESP(NORMAL)
-                   SET AUTH-ERROR TO TRUE
-               END-IF
+      *----------------------------------------------------------------*
+      *                     1330-WRITE-REPLACE
+      *  Replace an expired or identical occupant in place (REWRITE).
+      *  Never reached for a live, different token (a collision).
+      *----------------------------------------------------------------*
+       1330-WRITE-REPLACE.
+
+           EXEC CICS WRITEQ TS
+                QUEUE     (WS-QNAME)
+                FROM      (WS-TOKEN-RECORD)
+                LENGTH    (WS-Q-LEN)
+                ITEM      (1)
+                REWRITE
+                RESP      (WS-RESP-CD)
+                RESP2     (WS-REAS-CD)
+           END-EXEC
+           IF WS-RESP-CD = DFHRESP(NORMAL)
+               SET WRITE-DONE TO TRUE
+           ELSE
+               SET AUTH-ERROR TO TRUE
            END-IF.
 
       *----------------------------------------------------------------*
@@ -454,24 +670,31 @@
       *                     2200-CHECK-TOKEN
       *  Guard against a hash collision (stored token must equal the
       *  presented token) then test expiry with a lexical compare of
-      *  the fixed-format timestamps.
+      *  the fixed-format timestamps. M2 - a clock/format failure fails
+      *  validation CLOSED (500), never OPEN on a blank timestamp.
       *----------------------------------------------------------------*
        2200-CHECK-TOKEN.
 
            IF TOK-VALUE NOT = API-TOKEN-VALUE
                PERFORM 1900-UNAUTHORIZED
            ELSE
+               SET TIME-OK TO TRUE
                PERFORM 9100-CURRENT-ABSTIME
                MOVE WS-ABSTIME      TO WS-FMT-ABSTIME
                PERFORM 9200-FORMAT-TS
                MOVE WS-TS-26        TO WS-TS-NOW
-               IF WS-TS-NOW > TOK-EXPIRY-TS
-                   PERFORM 2400-PURGE-EXPIRED
-                   PERFORM 1900-UNAUTHORIZED
+               IF TIME-BAD
+                   PERFORM 1950-SERVER-ERROR
                ELSE
-                   PERFORM 2300-TOKEN-VALID
+                   IF WS-TS-NOW > TOK-EXPIRY-TS
+                       PERFORM 2400-PURGE-EXPIRED
+                       PERFORM 1900-UNAUTHORIZED
+                   ELSE
+                       PERFORM 2300-TOKEN-VALID
+                   END-IF
                END-IF
            END-IF.
+
 
       *----------------------------------------------------------------*
       *                     2300-TOKEN-VALID
@@ -535,6 +758,10 @@
                 RESP2     (WS-REAS-CD)
            END-EXEC
            IF WS-RESP-CD NOT = DFHRESP(NORMAL)
+      *  M2 - fail CLOSED: a clock read error marks TIME-BAD so
+      *  mint and validate refuse to issue or honor a token with
+      *  an unreliable timestamp.
+               SET TIME-BAD TO TRUE
                MOVE ZEROS           TO WS-ABSTIME
            END-IF.
 
@@ -565,6 +792,10 @@
                       INTO WS-TS-26
                END-STRING
            ELSE
+      *  M2 - fail CLOSED on a format error: mark TIME-BAD and
+      *  blank the timestamp; callers treat TIME-BAD as a hard
+      *  500 rather than trusting a blank (low-sorting) expiry.
+               SET TIME-BAD TO TRUE
                MOVE SPACES          TO WS-TS-26
            END-IF.
       *

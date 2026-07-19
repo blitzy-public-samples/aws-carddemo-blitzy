@@ -127,6 +127,33 @@
            05  WS-TAB              PIC X(01) VALUE X'05'.
            05  WS-CR               PIC X(01) VALUE X'0D'.
            05  WS-LF               PIC X(01) VALUE X'25'.
+           05  WS-BS               PIC X(01) VALUE X'16'.
+           05  WS-FF               PIC X(01) VALUE X'0C'.
+      *    C0 control escaping (N3) loop controls.
+           05  WS-C0-COUNT         PIC S9(04) COMP VALUE 27.
+           05  WS-C0-IDX           PIC S9(04) COMP VALUE 0.
+           05  WS-C0-MATCHED       PIC X(01) VALUE 'N'.
+               88  WS-C0-IS-MATCH  VALUE 'Y'.
+               88  WS-C0-NO-MATCH  VALUE 'N'.
+
+      *----------------------------------------------------------------*
+      *    JSON C0 control-character escape tables (N3). Every byte
+      *    whose EBCDIC (IBM-037) code maps to a Unicode C0 control not
+      *    covered by a short escape (\b \t \n \f \r) is emitted as
+      *    \u00XX. WS-C0-BYTE(i) is the EBCDIC byte; WS-C0-HX(i) is the
+      *    paired Unicode hex. C0 mappings are identical across
+      *    IBM-037 / 500 / 1140, the code pages this region uses.
+      *----------------------------------------------------------------*
+       01  WS-C0-BYTE-VALUES.
+           05  FILLER  PIC X(27) VALUE
+           X'00010203372D2E2F0B0E0F101112133C3D322618193F271C1D1E1F'.
+       01  WS-C0-BYTE-TAB REDEFINES WS-C0-BYTE-VALUES.
+           05  WS-C0-BYTE          PIC X(01) OCCURS 27 TIMES.
+       01  WS-C0-HEX-VALUES.
+           05  FILLER  PIC X(54) VALUE
+           '00010203040506070B0E0F101112131415161718191A1B1C1D1E1F'.
+       01  WS-C0-HEX-TAB REDEFINES WS-C0-HEX-VALUES.
+           05  WS-C0-HX            PIC X(02) OCCURS 27 TIMES.
 
       *----------------------------------------------------------------*
       *                        LINKAGE SECTION
@@ -151,7 +178,7 @@
            05  JP-PARSE-RESULT     PIC X(256).
            05  JP-PARSE-RESULT-LEN PIC S9(04) COMP.
        01  JSON-BUFFER.
-           05  JB-DATA             PIC X(32000).
+           05  JB-DATA             PIC X(96000).
            05  JB-LEN              PIC S9(08) COMP.
 
       *----------------------------------------------------------------*
@@ -453,12 +480,12 @@
 
       *----------------------------------------------------------------*
       * 9000-APPEND-STR - append WS-APP-STR(1:WS-APP-LEN) to JB-DATA
-      * with a hard bounds check against the 32000-byte buffer.
+      * with a hard bounds check against the JB-DATA buffer length.
       *----------------------------------------------------------------*
        9000-APPEND-STR.
            IF WS-APP-LEN > 0
                COMPUTE WS-DEST-POS = JB-LEN + WS-APP-LEN
-               IF WS-DEST-POS > 32000
+               IF WS-DEST-POS > LENGTH OF JB-DATA
                    SET JP-ERROR TO TRUE
                ELSE
                    COMPUTE WS-DEST-POS = JB-LEN + 1
@@ -519,20 +546,48 @@
                WHEN WS-ESC-CHAR = '\'
                    MOVE '\\' TO WS-APP-STR(1:2)
                    MOVE 2 TO WS-APP-LEN
+               WHEN WS-ESC-CHAR = WS-BS
+                   MOVE '\b' TO WS-APP-STR(1:2)
+                   MOVE 2 TO WS-APP-LEN
                WHEN WS-ESC-CHAR = WS-TAB
                    MOVE '\t' TO WS-APP-STR(1:2)
-                   MOVE 2 TO WS-APP-LEN
-               WHEN WS-ESC-CHAR = WS-CR
-                   MOVE '\r' TO WS-APP-STR(1:2)
                    MOVE 2 TO WS-APP-LEN
                WHEN WS-ESC-CHAR = WS-LF
                    MOVE '\n' TO WS-APP-STR(1:2)
                    MOVE 2 TO WS-APP-LEN
+               WHEN WS-ESC-CHAR = WS-FF
+                   MOVE '\f' TO WS-APP-STR(1:2)
+                   MOVE 2 TO WS-APP-LEN
+               WHEN WS-ESC-CHAR = WS-CR
+                   MOVE '\r' TO WS-APP-STR(1:2)
+                   MOVE 2 TO WS-APP-LEN
                WHEN OTHER
-                   MOVE WS-ESC-CHAR TO WS-APP-STR(1:1)
-                   MOVE 1 TO WS-APP-LEN
+                   PERFORM 9320-ESCAPE-CONTROL
            END-EVALUATE
            PERFORM 9000-APPEND-STR.
+
+      *----------------------------------------------------------------*
+      * 9320-ESCAPE-CONTROL - a byte not covered by the five short
+      * escapes: if it is an EBCDIC C0 control, emit \u00XX for the
+      * matching Unicode code point; otherwise emit the byte verbatim.
+      * Only sets WS-APP-STR / WS-APP-LEN; 9310 performs the append.
+      *----------------------------------------------------------------*
+       9320-ESCAPE-CONTROL.
+           SET WS-C0-NO-MATCH TO TRUE
+           PERFORM VARYING WS-C0-IDX FROM 1 BY 1
+                   UNTIL WS-C0-IDX > WS-C0-COUNT
+                       OR WS-C0-IS-MATCH
+               IF WS-ESC-CHAR = WS-C0-BYTE(WS-C0-IDX)
+                   MOVE '\u00' TO WS-APP-STR(1:4)
+                   MOVE WS-C0-HX(WS-C0-IDX) TO WS-APP-STR(5:2)
+                   MOVE 6 TO WS-APP-LEN
+                   SET WS-C0-IS-MATCH TO TRUE
+               END-IF
+           END-PERFORM
+           IF WS-C0-NO-MATCH
+               MOVE WS-ESC-CHAR TO WS-APP-STR(1:1)
+               MOVE 1 TO WS-APP-LEN
+           END-IF.
 
       *----------------------------------------------------------------*
       * 9400-APPEND-RESULT-CHAR - append WS-RCHAR to the parser result

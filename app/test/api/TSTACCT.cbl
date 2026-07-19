@@ -71,6 +71,7 @@
        01  WS-TESTS-RUN              PIC 9(03)  VALUE ZEROS.
        01  WS-TESTS-PASS             PIC 9(03)  VALUE ZEROS.
        01  WS-TESTS-FAIL             PIC 9(03)  VALUE ZEROS.
+       01  WS-TESTS-SKIP             PIC 9(03)  VALUE ZEROS.
        01  WS-TEST-RC                PIC S9(04) VALUE ZEROS.
        01  WS-GOOD-ACCT              PIC 9(11)  VALUE 1.
        01  WS-BAD-ACCT               PIC 9(11)  VALUE 99999999999.
@@ -170,8 +171,10 @@
       ******************************************************************
       * 3000-TEST-ACCT-NEG : account 00000000888 exercises the NEGATIVE
       * signed-money decode path - balance -250.75 and cycle-credit
-      * -75.50.  Skipped (counts as PASS) when the additive fixture is
-      * not loaded and the service returns HTTP 404.
+      * -75.50.  When the additive fixture is not loaded the service
+      * returns HTTP 404 and the case is recorded as a release-blocking
+      * SKIP (it never counts as PASS), so an absent fixture cannot hide
+      * that the negative-money path was never actually exercised.
       ******************************************************************
        3000-TEST-ACCT-NEG.
            ADD 1 TO WS-TESTS-RUN
@@ -199,28 +202,38 @@
                        DISPLAY 'TSTACCT 3000 ACCT-NEG FAIL'
                    END-IF
                WHEN API-HTTP-NOT-FOUND
-                   ADD 1 TO WS-TESTS-PASS
-                   DISPLAY 'TSTACCT 3000 ACCT-NEG SKIP'
+                   ADD 1 TO WS-TESTS-SKIP
+                   DISPLAY 'TSTACCT 3000 ACCT-NEG SKIP-FIXTURE ABSENT'
                WHEN OTHER
                    ADD 1 TO WS-TESTS-FAIL
                    DISPLAY 'TSTACCT 3000 ACCT-NEG FAIL'
            END-EVALUATE
            .
       ******************************************************************
-      * 9000-REPORT : print run/pass/fail counts and an overall verdict.
-      * Sets WS-TEST-RC to 8 when any case failed, else ZERO.
+      * 9000-REPORT : print run/pass/fail/skip counts and the overall
+      * verdict, and publish RETURN-CODE for a batch / EXCI / started-
+      * transaction harness: 0 = all passed, 4 = a required fixture was
+      * absent so a case was skipped (release-blocking - load the
+      * fixture and rerun), 8 = an assertion failed.
       ******************************************************************
        9000-REPORT.
            DISPLAY 'TSTACCT RESULTS RUN=' WS-TESTS-RUN
                    ' PASS=' WS-TESTS-PASS
                    ' FAIL=' WS-TESTS-FAIL
+                   ' SKIP=' WS-TESTS-SKIP
            IF WS-TESTS-FAIL > ZERO
               MOVE 8 TO WS-TEST-RC
               DISPLAY 'TSTACCT RESULT: FAIL'
            ELSE
-              MOVE ZERO TO WS-TEST-RC
-              DISPLAY 'TSTACCT RESULT: PASS'
+              IF WS-TESTS-SKIP > ZERO
+                 MOVE 4 TO WS-TEST-RC
+                 DISPLAY 'TSTACCT RESULT: INCOMPLETE-FIXTURE ABSENT'
+              ELSE
+                 MOVE ZERO TO WS-TEST-RC
+                 DISPLAY 'TSTACCT RESULT: PASS'
+              END-IF
            END-IF
+           MOVE WS-TEST-RC TO RETURN-CODE
            .
       *
       * Ver: CardDemo_v1.0

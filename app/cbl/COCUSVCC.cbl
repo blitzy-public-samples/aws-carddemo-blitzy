@@ -82,6 +82,7 @@
                SET ADDRESS OF API-COMMAREA TO ADDRESS OF DFHCOMMAREA
                PERFORM 1000-READ-CUST
            END-IF
+           PERFORM 9000-SCRUB-SENSITIVE
            EXEC CICS RETURN
            END-EXEC
            .
@@ -207,6 +208,23 @@
            END-EVALUATE
            MOVE WS-GOVT-LAST4
              TO CUST-GOVT-ID-MASKED OF API-CUST-RESPONSE
+           .
+      *----------------------------------------------------------------*
+      * 9000-SCRUB-SENSITIVE : C3 - overwrite the raw customer record  *
+      * and every PII work field so no SSN, government id or           *
+      * demographic value survives in this task's storage after RETURN *
+      * (CWE-226 storage reuse / CWE-532 dump/trace capture). The      *
+      * masked API-PAYLOAD already handed to the caller is left as-is. *
+      *----------------------------------------------------------------*
+       9000-SCRUB-SENSITIVE.
+           MOVE SPACES TO CUSTOMER-RECORD
+           MOVE SPACES TO API-CUST-RESPONSE
+           MOVE ZEROS  TO WS-CUST-KEY
+           MOVE ZEROS  TO WS-SSN-X
+           MOVE SPACES TO WS-SSN-LAST4
+           MOVE SPACES TO WS-SSN-MASK
+           MOVE SPACES TO WS-GOVT-WORK
+           MOVE SPACES TO WS-GOVT-LAST4
            .
       ******************************************************************
       * Ver: CardDemo REST/JSON API - COCUSVCC v1.0

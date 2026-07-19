@@ -38,8 +38,11 @@
       * the per-account list resolves the account to its card number(s)
       * through the CXACAIX cross-reference path and then browses the
       * base TRANSACT file, filtering records by card number in
-      * application logic. Data access is strictly READ / STARTBR /
-      * READNEXT / ENDBR - there is no WRITE, REWRITE or DELETE.
+      * application logic. This costs O(records x cards) per request
+      * and is bounded by WS-MAX-SCAN; a keyed index is a known backlog
+      * item (see docs/decision-log.md). Data access is strictly READ /
+      * STARTBR / READNEXT / ENDBR - there is no WRITE, REWRITE or
+      * DELETE.
       *
       * Security: the card number is always masked to the last four
       * digits before it leaves this program and the card security
@@ -93,11 +96,13 @@
                88  WS-BROWSE-NO-ERROR         VALUE 'N'.
       *
       * Named capacity / guard limits (no magic numbers). WS-MAX-CARDS
-      * MUST equal the WS-CT-CARD-NUM OCCURS count below. Exceeding any
-      * limit surfaces a deterministic 500 - never a silent stop or an
-      * undisclosed partial result.
+      * MUST equal the WS-CT-CARD-NUM OCCURS count below. WS-MAX-TRANS
+      * MUST equal the TRAN-LIST-ENTRY OCCURS max in COAPTRNY so a full
+      * list fits the JSON buffer. Reaching WS-MAX-TRANS discloses a
+      * truncated list (truncated='Y', HTTP 200); a WS-MAX-CARDS or
+      * WS-MAX-SCAN breach surfaces a deterministic 500.
            05  WS-MAX-CARDS         PIC 9(03) VALUE 50.
-           05  WS-MAX-TRANS         PIC 9(04) VALUE 500.
+           05  WS-MAX-TRANS         PIC 9(04) VALUE 50.
            05  WS-MAX-SCAN          PIC 9(09) VALUE 1000000.
            05  WS-SCAN-COUNT        PIC 9(09) VALUE ZEROS.
            05  WS-PUT-ERR-FLG       PIC X(01) VALUE 'N'.
@@ -631,8 +636,9 @@
       *
       *--------------------------------------------------------*
       * 3220-FILTER-AND-ADD : keep the record only when its card number
-      * belongs to the requested account. The list is capped at 500
-      * entries; a 501st match flags truncation and stops the browse.
+      * belongs to the requested account. The list is capped at
+      * WS-MAX-TRANS entries; a match beyond the cap flags truncation
+      * (truncated='Y') and stops the browse - a disclosed partial list.
       *--------------------------------------------------------*
        3220-FILTER-AND-ADD.
       *
@@ -647,13 +653,13 @@
            END-PERFORM
       *
       * A matching record beyond the supported list size cannot be
-      * represented in the fixed ODO table. Returning a silently
-      * truncated list would misrepresent the account, so the request
-      * fails deterministically with a 500 instead of an undisclosed
-      * partial result (F55).
+      * represented in the fixed ODO table. Rather than a silent stop,
+      * the list is flagged truncated (truncated='Y') and the browse
+      * ends, so the caller receives a disclosed partial list with
+      * HTTP 200 - never an undisclosed partial result (F55).
            IF WS-CARD-MATCHED
                IF TRAN-LIST-COUNT >= WS-MAX-TRANS
-                  SET WS-BROWSE-ERROR TO TRUE
+                  SET TRAN-LIST-WAS-TRUNCATED TO TRUE
                   SET WS-BROWSE-DONE TO TRUE
                ELSE
                   ADD 1 TO TRAN-LIST-COUNT

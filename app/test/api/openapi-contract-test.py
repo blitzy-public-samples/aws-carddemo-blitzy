@@ -27,31 +27,67 @@ variable; otherwise it is resolved relative to this file at
 ``../../api/openapi.yaml``. The process exit code is ``1`` when any real
 contract check fails and ``0`` on success or on a graceful SKIP. Non-fatal WARN
 lines never force a nonzero exit on their own.
+
+Set ``RELEASE_MODE=1`` to run the strict release gate: a missing optional
+dependency or a missing spec then FAILs (exit 1) instead of SKIPping (exit 0).
+Install the pinned dependencies first::
+
+    python3 -m pip install -r app/test/api/requirements-test.txt
 """
 
 import os
 import sys
 import re
 import json
+import copy
 import warnings
 
-# --- Optional dependency imports with graceful SKIP ------------------------
-# PyYAML is required to parse the OpenAPI document; jsonschema powers the
-# structural $ref validation layer. Either being absent yields a SKIP / exit 0
-# rather than a hard failure, because this test must be safe to run in a
-# stripped-down environment and must never attempt a network install.
+# --- Release (strict) mode gate --------------------------------------------
+# RELEASE_MODE=1 (also true/yes/on) turns the graceful degradations into hard
+# failures so a release gate cannot go green when the contract was never
+# actually validated: a missing optional dependency or a missing spec then
+# prints a FAIL and exits nonzero instead of printing SKIP and exiting 0. The
+# pinned, reproducible dependency set lives in
+# ``app/test/api/requirements-test.txt`` (PyYAML and jsonschema); install it
+# before a release run:
+#     python3 -m pip install -r app/test/api/requirements-test.txt
+# The default (unset / 0) keeps the developer-friendly SKIP-on-absence
+# behaviour so the test never blocks a minimal build.
+RELEASE_MODE = os.environ.get("RELEASE_MODE", "0").strip().lower() in (
+    "1", "true", "yes", "on",
+)
+
+
+def _skip_or_fail(message):
+    """Handle an absent optional dependency or spec.
+
+    Default mode: graceful SKIP (exit 0) so the test never blocks a minimal
+    build. Release mode: hard FAIL (exit 1) so an incomplete validation can
+    never pass the gate. This function does not return.
+    """
+    if RELEASE_MODE:
+        print("FAIL: " + message + " (required in RELEASE_MODE)")
+        sys.exit(1)
+    print("SKIP: " + message)
+    sys.exit(0)
+
+
+# --- Optional dependency imports (graceful SKIP / release FAIL) -------------
+# PyYAML parses the OpenAPI document; jsonschema powers the structural $ref
+# validation layer. Either being absent yields a SKIP (exit 0) by default or a
+# FAIL (exit 1) in release mode. The pinned versions are declared in
+# requirements-test.txt. This test NEVER installs packages and performs no
+# network access.
 try:
     import yaml
 except Exception:
-    print("SKIP: PyYAML not available")
-    sys.exit(0)
+    _skip_or_fail("PyYAML not available")
 
 try:
     import jsonschema  # noqa: F401  (imported to confirm availability)
     from jsonschema import Draft7Validator
 except Exception:
-    print("SKIP: jsonschema not available")
-    sys.exit(0)
+    _skip_or_fail("jsonschema not available")
 
 
 # --- Canonical patterns (kept in one place; also asserted against the spec) -
@@ -233,9 +269,20 @@ CUSTOMER_EXAMPLE = {
     "data": {
         "customerId": "000000001",
         "firstName": "IMMANUEL",
+        "middleName": "Q",
         "lastName": "PUBLIC",
+        "addressLine1": "123 MAIN ST",
+        "addressLine2": "APT 4B",
+        "addressLine3": "SPRINGFIELD",
+        "stateCode": "IL",
+        "countryCode": "USA",
+        "addressZip": "62704",
+        "phone1": "+1-217-555-0100",
+        "phone2": "+1-217-555-0101",
         "ssnMasked": "XXX-XX-6789",
         "govtIdMasked": "6789",
+        "dateOfBirth": "1980-05-20",
+        "primaryCardHolderIndicator": "Y",
         "ficoCreditScore": 274,
     }
 }
@@ -263,9 +310,16 @@ TRANSACTION_LIST_EXAMPLE = {
                 "transactionId": "0000000000683580",
                 "typeCode": "01",
                 "categoryCode": "0001",
+                "source": "POS",
                 "description": "POS PURCHASE - ACME STORE",
                 "amount": "504.77",
+                "merchantId": "000012345",
+                "merchantName": "ACME STORE",
+                "merchantCity": "SPRINGFIELD",
+                "merchantZip": "62704",
                 "cardNumberMasked": "************7065",
+                "originTimestamp": "2022-07-19 23:16:01.000000",
+                "processTimestamp": "2022-07-20 02:00:00.000000",
             }
         ],
         "count": 1,
@@ -285,9 +339,16 @@ TRANSACTION_EXAMPLE = {
         "transactionId": "0000000000683580",
         "typeCode": "01",
         "categoryCode": "0001",
+        "source": "POS",
         "description": "POS PURCHASE - ACME STORE",
         "amount": "504.77",
+        "merchantId": "000012345",
+        "merchantName": "ACME STORE",
+        "merchantCity": "SPRINGFIELD",
+        "merchantZip": "62704",
         "cardNumberMasked": "************7065",
+        "originTimestamp": "2022-07-19 23:16:01.000000",
+        "processTimestamp": "2022-07-20 02:00:00.000000",
     }
 }
 ERROR_EXAMPLE = {
@@ -810,6 +871,224 @@ def run_path_wired_validation(spec):
                         "declared 200 schema" % label)
 
 
+# --- Per-operation structural contract -------------------------------------
+# The EXACT declared contract per operation: (200 success envelope schema, the
+# complete set of response status codes, is-public). Asserting this operation
+# by operation catches a drifted status set, a rewired 200 schema, or a missing
+# security requirement precisely -- rather than by broad text presence.
+OPERATION_CONTRACT = {
+    "signon": ("SignonResponse", {"200", "400", "401", "500"}, True),
+    "getAccount": ("AccountResponse",
+                   {"200", "400", "401", "404", "500"}, False),
+    "getCustomer": ("CustomerResponse",
+                    {"200", "400", "401", "404", "500"}, False),
+    "getCard": ("CardResponse",
+                {"200", "400", "401", "404", "500"}, False),
+    "getCardXref": ("XrefResponse",
+                    {"200", "400", "401", "404", "500"}, False),
+    "listAccountTransactions": ("TransactionListResponse",
+                                {"200", "400", "401", "404", "500"}, False),
+    "getTransaction": ("TransactionResponse",
+                       {"200", "400", "401", "404", "500"}, False),
+}
+# Every declared error status must ultimately carry the ErrorResponse envelope.
+ERROR_STATUSES = frozenset({"400", "401", "404", "500"})
+
+
+def _ref_name(node):
+    """Return the trailing component name of a ``{'$ref': '#/.../Name'}`` node,
+    or ``None`` when ``node`` is not such a reference."""
+    if isinstance(node, dict) and isinstance(node.get("$ref"), str):
+        return node["$ref"].rsplit("/", 1)[-1]
+    return None
+
+
+def _resolves_to_error_response(spec, response_node):
+    """True when a response node -- possibly a ``$ref`` into
+    ``components.responses`` -- ultimately declares an ``application/json``
+    schema that is the ``ErrorResponse`` envelope."""
+    node = response_node
+    ref = _ref_name(node)
+    if ref is not None:
+        node = spec.get("components", {}).get("responses", {}).get(ref, {})
+    try:
+        schema = node["content"]["application/json"]["schema"]
+    except Exception:
+        return False
+    return _ref_name(schema) == "ErrorResponse"
+
+
+def _op_requires_bearer(operation, spec):
+    """True when the operation effectively requires the ``bearerAuth`` scheme,
+    honouring an operation-level ``security`` override of the global default."""
+    sec = operation.get("security")
+    if sec is None:
+        sec = spec.get("security", [])  # no override: global requirement
+    return any("bearerAuth" in (req or {}) for req in sec)
+
+
+def run_per_operation_checks(spec):
+    """Assert the exact per-operation contract for all seven operations: the
+    200 success envelope schema wiring, the complete status-code set, that
+    every error status resolves to ``ErrorResponse``, and the security policy
+    (``POST /signon`` public; every GET requires the bearer token). Also asserts
+    the ``bearerAuth`` scheme definition and the exact ``Error.code`` enum.
+    """
+    paths = spec.get("paths", {})
+    op_index = {}
+    for path, item in paths.items():
+        if not isinstance(item, dict):
+            continue
+        for method, operation in item.items():
+            if method.lower() in HTTP_METHODS and isinstance(operation, dict):
+                opid = operation.get("operationId")
+                if opid:
+                    op_index[opid] = (path, method.lower(), operation)
+
+    for opid, (schema_name, statuses, public) in OPERATION_CONTRACT.items():
+        if opid not in op_index:
+            record_fail("per-op: operation %s is absent from the spec" % opid)
+            continue
+        _path, _method, operation = op_index[opid]
+        responses = operation.get("responses", {}) or {}
+
+        # (a) 200 success envelope schema is wired to the exact component.
+        try:
+            got = _ref_name(
+                responses["200"]["content"]["application/json"]["schema"]
+            )
+        except Exception:
+            got = None
+        if got == schema_name:
+            record_pass("per-op: %s 200 -> %s" % (opid, schema_name))
+        else:
+            record_fail("per-op: %s 200 schema is %r, expected %s"
+                        % (opid, got, schema_name))
+
+        # (b) the declared status-code set is EXACTLY the expected set.
+        declared = {str(k) for k in responses.keys()}
+        if declared == statuses:
+            record_pass("per-op: %s declares exactly statuses %s"
+                        % (opid, sorted(statuses)))
+        else:
+            record_fail("per-op: %s statuses %s != expected %s"
+                        % (opid, sorted(declared), sorted(statuses)))
+
+        # (c) every error status resolves to the ErrorResponse envelope.
+        for status in sorted(ERROR_STATUSES & statuses):
+            if status in responses and _resolves_to_error_response(
+                    spec, responses[status]):
+                record_pass("per-op: %s %s -> ErrorResponse" % (opid, status))
+            else:
+                record_fail("per-op: %s %s does not resolve to ErrorResponse"
+                            % (opid, status))
+
+        # (d) security policy: signon public; every GET requires the token.
+        requires = _op_requires_bearer(operation, spec)
+        if public and not requires:
+            record_pass("per-op: %s is public (no bearer requirement)" % opid)
+        elif public and requires:
+            record_fail("per-op: %s must be public but requires a token" % opid)
+        elif (not public) and requires:
+            record_pass("per-op: %s requires the bearer token" % opid)
+        else:
+            record_fail("per-op: %s must require the bearer token but does not"
+                        % opid)
+
+    # (e) the bearerAuth security scheme is declared as HTTP bearer.
+    scheme = (spec.get("components", {}).get("securitySchemes", {})
+              .get("bearerAuth", {}))
+    if (scheme.get("type") == "http"
+            and str(scheme.get("scheme", "")).lower() == "bearer"):
+        record_pass("per-op: bearerAuth is an http bearer security scheme")
+    else:
+        record_fail("per-op: bearerAuth scheme missing or not http/bearer")
+
+    # (f) Error.code enum is EXACTLY the four fixed error codes.
+    enum = (spec.get("components", {}).get("schemas", {}).get("Error", {})
+            .get("properties", {}).get("code", {}).get("enum"))
+    if (isinstance(enum, list)
+            and set(enum) == set(REQUIRED_ERROR_CODES)
+            and len(enum) == len(REQUIRED_ERROR_CODES)):
+        record_pass("per-op: Error.code enum == the four fixed error codes")
+    else:
+        record_fail("per-op: Error.code enum is %r, expected %s"
+                    % (enum, REQUIRED_ERROR_CODES))
+
+
+# --- Negative mutation tests -----------------------------------------------
+# The happy-path examples only prove the schema ACCEPTS good data. These cases
+# prove it REJECTS bad data: each deep-copies a valid example, applies exactly
+# one mutation, and asserts the declared envelope schema now reports >= 1 error.
+# A mutation that still validates means the schema is too permissive (a FAIL).
+NEGATIVE_MUTATIONS = [
+    ("AccountResponse", "ACCOUNT_EXAMPLE",
+     lambda e: e["data"].__setitem__("unexpectedField", "x"),
+     "unknown property under data (additionalProperties:false)"),
+    ("AccountResponse", "ACCOUNT_EXAMPLE",
+     lambda e: e.__setitem__("unexpectedTop", 1),
+     "unknown top-level property (envelope additionalProperties:false)"),
+    ("AccountResponse", "ACCOUNT_EXAMPLE",
+     lambda e: e["data"].pop("accountId", None),
+     "missing required Account.accountId"),
+    ("CardResponse", "CARD_EXAMPLE",
+     lambda e: e["data"].__setitem__("cardNumberMasked", "0500024453765740"),
+     "raw 16-digit PAN in cardNumberMasked (MaskedPan pattern)"),
+    ("AccountResponse", "ACCOUNT_EXAMPLE",
+     lambda e: e["data"].__setitem__("currentBalance", "12.3"),
+     "monetary value with one fraction digit (MonetaryAmount pattern)"),
+    ("ErrorResponse", "ERROR_EXAMPLE",
+     lambda e: e["error"].__setitem__("code", "TEAPOT"),
+     "error.code outside the fixed enum"),
+    ("ErrorResponse", "ERROR_EXAMPLE",
+     lambda e: e["error"].__setitem__("message", ""),
+     "empty error.message (minLength:1)"),
+    ("TransactionListResponse", "TRANSACTION_LIST_EXAMPLE",
+     lambda e: e["data"].pop("count", None),
+     "missing required TransactionList.count"),
+    ("TransactionListResponse", "TRANSACTION_LIST_EXAMPLE",
+     lambda e: e["data"].__setitem__("truncated", "yes"),
+     "truncated as a string instead of boolean"),
+]
+_EXAMPLE_BY_NAME = {
+    "ACCOUNT_EXAMPLE": ACCOUNT_EXAMPLE,
+    "CARD_EXAMPLE": CARD_EXAMPLE,
+    "ERROR_EXAMPLE": ERROR_EXAMPLE,
+    "TRANSACTION_LIST_EXAMPLE": TRANSACTION_LIST_EXAMPLE,
+}
+
+
+def run_negative_mutation_checks(spec):
+    """Each mutated example MUST be rejected by its envelope schema; a mutation
+    that still validates means the schema is too permissive and is a FAIL. This
+    is what raises the test above validating only self-authored happy examples:
+    it exercises additionalProperties, required, enum, minLength, type, and the
+    monetary / masked-PAN string patterns as ENFORCED constraints.
+    """
+    schemas = spec.get("components", {}).get("schemas", {})
+    for envelope, example_name, mutate, label in NEGATIVE_MUTATIONS:
+        if envelope not in schemas:
+            record_fail("negative: envelope %s absent (cannot test %s)"
+                        % (envelope, label))
+            continue
+        example = copy.deepcopy(_EXAMPLE_BY_NAME[example_name])
+        mutate(example)
+        try:
+            validator = validator_for(
+                "#/components/schemas/" + envelope, spec
+            )
+            errs = list(validator.iter_errors(example))
+        except Exception as exc:  # defensive: never crash the whole run
+            record_fail("negative: %s validation raised %r" % (label, exc))
+            continue
+        if errs:
+            record_pass("negative: %s correctly rejected by %s"
+                        % (label, envelope))
+        else:
+            record_fail("negative: %s NOT rejected by %s (schema too permissive)"
+                        % (label, envelope))
+
+
 # --- Spec resolution and entry point ---------------------------------------
 def resolve_spec_path():
     """Resolve the OpenAPI spec path from ``OPENAPI_SPEC`` or relative to here.
@@ -830,7 +1109,12 @@ def main():
     spec_path = resolve_spec_path()
     if not os.path.isfile(spec_path):
         # The spec is authored by a sibling program and may be absent when this
-        # test is run standalone; that is a graceful SKIP, not a failure.
+        # test is run standalone; that is a graceful SKIP by default, but a hard
+        # FAIL in release mode (the contract cannot be validated without it).
+        if RELEASE_MODE:
+            print("FAIL: openapi.yaml not found at %s (required in RELEASE_MODE)"
+                  % spec_path)
+            return 1
         print("SKIP: openapi.yaml not found at " + spec_path)
         return 0
     try:
@@ -849,6 +1133,8 @@ def main():
     run_operation_checks(spec)
     run_property_safety_checks(spec)
     run_path_wired_validation(spec)
+    run_per_operation_checks(spec)
+    run_negative_mutation_checks(spec)
 
     checks = len(_passes) + len(_fails)
     print("SUMMARY: checks=%d passed=%d failed=%d"

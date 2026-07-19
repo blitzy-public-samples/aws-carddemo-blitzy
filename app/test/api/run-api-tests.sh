@@ -24,7 +24,7 @@
 # -----------------------------------------------------------------------------
 #   API_SCHEME  URL scheme for the region endpoint            (default: http)
 #   API_HOST    CICS Web Support host                         (default: localhost)
-#   API_PORT    TCPIPSERVICE listener port (operator-chosen)  (default: 8080)
+#   API_PORT    TCPIPSERVICE listener port (matches CSD def)  (default: 3001)
 #   API_BASE    API base path from openapi.yaml servers.url   (default: /carddemo/api/v1)
 #   BASE_URL    Derived: ${API_SCHEME}://${API_HOST}:${API_PORT}${API_BASE}
 #
@@ -40,7 +40,17 @@
 #
 #   FAULT_PATH  Optional operator-provided route that forces  (default: <unset>)
 #               a controlled 500; when unset the 500 check is
-#               SKIPPED (never counted as a failure).
+#               SKIPPED in default mode / FAILED in release mode.
+#               MUST be same-origin (a path, or a URL whose
+#               scheme://host:port equals the target); a
+#               cross-origin URL is rejected so the bearer token
+#               can never be sent to a foreign host.
+#
+#   RELEASE_MODE Strict gate: 1/true/yes/on make jq REQUIRED and  (default: 0)
+#               every optional scenario (500, duplicate sign-on,
+#               extra-segment routing, list cap, negative-amount
+#               matrix, unknown-token) MANDATORY. 0 keeps the
+#               developer-friendly optional behaviour.
 #
 # NOTE ON EMPTY_ACCT: it MUST be a *valid-but-cardless* account, i.e. an account
 # that resolves to zero cross-referenced cards. All shipped ASCII fixtures seed
@@ -84,7 +94,10 @@ set -o pipefail
 # ---- Endpoint / connection configuration (env-overridable) ------------------
 API_SCHEME="${API_SCHEME:-http}"
 API_HOST="${API_HOST:-localhost}"
-API_PORT="${API_PORT:-8080}"
+# Default matches the authoritative TCPIPSERVICE(CDAPISVC) PORTNUMBER in
+# app/csd/CARDDEMOAPI.CSD (3001). Override with API_PORT for a region that
+# installs the listener on a different operator-chosen port.
+API_PORT="${API_PORT:-3001}"
 API_BASE="${API_BASE:-/carddemo/api/v1}"
 BASE_URL="${API_SCHEME}://${API_HOST}:${API_PORT}${API_BASE}"
 
@@ -117,6 +130,21 @@ FAULT_PATH="${FAULT_PATH:-}"
 API_CONNECT_TIMEOUT="${API_CONNECT_TIMEOUT:-5}"
 API_MAX_TIME="${API_MAX_TIME:-30}"
 
+# ---- Release (strict) mode --------------------------------------------------
+# RELEASE_MODE=1 turns every optional degradation into a hard requirement so a
+# release gate cannot go green while coverage is silently incomplete:
+#   * jq becomes a REQUIRED dependency (precise JSON extraction is mandatory);
+#   * the 500 fault-injection scenario is MANDATORY -- FAULT_PATH must be set,
+#     otherwise the missing 500 check is recorded as a FAIL, not a SKIP;
+#   * every extended scenario (duplicate sign-on, extra-segment routing, list
+#     cap, negative-amount matrix, well-formed-but-unknown token) is asserted.
+# The default (0) keeps the developer-friendly behaviour: jq optional, the 500
+# scenario skipped when no fault route is supplied. Accept 1/true/yes/on.
+case "${RELEASE_MODE:-0}" in
+    1|true|TRUE|yes|YES|on|ON) RELEASE_MODE=1 ;;
+    *)                         RELEASE_MODE=0 ;;
+esac
+
 # -----------------------------------------------------------------------------
 # Command-line options
 # -----------------------------------------------------------------------------
@@ -141,13 +169,15 @@ usage() {
 '' \
 '  API_SCHEME           URL scheme                     (default: http)' \
 '  API_HOST             CICS Web Support host          (default: localhost)' \
-'  API_PORT             TCPIPSERVICE listener port     (default: 8080)' \
+'  API_PORT             TCPIPSERVICE listener port     (default: 3001)' \
 '  API_BASE             API base path                  (default: /carddemo/api/v1)' \
 '  API_USER             CardDemo user id               (default: USER0001)' \
 '  API_PASS             Password for API_USER          (default: PASSWORD)' \
 '  ACCT_OK CUST_OK CARD_OK TRAN_OK LIST_ACCT EMPTY_ACCT' \
 '                       Valid fixture identifiers      (see CONFIGURATION header)' \
-'  FAULT_PATH           Route forcing a 500            (default: unset -> skipped)' \
+'  FAULT_PATH           Same-origin route forcing 500  (default: unset -> skipped)' \
+'  RELEASE_MODE         Strict gate (1 => jq + all      (default: 0)' \
+'                       scenarios mandatory)' \
 '  API_CONNECT_TIMEOUT  curl connect timeout, seconds  (default: 5)' \
 '  API_MAX_TIME         curl total timeout, seconds    (default: 30)' \
 '' \
@@ -190,12 +220,17 @@ if ! command -v curl >/dev/null 2>&1; then
     exit 2
 fi
 
-# jq is OPTIONAL: when present it is used for precise JSON extraction; otherwise
-# the script falls back to portable grep/sed parsing. HAVE_JQ is 1 or 0.
+# jq is OPTIONAL in default mode (grep/sed fallback) but REQUIRED in release
+# mode, where precise JSON extraction is mandatory so a partially-parseable
+# body cannot slip a malformed field past the grep fallback. HAVE_JQ is 1 or 0.
 if command -v jq >/dev/null 2>&1; then
     HAVE_JQ=1
 else
     HAVE_JQ=0
+    if [ "$RELEASE_MODE" -eq 1 ]; then
+        printf 'ERROR: jq is required in RELEASE_MODE but was not found on PATH.\n' >&2
+        exit 2
+    fi
     printf 'NOTE: jq not found; using grep/sed fallback for JSON parsing.\n' >&2
 fi
 
@@ -210,10 +245,21 @@ fi
 #          payloads.
 # HDRS     holds the response headers (curl -D) of the most recent call so the
 #          response Content-Type can be asserted (must be application/json).
+# CURL_CFG holds a per-call curl --config (-K) file carrying the URL, method,
+#          headers (including Authorization: Bearer ...) and a reference to the
+#          request-body file. REQ_BODY holds the request body (which carries the
+#          sign-on password). Both are created mode 0600 and rewritten on every
+#          call so NO secret (password, bearer token) and no PAN-bearing URL is
+#          ever placed on the curl argv, where it could surface in process
+#          diagnostics such as `ps` (CWE-214). The whole set is removed on exit.
+umask 077
 BODY="$(mktemp)"
 RESP_ALL="$(mktemp)"
 HDRS="$(mktemp)"
-trap 'rm -f "$RESP_ALL" "$BODY" "$HDRS"' EXIT
+CURL_CFG="$(mktemp)"
+REQ_BODY="$(mktemp)"
+chmod 600 "$BODY" "$RESP_ALL" "$HDRS" "$CURL_CFG" "$REQ_BODY"
+trap 'rm -f "$RESP_ALL" "$BODY" "$HDRS" "$CURL_CFG" "$REQ_BODY"' EXIT
 
 # -----------------------------------------------------------------------------
 # Counters and issued bearer token
@@ -248,25 +294,40 @@ http_call() {
     local data="${3:-}"
     local auth="${4:-}"
 
-    local -a curl_args=(
-        -s
-        -o "$BODY"
-        -D "$HDRS"
-        -w '%{http_code}'
-        -X "$method"
-        -H 'Accept: application/json'
-        --connect-timeout "$API_CONNECT_TIMEOUT"
-        --max-time "$API_MAX_TIME"
-    )
+    # Build a per-call curl config file (-K). Every sensitive value -- the URL
+    # (which may embed a full PAN for /cards and /xref), the Authorization
+    # bearer token, and the request body (which carries the sign-on password)
+    # -- lives ONLY inside this mode-0600 file, never on the curl command line.
+    # The config file is rewritten (truncated) each call, and the request-body
+    # file is emptied when a call sends no body so a prior password cannot
+    # linger. Only "-K <cfg>" is ever visible in the process argv.
+    : > "$CURL_CFG"
+    : > "$REQ_BODY"
+    {
+        printf 'url = "%s"\n' "$url"
+        printf 'request = "%s"\n' "$method"
+        printf 'output = "%s"\n' "$BODY"
+        printf 'dump-header = "%s"\n' "$HDRS"
+        printf 'write-out = "%%{http_code}"\n'
+        printf 'silent\n'
+        printf 'connect-timeout = "%s"\n' "$API_CONNECT_TIMEOUT"
+        printf 'max-time = "%s"\n' "$API_MAX_TIME"
+        printf 'header = "Accept: application/json"\n'
+    } > "$CURL_CFG"
 
     if [ -n "$data" ]; then
-        curl_args+=(-H 'Content-Type: application/json' --data "$data")
+        # Body -> its own 0600 file, referenced as data = "@file"; the JSON
+        # (with its embedded quotes and the password) never touches argv or the
+        # config-file quoting rules.
+        printf '%s' "$data" > "$REQ_BODY"
+        printf 'header = "Content-Type: application/json"\n' >> "$CURL_CFG"
+        printf 'data = "@%s"\n' "$REQ_BODY" >> "$CURL_CFG"
     fi
 
     if [ "$auth" = "auth" ]; then
-        curl_args+=(-H "Authorization: Bearer ${TOKEN}")
+        printf 'header = "Authorization: Bearer %s"\n' "$TOKEN" >> "$CURL_CFG"
     elif [ -n "$auth" ]; then
-        curl_args+=(-H "Authorization: Bearer ${auth}")
+        printf 'header = "Authorization: Bearer %s"\n' "$auth" >> "$CURL_CFG"
     fi
 
     # Start from a clean body and header dump so a connection failure cannot
@@ -275,11 +336,15 @@ http_call() {
     : > "$HDRS"
 
     local code
-    code="$(curl "${curl_args[@]}" "$url")" || code="000"
+    code="$(curl -K "$CURL_CFG")" || code="000"
 
     # Accumulate the RESPONSE body only, with a newline separator.
     cat "$BODY" >> "$RESP_ALL"
     printf '\n' >> "$RESP_ALL"
+
+    # Scrub the request-body file immediately so the password does not persist
+    # on disk between calls (belt-and-braces alongside the EXIT trap rm).
+    : > "$REQ_BODY"
 
     printf '%s' "$code"
 }
@@ -435,6 +500,28 @@ check_data_envelope() {
     fi
 }
 
+# jq_assert LABEL FILTER
+# Precise JSON assertion over the CURRENT $BODY: FILTER must evaluate truthy for
+# a PASS. These are the EXACT-schema checks the release gate depends on, so they
+# require jq. Outside RELEASE_MODE (where jq may be absent) a missing jq records
+# a NOTE and does not count; inside RELEASE_MODE jq is guaranteed present, so
+# every such assertion runs. MUST be called immediately after the request under
+# test, before the next http_call overwrites $BODY.
+jq_assert() {
+    local label="$1"
+    local filter="$2"
+    if [ "$HAVE_JQ" -ne 1 ]; then
+        printf 'NOTE: %s requires jq; skipped (jq is mandatory in RELEASE_MODE)\n' \
+            "$label" >&2
+        return
+    fi
+    if jq -e "$filter" "$BODY" >/dev/null 2>&1; then
+        record_pass "$label"
+    else
+        record_fail "$label"
+    fi
+}
+
 
 # -----------------------------------------------------------------------------
 # Test execution
@@ -462,28 +549,53 @@ printf '\n-- 2. Positive inquiries (expect 200) --\n'
 status="$(http_call GET "${BASE_URL}/accounts/${ACCT_OK}" "" auth)"
 check_status 200 "$status" "GET /accounts/{acctId}"
 check_data_envelope "GET /accounts/{acctId}" "accountId"
+# Exact schema: every documented Account field present, and each of the five
+# monetary fields is a signed decimal with exactly two fraction digits (the
+# negative-amount matrix is enforced by the '^-?' below and over the corpus).
+jq_assert "schema: account has all 11 required fields" \
+    '.data|has("accountId") and has("activeStatus") and has("currentBalance") and has("creditLimit") and has("cashCreditLimit") and has("openDate") and has("expirationDate") and has("reissueDate") and has("currentCycleCredit") and has("currentCycleDebit") and has("groupId")'
+jq_assert "schema: account monetary fields are signed 2dp decimals" \
+    '[.data.currentBalance,.data.creditLimit,.data.cashCreditLimit,.data.currentCycleCredit,.data.currentCycleDebit]|all(type=="string" and test("^-?[0-9]+[.][0-9]{2}$"))'
 
 status="$(http_call GET "${BASE_URL}/customers/${CUST_OK}" "" auth)"
 check_status 200 "$status" "GET /customers/{custId}"
 check_data_envelope "GET /customers/{custId}" "customerId"
+# Exact schema: SSN / government id appear only in masked form and never raw.
+jq_assert "schema: customer has customerId and no raw ssn/govtId key" \
+    '(.data|has("customerId")) and ([.data|keys[]]|any(test("^(ssn|govtIssuedId|governmentIssuedId)$";"i"))|not)'
 
 status="$(http_call GET "${BASE_URL}/cards/${CARD_OK}" "" auth)"
 check_status 200 "$status" "GET /cards/{cardNum}"
 check_data_envelope "GET /cards/{cardNum}" "cardNumberMasked"
+# Exact schema: PAN masked (12 '*' + 4 digits), all Card fields present, no CVV.
+jq_assert "schema: card masked PAN well-formed, 5 fields, no CVV" \
+    '(.data.cardNumberMasked|type=="string" and test("^[*]{12}[0-9]{4}$")) and (.data|has("accountId") and has("embossedName") and has("expirationDate") and has("activeStatus")) and ([.data|keys[]]|any(test("cvv|securityCode";"i"))|not)'
 
 # Card -> account/customer resolution (User Example Flow 2, step 1).
 status="$(http_call GET "${BASE_URL}/xref/${CARD_OK}" "" auth)"
 check_status 200 "$status" "GET /xref/{cardNum}"
 check_data_envelope "GET /xref/{cardNum}" "accountId"
+jq_assert "schema: xref has masked PAN + accountId + customerId only" \
+    '(.data.cardNumberMasked|type=="string" and test("^[*]{12}[0-9]{4}$")) and (.data|has("accountId") and has("customerId"))'
 
-# Account -> transaction list (User Example Flow 2, step 2).
+# Account -> transaction list (User Example Flow 2, step 2). This is the
+# CHANNEL/CONTAINER-backed operation; from the client the observable contract is
+# the list envelope shape plus the 50-entry cap and truncated flag (C1).
 status="$(http_call GET "${BASE_URL}/accounts/${LIST_ACCT}/transactions" "" auth)"
 check_status 200 "$status" "GET /accounts/{acctId}/transactions"
 check_data_envelope "GET /accounts/{acctId}/transactions" "transactions"
+jq_assert "channel: list envelope shape (accountId,transactions[],count:int,truncated:bool)" \
+    '(.data.accountId|type=="string") and (.data.transactions|type=="array") and (.data.count|type=="number") and (.data.truncated|type=="boolean")'
+jq_assert "max-list: count==array length, count<=50, and truncated=>count==50" \
+    '(.data.count == (.data.transactions|length)) and (.data.count <= 50) and ((.data.truncated|not) or (.data.count == 50))'
+jq_assert "schema: every listed transaction has masked PAN + signed 2dp amount" \
+    '.data.transactions|all((.cardNumberMasked|type=="string" and test("^[*]{12}[0-9]{4}$")) and (.amount|type=="string" and test("^-?[0-9]+[.][0-9]{2}$")) and has("transactionId"))'
 
 status="$(http_call GET "${BASE_URL}/transactions/${TRAN_OK}" "" auth)"
 check_status 200 "$status" "GET /transactions/{tranId}"
 check_data_envelope "GET /transactions/{tranId}" "transactionId"
+jq_assert "schema: transaction detail has masked PAN + signed 2dp amount" \
+    '(.data.cardNumberMasked|type=="string" and test("^[*]{12}[0-9]{4}$")) and (.data.amount|type=="string" and test("^-?[0-9]+[.][0-9]{2}$")) and (.data|has("transactionId") and has("typeCode") and has("categoryCode"))'
 
 # ---- 3. Not found (expect 404) ----------------------------------------------
 printf '\n-- 3. Not found (expect 404) --\n'
@@ -540,42 +652,134 @@ check_error_envelope UNAUTHORIZED "GET /accounts/{acctId} (forged token)"
 printf '\n-- 6. Empty transaction list (expect 200 + empty array) --\n'
 status="$(http_call GET "${BASE_URL}/accounts/${EMPTY_ACCT}/transactions" "" auth)"
 check_status 200 "$status" "GET /accounts/{acctId}/transactions (cardless -> empty)"
+# Exact empty-list contract: the array MUST be empty AND count MUST be 0 AND
+# truncated MUST be false. The previous OR let a body satisfy the check with
+# only one of the two -- e.g. count 0 while the array was non-empty -- so the
+# conjunction is required here.
 if [ "$HAVE_JQ" -eq 1 ]; then
-    if jq -e '((.data.transactions // []) | length) == 0 or ((.data.count // 0) == 0)' \
+    if jq -e '((.data.transactions // ["x"]) | length) == 0
+              and ((.data.count) == 0)
+              and ((.data.truncated) == false)' \
         "$BODY" >/dev/null 2>&1; then
-        record_pass "empty-list: transactions array empty / count 0"
+        record_pass "empty-list: transactions [] AND count 0 AND truncated false"
     else
-        record_fail "empty-list: expected empty transactions array / count 0"
+        record_fail "empty-list: expected transactions [] AND count 0 AND truncated false"
     fi
 else
-    if grep -Eq '"transactions"[[:space:]]*:[[:space:]]*\[[[:space:]]*\]|"count"[[:space:]]*:[[:space:]]*0' "$BODY"; then
-        record_pass "empty-list: transactions array empty / count 0"
+    # Fallback: require an empty array AND count 0 (both must be present).
+    if grep -Eq '"transactions"[[:space:]]*:[[:space:]]*\[[[:space:]]*\]' "$BODY" \
+       && grep -Eq '"count"[[:space:]]*:[[:space:]]*0' "$BODY"; then
+        record_pass "empty-list: transactions [] AND count 0"
     else
-        record_fail "empty-list: expected empty transactions array / count 0"
+        record_fail "empty-list: expected transactions [] AND count 0"
     fi
 fi
 
-# ---- 7. Internal error (expect 500) -- optional, fault-injected -------------
+# ---- 7. Internal error (expect 500) -- fault-injected -----------------------
+# The bearer token is sent on this request, so FAULT_PATH MUST be same-origin:
+# an operator who could set FAULT_PATH to an arbitrary foreign URL would
+# otherwise receive a valid token (credential exfiltration, CWE-200). We accept
+# only (a) a path relative to the API base, (b) an absolute path on the target
+# host, or (c) a full URL whose scheme://host:port exactly equals the target
+# origin. Any other absolute URL is refused and recorded as a FAIL -- the token
+# is never sent off-origin.
 printf '\n-- 7. Internal error (expect 500) --\n'
 if [ -n "$FAULT_PATH" ]; then
-    # Accept a full URL, an absolute path, or a path relative to the API base.
+    ORIGIN="${API_SCHEME}://${API_HOST}:${API_PORT}"
+    fault_url=""
+    fault_reason=""
     case "$FAULT_PATH" in
-        http://*|https://*) fault_url="$FAULT_PATH" ;;
-        /*)                 fault_url="${API_SCHEME}://${API_HOST}:${API_PORT}${FAULT_PATH}" ;;
-        *)                  fault_url="${BASE_URL}/${FAULT_PATH}" ;;
+        http://*|https://*)
+            # Full URL: permit ONLY when it targets the exact same origin.
+            case "$FAULT_PATH" in
+                "${ORIGIN}"|"${ORIGIN}/"*) fault_url="$FAULT_PATH" ;;
+                *) fault_reason="FAULT_PATH origin is not ${ORIGIN} (refused: token must never be sent off-origin)" ;;
+            esac
+            ;;
+        //*)
+            # Protocol-relative (//host/...) is a foreign origin: refuse.
+            fault_reason="FAULT_PATH is protocol-relative (//...); a same-origin path or full ${ORIGIN} URL is required"
+            ;;
+        /*)
+            # Absolute path on the target host.
+            fault_url="${ORIGIN}${FAULT_PATH}"
+            ;;
+        *)
+            # Path relative to the API base.
+            fault_url="${BASE_URL}/${FAULT_PATH}"
+            ;;
     esac
-    status="$(http_call GET "$fault_url" "" auth)"
-    check_status 500 "$status" "GET fault route (forced 500)"
-    check_error_envelope INTERNAL_ERROR "GET fault route (forced 500)"
-    # The 500 envelope must not leak internal CICS RESP2 detail.
-    if grep -Eiq 'resp2' "$BODY"; then
-        record_fail "500 body leaks internal RESP2 detail"
+
+    if [ -n "$fault_url" ]; then
+        status="$(http_call GET "$fault_url" "" auth)"
+        check_status 500 "$status" "GET fault route (forced 500)"
+        check_error_envelope INTERNAL_ERROR "GET fault route (forced 500)"
+        # The 500 envelope must not leak internal CICS RESP2 detail.
+        if grep -Eiq 'resp2' "$BODY"; then
+            record_fail "500 body leaks internal RESP2 detail"
+        else
+            record_pass "500 body does not leak RESP2 detail"
+        fi
     else
-        record_pass "500 body does not leak RESP2 detail"
+        # Malformed / cross-origin FAULT_PATH is always a hard failure (the
+        # token would otherwise be exfiltrated); never a silent skip.
+        record_fail "500 fault route rejected: ${fault_reason}"
     fi
+elif [ "$RELEASE_MODE" -eq 1 ]; then
+    # Release gate: the 500 path is mandatory. A missing fault route is a FAIL,
+    # not a SKIP, so an incomplete run cannot pass the release gate.
+    record_fail "500 path not exercised: FAULT_PATH is required in RELEASE_MODE"
 else
-    printf 'SKIP: 500 path (set FAULT_PATH to enable)\n'
+    printf 'SKIP: 500 path (set FAULT_PATH to enable; mandatory in RELEASE_MODE)\n'
 fi
+
+# ---- 8. Extended mandatory scenarios ----------------------------------------
+# These exercise behaviours the base flow did not: token lifecycle (duplicate
+# sign-on issues distinct working tokens; a well-formed but unknown/expired
+# token is rejected) and strict routing (an extra path segment is a 400, not a
+# match). They are ordinary HTTP assertions and therefore run in every mode;
+# their assertions are mandatory (a violation is a FAIL, never a skip).
+printf '\n-- 8. Extended scenarios (token lifecycle + strict routing) --\n'
+
+# (a) Duplicate sign-on: a second sign-on must succeed and yield a DISTINCT
+#     token (collision-safe registry, AAP M3), and that second token must also
+#     authenticate a protected inquiry. Exercises the token registry beyond the
+#     single sign-on the base flow performs.
+status="$(http_call POST "${BASE_URL}/signon" "$SIGNON_BODY")"
+check_status 200 "$status" "POST /signon (second sign-on)"
+check_data_envelope "POST /signon (second sign-on)" "token"
+TOKEN2="$(extract_token)"
+if [ -n "$TOKEN" ] && [ -n "$TOKEN2" ]; then
+    if [ "$TOKEN" != "$TOKEN2" ]; then
+        record_pass "duplicate-auth: second sign-on issued a distinct token"
+    else
+        record_fail "duplicate-auth: second sign-on reissued an identical token"
+    fi
+    status="$(http_call GET "${BASE_URL}/accounts/${ACCT_OK}" "" "$TOKEN2")"
+    check_status 200 "$status" "GET /accounts/{acctId} (second token authenticates)"
+else
+    record_fail "duplicate-auth: could not obtain two tokens to compare"
+fi
+
+# (b) Well-formed but UNKNOWN token (64 chars from the documented [0-9A-Z]
+#     alphabet) must be rejected with 401. This is the same code path a valid
+#     token follows once it has EXPIRED and been purged from the registry, so
+#     it is the client-observable proxy for the expiry scenario.
+UNKNOWN_TOKEN="ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ012"
+status="$(http_call GET "${BASE_URL}/accounts/${ACCT_OK}" "" "$UNKNOWN_TOKEN")"
+check_status 401 "$status" "GET /accounts/{acctId} (well-formed unknown/expired token)"
+check_error_envelope UNAUTHORIZED "GET /accounts/{acctId} (well-formed unknown/expired token)"
+
+# (c) Strict routing: an extra path segment beyond a valid route must be a 400
+#     (unknown route), not a spurious 200 (AAP M7 exact-segment enforcement).
+status="$(http_call GET "${BASE_URL}/accounts/${ACCT_OK}/transactions/extra" "" auth)"
+check_status 400 "$status" "GET /accounts/{acctId}/transactions/extra (extra segment)"
+check_error_envelope BAD_REQUEST "GET /accounts/{acctId}/transactions/extra (extra segment)"
+
+# (d) Strict routing: a trailing segment on a single-key resource is a 400.
+status="$(http_call GET "${BASE_URL}/accounts/${ACCT_OK}/extra" "" auth)"
+check_status 400 "$status" "GET /accounts/{acctId}/extra (extra segment)"
+check_error_envelope BAD_REQUEST "GET /accounts/{acctId}/extra (extra segment)"
 
 
 # -----------------------------------------------------------------------------
@@ -605,7 +809,16 @@ raw_pan_hits="$(grep -oE '"[A-Za-z0-9_]+"[[:space:]]*:[[:space:]]*"[0-9]{13,19}"
     | grep -viE '"(transactionId|tranId|id|token)"[[:space:]]*:' || true)"
 if [ -n "$raw_pan_hits" ]; then
     record_fail "security: a raw 13-19 digit value appears under a non-id/token key (possible unmasked PAN)"
-    printf '%s\n' "$raw_pan_hits" | head -5 | sed 's/^/DETAIL: /'
+    # Print ONLY the offending key name and a redacted digit-count -- never the
+    # value itself, which may be a live PAN. Echoing it into the log would
+    # recreate the very leak this check exists to catch (CWE-532).
+    printf '%s\n' "$raw_pan_hits" | head -5 | while IFS= read -r hit; do
+        [ -z "$hit" ] && continue
+        k="$(printf '%s' "$hit" | sed -E 's/^"([A-Za-z0-9_]+)".*/\1/')"
+        v="$(printf '%s' "$hit" | sed -E 's/.*:[[:space:]]*"([0-9]+)".*/\1/')"
+        printf 'DETAIL: key=%s value=<redacted %d-digit numeric string>\n' \
+            "$k" "${#v}"
+    done
 else
     record_pass "security: no raw 13-19 digit PAN-like value under any non-id/token key"
 fi
@@ -617,7 +830,11 @@ while IFS= read -r masked; do
     mask_count=$((mask_count + 1))
     if ! printf '%s' "$masked" | grep -Eq '^\*{12}[0-9]{4}$'; then
         bad_mask=1
-        printf 'DETAIL: malformed masked card value: %s\n' "$masked"
+        # A malformed "masked" value may in fact be an unmasked PAN, so log
+        # only its length and the structural mismatch -- never the value
+        # itself (CWE-532).
+        printf 'DETAIL: malformed masked card value (len=%d; not ^*{12}[0-9]{4}$)\n' \
+            "${#masked}"
     fi
 done < <(grep -oE '"cardNumberMasked"[[:space:]]*:[[:space:]]*"[^"]*"' "$RESP_ALL" \
     | sed -E 's/.*:[[:space:]]*"([^"]*)".*/\1/')
@@ -632,6 +849,37 @@ elif [ "$bad_mask" -eq 0 ]; then
     record_pass "security: all ${mask_count} masked card value(s) well-formed (12 asterisks + 4 digits)"
 else
     record_fail "security: at least one masked card value is malformed"
+fi
+
+# 1c. Monetary matrix (fixture-independent): EVERY value carried under a known
+#     money key across ALL response bodies must be a signed decimal with exactly
+#     two fraction digits (COBOL S9(n)V99 serialized with the sign and scale
+#     preserved). This validates the negative-amount case too: a value such as
+#     "-12.34" matches, while an unsigned/unscaled value like "1234" or "12.3"
+#     is flagged. A malformed value is reported by key + length only (never the
+#     digits), consistent with the redaction rule above.
+bad_money=0
+money_count=0
+while IFS= read -r moneypair; do
+    [ -z "$moneypair" ] && continue
+    money_count=$((money_count + 1))
+    mval="$(printf '%s' "$moneypair" | sed -E 's/.*:[[:space:]]*"([^"]*)".*/\1/')"
+    if ! printf '%s' "$mval" | grep -Eq '^-?[0-9]+\.[0-9]{2}$'; then
+        bad_money=1
+        mkey="$(printf '%s' "$moneypair" | sed -E 's/^"([A-Za-z0-9_]+)".*/\1/')"
+        printf 'DETAIL: malformed monetary value under key=%s (len=%d; not ^-?[0-9]+.[0-9]{2}$)\n' \
+            "$mkey" "${#mval}"
+    fi
+done < <(grep -oE '"(currentBalance|creditLimit|cashCreditLimit|currentCycleCredit|currentCycleDebit|amount)"[[:space:]]*:[[:space:]]*"[^"]*"' "$RESP_ALL")
+if [ "$money_count" -eq 0 ]; then
+    # No monetary field observed at all means the money-bearing endpoints were
+    # never successfully exercised -- a hollow pass, so fail (parity with the
+    # mask_count guard above).
+    record_fail "security: no monetary field observed in any response -- money scaling was never exercised"
+elif [ "$bad_money" -eq 0 ]; then
+    record_pass "security: all ${money_count} monetary value(s) are signed 2-decimal (negatives included)"
+else
+    record_fail "security: at least one monetary value is not a signed 2-decimal number"
 fi
 
 # 2. No card security code (CVV) field is ever serialized.
@@ -677,4 +925,3 @@ if [ "$FAILED" -eq 0 ]; then
 else
     exit 1
 fi
-

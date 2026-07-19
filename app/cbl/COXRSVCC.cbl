@@ -50,9 +50,6 @@
            05  WS-MASKED-PAN       PIC X(16) VALUE SPACES.
            05  WS-PAN-LAST4        PIC X(04) VALUE SPACES.
            05  WS-PAN-WORK         PIC X(16) VALUE SPACES.
-           05  WS-PAN-LEN          PIC S9(04) COMP VALUE ZERO.
-           05  WS-PAN-IDX          PIC S9(04) COMP VALUE ZERO.
-           05  WS-PAN-START        PIC S9(04) COMP VALUE ZERO.
       *
       *****************************************************************
       * Card cross-reference record layout (read target,              *
@@ -101,6 +98,7 @@
                MOVE API-COMMAREA
                    TO DFHCOMMAREA(1:LENGTH OF API-COMMAREA)
            END-IF
+           PERFORM 9000-SCRUB-SENSITIVE
            EXEC CICS RETURN
            END-EXEC
            .
@@ -168,37 +166,40 @@
       * placed into the response payload or any log.                  *
       ******************************************************************
        2100-MASK-PAN.
+      * N5 - fail closed. Start fully masked; reveal the last four
+      * digits only when the source PAN is exactly sixteen numeric
+      * digits. Any other shape (spaces, low-values, short or non-
+      * numeric data) stays fully masked so a corrupt or short record
+      * can never leak a malformed masked value. Same rule as the
+      * transaction service (COTRSVCC 2100-MASK-PAN).
            MOVE XREF-CARD-NUM OF CARD-XREF-RECORD
                                        TO WS-PAN-WORK
-           MOVE ZERO                   TO WS-PAN-LEN
-
-           PERFORM VARYING WS-PAN-IDX FROM 16 BY -1
-                   UNTIL WS-PAN-IDX < 1
-                      OR WS-PAN-LEN > 0
-               IF WS-PAN-WORK (WS-PAN-IDX:1) NOT = SPACE
-                   MOVE WS-PAN-IDX     TO WS-PAN-LEN
-               END-IF
-           END-PERFORM
-
-           MOVE '0000'                 TO WS-PAN-LAST4
-
-           EVALUATE TRUE
-               WHEN WS-PAN-LEN >= 4
-                   COMPUTE WS-PAN-START = WS-PAN-LEN - 3
-                   MOVE WS-PAN-WORK (WS-PAN-START:4)
-                       TO WS-PAN-LAST4
-               WHEN WS-PAN-LEN > 0
-                   COMPUTE WS-PAN-START = 5 - WS-PAN-LEN
-                   MOVE WS-PAN-WORK (1:WS-PAN-LEN)
-                       TO WS-PAN-LAST4 (WS-PAN-START:WS-PAN-LEN)
-               WHEN OTHER
-                   CONTINUE
-           END-EVALUATE
-
            MOVE ALL '*'                TO WS-MASKED-PAN
-           MOVE WS-PAN-LAST4           TO WS-MASKED-PAN (13:4)
+           IF WS-PAN-WORK IS NUMERIC
+               MOVE WS-PAN-WORK (13:4)  TO WS-PAN-LAST4
+               MOVE WS-PAN-LAST4        TO WS-MASKED-PAN (13:4)
+           ELSE
+               MOVE SPACES              TO WS-PAN-LAST4
+           END-IF
            MOVE WS-MASKED-PAN
                TO XREF-CARD-NUM-MASKED OF API-XREF-RESPONSE
+           .
+      *
+      ************************************************************
+      * 9000-SCRUB-SENSITIVE : C3 - overwrite the raw cross-
+      * reference record (full PAN source) and every PAN / identity
+      * work field so no card number, account id or customer id
+      * survives in this task storage after RETURN (CWE-226 /
+      * CWE-532). The masked payload already copied to the caller
+      * is left untouched for the router to serialize and scrub.
+      ************************************************************
+       9000-SCRUB-SENSITIVE.
+           MOVE SPACES TO CARD-XREF-RECORD
+           MOVE SPACES TO API-XREF-RESPONSE
+           MOVE SPACES TO WS-XREF-KEY
+           MOVE SPACES TO WS-MASKED-PAN
+           MOVE SPACES TO WS-PAN-WORK
+           MOVE SPACES TO WS-PAN-LAST4
            .
       *
       * Ver: CardDemo REST/JSON API v1 - COXRSVCC card cross-reference

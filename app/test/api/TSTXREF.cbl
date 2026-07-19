@@ -61,6 +61,7 @@
        01  WS-TESTS-RUN           PIC 9(04) VALUE 0.
        01  WS-TESTS-PASS          PIC 9(04) VALUE 0.
        01  WS-TESTS-FAIL          PIC 9(04) VALUE 0.
+       01  WS-TESTS-SKIP          PIC 9(04) VALUE 0.
        01  WS-TEST-RC             PIC S9(04) COMP VALUE 0.
       *
       ******************************************************************
@@ -179,8 +180,9 @@
       * and customer id (77) are DISTINCT, then assert each lands in
       * its own response slot.  This is the assertion the production
       * rows (acct = cust) cannot make.  If the swap fixture is not
-      * loaded the service returns 404 and the case is skipped so the
-      * suite stays green without the extra fixture.
+      * loaded the service returns 404 and the case is recorded as a
+      * release-blocking SKIP (never counted as PASS), so an absent
+      * fixture cannot hide that the swap assertion never really ran.
       ******************************************************************
        3000-TEST-XREF-SWAP.
            ADD 1 TO WS-TESTS-RUN
@@ -208,8 +210,8 @@
                        DISPLAY 'TSTXREF 3000 XREF-SWAP FAIL'
                    END-IF
                WHEN API-HTTP-NOT-FOUND
-                   ADD 1 TO WS-TESTS-PASS
-                   DISPLAY 'TSTXREF 3000 XREF-SWAP SKIP'
+                   ADD 1 TO WS-TESTS-SKIP
+                   DISPLAY 'TSTXREF 3000 XREF-SWAP SKIP-FIXTURE ABSENT'
                WHEN OTHER
                    ADD 1 TO WS-TESTS-FAIL
                    DISPLAY 'TSTXREF 3000 XREF-SWAP FAIL'
@@ -217,15 +219,22 @@
            .
       *
       ******************************************************************
-      * 9000-REPORT : print the run/pass/fail tallies and raise the
-      * process return code to 8 when any assertion failed.
+      * 9000-REPORT : print the run/pass/fail/skip tallies and publish
+      * RETURN-CODE for the harness: 0 = all passed, 4 = a required
+      * fixture was absent so a case was skipped (release-blocking -
+      * load the fixture and rerun), 8 = an assertion failed.
       ******************************************************************
        9000-REPORT.
            DISPLAY 'TSTXREF RESULTS RUN=' WS-TESTS-RUN
                ' PASS=' WS-TESTS-PASS
                ' FAIL=' WS-TESTS-FAIL
+               ' SKIP=' WS-TESTS-SKIP
            IF WS-TESTS-FAIL > 0
                MOVE 8 TO WS-TEST-RC
+           ELSE
+               IF WS-TESTS-SKIP > 0
+                   MOVE 4 TO WS-TEST-RC
+               END-IF
            END-IF
            MOVE WS-TEST-RC TO RETURN-CODE
            .

@@ -302,7 +302,9 @@
       *                     9000-REPORT
       *----------------------------------------------------------------*
       * Emit a machine-greppable summary and an overall verdict, and
-      * set the driver return code to 8 when any check failed.
+      * publish the outcome to RETURN-CODE so an EXCI / batch /
+      * started-transaction harness can gate release: 0 = all checks
+      * passed, 8 = at least one check failed.
        9000-REPORT.
 
            DISPLAY 'TSTAUTH RESULTS'
@@ -314,7 +316,8 @@
                DISPLAY 'TSTAUTH RESULT: FAIL'
            ELSE
                DISPLAY 'TSTAUTH RESULT: PASS'
-           END-IF.
+           END-IF
+           MOVE WS-TEST-RC TO RETURN-CODE.
       *
       * Ver: CardDemo_v1.0
       *

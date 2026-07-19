@@ -101,10 +101,157 @@
       *  Container GET/PUT length work fields.
          05 WS-CONT-LEN             PIC S9(08) COMP VALUE 0.
          05 WS-CONT-LEN2            PIC S9(08) COMP VALUE 0.
+      *  M8 - Copybook-driven list length calibration. The fixed list
+      *  header length and per-entry length are derived from the layout
+      *  itself (no hard-coded sizes) and used to verify the returned
+      *  container FLENGTH matches the returned entry count exactly.
+         05 WS-TRLIST-HDR-LEN       PIC S9(08) COMP VALUE 0.
+         05 WS-TRENTRY-LEN          PIC S9(08) COMP VALUE 0.
+         05 WS-EXP-LIST-LEN         PIC S9(08) COMP VALUE 0.
       *  JSON buffer overflow indicator (COJSONUC bounds guard).
          05 WS-JSON-OVERFLOW        PIC X(01) VALUE 'N'.
            88 JSON-OVERFLOW                    VALUE 'Y'.
            88 JSON-OK                          VALUE 'N'.
+
+      *----------------------------------------------------------------*
+      *  C5 - Explicit HTTP code-page conversion controls. Inbound
+      *  request bodies are converted from the declared client charset
+      *  to the region host code page (037 - US EBCDIC); outbound JSON
+      *  is emitted as UTF-8 so distributed clients interoperate
+      *  deterministically regardless of platform default charset.
+      *----------------------------------------------------------------*
+       01 WS-HTTP-CONV.
+         05 WS-CHARSET-UTF8         PIC X(40) VALUE 'utf-8'.
+         05 WS-HOST-CP              PIC X(08) VALUE '037'.
+
+      *----------------------------------------------------------------*
+      *  N2 - Response security headers. Every API response carries
+      *  account, card, customer, token, or error data and must not be
+      *  cached by intermediaries or the client, so an explicit
+      *  'Cache-Control: no-store, private' (with a legacy 'Pragma:
+      *  no-cache') is written before the body is sent.
+      *----------------------------------------------------------------*
+       01 WS-RESP-HEADERS.
+         05 WS-CC-NAME             PIC X(16) VALUE 'Cache-Control'.
+         05 WS-CC-NAME-LEN         PIC S9(08) COMP VALUE 13.
+         05 WS-CC-VAL              PIC X(32) VALUE 'no-store, private'.
+         05 WS-CC-VAL-LEN          PIC S9(08) COMP VALUE 17.
+         05 WS-PRG-NAME            PIC X(16) VALUE 'Pragma'.
+         05 WS-PRG-NAME-LEN        PIC S9(08) COMP VALUE 6.
+         05 WS-PRG-VAL             PIC X(16) VALUE 'no-cache'.
+         05 WS-PRG-VAL-LEN         PIC S9(08) COMP VALUE 8.
+
+      *----------------------------------------------------------------*
+      *  N1 - Send-failure telemetry. When WEB SEND fails the client
+      *  cannot be told, so a console record is written carrying ONLY
+      *  the requestId correlation value and the CICS RESP/RESP2 - never
+      *  the response body, route, credentials, or token.
+      *----------------------------------------------------------------*
+       01 WS-TELEMETRY.
+         05 WS-TEL-MSG             PIC X(100) VALUE SPACES.
+         05 WS-TEL-LEN             PIC S9(08) COMP VALUE 0.
+         05 WS-TEL-PTR             PIC S9(08) COMP VALUE 1.
+         05 WS-TEL-RESP-X          PIC -(9).
+         05 WS-TEL-REAS-X          PIC -(9).
+
+      *----------------------------------------------------------------*
+      *  M6 - Content-Type request-header validation work area. A POST
+      *  body must be declared application/json; anything else is 400.
+      *----------------------------------------------------------------*
+       01 WS-CTYPE-WORK.
+         05 WS-CTYPE-NAME           PIC X(32) VALUE 'Content-Type'.
+         05 WS-CTYPE-NAME-LEN       PIC S9(08) COMP VALUE 12.
+         05 WS-CTYPE-VAL            PIC X(128) VALUE SPACES.
+         05 WS-CTYPE-VAL-LEN        PIC S9(08) COMP VALUE 128.
+         05 WS-CTYPE-U              PIC X(128) VALUE SPACES.
+
+      *----------------------------------------------------------------*
+      *  M5 - Strict bearer-token parse work area. A valid credential
+      *  is exactly 64 characters drawn from the COAPISEC token
+      *  alphabet [0-9A-Z], with no embedded or trailing padding after
+      *  the 7-character 'Bearer ' scheme prefix.
+      *----------------------------------------------------------------*
+       01 WS-BEARER-WORK.
+         05 WS-BEARER-I             PIC S9(04) COMP VALUE 0.
+         05 WS-BEARER-J             PIC S9(04) COMP VALUE 0.
+         05 WS-BEARER-CH            PIC X(01) VALUE SPACE.
+         05 WS-CHK-TALLY            PIC S9(04) COMP VALUE 0.
+         05 WS-BEARER-FLAG          PIC X(01) VALUE 'Y'.
+           88 BEARER-OK                        VALUE 'Y'.
+           88 BEARER-BAD                       VALUE 'N'.
+         05 WS-ALLOWED-CHARS        PIC X(36) VALUE
+              '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ'.
+
+      *----------------------------------------------------------------*
+      *  M5 - HTTP header browse work area. Used to count how many
+      *  Authorization request headers the client sent; a well-formed
+      *  request carries exactly one (zero or many is a 401).
+      *----------------------------------------------------------------*
+       01 WS-HDR-BROWSE.
+         05 WS-HDR-COUNT            PIC S9(04) COMP VALUE 0.
+         05 WS-HDRB-NAME            PIC X(64)  VALUE SPACES.
+         05 WS-HDRB-NAME-LEN        PIC S9(08) COMP VALUE 64.
+         05 WS-HDRB-VAL             PIC X(256) VALUE SPACES.
+         05 WS-HDRB-VAL-LEN         PIC S9(08) COMP VALUE 256.
+
+      *----------------------------------------------------------------*
+      *  M9 - Minimal auth contract save area. The route keys (incl. a
+      *  PAN) are saved here and cleared from the commarea for the
+      *  duration of the COAPISEC validation LINK, then restored for
+      *  dispatch, so credentials/keys the auth service does not need
+      *  are never presented to it. Length matches API-REQUEST (64).
+      *----------------------------------------------------------------*
+       01 WS-SAVE-REQUEST           PIC X(64) VALUE SPACES.
+
+      *----------------------------------------------------------------*
+      *  M6 - Strict sign-on body validator work area. The POST /signon
+      *  body is parsed by a bounded single-pass state machine over the
+      *  complete received body (up to 4096 bytes) rather than a naive
+      *  256-byte substring search. It accepts EXACTLY one flat JSON
+      *  object { "userId":"..","password":".." }, rejecting nesting,
+      *  duplicate keys, unknown keys, trailing garbage, backslash
+      *  escapes, and any value outside 1..8 characters. userId and
+      *  password (SGNI-USER-ID / SGNI-PASSWORD) are PIC X(08).
+      *  State names are held in WS-SB-STATE; whitespace bytes are the
+      *  host code-page (037) forms of SPACE/TAB/LF/CR and backslash is
+      *  the 037 code point X'E0'.
+      *----------------------------------------------------------------*
+       01 WS-SIGNON-PARSE.
+         05 WS-SB-N                 PIC S9(08) COMP VALUE 0.
+         05 WS-SB-I                 PIC S9(08) COMP VALUE 0.
+         05 WS-SB-CH                PIC X(01)  VALUE SPACE.
+         05 WS-SB-STATE             PIC X(08)  VALUE 'OPEN'.
+           88 SB-OPEN                           VALUE 'OPEN'.
+           88 SB-KEYCL                          VALUE 'KEYCL'.
+           88 SB-INKEY                          VALUE 'INKEY'.
+           88 SB-COLON                          VALUE 'COLON'.
+           88 SB-VAL                            VALUE 'VAL'.
+           88 SB-INVAL                          VALUE 'INVAL'.
+           88 SB-COMMACL                        VALUE 'COMMACL'.
+           88 SB-KEY                            VALUE 'KEY'.
+           88 SB-TRAIL                          VALUE 'TRAIL'.
+         05 WS-SB-CURKEY            PIC X(32)  VALUE SPACES.
+         05 WS-SB-CURKEY-LEN        PIC S9(04) COMP VALUE 0.
+         05 WS-SB-VAL               PIC X(08)  VALUE SPACES.
+         05 WS-SB-VAL-LEN           PIC S9(04) COMP VALUE 0.
+         05 WS-SB-USER              PIC X(08)  VALUE SPACES.
+         05 WS-SB-USER-LEN          PIC S9(04) COMP VALUE 0.
+         05 WS-SB-PASS              PIC X(08)  VALUE SPACES.
+         05 WS-SB-PASS-LEN          PIC S9(04) COMP VALUE 0.
+         05 WS-SB-HAVE-USER         PIC X(01)  VALUE 'N'.
+           88 SB-HAVE-USER                      VALUE 'Y'.
+         05 WS-SB-HAVE-PASS         PIC X(01)  VALUE 'N'.
+           88 SB-HAVE-PASS                      VALUE 'Y'.
+         05 WS-SB-FLAG              PIC X(01)  VALUE 'Y'.
+           88 SB-BODY-OK                        VALUE 'Y'.
+           88 SB-BODY-BAD                       VALUE 'N'.
+         05 WS-SB-ISWS              PIC X(01)  VALUE 'N'.
+           88 SB-IS-WS                          VALUE 'Y'.
+           88 SB-NOT-WS                         VALUE 'N'.
+         05 WS-SB-TAB               PIC X(01)  VALUE X'05'.
+         05 WS-SB-LF                PIC X(01)  VALUE X'25'.
+         05 WS-SB-CR                PIC X(01)  VALUE X'0D'.
+         05 WS-SB-ESC               PIC X(01)  VALUE X'E0'.
 
       *----------------------------------------------------------------*
       *  Processing state - short-circuits later phases when an early
@@ -243,6 +390,15 @@
       *----------------------------------------------------------------*
       *  COJSONUC call interface. These layouts match the COJSONUC
       *  LINKAGE SECTION exactly (JSON-PARM and JSON-BUFFER).
+      *  I2 - COJSONUC is invoked by a static literal CALL 'COJSONUC'
+      *  and is compiled NODYNAM, so it is statically bound into this
+      *  load module by the linkage editor. Consequence: the API build
+      *  job must compile COJSONUC first and INCLUDE its object when
+      *  binding COAPIRTR, and any change to COJSONUC requires relinking
+      *  COAPIRTR (and every other static caller). The build/relink
+      *  order is encoded in the API compile JCL and recorded in
+      *  docs/decision-log.md; JSON-PARM/JSON-BUFFER above are the
+      *  frozen contract that keeps the static bind valid.
       *----------------------------------------------------------------*
        01 JSON-PARM.
          05 JP-FUNCTION             PIC X(04).
@@ -261,8 +417,15 @@
          05 JP-PARSE-RESULT         PIC X(256).
          05 JP-PARSE-RESULT-LEN     PIC S9(04) COMP.
 
+      *----------------------------------------------------------------*
+      *  C1 - Shared JSON assembly buffer. Sized X(96000) to match the
+      *  COJSONUC LINKAGE JSON-BUFFER exactly; a mismatch would let the
+      *  subprogram append past this program's storage. 96000 bytes
+      *  safely holds a capped 50-entry transaction list at worst-case
+      *  JSON expansion (see docs/decision-log.md).
+      *----------------------------------------------------------------*
        01 JSON-BUFFER.
-         05 JB-DATA                 PIC X(32000).
+         05 JB-DATA                 PIC X(96000).
          05 JB-LEN                  PIC S9(08) COMP.
 
       *----------------------------------------------------------------*
@@ -292,6 +455,11 @@
            END-IF
            PERFORM 5000-SERIALIZE-RESPONSE
            PERFORM 6000-SEND-RESPONSE
+
+      *    C3 - Defense-in-depth: overwrite tokens, PAN, credentials
+      *    and PII copied into working storage before the task frees
+      *    its storage (complements CSD STORAGECLEAR(YES)).
+           PERFORM 6900-SCRUB-SENSITIVE
 
            EXEC CICS RETURN
            END-EXEC.
@@ -356,18 +524,69 @@
       *  unreadable body maps to 400.
       *----------------------------------------------------------------*
        1100-RECEIVE-BODY.
-           MOVE 4096   TO WS-REQ-LEN
-           MOVE SPACES TO WS-REQ-BODY
-           EXEC CICS WEB RECEIVE
-                INTO      (WS-REQ-BODY)
-                LENGTH    (WS-REQ-LEN)
-                MAXLENGTH (4096)
-                RESP      (WS-RESP-CD)
-                RESP2     (WS-REAS-CD)
+      *    M6 - reject any POST whose body is not declared JSON before
+      *    the body itself is received and parsed.
+           PERFORM 1150-CHECK-CONTENT-TYPE
+           IF STATE-CONTINUE
+               MOVE 4096   TO WS-REQ-LEN
+               MOVE SPACES TO WS-REQ-BODY
+      *        C5 - SRVCONVERT converts the inbound entity body from the
+      *        client charset (identified from Content-Type, default
+      *        ISO-8859-1) into HOSTCODEPAGE 037 (US EBCDIC) so the JSON
+      *        parser always sees host-encoded characters.
+               EXEC CICS WEB RECEIVE
+                    INTO         (WS-REQ-BODY)
+                    LENGTH       (WS-REQ-LEN)
+                    MAXLENGTH    (4096)
+                    SRVCONVERT
+                    HOSTCODEPAGE (WS-HOST-CP)
+                    RESP         (WS-RESP-CD)
+                    RESP2        (WS-REAS-CD)
+               END-EXEC
+               IF WS-RESP-CD NOT = DFHRESP(NORMAL)
+                   MOVE 400 TO WS-HTTP-STATUS
+                   MOVE 'Malformed request body' TO WS-ERR-MSG
+                   SET STATE-ERROR TO TRUE
+               END-IF
+           END-IF.
+
+      *----------------------------------------------------------------*
+      *                     1150-CHECK-CONTENT-TYPE
+      *  M6 - A request body is accepted only when the Content-Type
+      *  request header begins with 'application/json' (case-
+      *  insensitive; an optional ';charset=...' parameter is allowed).
+      *  A missing or mismatched media type is a deterministic 400.
+      *----------------------------------------------------------------*
+       1150-CHECK-CONTENT-TYPE.
+           MOVE 'Content-Type' TO WS-CTYPE-NAME
+           MOVE 12  TO WS-CTYPE-NAME-LEN
+           MOVE 128 TO WS-CTYPE-VAL-LEN
+           MOVE SPACES TO WS-CTYPE-VAL
+           MOVE SPACES TO WS-CTYPE-U
+           EXEC CICS WEB READ
+                HTTPHEADER  (WS-CTYPE-NAME)
+                NAMELENGTH  (WS-CTYPE-NAME-LEN)
+                VALUE       (WS-CTYPE-VAL)
+                VALUELENGTH (WS-CTYPE-VAL-LEN)
+                RESP        (WS-RESP-CD)
+                RESP2       (WS-REAS-CD)
            END-EXEC
+           IF WS-RESP-CD = DFHRESP(NORMAL)
+               MOVE FUNCTION UPPER-CASE(WS-CTYPE-VAL) TO WS-CTYPE-U
+           END-IF
+      *    M6 - Require the media-type token to be EXACTLY
+      *    'application/json'. Matching only the first 16 bytes would
+      *    also accept a run-on type such as 'application/jsonx', so the
+      *    byte after the token (position 17) must be a delimiter: a
+      *    space (bare type) or ';' (a parameter such as
+      *    '; charset=utf-8'). Anything else is a 400.
            IF WS-RESP-CD NOT = DFHRESP(NORMAL)
+             OR WS-CTYPE-U(1:16) NOT = 'APPLICATION/JSON'
+             OR (WS-CTYPE-U(17:1) NOT = SPACE
+                 AND WS-CTYPE-U(17:1) NOT = ';')
                MOVE 400 TO WS-HTTP-STATUS
-               MOVE 'Malformed request body' TO WS-ERR-MSG
+               MOVE 'Content-Type must be application/json'
+                    TO WS-ERR-MSG
                SET STATE-ERROR TO TRUE
            END-IF.
 
@@ -377,7 +596,14 @@
       *  '/', then resolve the route and validate the path parameter.
       *----------------------------------------------------------------*
        2000-PARSE-ROUTE.
+      *    M7 - The versioned base path must be followed by a '/'
+      *    separator. This rejects look-alike prefixes such as
+      *    /carddemo/api/v1extra/signon (char 17 = 'e', not '/') which
+      *    would otherwise share the 16-byte prefix and be mis-routed.
+      *    When the guard fails the full path is tokenized instead and
+      *    resolves to no known route (-> 400).
            IF WS-PATH(1:16) = WS-BASE-PATH
+             AND WS-PATH(17:1) = '/'
                MOVE WS-PATH(17:240) TO WS-ROUTE-PATH
            ELSE
                MOVE WS-PATH(1:240) TO WS-ROUTE-PATH
@@ -395,27 +621,54 @@
       *  Any unmatched combination is a 400.
       *----------------------------------------------------------------*
        2050-RESOLVE-ROUTE.
+      *    M7 - Every route enforces an EXACT segment count. WS-SEG0 is
+      *    the (always empty) part before the leading '/', so it must be
+      *    SPACES; each route additionally pins the trailing segment(s)
+      *    to SPACES so that surplus path segments (e.g. an extra
+      *    /segment after {id}) fall through to 2900 -> 400 rather than
+      *    being silently ignored.
            EVALUATE TRUE
-               WHEN WS-SEG1 = 'signon' AND WS-SEG2 = SPACES
+               WHEN WS-SEG0 = SPACES
+                    AND WS-SEG1 = 'signon'
+                    AND WS-SEG2 = SPACES
+                    AND WS-SEG3 = SPACES
+                    AND WS-SEG4 = SPACES
                    PERFORM 2110-ROUTE-SIGNON
-               WHEN WS-SEG1 = 'accounts'
+               WHEN WS-SEG0 = SPACES
+                    AND WS-SEG1 = 'accounts'
+                    AND WS-SEG2 NOT = SPACES
                     AND WS-SEG3 = 'transactions'
+                    AND WS-SEG4 = SPACES
                    PERFORM 2120-ROUTE-TRANLIST
-               WHEN WS-SEG1 = 'accounts'
+               WHEN WS-SEG0 = SPACES
+                    AND WS-SEG1 = 'accounts'
                     AND WS-SEG2 NOT = SPACES
                     AND WS-SEG3 = SPACES
+                    AND WS-SEG4 = SPACES
                    PERFORM 2130-ROUTE-ACCT
-               WHEN WS-SEG1 = 'customers'
+               WHEN WS-SEG0 = SPACES
+                    AND WS-SEG1 = 'customers'
                     AND WS-SEG2 NOT = SPACES
+                    AND WS-SEG3 = SPACES
+                    AND WS-SEG4 = SPACES
                    PERFORM 2140-ROUTE-CUST
-               WHEN WS-SEG1 = 'cards'
+               WHEN WS-SEG0 = SPACES
+                    AND WS-SEG1 = 'cards'
                     AND WS-SEG2 NOT = SPACES
+                    AND WS-SEG3 = SPACES
+                    AND WS-SEG4 = SPACES
                    PERFORM 2150-ROUTE-CARD
-               WHEN WS-SEG1 = 'xref'
+               WHEN WS-SEG0 = SPACES
+                    AND WS-SEG1 = 'xref'
                     AND WS-SEG2 NOT = SPACES
+                    AND WS-SEG3 = SPACES
+                    AND WS-SEG4 = SPACES
                    PERFORM 2160-ROUTE-XREF
-               WHEN WS-SEG1 = 'transactions'
+               WHEN WS-SEG0 = SPACES
+                    AND WS-SEG1 = 'transactions'
                     AND WS-SEG2 NOT = SPACES
+                    AND WS-SEG3 = SPACES
+                    AND WS-SEG4 = SPACES
                    PERFORM 2170-ROUTE-TRANDTL
                WHEN OTHER
                    PERFORM 2900-SET-BAD-ROUTE
@@ -620,6 +873,12 @@
                IF STATE-CONTINUE
                    PERFORM 3200-VALIDATE-TOKEN
                END-IF
+      *        M9 - The token has served its purpose once validated;
+      *        clear it (and the raw header) so it is never forwarded to
+      *        the inquiry services, which perform no per-user checks.
+               IF STATE-CONTINUE
+                   PERFORM 3300-CLEAR-TOKEN
+               END-IF
            END-IF.
 
       *----------------------------------------------------------------*
@@ -640,25 +899,121 @@
                 RESP        (WS-RESP-CD)
                 RESP2       (WS-REAS-CD)
            END-EXEC
-           IF WS-RESP-CD NOT = DFHRESP(NORMAL)
-               PERFORM 3900-SET-UNAUTHORIZED
-           ELSE
-               PERFORM 3150-EXTRACT-BEARER
-           END-IF.
+      *    M4 - Distinguish an expected 'no/oversized credential' (401)
+      *    from an unexpected CICS failure (500) instead of mapping
+      *    every non-NORMAL response to 401. A missing header (NOTFND)
+      *    or a value longer than the 256-byte buffer (LENGERR) is a
+      *    malformed/absent credential -> 401; anything else -> 500.
+           EVALUATE WS-RESP-CD
+               WHEN DFHRESP(NORMAL)
+                   PERFORM 3150-EXTRACT-BEARER
+               WHEN DFHRESP(NOTFND)
+                   PERFORM 3900-SET-UNAUTHORIZED
+               WHEN DFHRESP(LENGERR)
+                   PERFORM 3900-SET-UNAUTHORIZED
+               WHEN OTHER
+                   PERFORM 3950-SET-INTERNAL
+           END-EVALUATE.
 
       *----------------------------------------------------------------*
       *                     3150-EXTRACT-BEARER
       *  Extract the token following the 7-character 'Bearer ' prefix.
       *----------------------------------------------------------------*
        3150-EXTRACT-BEARER.
-           IF FUNCTION UPPER-CASE(WS-AUTH-HDR(1:7)) = 'BEARER '
+      *    M5 - Accept ONLY 'Bearer ' followed by EXACTLY 64 characters
+      *    drawn from the COAPISEC token alphabet [0-9A-Z], with no
+      *    trailing data after the token and exactly one Authorization
+      *    header present on the request. Any deviation is a 401.
+           SET BEARER-OK TO TRUE
+           PERFORM 3160-COUNT-AUTH-HEADERS
+           IF BEARER-OK
+             AND FUNCTION UPPER-CASE(WS-AUTH-HDR(1:7)) NOT = 'BEARER '
+               SET BEARER-BAD TO TRUE
+           END-IF
+           IF BEARER-OK
+               PERFORM 3170-CHECK-TOKEN-CHARS
+           END-IF
+           IF BEARER-OK
+             AND WS-AUTH-HDR(72:185) NOT = SPACES
+               SET BEARER-BAD TO TRUE
+           END-IF
+           IF BEARER-OK
                MOVE WS-AUTH-HDR(8:64) TO API-TOKEN-VALUE
-               IF API-TOKEN-VALUE = SPACES
-                   PERFORM 3900-SET-UNAUTHORIZED
-               END-IF
            ELSE
                PERFORM 3900-SET-UNAUTHORIZED
            END-IF.
+
+      *----------------------------------------------------------------*
+      *                     3160-COUNT-AUTH-HEADERS
+      *  M5 - Browse the inbound request headers and count how many are
+      *  named 'Authorization'. A well-formed request carries exactly
+      *  one; zero or more than one fails the bearer check (401). This
+      *  defends against header-injection where a duplicate credential
+      *  could be interpreted differently by an intermediary.
+      *----------------------------------------------------------------*
+       3160-COUNT-AUTH-HEADERS.
+           MOVE 0 TO WS-HDR-COUNT
+           EXEC CICS WEB STARTBROWSE HTTPHEADER
+                RESP  (WS-RESP-CD)
+                RESP2 (WS-REAS-CD)
+           END-EXEC
+           IF WS-RESP-CD = DFHRESP(NORMAL)
+               PERFORM 3165-BROWSE-ONE-HEADER
+                   UNTIL WS-RESP-CD NOT = DFHRESP(NORMAL)
+               EXEC CICS WEB ENDBROWSE HTTPHEADER
+                    RESP  (WS-RESP-CD)
+                    RESP2 (WS-REAS-CD)
+               END-EXEC
+           END-IF
+           IF WS-HDR-COUNT NOT = 1
+               SET BEARER-BAD TO TRUE
+           END-IF.
+
+      *----------------------------------------------------------------*
+      *                     3165-BROWSE-ONE-HEADER
+      *  Read one header line; count it when its name is EXACTLY the
+      *  13-character token 'Authorization' (case-insensitive), so that
+      *  look-alike names such as 'Authorization-Info' are not counted.
+      *----------------------------------------------------------------*
+       3165-BROWSE-ONE-HEADER.
+           MOVE SPACES TO WS-HDRB-NAME
+           MOVE 64  TO WS-HDRB-NAME-LEN
+           MOVE SPACES TO WS-HDRB-VAL
+           MOVE 256 TO WS-HDRB-VAL-LEN
+           EXEC CICS WEB READNEXT HTTPHEADER
+                HTTPHEADER  (WS-HDRB-NAME)
+                NAMELENGTH  (WS-HDRB-NAME-LEN)
+                VALUE       (WS-HDRB-VAL)
+                VALUELENGTH (WS-HDRB-VAL-LEN)
+                RESP        (WS-RESP-CD)
+                RESP2       (WS-REAS-CD)
+           END-EXEC
+           IF WS-RESP-CD = DFHRESP(NORMAL)
+             AND WS-HDRB-NAME-LEN = 13
+             AND FUNCTION UPPER-CASE(WS-HDRB-NAME(1:13)) =
+                 'AUTHORIZATION'
+               ADD 1 TO WS-HDR-COUNT
+           END-IF.
+
+      *----------------------------------------------------------------*
+      *                     3170-CHECK-TOKEN-CHARS
+      *  Verify each of the 64 token bytes (positions 8..71) is a member
+      *  of the COAPISEC alphabet [0-9A-Z]; a space or any other byte
+      *  fails. INSPECT tallies occurrences of the byte in the allowed
+      *  set - a tally of zero means the byte is not permitted.
+      *----------------------------------------------------------------*
+       3170-CHECK-TOKEN-CHARS.
+           PERFORM VARYING WS-BEARER-I FROM 1 BY 1
+                   UNTIL WS-BEARER-I > 64 OR BEARER-BAD
+               COMPUTE WS-BEARER-J = 7 + WS-BEARER-I
+               MOVE WS-AUTH-HDR(WS-BEARER-J:1) TO WS-BEARER-CH
+               MOVE 0 TO WS-CHK-TALLY
+               INSPECT WS-ALLOWED-CHARS
+                   TALLYING WS-CHK-TALLY FOR ALL WS-BEARER-CH
+               IF WS-CHK-TALLY = 0
+                   SET BEARER-BAD TO TRUE
+               END-IF
+           END-PERFORM.
 
       *----------------------------------------------------------------*
       *                     3200-VALIDATE-TOKEN
@@ -666,8 +1021,19 @@
       *  LINK failure is a 500 (no internal detail leaked).
       *----------------------------------------------------------------*
        3200-VALIDATE-TOKEN.
+      *    M9 - Present COAPISEC a minimal contract: only the service
+      *    code and the bearer token. Save the route keys (incl. PAN),
+      *    clear them and the payload for the LINK, then restore them
+      *    for dispatch so the auth service never receives keys it does
+      *    not need.
+           MOVE API-REQUEST TO WS-SAVE-REQUEST
            MOVE 'VALIDATE' TO API-SERVICE-CODE
            MOVE SPACES     TO API-ERR-MESSAGE
+           MOVE ZEROS      TO API-REQ-ACCT-ID
+           MOVE ZEROS      TO API-REQ-CUST-ID
+           MOVE SPACES     TO API-REQ-CARD-NUM
+           MOVE SPACES     TO API-REQ-TRAN-ID
+           MOVE SPACES     TO API-PAYLOAD
            EXEC CICS LINK
                 PROGRAM  ('COAPISEC')
                 COMMAREA (API-COMMAREA)
@@ -675,13 +1041,20 @@
                 RESP     (WS-RESP-CD)
                 RESP2    (WS-REAS-CD)
            END-EXEC
+           MOVE WS-SAVE-REQUEST TO API-REQUEST
+      *    M4 - A LINK failure, or an internal (500) status returned by
+      *    COAPISEC itself, is propagated as 500; only a genuine
+      *    credential failure (a non-OK status that is not 500) is
+      *    reported to the caller as 401.
            IF WS-RESP-CD NOT = DFHRESP(NORMAL)
-               MOVE 500 TO WS-HTTP-STATUS
-               MOVE SPACES TO WS-ERR-MSG
-               SET STATE-ERROR TO TRUE
+               PERFORM 3950-SET-INTERNAL
            ELSE
-               IF NOT API-HTTP-OK
-                   PERFORM 3900-SET-UNAUTHORIZED
+               IF API-HTTP-SERVER-ERROR
+                   PERFORM 3950-SET-INTERNAL
+               ELSE
+                   IF NOT API-HTTP-OK
+                       PERFORM 3900-SET-UNAUTHORIZED
+                   END-IF
                END-IF
            END-IF.
 
@@ -692,6 +1065,35 @@
            MOVE 401 TO WS-HTTP-STATUS
            MOVE 'Missing or invalid bearer token' TO WS-ERR-MSG
            SET STATE-ERROR TO TRUE.
+
+      *----------------------------------------------------------------*
+      *                     3950-SET-INTERNAL
+      *  M4 - Unexpected failure during authorization (LINK failure or
+      *  an internal error surfaced by COAPISEC). Reports a generic 500
+      *  with no internal detail; RESP2 is never surfaced to the client.
+      *----------------------------------------------------------------*
+       3950-SET-INTERNAL.
+           MOVE 500 TO WS-HTTP-STATUS
+           MOVE SPACES TO WS-ERR-MSG
+           SET STATE-ERROR TO TRUE.
+
+      *----------------------------------------------------------------*
+      *                     3300-CLEAR-TOKEN
+      *  M9 - Clear the validated bearer token, its identity fields, and
+      *  the raw Authorization/header-browse buffers as soon as the
+      *  token has been validated, so none of it flows to the inquiry
+      *  services. Sign-on never reaches here (it mints a token that
+      *  must survive to serialization).
+      *----------------------------------------------------------------*
+       3300-CLEAR-TOKEN.
+           MOVE SPACES TO API-TOKEN-VALUE
+           MOVE SPACES TO API-TOKEN-USER-ID
+           MOVE SPACES TO API-TOKEN-USER-TYPE
+           MOVE SPACES TO API-TOKEN-EXPIRY-TS
+           MOVE SPACES TO WS-AUTH-HDR
+           MOVE SPACES TO WS-HDRB-NAME
+           MOVE SPACES TO WS-HDRB-VAL
+           MOVE SPACE  TO WS-BEARER-CH.
 
       *----------------------------------------------------------------*
       *                       4000-DISPATCH
@@ -733,25 +1135,11 @@
       *  field is a 400; an authentication failure is a 401.
       *----------------------------------------------------------------*
        4100-DO-SIGNON.
-           MOVE SPACES   TO API-SIGNON-REQUEST
-           MOVE 'userId' TO JP-PARSE-KEY
-           PERFORM 4150-PARSE-BODY-FIELD
-           IF JP-OK AND JP-PARSE-RESULT-LEN > 0
-               MOVE JP-PARSE-RESULT(1:JP-PARSE-RESULT-LEN)
-                   TO SGNI-USER-ID
-           ELSE
-               PERFORM 4900-SET-BAD-BODY
-           END-IF
-           IF STATE-CONTINUE
-               MOVE 'password' TO JP-PARSE-KEY
-               PERFORM 4150-PARSE-BODY-FIELD
-               IF JP-OK AND JP-PARSE-RESULT-LEN > 0
-                   MOVE JP-PARSE-RESULT(1:JP-PARSE-RESULT-LEN)
-                       TO SGNI-PASSWORD
-               ELSE
-                   PERFORM 4900-SET-BAD-BODY
-               END-IF
-           END-IF
+      *    M6 - Parse and fully validate the sign-on body with a bounded
+      *    state machine (4160). It sets SGNI-USER-ID / SGNI-PASSWORD on
+      *    success or drives 4900-SET-BAD-BODY (400) on any violation.
+           MOVE SPACES TO API-SIGNON-REQUEST
+           PERFORM 4160-PARSE-SIGNON-BODY
            IF STATE-CONTINUE
                PERFORM 4180-LINK-SIGNON
            END-IF
@@ -759,25 +1147,264 @@
            MOVE SPACES TO WS-REQ-BODY.
 
       *----------------------------------------------------------------*
-      *                     4150-PARSE-BODY-FIELD
-      *  Parse one string field (key in JP-PARSE-KEY) from the JSON
-      *  request body using COJSONUC PARS.
+      *                     4160-PARSE-SIGNON-BODY
+      *  M6 - Bounded single-pass validator for the sign-on JSON body.
+      *  Scans the COMPLETE received body (1..WS-SB-N, capped at 4096)
+      *  through the WS-SB-STATE machine, then finalizes. On success the
+      *  extracted credentials are moved to SGNI-USER-ID/SGNI-PASSWORD;
+      *  on ANY structural or length violation 4900-SET-BAD-BODY sets a
+      *  deterministic 400.
       *----------------------------------------------------------------*
-       4150-PARSE-BODY-FIELD.
-           MOVE 'PARS' TO JP-FUNCTION
-           IF WS-REQ-LEN > 256
-               MOVE 256 TO JP-VALUE-LEN
+       4160-PARSE-SIGNON-BODY.
+           SET SB-BODY-OK TO TRUE
+           MOVE 'OPEN' TO WS-SB-STATE
+           MOVE SPACES TO WS-SB-CURKEY
+           MOVE 0      TO WS-SB-CURKEY-LEN
+           MOVE SPACES TO WS-SB-VAL
+           MOVE 0      TO WS-SB-VAL-LEN
+           MOVE SPACES TO WS-SB-USER WS-SB-PASS
+           MOVE 0      TO WS-SB-USER-LEN WS-SB-PASS-LEN
+           MOVE 'N'    TO WS-SB-HAVE-USER WS-SB-HAVE-PASS
+           MOVE WS-REQ-LEN TO WS-SB-N
+           IF WS-SB-N > 4096
+               MOVE 4096 TO WS-SB-N
+           END-IF
+           PERFORM VARYING WS-SB-I FROM 1 BY 1
+                   UNTIL WS-SB-I > WS-SB-N OR SB-BODY-BAD
+               MOVE WS-REQ-BODY(WS-SB-I:1) TO WS-SB-CH
+               PERFORM 4162-CLASSIFY-WS
+               PERFORM 4164-SCAN-STEP
+           END-PERFORM
+           IF SB-BODY-OK
+               PERFORM 4166-FINALIZE-BODY
+           END-IF
+           IF SB-BODY-OK
+               MOVE WS-SB-USER TO SGNI-USER-ID
+               MOVE WS-SB-PASS TO SGNI-PASSWORD
            ELSE
-               MOVE WS-REQ-LEN TO JP-VALUE-LEN
+               PERFORM 4900-SET-BAD-BODY
+           END-IF.
+
+      *----------------------------------------------------------------*
+      *                     4162-CLASSIFY-WS
+      *  Flag whether the current byte is JSON insignificant whitespace
+      *  (space, tab, line feed, carriage return) in host code page 037.
+      *----------------------------------------------------------------*
+       4162-CLASSIFY-WS.
+           IF WS-SB-CH = SPACE OR WS-SB-CH = WS-SB-TAB
+              OR WS-SB-CH = WS-SB-LF OR WS-SB-CH = WS-SB-CR
+               SET SB-IS-WS TO TRUE
+           ELSE
+               SET SB-NOT-WS TO TRUE
+           END-IF.
+
+      *----------------------------------------------------------------*
+      *                     4164-SCAN-STEP
+      *  Dispatch the current byte to the handler for the current state.
+      *----------------------------------------------------------------*
+       4164-SCAN-STEP.
+           EVALUATE TRUE
+               WHEN SB-OPEN
+                   PERFORM 4170-ST-OPEN
+               WHEN SB-KEYCL
+                   PERFORM 4171-ST-KEYCL
+               WHEN SB-INKEY
+                   PERFORM 4172-ST-INKEY
+               WHEN SB-COLON
+                   PERFORM 4173-ST-COLON
+               WHEN SB-VAL
+                   PERFORM 4174-ST-VAL
+               WHEN SB-INVAL
+                   PERFORM 4175-ST-INVAL
+               WHEN SB-COMMACL
+                   PERFORM 4176-ST-COMMACL
+               WHEN SB-KEY
+                   PERFORM 4177-ST-KEY
+               WHEN SB-TRAIL
+                   PERFORM 4178-ST-TRAIL
+               WHEN OTHER
+                   SET SB-BODY-BAD TO TRUE
+           END-EVALUATE.
+
+      *----------------------------------------------------------------*
+      *                     4166-FINALIZE-BODY
+      *  After the scan the machine must rest in TRAIL (closed brace);
+      *  both required fields must be present, and each credential must
+      *  be 1..8 characters.
+      *----------------------------------------------------------------*
+       4166-FINALIZE-BODY.
+           IF NOT SB-TRAIL
+               SET SB-BODY-BAD TO TRUE
            END-IF
-           IF JP-VALUE-LEN < 1
-               MOVE 1 TO JP-VALUE-LEN
+           IF SB-BODY-OK
+             AND (NOT SB-HAVE-USER OR NOT SB-HAVE-PASS)
+               SET SB-BODY-BAD TO TRUE
            END-IF
-           MOVE SPACES TO JP-VALUE
-           MOVE WS-REQ-BODY(1:JP-VALUE-LEN) TO JP-VALUE
-           MOVE SPACES TO JP-PARSE-RESULT
-           MOVE 0      TO JP-PARSE-RESULT-LEN
-           CALL 'COJSONUC' USING JSON-PARM JSON-BUFFER.
+           IF SB-BODY-OK
+             AND (WS-SB-USER-LEN < 1 OR WS-SB-USER-LEN > 8)
+               SET SB-BODY-BAD TO TRUE
+           END-IF
+           IF SB-BODY-OK
+             AND (WS-SB-PASS-LEN < 1 OR WS-SB-PASS-LEN > 8)
+               SET SB-BODY-BAD TO TRUE
+           END-IF.
+
+      *----------------------------------------------------------------*
+      *  State handlers. Each consumes exactly one byte (WS-SB-CH) and
+      *  advances WS-SB-STATE or fails the body (SB-BODY-BAD).
+      *----------------------------------------------------------------*
+       4170-ST-OPEN.
+           IF SB-IS-WS
+               CONTINUE
+           ELSE
+               IF WS-SB-CH = '{'
+                   MOVE 'KEYCL' TO WS-SB-STATE
+               ELSE
+                   SET SB-BODY-BAD TO TRUE
+               END-IF
+           END-IF.
+
+       4171-ST-KEYCL.
+           IF SB-IS-WS
+               CONTINUE
+           ELSE
+               IF WS-SB-CH = '"'
+                   MOVE 'INKEY' TO WS-SB-STATE
+                   MOVE SPACES  TO WS-SB-CURKEY
+                   MOVE 0       TO WS-SB-CURKEY-LEN
+               ELSE
+                   IF WS-SB-CH = '}'
+                       MOVE 'TRAIL' TO WS-SB-STATE
+                   ELSE
+                       SET SB-BODY-BAD TO TRUE
+                   END-IF
+               END-IF
+           END-IF.
+
+       4172-ST-INKEY.
+           IF WS-SB-CH = '"'
+               MOVE 'COLON' TO WS-SB-STATE
+           ELSE
+               IF WS-SB-CH = WS-SB-ESC
+                   SET SB-BODY-BAD TO TRUE
+               ELSE
+                   IF WS-SB-CURKEY-LEN >= 32
+                       SET SB-BODY-BAD TO TRUE
+                   ELSE
+                       ADD 1 TO WS-SB-CURKEY-LEN
+                       MOVE WS-SB-CH
+                            TO WS-SB-CURKEY(WS-SB-CURKEY-LEN:1)
+                   END-IF
+               END-IF
+           END-IF.
+
+       4173-ST-COLON.
+           IF SB-IS-WS
+               CONTINUE
+           ELSE
+               IF WS-SB-CH = ':'
+                   MOVE 'VAL' TO WS-SB-STATE
+               ELSE
+                   SET SB-BODY-BAD TO TRUE
+               END-IF
+           END-IF.
+
+       4174-ST-VAL.
+           IF SB-IS-WS
+               CONTINUE
+           ELSE
+               IF WS-SB-CH = '"'
+                   MOVE 'INVAL' TO WS-SB-STATE
+                   MOVE SPACES  TO WS-SB-VAL
+                   MOVE 0       TO WS-SB-VAL-LEN
+               ELSE
+                   SET SB-BODY-BAD TO TRUE
+               END-IF
+           END-IF.
+
+       4175-ST-INVAL.
+           IF WS-SB-CH = '"'
+               PERFORM 4179-COMMIT-PAIR
+           ELSE
+               IF WS-SB-CH = WS-SB-ESC
+                   SET SB-BODY-BAD TO TRUE
+               ELSE
+                   IF WS-SB-VAL-LEN >= 8
+                       SET SB-BODY-BAD TO TRUE
+                   ELSE
+                       ADD 1 TO WS-SB-VAL-LEN
+                       MOVE WS-SB-CH TO WS-SB-VAL(WS-SB-VAL-LEN:1)
+                   END-IF
+               END-IF
+           END-IF.
+
+       4176-ST-COMMACL.
+           IF SB-IS-WS
+               CONTINUE
+           ELSE
+               IF WS-SB-CH = ','
+                   MOVE 'KEY' TO WS-SB-STATE
+               ELSE
+                   IF WS-SB-CH = '}'
+                       MOVE 'TRAIL' TO WS-SB-STATE
+                   ELSE
+                       SET SB-BODY-BAD TO TRUE
+                   END-IF
+               END-IF
+           END-IF.
+
+       4177-ST-KEY.
+           IF SB-IS-WS
+               CONTINUE
+           ELSE
+               IF WS-SB-CH = '"'
+                   MOVE 'INKEY' TO WS-SB-STATE
+                   MOVE SPACES  TO WS-SB-CURKEY
+                   MOVE 0       TO WS-SB-CURKEY-LEN
+               ELSE
+                   SET SB-BODY-BAD TO TRUE
+               END-IF
+           END-IF.
+
+       4178-ST-TRAIL.
+           IF SB-IS-WS
+               CONTINUE
+           ELSE
+               SET SB-BODY-BAD TO TRUE
+           END-IF.
+
+      *----------------------------------------------------------------*
+      *                     4179-COMMIT-PAIR
+      *  A complete "key":"value" pair has been read. Match the key to
+      *  exactly one required field, rejecting duplicates and any
+      *  unknown key, then expect a comma or the closing brace.
+      *----------------------------------------------------------------*
+       4179-COMMIT-PAIR.
+           EVALUATE TRUE
+               WHEN WS-SB-CURKEY-LEN = 6
+                    AND WS-SB-CURKEY(1:6) = 'userId'
+                   IF SB-HAVE-USER
+                       SET SB-BODY-BAD TO TRUE
+                   ELSE
+                       SET SB-HAVE-USER TO TRUE
+                       MOVE WS-SB-VAL     TO WS-SB-USER
+                       MOVE WS-SB-VAL-LEN TO WS-SB-USER-LEN
+                   END-IF
+               WHEN WS-SB-CURKEY-LEN = 8
+                    AND WS-SB-CURKEY(1:8) = 'password'
+                   IF SB-HAVE-PASS
+                       SET SB-BODY-BAD TO TRUE
+                   ELSE
+                       SET SB-HAVE-PASS TO TRUE
+                       MOVE WS-SB-VAL     TO WS-SB-PASS
+                       MOVE WS-SB-VAL-LEN TO WS-SB-PASS-LEN
+                   END-IF
+               WHEN OTHER
+                   SET SB-BODY-BAD TO TRUE
+           END-EVALUATE
+           IF SB-BODY-OK
+               MOVE 'COMMACL' TO WS-SB-STATE
+           END-IF.
 
       *----------------------------------------------------------------*
       *                       4180-LINK-SIGNON
@@ -867,11 +1494,21 @@
 
       *----------------------------------------------------------------*
       *                     4320-GET-LIST-RESULT
-      *  The status container is fixed length; the response container
-      *  buffer is sized at the maximum (500 entries) so nothing is
-      *  truncated. The list service's HTTP status is authoritative.
+      *  C1 - The response container buffer is sized for the capped
+      *  maximum of 50 entries (matching TRAN-LIST-ENTRY OCCURS 0 TO 50
+      *  and JB-DATA X(96000)); a larger preset would over-size the ODO
+      *  group and mis-drive JSON assembly.
+      *  M8 - Receiving areas are initialized first, and the status
+      *  container length, the response container length, and the
+      *  returned count/truncated fields are all range/layout checked
+      *  before the list is trusted. The list service's HTTP status is
+      *  authoritative only once these checks pass.
       *----------------------------------------------------------------*
        4320-GET-LIST-RESULT.
+           INITIALIZE API-TRAN-LIST-STATUS
+           MOVE 0   TO TRAN-LIST-COUNT
+           MOVE 'N' TO TRAN-LIST-TRUNCATED
+           MOVE 0   TO TRAN-LIST-ACCT-ID
            MOVE LENGTH OF API-TRAN-LIST-STATUS TO WS-CONT-LEN
            EXEC CICS GET CONTAINER('TRANLISTSTA')
                 CHANNEL ('CDEMOAPILISTCH')
@@ -884,24 +1521,79 @@
                MOVE 500 TO WS-HTTP-STATUS
                MOVE SPACES TO WS-ERR-MSG
            ELSE
-               MOVE 500 TO TRAN-LIST-COUNT
-               MOVE LENGTH OF API-TRAN-LIST TO WS-CONT-LEN2
-               EXEC CICS GET CONTAINER('TRANLISTRSP')
-                    CHANNEL ('CDEMOAPILISTCH')
-                    INTO    (API-TRAN-LIST)
-                    FLENGTH (WS-CONT-LEN2)
-                    RESP    (WS-RESP-CD)
-                    RESP2   (WS-REAS-CD)
-               END-EXEC
-               IF WS-RESP-CD NOT = DFHRESP(NORMAL)
+               IF WS-CONT-LEN NOT = LENGTH OF API-TRAN-LIST-STATUS
                    MOVE 500 TO WS-HTTP-STATUS
                    MOVE SPACES TO WS-ERR-MSG
                ELSE
-                   MOVE TRLS-HTTP-STATUS TO WS-HTTP-STATUS
-                   IF WS-HTTP-STATUS NOT = 200
-                       MOVE TRLS-ERR-MESSAGE TO WS-ERR-MSG
+                   PERFORM 4330-GET-LIST-BODY
+               END-IF
+           END-IF.
+
+      *----------------------------------------------------------------*
+      *                     4330-GET-LIST-BODY
+      *  Calibrate the fixed header length and per-entry length from the
+      *  copybook itself, size the receive buffer for the 50-entry cap,
+      *  then read the response container.
+      *----------------------------------------------------------------*
+       4330-GET-LIST-BODY.
+           MOVE 0 TO TRAN-LIST-COUNT
+           MOVE LENGTH OF API-TRAN-LIST TO WS-TRLIST-HDR-LEN
+           MOVE 1 TO TRAN-LIST-COUNT
+           COMPUTE WS-TRENTRY-LEN =
+               LENGTH OF API-TRAN-LIST - WS-TRLIST-HDR-LEN
+           MOVE 50 TO TRAN-LIST-COUNT
+           MOVE LENGTH OF API-TRAN-LIST TO WS-CONT-LEN2
+           EXEC CICS GET CONTAINER('TRANLISTRSP')
+                CHANNEL ('CDEMOAPILISTCH')
+                INTO    (API-TRAN-LIST)
+                FLENGTH (WS-CONT-LEN2)
+                RESP    (WS-RESP-CD)
+                RESP2   (WS-REAS-CD)
+           END-EXEC
+           IF WS-RESP-CD NOT = DFHRESP(NORMAL)
+               MOVE 500 TO WS-HTTP-STATUS
+               MOVE SPACES TO WS-ERR-MSG
+           ELSE
+               PERFORM 4340-VALIDATE-LIST
+           END-IF.
+
+      *----------------------------------------------------------------*
+      *                     4340-VALIDATE-LIST
+      *  M8 - Trust the ODO list only after the returned count is within
+      *  [0,50], the truncated flag is exactly 'N' or 'Y', and the
+      *  returned FLENGTH equals the fixed header plus the exact number
+      *  of fixed-length entries. Any inconsistency is a generic 500.
+      *----------------------------------------------------------------*
+       4340-VALIDATE-LIST.
+           IF TRAN-LIST-COUNT > 50
+               MOVE 500 TO WS-HTTP-STATUS
+               MOVE SPACES TO WS-ERR-MSG
+           ELSE
+               IF NOT (TRAN-LIST-COMPLETE OR TRAN-LIST-WAS-TRUNCATED)
+                   MOVE 500 TO WS-HTTP-STATUS
+                   MOVE SPACES TO WS-ERR-MSG
+               ELSE
+                   COMPUTE WS-EXP-LIST-LEN =
+                       WS-TRLIST-HDR-LEN
+                       + (TRAN-LIST-COUNT * WS-TRENTRY-LEN)
+                   IF WS-CONT-LEN2 NOT = WS-EXP-LIST-LEN
+                       MOVE 500 TO WS-HTTP-STATUS
+                       MOVE SPACES TO WS-ERR-MSG
+                   ELSE
+                       PERFORM 4350-APPLY-LIST-STATUS
                    END-IF
                END-IF
+           END-IF.
+
+      *----------------------------------------------------------------*
+      *                     4350-APPLY-LIST-STATUS
+      *  The validated list service HTTP status becomes the response
+      *  status; a non-200 carries the service error message.
+      *----------------------------------------------------------------*
+       4350-APPLY-LIST-STATUS.
+           MOVE TRLS-HTTP-STATUS TO WS-HTTP-STATUS
+           IF WS-HTTP-STATUS NOT = 200
+               MOVE TRLS-ERR-MESSAGE TO WS-ERR-MSG
            END-IF.
 
       *----------------------------------------------------------------*
@@ -1469,23 +2161,83 @@
 
       *----------------------------------------------------------------*
       *                    6000-SEND-RESPONSE
-      *  Send the serialized JSON with Content-Type application/json
-      *  and the mapped HTTP status code. A WEB SEND failure cannot be
-      *  reported to the client (the channel is already committing), so
-      *  it is swallowed after being captured in the RESP fields.
+      *  Send the serialized JSON. C5 - SRVCONVERT converts the body
+      *  from host code page 037 to CHARACTERSET utf-8 so distributed
+      *  clients receive interoperable UTF-8 JSON and Content-Type is
+      *  emitted as 'application/json; charset=utf-8'. N2 - the no-store
+      *  cache headers are written first. N1 - a WEB SEND failure cannot
+      *  be reported to the client, so it is captured and recorded as
+      *  requestId-safe console telemetry.
       *----------------------------------------------------------------*
        6000-SEND-RESPONSE.
            MOVE WS-HTTP-STATUS TO WS-STATUSCODE
            PERFORM 6100-SET-STATUS-TEXT
+           PERFORM 6050-WRITE-SEC-HEADERS
            EXEC CICS WEB SEND
-                FROM       (JB-DATA)
-                FROMLENGTH (JB-LEN)
-                MEDIATYPE  (WS-MEDIATYPE)
-                STATUSCODE (WS-STATUSCODE)
-                STATUSTEXT (WS-STATUS-TEXT)
-                STATUSLEN  (WS-STATUS-TEXT-LEN)
-                RESP       (WS-RESP-CD)
-                RESP2      (WS-REAS-CD)
+                FROM         (JB-DATA)
+                FROMLENGTH   (JB-LEN)
+                MEDIATYPE    (WS-MEDIATYPE)
+                SRVCONVERT
+                CHARACTERSET (WS-CHARSET-UTF8)
+                HOSTCODEPAGE (WS-HOST-CP)
+                STATUSCODE   (WS-STATUSCODE)
+                STATUSTEXT   (WS-STATUS-TEXT)
+                STATUSLEN    (WS-STATUS-TEXT-LEN)
+                RESP         (WS-RESP-CD)
+                RESP2        (WS-REAS-CD)
+           END-EXEC
+           IF WS-RESP-CD NOT = DFHRESP(NORMAL)
+               PERFORM 6060-LOG-SEND-FAILURE
+           END-IF.
+
+      *----------------------------------------------------------------*
+      *                    6050-WRITE-SEC-HEADERS
+      *  N2 - Write the no-store cache policy headers before the body is
+      *  sent. A header-write failure is non-fatal to the response and
+      *  is intentionally not escalated.
+      *----------------------------------------------------------------*
+       6050-WRITE-SEC-HEADERS.
+           EXEC CICS WEB WRITE
+                HTTPHEADER  (WS-CC-NAME)
+                NAMELENGTH  (WS-CC-NAME-LEN)
+                VALUE       (WS-CC-VAL)
+                VALUELENGTH (WS-CC-VAL-LEN)
+                RESP        (WS-RESP-CD)
+                RESP2       (WS-REAS-CD)
+           END-EXEC
+           EXEC CICS WEB WRITE
+                HTTPHEADER  (WS-PRG-NAME)
+                NAMELENGTH  (WS-PRG-NAME-LEN)
+                VALUE       (WS-PRG-VAL)
+                VALUELENGTH (WS-PRG-VAL-LEN)
+                RESP        (WS-RESP-CD)
+                RESP2       (WS-REAS-CD)
+           END-EXEC.
+
+      *----------------------------------------------------------------*
+      *                    6060-LOG-SEND-FAILURE
+      *  N1 - Record a WEB SEND failure to the system console with only
+      *  the requestId correlation value and the CICS RESP/RESP2. No
+      *  response body, route, credential, or token data is included.
+      *----------------------------------------------------------------*
+       6060-LOG-SEND-FAILURE.
+           MOVE SPACES     TO WS-TEL-MSG
+           MOVE WS-RESP-CD TO WS-TEL-RESP-X
+           MOVE WS-REAS-CD TO WS-TEL-REAS-X
+           MOVE 1 TO WS-TEL-PTR
+           STRING 'COAPIRTR WEB SEND failed req=' DELIMITED BY SIZE
+                  WS-REQ-ID                        DELIMITED BY SIZE
+                  ' resp='                         DELIMITED BY SIZE
+                  WS-TEL-RESP-X                    DELIMITED BY SIZE
+                  ' resp2='                        DELIMITED BY SIZE
+                  WS-TEL-REAS-X                    DELIMITED BY SIZE
+               INTO WS-TEL-MSG
+               WITH POINTER WS-TEL-PTR
+           END-STRING
+           SUBTRACT 1 FROM WS-TEL-PTR GIVING WS-TEL-LEN
+           EXEC CICS WRITE OPERATOR
+                TEXT       (WS-TEL-MSG)
+                TEXTLENGTH (WS-TEL-LEN)
            END-EXEC.
 
       *----------------------------------------------------------------*
@@ -1510,6 +2262,48 @@
                    MOVE 'Internal Server Error' TO WS-STATUS-TEXT
                    MOVE 21 TO WS-STATUS-TEXT-LEN
            END-EVALUATE.
+
+      *----------------------------------------------------------------*
+      *                    6900-SCRUB-SENSITIVE
+      *  C3 - Defense-in-depth: overwrite every buffer that may hold a
+      *  credential, token, PAN, PII, or serialized sensitive payload
+      *  before the task returns and its storage is freed or reused.
+      *  This complements the CSD STORAGECLEAR(YES) attribute. The
+      *  requestId is not sensitive and is intentionally retained for
+      *  correlation.
+      *----------------------------------------------------------------*
+       6900-SCRUB-SENSITIVE.
+      *    Inbound request material (the body may carry the password;
+      *    the header carries the bearer token).
+           MOVE SPACES TO WS-REQ-BODY
+           MOVE SPACES TO WS-AUTH-HDR
+           MOVE SPACES TO WS-CTYPE-VAL
+           MOVE SPACES TO WS-CTYPE-U
+           MOVE SPACES TO WS-HDRB-NAME
+           MOVE SPACES TO WS-HDRB-VAL
+      *    Parsed sign-on credentials.
+           MOVE SPACES TO WS-SB-CURKEY
+           MOVE SPACES TO WS-SB-VAL
+           MOVE SPACES TO WS-SB-USER
+           MOVE SPACES TO WS-SB-PASS
+           MOVE SPACES TO API-SIGNON-REQUEST
+      *    Commarea token and generic payload buffer.
+           MOVE SPACES TO API-TOKEN-VALUE
+           MOVE SPACES TO API-TOKEN-USER-ID
+           MOVE SPACES TO API-TOKEN-USER-TYPE
+           MOVE SPACES TO API-TOKEN-EXPIRY-TS
+           MOVE SPACES TO API-PAYLOAD
+      *    Per-service response areas (PAN, SSN, govt id, token, PII).
+           MOVE SPACES TO API-ACCT-RESPONSE
+           MOVE SPACES TO API-CUST-RESPONSE
+           MOVE SPACES TO API-CARD-RESPONSE
+           MOVE SPACES TO API-XREF-RESPONSE
+           MOVE SPACES TO API-SIGNON-RESPONSE
+           MOVE SPACES TO API-TRAN-RESPONSE
+           MOVE 50     TO TRAN-LIST-COUNT
+           MOVE SPACES TO API-TRAN-LIST
+      *    Assembled JSON body (contains every emitted value).
+           MOVE SPACES TO JB-DATA.
 
       *----------------------------------------------------------------*
       *                    7000-JSON-BEGIN-DATA

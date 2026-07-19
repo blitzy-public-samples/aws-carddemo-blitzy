@@ -24,11 +24,12 @@
            05  TRAN-LIST-COUNT            PIC 9(04).
            05  TRAN-LIST-TRUNCATED        PIC X(01).
            88  TRAN-LIST-COMPLETE  VALUE 'N'.
-      *  Reserved state: current COTRSVCC never produces 'Y'.
-      *  COAPIRTR reads it to render the JSON truncated property.
+      *  Set to 'Y' by COTRSVCC when matching transactions exceed
+      *  the list cap; COAPIRTR renders it as the JSON truncated
+      *  property so a partial list is disclosed, never silent.
            88  TRAN-LIST-WAS-TRUNCATED  VALUE 'Y'.
            05  TRAN-LIST-ACCT-ID          PIC 9(11).
-           05  TRAN-LIST-ENTRY OCCURS 0 TO 500 TIMES
+           05  TRAN-LIST-ENTRY OCCURS 0 TO 50 TIMES
                                DEPENDING ON TRAN-LIST-COUNT.
                10  TRNL-ID                PIC X(16).
                10  TRNL-TYPE-CD           PIC X(02).
@@ -51,6 +52,12 @@
       *    TRANLISTSTA = API-TRAN-LIST-STATUS   (135 bytes)
        01  API-TRAN-LIST-REQUEST.
            05  TRLR-ACCT-ID               PIC 9(11).
+      *  Alphanumeric alias of the 11-byte request key. Lets a driver
+      *  inject a non-numeric account id to drive the COTRSVCC 400
+      *  BADREQ path without recreating the request layout - shared so
+      *  a test affordance can never drift from API-TRAN-LIST-REQUEST.
+       01  API-TRAN-LIST-REQ-RAW REDEFINES API-TRAN-LIST-REQUEST.
+           05  TRLR-ACCT-ID-RAW           PIC X(11).
        01  API-TRAN-LIST-STATUS.
            05  TRLS-HTTP-STATUS           PIC 9(03).
            05  TRLS-RETURN-CODE           PIC S9(04).

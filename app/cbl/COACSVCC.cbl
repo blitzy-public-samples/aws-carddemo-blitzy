@@ -68,9 +68,16 @@
 
        LINKAGE SECTION.
       *****************************************************************
-      * Shared API COMMAREA contract.  Copied as the first 01 in the
-      * LINKAGE SECTION so the LINKed COMMAREA maps to API-COMMAREA.
+      * C7 - Raw COMMAREA byte map.  API-COMMAREA (COAPICOM) is
+      * overlaid on DFHCOMMAREA via SET ADDRESS in 0000-MAIN so the
+      * typed contract addresses the storage the router LINKed and any
+      * writes reach the caller (COAPIRTR).  Mirrors the working
+      * services (COCUSVCC).  Without this overlay API-COMMAREA is an
+      * unaddressed LINKAGE item and the account route is not runnable.
       *****************************************************************
+       01  DFHCOMMAREA.
+           05  FILLER                  PIC X(01)
+               OCCURS 1 TO 32767 TIMES DEPENDING ON EIBCALEN.
        COPY COAPICOM.
 
        PROCEDURE DIVISION.
@@ -82,6 +89,7 @@
        0000-MAIN.
 
            IF EIBCALEN >= LENGTH OF API-COMMAREA
+              SET ADDRESS OF API-COMMAREA TO ADDRESS OF DFHCOMMAREA
               PERFORM 1000-READ-ACCT
                  THRU 1000-READ-ACCT-EXIT
            END-IF

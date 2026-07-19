@@ -64,7 +64,14 @@
        COPY COAPCRDY.
 
        LINKAGE SECTION.
-      * Shared REST/JSON API COMMAREA contract (first 01 = COMMAREA)
+      * C8 - Raw COMMAREA byte map. API-COMMAREA (COAPICOM) is overlaid
+      * on DFHCOMMAREA via SET ADDRESS in 0000-MAIN so the typed
+      * contract addresses the LINKed storage and writes reach the
+      * caller. Without it API-COMMAREA is unaddressed and the card
+      * route is not runnable. Mirrors the working services (COCUSVCC).
+       01  DFHCOMMAREA.
+           05  FILLER                  PIC X(01)
+               OCCURS 1 TO 32767 TIMES DEPENDING ON EIBCALEN.
        COPY COAPICOM.
 
        PROCEDURE DIVISION.
@@ -74,9 +81,11 @@
       *****************************************************************
        0000-MAIN.
            IF EIBCALEN >= LENGTH OF API-COMMAREA
+               SET ADDRESS OF API-COMMAREA TO ADDRESS OF DFHCOMMAREA
                PERFORM 1000-READ-CARD
            END-IF
 
+           PERFORM 9000-SCRUB-SENSITIVE
            EXEC CICS RETURN
            END-EXEC
            .
@@ -180,6 +189,21 @@
              TO CARD-NUM-MASKED OF API-CARD-RESPONSE
            .
 
+      *****************************************************************
+      * 9000-SCRUB-SENSITIVE : C3 - overwrite the raw card record and *
+      * every PAN work field so no full card number survives in this  *
+      * task's storage after RETURN (CWE-226 / CWE-532). CVV is never *
+      * referenced by this service. The masked API-PAYLOAD handed to   *
+      * the caller is left untouched for the router to serialize.      *
+      *****************************************************************
+       9000-SCRUB-SENSITIVE.
+           MOVE SPACES TO CARD-RECORD
+           MOVE SPACES TO API-CARD-RESPONSE
+           MOVE SPACES TO WS-CARD-KEY
+           MOVE SPACES TO WS-MASKED-PAN
+           MOVE SPACES TO WS-PAN-WORK
+           MOVE '0000' TO WS-PAN-LAST4
+           .
       *
       * Ver: CardDemo REST/JSON API v1 - COCRSVCC card inquiry service
       *

@@ -66,24 +66,23 @@
        01  WS-CTR-STA             PIC X(16) VALUE 'TRANLISTSTA'.
       *
       ******************************************************************
-      * Local mirror of the TRANLISTREQ input container (11 bytes):
-      * the requested account id handed to COTRSVCC list mode.
-      ******************************************************************
-       01  WS-LIST-REQUEST.
-           05  WS-LR-ACCT-ID      PIC 9(11).
-       01  WS-LIST-REQUEST-RAW REDEFINES WS-LIST-REQUEST.
-           05  WS-LR-ACCT-ID-RAW  PIC X(11).
+      * The request, raw-request alias and status container layouts are
+      * the SHARED COAPTRNY groups - API-TRAN-LIST-REQUEST (TRLR-ACCT-ID
+      * 9(11)), API-TRAN-LIST-REQ-RAW (TRLR-ACCT-ID-RAW X(11), for the
+      * malformed-input case) and API-TRAN-LIST-STATUS (TRLS-*) - so the
+      * driver can never drift from the producer COTRSVCC. No local
+      * mirrors of the container layouts are declared.
       *
+      * Expected sanitized error-envelope messages COTRSVCC publishes
+      * (fixed literals; asserting equality proves the envelope carries
+      * no RESP2 / internal leakage).
       ******************************************************************
-      * Local mirror of the TRANLISTSTA status container (135
-      * bytes): the HTTP status intent and error envelope that
-      * COTRSVCC publishes for the list call.
-      ******************************************************************
-       01  WS-LIST-STATUS.
-           05  WS-LS-HTTP-STATUS  PIC 9(03).
-           05  WS-LS-RETURN-CODE  PIC S9(04).
-           05  WS-LS-ERR-CODE     PIC X(08).
-           05  WS-LS-ERR-MESSAGE  PIC X(120).
+       01  WS-EXP-BADREQ-MSG   PIC X(120) VALUE
+           'Account id must be 11 numeric digits'.
+       01  WS-EXP-NOTFND-MSG   PIC X(120) VALUE
+           'Account not found'.
+       01  WS-EXP-INTNL-MSG    PIC X(120) VALUE
+           'Internal server error'.
       *
       ******************************************************************
       * LINK target program and CICS response feedback codes,
@@ -102,8 +101,14 @@
        01  WS-TESTS-RUN           PIC 9(03) VALUE 0.
        01  WS-TESTS-PASS          PIC 9(03) VALUE 0.
        01  WS-TESTS-FAIL          PIC 9(03) VALUE 0.
+       01  WS-TESTS-SKIP          PIC 9(03) VALUE 0.
        01  WS-TEST-RC             PIC S9(04) VALUE 0.
        01  WS-BAD-MASK-CNT        PIC 9(04) VALUE 0.
+      *  Command-response accumulator: set to 'N' by any container /
+      *  link command whose RESP is not NORMAL or whose FLENGTH does
+      *  not match the exact container contract (M21 RESP/FLENGTH).
+       01  WS-CMD-OK              PIC X(01) VALUE 'Y'.
+           88  CMD-OK             VALUE 'Y'.
       *
       ******************************************************************
       * Expected fixture values. dailytran rec0: tran id
@@ -139,6 +144,19 @@
        01  WS-EMPTY-ACCT          PIC 9(11) VALUE 99.
       *
       ******************************************************************
+      * Boundary / failure fixtures (additive; loaded by the live API
+      * test JCL, out of scope). WS-TRUNC-ACCT owns MORE than the cap
+      * of matching transactions so the list is truncated at 50 with
+      * TRAN-LIST-WAS-TRUNCATED = 'Y' and HTTP 200 (never 500).
+      * WS-FAULT-ACCT is engineered to drive an unexpected file error
+      * so COTRSVCC returns the sanitized HTTP 500 envelope. When
+      * either fixture is absent the service answers 404 and the case
+      * is a release-blocking SKIP (never PASS).
+      ******************************************************************
+       01  WS-TRUNC-ACCT          PIC 9(11) VALUE 97.
+       01  WS-FAULT-ACCT          PIC 9(11) VALUE 96.
+      *
+      ******************************************************************
       * Masking helper: the first twelve characters of every
       * masked PAN must be asterisks.
       ******************************************************************
@@ -155,13 +173,15 @@
        PROCEDURE DIVISION.
       *
       ******************************************************************
-      * 0000-MAIN : run the seven transaction checks, report, and
-      * return control to the caller.
+      * 0000-MAIN : run every detail and list check (including the
+      * boundary and failure-path list cases), report, and return
+      * control to the caller.
       ******************************************************************
        0000-MAIN.
            MOVE 0 TO WS-TESTS-RUN
            MOVE 0 TO WS-TESTS-PASS
            MOVE 0 TO WS-TESTS-FAIL
+           MOVE 0 TO WS-TESTS-SKIP
            MOVE 0 TO WS-TEST-RC
            PERFORM 1000-TEST-DETAIL-OK
            PERFORM 2000-TEST-DETAIL-NOTFOUND
@@ -170,6 +190,10 @@
            PERFORM 4000-TEST-LIST-EMPTY
            PERFORM 5000-TEST-LIST-NOTFOUND
            PERFORM 6000-TEST-LIST-BADREQ
+           PERFORM 7000-TEST-LIST-NO-CONTAINER
+           PERFORM 7100-TEST-LIST-BAD-LENGTH
+           PERFORM 7200-TEST-LIST-TRUNCATED
+           PERFORM 7300-TEST-LIST-INTERNAL
            PERFORM 9000-REPORT
            EXEC CICS RETURN
            END-EXEC
@@ -273,45 +297,58 @@
       *
       ******************************************************************
       * 3000-TEST-LIST-NONEMPTY : account 00000000050 owns a card
-      * with six transactions. PUT the request container, LINK
-      * COTRSVCC over the channel, then GET the status and the
-      * response containers. Preset the ODO object to 500 so the
-      * receive area is sized to the maximum before the GET;
-      * COTRSVCC overwrites it with the true count. Assert HTTP
-      * 200, a positive count, every entry masked (first twelve
-      * chars asterisks), and no full PAN in the list payload.
+      * with six transactions. Reset the channel, PUT the request
+      * container, LINK COTRSVCC, then GET the status and response
+      * containers. Preset the ODO object to 50 so the receive area
+      * is sized to the cap before the GET; COTRSVCC overwrites it
+      * with the true count. Assert every container command returns
+      * NORMAL with the exact contract FLENGTH, HTTP 200, a positive
+      * count, every entry masked, and no full PAN in the payload.
       ******************************************************************
        3000-TEST-LIST-NONEMPTY.
            ADD 1 TO WS-TESTS-RUN
+           PERFORM 8100-RESET-CHANNEL
+           MOVE 'Y' TO WS-CMD-OK
            MOVE ZERO TO TRAN-LIST-COUNT
-           INITIALIZE WS-LIST-REQUEST WS-LIST-STATUS API-TRAN-LIST
-           MOVE WS-LIST-ACCT TO WS-LR-ACCT-ID
+           INITIALIZE API-TRAN-LIST-REQUEST API-TRAN-LIST-STATUS
+                      API-TRAN-LIST
+           MOVE WS-LIST-ACCT TO TRLR-ACCT-ID
            MOVE 0 TO WS-PAN-COUNT
            MOVE 0 TO WS-BAD-MASK-CNT
            EXEC CICS PUT
                 CONTAINER (WS-CTR-REQ)
                 CHANNEL   (WS-CHANNEL)
-                FROM      (WS-LIST-REQUEST)
-                FLENGTH   (LENGTH OF WS-LIST-REQUEST)
+                FROM      (API-TRAN-LIST-REQUEST)
+                FLENGTH   (LENGTH OF API-TRAN-LIST-REQUEST)
                 RESP      (WS-RESP-CD)
                 RESP2     (WS-REAS-CD)
            END-EXEC
+           IF WS-RESP-CD NOT = DFHRESP(NORMAL)
+               MOVE 'N' TO WS-CMD-OK
+           END-IF
            EXEC CICS LINK
                 PROGRAM   (WS-PGM-COTRSVCC)
                 CHANNEL   (WS-CHANNEL)
                 RESP      (WS-RESP-CD)
                 RESP2     (WS-REAS-CD)
            END-EXEC
-           MOVE LENGTH OF WS-LIST-STATUS TO WS-FLEN
+           IF WS-RESP-CD NOT = DFHRESP(NORMAL)
+               MOVE 'N' TO WS-CMD-OK
+           END-IF
+           MOVE LENGTH OF API-TRAN-LIST-STATUS TO WS-FLEN
            EXEC CICS GET
                 CONTAINER (WS-CTR-STA)
                 CHANNEL   (WS-CHANNEL)
-                INTO      (WS-LIST-STATUS)
+                INTO      (API-TRAN-LIST-STATUS)
                 FLENGTH   (WS-FLEN)
                 RESP      (WS-RESP-CD)
                 RESP2     (WS-REAS-CD)
            END-EXEC
-           MOVE 500 TO TRAN-LIST-COUNT
+           IF WS-RESP-CD NOT = DFHRESP(NORMAL)
+              OR WS-FLEN NOT = LENGTH OF API-TRAN-LIST-STATUS
+               MOVE 'N' TO WS-CMD-OK
+           END-IF
+           MOVE 50 TO TRAN-LIST-COUNT
            MOVE LENGTH OF API-TRAN-LIST TO WS-FLEN
            EXEC CICS GET
                 CONTAINER (WS-CTR-RSP)
@@ -321,6 +358,10 @@
                 RESP      (WS-RESP-CD)
                 RESP2     (WS-REAS-CD)
            END-EXEC
+           IF WS-RESP-CD NOT = DFHRESP(NORMAL)
+              OR WS-FLEN NOT = LENGTH OF API-TRAN-LIST
+               MOVE 'N' TO WS-CMD-OK
+           END-IF
            PERFORM VARYING WS-IDX FROM 1 BY 1
                    UNTIL WS-IDX > TRAN-LIST-COUNT
                IF TRNL-CARD-NUM-MASKED (WS-IDX) (1:12)
@@ -333,10 +374,11 @@
            IF WS-PAN-COUNT > 0
                DISPLAY 'TSTTRAN: LIST PAN LEAK DETECTED'
            END-IF
-           IF WS-LS-HTTP-STATUS = 200
+           IF TRLS-HTTP-STATUS = 200
               AND TRAN-LIST-COUNT > 0
               AND WS-BAD-MASK-CNT = 0
               AND WS-PAN-COUNT = 0
+              AND CMD-OK
                ADD 1 TO WS-TESTS-PASS
                DISPLAY 'TSTTRAN 3000 LIST-NONEMPTY PASS'
            ELSE
@@ -348,39 +390,53 @@
       ******************************************************************
       * 4000-TEST-LIST-EMPTY : a valid-but-cardless account must
       * resolve to HTTP 200 with count 0 - explicitly NOT 404.
-      * Same channel/container calls as 3000 (ODO preset to 500
-      * before the response GET). See WS-EMPTY-ACCT for the
+      * Same channel/container calls as 3000 (ODO preset to 50
+      * before the response GET), with the same RESP/FLENGTH
+      * command-response assertions. See WS-EMPTY-ACCT for the
       * supplied synthetic ACCTDAT fixture.
       ******************************************************************
        4000-TEST-LIST-EMPTY.
            ADD 1 TO WS-TESTS-RUN
+           PERFORM 8100-RESET-CHANNEL
+           MOVE 'Y' TO WS-CMD-OK
            MOVE ZERO TO TRAN-LIST-COUNT
-           INITIALIZE WS-LIST-REQUEST WS-LIST-STATUS API-TRAN-LIST
-           MOVE WS-EMPTY-ACCT TO WS-LR-ACCT-ID
+           INITIALIZE API-TRAN-LIST-REQUEST API-TRAN-LIST-STATUS
+                      API-TRAN-LIST
+           MOVE WS-EMPTY-ACCT TO TRLR-ACCT-ID
            EXEC CICS PUT
                 CONTAINER (WS-CTR-REQ)
                 CHANNEL   (WS-CHANNEL)
-                FROM      (WS-LIST-REQUEST)
-                FLENGTH   (LENGTH OF WS-LIST-REQUEST)
+                FROM      (API-TRAN-LIST-REQUEST)
+                FLENGTH   (LENGTH OF API-TRAN-LIST-REQUEST)
                 RESP      (WS-RESP-CD)
                 RESP2     (WS-REAS-CD)
            END-EXEC
+           IF WS-RESP-CD NOT = DFHRESP(NORMAL)
+               MOVE 'N' TO WS-CMD-OK
+           END-IF
            EXEC CICS LINK
                 PROGRAM   (WS-PGM-COTRSVCC)
                 CHANNEL   (WS-CHANNEL)
                 RESP      (WS-RESP-CD)
                 RESP2     (WS-REAS-CD)
            END-EXEC
-           MOVE LENGTH OF WS-LIST-STATUS TO WS-FLEN
+           IF WS-RESP-CD NOT = DFHRESP(NORMAL)
+               MOVE 'N' TO WS-CMD-OK
+           END-IF
+           MOVE LENGTH OF API-TRAN-LIST-STATUS TO WS-FLEN
            EXEC CICS GET
                 CONTAINER (WS-CTR-STA)
                 CHANNEL   (WS-CHANNEL)
-                INTO      (WS-LIST-STATUS)
+                INTO      (API-TRAN-LIST-STATUS)
                 FLENGTH   (WS-FLEN)
                 RESP      (WS-RESP-CD)
                 RESP2     (WS-REAS-CD)
            END-EXEC
-           MOVE 500 TO TRAN-LIST-COUNT
+           IF WS-RESP-CD NOT = DFHRESP(NORMAL)
+              OR WS-FLEN NOT = LENGTH OF API-TRAN-LIST-STATUS
+               MOVE 'N' TO WS-CMD-OK
+           END-IF
+           MOVE 50 TO TRAN-LIST-COUNT
            MOVE LENGTH OF API-TRAN-LIST TO WS-FLEN
            EXEC CICS GET
                 CONTAINER (WS-CTR-RSP)
@@ -390,11 +446,16 @@
                 RESP      (WS-RESP-CD)
                 RESP2     (WS-REAS-CD)
            END-EXEC
-           IF WS-LS-HTTP-STATUS = 404
+           IF WS-RESP-CD NOT = DFHRESP(NORMAL)
+              OR WS-FLEN NOT = LENGTH OF API-TRAN-LIST
+               MOVE 'N' TO WS-CMD-OK
+           END-IF
+           IF TRLS-HTTP-STATUS = 404
                DISPLAY 'TSTTRAN: EMPTY LIST RETURNED 404 (EXPECTED 200)'
            END-IF
-           IF WS-LS-HTTP-STATUS = 200
+           IF TRLS-HTTP-STATUS = 200
               AND TRAN-LIST-COUNT = 0
+              AND CMD-OK
                ADD 1 TO WS-TESTS-PASS
                DISPLAY 'TSTTRAN 4000 LIST-EMPTY PASS'
            ELSE
@@ -405,40 +466,55 @@
       *
       ******************************************************************
       * 5000-TEST-LIST-NOTFOUND : account 00000000098 is absent
-      * from ACCTDAT, so list mode must return HTTP 404/NOTFOUND.
-      * This distinguishes a missing account from test 4000's
-      * valid-but-cardless HTTP 200 response.
+      * from ACCTDAT, so list mode must return HTTP 404/NOTFOUND
+      * with the sanitized 'Account not found' envelope message and
+      * every container command NORMAL. This distinguishes a missing
+      * account from test 4000's valid-but-cardless HTTP 200 response.
       ******************************************************************
        5000-TEST-LIST-NOTFOUND.
            ADD 1 TO WS-TESTS-RUN
-           INITIALIZE WS-LIST-REQUEST WS-LIST-STATUS
-           MOVE WS-NOTFOUND-ACCT TO WS-LR-ACCT-ID
+           PERFORM 8100-RESET-CHANNEL
+           MOVE 'Y' TO WS-CMD-OK
+           INITIALIZE API-TRAN-LIST-REQUEST API-TRAN-LIST-STATUS
+           MOVE WS-NOTFOUND-ACCT TO TRLR-ACCT-ID
            EXEC CICS PUT
                 CONTAINER (WS-CTR-REQ)
                 CHANNEL   (WS-CHANNEL)
-                FROM      (WS-LIST-REQUEST)
-                FLENGTH   (LENGTH OF WS-LIST-REQUEST)
+                FROM      (API-TRAN-LIST-REQUEST)
+                FLENGTH   (LENGTH OF API-TRAN-LIST-REQUEST)
                 RESP      (WS-RESP-CD)
                 RESP2     (WS-REAS-CD)
            END-EXEC
+           IF WS-RESP-CD NOT = DFHRESP(NORMAL)
+               MOVE 'N' TO WS-CMD-OK
+           END-IF
            EXEC CICS LINK
                 PROGRAM   (WS-PGM-COTRSVCC)
                 CHANNEL   (WS-CHANNEL)
                 RESP      (WS-RESP-CD)
                 RESP2     (WS-REAS-CD)
            END-EXEC
-           MOVE LENGTH OF WS-LIST-STATUS TO WS-FLEN
+           IF WS-RESP-CD NOT = DFHRESP(NORMAL)
+               MOVE 'N' TO WS-CMD-OK
+           END-IF
+           MOVE LENGTH OF API-TRAN-LIST-STATUS TO WS-FLEN
            EXEC CICS GET
                 CONTAINER (WS-CTR-STA)
                 CHANNEL   (WS-CHANNEL)
-                INTO      (WS-LIST-STATUS)
+                INTO      (API-TRAN-LIST-STATUS)
                 FLENGTH   (WS-FLEN)
                 RESP      (WS-RESP-CD)
                 RESP2     (WS-REAS-CD)
            END-EXEC
-           IF WS-LS-HTTP-STATUS = 404
-              AND WS-LS-RETURN-CODE = +4
-              AND WS-LS-ERR-CODE = 'NOTFOUND'
+           IF WS-RESP-CD NOT = DFHRESP(NORMAL)
+              OR WS-FLEN NOT = LENGTH OF API-TRAN-LIST-STATUS
+               MOVE 'N' TO WS-CMD-OK
+           END-IF
+           IF TRLS-HTTP-STATUS = 404
+              AND TRLS-RETURN-CODE = +4
+              AND TRLS-ERR-CODE = 'NOTFOUND'
+              AND TRLS-ERR-MESSAGE = WS-EXP-NOTFND-MSG
+              AND CMD-OK
                ADD 1 TO WS-TESTS-PASS
                DISPLAY 'TSTTRAN 5000 LIST-NOTFOUND PASS'
            ELSE
@@ -450,38 +526,54 @@
       ******************************************************************
       * 6000-TEST-LIST-BADREQ : place eleven non-numeric bytes in
       * TRANLISTREQ through its alphanumeric redefine. COTRSVCC must
-      * reject the request with HTTP 400/BADREQ before ACCTDAT access.
+      * reject the request with HTTP 400/BADREQ and the sanitized
+      * 'Account id must be 11 numeric digits' message before any
+      * ACCTDAT access, with every container command NORMAL.
       ******************************************************************
        6000-TEST-LIST-BADREQ.
            ADD 1 TO WS-TESTS-RUN
-           INITIALIZE WS-LIST-REQUEST WS-LIST-STATUS
-           MOVE WS-BADREQ-ACCT TO WS-LR-ACCT-ID-RAW
+           PERFORM 8100-RESET-CHANNEL
+           MOVE 'Y' TO WS-CMD-OK
+           INITIALIZE API-TRAN-LIST-REQUEST API-TRAN-LIST-STATUS
+           MOVE WS-BADREQ-ACCT TO TRLR-ACCT-ID-RAW
            EXEC CICS PUT
                 CONTAINER (WS-CTR-REQ)
                 CHANNEL   (WS-CHANNEL)
-                FROM      (WS-LIST-REQUEST-RAW)
-                FLENGTH   (LENGTH OF WS-LIST-REQUEST-RAW)
+                FROM      (API-TRAN-LIST-REQ-RAW)
+                FLENGTH   (LENGTH OF API-TRAN-LIST-REQ-RAW)
                 RESP      (WS-RESP-CD)
                 RESP2     (WS-REAS-CD)
            END-EXEC
+           IF WS-RESP-CD NOT = DFHRESP(NORMAL)
+               MOVE 'N' TO WS-CMD-OK
+           END-IF
            EXEC CICS LINK
                 PROGRAM   (WS-PGM-COTRSVCC)
                 CHANNEL   (WS-CHANNEL)
                 RESP      (WS-RESP-CD)
                 RESP2     (WS-REAS-CD)
            END-EXEC
-           MOVE LENGTH OF WS-LIST-STATUS TO WS-FLEN
+           IF WS-RESP-CD NOT = DFHRESP(NORMAL)
+               MOVE 'N' TO WS-CMD-OK
+           END-IF
+           MOVE LENGTH OF API-TRAN-LIST-STATUS TO WS-FLEN
            EXEC CICS GET
                 CONTAINER (WS-CTR-STA)
                 CHANNEL   (WS-CHANNEL)
-                INTO      (WS-LIST-STATUS)
+                INTO      (API-TRAN-LIST-STATUS)
                 FLENGTH   (WS-FLEN)
                 RESP      (WS-RESP-CD)
                 RESP2     (WS-REAS-CD)
            END-EXEC
-           IF WS-LS-HTTP-STATUS = 400
-              AND WS-LS-RETURN-CODE = +4
-              AND WS-LS-ERR-CODE = 'BADREQ'
+           IF WS-RESP-CD NOT = DFHRESP(NORMAL)
+              OR WS-FLEN NOT = LENGTH OF API-TRAN-LIST-STATUS
+               MOVE 'N' TO WS-CMD-OK
+           END-IF
+           IF TRLS-HTTP-STATUS = 400
+              AND TRLS-RETURN-CODE = +4
+              AND TRLS-ERR-CODE = 'BADREQ'
+              AND TRLS-ERR-MESSAGE = WS-EXP-BADREQ-MSG
+              AND CMD-OK
                ADD 1 TO WS-TESTS-PASS
                DISPLAY 'TSTTRAN 6000 LIST-BADREQ PASS'
            ELSE
@@ -491,18 +583,305 @@
            .
       *
       ******************************************************************
-      * 9000-REPORT : print the run/pass/fail tallies and the
-      * overall verdict, and raise the process return code to 8
-      * when any assertion failed.
+      * 8100-RESET-CHANNEL : delete any residual request/response/
+      * status containers so each list test runs against a FRESH
+      * channel (M21 - no cross-test container carryover). RESP is
+      * captured but tolerated: a not-found container on the first
+      * pass is expected and benign. Container commands are task-
+      * local, so no VSAM dataset is written (read-only preserved).
+      ******************************************************************
+       8100-RESET-CHANNEL.
+           EXEC CICS DELETE
+                CONTAINER (WS-CTR-REQ)
+                CHANNEL   (WS-CHANNEL)
+                RESP      (WS-RESP-CD)
+                RESP2     (WS-REAS-CD)
+           END-EXEC
+           EXEC CICS DELETE
+                CONTAINER (WS-CTR-RSP)
+                CHANNEL   (WS-CHANNEL)
+                RESP      (WS-RESP-CD)
+                RESP2     (WS-REAS-CD)
+           END-EXEC
+           EXEC CICS DELETE
+                CONTAINER (WS-CTR-STA)
+                CHANNEL   (WS-CHANNEL)
+                RESP      (WS-RESP-CD)
+                RESP2     (WS-REAS-CD)
+           END-EXEC
+           .
+      *
+      ******************************************************************
+      * 7000-TEST-LIST-NO-CONTAINER : drive the missing-request-
+      * container path. After resetting the channel the driver does
+      * NOT put TRANLISTREQ, then LINKs COTRSVCC. The service's GET
+      * of the absent container fails, so it must answer HTTP 400 /
+      * BADREQ with the sanitized message - never a dump or 500.
+      ******************************************************************
+       7000-TEST-LIST-NO-CONTAINER.
+           ADD 1 TO WS-TESTS-RUN
+           PERFORM 8100-RESET-CHANNEL
+           MOVE 'Y' TO WS-CMD-OK
+           INITIALIZE API-TRAN-LIST-STATUS
+           EXEC CICS LINK
+                PROGRAM   (WS-PGM-COTRSVCC)
+                CHANNEL   (WS-CHANNEL)
+                RESP      (WS-RESP-CD)
+                RESP2     (WS-REAS-CD)
+           END-EXEC
+           IF WS-RESP-CD NOT = DFHRESP(NORMAL)
+               MOVE 'N' TO WS-CMD-OK
+           END-IF
+           MOVE LENGTH OF API-TRAN-LIST-STATUS TO WS-FLEN
+           EXEC CICS GET
+                CONTAINER (WS-CTR-STA)
+                CHANNEL   (WS-CHANNEL)
+                INTO      (API-TRAN-LIST-STATUS)
+                FLENGTH   (WS-FLEN)
+                RESP      (WS-RESP-CD)
+                RESP2     (WS-REAS-CD)
+           END-EXEC
+           IF WS-RESP-CD NOT = DFHRESP(NORMAL)
+              OR WS-FLEN NOT = LENGTH OF API-TRAN-LIST-STATUS
+               MOVE 'N' TO WS-CMD-OK
+           END-IF
+           IF TRLS-HTTP-STATUS = 400
+              AND TRLS-ERR-CODE = 'BADREQ'
+              AND TRLS-ERR-MESSAGE = WS-EXP-BADREQ-MSG
+              AND CMD-OK
+               ADD 1 TO WS-TESTS-PASS
+               DISPLAY 'TSTTRAN 7000 LIST-NO-CONTAINER PASS'
+           ELSE
+               ADD 1 TO WS-TESTS-FAIL
+               DISPLAY 'TSTTRAN 7000 LIST-NO-CONTAINER FAIL'
+           END-IF
+           .
+      *
+      ******************************************************************
+      * 7100-TEST-LIST-BAD-LENGTH : PUT a request container that is
+      * shorter than the 11-byte contract (5 bytes) even though the
+      * account id itself is numeric. COTRSVCC must detect the FLENGTH
+      * mismatch and answer HTTP 400 / BADREQ with the sanitized
+      * message before any ACCTDAT access - proving the length guard.
+      ******************************************************************
+       7100-TEST-LIST-BAD-LENGTH.
+           ADD 1 TO WS-TESTS-RUN
+           PERFORM 8100-RESET-CHANNEL
+           MOVE 'Y' TO WS-CMD-OK
+           INITIALIZE API-TRAN-LIST-REQUEST API-TRAN-LIST-STATUS
+           MOVE WS-LIST-ACCT TO TRLR-ACCT-ID
+           MOVE 5 TO WS-FLEN
+           EXEC CICS PUT
+                CONTAINER (WS-CTR-REQ)
+                CHANNEL   (WS-CHANNEL)
+                FROM      (API-TRAN-LIST-REQUEST)
+                FLENGTH   (WS-FLEN)
+                RESP      (WS-RESP-CD)
+                RESP2     (WS-REAS-CD)
+           END-EXEC
+           IF WS-RESP-CD NOT = DFHRESP(NORMAL)
+               MOVE 'N' TO WS-CMD-OK
+           END-IF
+           EXEC CICS LINK
+                PROGRAM   (WS-PGM-COTRSVCC)
+                CHANNEL   (WS-CHANNEL)
+                RESP      (WS-RESP-CD)
+                RESP2     (WS-REAS-CD)
+           END-EXEC
+           IF WS-RESP-CD NOT = DFHRESP(NORMAL)
+               MOVE 'N' TO WS-CMD-OK
+           END-IF
+           MOVE LENGTH OF API-TRAN-LIST-STATUS TO WS-FLEN
+           EXEC CICS GET
+                CONTAINER (WS-CTR-STA)
+                CHANNEL   (WS-CHANNEL)
+                INTO      (API-TRAN-LIST-STATUS)
+                FLENGTH   (WS-FLEN)
+                RESP      (WS-RESP-CD)
+                RESP2     (WS-REAS-CD)
+           END-EXEC
+           IF WS-RESP-CD NOT = DFHRESP(NORMAL)
+              OR WS-FLEN NOT = LENGTH OF API-TRAN-LIST-STATUS
+               MOVE 'N' TO WS-CMD-OK
+           END-IF
+           IF TRLS-HTTP-STATUS = 400
+              AND TRLS-ERR-CODE = 'BADREQ'
+              AND TRLS-ERR-MESSAGE = WS-EXP-BADREQ-MSG
+              AND CMD-OK
+               ADD 1 TO WS-TESTS-PASS
+               DISPLAY 'TSTTRAN 7100 LIST-BAD-LENGTH PASS'
+           ELSE
+               ADD 1 TO WS-TESTS-FAIL
+               DISPLAY 'TSTTRAN 7100 LIST-BAD-LENGTH FAIL'
+           END-IF
+           .
+      *
+      ******************************************************************
+      * 7200-TEST-LIST-TRUNCATED : account 00000000097 owns MORE than
+      * the cap of matching transactions. The service must cap the
+      * list at 50, set TRAN-LIST-WAS-TRUNCATED = 'Y', and STILL
+      * answer HTTP 200 (a disclosed partial list, never a 500). When
+      * the boundary fixture is absent the account is unknown and the
+      * service answers 404: a release-blocking SKIP, never a PASS.
+      ******************************************************************
+       7200-TEST-LIST-TRUNCATED.
+           ADD 1 TO WS-TESTS-RUN
+           PERFORM 8100-RESET-CHANNEL
+           MOVE 'Y' TO WS-CMD-OK
+           MOVE ZERO TO TRAN-LIST-COUNT
+           INITIALIZE API-TRAN-LIST-REQUEST API-TRAN-LIST-STATUS
+                      API-TRAN-LIST
+           MOVE WS-TRUNC-ACCT TO TRLR-ACCT-ID
+           EXEC CICS PUT
+                CONTAINER (WS-CTR-REQ)
+                CHANNEL   (WS-CHANNEL)
+                FROM      (API-TRAN-LIST-REQUEST)
+                FLENGTH   (LENGTH OF API-TRAN-LIST-REQUEST)
+                RESP      (WS-RESP-CD)
+                RESP2     (WS-REAS-CD)
+           END-EXEC
+           IF WS-RESP-CD NOT = DFHRESP(NORMAL)
+               MOVE 'N' TO WS-CMD-OK
+           END-IF
+           EXEC CICS LINK
+                PROGRAM   (WS-PGM-COTRSVCC)
+                CHANNEL   (WS-CHANNEL)
+                RESP      (WS-RESP-CD)
+                RESP2     (WS-REAS-CD)
+           END-EXEC
+           IF WS-RESP-CD NOT = DFHRESP(NORMAL)
+               MOVE 'N' TO WS-CMD-OK
+           END-IF
+           MOVE LENGTH OF API-TRAN-LIST-STATUS TO WS-FLEN
+           EXEC CICS GET
+                CONTAINER (WS-CTR-STA)
+                CHANNEL   (WS-CHANNEL)
+                INTO      (API-TRAN-LIST-STATUS)
+                FLENGTH   (WS-FLEN)
+                RESP      (WS-RESP-CD)
+                RESP2     (WS-REAS-CD)
+           END-EXEC
+           IF WS-RESP-CD NOT = DFHRESP(NORMAL)
+              OR WS-FLEN NOT = LENGTH OF API-TRAN-LIST-STATUS
+               MOVE 'N' TO WS-CMD-OK
+           END-IF
+           MOVE 50 TO TRAN-LIST-COUNT
+           MOVE LENGTH OF API-TRAN-LIST TO WS-FLEN
+           EXEC CICS GET
+                CONTAINER (WS-CTR-RSP)
+                CHANNEL   (WS-CHANNEL)
+                INTO      (API-TRAN-LIST)
+                FLENGTH   (WS-FLEN)
+                RESP      (WS-RESP-CD)
+                RESP2     (WS-REAS-CD)
+           END-EXEC
+           IF WS-RESP-CD NOT = DFHRESP(NORMAL)
+              OR WS-FLEN NOT = LENGTH OF API-TRAN-LIST
+               MOVE 'N' TO WS-CMD-OK
+           END-IF
+           IF TRLS-HTTP-STATUS = 200
+              AND TRAN-LIST-COUNT = 50
+              AND TRAN-LIST-WAS-TRUNCATED
+              AND CMD-OK
+               ADD 1 TO WS-TESTS-PASS
+               DISPLAY 'TSTTRAN 7200 LIST-TRUNCATED PASS'
+           ELSE
+               IF TRLS-HTTP-STATUS = 404
+                   ADD 1 TO WS-TESTS-SKIP
+                   DISPLAY 'TSTTRAN 7200 TRUNC SKIP-ABSENT'
+               ELSE
+                   ADD 1 TO WS-TESTS-FAIL
+                   DISPLAY 'TSTTRAN 7200 LIST-TRUNCATED FAIL'
+               END-IF
+           END-IF
+           .
+      *
+      ******************************************************************
+      * 7300-TEST-LIST-INTERNAL : account 00000000096 is engineered to
+      * drive an unexpected file error inside COTRSVCC so the service
+      * must answer the sanitized HTTP 500 envelope ('Internal server
+      * error', code INTERNAL) with NO RESP2 / internal leakage. When
+      * the fault fixture is absent the account is unknown and the
+      * service answers 404: a release-blocking SKIP, never a PASS.
+      ******************************************************************
+       7300-TEST-LIST-INTERNAL.
+           ADD 1 TO WS-TESTS-RUN
+           PERFORM 8100-RESET-CHANNEL
+           MOVE 'Y' TO WS-CMD-OK
+           INITIALIZE API-TRAN-LIST-REQUEST API-TRAN-LIST-STATUS
+           MOVE WS-FAULT-ACCT TO TRLR-ACCT-ID
+           EXEC CICS PUT
+                CONTAINER (WS-CTR-REQ)
+                CHANNEL   (WS-CHANNEL)
+                FROM      (API-TRAN-LIST-REQUEST)
+                FLENGTH   (LENGTH OF API-TRAN-LIST-REQUEST)
+                RESP      (WS-RESP-CD)
+                RESP2     (WS-REAS-CD)
+           END-EXEC
+           IF WS-RESP-CD NOT = DFHRESP(NORMAL)
+               MOVE 'N' TO WS-CMD-OK
+           END-IF
+           EXEC CICS LINK
+                PROGRAM   (WS-PGM-COTRSVCC)
+                CHANNEL   (WS-CHANNEL)
+                RESP      (WS-RESP-CD)
+                RESP2     (WS-REAS-CD)
+           END-EXEC
+           IF WS-RESP-CD NOT = DFHRESP(NORMAL)
+               MOVE 'N' TO WS-CMD-OK
+           END-IF
+           MOVE LENGTH OF API-TRAN-LIST-STATUS TO WS-FLEN
+           EXEC CICS GET
+                CONTAINER (WS-CTR-STA)
+                CHANNEL   (WS-CHANNEL)
+                INTO      (API-TRAN-LIST-STATUS)
+                FLENGTH   (WS-FLEN)
+                RESP      (WS-RESP-CD)
+                RESP2     (WS-REAS-CD)
+           END-EXEC
+           IF WS-RESP-CD NOT = DFHRESP(NORMAL)
+              OR WS-FLEN NOT = LENGTH OF API-TRAN-LIST-STATUS
+               MOVE 'N' TO WS-CMD-OK
+           END-IF
+           IF TRLS-HTTP-STATUS = 500
+              AND TRLS-ERR-CODE = 'INTERNAL'
+              AND TRLS-ERR-MESSAGE = WS-EXP-INTNL-MSG
+              AND CMD-OK
+               ADD 1 TO WS-TESTS-PASS
+               DISPLAY 'TSTTRAN 7300 LIST-INTERNAL PASS'
+           ELSE
+               IF TRLS-HTTP-STATUS = 404
+                   ADD 1 TO WS-TESTS-SKIP
+                   DISPLAY 'TSTTRAN 7300 INTNL SKIP-ABSENT'
+               ELSE
+                   ADD 1 TO WS-TESTS-FAIL
+                   DISPLAY 'TSTTRAN 7300 LIST-INTERNAL FAIL'
+               END-IF
+           END-IF
+           .
+      *
+      ******************************************************************
+      * 9000-REPORT : print the run/pass/fail/skip tallies and the
+      * overall verdict, then raise the machine-observable process
+      * return code (M19): 8 when any assertion failed, else 4 when a
+      * release-blocking fixture was absent (SKIP), else 0. A non-zero
+      * RC lets the harness / CSD-invoked run fail the build.
       ******************************************************************
        9000-REPORT.
            DISPLAY 'TSTTRAN RESULTS RUN=' WS-TESTS-RUN
                ' PASS=' WS-TESTS-PASS ' FAIL=' WS-TESTS-FAIL
+               ' SKIP=' WS-TESTS-SKIP
            IF WS-TESTS-FAIL > 0
                MOVE 8 TO WS-TEST-RC
                DISPLAY 'TSTTRAN RESULT: FAIL'
            ELSE
-               DISPLAY 'TSTTRAN RESULT: PASS'
+               IF WS-TESTS-SKIP > 0
+                   MOVE 4 TO WS-TEST-RC
+                   DISPLAY 'TSTTRAN RESULT: PASS (WITH SKIPS)'
+               ELSE
+                   MOVE 0 TO WS-TEST-RC
+                   DISPLAY 'TSTTRAN RESULT: PASS'
+               END-IF
            END-IF
            MOVE WS-TEST-RC TO RETURN-CODE
            .

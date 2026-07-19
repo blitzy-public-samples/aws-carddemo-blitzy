@@ -217,9 +217,10 @@ paths:
         account is resolved to its card(s) via the cross-reference and matching
         TRANSACT records are returned read-only. An account that exists but has
         no transactions returns HTTP 200 with an empty array (not 404). Card
-        numbers are masked to the last four digits. The list is capped at 500
-        transactions; an account whose matching transactions exceed that cap
-        returns HTTP 500 (INTERNAL_ERROR) rather than a silently truncated list.
+        numbers are masked to the last four digits. The list is capped at 50
+        transactions; when an account's matching transactions exceed the cap
+        the first 50 are returned with truncated=true (a disclosed partial
+        list) and HTTP 200, so request volume never yields HTTP 500.
       security:
         - bearerAuth: []
       parameters:
@@ -314,9 +315,14 @@ components:
       name: tranId
       in: path
       required: true
-      description: Sixteen-character transaction id (TRAN-ID PIC X(16)).
+      description: >-
+        Transaction id of 1 to 16 numeric digits (TRAN-ID PIC X(16)); the
+        router left-pads the value with zeros to sixteen digits before the
+        read. Non-numeric or over-length values are rejected with HTTP 400.
       schema:
         type: string
+        pattern: '^[0-9]{1,16}$'
+        minLength: 1
         maxLength: 16
       example: "0000000000000001"
   responses:
@@ -374,6 +380,7 @@ components:
   schemas:
     Error:
       type: object
+      additionalProperties: false
       description: Error detail carried inside the uniform failure envelope.
       required:
         - code
@@ -382,20 +389,28 @@ components:
       properties:
         code:
           type: string
+          minLength: 1
+          enum:
+            - BAD_REQUEST
+            - UNAUTHORIZED
+            - NOT_FOUND
+            - INTERNAL_ERROR
           description: >-
-            Machine-readable error code (for example NOT_FOUND or
-            BAD_REQUEST).
+            Machine-readable error code; one of the fixed API error codes.
           example: "NOT_FOUND"
         message:
           type: string
+          minLength: 1
           description: Human-readable description of the error.
           example: "The requested resource was not found."
         requestId:
           type: string
+          minLength: 1
           description: Correlation id for tracing a single request end to end.
           example: "b1c2d3e4-0000-4000-8000-000000000404"
     ErrorResponse:
       type: object
+      additionalProperties: false
       description: Uniform failure envelope wrapping a single error object.
       required:
         - error
@@ -404,6 +419,7 @@ components:
           $ref: '#/components/schemas/Error'
     SignonResponse:
       type: object
+      additionalProperties: false
       description: Success envelope for a sign-on result.
       required:
         - data
@@ -412,6 +428,7 @@ components:
           $ref: '#/components/schemas/SignonData'
     AccountResponse:
       type: object
+      additionalProperties: false
       description: Success envelope for an account.
       required:
         - data
@@ -420,6 +437,7 @@ components:
           $ref: '#/components/schemas/Account'
     CustomerResponse:
       type: object
+      additionalProperties: false
       description: Success envelope for a customer.
       required:
         - data
@@ -428,6 +446,7 @@ components:
           $ref: '#/components/schemas/Customer'
     CardResponse:
       type: object
+      additionalProperties: false
       description: Success envelope for a card.
       required:
         - data
@@ -436,6 +455,7 @@ components:
           $ref: '#/components/schemas/Card'
     XrefResponse:
       type: object
+      additionalProperties: false
       description: Success envelope for a card cross-reference.
       required:
         - data
@@ -444,6 +464,7 @@ components:
           $ref: '#/components/schemas/Xref'
     TransactionResponse:
       type: object
+      additionalProperties: false
       description: Success envelope for a single transaction.
       required:
         - data
@@ -452,6 +473,7 @@ components:
           $ref: '#/components/schemas/Transaction'
     TransactionListResponse:
       type: object
+      additionalProperties: false
       description: Success envelope for a list of transactions.
       required:
         - data
@@ -478,6 +500,7 @@ components:
         never returned.
     SignonRequest:
       type: object
+      additionalProperties: false
       description: Sign-on request carrying CardDemo user credentials.
       required:
         - userId
@@ -485,12 +508,14 @@ components:
       properties:
         userId:
           type: string
+          minLength: 1
           maxLength: 8
           description: CardDemo user id (SEC-USR-ID PIC X(08)).
           example: "USER0001"
         password:
           type: string
           format: password
+          minLength: 1
           maxLength: 8
           description: >-
             User password (SEC-USR-PWD PIC X(08)). Accepted inbound only for
@@ -498,6 +523,7 @@ components:
           example: "PASS0001"
     SignonData:
       type: object
+      additionalProperties: false
       description: >-
         Sign-on result carrying the issued bearer token, the authenticated user
         id and type, and the absolute token expiry timestamp.
@@ -509,6 +535,7 @@ components:
       properties:
         token:
           type: string
+          minLength: 1
           description: >-
             Short-lived opaque bearer token to send on subsequent calls in the
             Authorization header. The token lifetime is fixed at 900 seconds
@@ -540,8 +567,21 @@ components:
           example: "2026-07-19 08:15:00.000000"
     Account:
       type: object
+      additionalProperties: false
       description: >-
         Account entity mapped from CVACT01Y ACCOUNT-RECORD (read-only).
+      required:
+        - accountId
+        - activeStatus
+        - currentBalance
+        - creditLimit
+        - cashCreditLimit
+        - openDate
+        - expirationDate
+        - reissueDate
+        - currentCycleCredit
+        - currentCycleDebit
+        - groupId
       properties:
         accountId:
           type: string
@@ -603,10 +643,17 @@ components:
           example: "DEFAULT"
     Card:
       type: object
+      additionalProperties: false
       description: >-
         Card entity mapped from CVACT02Y CARD-RECORD (read-only). The PAN is
         masked to the last four digits and the card security code is excluded
         entirely and never serialized.
+      required:
+        - cardNumberMasked
+        - accountId
+        - embossedName
+        - expirationDate
+        - activeStatus
       properties:
         cardNumberMasked:
           allOf:
@@ -639,9 +686,14 @@ components:
           example: "Y"
     Xref:
       type: object
+      additionalProperties: false
       description: >-
         Card cross-reference mapped from CVACT03Y CARD-XREF-RECORD
         (read-only).
+      required:
+        - cardNumberMasked
+        - accountId
+        - customerId
       properties:
         cardNumberMasked:
           allOf:
@@ -662,10 +714,29 @@ components:
           example: "000000001"
     Customer:
       type: object
+      additionalProperties: false
       description: >-
         Customer entity mapped from CVCUS01Y CUSTOMER-RECORD (read-only). Social
         Security Number and government-issued identification are masked to the
         last four digits for PII minimization; full values are never returned.
+      required:
+        - customerId
+        - firstName
+        - middleName
+        - lastName
+        - addressLine1
+        - addressLine2
+        - addressLine3
+        - stateCode
+        - countryCode
+        - addressZip
+        - phone1
+        - phone2
+        - ssnMasked
+        - govtIdMasked
+        - dateOfBirth
+        - primaryCardHolderIndicator
+        - ficoCreditScore
       properties:
         customerId:
           type: string
@@ -762,8 +833,23 @@ components:
           example: 750
     Transaction:
       type: object
+      additionalProperties: false
       description: >-
         Transaction entity mapped from CVTRA05Y TRAN-RECORD (read-only).
+      required:
+        - transactionId
+        - typeCode
+        - categoryCode
+        - source
+        - description
+        - amount
+        - merchantId
+        - merchantName
+        - merchantCity
+        - merchantZip
+        - cardNumberMasked
+        - originTimestamp
+        - processTimestamp
       properties:
         transactionId:
           type: string
@@ -836,14 +922,17 @@ components:
           example: "2022-07-20 02:00:00.000000"
     TransactionList:
       type: object
+      additionalProperties: false
       description: >-
-        A list of transactions for a single account. The list is capped at 500
-        transactions; an account whose matching transactions exceed that cap
-        fails deterministically with HTTP 500 (INTERNAL_ERROR) rather than
-        returning a silently partial list, so a 200 response is always complete.
+        A list of transactions for a single account. The list is capped at 50
+        transactions; when an account's matching transactions exceed the cap
+        the first 50 are returned with truncated=true (a disclosed partial
+        list) and HTTP 200, so request volume never yields HTTP 500.
       required:
         - accountId
         - transactions
+        - count
+        - truncated
       properties:
         accountId:
           type: string
@@ -852,6 +941,7 @@ components:
           example: "00000000011"
         transactions:
           type: array
+          maxItems: 50
           description: The transactions for the account; may be empty.
           items:
             $ref: '#/components/schemas/Transaction'
@@ -863,8 +953,7 @@ components:
           type: boolean
           description: >-
             Whether the returned list was truncated (from TRAN-LIST-TRUNCATED
-            PIC X(01): 'N' -> false, 'Y' -> true). Always false in a successful
-            200 response: the list is capped at 500 and an account exceeding
-            that cap returns HTTP 500 (INTERNAL_ERROR) rather than a partial
-            list, so a 200 body is never a truncated result.
+            PIC X(01): 'N' -> false, 'Y' -> true). true when the account's
+            matching transactions exceeded the 50-entry cap and only the first
+            50 are returned; the response is still HTTP 200 with a partial list.
           example: false
