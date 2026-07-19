@@ -62,9 +62,13 @@ spring:
     # added downstream. Migration locations are inherited from the base profile
     # (classpath:db/migration).
     enabled: true
-    # Safety: forbid Flyway 'clean' from ever wiping the container database during
-    # a test run (the default is already true; stated explicitly as a hard guard).
-    clean-disabled: true
+    # Test-only: permit Flyway 'clean' so the integration-test base
+    # (AbstractPostgresIntegrationTest) can reset the DISPOSABLE Testcontainers
+    # database back to the pristine V0->V1->V2->V3 seed before each test, giving
+    # every *IT full data isolation on the single shared container. This is scoped
+    # exclusively to the 'test' profile against the ephemeral container; the base
+    # profile keeps clean disabled so a real database can never be wiped.
+    clean-disabled: false
 
   batch:
     job:

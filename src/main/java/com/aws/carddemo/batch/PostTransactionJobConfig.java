@@ -282,7 +282,7 @@ public class PostTransactionJobConfig {
      */
     @Bean
     @StepScope
-    public ItemWriter<PostingOutcome> postTransactionWriter(
+    public PostTransactionWriter postTransactionWriter(
             @Value("#{stepExecution}") StepExecution stepExecution) {
         return new PostTransactionWriter(transactionRepository, accountRepository,
                 transactionCategoryBalanceRepository, rejectItemWriter(null, null), stepExecution);
@@ -708,8 +708,12 @@ public class PostTransactionJobConfig {
      * account, {@code 2900} transaction master, in that order) within the chunk transaction, and
      * writes rejected records ({@code 2500}) as 430-byte lines to the reject stream while accumulating
      * the reject count in the step execution context for the exit-status listener.
+     *
+     * <p>Not declared {@code final}: this writer is a {@code @StepScope} bean (it injects the
+     * runtime {@code StepExecution}), so Spring supplies it through a CGLIB scoped proxy, which
+     * must be able to subclass this type.</p>
      */
-    public static final class PostTransactionWriter implements ItemWriter<PostingOutcome> {
+    public static class PostTransactionWriter implements ItemWriter<PostingOutcome> {
 
         private final TransactionRepository transactionRepository;
         private final AccountRepository accountRepository;
