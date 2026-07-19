@@ -62,7 +62,7 @@ import jakarta.persistence.Table;
  * Introducing password hashing (e.g. BCrypt/PBKDF2) is deliberately out of scope here and is
  * recorded as a suggested next task in {@code docs/decision-log.md}; it is not silently changed.
  * The "no hardcoded credentials" rule applies to source and configuration, not to this seeded data
- * column. As a security-hygiene safeguard, the password is masked in {@link #toString()} and must
+ * column. As a security-hygiene safeguard, the password is never emitted by {@link #toString()} and must
  * never be written to logs.</p>
  */
 @Entity
@@ -90,7 +90,7 @@ public class UserSecurity {
 
     /**
      * User password, stored as cleartext for parity with the legacy {@code USRSEC} store. Origin
-     * {@code SEC-USR-PWD PIC X(08)} (8 bytes). Never logged and masked in {@link #toString()}.
+     * {@code SEC-USR-PWD PIC X(08)} (8 bytes). Never logged and never emitted by {@link #toString()}.
      */
     @Column(name = "usr_pwd", length = 8)
     private String usrPwd;
@@ -202,11 +202,14 @@ public class UserSecurity {
     }
 
     /**
-     * Compares two {@code UserSecurity} instances by their primary key ({@link #getUsrId() usrId}),
-     * mirroring the VSAM KSDS key identity.
+     * Compares two {@code UserSecurity} instances by their non-null primary key
+     * ({@link #getUsrId() usrId}), mirroring the VSAM KSDS key identity. Uses an {@code instanceof}
+     * check so a Hibernate proxy compares equal to its underlying entity, and treats an instance
+     * with a {@code null} id as not equal to any other instance (including other unsaved instances),
+     * so distinct transient rows are never collapsed (review finding F10).
      *
      * @param o the object to compare with
-     * @return {@code true} if {@code o} is a {@code UserSecurity} with an equal {@code usrId}
+     * @return {@code true} if {@code o} is a {@code UserSecurity} with an equal non-null {@code usrId}
      */
     @Override
     public boolean equals(Object o) {
@@ -216,34 +219,32 @@ public class UserSecurity {
         if (!(o instanceof UserSecurity other)) {
             return false;
         }
-        return usrId == null ? other.usrId == null : usrId.equals(other.usrId);
+        return usrId != null && usrId.equals(other.usrId);
     }
 
     /**
-     * Returns a hash code derived from the primary key ({@link #getUsrId() usrId}), consistent with
-     * {@link #equals(Object)}.
+     * Returns a constant, identity-stable hash code. A constant (rather than one derived from
+     * {@code usrId}) is used so the hash does not change when the primary key is assigned, keeping
+     * instances locatable in hash-based collections and consistent with {@link #equals(Object)}
+     * (review finding F10).
      *
-     * @return the hash code
+     * @return a stable, class-level hash code
      */
     @Override
     public int hashCode() {
-        return usrId == null ? 0 : usrId.hashCode();
+        return UserSecurity.class.hashCode();
     }
 
     /**
-     * Returns a diagnostic string for this user. The password is intentionally masked and never
-     * included, as a security-hygiene safeguard (see the class-level note).
+     * Returns a non-sensitive diagnostic representation containing only the class name and an opaque
+     * per-instance identity token. The user id, first/last names, user type and (cleartext) password
+     * are deliberately never emitted — not even partially masked — so that credentials and user
+     * identity cannot leak into logs or error messages (CWE-532; review finding F9).
      *
-     * @return a string representation that excludes the cleartext password
+     * @return a non-sensitive string representation
      */
     @Override
     public String toString() {
-        return "UserSecurity{"
-                + "usrId='" + usrId + '\''
-                + ", usrFname='" + usrFname + '\''
-                + ", usrLname='" + usrLname + '\''
-                + ", usrPwd=***"
-                + ", usrType='" + usrType + '\''
-                + '}';
+        return "UserSecurity@" + Integer.toHexString(System.identityHashCode(this));
     }
 }

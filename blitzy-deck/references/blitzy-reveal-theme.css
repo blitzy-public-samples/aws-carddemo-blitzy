@@ -587,10 +587,10 @@
   font-size: 2.4em;
   line-height: 1;
   letter-spacing: -0.03em;
-  background: var(--blitzy-gradient);
-  -webkit-background-clip: text;
-  background-clip: text;
-  -webkit-text-fill-color: transparent;
+  /* Solid brand color rather than a clipped gradient: on the stat-card surface
+     (--blitzy-surface #1C1930) the gradient's indigo stop #4F46E5 is only 2.713:1,
+     below the WCAG 2.1 large-text 3:1 floor, whereas --blitzy-primary-bright #9D7BFF
+     is ~5.45:1, so every numeral is uniformly legible. */
   color: var(--blitzy-primary-bright);
 }
 
@@ -999,4 +999,3 @@
     box-shadow: none;
   }
 }
-

@@ -122,15 +122,15 @@ public class COACTUPForm {
     @Size(max = 9)
     private String acstnum;
 
-    /** Customer SSN, part one (area). Masked in toString(). BMS symbolic {@code ACTSSN1I}, PIC X(3). */
+    /** Customer SSN, part one (area). Never emitted by toString() (review finding F9). BMS symbolic {@code ACTSSN1I}, PIC X(3). */
     @Size(max = 3)
     private String actssn1;
 
-    /** Customer SSN, part two (group). Masked in toString(). BMS symbolic {@code ACTSSN2I}, PIC X(2). */
+    /** Customer SSN, part two (group). Never emitted by toString() (review finding F9). BMS symbolic {@code ACTSSN2I}, PIC X(2). */
     @Size(max = 2)
     private String actssn2;
 
-    /** Customer SSN, part three (serial). Masked in toString(). BMS symbolic {@code ACTSSN3I}, PIC X(4). */
+    /** Customer SSN, part three (serial). Never emitted by toString() (review finding F9). BMS symbolic {@code ACTSSN3I}, PIC X(4). */
     @Size(max = 4)
     private String actssn3;
 
@@ -1221,70 +1221,15 @@ public class COACTUPForm {
     }
 
     /**
-     * Returns a string representation listing every screen field value. The three
-     * social-security-number parts ({@code actssn1}, {@code actssn2}, {@code actssn3})
-     * are masked as {@code ***} so that sensitive PII is never emitted in logs or
-     * diagnostics.
+     * Returns a non-sensitive diagnostic representation containing only the class name and an opaque
+     * per-instance identity token. Screen-form fields (which may include card numbers, account and
+     * customer identifiers, names, balances, or credentials) are never rendered, so form state cannot
+     * leak into logs or error messages (CWE-532; review finding F9).
      *
-     * @return a string representation of this form with SSN parts masked
+     * @return a non-sensitive string representation
      */
     @Override
     public String toString() {
-        return "COACTUPForm{"
-                + "trnname='" + trnname + '\''
-                + ", title01='" + title01 + '\''
-                + ", curdate='" + curdate + '\''
-                + ", pgmname='" + pgmname + '\''
-                + ", title02='" + title02 + '\''
-                + ", curtime='" + curtime + '\''
-                + ", acctsid='" + acctsid + '\''
-                + ", acsttus='" + acsttus + '\''
-                + ", opnyear='" + opnyear + '\''
-                + ", opnmon='" + opnmon + '\''
-                + ", opnday='" + opnday + '\''
-                + ", acrdlim='" + acrdlim + '\''
-                + ", expyear='" + expyear + '\''
-                + ", expmon='" + expmon + '\''
-                + ", expday='" + expday + '\''
-                + ", acshlim='" + acshlim + '\''
-                + ", risyear='" + risyear + '\''
-                + ", rismon='" + rismon + '\''
-                + ", risday='" + risday + '\''
-                + ", acurbal='" + acurbal + '\''
-                + ", acrcycr='" + acrcycr + '\''
-                + ", aaddgrp='" + aaddgrp + '\''
-                + ", acrcydb='" + acrcydb + '\''
-                + ", acstnum='" + acstnum + '\''
-                + ", actssn1='***'"
-                + ", actssn2='***'"
-                + ", actssn3='***'"
-                + ", dobyear='" + dobyear + '\''
-                + ", dobmon='" + dobmon + '\''
-                + ", dobday='" + dobday + '\''
-                + ", acstfco='" + acstfco + '\''
-                + ", acsfnam='" + acsfnam + '\''
-                + ", acsmnam='" + acsmnam + '\''
-                + ", acslnam='" + acslnam + '\''
-                + ", acsadl1='" + acsadl1 + '\''
-                + ", acsstte='" + acsstte + '\''
-                + ", acsadl2='" + acsadl2 + '\''
-                + ", acszipc='" + acszipc + '\''
-                + ", acscity='" + acscity + '\''
-                + ", acsctry='" + acsctry + '\''
-                + ", acsph1a='" + acsph1a + '\''
-                + ", acsph1b='" + acsph1b + '\''
-                + ", acsph1c='" + acsph1c + '\''
-                + ", acsgovt='" + acsgovt + '\''
-                + ", acsph2a='" + acsph2a + '\''
-                + ", acsph2b='" + acsph2b + '\''
-                + ", acsph2c='" + acsph2c + '\''
-                + ", acseftc='" + acseftc + '\''
-                + ", acspflg='" + acspflg + '\''
-                + ", infomsg='" + infomsg + '\''
-                + ", errmsg='" + errmsg + '\''
-                + ", fkeys='" + fkeys + '\''
-                + ", fkey05='" + fkey05 + '\''
-                + ", fkey12='" + fkey12 + '\''
-                + '}';
+        return "COACTUPForm@" + Integer.toHexString(System.identityHashCode(this));
     }
 }

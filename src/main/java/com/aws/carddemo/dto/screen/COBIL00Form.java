@@ -251,19 +251,16 @@ public class COBIL00Form {
         this.errmsg = errmsg;
     }
 
+    /**
+     * Returns a non-sensitive diagnostic representation containing only the class name and an opaque
+     * per-instance identity token. Screen-form fields (which may include card numbers, account and
+     * customer identifiers, names, balances, or credentials) are never rendered, so form state cannot
+     * leak into logs or error messages (CWE-532; review finding F9).
+     *
+     * @return a non-sensitive string representation
+     */
     @Override
     public String toString() {
-        return "COBIL00Form{"
-                + "trnname='" + trnname + '\''
-                + ", title01='" + title01 + '\''
-                + ", curdate='" + curdate + '\''
-                + ", pgmname='" + pgmname + '\''
-                + ", title02='" + title02 + '\''
-                + ", curtime='" + curtime + '\''
-                + ", actidin='" + actidin + '\''
-                + ", curbal='" + curbal + '\''
-                + ", confirm='" + confirm + '\''
-                + ", errmsg='" + errmsg + '\''
-                + '}';
+        return "COBIL00Form@" + Integer.toHexString(System.identityHashCode(this));
     }
 }

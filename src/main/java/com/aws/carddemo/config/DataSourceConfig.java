@@ -1,5 +1,7 @@
 package com.aws.carddemo.config;
 
+import com.zaxxer.hikari.HikariDataSource;
+
 import javax.sql.DataSource;
 
 import org.springframework.boot.autoconfigure.jdbc.DataSourceProperties;
@@ -70,24 +72,36 @@ public class DataSourceConfig {
     /**
      * Builds the single primary {@link DataSource} for the application.
      *
-     * <p>Every value &mdash; connection URL, username, password, driver class name, and any
-     * HikariCP pool setting &mdash; is bound from the {@code spring.datasource.*} properties
-     * (populated from environment variables by the resources agent in {@code application.yml});
-     * nothing is hardcoded here.</p>
+     * <p>Every value &mdash; connection URL, username, password, driver class name, and every
+     * HikariCP pool setting &mdash; is bound from configuration (populated from environment
+     * variables by the resources agent in {@code application.yml}); nothing is hardcoded here. Two
+     * distinct property prefixes are bound, matching Spring Boot's own datasource conventions:</p>
+     * <ul>
+     *   <li>the connection coordinates come from {@code spring.datasource.*}
+     *       ({@code url}/{@code username}/{@code password}/{@code driver-class-name}), and</li>
+     *   <li>the pool tuning comes from {@code spring.datasource.hikari.*}
+     *       ({@code pool-name}, {@code maximum-pool-size}, {@code minimum-idle}, &hellip;).</li>
+     * </ul>
      *
      * <p>The builder is obtained from {@link DataSourceProperties#initializeDataSourceBuilder()}
      * rather than from a bare {@code DataSourceBuilder.create()}. This is deliberate and required
-     * for correctness: {@code @ConfigurationProperties} binds onto the concrete pool object that is
-     * returned, and the default pool (HikariCP, selected automatically because it is on the
-     * classpath via {@code spring-boot-starter-data-jpa}) exposes {@code jdbcUrl} but has no
-     * {@code url} setter. Binding a bare builder result would therefore silently drop the
-     * {@code spring.datasource.url} value. {@code DataSourceProperties} (auto-registered by Boot's
+     * for correctness: {@code DataSourceProperties} (auto-registered by Boot's
      * {@code DataSourceAutoConfiguration}) pre-populates the builder from the documented
      * {@code spring.datasource.url}/{@code username}/{@code password}/{@code driver-class-name}
-     * keys &mdash; performing the {@code url} to {@code jdbcUrl} mapping &mdash; while the
-     * method-level {@code @ConfigurationProperties(prefix = "spring.datasource")} still binds any
-     * additional pool settings. {@code build()} is invoked inline on the wildcard-parameterized
-     * builder so no raw type is introduced.</p>
+     * keys &mdash; performing the {@code url} to {@code jdbcUrl} mapping that HikariCP requires
+     * (HikariCP exposes {@code jdbcUrl} but has no {@code url} setter, so binding a bare builder
+     * result would silently drop the URL). The pool type is then pinned explicitly with
+     * {@code .type(HikariDataSource.class)} so the concrete pool is a {@link HikariDataSource}
+     * and the return value is strongly typed with no wildcard capture.</p>
+     *
+     * <p><strong>Pool tuning binding (review finding F5):</strong> the method-level
+     * {@code @ConfigurationProperties(prefix = "spring.datasource.hikari")} binds the nested
+     * {@code spring.datasource.hikari.*} keys directly onto the returned {@link HikariDataSource}
+     * instance. The previous prefix {@code "spring.datasource"} did <em>not</em> reach those nested
+     * keys, so {@code pool-name}, {@code maximum-pool-size} and {@code minimum-idle} were silently
+     * ignored; binding at the {@code spring.datasource.hikari} prefix &mdash; the same prefix Boot's
+     * own auto-configuration uses for the pool &mdash; makes every documented pool setting take
+     * effect.</p>
      *
      * <p>This bean intentionally replaces Boot's {@code @ConditionalOnMissingBean} auto-configured
      * datasource. Both the auto-configured Flyway migrations and the JPA/Hibernate
@@ -102,8 +116,10 @@ public class DataSourceConfig {
      */
     @Bean
     @Primary
-    @ConfigurationProperties(prefix = "spring.datasource")
+    @ConfigurationProperties(prefix = "spring.datasource.hikari")
     public DataSource dataSource(DataSourceProperties properties) {
-        return properties.initializeDataSourceBuilder().build();
+        return properties.initializeDataSourceBuilder()
+                .type(HikariDataSource.class)
+                .build();
     }
 }

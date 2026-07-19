@@ -5,6 +5,9 @@ import jakarta.persistence.Entity;
 import jakarta.persistence.Id;
 import jakarta.persistence.Table;
 
+import org.hibernate.annotations.JdbcTypeCode;
+import org.hibernate.type.SqlTypes;
+
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
 
@@ -19,13 +22,19 @@ import java.time.LocalDateTime;
  * intentionally not persisted, so the 350-byte fixed-width record maps to the 13 columns declared
  * here.</p>
  *
- * <p><strong>Key semantics (AAP 0.6.2):</strong> the primary key is the 16-character transaction id
- * ({@code TRAN-ID} &rarr; column {@code tran_id}). The legacy transaction-by-card alternate index is
- * reproduced as the secondary database index {@code transaction(card_num)} and surfaced through the
- * Spring Data derived query {@code TransactionRepository.findByCardNum(String)}. To keep that derived
- * query and the index aligned, {@code TRAN-CARD-NUM} is deliberately exposed as the property
- * {@code cardNum} (column {@code card_num}) with the {@code TRAN-} prefix dropped; every other column
- * retains its {@code tran_} prefix.</p>
+ * <p><strong>Key semantics (AAP 0.6.2; review finding F7):</strong> the primary key is the
+ * 16-character transaction id ({@code TRAN-ID} &rarr; column {@code tran_id}). The single legacy
+ * VSAM alternate index over {@code TRANSACT} is defined by {@code legacy/jcl/TRANIDX.jcl} as
+ * {@code KEYS(26 304) NONUNIQUEKEY} — that is, the 26-byte processing timestamp {@code TRAN-PROC-TS}
+ * at offset 304 ("CREATE ALTERNATE INDEX ON PROCESSED TIMESTAMP"), <em>not</em> the card number. It
+ * is therefore reproduced as a nonunique secondary index on {@code transaction(proc_ts)} (created in
+ * the forthcoming {@code V3__indexes.sql}). Access by card number is a <em>separate functional
+ * report/sort query optimization</em> (used by the transaction-report and card-list paths), surfaced
+ * through the Spring Data derived query {@code TransactionRepository.findByCardNum(String)}; it does
+ * not correspond to any legacy alternate index. To keep that derived query resolvable,
+ * {@code TRAN-CARD-NUM} is deliberately exposed as the property {@code cardNum} (column
+ * {@code card_num}) with the {@code TRAN-} prefix dropped; every other column retains its
+ * {@code tran_} prefix.</p>
  *
  * <p><strong>Decimal and timestamp fidelity (AAP 0.6.1):</strong> the monetary amount
  * {@code TRAN-AMT PIC S9(09)V99} maps to {@link java.math.BigDecimal} with precision 11 and scale 2
@@ -46,8 +55,13 @@ public class Transaction {
     @Column(name = "tran_type_cd", length = 2)
     private String tranTypeCd;
 
-    /** Transaction category code &mdash; {@code TRAN-CAT-CD PIC 9(04)}. */
+    /**
+     * Transaction category code &mdash; {@code TRAN-CAT-CD PIC 9(04)}. Mapped to SQL
+     * {@code NUMERIC(4)} via {@link JdbcTypeCode}({@link SqlTypes#NUMERIC}) so Hibernate expects
+     * {@code NUMERIC} rather than the default {@code INTEGER} (review finding F1).
+     */
     @Column(name = "tran_cat_cd", precision = 4)
+    @JdbcTypeCode(SqlTypes.NUMERIC)
     private Integer tranCatCd;
 
     /** Transaction source &mdash; {@code TRAN-SOURCE PIC X(10)}. */
@@ -66,8 +80,13 @@ public class Transaction {
     @Column(name = "tran_amt", precision = 11, scale = 2)
     private BigDecimal tranAmt;
 
-    /** Merchant id &mdash; {@code TRAN-MERCHANT-ID PIC 9(09)}. */
+    /**
+     * Merchant id &mdash; {@code TRAN-MERCHANT-ID PIC 9(09)}. Mapped to SQL {@code NUMERIC(9)} via
+     * {@link JdbcTypeCode}({@link SqlTypes#NUMERIC}) so Hibernate expects {@code NUMERIC} rather than
+     * the default {@code BIGINT} (review finding F1).
+     */
     @Column(name = "tran_merchant_id", precision = 9)
+    @JdbcTypeCode(SqlTypes.NUMERIC)
     private Long merchantId;
 
     /** Merchant name &mdash; {@code TRAN-MERCHANT-NAME PIC X(50)}. */
@@ -85,7 +104,10 @@ public class Transaction {
     /**
      * Card number &mdash; {@code TRAN-CARD-NUM PIC X(16)}. Exposed as {@code cardNum} / column
      * {@code card_num} (the {@code TRAN-} prefix is dropped) so the repository derived query
-     * {@code findByCardNum(String)} resolves and matches the {@code transaction(card_num)} index.
+     * {@code findByCardNum(String)} resolves. This card-number access path is a functional
+     * report/sort query optimization and does <em>not</em> correspond to the legacy VSAM alternate
+     * index, which is on {@code TRAN-PROC-TS} (see the class-level key-semantics note; review finding
+     * F7).
      */
     @Column(name = "card_num", length = 16)
     private String cardNum;
@@ -211,74 +233,49 @@ public class Transaction {
     }
 
     /**
-     * Two transactions are equal when they share the same primary key ({@code tranId}), matching the
-     * identity semantics of the underlying {@code TRANSACT} KSDS record key.
+     * Two transactions are equal when they share the same non-null primary key ({@code tranId}),
+     * matching the identity semantics of the underlying {@code TRANSACT} KSDS record key. Uses an
+     * {@code instanceof} check so a Hibernate proxy compares equal to its underlying entity, and
+     * treats an instance with a {@code null} id as not equal to any other instance (including other
+     * unsaved instances), so distinct transient rows are never collapsed (review finding F10).
      *
      * @param o the object to compare with
-     * @return {@code true} if {@code o} is a {@code Transaction} with an equal {@code tranId}
+     * @return {@code true} if {@code o} is a {@code Transaction} with an equal non-null {@code tranId}
      */
     @Override
     public boolean equals(Object o) {
         if (this == o) {
             return true;
         }
-        if (o == null || getClass() != o.getClass()) {
+        if (!(o instanceof Transaction that)) {
             return false;
         }
-        Transaction that = (Transaction) o;
-        return tranId != null ? tranId.equals(that.tranId) : that.tranId == null;
+        return tranId != null && tranId.equals(that.tranId);
     }
 
     /**
-     * Hash code derived from the primary key ({@code tranId}), consistent with {@link #equals(Object)}.
+     * Returns a constant, identity-stable hash code. A constant (rather than one derived from
+     * {@code tranId}) is used so the hash does not change when the mutable primary key is assigned,
+     * keeping instances locatable in hash-based collections and consistent with
+     * {@link #equals(Object)} (review finding F10).
      *
-     * @return the hash code of {@code tranId}, or {@code 0} when the id is not yet assigned
+     * @return a stable, class-level hash code
      */
     @Override
     public int hashCode() {
-        return tranId != null ? tranId.hashCode() : 0;
+        return Transaction.class.hashCode();
     }
 
     /**
-     * Returns a diagnostic representation of this transaction. The card number ({@code cardNum}) is
-     * masked to its last four characters so full primary account numbers are never emitted to logs.
+     * Returns a non-sensitive diagnostic representation containing only the class name and an opaque
+     * per-instance identity token. The card number (PAN), amount, merchant details, and every other
+     * business field are deliberately never emitted — not even partially masked — so that payment
+     * and transaction data cannot leak into logs or error messages (CWE-532; review finding F9).
      *
-     * @return a string containing the transaction fields with the card number masked
+     * @return a non-sensitive string representation
      */
     @Override
     public String toString() {
-        return "Transaction{"
-                + "tranId='" + tranId + '\''
-                + ", tranTypeCd='" + tranTypeCd + '\''
-                + ", tranCatCd=" + tranCatCd
-                + ", tranSource='" + tranSource + '\''
-                + ", tranDesc='" + tranDesc + '\''
-                + ", tranAmt=" + tranAmt
-                + ", merchantId=" + merchantId
-                + ", merchantName='" + merchantName + '\''
-                + ", merchantCity='" + merchantCity + '\''
-                + ", merchantZip='" + merchantZip + '\''
-                + ", cardNum='" + maskCardNumber(cardNum) + '\''
-                + ", origTs=" + origTs
-                + ", procTs=" + procTs
-                + '}';
-    }
-
-    /**
-     * Masks all but the last four characters of a card number for safe logging (PAN hygiene).
-     *
-     * @param value the raw card number (may be {@code null} or padded with spaces)
-     * @return the masked value, or {@code null} when {@code value} is {@code null}
-     */
-    private static String maskCardNumber(String value) {
-        if (value == null) {
-            return null;
-        }
-        String trimmed = value.trim();
-        int visibleFrom = trimmed.length() - 4;
-        if (visibleFrom <= 0) {
-            return trimmed;
-        }
-        return "*".repeat(visibleFrom) + trimmed.substring(visibleFrom);
+        return "Transaction@" + Integer.toHexString(System.identityHashCode(this));
     }
 }

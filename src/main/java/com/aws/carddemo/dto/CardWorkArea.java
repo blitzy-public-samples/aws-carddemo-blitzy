@@ -439,23 +439,17 @@ public class CardWorkArea {
     }
 
     /**
-     * Returns a diagnostic representation including every scalar field.
+     * Returns a non-sensitive diagnostic representation containing only the class name and an opaque
+     * per-instance identity token. The work area holds the selected card number ({@code cardNum}, an
+     * unmasked PAN) alongside account and customer identifiers and screen messages; rendering those
+     * into logs or error messages would leak payment/customer data (CWE-532), so no business field is
+     * ever emitted here (review finding F9).
      *
-     * @return a string form of this work area
+     * @return a non-sensitive string representation
      */
     @Override
     public String toString() {
-        return "CardWorkArea{"
-                + "aid=" + aid
-                + ", nextProg=" + nextProg
-                + ", nextMapset=" + nextMapset
-                + ", nextMap=" + nextMap
-                + ", errorMsg=" + errorMsg
-                + ", returnMsg=" + returnMsg
-                + ", acctId=" + acctId
-                + ", cardNum=" + cardNum
-                + ", custId=" + custId
-                + '}';
+        return "CardWorkArea@" + Integer.toHexString(System.identityHashCode(this));
     }
 
     /**

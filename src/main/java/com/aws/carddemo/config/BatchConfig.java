@@ -52,9 +52,14 @@ import org.springframework.context.annotation.Configuration;
  *       startup. CardDemo is an online application; batch jobs are launched on demand (for example,
  *       {@code ReportSubmitService} launches {@code transactionReportJob} from the {@code /report}
  *       screen). Without this flag, all 13 jobs would fire on boot.</li>
- *   <li>{@code spring.batch.jdbc.initialize-schema=always} for {@code dev}/{@code test} (let Boot
- *       create the {@code BATCH_*} metadata tables) or {@code never} for prod, where Flyway may own
- *       the batch-metadata DDL. The chosen value and its rationale are recorded in
+ *   <li><strong>{@code spring.batch.jdbc.initialize-schema=never}</strong> (on every profile).
+ *       Flyway is the single source of truth for all DDL in this application, so the {@code BATCH_*}
+ *       metadata tables and sequences are created by the versioned migration
+ *       {@code db/migration/V0__spring_batch_metadata.sql} (copied verbatim from
+ *       {@code spring-batch-core}'s own {@code schema-postgresql.sql}) rather than by Boot's schema
+ *       initializer. The previous {@code embedded} setting behaved as {@code never} on PostgreSQL
+ *       and left these tables absent, so every {@code Job} failed on first execution and could not
+ *       restart (review finding F2). The chosen value and its rationale are recorded in
  *       {@code docs/decision-log.md}.</li>
  * </ul>
  *

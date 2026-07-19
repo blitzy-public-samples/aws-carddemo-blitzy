@@ -1,7 +1,5 @@
 package com.aws.carddemo.domain;
 
-import java.util.Objects;
-
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
 import jakarta.persistence.Id;
@@ -91,11 +89,14 @@ public class TransactionType {
     }
 
     /**
-     * Compares this entity with another for equality based solely on the primary
-     * key {@code tranType}.
+     * Compares this entity with another for equality based solely on the non-null primary key
+     * {@code tranType}. Uses an {@code instanceof} check so a Hibernate proxy compares equal to its
+     * underlying entity, and treats an instance with a {@code null} id as not equal to any other
+     * instance (including other unsaved instances), so distinct transient rows are never collapsed
+     * (review finding F10).
      *
      * @param o the object to compare with
-     * @return {@code true} if {@code o} is a {@code TransactionType} with an equal
+     * @return {@code true} if {@code o} is a {@code TransactionType} with an equal non-null
      *         transaction-type code
      */
     @Override
@@ -103,21 +104,23 @@ public class TransactionType {
         if (this == o) {
             return true;
         }
-        if (o == null || getClass() != o.getClass()) {
+        if (!(o instanceof TransactionType that)) {
             return false;
         }
-        TransactionType that = (TransactionType) o;
-        return Objects.equals(tranType, that.tranType);
+        return tranType != null && tranType.equals(that.tranType);
     }
 
     /**
-     * Returns a hash code derived solely from the primary key {@code tranType}.
+     * Returns a constant, identity-stable hash code. A constant (rather than one derived from
+     * {@code tranType}) is used so the hash does not change when the primary key is assigned, keeping
+     * instances locatable in hash-based collections and consistent with {@link #equals(Object)}
+     * (review finding F10).
      *
-     * @return the hash code for this entity
+     * @return a stable, class-level hash code
      */
     @Override
     public int hashCode() {
-        return Objects.hash(tranType);
+        return TransactionType.class.hashCode();
     }
 
     /**

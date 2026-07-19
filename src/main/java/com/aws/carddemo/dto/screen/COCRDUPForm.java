@@ -448,32 +448,15 @@ public class COCRDUPForm {
     }
 
     /**
-     * Returns a string representation listing every screen field value. This form has
-     * no password field, so all values are safe to include.
+     * Returns a non-sensitive diagnostic representation containing only the class name and an opaque
+     * per-instance identity token. Screen-form fields (which may include card numbers, account and
+     * customer identifiers, names, balances, or credentials) are never rendered, so form state cannot
+     * leak into logs or error messages (CWE-532; review finding F9).
      *
-     * @return a string representation of this form
+     * @return a non-sensitive string representation
      */
     @Override
     public String toString() {
-        return "COCRDUPForm{"
-                + "trnname='" + trnname + '\''
-                + ", title01='" + title01 + '\''
-                + ", curdate='" + curdate + '\''
-                + ", pgmname='" + pgmname + '\''
-                + ", title02='" + title02 + '\''
-                + ", curtime='" + curtime + '\''
-                + ", acctsid='" + acctsid + '\''
-                + ", cardsid='" + cardsid + '\''
-                + ", crdname='" + crdname + '\''
-                + ", crdstcd='" + crdstcd + '\''
-                + ", expmon='" + expmon + '\''
-                + ", expyear='" + expyear + '\''
-                + ", expday='" + expday + '\''
-                + ", infomsg='" + infomsg + '\''
-                + ", errmsg='" + errmsg + '\''
-                + ", fkeys='" + fkeys + '\''
-                + ", fkeysc='" + fkeysc + '\''
-                + '}';
+        return "COCRDUPForm@" + Integer.toHexString(System.identityHashCode(this));
     }
 }
-

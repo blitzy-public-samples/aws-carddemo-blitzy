@@ -6,6 +6,9 @@ import jakarta.persistence.Id;
 import jakarta.persistence.IdClass;
 import jakarta.persistence.Table;
 
+import org.hibernate.annotations.JdbcTypeCode;
+import org.hibernate.type.SqlTypes;
+
 import java.io.Serializable;
 import java.math.BigDecimal;
 
@@ -44,9 +47,13 @@ public class TransactionCategoryBalance {
     /**
      * Account identifier &mdash; legacy {@code TRANCAT-ACCT-ID PIC 9(11)}.
      * First component of the composite primary key ({@code NUMERIC(11)}).
+     * {@link JdbcTypeCode}({@link SqlTypes#NUMERIC}) forces Hibernate to expect a
+     * {@code NUMERIC} column rather than the default {@code BIGINT} (review
+     * finding F1).
      */
     @Id
     @Column(name = "trancat_acct_id", precision = 11)
+    @JdbcTypeCode(SqlTypes.NUMERIC)
     private Long acctId;
 
     /**
@@ -60,9 +67,13 @@ public class TransactionCategoryBalance {
     /**
      * Transaction-category code &mdash; legacy {@code TRANCAT-CD PIC 9(04)}.
      * Third component of the composite primary key ({@code NUMERIC(4)}).
+     * {@link JdbcTypeCode}({@link SqlTypes#NUMERIC}) forces Hibernate to expect a
+     * {@code NUMERIC} column rather than the default {@code INTEGER} (review
+     * finding F1).
      */
     @Id
     @Column(name = "trancat_cd", precision = 4)
+    @JdbcTypeCode(SqlTypes.NUMERIC)
     private Integer catCd;
 
     /**
@@ -158,53 +169,57 @@ public class TransactionCategoryBalance {
      * Entity equality is defined over the composite primary key
      * (account id, transaction-type code, transaction-category code),
      * mirroring the uniqueness of the legacy VSAM {@code TRAN-CAT-KEY}.
-     * The non-key {@code balance} field is intentionally excluded.
+     * The non-key {@code balance} field is intentionally excluded. Uses an
+     * {@code instanceof} pattern so a Hibernate proxy compares equal to its
+     * underlying entity, and treats an instance whose key is not fully populated
+     * (any component {@code null}) as not equal to any other instance, so
+     * distinct transient rows are never collapsed (review finding F10).
      *
-     * @param other the object to compare with
+     * @param o the object to compare with
      * @return {@code true} if the other object is a
-     *         {@code TransactionCategoryBalance} with an equal composite key
+     *         {@code TransactionCategoryBalance} with an equal, fully populated
+     *         composite key
      */
     @Override
-    public boolean equals(Object other) {
-        if (this == other) {
+    public boolean equals(Object o) {
+        if (this == o) {
             return true;
         }
-        if (other == null || getClass() != other.getClass()) {
+        if (!(o instanceof TransactionCategoryBalance that)) {
             return false;
         }
-        TransactionCategoryBalance that = (TransactionCategoryBalance) other;
-        return (acctId == null ? that.acctId == null : acctId.equals(that.acctId))
-                && (typeCd == null ? that.typeCd == null : typeCd.equals(that.typeCd))
-                && (catCd == null ? that.catCd == null : catCd.equals(that.catCd));
+        return acctId != null && typeCd != null && catCd != null
+                && acctId.equals(that.acctId)
+                && typeCd.equals(that.typeCd)
+                && catCd.equals(that.catCd);
     }
 
     /**
-     * Computes the hash code from the composite primary key components,
-     * consistent with {@link #equals(Object)}.
+     * Returns a constant, identity-stable hash code. A constant (rather than one
+     * derived from the mutable composite key) is used so the hash does not change
+     * as the key components are assigned, keeping instances locatable in
+     * hash-based collections and consistent with {@link #equals(Object)} (review
+     * finding F10).
      *
-     * @return the hash code derived from (acctId, typeCd, catCd)
+     * @return a stable, class-level hash code
      */
     @Override
     public int hashCode() {
-        int result = (acctId == null) ? 0 : acctId.hashCode();
-        result = 31 * result + ((typeCd == null) ? 0 : typeCd.hashCode());
-        result = 31 * result + ((catCd == null) ? 0 : catCd.hashCode());
-        return result;
+        return TransactionCategoryBalance.class.hashCode();
     }
 
     /**
-     * Returns a string representation including all four fields.
+     * Returns a non-sensitive diagnostic representation containing only the class
+     * name and an opaque per-instance identity token. The account id, type code,
+     * category code and running balance are deliberately never emitted so that
+     * account/financial data cannot leak into logs or error messages (CWE-532;
+     * review finding F9).
      *
-     * @return a diagnostic string for this entity
+     * @return a non-sensitive string representation
      */
     @Override
     public String toString() {
-        return "TransactionCategoryBalance{"
-                + "acctId=" + acctId
-                + ", typeCd=" + typeCd
-                + ", catCd=" + catCd
-                + ", balance=" + balance
-                + '}';
+        return "TransactionCategoryBalance@" + Integer.toHexString(System.identityHashCode(this));
     }
 
     /**

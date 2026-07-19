@@ -1332,73 +1332,15 @@ public class COTRN00Form {
     }
 
     /**
-     * Returns a diagnostic representation of this form including every value
-     * field. This screen has no password field, so no masking is required.
+     * Returns a non-sensitive diagnostic representation containing only the class name and an opaque
+     * per-instance identity token. Screen-form fields (which may include card numbers, account and
+     * customer identifiers, names, balances, or credentials) are never rendered, so form state cannot
+     * leak into logs or error messages (CWE-532; review finding F9).
      *
-     * @return a string representation of all form fields
+     * @return a non-sensitive string representation
      */
     @Override
     public String toString() {
-        return "COTRN00Form{"
-                + "trnname='" + trnname + '\''
-                + ", title01='" + title01 + '\''
-                + ", curdate='" + curdate + '\''
-                + ", pgmname='" + pgmname + '\''
-                + ", title02='" + title02 + '\''
-                + ", curtime='" + curtime + '\''
-                + ", pagenum='" + pagenum + '\''
-                + ", trnidin='" + trnidin + '\''
-                + ", sel0001='" + sel0001 + '\''
-                + ", trnid01='" + trnid01 + '\''
-                + ", tdate01='" + tdate01 + '\''
-                + ", tdesc01='" + tdesc01 + '\''
-                + ", tamt001='" + tamt001 + '\''
-                + ", sel0002='" + sel0002 + '\''
-                + ", trnid02='" + trnid02 + '\''
-                + ", tdate02='" + tdate02 + '\''
-                + ", tdesc02='" + tdesc02 + '\''
-                + ", tamt002='" + tamt002 + '\''
-                + ", sel0003='" + sel0003 + '\''
-                + ", trnid03='" + trnid03 + '\''
-                + ", tdate03='" + tdate03 + '\''
-                + ", tdesc03='" + tdesc03 + '\''
-                + ", tamt003='" + tamt003 + '\''
-                + ", sel0004='" + sel0004 + '\''
-                + ", trnid04='" + trnid04 + '\''
-                + ", tdate04='" + tdate04 + '\''
-                + ", tdesc04='" + tdesc04 + '\''
-                + ", tamt004='" + tamt004 + '\''
-                + ", sel0005='" + sel0005 + '\''
-                + ", trnid05='" + trnid05 + '\''
-                + ", tdate05='" + tdate05 + '\''
-                + ", tdesc05='" + tdesc05 + '\''
-                + ", tamt005='" + tamt005 + '\''
-                + ", sel0006='" + sel0006 + '\''
-                + ", trnid06='" + trnid06 + '\''
-                + ", tdate06='" + tdate06 + '\''
-                + ", tdesc06='" + tdesc06 + '\''
-                + ", tamt006='" + tamt006 + '\''
-                + ", sel0007='" + sel0007 + '\''
-                + ", trnid07='" + trnid07 + '\''
-                + ", tdate07='" + tdate07 + '\''
-                + ", tdesc07='" + tdesc07 + '\''
-                + ", tamt007='" + tamt007 + '\''
-                + ", sel0008='" + sel0008 + '\''
-                + ", trnid08='" + trnid08 + '\''
-                + ", tdate08='" + tdate08 + '\''
-                + ", tdesc08='" + tdesc08 + '\''
-                + ", tamt008='" + tamt008 + '\''
-                + ", sel0009='" + sel0009 + '\''
-                + ", trnid09='" + trnid09 + '\''
-                + ", tdate09='" + tdate09 + '\''
-                + ", tdesc09='" + tdesc09 + '\''
-                + ", tamt009='" + tamt009 + '\''
-                + ", sel0010='" + sel0010 + '\''
-                + ", trnid10='" + trnid10 + '\''
-                + ", tdate10='" + tdate10 + '\''
-                + ", tdesc10='" + tdesc10 + '\''
-                + ", tamt010='" + tamt010 + '\''
-                + ", errmsg='" + errmsg + '\''
-                + '}';
+        return "COTRN00Form@" + Integer.toHexString(System.identityHashCode(this));
     }
 }

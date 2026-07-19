@@ -504,35 +504,15 @@ public class COTRN01Form {
     }
 
     /**
-     * Returns a diagnostic representation listing all screen value fields. No sensitive
-     * credential fields are present on this screen, so every value field is included.
+     * Returns a non-sensitive diagnostic representation containing only the class name and an opaque
+     * per-instance identity token. Screen-form fields (which may include card numbers, account and
+     * customer identifiers, names, balances, or credentials) are never rendered, so form state cannot
+     * leak into logs or error messages (CWE-532; review finding F9).
      *
-     * @return a string representation of this form
+     * @return a non-sensitive string representation
      */
     @Override
     public String toString() {
-        return "COTRN01Form{"
-                + "trnname='" + trnname + '\''
-                + ", title01='" + title01 + '\''
-                + ", curdate='" + curdate + '\''
-                + ", pgmname='" + pgmname + '\''
-                + ", title02='" + title02 + '\''
-                + ", curtime='" + curtime + '\''
-                + ", trnidin='" + trnidin + '\''
-                + ", trnid='" + trnid + '\''
-                + ", cardnum='" + cardnum + '\''
-                + ", ttypcd='" + ttypcd + '\''
-                + ", tcatcd='" + tcatcd + '\''
-                + ", trnsrc='" + trnsrc + '\''
-                + ", tdesc='" + tdesc + '\''
-                + ", trnamt='" + trnamt + '\''
-                + ", torigdt='" + torigdt + '\''
-                + ", tprocdt='" + tprocdt + '\''
-                + ", mid='" + mid + '\''
-                + ", mname='" + mname + '\''
-                + ", mcity='" + mcity + '\''
-                + ", mzip='" + mzip + '\''
-                + ", errmsg='" + errmsg + '\''
-                + '}';
+        return "COTRN01Form@" + Integer.toHexString(System.identityHashCode(this));
     }
 }

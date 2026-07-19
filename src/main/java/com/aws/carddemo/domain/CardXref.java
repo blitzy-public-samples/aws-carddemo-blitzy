@@ -5,6 +5,10 @@ import jakarta.persistence.Entity;
 import jakarta.persistence.Id;
 import jakarta.persistence.IdClass;
 import jakarta.persistence.Table;
+import jakarta.persistence.UniqueConstraint;
+
+import org.hibernate.annotations.JdbcTypeCode;
+import org.hibernate.type.SqlTypes;
 
 import java.io.Serializable;
 import java.util.Objects;
@@ -26,12 +30,20 @@ import java.util.Objects;
  *     05  FILLER          PIC X(14).   -- 14 bytes -- NOT persisted
  * </pre>
  *
- * <p>Key semantics (AAP &sect;0.3.3, &sect;0.6.2): the entire business record
- * (minus the trailing {@code FILLER}) forms the primary key, so all three
- * fields are annotated {@link Id} and the composite identity is realized with
- * {@link IdClass} using the nested {@link CardXrefId}. This preserves the VSAM
- * primary-key semantics of the {@code CCXREF} cluster (card + customer +
- * account).</p>
+ * <p>Key semantics (AAP &sect;0.3.3, &sect;0.6.2) and review finding F6: the
+ * authoritative VSAM {@code CCXREF} KSDS is keyed <em>uniquely</em> on the
+ * 16-byte card number alone ({@code legacy/jcl/XREFFILE.jcl} defines
+ * {@code KEYS(16 0)}; {@code legacy/catlg/LISTCAT.txt} confirms the account id
+ * is a <em>nonunique</em> alternate index {@code CXACAIX} at offset 25). The
+ * AAP-frozen mapping retains the three-column composite {@link IdClass}
+ * ({@link CardXrefId}: card + customer + account) for structural traceability;
+ * to prevent that composite key from admitting duplicate card numbers (which
+ * the true KSDS forbids) a {@code UNIQUE} constraint
+ * {@code uk_card_xref_card_num} is enforced on {@code xref_card_num}. Account
+ * access remains nonunique secondary access via the derived query
+ * {@code findByXrefAcctId(Long)}. This divergence between the frozen composite
+ * {@code IdClass} and the true single-column unique key is recorded in
+ * {@code docs/decision-log.md}.</p>
  *
  * <p>Alternate-index migration: the legacy VSAM alternate index {@code CXACAIX}
  * over {@code XREF-ACCT-ID} (verified {@code AXRKP=25} in
@@ -48,7 +60,11 @@ import java.util.Objects;
  * persisted as a column.</p>
  */
 @Entity
-@Table(name = "card_xref")
+@Table(
+        name = "card_xref",
+        uniqueConstraints = @UniqueConstraint(
+                name = "uk_card_xref_card_num",
+                columnNames = "xref_card_num"))
 @IdClass(CardXref.CardXrefId.class)
 public class CardXref {
 
@@ -63,20 +79,27 @@ public class CardXref {
     /**
      * Customer identifier cross-reference key. Legacy
      * {@code XREF-CUST-ID PIC 9(09)}. Nine-digit customer id; part of the
-     * composite primary key.
+     * composite primary key. Mapped to SQL {@code NUMERIC(9)} via
+     * {@link JdbcTypeCode}({@link SqlTypes#NUMERIC}) so Hibernate expects
+     * {@code NUMERIC} rather than the default {@code BIGINT} (review finding F1).
      */
     @Id
     @Column(name = "xref_cust_id", precision = 9)
+    @JdbcTypeCode(SqlTypes.NUMERIC)
     private Long xrefCustId;
 
     /**
      * Account identifier cross-reference key. Legacy
      * {@code XREF-ACCT-ID PIC 9(11)}. Eleven-digit account id; part of the
      * composite primary key. Backs the {@code CXACAIX} alternate index via the
-     * repository derived query {@code findByXrefAcctId}.
+     * repository derived query {@code findByXrefAcctId}. Mapped to SQL
+     * {@code NUMERIC(11)} via {@link JdbcTypeCode}({@link SqlTypes#NUMERIC}) so
+     * Hibernate expects {@code NUMERIC} rather than the default {@code BIGINT}
+     * (review finding F1).
      */
     @Id
     @Column(name = "xref_acct_id", precision = 11)
+    @JdbcTypeCode(SqlTypes.NUMERIC)
     private Long xrefAcctId;
 
     /**
@@ -158,50 +181,57 @@ public class CardXref {
     }
 
     /**
-     * Equality is defined over the full composite key (card + customer +
+     * Entity equality is defined over the full composite key (card + customer +
      * account), consistent with the VSAM {@code CCXREF} primary-key semantics.
+     * Uses an {@code instanceof} check so a Hibernate proxy compares equal to
+     * its underlying entity, and treats an instance whose key is not fully
+     * populated (any component {@code null}) as not equal to any other instance,
+     * so distinct transient rows are never collapsed (review finding F10).
      *
      * @param o the object to compare with
      * @return {@code true} if the other object is a {@code CardXref} with an
-     *         equal composite key
+     *         equal, fully populated composite key
      */
     @Override
     public boolean equals(Object o) {
         if (this == o) {
             return true;
         }
-        if (o == null || getClass() != o.getClass()) {
+        if (!(o instanceof CardXref that)) {
             return false;
         }
-        CardXref that = (CardXref) o;
-        return Objects.equals(xrefCardNum, that.xrefCardNum)
-                && Objects.equals(xrefCustId, that.xrefCustId)
-                && Objects.equals(xrefAcctId, that.xrefAcctId);
+        return xrefCardNum != null && xrefCustId != null && xrefAcctId != null
+                && xrefCardNum.equals(that.xrefCardNum)
+                && xrefCustId.equals(that.xrefCustId)
+                && xrefAcctId.equals(that.xrefAcctId);
     }
 
     /**
-     * Hash code derived from the full composite key, consistent with
-     * {@link #equals(Object)}.
+     * Returns a constant, identity-stable hash code. A constant (rather than one
+     * derived from the mutable composite key) is used so the hash does not change
+     * as the key components are assigned, keeping instances locatable in
+     * hash-based collections and consistent with {@link #equals(Object)} (review
+     * finding F10).
      *
-     * @return the composite-key hash code
+     * @return a stable, class-level hash code
      */
     @Override
     public int hashCode() {
-        return Objects.hash(xrefCardNum, xrefCustId, xrefAcctId);
+        return CardXref.class.hashCode();
     }
 
     /**
-     * Returns a diagnostic representation including all three key fields.
+     * Returns a non-sensitive diagnostic representation containing only the class
+     * name and an opaque per-instance identity token. The cross-referenced card
+     * number, customer id and account id are deliberately never emitted so that
+     * payment/customer identifiers cannot leak into logs or error messages
+     * (CWE-532; review finding F9).
      *
-     * @return a string representation of this cross-reference record
+     * @return a non-sensitive string representation
      */
     @Override
     public String toString() {
-        return "CardXref{"
-                + "xrefCardNum='" + xrefCardNum + '\''
-                + ", xrefCustId=" + xrefCustId
-                + ", xrefAcctId=" + xrefAcctId
-                + '}';
+        return "CardXref@" + Integer.toHexString(System.identityHashCode(this));
     }
 
     /**

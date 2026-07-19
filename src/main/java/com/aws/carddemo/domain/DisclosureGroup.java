@@ -6,6 +6,9 @@ import jakarta.persistence.Id;
 import jakarta.persistence.IdClass;
 import jakarta.persistence.Table;
 
+import org.hibernate.annotations.JdbcTypeCode;
+import org.hibernate.type.SqlTypes;
+
 import java.io.Serializable;
 import java.math.BigDecimal;
 
@@ -73,9 +76,13 @@ public class DisclosureGroup {
      * Transaction-category code &mdash; third component of the composite key.
      * Legacy: {@code DIS-TRAN-CAT-CD PIC 9(04)} (unsigned 4-digit numeric)
      * &rarr; {@code NUMERIC(4)} mapped to {@link Integer}.
+     * {@link JdbcTypeCode}({@link SqlTypes#NUMERIC}) forces Hibernate to expect
+     * a {@code NUMERIC} column rather than the default {@code INTEGER} (review
+     * finding F1).
      */
     @Id
     @Column(name = "dis_tran_cat_cd", precision = 4)
+    @JdbcTypeCode(SqlTypes.NUMERIC)
     private Integer tranCatCd;
 
     /**
@@ -168,15 +175,17 @@ public class DisclosureGroup {
     }
 
     /**
-     * Value equality is defined over the composite primary key
-     * (account-group id, transaction-type code, transaction-category code),
-     * consistent with the legacy VSAM key semantics. Uses an
-     * {@code instanceof} pattern so Hibernate proxy instances compare
-     * correctly.
+     * Entity equality is defined over the composite primary key (account-group
+     * id, transaction-type code, transaction-category code), consistent with the
+     * legacy VSAM key semantics. Uses an {@code instanceof} pattern so a
+     * Hibernate proxy compares equal to its underlying entity, and treats an
+     * instance whose key is not fully populated (any component {@code null}) as
+     * not equal to any other instance, so distinct transient rows are never
+     * collapsed (review finding F10).
      *
      * @param o the object to compare with
      * @return {@code true} if {@code o} is a {@code DisclosureGroup} with an
-     *         equal composite key
+     *         equal, fully populated composite key
      */
     @Override
     public boolean equals(Object o) {
@@ -186,20 +195,24 @@ public class DisclosureGroup {
         if (!(o instanceof DisclosureGroup that)) {
             return false;
         }
-        return java.util.Objects.equals(acctGroupId, that.acctGroupId)
-                && java.util.Objects.equals(tranTypeCd, that.tranTypeCd)
-                && java.util.Objects.equals(tranCatCd, that.tranCatCd);
+        return acctGroupId != null && tranTypeCd != null && tranCatCd != null
+                && acctGroupId.equals(that.acctGroupId)
+                && tranTypeCd.equals(that.tranTypeCd)
+                && tranCatCd.equals(that.tranCatCd);
     }
 
     /**
-     * Hash code computed over the composite primary key, consistent with
-     * {@link #equals(Object)}.
+     * Returns a constant, identity-stable hash code. A constant (rather than one
+     * derived from the mutable composite key) is used so the hash does not change
+     * as the key components are assigned, keeping instances locatable in
+     * hash-based collections and consistent with {@link #equals(Object)} (review
+     * finding F10).
      *
-     * @return the hash code of the composite key
+     * @return a stable, class-level hash code
      */
     @Override
     public int hashCode() {
-        return java.util.Objects.hash(acctGroupId, tranTypeCd, tranCatCd);
+        return DisclosureGroup.class.hashCode();
     }
 
     /**

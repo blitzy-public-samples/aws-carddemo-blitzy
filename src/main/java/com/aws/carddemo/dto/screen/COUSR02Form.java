@@ -15,7 +15,7 @@ import jakarta.validation.constraints.Size;
  * binding. This is a plain POJO instantiated per request via
  * {@code @ModelAttribute}; it holds no business logic and no monetary fields.
  * The {@code passwd} property is a cleartext password field that is
- * intentionally masked in {@link #toString()}.</p>
+ * intentionally never emitted by {@link #toString()} (which returns only an identity string).</p>
  */
 public class COUSR02Form {
 
@@ -55,7 +55,7 @@ public class COUSR02Form {
     @Size(max = 20)
     private String lname;
 
-    /** PASSWDI PIC X(8) - cleartext password; masked in {@link #toString()}. */
+    /** PASSWDI PIC X(8) - cleartext password; never emitted by {@link #toString()} (review finding F9). */
     @Size(max = 8)
     private String passwd;
 
@@ -240,7 +240,7 @@ public class COUSR02Form {
 
     /**
      * Returns the cleartext password entry field. Callers must never log this
-     * value in cleartext; {@link #toString()} masks it.
+     * value in cleartext; {@link #toString()} never emits it (review finding F9).
      *
      * @return the {@code PASSWD} value (max 8 characters)
      */
@@ -296,28 +296,15 @@ public class COUSR02Form {
     }
 
     /**
-     * Returns a diagnostic representation of this form including every value
-     * field. The {@code passwd} field is intentionally rendered as
-     * {@code ***} so the cleartext password is never emitted to logs or
-     * diagnostics.
+     * Returns a non-sensitive diagnostic representation containing only the class name and an opaque
+     * per-instance identity token. Screen-form fields (which may include card numbers, account and
+     * customer identifiers, names, balances, or credentials) are never rendered, so form state cannot
+     * leak into logs or error messages (CWE-532; review finding F9).
      *
-     * @return a string representation with the password masked
+     * @return a non-sensitive string representation
      */
     @Override
     public String toString() {
-        return "COUSR02Form{"
-                + "trnname='" + trnname + '\''
-                + ", title01='" + title01 + '\''
-                + ", curdate='" + curdate + '\''
-                + ", pgmname='" + pgmname + '\''
-                + ", title02='" + title02 + '\''
-                + ", curtime='" + curtime + '\''
-                + ", usridin='" + usridin + '\''
-                + ", fname='" + fname + '\''
-                + ", lname='" + lname + '\''
-                + ", passwd='***'"
-                + ", usrtype='" + usrtype + '\''
-                + ", errmsg='" + errmsg + '\''
-                + '}';
+        return "COUSR02Form@" + Integer.toHexString(System.identityHashCode(this));
     }
 }

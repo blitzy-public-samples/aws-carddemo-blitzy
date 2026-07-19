@@ -1,9 +1,7 @@
 package com.aws.carddemo.util;
 
+import java.time.DateTimeException;
 import java.time.LocalDate;
-import java.time.format.DateTimeFormatter;
-import java.time.format.DateTimeParseException;
-import java.time.format.ResolverStyle;
 import java.util.Locale;
 import java.util.OptionalLong;
 
@@ -14,27 +12,29 @@ import org.springframework.stereotype.Service;
  *
  * <p>Origin: {@code legacy/cbl/CSUTLDTC.cbl} (source branch {@code app/cbl/CSUTLDTC.cbl}).
  * This service replaces the IBM Language Environment callable services
- * {@code CEEDAYS}/{@code CEEDATE}/{@code CEECBLDY} with {@link java.time.DateTimeFormatter},
- * validating a date string against a format mask and returning a structured result
- * (valid flag + severity + message + epoch-day equivalent). Implements AAP &sect;0.6.9.</p>
+ * {@code CEEDAYS}/{@code CEEDATE}/{@code CEECBLDY} with deterministic positional field extraction
+ * validated by {@link java.time.LocalDate}, validating a date string against a format mask and
+ * returning a structured result (valid flag + severity + message + epoch-day equivalent).
+ * Implements AAP &sect;0.6.9.</p>
  *
  * <p>The COBOL contract being reproduced is
  * {@code PROCEDURE DIVISION USING LS-DATE PIC X(10), LS-DATE-FORMAT PIC X(10), LS-RESULT PIC X(80)}:
  * {@code CSUTLDTC} calls {@code CEEDAYS}, then runs an {@code EVALUATE TRUE} over the feedback-code
  * 88-levels to select a 15-character result message, and finally moves the CEE severity to
- * {@code RETURN-CODE} (0 = success). The behaviorally-critical output is
- * <strong>{@code severity == 0} &hArr; valid</strong>; both {@code CSUTLDPY} ({@code EDIT-DATE-LE},
- * {@code IF WS-SEVERITY-N = 0}) and {@code CORPT00C} branch only on that. The exact CEE
- * message-number is cosmetic.</p>
+ * {@code RETURN-CODE} (0 = success). {@code CSUTLDPY} ({@code EDIT-DATE-LE}, {@code IF WS-SEVERITY-N
+ * = 0}) branches on <strong>{@code severity == 0} &hArr; valid</strong>, while {@code CORPT00C}
+ * additionally branches on the exact CEE message number (notably {@code 2513}); both the severity
+ * (0 or 3) and the message number (0, or 2507-2521) are therefore reproduced exactly.</p>
  *
  * <p>Injected wherever COBOL executed {@code CALL 'CSUTLDTC'} (AAP &sect;0.5.3): the online report
  * controller flow ({@code CORPT00C}) and {@code DateConversionSupport} (the {@code CSUTLDPY}
  * {@code EDIT-DATE-LE} step).</p>
  *
- * <p>This bean is <strong>stateless and thread-safe</strong>: it holds no mutable state and
- * {@link java.time.format.DateTimeFormatter} instances are immutable. The full rationale for the
- * mapping decisions summarized here (severity model, msg-number handling, epoch-day vs. Lillian day,
- * and the CEE feedback-code approximation) lives in {@code docs/decision-log.md}.</p>
+ * <p>This bean is <strong>stateless and thread-safe</strong>: it holds no mutable state and every
+ * validation works entirely on local variables and immutable {@link java.time.LocalDate} values. The
+ * full rationale for the mapping decisions summarized here (severity model, msg-number handling,
+ * epoch-day vs. Lillian day, and the CEE feedback-code mapping) lives in
+ * {@code docs/decision-log.md}.</p>
  */
 @Service
 public class DateConversionService {
@@ -70,6 +70,13 @@ public class DateConversionService {
     private static final String DEFAULT_MASK = "YYYYMMDD";
 
     /**
+     * First date supported by {@code CEEDAYS} (Lillian day 1, {@code 1582-10-15}). A well-formed date
+     * strictly before this maps to {@link ValidationOutcome#FC_UNSUPP_RANGE} (CEE message {@code 2513}),
+     * which {@code CORPT00C} branches on. Java's proleptic calendar would otherwise accept such dates.
+     */
+    private static final LocalDate LILLIAN_START = LocalDate.of(1582, 10, 15);
+
+    /**
      * Mirror of the {@code CEEDAYS} feedback-code 88-levels evaluated by {@code CSUTLDTC}
      * (see {@code EVALUATE TRUE} in {@code A000-MAIN}). Each constant carries the exact 15-character
      * COBOL result message (trimmed of trailing pad) and a CEE-style severity.
@@ -79,43 +86,52 @@ public class DateConversionService {
      * SUCCESS). Despite the misleading name it is the <em>success</em> condition and maps to
      * {@code "Date is valid"} with severity 0. The name and behavior are preserved verbatim.</p>
      *
-     * <p>Only {@link #FC_INVALID_DATE} carries severity 0; every failure constant carries a non-zero
-     * severity (12, the conventional CEE "error" severity - a documented simplification of the real
-     * LE severities, since the only value inspected downstream is {@code severity == 0} vs
-     * {@code != 0}). Several constants ({@code FC_INVALID_ERA}, {@code FC_UNSUPP_RANGE},
-     * {@code FC_INSUFFICIENT_DATA}, {@code FC_YEAR_IN_ERA_ZERO}) exist purely to mirror the COBOL
-     * 88-levels one-for-one; the {@code java.time} proleptic parser has no equivalent condition to
-     * raise them, which is acceptable because parity is defined on the valid/invalid decision.</p>
+     * <p>Only {@link #FC_INVALID_DATE} carries severity 0; every failure constant carries the exact
+     * CEE severity {@code 3} and the exact CEE message number decoded from the {@code CSUTLDTC}
+     * feedback-code 88-level tokens (for example {@code FC-INSUFFICIENT-DATA} =
+     * {@code X'000309CB59C3C5C5'} &rarr; severity {@code 0x0003} = {@code 3}, message {@code 0x09CB}
+     * = {@code 2507}), through {@code 2521}. These are reproduced verbatim so a consumer that branches
+     * on a specific number - notably {@code CORPT00C}, which explicitly tests message {@code 2513}
+     * ({@link #FC_UNSUPP_RANGE}) - behaves identically, and so the {@code WS-SEVERITY}/{@code WS-MSG-NO}
+     * rendered into the 80-byte result are byte-exact. {@link #FC_INVALID_ERA} ({@code 2509}) has no
+     * analog under the era-less {@code YYYYMMDD}/{@code YYYY-MM-DD} masks and is therefore unreachable
+     * in practice, but is retained to mirror the COBOL 88-level one-for-one.</p>
      */
     public enum ValidationOutcome {
 
         /** {@code FC-INVALID-DATE} - CEE000 success (see class quirk note). */
-        FC_INVALID_DATE("Date is valid", 0),
-        /** {@code FC-INSUFFICIENT-DATA}. */
-        FC_INSUFFICIENT_DATA("Insufficient", 12),
-        /** {@code FC-BAD-DATE-VALUE} - a syntactically well-formed but non-existent date. */
-        FC_BAD_DATE_VALUE("Datevalue error", 12),
-        /** {@code FC-INVALID-ERA}. */
-        FC_INVALID_ERA("Invalid Era", 12),
-        /** {@code FC-UNSUPP-RANGE}. */
-        FC_UNSUPP_RANGE("Unsupp. Range", 12),
-        /** {@code FC-INVALID-MONTH} - month component outside 1-12. */
-        FC_INVALID_MONTH("Invalid month", 12),
-        /** {@code FC-BAD-PIC-STRING} - unrecognized/empty picture mask. */
-        FC_BAD_PIC_STRING("Bad Pic String", 12),
-        /** {@code FC-NON-NUMERIC-DATA} - non-numeric character where a digit was expected. */
-        FC_NON_NUMERIC_DATA("Nonnumeric data", 12),
-        /** {@code FC-YEAR-IN-ERA-ZERO}. */
-        FC_YEAR_IN_ERA_ZERO("YearInEra is 0", 12),
-        /** {@code WHEN OTHER} - any other failure (including an empty/blank date string). */
-        OTHER_INVALID("Date is invalid", 12);
+        FC_INVALID_DATE("Date is valid", 0, 0),
+        /** {@code FC-INSUFFICIENT-DATA} - feedback {@code X'0003 09CB ...'}; not enough date characters. */
+        FC_INSUFFICIENT_DATA("Insufficient", 3, 2507),
+        /** {@code FC-BAD-DATE-VALUE} - feedback {@code X'0003 09CC ...'}; well-formed but non-existent date. */
+        FC_BAD_DATE_VALUE("Datevalue error", 3, 2508),
+        /** {@code FC-INVALID-ERA} - feedback {@code X'0003 09CD ...'}; no era in the supported masks. */
+        FC_INVALID_ERA("Invalid Era", 3, 2509),
+        /** {@code FC-UNSUPP-RANGE} - feedback {@code X'0003 09D1 ...'}; date before 1582-10-15. */
+        FC_UNSUPP_RANGE("Unsupp. Range", 3, 2513),
+        /** {@code FC-INVALID-MONTH} - feedback {@code X'0003 09D5 ...'}; month component outside 1-12. */
+        FC_INVALID_MONTH("Invalid month", 3, 2517),
+        /** {@code FC-BAD-PIC-STRING} - feedback {@code X'0003 09D6 ...'}; unrecognized/empty picture mask. */
+        FC_BAD_PIC_STRING("Bad Pic String", 3, 2518),
+        /** {@code FC-NON-NUMERIC-DATA} - feedback {@code X'0003 09D8 ...'}; non-digit where a digit was expected. */
+        FC_NON_NUMERIC_DATA("Nonnumeric data", 3, 2520),
+        /** {@code FC-YEAR-IN-ERA-ZERO} - feedback {@code X'0003 09D9 ...'}; year component is 0000. */
+        FC_YEAR_IN_ERA_ZERO("YearInEra is 0", 3, 2521),
+        /**
+         * {@code WHEN OTHER} - defensive fallback for any feedback condition not matched above. Carries
+         * severity {@code 3} (an error) and message number {@code 0} (no canonical CEE number is
+         * synthesized). With the supported masks the specific outcomes above are always selected first.
+         */
+        OTHER_INVALID("Date is invalid", 3, 0);
 
         private final String message;
         private final int severity;
+        private final int msgNo;
 
-        ValidationOutcome(String message, int severity) {
+        ValidationOutcome(String message, int severity, int msgNo) {
             this.message = message;
             this.severity = severity;
+            this.msgNo = msgNo;
         }
 
         /**
@@ -129,14 +145,25 @@ public class DateConversionService {
         }
 
         /**
-         * The CEE-style severity moved to {@code RETURN-CODE} for this outcome: 0 for the success
-         * condition, non-zero for every failure. This is the only value examined by downstream
-         * COBOL logic.
+         * The CEE severity moved to {@code RETURN-CODE} for this outcome: {@code 0} for the success
+         * condition and {@code 3} for every failure (the exact {@code CEEDAYS} error severity).
+         * {@code CSUTLDPY} {@code EDIT-DATE-LE} branches on {@code severity == 0}.
          *
-         * @return the severity (0 = valid)
+         * @return the severity (0 = valid, 3 = error)
          */
         public int severity() {
             return severity;
+        }
+
+        /**
+         * The exact {@code CEEDAYS} feedback message number for this outcome ({@code WS-MSG-NO}):
+         * {@code 0} for success, otherwise the number decoded from the feedback-code token
+         * ({@code 2507}-{@code 2521}). {@code CORPT00C} branches on {@code 2513}.
+         *
+         * @return the CEE message number (0 for the success condition)
+         */
+        public int msgNo() {
+            return msgNo;
         }
     }
 
@@ -147,8 +174,9 @@ public class DateConversionService {
      * @param valid           {@code true} when the date is valid ({@code severity == 0}); mirrors
      *                        the COBOL {@code IF WS-SEVERITY-N = 0} check
      * @param severity        CEE-style severity (0 = valid); moved to {@code RETURN-CODE} by COBOL
-     * @param msgNo           the {@code WS-MSG-NO} value; cosmetic (the real LE message number is not
-     *                        reproduced - see class/decision-log note) and mirrors {@code severity}
+     * @param msgNo           the {@code WS-MSG-NO} value: the exact {@code CEEDAYS} feedback message
+     *                        number ({@code 0}, or {@code 2507}-{@code 2521}); {@code CORPT00C}
+     *                        branches on {@code 2513}
      * @param message         the 15-character {@code WS-RESULT} message, trimmed
      * @param formattedResult the exact 80-character {@code LS-RESULT} record, byte-for-byte
      * @param epochDay        {@link LocalDate#toEpochDay()} of the parsed date when valid, otherwise
@@ -179,33 +207,37 @@ public class DateConversionService {
      * Validates {@code lsDate} against {@code lsDateFormat}, reproducing
      * {@code CALL 'CSUTLDTC' USING LS-DATE, LS-DATE-FORMAT, LS-RESULT}.
      *
-     * <p>Processing mirrors {@code CSUTLDTC}/{@code CEEDAYS}:</p>
+     * <p>Processing mirrors {@code CSUTLDTC}/{@code CEEDAYS} and selects the exact feedback outcome,
+     * so both the {@code severity == 0} valid/invalid decision and the specific CEE message number
+     * ({@code CORPT00C} branches on {@code 2513}) match the COBOL:</p>
      * <ol>
-     *   <li>The COBOL/CEEDAYS picture mask is translated to a {@code java.time} pattern
-     *       ({@code Y}&rarr;{@code u} proleptic year so {@link ResolverStyle#STRICT} rejects
-     *       impossible dates without needing an era, {@code D}&rarr;{@code d}, {@code M} kept, and
-     *       {@code '-'}/{@code '/'} separators preserved). An unrecognized or empty mask yields
-     *       {@link ValidationOutcome#FC_BAD_PIC_STRING}.</li>
-     *   <li>A {@link DateTimeFormatter} with {@code ResolverStyle.STRICT} attempts to parse the
-     *       trimmed date.</li>
-     *   <li>Success &rarr; {@link ValidationOutcome#FC_INVALID_DATE} (valid, severity 0) with the
-     *       parsed {@link LocalDate#toEpochDay()}.</li>
-     *   <li>Failure &rarr; the closest failure outcome is selected: a non-numeric character where a
-     *       digit was expected &rarr; {@link ValidationOutcome#FC_NON_NUMERIC_DATA}; a month outside
-     *       1-12 &rarr; {@link ValidationOutcome#FC_INVALID_MONTH}; an empty/blank date &rarr;
-     *       {@link ValidationOutcome#OTHER_INVALID}; otherwise
-     *       {@link ValidationOutcome#FC_BAD_DATE_VALUE}.</li>
+     *   <li>The picture mask is validated: {@code Y}/{@code M}/{@code D} components (either case) and
+     *       {@code '-'}/{@code '/'} separators are recognized; a mask missing any of year, month or
+     *       day, or containing any other character, yields
+     *       {@link ValidationOutcome#FC_BAD_PIC_STRING} (2518).</li>
+     *   <li>If the (trimmed) date has fewer characters than the (trimmed) mask, the outcome is
+     *       {@link ValidationOutcome#FC_INSUFFICIENT_DATA} (2507).</li>
+     *   <li>Each mask position is matched against the date: a non-digit where a digit is expected
+     *       yields {@link ValidationOutcome#FC_NON_NUMERIC_DATA} (2520); a separator that does not
+     *       match yields {@link ValidationOutcome#FC_BAD_DATE_VALUE} (2508).</li>
+     *   <li>A month outside 1-12 yields {@link ValidationOutcome#FC_INVALID_MONTH} (2517); a year of
+     *       {@code 0000} yields {@link ValidationOutcome#FC_YEAR_IN_ERA_ZERO} (2521) - a condition the
+     *       proleptic {@code java.time} calendar would otherwise accept; a day that does not exist for
+     *       the month/year yields {@link ValidationOutcome#FC_BAD_DATE_VALUE} (2508).</li>
+     *   <li>A well-formed date before {@code 1582-10-15} (the {@code CEEDAYS} lower bound) yields
+     *       {@link ValidationOutcome#FC_UNSUPP_RANGE} (2513).</li>
+     *   <li>Otherwise the date is valid: {@link ValidationOutcome#FC_INVALID_DATE} (severity 0) with
+     *       the parsed {@link LocalDate#toEpochDay()}.</li>
      * </ol>
      *
-     * <p>The exact CEE feedback-code selection is <em>approximated</em> - {@code java.time} cannot
-     * reproduce every Language Environment nuance - but the valid/invalid decision and the
-     * {@code severity == 0} semantics match the COBOL exactly (see decision log). The returned
-     * {@link DateValidationResult#formattedResult()} reproduces the 80-byte {@code LS-RESULT} layout
-     * byte-for-byte so consumers such as {@code CORPT00C}, which re-slice it at fixed offsets, remain
-     * compatible.</p>
+     * <p>The {@link DateValidationResult#formattedResult()} reproduces the 80-byte {@code LS-RESULT}
+     * layout byte-for-byte (including the exact 4-digit {@code WS-SEVERITY} and {@code WS-MSG-NO}), so
+     * consumers such as {@code CORPT00C}, which re-slice it at fixed offsets, remain compatible. The
+     * era-less masks used by CardDemo cannot raise {@link ValidationOutcome#FC_INVALID_ERA}; that
+     * mapping is documented in the decision log.</p>
      *
-     * @param lsDate       the date to validate (COBOL {@code LS-DATE PIC X(10)}); may be shorter and
-     *                     is trimmed before parsing; {@code null} is treated as blank
+     * @param lsDate       the date to validate (COBOL {@code LS-DATE PIC X(10)}); trailing spaces are
+     *                     trimmed before validation; {@code null} is treated as blank
      * @param lsDateFormat the picture mask (COBOL {@code LS-DATE-FORMAT PIC X(10)}), e.g.
      *                     {@code "YYYYMMDD"} or {@code "YYYY-MM-DD"}; {@code null} is treated as empty
      * @return the structured {@link DateValidationResult}; never {@code null}
@@ -214,36 +246,76 @@ public class DateConversionService {
         String date = (lsDate == null) ? "" : lsDate;
         String mask = (lsDateFormat == null) ? "" : lsDateFormat;
 
-        // Step 1: translate and validate the picture mask (CEEDAYS validates the picture first).
-        String pattern = translateMask(mask);
-        if (pattern == null) {
+        // Step 1: validate the picture mask (CEEDAYS validates the picture first -> 2518).
+        String trimmedMask = mask.trim();
+        if (!isRecognizedMask(trimmedMask)) {
             return buildResult(ValidationOutcome.FC_BAD_PIC_STRING, OptionalLong.empty(), date, mask);
         }
 
-        DateTimeFormatter formatter;
-        try {
-            formatter = DateTimeFormatter.ofPattern(pattern, Locale.US)
-                    .withResolverStyle(ResolverStyle.STRICT);
-        } catch (IllegalArgumentException ex) {
-            // Defensive: a translated pattern that java.time still rejects is a bad picture string.
-            return buildResult(ValidationOutcome.FC_BAD_PIC_STRING, OptionalLong.empty(), date, mask);
-        }
-
-        // Step 2: an empty/blank date is the WHEN OTHER path (no numeric content to validate).
+        // Step 2: insufficient data -> 2507 (this also covers an empty/blank date).
         String trimmedDate = date.trim();
-        if (trimmedDate.isEmpty()) {
-            return buildResult(ValidationOutcome.OTHER_INVALID, OptionalLong.empty(), date, mask);
+        if (trimmedDate.length() < trimmedMask.length()) {
+            return buildResult(ValidationOutcome.FC_INSUFFICIENT_DATA, OptionalLong.empty(), date, mask);
         }
 
-        // Step 3: strict parse. Success is CEE000 (FC-INVALID-DATE = "Date is valid").
-        try {
-            LocalDate parsed = LocalDate.parse(trimmedDate, formatter);
-            return buildResult(ValidationOutcome.FC_INVALID_DATE,
-                    OptionalLong.of(parsed.toEpochDay()), date, mask);
-        } catch (DateTimeParseException ex) {
-            ValidationOutcome outcome = classifyFailure(trimmedDate, mask, ex);
-            return buildResult(outcome, OptionalLong.empty(), date, mask);
+        // Step 3: positionally extract year/month/day, validating digits and literal separators.
+        int year = 0;
+        int month = 0;
+        int day = 0;
+        for (int i = 0; i < trimmedMask.length(); i++) {
+            char m = trimmedMask.charAt(i);
+            char c = trimmedDate.charAt(i);
+            switch (m) {
+                case 'Y', 'y' -> {
+                    if (!isDigit(c)) {
+                        return buildResult(ValidationOutcome.FC_NON_NUMERIC_DATA, OptionalLong.empty(), date, mask);
+                    }
+                    year = year * 10 + (c - '0');
+                }
+                case 'M', 'm' -> {
+                    if (!isDigit(c)) {
+                        return buildResult(ValidationOutcome.FC_NON_NUMERIC_DATA, OptionalLong.empty(), date, mask);
+                    }
+                    month = month * 10 + (c - '0');
+                }
+                case 'D', 'd' -> {
+                    if (!isDigit(c)) {
+                        return buildResult(ValidationOutcome.FC_NON_NUMERIC_DATA, OptionalLong.empty(), date, mask);
+                    }
+                    day = day * 10 + (c - '0');
+                }
+                default -> {
+                    // A literal separator ('-' or '/'): the date must carry the same character here.
+                    if (c != m) {
+                        return buildResult(ValidationOutcome.FC_BAD_DATE_VALUE, OptionalLong.empty(), date, mask);
+                    }
+                }
+            }
         }
+
+        // Step 4: field-level checks, in CEEDAYS order.
+        if (month < 1 || month > 12) {
+            return buildResult(ValidationOutcome.FC_INVALID_MONTH, OptionalLong.empty(), date, mask);
+        }
+        if (year == 0) {
+            // java.time's proleptic calendar would accept year 0000; CEEDAYS rejects it (2521).
+            return buildResult(ValidationOutcome.FC_YEAR_IN_ERA_ZERO, OptionalLong.empty(), date, mask);
+        }
+        LocalDate parsed;
+        try {
+            parsed = LocalDate.of(year, month, day);
+        } catch (DateTimeException ex) {
+            // A non-existent day for the month/year (e.g. 2022-02-30, or day 00/32).
+            return buildResult(ValidationOutcome.FC_BAD_DATE_VALUE, OptionalLong.empty(), date, mask);
+        }
+
+        // Step 5: range check -> 2513 (CORPT00C branches on this exact message number).
+        if (parsed.isBefore(LILLIAN_START)) {
+            return buildResult(ValidationOutcome.FC_UNSUPP_RANGE, OptionalLong.empty(), date, mask);
+        }
+
+        // Success: CEE000 (FC-INVALID-DATE = "Date is valid", severity 0).
+        return buildResult(ValidationOutcome.FC_INVALID_DATE, OptionalLong.of(parsed.toEpochDay()), date, mask);
     }
 
     /**
@@ -258,117 +330,46 @@ public class DateConversionService {
     }
 
     /**
-     * Translates a COBOL/CEEDAYS picture mask into a {@code java.time} pattern.
+     * Reports whether {@code mask} is a recognized {@code CEEDAYS} picture: it must be non-empty,
+     * contain a year, a month and a day component, and consist solely of {@code Y}/{@code M}/{@code D}
+     * (either case) and {@code '-'}/{@code '/'} separators. An unrecognized mask maps to
+     * {@link ValidationOutcome#FC_BAD_PIC_STRING}.
      *
-     * <p>{@code Y}/{@code y}&rarr;{@code u} (proleptic year), {@code M}/{@code m}&rarr;{@code M}
-     * (month), {@code D}/{@code d}&rarr;{@code d} (day-of-month); {@code '-'} and {@code '/'}
-     * separators are preserved. Trailing {@code PIC X(10)} space padding is trimmed first. The mask
-     * must contain a year, a month and a day component and must consist solely of the recognized
-     * characters; otherwise it is rejected.</p>
-     *
-     * @param mask the raw picture mask
-     * @return the equivalent {@code java.time} pattern, or {@code null} when the mask is empty or
-     *         unrecognized (signaling {@link ValidationOutcome#FC_BAD_PIC_STRING})
+     * @param mask the trimmed picture mask
+     * @return {@code true} when the mask is a supported year/month/day picture
      */
-    private String translateMask(String mask) {
-        String trimmed = mask.trim();
-        if (trimmed.isEmpty()) {
-            return null;
+    private boolean isRecognizedMask(String mask) {
+        if (mask.isEmpty()) {
+            return false;
         }
-        StringBuilder pattern = new StringBuilder(trimmed.length());
         boolean hasYear = false;
         boolean hasMonth = false;
         boolean hasDay = false;
-        for (int i = 0; i < trimmed.length(); i++) {
-            char c = trimmed.charAt(i);
-            switch (c) {
-                case 'Y':
-                case 'y':
-                    pattern.append('u');
-                    hasYear = true;
-                    break;
-                case 'M':
-                case 'm':
-                    pattern.append('M');
-                    hasMonth = true;
-                    break;
-                case 'D':
-                case 'd':
-                    pattern.append('d');
-                    hasDay = true;
-                    break;
-                case '-':
-                case '/':
-                    pattern.append(c);
-                    break;
-                default:
-                    // Any other character is not a recognized CEEDAYS picture element.
-                    return null;
-            }
-        }
-        if (!hasYear || !hasMonth || !hasDay) {
-            return null;
-        }
-        return pattern.toString();
-    }
-
-    /**
-     * Chooses the failure {@link ValidationOutcome} closest to the corresponding {@code CEEDAYS}
-     * feedback condition when a strict parse fails.
-     *
-     * @param trimmedDate the trimmed date that failed to parse
-     * @param mask        the original picture mask (used to identify literal separators)
-     * @param ex          the parse failure
-     * @return the selected failure outcome
-     */
-    private ValidationOutcome classifyFailure(String trimmedDate, String mask, DateTimeParseException ex) {
-        String separators = separatorsOf(mask);
-        for (int i = 0; i < trimmedDate.length(); i++) {
-            char c = trimmedDate.charAt(i);
-            if (!Character.isDigit(c) && separators.indexOf(c) < 0) {
-                return ValidationOutcome.FC_NON_NUMERIC_DATA;
-            }
-        }
-        if (mentionsMonth(ex)) {
-            return ValidationOutcome.FC_INVALID_MONTH;
-        }
-        return ValidationOutcome.FC_BAD_DATE_VALUE;
-    }
-
-    /**
-     * Extracts the literal separator characters ({@code '-'}, {@code '/'}) present in the mask, so a
-     * non-numeric-content check can distinguish an expected separator from an unexpected character.
-     *
-     * @param mask the picture mask
-     * @return a string containing every separator character found (possibly empty)
-     */
-    private String separatorsOf(String mask) {
-        StringBuilder separators = new StringBuilder();
         for (int i = 0; i < mask.length(); i++) {
-            char c = mask.charAt(i);
-            if (c == '-' || c == '/') {
-                separators.append(c);
+            switch (mask.charAt(i)) {
+                case 'Y', 'y' -> hasYear = true;
+                case 'M', 'm' -> hasMonth = true;
+                case 'D', 'd' -> hasDay = true;
+                case '-', '/' -> {
+                    // Recognized literal separator; contributes no date component.
+                }
+                default -> {
+                    return false;
+                }
             }
         }
-        return separators.toString();
+        return hasYear && hasMonth && hasDay;
     }
 
     /**
-     * Reports whether the parse failure (or any of its causes) was raised because the month
-     * component fell outside the valid 1-12 range. Detection relies on the stable
-     * {@code MONTH_OF_YEAR} field name emitted by {@code java.time}.
+     * Reports whether {@code c} is an ASCII digit ({@code '0'}-{@code '9'}). Used instead of
+     * {@link Character#isDigit(char)} so only ASCII digits (as {@code CEEDAYS} expects) are accepted.
      *
-     * @param ex the parse failure
-     * @return {@code true} when the failure is attributable to an out-of-range month
+     * @param c the character to test
+     * @return {@code true} when {@code c} is an ASCII digit
      */
-    private boolean mentionsMonth(DateTimeParseException ex) {
-        for (Throwable t = ex; t != null; t = t.getCause()) {
-            String message = t.getMessage();
-            if (message != null && message.contains("MonthOfYear")) {
-                return true;
-            }
-        }
-        return false;
+    private boolean isDigit(char c) {
+        return c >= '0' && c <= '9';
     }
 
     /**
@@ -384,10 +385,10 @@ public class DateConversionService {
     private DateValidationResult buildResult(ValidationOutcome outcome, OptionalLong epochDay,
             String date, String mask) {
         int severity = outcome.severity();
-        // WS-MSG-NO is cosmetic (CORPT00C displays but never branches on it). The real LE message
-        // number is not reproducible from java.time, so it mirrors severity - documented in the
-        // decision log.
-        int msgNo = severity;
+        // WS-SEVERITY and WS-MSG-NO are the exact CEEDAYS feedback values (severity 0 for valid, or 3
+        // with message 2507-2521 for the failure conditions). CORPT00C branches on the message number
+        // (notably 2513), so this must be the real number, not a mirror of severity.
+        int msgNo = outcome.msgNo();
         String message = outcome.message();
         String formattedResult = formatResult(severity, msgNo, message, date, mask);
         boolean valid = severity == 0;

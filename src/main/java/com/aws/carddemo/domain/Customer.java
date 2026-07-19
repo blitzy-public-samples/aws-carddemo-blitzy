@@ -4,6 +4,10 @@ import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
 import jakarta.persistence.Id;
 import jakarta.persistence.Table;
+
+import org.hibernate.annotations.JdbcTypeCode;
+import org.hibernate.type.SqlTypes;
+
 import java.time.LocalDate;
 
 /**
@@ -48,6 +52,7 @@ public class Customer {
      */
     @Id
     @Column(name = "cust_id", precision = 9)
+    @JdbcTypeCode(SqlTypes.NUMERIC)
     private Long custId;
 
     /** Customer first name. COBOL {@code CUST-FIRST-NAME PIC X(25)}. */
@@ -103,6 +108,7 @@ public class Customer {
      * via the {@code FixedWidthRecordMapper} utility, so the numeric mapping is loss-free.</p>
      */
     @Column(name = "cust_ssn", precision = 9)
+    @JdbcTypeCode(SqlTypes.NUMERIC)
     private Long ssn;
 
     /** Government-issued identifier. COBOL {@code CUST-GOVT-ISSUED-ID PIC X(20)}. */
@@ -130,6 +136,7 @@ public class Customer {
      * {@code NUMERIC(3)} per the deliberate {@code 9(n) -> NUMERIC(n)} rule.
      */
     @Column(name = "cust_fico_credit_score", precision = 3)
+    @JdbcTypeCode(SqlTypes.NUMERIC)
     private Integer ficoCreditScore;
 
     /**
@@ -484,47 +491,33 @@ public class Customer {
     }
 
     /**
-     * Returns a hash code derived from the primary key {@code custId}. Returns {@code 0} when the
-     * identifier is {@code null} (unsaved instance).
+     * Returns a constant, identity-stable hash code. A constant (rather than one derived from
+     * {@code custId}) is used so the hash does not change when the mutable primary key is assigned
+     * on persist, keeping instances locatable in hash-based collections and consistent with
+     * {@link #equals(Object)}. This unifies {@code Customer} with the stable-hash identity strategy
+     * applied across all entities (review finding F10).
      *
-     * @return the primary-key-based hash code
+     * @return a stable, class-level hash code
      */
     @Override
     public int hashCode() {
-        return custId != null ? custId.hashCode() : 0;
+        return Customer.class.hashCode();
     }
 
     /**
-     * Returns a diagnostic string representation of this customer.
+     * Returns a non-sensitive diagnostic representation containing only the class name and an opaque
+     * per-instance identity token.
      *
-     * <p><strong>PII safety:</strong> the Social Security Number is masked and the raw date of
-     * birth is not emitted, so that {@link #toString()} output (for example in application logs)
-     * cannot leak these sensitive fields.</p>
+     * <p><strong>PII safety:</strong> this record contains personally identifiable information
+     * (name, address, phone, SSN, government id, date of birth, FICO score). None of it — not even
+     * partially masked — is emitted here, so {@link #toString()} output (for example in application
+     * logs or error messages) cannot leak customer PII (CWE-532; review finding F9).</p>
      *
-     * @return a PII-safe string representation
+     * @return a non-sensitive string representation
      */
     @Override
     public String toString() {
-        return "Customer{"
-                + "custId=" + custId
-                + ", firstName=" + firstName
-                + ", middleName=" + middleName
-                + ", lastName=" + lastName
-                + ", addrLine1=" + addrLine1
-                + ", addrLine2=" + addrLine2
-                + ", addrLine3=" + addrLine3
-                + ", addrStateCd=" + addrStateCd
-                + ", addrCountryCd=" + addrCountryCd
-                + ", addrZip=" + addrZip
-                + ", phoneNum1=" + phoneNum1
-                + ", phoneNum2=" + phoneNum2
-                + ", ssn=***"
-                + ", govtIssuedId=" + govtIssuedId
-                + ", dateOfBirth=***"
-                + ", eftAccountId=" + eftAccountId
-                + ", priCardHolderInd=" + priCardHolderInd
-                + ", ficoCreditScore=" + ficoCreditScore
-                + '}';
+        return "Customer@" + Integer.toHexString(System.identityHashCode(this));
     }
 
 }

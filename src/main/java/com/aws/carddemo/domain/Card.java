@@ -5,6 +5,9 @@ import jakarta.persistence.Entity;
 import jakarta.persistence.Id;
 import jakarta.persistence.Table;
 
+import org.hibernate.annotations.JdbcTypeCode;
+import org.hibernate.type.SqlTypes;
+
 import java.time.LocalDate;
 
 /**
@@ -58,16 +61,23 @@ public class Card {
      * Owning account id ({@code CARD-ACCT-ID PIC 9(11)}). Modelled as a plain scalar foreign key to
      * {@code account.acct_id}; no JPA relationship is declared, preserving the loosely-coupled VSAM
      * file design (AAP section 0.6.2). This property backs the {@code CARDAIX} alternate index via
-     * the repository derived query {@code findByCardAcctId}.
+     * the repository derived query {@code findByCardAcctId}. Mapped to SQL {@code NUMERIC(11)} via
+     * {@link JdbcTypeCode}({@link SqlTypes#NUMERIC}) so Hibernate expects {@code NUMERIC} rather than
+     * the default {@code BIGINT}, keeping {@code ddl-auto=validate} in agreement with the Flyway
+     * schema (review finding F1).
      */
     @Column(name = "card_acct_id", precision = 11)
+    @JdbcTypeCode(SqlTypes.NUMERIC)
     private Long cardAcctId;
 
     /**
      * Card verification value ({@code CARD-CVV-CD PIC 9(03)}). Sensitive value: it is deliberately
-     * never emitted by {@link #toString()}.
+     * never emitted by {@link #toString()}. Mapped to SQL {@code NUMERIC(3)} via
+     * {@link JdbcTypeCode}({@link SqlTypes#NUMERIC}) so Hibernate expects {@code NUMERIC} rather than
+     * the default {@code INTEGER} (review finding F1).
      */
     @Column(name = "card_cvv_cd", precision = 3)
+    @JdbcTypeCode(SqlTypes.NUMERIC)
     private Integer cardCvvCd;
 
     /**
@@ -241,49 +251,49 @@ public class Card {
 
     /**
      * Entity equality is defined solely by the primary key {@code cardNum}, mirroring VSAM KSDS
-     * record identity. Two {@code Card} instances are equal when they are the same concrete type
-     * and carry the same (possibly {@code null}) card number.
+     * record identity. Uses an {@code instanceof} check so a Hibernate proxy compares equal to its
+     * underlying entity, and treats an instance with a {@code null} card number as not equal to any
+     * other instance (including other unsaved instances), so distinct transient rows are never
+     * collapsed (review finding F10).
      *
      * @param o the object to compare with this card
-     * @return {@code true} if {@code o} is a {@code Card} with an equal card number
+     * @return {@code true} if {@code o} is a {@code Card} with an equal non-null card number
      */
     @Override
     public boolean equals(Object o) {
         if (this == o) {
             return true;
         }
-        if (o == null || getClass() != o.getClass()) {
+        if (!(o instanceof Card other)) {
             return false;
         }
-        Card other = (Card) o;
-        return cardNum != null ? cardNum.equals(other.cardNum) : other.cardNum == null;
+        return cardNum != null && cardNum.equals(other.cardNum);
     }
 
     /**
-     * Hash code derived solely from the primary key {@code cardNum}, kept consistent with
-     * {@link #equals(Object)}.
+     * Returns a constant, identity-stable hash code. A constant (rather than one derived from
+     * {@code cardNum}) is used so the hash does not change when the primary key is assigned, keeping
+     * instances locatable in hash-based collections and consistent with {@link #equals(Object)}
+     * (review finding F10).
      *
-     * @return the hash code of the card number, or {@code 0} when the card number is {@code null}
+     * @return a stable, class-level hash code
      */
     @Override
     public int hashCode() {
-        return cardNum != null ? cardNum.hashCode() : 0;
+        return Card.class.hashCode();
     }
 
     /**
-     * Returns a diagnostic string representation of this card. The card verification value
-     * ({@code cardCvvCd}) is deliberately omitted for security hygiene and must never be logged.
+     * Returns a non-sensitive diagnostic representation containing only the class name and an opaque
+     * per-instance identity token. The primary account number (PAN, {@code cardNum}), the card
+     * verification value ({@code cardCvvCd}), and every other business field are deliberately never
+     * emitted so that payment data cannot leak into logs or error messages (CWE-532; review finding
+     * F9).
      *
-     * @return a string containing the non-sensitive fields of this card
+     * @return a non-sensitive string representation
      */
     @Override
     public String toString() {
-        return "Card{"
-                + "cardNum='" + cardNum + '\''
-                + ", cardAcctId=" + cardAcctId
-                + ", cardEmbossedName='" + cardEmbossedName + '\''
-                + ", cardExpiraionDate=" + cardExpiraionDate
-                + ", cardActiveStatus='" + cardActiveStatus + '\''
-                + '}';
+        return "Card@" + Integer.toHexString(System.identityHashCode(this));
     }
 }

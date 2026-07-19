@@ -1331,74 +1331,15 @@ public class COUSR00Form {
     }
 
     /**
-     * Returns a diagnostic representation of this form including every value
-     * field. This is a user <em>list</em> screen with no password column, so
-     * no field masking is required.
+     * Returns a non-sensitive diagnostic representation containing only the class name and an opaque
+     * per-instance identity token. Screen-form fields (which may include card numbers, account and
+     * customer identifiers, names, balances, or credentials) are never rendered, so form state cannot
+     * leak into logs or error messages (CWE-532; review finding F9).
      *
-     * @return a string representation of all form fields
+     * @return a non-sensitive string representation
      */
     @Override
     public String toString() {
-        return "COUSR00Form{"
-            + "trnname='" + trnname + '\''
-            + ", title01='" + title01 + '\''
-            + ", curdate='" + curdate + '\''
-            + ", pgmname='" + pgmname + '\''
-            + ", title02='" + title02 + '\''
-            + ", curtime='" + curtime + '\''
-            + ", pagenum='" + pagenum + '\''
-            + ", usridin='" + usridin + '\''
-            + ", sel0001='" + sel0001 + '\''
-            + ", usrid01='" + usrid01 + '\''
-            + ", fname01='" + fname01 + '\''
-            + ", lname01='" + lname01 + '\''
-            + ", utype01='" + utype01 + '\''
-            + ", sel0002='" + sel0002 + '\''
-            + ", usrid02='" + usrid02 + '\''
-            + ", fname02='" + fname02 + '\''
-            + ", lname02='" + lname02 + '\''
-            + ", utype02='" + utype02 + '\''
-            + ", sel0003='" + sel0003 + '\''
-            + ", usrid03='" + usrid03 + '\''
-            + ", fname03='" + fname03 + '\''
-            + ", lname03='" + lname03 + '\''
-            + ", utype03='" + utype03 + '\''
-            + ", sel0004='" + sel0004 + '\''
-            + ", usrid04='" + usrid04 + '\''
-            + ", fname04='" + fname04 + '\''
-            + ", lname04='" + lname04 + '\''
-            + ", utype04='" + utype04 + '\''
-            + ", sel0005='" + sel0005 + '\''
-            + ", usrid05='" + usrid05 + '\''
-            + ", fname05='" + fname05 + '\''
-            + ", lname05='" + lname05 + '\''
-            + ", utype05='" + utype05 + '\''
-            + ", sel0006='" + sel0006 + '\''
-            + ", usrid06='" + usrid06 + '\''
-            + ", fname06='" + fname06 + '\''
-            + ", lname06='" + lname06 + '\''
-            + ", utype06='" + utype06 + '\''
-            + ", sel0007='" + sel0007 + '\''
-            + ", usrid07='" + usrid07 + '\''
-            + ", fname07='" + fname07 + '\''
-            + ", lname07='" + lname07 + '\''
-            + ", utype07='" + utype07 + '\''
-            + ", sel0008='" + sel0008 + '\''
-            + ", usrid08='" + usrid08 + '\''
-            + ", fname08='" + fname08 + '\''
-            + ", lname08='" + lname08 + '\''
-            + ", utype08='" + utype08 + '\''
-            + ", sel0009='" + sel0009 + '\''
-            + ", usrid09='" + usrid09 + '\''
-            + ", fname09='" + fname09 + '\''
-            + ", lname09='" + lname09 + '\''
-            + ", utype09='" + utype09 + '\''
-            + ", sel0010='" + sel0010 + '\''
-            + ", usrid10='" + usrid10 + '\''
-            + ", fname10='" + fname10 + '\''
-            + ", lname10='" + lname10 + '\''
-            + ", utype10='" + utype10 + '\''
-            + ", errmsg='" + errmsg + '\''
-            + '}';
+        return "COUSR00Form@" + Integer.toHexString(System.identityHashCode(this));
     }
 }

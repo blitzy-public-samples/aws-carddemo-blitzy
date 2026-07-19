@@ -9,6 +9,9 @@ import jakarta.persistence.Id;
 import jakarta.persistence.IdClass;
 import jakarta.persistence.Table;
 
+import org.hibernate.annotations.JdbcTypeCode;
+import org.hibernate.type.SqlTypes;
+
 /**
  * JPA entity mapping the AWS CardDemo transaction-category reference table.
  *
@@ -53,9 +56,13 @@ public class TransactionCategory {
      * the second component of the composite primary key {@code TRAN-CAT-KEY}.
      * Modeled as {@link Integer} (mapped to {@code NUMERIC(4)}) and never a
      * floating-point type, to preserve exact fixed-scale decimal semantics.
+     * {@link JdbcTypeCode}({@link SqlTypes#NUMERIC}) forces Hibernate to expect a
+     * {@code NUMERIC} column rather than the default {@code INTEGER} (review
+     * finding F1).
      */
     @Id
     @Column(name = "tran_cat_cd", precision = 4)
+    @JdbcTypeCode(SqlTypes.NUMERIC)
     private Integer catCd;
 
     /**
@@ -129,14 +136,18 @@ public class TransactionCategory {
     }
 
     /**
-     * Equality is defined over the composite primary key
+     * Entity equality is defined over the composite primary key
      * ({@link #typeCd}, {@link #catCd}), mirroring the legacy VSAM key
-     * {@code TRAN-CAT-KEY}. The non-key {@link #description} field is excluded
-     * so that identity matches the underlying primary-key semantics.
+     * {@code TRAN-CAT-KEY}. The non-key {@link #description} field is excluded so
+     * that identity matches the underlying primary-key semantics. Uses an
+     * {@code instanceof} pattern so a Hibernate proxy compares equal to its
+     * underlying entity, and treats an instance whose key is not fully populated
+     * (any component {@code null}) as not equal to any other instance, so
+     * distinct transient rows are never collapsed (review finding F10).
      *
      * @param o the object to compare with
      * @return {@code true} if the other object is a {@code TransactionCategory}
-     *         with the same composite key
+     *         with the same fully populated composite key
      */
     @Override
     public boolean equals(Object o) {
@@ -146,19 +157,23 @@ public class TransactionCategory {
         if (!(o instanceof TransactionCategory that)) {
             return false;
         }
-        return Objects.equals(typeCd, that.typeCd)
-                && Objects.equals(catCd, that.catCd);
+        return typeCd != null && catCd != null
+                && typeCd.equals(that.typeCd)
+                && catCd.equals(that.catCd);
     }
 
     /**
-     * Hash code derived from the composite primary key ({@link #typeCd},
-     * {@link #catCd}), consistent with {@link #equals(Object)}.
+     * Returns a constant, identity-stable hash code. A constant (rather than one
+     * derived from the mutable composite key) is used so the hash does not change
+     * as the key components are assigned, keeping instances locatable in
+     * hash-based collections and consistent with {@link #equals(Object)} (review
+     * finding F10).
      *
-     * @return the composite-key hash code
+     * @return a stable, class-level hash code
      */
     @Override
     public int hashCode() {
-        return Objects.hash(typeCd, catCd);
+        return TransactionCategory.class.hashCode();
     }
 
     /**

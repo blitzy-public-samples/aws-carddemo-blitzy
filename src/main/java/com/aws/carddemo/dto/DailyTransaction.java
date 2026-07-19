@@ -444,62 +444,54 @@ public class DailyTransaction {
     }
 
     /**
-     * Returns a debug-friendly representation containing every data field.
+     * Returns a non-sensitive diagnostic representation containing only the class name and an opaque
+     * per-instance identity token.
      *
-     * @return a string representation of this daily-transaction record
+     * <p>The daily-transaction feed carries the full unmasked card number ({@code DALYTRAN-CARD-NUM}),
+     * merchant data, and monetary amount. Emitting those into logs or error messages would leak PAN
+     * and cardholder data (CWE-532), so no business field is ever rendered here (review finding F9).
+     * Callers that genuinely need field values must read the typed accessors explicitly rather than
+     * interpolate the object.</p>
+     *
+     * @return a non-sensitive string representation
      */
     @Override
     public String toString() {
-        return "DailyTransaction{"
-                + "id=" + id
-                + ", typeCd=" + typeCd
-                + ", catCd=" + catCd
-                + ", source=" + source
-                + ", description=" + description
-                + ", amount=" + amount
-                + ", merchantId=" + merchantId
-                + ", merchantName=" + merchantName
-                + ", merchantCity=" + merchantCity
-                + ", merchantZip=" + merchantZip
-                + ", cardNum=" + cardNum
-                + ", origTs=" + origTs
-                + ", procTs=" + procTs
-                + '}';
+        return "DailyTransaction@" + Integer.toHexString(System.identityHashCode(this));
     }
 
     /**
-     * Compares two records for logical equality based on their natural business key
-     * ({@code id} plus {@code cardNum}), mirroring the transaction identity used by the
-     * legacy posting programs.
+     * Compares two records for logical equality on the transaction identifier ({@code id},
+     * i.e. {@code DALYTRAN-ID} / {@code TRAN-ID}) alone.
+     *
+     * <p>The legacy {@code TRANSACT} file and the target {@code Transaction} entity are keyed by the
+     * transaction id alone, so posting identity is the transaction id and nothing else. Two records
+     * with a {@code null} id are never considered equal, so malformed feed records are not collapsed
+     * and this equality is safe to use for de-duplication before persistence (review finding F19).</p>
      *
      * @param o the object to compare with
-     * @return {@code true} if the other object is a {@code DailyTransaction} with the
-     *         same {@code id} and {@code cardNum}; {@code false} otherwise
+     * @return {@code true} if the other object is a {@code DailyTransaction} with the same non-null
+     *         {@code id}; {@code false} otherwise
      */
     @Override
     public boolean equals(Object o) {
         if (this == o) {
             return true;
         }
-        if (o == null || getClass() != o.getClass()) {
+        if (!(o instanceof DailyTransaction other)) {
             return false;
         }
-        DailyTransaction other = (DailyTransaction) o;
-        boolean sameId = (id == null) ? (other.id == null) : id.equals(other.id);
-        boolean sameCardNum = (cardNum == null) ? (other.cardNum == null) : cardNum.equals(other.cardNum);
-        return sameId && sameCardNum;
+        return id != null && id.equals(other.id);
     }
 
     /**
-     * Returns a hash code consistent with {@link #equals(Object)}, derived from the
-     * {@code id} and {@code cardNum} business key.
+     * Returns a hash code consistent with {@link #equals(Object)}, derived from the transaction
+     * identifier ({@code id}) alone.
      *
-     * @return the hash code for this record
+     * @return the hash code for this record ({@code 0} when {@code id} is {@code null})
      */
     @Override
     public int hashCode() {
-        int result = (id == null) ? 0 : id.hashCode();
-        result = 31 * result + ((cardNum == null) ? 0 : cardNum.hashCode());
-        return result;
+        return (id == null) ? 0 : id.hashCode();
     }
 }

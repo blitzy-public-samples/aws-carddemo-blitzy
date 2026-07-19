@@ -1022,59 +1022,15 @@ public class COCRDLIForm {
     }
 
     /**
-     * Returns a diagnostic representation listing all screen value fields. No sensitive
-     * credential fields are present on this screen, so every value field is included.
+     * Returns a non-sensitive diagnostic representation containing only the class name and an opaque
+     * per-instance identity token. Screen-form fields (which may include card numbers, account and
+     * customer identifiers, names, balances, or credentials) are never rendered, so form state cannot
+     * leak into logs or error messages (CWE-532; review finding F9).
      *
-     * @return a string representation of this form
+     * @return a non-sensitive string representation
      */
     @Override
     public String toString() {
-        return "COCRDLIForm{"
-                + "trnname='" + trnname + '\''
-                + ", title01='" + title01 + '\''
-                + ", curdate='" + curdate + '\''
-                + ", pgmname='" + pgmname + '\''
-                + ", title02='" + title02 + '\''
-                + ", curtime='" + curtime + '\''
-                + ", pageno='" + pageno + '\''
-                + ", acctsid='" + acctsid + '\''
-                + ", cardsid='" + cardsid + '\''
-                + ", crdsel1='" + crdsel1 + '\''
-                + ", acctno1='" + acctno1 + '\''
-                + ", crdnum1='" + crdnum1 + '\''
-                + ", crdsts1='" + crdsts1 + '\''
-                + ", crdsel2='" + crdsel2 + '\''
-                + ", crdstp2='" + crdstp2 + '\''
-                + ", acctno2='" + acctno2 + '\''
-                + ", crdnum2='" + crdnum2 + '\''
-                + ", crdsts2='" + crdsts2 + '\''
-                + ", crdsel3='" + crdsel3 + '\''
-                + ", crdstp3='" + crdstp3 + '\''
-                + ", acctno3='" + acctno3 + '\''
-                + ", crdnum3='" + crdnum3 + '\''
-                + ", crdsts3='" + crdsts3 + '\''
-                + ", crdsel4='" + crdsel4 + '\''
-                + ", crdstp4='" + crdstp4 + '\''
-                + ", acctno4='" + acctno4 + '\''
-                + ", crdnum4='" + crdnum4 + '\''
-                + ", crdsts4='" + crdsts4 + '\''
-                + ", crdsel5='" + crdsel5 + '\''
-                + ", crdstp5='" + crdstp5 + '\''
-                + ", acctno5='" + acctno5 + '\''
-                + ", crdnum5='" + crdnum5 + '\''
-                + ", crdsts5='" + crdsts5 + '\''
-                + ", crdsel6='" + crdsel6 + '\''
-                + ", crdstp6='" + crdstp6 + '\''
-                + ", acctno6='" + acctno6 + '\''
-                + ", crdnum6='" + crdnum6 + '\''
-                + ", crdsts6='" + crdsts6 + '\''
-                + ", crdsel7='" + crdsel7 + '\''
-                + ", crdstp7='" + crdstp7 + '\''
-                + ", acctno7='" + acctno7 + '\''
-                + ", crdnum7='" + crdnum7 + '\''
-                + ", crdsts7='" + crdsts7 + '\''
-                + ", infomsg='" + infomsg + '\''
-                + ", errmsg='" + errmsg + '\''
-                + '}';
+        return "COCRDLIForm@" + Integer.toHexString(System.identityHashCode(this));
     }
 }

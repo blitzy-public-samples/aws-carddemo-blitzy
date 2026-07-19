@@ -21,7 +21,9 @@ package com.aws.carddemo.exception;
  * is a two-byte <em>alphanumeric</em> field: it may be non-numeric (for example the
  * implementation-defined {@code "9x"} codes) and its leading zeros are significant (for example
  * {@code "00"} success, {@code "10"} end-of-file, {@code "23"} record-not-found). It is immutable
- * once assigned.</p>
+ * once assigned, and it is <strong>validated at construction</strong>: it must be non-null and
+ * exactly two characters, each an ASCII alphanumeric byte, so that malformed or arbitrary-length
+ * status codes are rejected while the alphanumeric {@code "9x"} runtime statuses are retained.</p>
  *
  * <p>Origin: FILE STATUS / EIBRESP handling convention across {@code legacy/cbl/**} (representative:
  * legacy/cbl/CBTRN02C.cbl 9910-DISPLAY-IO-STATUS; legacy/cbl/COSGN00C.cbl READ-USER-SEC-FILE RESP
@@ -51,10 +53,12 @@ public class FileStatusException extends RuntimeException {
      *                   {@code RESP}) code; retained verbatim to preserve leading zeros and
      *                   non-numeric status bytes
      * @param message    a human-readable description of the failure
+     * @throws IllegalArgumentException if {@code fileStatus} is null, not exactly two characters, or
+     *                                  contains a non-alphanumeric byte
      */
     public FileStatusException(String fileStatus, String message) {
         super(message);
-        this.fileStatus = fileStatus;
+        this.fileStatus = validateFileStatus(fileStatus);
     }
 
     /**
@@ -67,10 +71,12 @@ public class FileStatusException extends RuntimeException {
      *                   non-numeric status bytes
      * @param message    a human-readable description of the failure
      * @param cause      the underlying throwable that triggered this exception
+     * @throws IllegalArgumentException if {@code fileStatus} is null, not exactly two characters, or
+     *                                  contains a non-alphanumeric byte
      */
     public FileStatusException(String fileStatus, String message, Throwable cause) {
         super(message, cause);
-        this.fileStatus = fileStatus;
+        this.fileStatus = validateFileStatus(fileStatus);
     }
 
     /**
@@ -82,5 +88,50 @@ public class FileStatusException extends RuntimeException {
      */
     public String getFileStatus() {
         return fileStatus;
+    }
+
+    /**
+     * Validates a COBOL FILE STATUS / mapped CICS {@code RESP} code: it must be non-null, exactly two
+     * characters, and composed solely of ASCII alphanumeric bytes. Two characters is the fixed width
+     * of the COBOL {@code FILE STATUS} field; the alphanumeric rule accepts the standard numeric codes
+     * (for example {@code "00"}, {@code "10"}, {@code "23"}) and the implementation-defined
+     * {@code "9x"} runtime statuses (for example {@code "9A"}) while rejecting null, empty, and
+     * arbitrary-length input. The offending character is never echoed &mdash; only its position is
+     * reported &mdash; so no raw content leaks into diagnostics.
+     *
+     * @param fileStatus the candidate status code
+     * @return the validated status code (returned for convenient field assignment)
+     * @throws IllegalArgumentException if the code is null, not exactly two characters, or contains a
+     *                                  non-alphanumeric byte
+     */
+    private static String validateFileStatus(String fileStatus) {
+        if (fileStatus == null) {
+            throw new IllegalArgumentException(
+                    "fileStatus must not be null: a COBOL FILE STATUS is a mandatory two-character code");
+        }
+        if (fileStatus.length() != 2) {
+            throw new IllegalArgumentException(
+                    "fileStatus must be exactly two characters, but had length " + fileStatus.length());
+        }
+        for (int i = 0; i < fileStatus.length(); i++) {
+            if (!isAsciiAlphanumeric(fileStatus.charAt(i))) {
+                throw new IllegalArgumentException(
+                        "fileStatus must contain only ASCII alphanumeric characters, but had an "
+                                + "invalid character at position " + i);
+            }
+        }
+        return fileStatus;
+    }
+
+    /**
+     * Reports whether {@code c} is an ASCII digit or ASCII letter &mdash; the character set of a COBOL
+     * FILE STATUS byte, including the {@code "9x"} runtime family.
+     *
+     * @param c the character to test
+     * @return {@code true} when {@code c} is {@code '0'}-{@code '9'}, {@code 'A'}-{@code 'Z'}, or
+     *         {@code 'a'}-{@code 'z'}
+     */
+    private static boolean isAsciiAlphanumeric(char c) {
+        return (c >= '0' && c <= '9') || (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z');
     }
 }

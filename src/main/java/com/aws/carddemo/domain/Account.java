@@ -5,9 +5,11 @@ import jakarta.persistence.Entity;
 import jakarta.persistence.Id;
 import jakarta.persistence.Table;
 
+import org.hibernate.annotations.JdbcTypeCode;
+import org.hibernate.type.SqlTypes;
+
 import java.math.BigDecimal;
 import java.time.LocalDate;
-import java.util.Objects;
 
 /**
  * JPA entity mapping the AWS CardDemo account master record.
@@ -40,9 +42,17 @@ import java.util.Objects;
 @Table(name = "account")
 public class Account {
 
-    /** {@code ACCT-ID PIC 9(11)} — natural primary key of the VSAM ACCTDAT KSDS. */
+    /**
+     * {@code ACCT-ID PIC 9(11)} — natural primary key of the VSAM ACCTDAT KSDS.
+     *
+     * <p>Mapped to SQL {@code NUMERIC(11)} to preserve the COBOL {@code 9(11)} digit-width
+     * semantics. {@link JdbcTypeCode}({@link SqlTypes#NUMERIC}) forces Hibernate to expect a
+     * {@code NUMERIC} column (a {@code Long} defaults to {@code BIGINT}), so {@code ddl-auto=validate}
+     * agrees with the {@code NUMERIC} Flyway schema (AAP &sect;0.6.2; review finding F1).</p>
+     */
     @Id
     @Column(name = "acct_id", precision = 11)
+    @JdbcTypeCode(SqlTypes.NUMERIC)
     private Long acctId;
 
     /** {@code ACCT-ACTIVE-STATUS PIC X(01)} — single-character active flag. */
@@ -213,11 +223,14 @@ public class Account {
     // ------------------------------------------------------------------
 
     /**
-     * Two {@code Account} instances are equal when they represent the same persistent
-     * record, i.e. when their primary-key {@code acctId} values are equal.
+     * Two {@code Account} instances are equal when they represent the same persistent record, i.e.
+     * when both have a non-null, equal primary-key {@code acctId}. Uses an {@code instanceof} check
+     * so a Hibernate proxy compares equal to its underlying entity, and treats an instance with a
+     * {@code null} identifier as not equal to any other instance (including other unsaved
+     * instances), so distinct transient rows are never collapsed (review finding F10).
      *
      * @param o the object to compare with
-     * @return {@code true} if {@code o} is an {@code Account} with an equal {@code acctId}
+     * @return {@code true} if {@code o} is an {@code Account} with an equal non-null {@code acctId}
      */
     @Override
     public boolean equals(Object o) {
@@ -227,40 +240,32 @@ public class Account {
         if (!(o instanceof Account other)) {
             return false;
         }
-        return Objects.equals(acctId, other.acctId);
+        return acctId != null && acctId.equals(other.acctId);
     }
 
     /**
-     * Returns a hash code derived solely from the primary key {@code acctId}.
+     * Returns a constant, identity-stable hash code. A constant (rather than one derived from
+     * {@code acctId}) is used so the hash does not change when the mutable primary key is assigned
+     * on persist; this keeps instances locatable in hash-based collections across their lifecycle
+     * and is consistent with {@link #equals(Object)} (review finding F10).
      *
-     * @return the primary-key-based hash code
+     * @return a stable, class-level hash code
      */
     @Override
     public int hashCode() {
-        return Objects.hash(acctId);
+        return Account.class.hashCode();
     }
 
     /**
-     * Returns a diagnostic string representation of this account, intended for logging and
-     * debugging. No field masking is applied for {@code Account}.
+     * Returns a non-sensitive diagnostic representation containing only the class name and an opaque
+     * per-instance identity token. Business fields (identifiers, balances, dates) are deliberately
+     * never emitted so that account data cannot leak into logs or error messages (CWE-532; review
+     * finding F9).
      *
-     * @return a string containing the key, status, balances and dates
+     * @return a non-sensitive string representation
      */
     @Override
     public String toString() {
-        return "Account{"
-                + "acctId=" + acctId
-                + ", activeStatus='" + activeStatus + '\''
-                + ", currBal=" + currBal
-                + ", creditLimit=" + creditLimit
-                + ", cashCreditLimit=" + cashCreditLimit
-                + ", openDate=" + openDate
-                + ", expiraionDate=" + expiraionDate
-                + ", reissueDate=" + reissueDate
-                + ", currCycCredit=" + currCycCredit
-                + ", currCycDebit=" + currCycDebit
-                + ", addrZip='" + addrZip + '\''
-                + ", groupId='" + groupId + '\''
-                + '}';
+        return "Account@" + Integer.toHexString(System.identityHashCode(this));
     }
 }

@@ -23,8 +23,8 @@ import jakarta.validation.constraints.Size;
  * {@code acrcycr}, {@code acrcydb}) are held as pre-formatted {@code String} values, never
  * as {@code BigDecimal}/{@code float}/{@code double}; the authoritative monetary values live
  * on the {@code Account} domain entity and are formatted to display strings by the
- * controller. The Social Security Number ({@code acstssn}) is masked in {@link #toString()}
- * so it is never emitted to logs or diagnostics.</p>
+ * controller. The Social Security Number ({@code acstssn}) is never emitted by {@link #toString()}
+ * (which returns only an identity string), so it never reaches logs or diagnostics.</p>
  *
  * <p>Origin: legacy/cpy-bms/COACTVW.CPY (BMS mapset COACTVW, map CACTVWA)</p>
  */
@@ -102,7 +102,7 @@ public class COACTVWForm {
     @Size(max = 9)
     private String acstnum;
 
-    /** ACSTSSNI — Social Security Number (PII); masked in {@link #toString()} (BMS PIC X(12)). */
+    /** ACSTSSNI — Social Security Number (PII); never emitted by {@link #toString()} (BMS PIC X(12)). */
     @Size(max = 12)
     private String acstssn;
 
@@ -518,7 +518,7 @@ public class COACTVWForm {
 
     /**
      * Returns the Social Security Number value (BMS ACSTSSNI). This value is PII; callers
-     * must never log it in cleartext. {@link #toString()} masks it.
+     * must never log it in cleartext. {@link #toString()} never emits it (review finding F9).
      *
      * @return the Social Security Number, or {@code null} if unset
      */
@@ -860,53 +860,15 @@ public class COACTVWForm {
     }
 
     /**
-     * Returns a diagnostic representation listing every screen value field. The
-     * {@code acstssn} field carries a Social Security Number (PII) and is intentionally
-     * rendered as {@code ***} so the cleartext SSN is never emitted to logs or diagnostics.
-     * All other fields, including the date of birth, are rendered normally.
+     * Returns a non-sensitive diagnostic representation containing only the class name and an opaque
+     * per-instance identity token. Screen-form fields (which may include card numbers, account and
+     * customer identifiers, names, balances, or credentials) are never rendered, so form state cannot
+     * leak into logs or error messages (CWE-532; review finding F9).
      *
-     * @return a string representation of this form with the SSN masked
+     * @return a non-sensitive string representation
      */
     @Override
     public String toString() {
-        return "COACTVWForm{"
-                + "trnname='" + trnname + '\''
-                + ", title01='" + title01 + '\''
-                + ", curdate='" + curdate + '\''
-                + ", pgmname='" + pgmname + '\''
-                + ", title02='" + title02 + '\''
-                + ", curtime='" + curtime + '\''
-                + ", acctsid='" + acctsid + '\''
-                + ", acsttus='" + acsttus + '\''
-                + ", adtopen='" + adtopen + '\''
-                + ", acrdlim='" + acrdlim + '\''
-                + ", aexpdt='" + aexpdt + '\''
-                + ", acshlim='" + acshlim + '\''
-                + ", areisdt='" + areisdt + '\''
-                + ", acurbal='" + acurbal + '\''
-                + ", acrcycr='" + acrcycr + '\''
-                + ", aaddgrp='" + aaddgrp + '\''
-                + ", acrcydb='" + acrcydb + '\''
-                + ", acstnum='" + acstnum + '\''
-                + ", acstssn='***'"
-                + ", acstdob='" + acstdob + '\''
-                + ", acstfco='" + acstfco + '\''
-                + ", acsfnam='" + acsfnam + '\''
-                + ", acsmnam='" + acsmnam + '\''
-                + ", acslnam='" + acslnam + '\''
-                + ", acsadl1='" + acsadl1 + '\''
-                + ", acsstte='" + acsstte + '\''
-                + ", acsadl2='" + acsadl2 + '\''
-                + ", acszipc='" + acszipc + '\''
-                + ", acscity='" + acscity + '\''
-                + ", acsctry='" + acsctry + '\''
-                + ", acsphn1='" + acsphn1 + '\''
-                + ", acsgovt='" + acsgovt + '\''
-                + ", acsphn2='" + acsphn2 + '\''
-                + ", acseftc='" + acseftc + '\''
-                + ", acspflg='" + acspflg + '\''
-                + ", infomsg='" + infomsg + '\''
-                + ", errmsg='" + errmsg + '\''
-                + '}';
+        return "COACTVWForm@" + Integer.toHexString(System.identityHashCode(this));
     }
 }

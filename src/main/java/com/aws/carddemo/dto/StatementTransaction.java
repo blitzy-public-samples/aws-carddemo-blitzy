@@ -431,28 +431,17 @@ public class StatementTransaction {
     }
 
     /**
-     * Returns a diagnostic string containing every modeled field. Intended for logging and
-     * debugging only; this is not a statement/report rendering, since display formatting is the
-     * responsibility of the statement/report writer.
+     * Returns a non-sensitive diagnostic representation containing only the class name and an opaque
+     * per-instance identity token. A statement transaction carries the full unmasked card number
+     * ({@code cardNum}), the monetary amount, and merchant data; emitting those into logs or error
+     * messages would leak PAN and cardholder data (CWE-532), so no business field is ever rendered
+     * here (review finding F9). This is not a statement/report rendering &mdash; display formatting
+     * is the responsibility of the statement/report writer, which reads the typed accessors.
      *
-     * @return a string representation of this statement transaction
+     * @return a non-sensitive string representation
      */
     @Override
     public String toString() {
-        return "StatementTransaction{"
-                + "cardNum='" + cardNum + '\''
-                + ", id='" + id + '\''
-                + ", typeCd='" + typeCd + '\''
-                + ", catCd=" + catCd
-                + ", source='" + source + '\''
-                + ", description='" + description + '\''
-                + ", amount=" + amount
-                + ", merchantId=" + merchantId
-                + ", merchantName='" + merchantName + '\''
-                + ", merchantCity='" + merchantCity + '\''
-                + ", merchantZip='" + merchantZip + '\''
-                + ", origTs='" + origTs + '\''
-                + ", procTs='" + procTs + '\''
-                + '}';
+        return "StatementTransaction@" + Integer.toHexString(System.identityHashCode(this));
     }
 }

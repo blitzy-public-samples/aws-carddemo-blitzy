@@ -14,8 +14,8 @@ import jakarta.validation.constraints.Size;
  * upper bounds, so the legacy BMS field-length edits are reproduced during
  * Spring MVC request binding. This is a plain POJO instantiated per request via
  * {@code @ModelAttribute}; it holds no business logic and no monetary fields.
- * The {@code passwd} property carries a cleartext password and is masked in
- * {@link #toString()} so it is never emitted to logs or diagnostics.</p>
+ * The {@code passwd} property carries a cleartext password and is never emitted by
+ * {@link #toString()} (which returns only an identity string), so it never reaches logs or diagnostics.</p>
  */
 public class COUSR01Form {
 
@@ -55,7 +55,7 @@ public class COUSR01Form {
     @Size(max = 8)
     private String userid;
 
-    /** PASSWDI PIC X(8) - cleartext password entry; masked in {@link #toString()}. */
+    /** PASSWDI PIC X(8) - cleartext password entry; never emitted by {@link #toString()} (review finding F9). */
     @Size(max = 8)
     private String passwd;
 
@@ -240,7 +240,7 @@ public class COUSR01Form {
 
     /**
      * Returns the cleartext password entry field. Callers must never log this
-     * value in cleartext; {@link #toString()} masks it.
+     * value in cleartext; {@link #toString()} never emits it (review finding F9).
      *
      * @return the {@code PASSWD} value (max 8 characters)
      */
@@ -296,28 +296,15 @@ public class COUSR01Form {
     }
 
     /**
-     * Returns a diagnostic representation of this form including every value
-     * field. The {@code passwd} field is intentionally rendered as
-     * {@code ***} so the cleartext password is never emitted to logs or
-     * diagnostics.
+     * Returns a non-sensitive diagnostic representation containing only the class name and an opaque
+     * per-instance identity token. Screen-form fields (which may include card numbers, account and
+     * customer identifiers, names, balances, or credentials) are never rendered, so form state cannot
+     * leak into logs or error messages (CWE-532; review finding F9).
      *
-     * @return a string representation with the password masked
+     * @return a non-sensitive string representation
      */
     @Override
     public String toString() {
-        return "COUSR01Form{"
-                + "trnname='" + trnname + '\''
-                + ", title01='" + title01 + '\''
-                + ", curdate='" + curdate + '\''
-                + ", pgmname='" + pgmname + '\''
-                + ", title02='" + title02 + '\''
-                + ", curtime='" + curtime + '\''
-                + ", fname='" + fname + '\''
-                + ", lname='" + lname + '\''
-                + ", userid='" + userid + '\''
-                + ", passwd='***'"
-                + ", usrtype='" + usrtype + '\''
-                + ", errmsg='" + errmsg + '\''
-                + '}';
+        return "COUSR01Form@" + Integer.toHexString(System.identityHashCode(this));
     }
 }

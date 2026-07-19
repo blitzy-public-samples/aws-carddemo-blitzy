@@ -22,21 +22,28 @@ traced back to its originating `legacy/` source.
 >   Specification §0.2.2 / §0.4.1, and the 148-file inventory has been restored and byte-verified).
 >   All source citations, counts, offsets, and quirks in this document are checked against those
 >   files.
-> - **Java side — planned, not yet generated.** The Java targets named below (services, controllers,
->   entities, repositories, DTOs, batch jobs, Thymeleaf templates, Flyway migrations such as
->   `V1__schema.sql` / `V3__indexes.sql`, and tests) are the **planned** result of the subsequent
->   generation phase. At this checkpoint the implemented Java deliverable is the **build baseline
->   only** (`pom.xml`, the Maven wrapper, `.mvn/jvm.config`, and these docs); **no `src/**` Java
->   source exists yet.** Every Java path is therefore a *forward mapping target*, not an assertion
->   that the class currently exists.
+> - **Java side — foundation generated; remaining layers forthcoming.** A substantial Java
+>   foundation now exists under `src/main/java/**`: all **10** domain entities plus the reference/enum
+>   layer, the DTO layer (screen forms, menu, report, session context), the cross-cutting `config` /
+>   `exception` / `security` / `util` classes, the `CSUTLDTC` date utility, and the `CBADMCDJ`
+>   admin-driver batch config — together with `application.yml`, `logback-spring.xml`, and the `V0`
+>   Spring Batch metadata migration (**43 of 123** primary constructs are mapped to a present
+>   artifact; see [§1](#1-coverage-summary)). The remaining Java targets named below (repositories,
+>   online services + controllers, business batch jobs, the CSD-derived `SecurityConfig`, the
+>   `CSSTRPFY` / `CSUTLDPY` / `CSUTLDWY` utilities, Thymeleaf templates, the `V1__schema.sql` / `V2` /
+>   `V3__indexes.sql` migrations, and tests) are **forthcoming** in the subsequent generation phase. A
+>   Java path marked *forthcoming* is a *forward mapping target*, not an assertion that the class
+>   currently exists; unmarked paths in the forward tables denote artifacts present at this checkpoint.
 > - **Coverage claim, stated precisely.** This matrix guarantees that **100 % of legacy constructs
 >   are inventoried and each is assigned either a planned Java target or an explicitly logged
 >   intentional non-migration** — i.e. there are no *unaccounted* constructs. It does **not** claim
 >   that 100 % of the Java targets are implemented at this checkpoint (they are not). Implemented
 >   coverage is tracked separately in [§1 Coverage Summary](#1-coverage-summary).
-> - **Reverse direction — planned convention.** Because no Java classes exist yet, the reverse
->   Javadoc origin-tags described in [§13](#13-reverse-direction-convention-java--legacy) are a
->   **convention the generator will apply**, not tags that are present today.
+> - **Reverse direction — already applied to the generated foundation.** The reverse Javadoc
+>   origin-tags described in [§13](#13-reverse-direction-convention-java--legacy) are **present today
+>   on the generated `src/main/java/**` classes** — **45 of the 56** files carry an explicit `Origin:`
+>   tag and several more cite their `legacy/` source in class-Javadoc prose — and remain the
+>   convention the generator applies to the forthcoming layers.
 
 > **Legacy path convention.** All source citations use the `legacy/` prefix while preserving the
 > original subfolder names and exact file-name casing (`legacy/cbl/…`, `legacy/cpy/…`,
@@ -71,25 +78,35 @@ traced back to its originating `legacy/` source.
 ## 1. Coverage Summary
 
 The table below counts every legacy construct type present at this checkpoint and confirms that each
-is either **mapped** to a planned Java target or **accounted-for** as a logged intentional
-non-migration. The **Implemented** column reflects the build-baseline checkpoint honestly: the Java
-source tree is not yet generated, so implemented Java artifacts are **0** for every mapped row.
+is either **mapped** to a Java target or **accounted-for** as a logged intentional
+non-migration. The **Constructs with target artifact present** column reflects the checkpoint
+honestly: a partial Java source tree exists, so **43 of 123** mapped constructs already have their
+target artifact present while the remainder are forthcoming.
 
-| Construct type | Count (present at HEAD) | Inventoried & assigned a target / logged gap | Implemented Java artifacts (this checkpoint) | Unaccounted constructs |
+| Construct type | Count (present at HEAD) | Inventoried & assigned a target / logged gap | Constructs with target artifact present (this checkpoint) | Unaccounted constructs |
 | :------------- | ----: | ---------------------: | ---: | --------------: |
-| COBOL programs (`legacy/cbl/*.cbl`, `*.CBL`) | 28 | 28 | 0 | 0 |
-| Copybooks (`legacy/cpy/*.cpy`, `*.CPY`) | 28 | 28 *(incl. `UNUSED1Y` logged as dead code)* | 0 | 0 |
+| COBOL programs (`legacy/cbl/*.cbl`, `*.CBL`) | 28 | 28 | 1 | 0 |
+| Copybooks (`legacy/cpy/*.cpy`, `*.CPY`) | 28 | 28 *(incl. `UNUSED1Y` logged as dead code)* | 24 | 0 |
 | BMS map sources (`legacy/bms/*.bms`) | 17 | 17 | 0 | 0 |
-| Symbolic map copybooks (`legacy/cpy-bms/*.CPY`) | 17 | 17 | 0 | 0 |
-| JCL jobs (`legacy/jcl/*.jcl`, `*.JCL`) | 29 | 29 *(incl. `OPENFIL`/`CLOSEFIL` logged as N/A)* | 0 | 0 |
+| Symbolic map copybooks (`legacy/cpy-bms/*.CPY`) | 17 | 17 | 17 | 0 |
+| JCL jobs (`legacy/jcl/*.jcl`, `*.JCL`) | 29 | 29 *(incl. `OPENFIL`/`CLOSEFIL` logged as N/A)* | 1 | 0 |
 | PROCs (`legacy/proc/*.prc`) | 2 | 2 | 0 | 0 |
 | Sort control (`legacy/ctl/*.ctl`) | 1 | 1 | 0 | 0 |
 | CICS resource definitions (`legacy/csd/CARDDEMO.CSD`) | 1 | 1 *(incl. `COCRDSEC` program logged → `SecurityConfig`)* | 0 | 0 |
-| **Total primary constructs** | **123** | **123** | **0** | **0** |
+| **Total primary constructs** | **123** | **123** | **43** | **0** |
 
-**How to read this:** *inventory* coverage is **100 %** (no legacy construct is unaccounted-for);
-*implementation* coverage is **0 %** at this build-baseline checkpoint and will rise as the
-generation phase produces `src/**`. Conflating the two is exactly the error this matrix now avoids.
+**How to read this:** *inventory* coverage is **100 %** (no legacy construct is unaccounted-for).
+*Implementation* coverage is **partial** at this checkpoint: **43 of 123** primary constructs
+(~35 %) already have their target Java artifact generated under `src/main/java/**` — all **10**
+domain entities plus the reference/DTO layer they depend on, the **17** screen-form DTOs, the report
+DTOs, the cross-cutting `config` / `exception` / `security` / `util` foundation, the `CSUTLDTC` date
+utility (`util/DateConversionService`), and the `CBADMCDJ` admin driver (`batch/AdminBatchJobConfig`,
+a documented no-op `Tasklet`). The remaining constructs — the **17** BMS screens (Thymeleaf
+templates), the online services + controllers, the business batch jobs, the `SecurityConfig` /
+routing derived from the CSD, the `CSSTRPFY` / `CSUTLDPY` / `CSUTLDWY` PF-key & date-support
+utilities, and the `V1`–`V3` Flyway schema/seed/index migrations — are **forthcoming** in the
+generation phase and are individually marked *(forthcoming)* in the per-construct rows below.
+Conflating inventory with implementation is exactly the error this matrix now avoids.
 
 **Reference-only artifacts** (retained as parity oracles / schema inputs, not transformed into a
 single output, per Technical Specification §0.2.1): the VSAM catalog listing
@@ -216,7 +233,7 @@ constants — see the callouts below and [§8](#8-construct-level-traceability-p
 > map to `java.math.BigDecimal`, while the `FixedWidthRecordMapper` preserves the original zoned/overpunch
 > character representation for flat-file feeds. See [§9](#9-exact-record-contracts-offsets-keys-signs-filler).
 
-| Copybook (`legacy/cpy`) | VSAM file / role | Java artifact (planned) |
+| Copybook (`legacy/cpy`) | VSAM file / role | Java artifact (present unless marked *forthcoming*) |
 | :---------------------- | :--------------- | :------------ |
 | `CVACT01Y.cpy` | `ACCTDAT` (account record, 300 B) | `domain/Account.java` |
 | `CVACT02Y.cpy` | `CARDDAT` (card record, 150 B) | `domain/Card.java` |
@@ -232,7 +249,7 @@ constants — see the callouts below and [§8](#8-construct-level-traceability-p
 | `COCOM01Y.cpy` | COMMAREA (pseudo-conversational state, 160 B) | `dto/CardDemoContext.java` |
 | `CVTRA06Y.cpy` | `DALYTRAN` feed (batch input, 350 B) | `dto/DailyTransaction.java` |
 | `COSTM01.CPY` | statement layout (`TRNX-RECORD`, 350 B) | `dto/StatementTransaction.java` |
-| `CVTRA07Y.cpy` | report layout — **7 `01`-level groups** (headers + detail + totals) | `dto/report/ReportNameHeader.java`, `dto/report/TransactionDetailReport.java`, `dto/report/TransactionHeader1.java`, `dto/report/TransactionHeader2.java`, `dto/report/ReportPageTotals.java`, `dto/report/ReportAccountTotals.java`, `dto/report/ReportGrandTotals.java` *(edit-mask formatting; concrete DTOs — no wildcard)* |
+| `CVTRA07Y.cpy` | report layout — **7 `01`-level groups** (headers + detail + totals) | `dto/report/ReportNameHeader.java`, `dto/report/TransactionReportHeaders.java` *(consolidates the two page-header `01` groups — see [`decision-log.md`](./decision-log.md))*, `dto/report/TransactionDetailReport.java`, `dto/report/ReportPageTotals.java`, `dto/report/ReportAccountTotals.java`, `dto/report/ReportGrandTotals.java`, with `dto/report/ReportAmountFormatter.java` providing the shared `PIC -ZZZ,ZZZ,ZZZ.ZZ` edit-mask formatting *(concrete DTOs — no wildcard)* |
 | `CVCRD01Y.cpy` | card work areas (`CC-WORK-AREAS`) | `dto/CardWorkArea.java` *(AID/PFK 88-levels → PF-key enum)* |
 | `COADM02Y.cpy` | admin menu options | `dto/menu/AdminMenuOptions.java` |
 | `COMEN02Y.cpy` | main menu options *(note: active Transaction Add is user-accessible — quirk #8, [§10](#10-source-quirk-ledger-preserve-or-deviate--parity-test-obligations))* | `dto/menu/MainMenuOptions.java` |
@@ -240,11 +257,11 @@ constants — see the callouts below and [§8](#8-construct-level-traceability-p
 | `COTTL01Y.cpy` | screen title constants | `util/constants/ScreenTitles.java` |
 | `CSLKPCDY.cpy` | reference / lookup codes *(frozen lookup tables — quirk #10)* | `domain/enums/LookupCodes.java` |
 | `CSMSG01Y.cpy` | **message constants** (`01 CCDA-COMMON-MESSAGES` — `CCDA-MSG-*` `PIC X(50)` VALUEs) | `util/constants/Messages.java` |
-| `CSMSG02Y.cpy` | **`01 ABEND-DATA` abend work area** — `ABEND-CODE X(4)`, `ABEND-CULPRIT X(8)`, `ABEND-REASON X(50)`, `ABEND-MSG X(72)` — **not** message constants | `exception/AbendData.java` (abend/error-handling context used by `GlobalExceptionHandler`) — **not** merged into `Messages.java` |
+| `CSMSG02Y.cpy` | **`01 ABEND-DATA` abend work area** — `ABEND-CODE X(4)`, `ABEND-CULPRIT X(8)`, `ABEND-REASON X(50)`, `ABEND-MSG X(72)` | `util/constants/Messages.java` — the four `ABEND-DATA` field widths are captured as the `ABEND_CODE_LENGTH` (4), `ABEND_CULPRIT_LENGTH` (8), `ABEND_REASON_LENGTH` (50), `ABEND_MSG_LENGTH` (72) constants, **consolidated with `CSMSG01Y`** into a single `Messages` class whose Javadoc cites both copybook origins. No separate `AbendData` type exists at this checkpoint. |
 | `CSSETATY.cpy` | **executable `COPY … REPLACING` screen-attribute logic** (`IF FLG-(TESTVAR1)-NOT-OK/BLANK … MOVE DFHRED …` / `MOVE '*' …`) — **not** passive constants | screen-attribute handling logic emitted where the `COPY … REPLACING` was expanded (field-error highlight/`*` behavior); see [§8](#8-construct-level-traceability-paragraphs-executable-copybooks-subprograms) |
-| `CSSTRPFY.cpy` | **executable PF-key store logic** — 2 paragraphs (`YYYY-STORE-PFKEY`, `YYYY-STORE-PFKEY-EXIT`) | `util/PfKeyHandler.java` (behavior ported, not merely a constant table) |
-| `CSUTLDPY.cpy` | **14 executable date-validation paragraphs** (`EDIT-DATE-CCYYMMDD`, `EDIT-YEAR-CCYY`, `EDIT-MONTH`, `EDIT-DAY`, `EDIT-DAY-MONTH-YEAR`, `EDIT-DATE-LE`, `EDIT-DATE-OF-BIRTH`, + their `-EXIT`s) — **not** mere linkage | `util/DateConversionSupport.java` *(the 14 paragraphs → validation methods; merged with `CSUTLDWY` working storage)* |
-| `CSUTLDWY.cpy` | date working storage (century/window rules — quirk #10) | `util/DateConversionSupport.java` *(merged with `CSUTLDPY`)* |
+| `CSSTRPFY.cpy` | **executable PF-key store logic** — 2 paragraphs (`YYYY-STORE-PFKEY`, `YYYY-STORE-PFKEY-EXIT`) | `util/PfKeyHandler.java` (behavior ported, not merely a constant table) — ***forthcoming*** (not yet generated at this checkpoint) |
+| `CSUTLDPY.cpy` | **14 executable date-validation paragraphs** (`EDIT-DATE-CCYYMMDD`, `EDIT-YEAR-CCYY`, `EDIT-MONTH`, `EDIT-DAY`, `EDIT-DAY-MONTH-YEAR`, `EDIT-DATE-LE`, `EDIT-DATE-OF-BIRTH`, + their `-EXIT`s) — **not** mere linkage | `util/DateConversionSupport.java` *(the 14 paragraphs → validation methods; merged with `CSUTLDWY` working storage)* — ***forthcoming*** (not yet generated at this checkpoint) |
+| `CSUTLDWY.cpy` | date working storage (century/window rules — quirk #10) | `util/DateConversionSupport.java` *(merged with `CSUTLDPY`)* — ***forthcoming*** (not yet generated at this checkpoint) |
 | `UNUSED1Y.cpy` | _(not referenced by any program)_ | **NOT MIGRATED — dead code, intentional gap, see [§12](#12-intentional-non-migrations-gaps-ledger)** |
 
 > **Customer DOB data-name alias (M-06 / quirk #7).** `CVCUS01Y.cpy` and `CUSTREC.cpy` describe the
@@ -268,9 +285,9 @@ indexes (planned `V3__indexes.sql`) plus Spring Data **derived queries** (Techni
 | :-------- | :------- | :-------------- | :----------------------------- |
 | `ACCTDAT` | `CVACT01Y` | `repository/AccountRepository.java` | PK `acctId` |
 | `CARDDAT` | `CVACT02Y` | `repository/CardRepository.java` | PK `cardNum`; `findByCardAcctId` replaces the `CARDAIX` alt index |
-| `CCXREF` | `CVACT03Y` | `repository/CardXrefRepository.java` | composite key (card + customer + account); `findByXrefAcctId` replaces the `CXACAIX` alt index |
+| `CCXREF` | `CVACT03Y` | `repository/CardXrefRepository.java` | composite `@IdClass` (card + customer + account) **plus a `UNIQUE` constraint `uk_card_xref_card_num` on the 16-byte card number** to preserve the VSAM KSDS single-key uniqueness (see [`decision-log.md`](./decision-log.md) F6 divergence); `findByXrefAcctId` replaces the nonunique `CXACAIX` alt index |
 | `CUSTDAT` | `CVCUS01Y` | `repository/CustomerRepository.java` | PK `custId` |
-| `TRANSACT` | `CVTRA05Y` | `repository/TransactionRepository.java` | PK `tranId`; `findByCardNum` replaces the transaction-by-card AIX |
+| `TRANSACT` | `CVTRA05Y` | `repository/TransactionRepository.java` | PK `tranId`; the `TRANIDX` alternate index (`KEYS(26 304)` = `TRAN-PROC-TS`) maps to a secondary index on `proc_ts`; `findByCardNum` is a **separate functional** derived query for card-scoped report access (not the literal AIX) — see [`decision-log.md`](./decision-log.md) F7 |
 | `USRSEC` | `CSUSR01Y` | `repository/UserSecurityRepository.java` | lookup by `usrId` (authentication) |
 | `TCATBAL` | `CVTRA01Y` | `repository/TransactionCategoryBalanceRepository.java` | composite key (account + type + category) |
 | `DISCGRP` | `CVTRA02Y` | `repository/DisclosureGroupRepository.java` | composite key (group + type + category) |
@@ -278,11 +295,14 @@ indexes (planned `V3__indexes.sql`) plus Spring Data **derived queries** (Techni
 | `TRANCATG` | `CVTRA04Y` | `repository/TransactionCategoryRepository.java` | composite key (type + category) |
 
 > **Alternate-index parity (planned).** The CSD defines two alternate-index PATHs — `CARDAIX`
-> (`CARDDATA.VSAM.AIX.PATH`) and `CXACAIX` (`CARDXREF.VSAM.AIX.PATH`) — plus the transaction-by-card
-> AIX. All three are planned to map to secondary database indexes created in
+> (`CARDDATA.VSAM.AIX.PATH`) and `CXACAIX` (`CARDXREF.VSAM.AIX.PATH`). The `TRANSACT` file
+> additionally carries the `TRANIDX` alternate index, whose CSD key definition is
+> `KEYS(26 304) NONUNIQUEKEY` — offset 304, length 26 = **`TRAN-PROC-TS`**, **not** the card number
+> (F7). All are planned to map to secondary database indexes created in
 > `src/main/resources/db/migration/V3__indexes.sql` (a **planned** migration that does not exist at
-> this checkpoint) and to be queried through the Spring Data derived queries listed above
-> (`findByCardAcctId`, `findByXrefAcctId`, `findByCardNum`).
+> this checkpoint): `CARDAIX` → `findByCardAcctId`, `CXACAIX` → `findByXrefAcctId`, and `TRANIDX` →
+> a secondary index on `proc_ts`. Card-scoped transaction access (`findByCardNum`) is a **separate
+> functional derived query** — a report/query optimization, **not** the literal `TRANIDX` AIX.
 
 ---
 
@@ -338,7 +358,7 @@ data; `SORT` becomes a Java `Comparator` / SQL `ORDER BY`; GDG output becomes jo
 | `legacy/jcl/DISCGRP.jcl` | IDCAMS load Disclosure Group file | `V1__schema.sql` + `V2__reference_data.sql` (seed) |
 | `legacy/jcl/DUSRSECJ.jcl` | IEBGENER initial load of User security | `V1__schema.sql` (usrsec table) + `V2__reference_data.sql` (seed users) |
 | `legacy/catlg/LISTCAT.txt` | IDCAMS `LISTCAT` (VSAM cluster metadata) | informs `V1__schema.sql` — **REFERENCE only** |
-| `legacy/jcl/TRANIDX.jcl` | IDCAMS define AIX on transaction file | `V3__indexes.sql` (secondary index on `transaction.card_num`) |
+| `legacy/jcl/TRANIDX.jcl` | IDCAMS define AIX on transaction file (`TRANIDX` = `KEYS(26 304)` = `TRAN-PROC-TS`) | `V3__indexes.sql` (secondary index on `transaction.proc_ts`; **not** `card_num` — see F7) |
 | `legacy/jcl/COMBTRAN.jcl` + `legacy/ctl/REPROCT.ctl` + `legacy/proc/REPROC.prc` | `PGM=SORT`, `SORT FIELDS=(TRAN-ID,A)` | `batch/TransactionCombineJobConfig.java` — Java `Comparator` ascending by `tranId` / `ORDER BY tran_id` (deterministic `C`/`POSIX` collation — see `decision-log.md`) |
 | `legacy/jcl/DALYREJS.jcl` + `legacy/jcl/DEFGDGB.jcl` | reject dataset (LRECL 430) + GDG base define | reject `FlatFileItemWriter` (350 B transaction + 80 B reason = 430 B) + Spring Batch job-instance versioning (GDG generations) |
 | `legacy/jcl/PRTCATBL.jcl` + `legacy/jcl/REPTFILE.jcl` | category-balance / report output | `batch/CategoryBalancePrintJobConfig.java` |
@@ -396,11 +416,12 @@ copybooks and must be ported as behavior:
 `batch/statement/StatementFileDao.java`, a `@Component` DAO that `StatementJobConfig`'s reader
 delegates to for keyed/sequential reads.
 
-**Report DTOs (no wildcards).** `CVTRA07Y.cpy` declares **7** `01`-level groups; each maps to a named
-DTO (see [§4](#4-copybooks--entities--dtos--enums--constants)): `ReportNameHeader`,
-`TransactionDetailReport`, `TransactionHeader1`, `TransactionHeader2`, `ReportPageTotals`,
-`ReportAccountTotals`, `ReportGrandTotals`. The previous non-deterministic `dto/report/*.java`
-wildcard is replaced by these concrete targets.
+**Report DTOs (no wildcards).** `CVTRA07Y.cpy` declares **7** `01`-level groups, which map to the
+concrete report DTOs (see [§4](#4-copybooks--entities--dtos--enums--constants)): `ReportNameHeader`,
+`TransactionReportHeaders` (which consolidates the two page-header `01` groups), `TransactionDetailReport`,
+`ReportPageTotals`, `ReportAccountTotals`, and `ReportGrandTotals`, with `ReportAmountFormatter`
+providing the shared `PIC -ZZZ,ZZZ,ZZZ.ZZ` edit-mask formatting. The previous non-deterministic
+`dto/report/*.java` wildcard is replaced by these concrete, present targets.
 
 ---
 
@@ -493,6 +514,14 @@ distinct sinks: (a) **protected parity report output** that reproduces the sourc
 (for parity testing / operator report files), and (b) **redacted operational logs** (structured JSON
 via `logback-spring.xml`) that never contain PAN/CVV/SSN/password. These are not the same stream.
 
+**Redaction is enforced, not aspirational.** Every entity, DTO, and the security principal that
+carries a sensitive field overrides `toString()` to emit only `ClassName@identityHash` — no field
+values. Consequently, even if such an object is handed to a logger, no PAN / CVV / SSN / password /
+DOB / FICO value can reach an operational log through `toString()`. The "Never logged" / "Redacted"
+guarantees in the table above are therefore **implemented in code at this checkpoint** (across all 25
+sensitive-value-bearing classes), not merely planned; the only stream that intentionally retains full
+values is the access-controlled parity report output described above.
+
 **Direct-route A/U authorization matrix.** Menu visibility is **not** sufficient; each endpoint must
 independently enforce role authorization, and dynamic `XCTL` targets become a **server-side
 allowlist** (not a client-supplied program name).
@@ -525,20 +554,25 @@ than silently reduced.
 **These are the only intentional gaps.** With all three explicitly accounted for, **every** COBOL /
 z/OS construct is either mapped to a planned Java target or logged here — i.e. inventory coverage
 reconciles exactly with the [Coverage Summary](#1-coverage-summary). (As stated in the
-implementation-status note, this is *inventory* completeness; *implemented* Java coverage is 0 at
-this build-baseline checkpoint.)
+implementation-status note, this is *inventory* completeness; *implemented* Java coverage is
+**partial** — **43 of 123** constructs have their target artifact present at this checkpoint, the
+remainder forthcoming.)
 
 ---
 
 ## 13. Reverse-Direction Convention (Java → Legacy)
 
-Traceability is designed to be **bidirectional**. In addition to the forward tables above, the
-generation phase will apply a Javadoc **origin-tag convention** to every generated Java class, citing
-the `legacy/` source path (and, where relevant, the CICS transaction id or JCL job) it was derived
-from. **This convention is planned:** because no `src/**` Java classes exist at this checkpoint, no
-origin tags are present yet — they will be emitted with the code.
+Traceability is designed to be **bidirectional**. In addition to the forward tables above, generated
+Java classes carry a Javadoc **origin-tag convention** citing the `legacy/` source path (and, where
+relevant, the CICS transaction id or JCL job) they were derived from. **This convention is already
+applied to the generated foundation:** of the **56** Java files under `src/main/java/**` at this
+checkpoint, **45 carry an explicit `Origin:` Javadoc tag** and several more cite their `legacy/`
+source in class-Javadoc prose; only the net-new infrastructure classes with no COBOL antecedent
+(`CardDemoApplication`, `config/ObservabilityConfig`, `config/WebConfig`) omit a legacy origin, which
+is correct. The forthcoming layers (repositories, services, controllers, business batch jobs) will
+carry the same tag when generated.
 
-The planned convention is a single Javadoc line of the form:
+The convention is a Javadoc line of the form:
 
 ```java
 /**
@@ -548,20 +582,21 @@ The planned convention is a single Javadoc line of the form:
 ```
 
 For artifacts synthesised from more than one legacy member, the origin tag lists each source, e.g.
-`Origin: legacy/cbl/CBTRN02C.cbl + legacy/jcl/POSTTRAN.jcl`. This will let a reader navigate from any
+`Origin: legacy/cbl/CBTRN02C.cbl + legacy/jcl/POSTTRAN.jcl`. This lets a reader navigate from any
 Java class back to the exact COBOL/JCL/BMS/copybook it replaces — the property that makes the matrix
 bidirectional per the Explainability rule.
 
-**Planned examples (to be emitted during generation):**
+**Examples (present artifacts already carry the tag; forthcoming artifacts will gain it on generation):**
 
-| Java artifact (planned) | Planned Javadoc origin tag (reverse citation) |
-| :------------ | :------------------------------------ |
-| `domain/Account.java` | `Origin: legacy/cpy/CVACT01Y.cpy (ACCTDAT, RECLN 300)` |
-| `batch/PostTransactionJobConfig.java` | `Origin: legacy/cbl/CBTRN02C.cbl + legacy/jcl/POSTTRAN.jcl` |
-| `web/controller/SignonController.java` | `Origin: legacy/cbl/COSGN00C.cbl (CICS tran CC00)` |
-| `batch/statement/StatementFileDao.java` | `Origin: legacy/cbl/CBSTM03B.CBL (statement I/O subprogram)` |
+| Java artifact | Javadoc origin tag (reverse citation) | Status |
+| :------------ | :------------------------------------ | :----- |
+| `domain/Account.java` | cites `legacy/cpy/CVACT01Y.cpy` (`ACCTDAT`, RECLN 300) in class Javadoc | present *(prose citation)* |
+| `dto/CardDemoContext.java` | `Origin: legacy/cpy/COCOM01Y.cpy` | present *(explicit tag)* |
+| `util/DateConversionService.java` | `Origin: legacy/cbl/CSUTLDTC.cbl` | present *(explicit tag)* |
+| `batch/PostTransactionJobConfig.java` | `Origin: legacy/cbl/CBTRN02C.cbl + legacy/jcl/POSTTRAN.jcl` | forthcoming |
+| `web/controller/SignonController.java` | `Origin: legacy/cbl/COSGN00C.cbl (CICS tran CC00)` | forthcoming |
 
-> Once generation applies these tags, each forward row above will have a corresponding reverse origin
-> tag on its target class, making the two directions mutually consistent. Until then, the forward
-> mapping in this document is the authoritative COBOL → Java direction, and this section defines the
-> reverse convention the generator must honor.
+> The generated foundation already satisfies this in both directions; as the forthcoming layers are
+> generated, each remaining forward row will gain its corresponding reverse origin tag, keeping the
+> two directions mutually consistent. The forward mapping in this document remains the authoritative
+> COBOL → Java direction, and this section defines the reverse convention every generated class honors.

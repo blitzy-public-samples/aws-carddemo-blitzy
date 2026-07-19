@@ -78,10 +78,15 @@ spring:
       # auto-running at application startup. Jobs are launched explicitly on demand.
       enabled: false
     jdbc:
-      # base/prod: do NOT auto-create the Spring Batch metadata tables
-      # ('embedded' behaves as 'never' for PostgreSQL). dev/test profiles override
-      # this to 'always'.
-      initialize-schema: embedded
+      # Spring Batch metadata (BATCH_* tables + sequences) is created exclusively
+      # by the Flyway migration db/migration/V0__spring_batch_metadata.sql, which is
+      # the single source of truth for this DDL (consistent with
+      # spring.jpa.hibernate.ddl-auto=validate). Boot must therefore NEVER attempt
+      # to initialize the batch schema itself, on any profile (review finding F2).
+      # 'never' replaces the previous 'embedded', which behaved as 'never' on
+      # PostgreSQL but misleadingly implied conditional creation and left the
+      # BATCH_* tables absent, so every Job failed on first execution/restart.
+      initialize-schema: never
 
   thymeleaf:
     # Base/prod caches compiled templates for performance; the dev profile
@@ -101,24 +106,42 @@ management:
   endpoints:
     web:
       exposure:
-        # Expose ONLY these three endpoints (least exposure).
+        # Expose ONLY these three endpoints (least exposure). NOTE (F26): 'info' and
+        # 'prometheus' are currently reachable without authentication for local observability.
+        # A forthcoming SecurityConfig SecurityFilterChain MUST restrict detailed health, info
+        # and prometheus to a monitoring/admin authority (or bind them to an isolated management
+        # port) and explicitly permit only the sanitized liveness/readiness probes for anonymous
+        # callers. Adding that chain makes Boot's actuator security auto-configuration back off,
+        # so the restriction has to be asserted there and tested for anonymous/user/admin access.
         include: health,info,prometheus
   endpoint:
     health:
       probes:
         # Enable Kubernetes-style liveness/readiness health groups.
         enabled: true
-      # Only reveal detailed health information to authorized principals.
+      # Only reveal detailed health information to authorized principals, and make the
+      # authorization explicit (review finding F26): details require the ADMIN role (authority
+      # ROLE_ADMIN, matching the admin user type 'A'). Until a security filter chain is active no
+      # principal is authorized, so detailed health stays hidden by default (fail-closed).
       show-details: when_authorized
+      roles:
+        - ADMIN
   tracing:
     sampling:
       # Sample 100% of traces locally so every request is observable during
       # migration validation (Observability rule).
       probability: 1.0
   metrics:
-    tags:
-      # Tag every metric with the application name for dashboard filtering.
-      application: ${spring.application.name}
+    distribution:
+      # F17: enable server-side latency histogram buckets for http.server.requests so the
+      # Grafana p50/p95/p99 percentile panels (which apply histogram_quantile over
+      # http_server_requests_seconds_bucket) render real data instead of "No data".
+      percentiles-histogram:
+        http.server.requests: true
+    # NOTE (F28): the common 'application' meter tag is applied by a SINGLE authority - the
+    # programmatic ObservabilityConfig#commonTagsCustomizer() bean. It is intentionally NOT
+    # also declared here (management.metrics.tags.application) so there are never two
+    # configuration authorities that can drift out of sync.
   prometheus:
     metrics:
       export:

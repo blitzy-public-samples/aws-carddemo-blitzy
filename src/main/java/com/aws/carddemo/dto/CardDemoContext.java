@@ -39,13 +39,37 @@ import org.springframework.web.context.annotation.SessionScope;
  * so the identical navigation and selection state survives across stateless
  * web requests.</p>
  *
- * <h2>First-entry semantics</h2>
+ * <h2>First-entry semantics (review finding F20)</h2>
  * <p>In COBOL, first entry into a transaction is detected via
- * {@code EIBCALEN = 0} (no COMMAREA has been passed yet). In the target, an
- * <b>absent context in the HTTP session equals first entry</b>; a null or
- * freshly-created context signals the {@code EIBCALEN = 0} condition. That
- * first-entry decision is enforced by the controller layer, which reads the
- * context at the start of a request and writes it back before responding.</p>
+ * {@code EIBCALEN = 0} (no COMMAREA has been passed yet). Reproducing this in a
+ * session-scoped Spring bean requires care: because reading any property of the
+ * {@link SessionScope} proxy instantiates the target bean on demand, <b>bean
+ * existence alone is not equivalent to {@code EIBCALEN = 0}</b>. Two explicit,
+ * complementary signals are therefore provided:</p>
+ * <ul>
+ *   <li><b>HTTP-session presence</b> &mdash; to detect first entry <em>without</em>
+ *       side effects, a controller must inspect the session before dereferencing
+ *       the proxy, for example {@code request.getSession(false) == null} (or the
+ *       absence of the context's session attribute). Only after that check should
+ *       the proxy be dereferenced.</li>
+ *   <li><b>Explicit initialized marker</b> &mdash; once dereferenced, the context
+ *       itself reports first entry through {@link #isNew()} (the
+ *       {@code EIBCALEN = 0} equivalent), which reflects the {@link #initialized}
+ *       flag rather than bean existence. The controller runs its first-entry
+ *       initialization branch and then calls {@link #markInitialized()} so that
+ *       subsequent requests in the same session are treated as re-entry.</li>
+ * </ul>
+ * <p>The controller layer enforces this: it performs the presence check, reads
+ * the context at the start of a request, and writes it back before responding.</p>
+ *
+ * <h2>Reset and session invalidation (review finding F20)</h2>
+ * <p>{@link #clear()} resets the entire context &mdash; navigation hand-off,
+ * authenticated identity, selected customer/account, the selected card number
+ * (PAN), the last map/mapset, and the initialized marker &mdash; to the pristine
+ * first-entry state. Controllers must call {@link #clear()} at sign-off/logout
+ * immediately before invalidating and rotating the HTTP session, so that no PAN,
+ * customer PII, or navigation trail survives into a subsequent session. Sessions
+ * should likewise be rotated at successful authentication to prevent fixation.</p>
  *
  * <p>Distinct from the cross-transaction first-entry test above, the
  * {@code CDEMO-PGM-CONTEXT} flag ({@code PIC 9(01)}) preserves the
@@ -178,6 +202,25 @@ public class CardDemoContext implements Serializable {
 
     /** {@code CDEMO-LAST-MAPSET PIC X(7)} - name of the last BMS mapset displayed. */
     private String lastMapset;
+
+    // --- Lifecycle marker (no COBOL field; see review finding F20) ----------
+
+    /**
+     * Explicit initialized/new marker distinguishing a genuinely first-entry
+     * context from one merely materialized by dereferencing the session-scoped
+     * proxy.
+     *
+     * <p>Because reading any property of a {@link SessionScope} proxy
+     * instantiates the target bean on demand, bean existence alone is <em>not</em>
+     * equivalent to the CICS {@code EIBCALEN = 0} first-entry test. This flag
+     * supplies that missing signal: it is {@code false} on a freshly created
+     * context ({@link #isNew()} then returns {@code true}, the {@code EIBCALEN = 0}
+     * equivalent) and is flipped to {@code true} by the controller via
+     * {@link #markInitialized()} once first-entry initialization has run. It is a
+     * plain (non-transient) field so the initialized state survives across
+     * requests within the same HTTP session (review finding F20).</p>
+     */
+    private boolean initialized;
 
     /**
      * Creates an empty context in the first-entry / program-enter state.
@@ -571,35 +614,101 @@ public class CardDemoContext implements Serializable {
         this.pgmContext = PGM_CONTEXT_REENTER;
     }
 
+    // --- Lifecycle (review finding F20) -------------------------------------
+
+    /**
+     * Reports whether this context is in the first-entry / uninitialized state,
+     * the modern equivalent of the CICS {@code EIBCALEN = 0} test.
+     *
+     * <p>A controller should treat a "new" context as first entry: run the
+     * program's initialization branch and then call {@link #markInitialized()}.
+     * Note that this reflects the explicit {@link #initialized} marker, not mere
+     * bean existence &mdash; dereferencing the session-scoped proxy always
+     * materializes a bean, so bean existence cannot be used for this test.</p>
+     *
+     * @return {@code true} if the context has not yet been marked initialized
+     */
+    public boolean isNew() {
+        return !initialized;
+    }
+
+    /**
+     * Returns the raw initialized marker.
+     *
+     * @return {@code true} once {@link #markInitialized()} has been called on this
+     *         context instance; {@code false} for a fresh (first-entry) context
+     */
+    public boolean isInitialized() {
+        return initialized;
+    }
+
+    /**
+     * Marks this context as initialized, so subsequent requests in the same
+     * session are treated as re-entry rather than first entry
+     * ({@link #isNew()} will then return {@code false}). Controllers call this
+     * after completing first-entry initialization.
+     */
+    public void markInitialized() {
+        this.initialized = true;
+    }
+
+    /**
+     * Clears all navigation, selection, identity, and PAN/PII state, returning
+     * the context to a pristine first-entry state.
+     *
+     * <p>Every mutable field is reset to its initial value: the from/to
+     * program and transaction ids, the authenticated {@code userId}/{@code userType},
+     * the selected customer (id and names), the selected account (id and status),
+     * the selected {@code cardNum} (PAN), and the last map/mapset are all set to
+     * {@code null}; {@code pgmContext} is reset to {@code enter} ({@code 0}); and
+     * the {@link #initialized} marker is reset to {@code false} so
+     * {@link #isNew()} again reports first entry.</p>
+     *
+     * <p>Controllers must invoke this as part of sign-off/logout, immediately
+     * before invalidating and rotating the HTTP session, so that no card number,
+     * customer PII, or navigation trail survives into a subsequent session
+     * (review finding F20). It is also useful when a controller needs to force a
+     * clean re-initialization of the conversation.</p>
+     */
+    public void clear() {
+        this.fromTranid = null;
+        this.fromProgram = null;
+        this.toTranid = null;
+        this.toProgram = null;
+        this.userId = null;
+        this.userType = null;
+        this.pgmContext = PGM_CONTEXT_ENTER;
+        this.custId = null;
+        this.custFirstName = null;
+        this.custMiddleName = null;
+        this.custLastName = null;
+        this.acctId = null;
+        this.acctStatus = null;
+        this.cardNum = null;
+        this.lastMap = null;
+        this.lastMapset = null;
+        this.initialized = false;
+    }
+
     // --- Object overrides ---------------------------------------------------
 
     /**
-     * Returns a human-readable representation of the navigation and selection
-     * state. This copybook contains no password or other secret field, so no
-     * masking is required.
+     * Returns a non-sensitive diagnostic representation containing only the class
+     * name and an opaque per-instance identity token.
      *
-     * @return a diagnostic string describing the current context state
+     * <p>The context aggregates the full session state, including the selected
+     * card number ({@code CDEMO-CARD-NUM}, an unmasked PAN), customer PII
+     * (id and names), the account id, and the authenticated user id. Rendering
+     * any of that into logs or error messages would leak payment and personal
+     * data (CWE-532), so no business field is ever emitted here (review finding
+     * F9). Callers needing specific values must read the typed accessors
+     * explicitly rather than interpolate the object.</p>
+     *
+     * @return a non-sensitive string representation
      */
     @Override
     public String toString() {
-        return "CardDemoContext{"
-                + "fromTranid=" + fromTranid
-                + ", fromProgram=" + fromProgram
-                + ", toTranid=" + toTranid
-                + ", toProgram=" + toProgram
-                + ", userId=" + userId
-                + ", userType=" + userType
-                + ", pgmContext=" + pgmContext
-                + ", custId=" + custId
-                + ", custFirstName=" + custFirstName
-                + ", custMiddleName=" + custMiddleName
-                + ", custLastName=" + custLastName
-                + ", acctId=" + acctId
-                + ", acctStatus=" + acctStatus
-                + ", cardNum=" + cardNum
-                + ", lastMap=" + lastMap
-                + ", lastMapset=" + lastMapset
-                + '}';
+        return "CardDemoContext@" + Integer.toHexString(System.identityHashCode(this));
     }
 
 }
