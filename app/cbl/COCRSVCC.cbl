@@ -73,7 +73,7 @@
       * Guards the COMMAREA length, performs the read, returns.       *
       *****************************************************************
        0000-MAIN.
-           IF EIBCALEN > 0
+           IF EIBCALEN >= LENGTH OF API-COMMAREA
                PERFORM 1000-READ-CARD
            END-IF
 
@@ -104,11 +104,13 @@
                    SET API-HTTP-OK           TO TRUE
                    MOVE ZERO                 TO API-RETURN-CODE
                WHEN DFHRESP(NOTFND)
+                   MOVE SPACES               TO API-PAYLOAD
                    SET API-HTTP-NOT-FOUND    TO TRUE
                    MOVE +4                   TO API-RETURN-CODE
                    MOVE 'NOTFOUND'           TO API-ERR-CODE
                    MOVE 'Card not found'     TO API-ERR-MESSAGE
                WHEN OTHER
+                   MOVE SPACES               TO API-PAYLOAD
                    SET API-HTTP-SERVER-ERROR TO TRUE
                    MOVE +8                   TO API-RETURN-CODE
                    MOVE 'INTERNAL'           TO API-ERR-CODE

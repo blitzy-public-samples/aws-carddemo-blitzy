@@ -56,14 +56,20 @@
        01  WS-BAD-CUST          PIC 9(09) VALUE 999999999.
        01  WS-EXP-SSN-MASK      PIC X(11) VALUE 'XXX-XX-3888'.
        01  WS-EXP-GOVT-MASK     PIC X(04) VALUE '8437'.
+       01  WS-EXP-FIRST         PIC X(25) VALUE 'Immanuel'.
+       01  WS-EXP-LAST          PIC X(25) VALUE 'Kessler'.
+       01  WS-EXP-DOB           PIC X(10) VALUE '1961-06-08'.
+       01  WS-EXP-FICO          PIC 9(03) VALUE 274.
       *----------------------------------------------------------------*
       * PII leak-probe literals + tally counters (full PII must never  *
       * appear anywhere in the response; expected tally is ZERO)       *
       *----------------------------------------------------------------*
        01  WS-FULL-SSN          PIC X(09) VALUE '020973888'.
        01  WS-FULL-GOVT         PIC X(20) VALUE '00000000000049368437'.
+       01  WS-FULL-EFT          PIC X(10) VALUE '0053581756'.
        01  WS-SSN-COUNT         PIC 9(04) VALUE 0.
        01  WS-GOVT-COUNT        PIC 9(04) VALUE 0.
+       01  WS-EFT-COUNT         PIC 9(04) VALUE 0.
 
        PROCEDURE DIVISION.
       *----------------------------------------------------------------*
@@ -112,6 +118,19 @@
            IF CUST-GOVT-ID-MASKED NOT = WS-EXP-GOVT-MASK
                SET WS-TEST-BAD TO TRUE
            END-IF
+      *    Assertion : demographic fields decode correctly
+           IF CUST-FIRST-NAME NOT = WS-EXP-FIRST
+               SET WS-TEST-BAD TO TRUE
+           END-IF
+           IF CUST-LAST-NAME NOT = WS-EXP-LAST
+               SET WS-TEST-BAD TO TRUE
+           END-IF
+           IF CUST-DOB-YYYY-MM-DD NOT = WS-EXP-DOB
+               SET WS-TEST-BAD TO TRUE
+           END-IF
+           IF CUST-FICO-CREDIT-SCORE NOT = WS-EXP-FICO
+               SET WS-TEST-BAD TO TRUE
+           END-IF
       *    Security : the FULL SSN must not appear anywhere
            MOVE ZERO TO WS-SSN-COUNT
            INSPECT API-PAYLOAD
@@ -129,6 +148,16 @@
            INSPECT API-CUST-RESPONSE
                TALLYING WS-GOVT-COUNT FOR ALL WS-FULL-GOVT
            IF WS-GOVT-COUNT > ZERO
+               SET WS-TEST-BAD TO TRUE
+               DISPLAY 'TSTCUST: PII LEAK DETECTED'
+           END-IF
+      *    Security : the EFT account id must not appear anywhere
+           MOVE ZERO TO WS-EFT-COUNT
+           INSPECT API-PAYLOAD
+               TALLYING WS-EFT-COUNT FOR ALL WS-FULL-EFT
+           INSPECT API-CUST-RESPONSE
+               TALLYING WS-EFT-COUNT FOR ALL WS-FULL-EFT
+           IF WS-EFT-COUNT > ZERO
                SET WS-TEST-BAD TO TRUE
                DISPLAY 'TSTCUST: PII LEAK DETECTED'
            END-IF

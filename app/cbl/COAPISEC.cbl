@@ -97,8 +97,8 @@
          05 WS-IDX                  PIC 9(04) VALUE ZEROS.
          05 WS-POS                  PIC 9(04) VALUE ZEROS.
          05 WS-ORD                  PIC 9(05) VALUE ZEROS.
-         05 WS-HASH                 PIC 9(08) VALUE ZEROS.
-         05 WS-HASH-X               PIC 9(08) VALUE ZEROS.
+         05 WS-HASH                 PIC 9(14) VALUE ZEROS.
+         05 WS-HASH-X               PIC 9(14) VALUE ZEROS.
          05 WS-QNAME                PIC X(16) VALUE SPACES.
          05 WS-TASK-NUM             PIC 9(07) VALUE ZEROS.
          05 WS-USERID-NUM           PIC 9(09) VALUE ZEROS.
@@ -164,7 +164,7 @@
       *----------------------------------------------------------------*
        0000-MAIN.
 
-           IF EIBCALEN > 0
+           IF EIBCALEN >= LENGTH OF API-COMMAREA
                SET ADDRESS OF API-COMMAREA TO ADDRESS OF DFHCOMMAREA
                PERFORM 0100-DISPATCH
            END-IF
@@ -194,7 +194,7 @@
 
            SET API-HTTP-BAD-REQUEST TO TRUE
            MOVE -1                  TO API-RETURN-CODE
-           MOVE 'APIREQ01'          TO API-ERR-CODE
+           SET API-ERR-BAD-REQUEST  TO TRUE
            MOVE 'Unsupported API service operation'
                                     TO API-ERR-MESSAGE.
 
@@ -389,7 +389,7 @@
 
            SET API-HTTP-UNAUTHORIZED TO TRUE
            MOVE -1                  TO API-RETURN-CODE
-           MOVE 'APIAUTH1'          TO API-ERR-CODE
+           SET API-ERR-UNAUTHORIZED TO TRUE
            MOVE 'Authentication failed'
                                     TO API-ERR-MESSAGE
       *  Ensure no token or payload leaks on the failure path.
@@ -405,7 +405,7 @@
 
            SET API-HTTP-SERVER-ERROR TO TRUE
            MOVE -2                  TO API-RETURN-CODE
-           MOVE 'APISRV1 '          TO API-ERR-CODE
+           SET API-ERR-SERVER-ERROR TO TRUE
            MOVE 'Internal server error'
                                     TO API-ERR-MESSAGE
            MOVE SPACES              TO API-TOKEN-VALUE
@@ -466,6 +466,7 @@
                PERFORM 9200-FORMAT-TS
                MOVE WS-TS-26        TO WS-TS-NOW
                IF WS-TS-NOW > TOK-EXPIRY-TS
+                   PERFORM 2400-PURGE-EXPIRED
                    PERFORM 1900-UNAUTHORIZED
                ELSE
                    PERFORM 2300-TOKEN-VALID
@@ -487,9 +488,23 @@
            MOVE SPACES              TO API-ERR-MESSAGE.
 
       *----------------------------------------------------------------*
+      *                     2400-PURGE-EXPIRED
+      *  Delete the backing TSQ for an expired token (best-effort) so
+      *  the stale registry entry is not left behind.  WS-QNAME is set
+      *  by the preceding 2100-READ-REGISTRY hash.
+      *----------------------------------------------------------------*
+       2400-PURGE-EXPIRED.
+
+           EXEC CICS DELETEQ TS
+                QUEUE     (WS-QNAME)
+                RESP      (WS-RESP-CD)
+                RESP2     (WS-REAS-CD)
+           END-EXEC.
+
+      *----------------------------------------------------------------*
       *                     9000-HASH-QNAME
-      *  Numeric rolling hash of the 64-char token -> 8-digit value,
-      *  producing queue name 'AT' + hash (10 chars, <= 16 TSQ limit).
+      *  Numeric rolling hash of the 64-char token -> 14-digit value,
+      *  producing queue name 'AT' + hash (16 chars, = 16 TSQ limit).
       *----------------------------------------------------------------*
        9000-HASH-QNAME.
 
@@ -498,7 +513,7 @@
                MOVE WS-TOKEN-VALUE (WS-POS:1) TO WS-ONE-CHAR
                COMPUTE WS-ORD = FUNCTION ORD (WS-ONE-CHAR)
                COMPUTE WS-HASH =
-                   FUNCTION MOD (WS-HASH * 31 + WS-ORD, 100000000)
+                   FUNCTION MOD (WS-HASH * 31 + WS-ORD, 100000000000000)
            END-PERFORM
 
            MOVE WS-HASH             TO WS-HASH-X

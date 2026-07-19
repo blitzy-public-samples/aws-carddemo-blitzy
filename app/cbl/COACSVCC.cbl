@@ -81,7 +81,7 @@
       *****************************************************************
        0000-MAIN.
 
-           IF EIBCALEN GREATER THAN ZERO
+           IF EIBCALEN >= LENGTH OF API-COMMAREA
               PERFORM 1000-READ-ACCT
                  THRU 1000-READ-ACCT-EXIT
            END-IF
@@ -119,14 +119,16 @@
                    SET API-HTTP-OK          TO TRUE
                    MOVE ZERO                TO API-RETURN-CODE
                WHEN DFHRESP(NOTFND)
+                   MOVE SPACES              TO API-PAYLOAD
                    SET API-HTTP-NOT-FOUND   TO TRUE
                    MOVE +4                  TO API-RETURN-CODE
                    MOVE 'NOTFOUND'          TO API-ERR-CODE
                    MOVE 'Account not found' TO API-ERR-MESSAGE
                WHEN OTHER
+                   MOVE SPACES              TO API-PAYLOAD
                    SET API-HTTP-SERVER-ERROR TO TRUE
                    MOVE +8                  TO API-RETURN-CODE
-                   MOVE 'SRVERROR'          TO API-ERR-CODE
+                   SET API-ERR-SERVER-ERROR TO TRUE
                    MOVE 'Internal server error'
                                             TO API-ERR-MESSAGE
            END-EVALUATE

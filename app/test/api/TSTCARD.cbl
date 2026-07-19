@@ -68,6 +68,8 @@
        01  WS-GOOD-CARD          PIC X(16) VALUE '0500024453765740'.
        01  WS-BAD-CARD           PIC X(16) VALUE '9999999999999999'.
        01  WS-EXP-CARD-MASK      PIC X(16) VALUE '************5740'.
+       01  WS-EXP-EMBOSSED       PIC X(50) VALUE 'Aniya Von'.
+       01  WS-EXP-EXPIRY         PIC X(10) VALUE '2023-03-09'.
 
       ******************************************************************
       * Security leak probes. Neither the full PAN nor the card       *
@@ -76,8 +78,13 @@
       ******************************************************************
        01  WS-FULL-PAN           PIC X(16) VALUE '0500024453765740'.
        01  WS-CVV                PIC X(03) VALUE '747'.
+      *    Contextual CVV signature = acct id (00000000050) immediately
+      *    followed by the CVV (747) as laid out in the raw card record;
+      *    a near-zero false-positive probe that the CVV never leaks.
+       01  WS-CVV-CTX            PIC X(14) VALUE '00000000050747'.
        01  WS-PAN-COUNT          PIC 9(04) VALUE 0.
        01  WS-CVV-COUNT          PIC 9(04) VALUE 0.
+       01  WS-CVV-CTX-COUNT      PIC 9(04) VALUE 0.
 
        PROCEDURE DIVISION.
       ******************************************************************
@@ -131,6 +138,12 @@
            IF CARD-ACTIVE-STATUS NOT = 'Y'
                MOVE 'N'              TO WS-TEST-PASS-FLG
            END-IF
+           IF CARD-EMBOSSED-NAME NOT = WS-EXP-EMBOSSED
+               MOVE 'N'              TO WS-TEST-PASS-FLG
+           END-IF
+           IF CARD-EXPIRAION-DATE NOT = WS-EXP-EXPIRY
+               MOVE 'N'              TO WS-TEST-PASS-FLG
+           END-IF
 
       *    Security: the full PAN must never appear in the payload.
            MOVE ZERO                 TO WS-PAN-COUNT
@@ -142,10 +155,19 @@
            END-IF
 
       *    Security: the card security code must never appear either.
+      *    Scan the bare CVV and the acct-id+CVV signature across both
+      *    the raw payload and the mapped response for full coverage.
            MOVE ZERO                 TO WS-CVV-COUNT
            INSPECT API-PAYLOAD
                TALLYING WS-CVV-COUNT FOR ALL WS-CVV
-           IF WS-CVV-COUNT > 0
+           INSPECT API-CARD-RESPONSE
+               TALLYING WS-CVV-COUNT FOR ALL WS-CVV
+           MOVE ZERO                 TO WS-CVV-CTX-COUNT
+           INSPECT API-PAYLOAD
+               TALLYING WS-CVV-CTX-COUNT FOR ALL WS-CVV-CTX
+           INSPECT API-CARD-RESPONSE
+               TALLYING WS-CVV-CTX-COUNT FOR ALL WS-CVV-CTX
+           IF WS-CVV-COUNT > 0 OR WS-CVV-CTX-COUNT > 0
                MOVE 'N'              TO WS-TEST-PASS-FLG
                DISPLAY 'TSTCARD: SENSITIVE DATA LEAK DETECTED'
            END-IF

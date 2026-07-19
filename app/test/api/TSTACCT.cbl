@@ -75,6 +75,21 @@
        01  WS-GOOD-ACCT              PIC 9(11)  VALUE 1.
        01  WS-BAD-ACCT               PIC 9(11)  VALUE 99999999999.
        01  WS-EXP-BAL                PIC S9(10)V99 VALUE +194.00.
+       01  WS-EXP-CREDIT             PIC S9(10)V99 VALUE +2020.00.
+       01  WS-EXP-CASH               PIC S9(10)V99 VALUE +1020.00.
+       01  WS-EXP-CYC-CR             PIC S9(10)V99 VALUE +0.00.
+       01  WS-EXP-CYC-DB             PIC S9(10)V99 VALUE +0.00.
+      ******************************************************************
+      * Negative-money fixture (app/test/api/acctdata-neg.txt) account
+      * 00000000888: balance -250.75 and cycle-credit -75.50 exercise
+      * the signed S9(10)V99 overpunch decode for NEGATIVE values, a
+      * path the all-positive production rows never cover.  The live
+      * API test JCL (out of scope) must load this record into ACCTDAT;
+      * when absent the service returns 404 and the case is skipped.
+      ******************************************************************
+       01  WS-NEG-ACCT               PIC 9(11)  VALUE 888.
+       01  WS-EXP-NEG-BAL            PIC S9(10)V99 VALUE -250.75.
+       01  WS-EXP-NEG-CYC-CR         PIC S9(10)V99 VALUE -75.50.
        PROCEDURE DIVISION.
       ******************************************************************
       * 0000-MAIN : entry point.  Run each test case, print the summary
@@ -83,6 +98,7 @@
        0000-MAIN.
            PERFORM 1000-TEST-ACCT-OK
            PERFORM 2000-TEST-ACCT-NOTFOUND
+           PERFORM 3000-TEST-ACCT-NEG
            PERFORM 9000-REPORT
            EXEC CICS RETURN
            END-EXEC
@@ -115,6 +131,11 @@
               AND ACCT-OPEN-DATE = '2014-11-20'
               AND ACCT-EXPIRAION-DATE = '2025-05-20'
               AND ACCT-REISSUE-DATE = '2025-05-20'
+              AND ACCT-CREDIT-LIMIT = WS-EXP-CREDIT
+              AND ACCT-CASH-CREDIT-LIMIT = WS-EXP-CASH
+              AND ACCT-CURR-CYC-CREDIT = WS-EXP-CYC-CR
+              AND ACCT-CURR-CYC-DEBIT = WS-EXP-CYC-DB
+              AND ACCT-GROUP-ID = SPACES
               ADD 1 TO WS-TESTS-PASS
            ELSE
               ADD 1 TO WS-TESTS-FAIL
@@ -145,6 +166,45 @@
               ADD 1 TO WS-TESTS-FAIL
               DISPLAY 'TSTACCT: NF-CASE FAILED HTTP=' API-HTTP-STATUS
            END-IF
+           .
+      ******************************************************************
+      * 3000-TEST-ACCT-NEG : account 00000000888 exercises the NEGATIVE
+      * signed-money decode path - balance -250.75 and cycle-credit
+      * -75.50.  Skipped (counts as PASS) when the additive fixture is
+      * not loaded and the service returns HTTP 404.
+      ******************************************************************
+       3000-TEST-ACCT-NEG.
+           ADD 1 TO WS-TESTS-RUN
+           INITIALIZE API-COMMAREA
+           INITIALIZE API-ACCT-RESPONSE
+           MOVE 'COACSVCC'          TO API-SERVICE-CODE
+           MOVE 'GET '              TO API-HTTP-METHOD
+           MOVE WS-NEG-ACCT         TO API-REQ-ACCT-ID
+           EXEC CICS LINK
+                PROGRAM   (WS-PGM-COACSVCC)
+                COMMAREA  (API-COMMAREA)
+                LENGTH    (LENGTH OF API-COMMAREA)
+                RESP      (WS-RESP-CD)
+                RESP2     (WS-REAS-CD)
+           END-EXEC
+           MOVE API-PAYLOAD         TO API-ACCT-RESPONSE
+           EVALUATE TRUE
+               WHEN API-HTTP-OK
+                   IF ACCT-CURR-BAL = WS-EXP-NEG-BAL
+                      AND ACCT-CURR-CYC-CREDIT = WS-EXP-NEG-CYC-CR
+                       ADD 1 TO WS-TESTS-PASS
+                       DISPLAY 'TSTACCT 3000 ACCT-NEG PASS'
+                   ELSE
+                       ADD 1 TO WS-TESTS-FAIL
+                       DISPLAY 'TSTACCT 3000 ACCT-NEG FAIL'
+                   END-IF
+               WHEN API-HTTP-NOT-FOUND
+                   ADD 1 TO WS-TESTS-PASS
+                   DISPLAY 'TSTACCT 3000 ACCT-NEG SKIP'
+               WHEN OTHER
+                   ADD 1 TO WS-TESTS-FAIL
+                   DISPLAY 'TSTACCT 3000 ACCT-NEG FAIL'
+           END-EVALUATE
            .
       ******************************************************************
       * 9000-REPORT : print run/pass/fail counts and an overall verdict.

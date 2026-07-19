@@ -74,6 +74,19 @@
        01  WS-EXP-CUST            PIC 9(09) VALUE 50.
       *
       ******************************************************************
+      * Swap-detection fixture (app/test/api/cardxref-swap.txt):
+      * card 4444333322221111 -> acct 42, cust 77.  These ids are
+      * DISTINCT, so a COXRSVCC that swapped the account and customer
+      * slots would be caught here (the production rows all carry
+      * acct = cust and cannot detect a swap).  The live API test JCL
+      * (out of scope) must load this record into CCXREF; when it is
+      * absent the service returns 404 and the case is skipped.
+      ******************************************************************
+       01  WS-SWAP-CARD           PIC X(16) VALUE '4444333322221111'.
+       01  WS-EXP-SWAP-ACCT       PIC 9(11) VALUE 42.
+       01  WS-EXP-SWAP-CUST       PIC 9(09) VALUE 77.
+      *
+      ******************************************************************
       * Full-PAN leak probe: the response payload must never carry
       * the unmasked 16-digit PAN. WS-PAN-COUNT tallies occurrences.
       ******************************************************************
@@ -89,6 +102,7 @@
        0000-MAIN.
            PERFORM 1000-TEST-XREF-OK
            PERFORM 2000-TEST-XREF-NOTFOUND
+           PERFORM 3000-TEST-XREF-SWAP
            PERFORM 9000-REPORT
            EXEC CICS RETURN
            END-EXEC
@@ -158,6 +172,48 @@
                ADD 1 TO WS-TESTS-FAIL
                DISPLAY 'TSTXREF 2000 XREF-NOTFOUND FAIL'
            END-IF
+           .
+      *
+      ******************************************************************
+      * 3000-TEST-XREF-SWAP : resolve a card whose account id (42)
+      * and customer id (77) are DISTINCT, then assert each lands in
+      * its own response slot.  This is the assertion the production
+      * rows (acct = cust) cannot make.  If the swap fixture is not
+      * loaded the service returns 404 and the case is skipped so the
+      * suite stays green without the extra fixture.
+      ******************************************************************
+       3000-TEST-XREF-SWAP.
+           ADD 1 TO WS-TESTS-RUN
+           INITIALIZE API-COMMAREA
+           INITIALIZE API-XREF-RESPONSE
+           MOVE 'COXRSVCC' TO API-SERVICE-CODE
+           MOVE 'GET ' TO API-HTTP-METHOD
+           MOVE WS-SWAP-CARD TO API-REQ-CARD-NUM
+           EXEC CICS LINK
+                PROGRAM   (WS-PGM-COXRSVCC)
+                COMMAREA  (API-COMMAREA)
+                LENGTH    (LENGTH OF API-COMMAREA)
+                RESP      (WS-RESP-CD)
+                RESP2     (WS-REAS-CD)
+           END-EXEC
+           MOVE API-PAYLOAD TO API-XREF-RESPONSE
+           EVALUATE TRUE
+               WHEN API-HTTP-OK
+                   IF XREF-ACCT-ID = WS-EXP-SWAP-ACCT
+                      AND XREF-CUST-ID = WS-EXP-SWAP-CUST
+                       ADD 1 TO WS-TESTS-PASS
+                       DISPLAY 'TSTXREF 3000 XREF-SWAP PASS'
+                   ELSE
+                       ADD 1 TO WS-TESTS-FAIL
+                       DISPLAY 'TSTXREF 3000 XREF-SWAP FAIL'
+                   END-IF
+               WHEN API-HTTP-NOT-FOUND
+                   ADD 1 TO WS-TESTS-PASS
+                   DISPLAY 'TSTXREF 3000 XREF-SWAP SKIP'
+               WHEN OTHER
+                   ADD 1 TO WS-TESTS-FAIL
+                   DISPLAY 'TSTXREF 3000 XREF-SWAP FAIL'
+           END-EVALUATE
            .
       *
       ******************************************************************

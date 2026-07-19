@@ -49,6 +49,10 @@
            05  WS-XREF-KEY         PIC X(16) VALUE SPACES.
            05  WS-MASKED-PAN       PIC X(16) VALUE SPACES.
            05  WS-PAN-LAST4        PIC X(04) VALUE SPACES.
+           05  WS-PAN-WORK         PIC X(16) VALUE SPACES.
+           05  WS-PAN-LEN          PIC S9(04) COMP VALUE ZERO.
+           05  WS-PAN-IDX          PIC S9(04) COMP VALUE ZERO.
+           05  WS-PAN-START        PIC S9(04) COMP VALUE ZERO.
       *
       *****************************************************************
       * Card cross-reference record layout (read target,              *
@@ -90,7 +94,7 @@
       * the router one logical level higher.                          *
       ******************************************************************
        0000-MAIN.
-           IF EIBCALEN > 0
+           IF EIBCALEN >= LENGTH OF API-COMMAREA
                MOVE DFHCOMMAREA(1:LENGTH OF API-COMMAREA)
                    TO API-COMMAREA
                PERFORM 1000-READ-XREF
@@ -134,7 +138,7 @@
                    MOVE SPACES                  TO API-PAYLOAD
                    SET API-HTTP-SERVER-ERROR    TO TRUE
                    MOVE +8                      TO API-RETURN-CODE
-                   MOVE 'SRVERR'                TO API-ERR-CODE
+                   SET API-ERR-SERVER-ERROR     TO TRUE
                    MOVE 'Internal server error'
                        TO API-ERR-MESSAGE
            END-EVALUATE
@@ -164,9 +168,34 @@
       * placed into the response payload or any log.                  *
       ******************************************************************
        2100-MASK-PAN.
+           MOVE XREF-CARD-NUM OF CARD-XREF-RECORD
+                                       TO WS-PAN-WORK
+           MOVE ZERO                   TO WS-PAN-LEN
+
+           PERFORM VARYING WS-PAN-IDX FROM 16 BY -1
+                   UNTIL WS-PAN-IDX < 1
+                      OR WS-PAN-LEN > 0
+               IF WS-PAN-WORK (WS-PAN-IDX:1) NOT = SPACE
+                   MOVE WS-PAN-IDX     TO WS-PAN-LEN
+               END-IF
+           END-PERFORM
+
+           MOVE '0000'                 TO WS-PAN-LAST4
+
+           EVALUATE TRUE
+               WHEN WS-PAN-LEN >= 4
+                   COMPUTE WS-PAN-START = WS-PAN-LEN - 3
+                   MOVE WS-PAN-WORK (WS-PAN-START:4)
+                       TO WS-PAN-LAST4
+               WHEN WS-PAN-LEN > 0
+                   COMPUTE WS-PAN-START = 5 - WS-PAN-LEN
+                   MOVE WS-PAN-WORK (1:WS-PAN-LEN)
+                       TO WS-PAN-LAST4 (WS-PAN-START:WS-PAN-LEN)
+               WHEN OTHER
+                   CONTINUE
+           END-EVALUATE
+
            MOVE ALL '*'                TO WS-MASKED-PAN
-           MOVE XREF-CARD-NUM OF CARD-XREF-RECORD (13:4)
-               TO WS-PAN-LAST4
            MOVE WS-PAN-LAST4           TO WS-MASKED-PAN (13:4)
            MOVE WS-MASKED-PAN
                TO XREF-CARD-NUM-MASKED OF API-XREF-RESPONSE
