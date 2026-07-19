@@ -70,7 +70,7 @@ import com.aws.carddemo.repository.CardXrefRepository;
  * {@code config/BatchConfig}. It relies on Spring Boot's Batch auto-configuration, which supplies the
  * persistent, restartable {@link JobRepository} and the {@link PlatformTransactionManager} injected
  * through the constructor &mdash; the same convention used by the sibling batch configurations
- * ({@code AdminBatchJobConfig}, {@code DateConversionJobConfig}). The migration rationale lives in
+ * (for example {@code AdminBatchJobConfig}). The migration rationale lives in
  * {@code docs/decision-log.md} rather than in code comments (Explainability rule).</p>
  *
  * <p>This configuration is stateless and thread-safe: it holds only immutable collaborators supplied

@@ -102,7 +102,7 @@ import java.util.Optional;
  * {@code config/BatchConfig}. It relies on Spring Boot's Batch auto-configuration, which supplies
  * the persistent, restartable {@link JobRepository} and the {@link PlatformTransactionManager}
  * injected through the constructor &mdash; the same convention used by the sibling batch
- * configurations ({@code AdminBatchJobConfig}, {@code DateConversionJobConfig}).</p>
+ * configurations (for example {@code AdminBatchJobConfig}).</p>
  *
  * <p>The configuration holds only immutable collaborators; the {@code @StepScope} tasklet reads its
  * processing date exclusively from the per-execution job parameters, so the bean is thread-safe.</p>

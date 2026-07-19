@@ -89,8 +89,8 @@ import com.aws.carddemo.repository.CustomerRepository;
  * {@code config/BatchConfig}. It relies on Spring Boot's Batch auto-configuration, which supplies
  * the persistent, restartable, JDBC-backed {@link JobRepository} and the
  * {@link PlatformTransactionManager} injected through the constructor &mdash; the same convention
- * used by the sibling batch configurations ({@code AdminBatchJobConfig},
- * {@code DateConversionJobConfig}). Adding {@code @EnableBatchProcessing} would make Boot's batch
+ * used by the sibling batch configurations (for example {@code AdminBatchJobConfig}). Adding
+ * {@code @EnableBatchProcessing} would make Boot's batch
  * auto-configuration back off and substitute a non-persistent in-memory job repository, a
  * functional regression versus the mainframe's JES2 checkpoint/restart behavior. The chunk/commit
  * interval {@link #CHUNK_SIZE} intentionally matches the shared read-only print-job commit interval

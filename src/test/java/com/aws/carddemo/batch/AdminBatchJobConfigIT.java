@@ -65,7 +65,7 @@ import org.springframework.test.context.TestPropertySource;
  * likewise relies on auto-configuration and deliberately omits {@code @EnableBatchProcessing}.</p>
  *
  * <p><strong>Launcher wiring.</strong> {@code @SpringBatchTest} is deliberately <strong>not</strong>
- * used. The application declares thirteen batch {@link Job} beans; the annotation's auto-registered
+ * used. The application declares twelve batch {@link Job} beans; the annotation's auto-registered
  * {@link JobLauncherTestUtils} autowires a single, unique {@link Job} and so is unsafe against the
  * multi-job application, and avoiding it keeps this harness uniform with the rest of the suite.
  * Instead the nested {@link BatchTestConfig} supplies exactly one {@link JobLauncherTestUtils},

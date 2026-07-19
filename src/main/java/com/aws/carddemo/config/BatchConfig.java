@@ -51,7 +51,7 @@ import org.springframework.context.annotation.Configuration;
  *       {@code JobLauncherApplicationRunner} from auto-running every {@code Job} bean at application
  *       startup. CardDemo is an online application; batch jobs are launched on demand (for example,
  *       {@code ReportSubmitService} launches {@code transactionReportJob} from the {@code /report}
- *       screen). Without this flag, all 13 jobs would fire on boot.</li>
+ *       screen). Without this flag, all 12 jobs would fire on boot.</li>
  *   <li><strong>{@code spring.batch.jdbc.initialize-schema=never}</strong> (on every profile).
  *       Flyway is the single source of truth for all DDL in this application, so the {@code BATCH_*}
  *       metadata tables and sequences are created by the versioned migration
