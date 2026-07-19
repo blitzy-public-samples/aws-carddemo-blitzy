@@ -1,10 +1,12 @@
 package com.aws.carddemo.domain;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import com.aws.carddemo.AbstractPostgresIntegrationTest;
 import jakarta.persistence.EntityManager;
 import jakarta.persistence.PersistenceContext;
+import jakarta.persistence.PersistenceException;
 import org.junit.jupiter.api.Test;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -191,5 +193,65 @@ class CardXrefPersistenceIT extends AbstractPostgresIntegrationTest {
         assertThat(reloaded.getXrefCardNum().strip())
                 .as("card number component round-trips (CHAR(16), trailing padding stripped)")
                 .isEqualTo(NEW_CARD_NUM);
+    }
+
+    /**
+     * Card number used by {@link #duplicateCardNumberIsRejected()} to prove the
+     * single-key uniqueness invariant. Exactly sixteen characters (matching the
+     * {@code CHAR(16)} column {@code xref_card_num}) and absent from the
+     * {@code V2} seed set, so the first insert is always accepted and only the
+     * uniqueness rule — not a seed collision — governs the second insert.
+     */
+    private static final String DUP_CARD_NUM = "DUPXREFCARD00001";
+
+    /**
+     * Regression test for the legacy VSAM KSDS single-key uniqueness of the
+     * card cross-reference (finding F-001). The legacy base cluster
+     * {@code CCXREF} keys on the 16-byte card number alone
+     * ({@code legacy/jcl/XREFFILE.jcl} defines {@code KEYS(16 0)}), so it can
+     * never hold two records that share a card number; the account id is only a
+     * <em>nonunique</em> alternate index ({@code CXACAIX}). The Java schema
+     * preserves the frozen three-column composite {@link CardXref.CardXrefId}
+     * (card + customer + account) for structural traceability, which alone would
+     * admit two rows sharing a card number but differing in customer/account —
+     * silently breaking parity. The {@code UNIQUE} constraint
+     * {@code uk_card_xref_card_num} (authored by Flyway
+     * {@code V4__card_xref_unique_card_num.sql}, matching the entity's declared
+     * {@code @UniqueConstraint}) restores the KSDS invariant (AAP &sect;0.6.2,
+     * {@code docs/decision-log.md} F6).
+     *
+     * <p>The test persists one row for {@link #DUP_CARD_NUM}, flushes it
+     * successfully, then persists a second row with the <em>same</em> card
+     * number but a different customer and account (so the composite primary key
+     * differs and does <strong>not</strong> catch the duplicate). Flushing the
+     * second row must be rejected by {@code uk_card_xref_card_num} with a
+     * PostgreSQL unique-violation (SQLState {@code 23505}), reproducing the
+     * duplicate-{@code card_num} rejection the VSAM base cluster would enforce.
+     * Without the constraint (the F-001 defect) both inserts would be accepted
+     * and this assertion would fail. The whole method runs inside the
+     * class-level {@link Transactional} boundary and is rolled back afterwards,
+     * so nothing leaks into sibling tests.</p>
+     */
+    @Test
+    void duplicateCardNumberIsRejected() {
+        CardXref first = new CardXref();
+        first.setXrefCardNum(DUP_CARD_NUM);
+        first.setXrefCustId(111_111_111L);
+        first.setXrefAcctId(11_111_111_111L);
+        entityManager.persist(first);
+        entityManager.flush();
+
+        CardXref duplicate = new CardXref();
+        duplicate.setXrefCardNum(DUP_CARD_NUM);
+        duplicate.setXrefCustId(222_222_222L);
+        duplicate.setXrefAcctId(22_222_222_222L);
+        entityManager.persist(duplicate);
+
+        assertThatThrownBy(entityManager::flush)
+                .as("a second card_xref row sharing xref_card_num='%s' (differing only in "
+                        + "customer/account) must be rejected by uk_card_xref_card_num, "
+                        + "preserving VSAM KSDS single-key uniqueness (F-001)", DUP_CARD_NUM)
+                .isInstanceOf(PersistenceException.class)
+                .hasStackTraceContaining("uk_card_xref_card_num");
     }
 }

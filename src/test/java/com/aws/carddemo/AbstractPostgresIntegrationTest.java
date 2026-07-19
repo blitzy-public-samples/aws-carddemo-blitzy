@@ -23,7 +23,8 @@ import org.testcontainers.containers.PostgreSQLContainer;
  * <p>The {@code test} profile (see {@code src/main/resources/application-test.yml}) keeps Hibernate
  * at {@code ddl-auto=validate} and lets Flyway apply the versioned migrations in order into the
  * container ({@code V0__spring_batch_metadata.sql} &rarr; {@code V1__schema.sql} &rarr;
- * {@code V2__reference_data.sql} &rarr; {@code V3__indexes.sql}); Hibernate then validates the JPA
+ * {@code V2__reference_data.sql} &rarr; {@code V3__indexes.sql} &rarr;
+ * {@code V4__card_xref_unique_card_num.sql}); Hibernate then validates the JPA
  * entity mappings against that container-materialised schema. That profile deliberately declares no
  * {@code spring.datasource.*} block so that the dynamic, container-supplied coordinates take
  * precedence &mdash; there are no hardcoded datasource credentials anywhere (AAP &sect;0.7.1).</p>
@@ -104,7 +105,8 @@ public abstract class AbstractPostgresIntegrationTest {
      * Resets the single shared container database back to its pristine, Flyway-migrated seed before
      * every test method, then re-applies the versioned migrations
      * ({@code V0__spring_batch_metadata.sql} &rarr; {@code V1__schema.sql} &rarr;
-     * {@code V2__reference_data.sql} &rarr; {@code V3__indexes.sql}).
+     * {@code V2__reference_data.sql} &rarr; {@code V3__indexes.sql} &rarr;
+     * {@code V4__card_xref_unique_card_num.sql}).
      *
      * <p>Because the container is a JVM-lifetime singleton (started once above for a stable port),
      * every {@code *IT} class shares one physical database. The batch, repository, controller and

@@ -33,7 +33,7 @@ traced back to its originating `legacy/` source.
 >   / `security` / `util` classes — together with `application.yml`, the `application-dev.yml` /
 >   `application-test.yml` profiles, `logback-spring.xml`, the Thymeleaf `templates/` (17 screens),
 >   the Flyway migrations `V0__spring_batch_metadata.sql` / `V1__schema.sql` / `V2__reference_data.sql`
->   / `V3__indexes.sql`, and the `src/test/**` suites (**120 of 123** primary constructs have their
+>   / `V3__indexes.sql` / `V4__card_xref_unique_card_num.sql`, and the `src/test/**` suites (**120 of 123** primary constructs have their
 >   target artifact present; the other **3** are the explicitly logged intentional non-migrations —
 >   see [§1](#1-coverage-summary)). Java paths in the forward tables denote artifacts that exist now.
 > - **Coverage claim, stated precisely.** This matrix guarantees **100 % inventory coverage** —
@@ -286,7 +286,7 @@ indexes (`V3__indexes.sql`) plus Spring Data **derived queries** (Technical Spec
 | :-------- | :------- | :-------------- | :----------------------------- |
 | `ACCTDAT` | `CVACT01Y` | `repository/AccountRepository.java` | PK `acctId` |
 | `CARDDAT` | `CVACT02Y` | `repository/CardRepository.java` | PK `cardNum`; `findByCardAcctId` replaces the `CARDAIX` alt index |
-| `CCXREF` | `CVACT03Y` | `repository/CardXrefRepository.java` | composite `@IdClass` (card + customer + account) **plus a `UNIQUE` constraint `uk_card_xref_card_num` on the 16-byte card number** to preserve the VSAM KSDS single-key uniqueness (see [`decision-log.md`](./decision-log.md) F6 divergence); `findByXrefAcctId` replaces the nonunique `CXACAIX` alt index |
+| `CCXREF` | `CVACT03Y` | `repository/CardXrefRepository.java` | composite `@IdClass` (card + customer + account) **plus a `UNIQUE` constraint `uk_card_xref_card_num` on the 16-byte card number** (authored by Flyway `V4__card_xref_unique_card_num.sql`, the enforcing DDL authority under `ddl-auto=validate`) to preserve the VSAM KSDS single-key uniqueness (see [`decision-log.md`](./decision-log.md) F6 divergence); `findByXrefAcctId` replaces the nonunique `CXACAIX` alt index |
 | `CUSTDAT` | `CVCUS01Y` | `repository/CustomerRepository.java` | PK `custId` |
 | `TRANSACT` | `CVTRA05Y` | `repository/TransactionRepository.java` | PK `tranId`; the `TRANIDX` alternate index (`KEYS(26 304)` = `TRAN-PROC-TS`) maps to a secondary index on `proc_ts`; `findByCardNum` is a **separate functional** derived query for card-scoped report access (not the literal AIX) — see [`decision-log.md`](./decision-log.md) F7 |
 | `USRSEC` | `CSUSR01Y` | `repository/UserSecurityRepository.java` | lookup by `usrId` (authentication) |
@@ -380,6 +380,18 @@ data; `SORT` becomes a Java `Comparator` / SQL `ORDER BY`; GDG output becomes jo
 > mapped above. Note that `TRANBKP.jcl` is an IDCAMS REPRO backup job (no COBOL program); it is
 > listed as a business row in §3 only because the migration plan groups it with `CBTRN01C` under one
 > frozen job-config name — see footnote [^cbtrn01c].
+
+> **No business foreign keys (loose VSAM coupling).** The relational schema deliberately declares
+> **no** referential foreign-key constraints between the business tables; the only foreign keys in
+> the database are the Spring Batch `batch_*` metadata FKs authored by `V0__spring_batch_metadata.sql`.
+> VSAM KSDS files are physically independent datasets with no DBMS-enforced referential integrity, and
+> the COBOL enforced every cross-file relationship in application logic (the daily-posting job
+> `CBTRN02C` validates card/xref/account procedurally and writes unmatched records to `DALYREJS`
+> rather than aborting), so DB-level FKs would change observable behavior. Keys and alternate indexes
+> are preserved instead (one table per VSAM file, primary key + secondary indexes / Spring Data
+> derived queries), and cross-file integrity remains a service-layer/batch concern — per AAP §0.6.2,
+> the `V1__schema.sql` header (lines 16, 30), and [`decision-log.md`](./decision-log.md) (no-business-FK
+> decision, finding **F-003**).
 
 ---
 

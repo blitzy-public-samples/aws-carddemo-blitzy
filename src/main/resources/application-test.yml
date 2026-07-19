@@ -7,24 +7,25 @@
 # Activated automatically for the 'test' profile (Spring resolves this file by
 # its name, application-test.yml) and layered ON TOP OF the base application.yml.
 # It is the activation profile for the Testcontainers PostgreSQL integration/
-# parity suite intended to live under src/test/java/com/aws/carddemo/**; the
-# >=80% line-coverage goal (AAP 0.7.1) is measured once that suite exists.
+# parity suite under src/test/java/com/aws/carddemo/**; the >=80% combined
+# (unit + integration) line-coverage goal (AAP 0.7.1) is measured against that
+# suite.
 #
 # -----------------------------------------------------------------------------
-# CURRENT STATUS (this milestone) - read before relying on the CONTRACT below:
-#   * Migrations: only db/migration/V0__spring_batch_metadata.sql exists today.
-#     The business-schema migrations V1 (schema) / V2 (reference data) /
-#     V3 (indexes) are NOT yet present - they are downstream deliverables.
-#   * Integration tests: NONE exist yet. Every test currently under
-#     src/test/java/** is a pure JUnit unit test that starts no Spring context
-#     and opens no database connection. The org.testcontainers dependencies are
-#     declared in pom.xml but are not yet exercised by any test.
-#   * Startup/parity: full application startup is therefore not demonstrable
-#     end-to-end at this milestone, so NO measured startup or integration
-#     evidence is asserted here.
-# The keys below thus describe the INTENDED test-profile CONTRACT for when those
-# downstream artifacts land - not behavior that is already exercised. Each key is
-# validated incrementally as the corresponding artifact (V1-V3, the ITs) arrives.
+# CURRENT STATUS - the CONTRACT below is fully realized and exercised:
+#   * Migrations: the complete Flyway set is present under db/migration/ and is
+#     applied in version order into the container - V0 (Spring Batch metadata) ->
+#     V1 (schema) -> V2 (reference data) -> V3 (indexes) ->
+#     V4 (card_xref single-key UNIQUE constraint uk_card_xref_card_num).
+#   * Integration tests: the Testcontainers suite exists under
+#     src/test/java/com/aws/carddemo/** (AbstractPostgresIntegrationTest plus the
+#     *IT classes). Each *IT boots a Spring context against a REAL PostgreSQL
+#     container, so the org.testcontainers dependencies declared in pom.xml are
+#     actively exercised.
+#   * Startup/parity: full application startup against the containerized schema is
+#     demonstrated end-to-end by that suite (Flyway migrate + Hibernate validate),
+#     so the keys below describe behavior that is actually exercised, not merely
+#     intended.
 # -----------------------------------------------------------------------------
 #
 # CONNECTION CONTRACT - this profile intentionally defines NO database-connection
@@ -36,11 +37,11 @@
 # PostgreSQLContainer<>("postgres:18-alpine") binding the coordinates at runtime,
 # so this file deliberately leaves them unset for the dynamic values to win.
 #
-# PARITY CONTRACT (AAP 0.6.x): once the suite and V1-V3 exist, the tests will run
-# against a REAL PostgreSQL container with the REAL Flyway schema (V0 batch
-# metadata -> V1 schema -> V2 reference data -> V3 indexes), with no in-memory
-# database and no auto-generated schema, so they will exercise exactly the same
-# DDL and reference data as production. As of this milestone only V0 is applied.
+# PARITY CONTRACT (AAP 0.6.x): the tests run against a REAL PostgreSQL container
+# with the REAL Flyway schema (V0 batch metadata -> V1 schema -> V2 reference
+# data -> V3 indexes -> V4 card_xref single-key UNIQUE constraint), with no
+# in-memory database and no auto-generated schema, so they exercise exactly the
+# same DDL and reference data as production.
 # =============================================================================
 
 spring:
@@ -56,15 +57,15 @@ spring:
 
   flyway:
     # Run the versioned migrations into the container so tests hit the true
-    # schema in version order. As of this milestone only V0 (Spring Batch
-    # metadata) exists; the business-schema migrations V1 (schema) ->
-    # V2 (reference data) -> V3 (indexes) apply here automatically once they are
-    # added downstream. Migration locations are inherited from the base profile
-    # (classpath:db/migration).
+    # schema in version order: V0 (Spring Batch metadata) -> V1 (schema) ->
+    # V2 (reference data) -> V3 (indexes) -> V4 (card_xref single-key UNIQUE
+    # constraint uk_card_xref_card_num), all present under db/migration/ and
+    # applied automatically. Migration locations are inherited from the base
+    # profile (classpath:db/migration).
     enabled: true
     # Test-only: permit Flyway 'clean' so the integration-test base
     # (AbstractPostgresIntegrationTest) can reset the DISPOSABLE Testcontainers
-    # database back to the pristine V0->V1->V2->V3 seed before each test, giving
+    # database back to the pristine V0->V1->V2->V3->V4 seed before each test, giving
     # every *IT full data isolation on the single shared container. This is scoped
     # exclusively to the 'test' profile against the ephemeral container; the base
     # profile keeps clean disabled so a real database can never be wiped.

@@ -22,11 +22,13 @@ import org.springframework.web.servlet.ModelAndView;
  * Thymeleaf application and introduces no new REST/JSON interface.</p>
  *
  * <p>The advice also <em>bridges</em> framework data-access failures into the same screen behaviour.
- * Spring's {@code org.springframework.dao.DataAccessException} subclasses and JPA's
- * {@code jakarta.persistence.EntityNotFoundException} are translated to the equivalent CardDemo
- * status semantics (record-not-found, duplicate/constraint violation, resource-unavailable, or a
- * generic data error) and surfaced identically, preserving the underlying cause so no diagnostic
- * detail is lost. Each handler logs before returning; nothing is silently discarded. The HTTP status
+ * Spring's {@code org.springframework.dao.DataAccessException} subclasses, JPA's
+ * {@code jakarta.persistence.EntityNotFoundException}, and the transaction-infrastructure failure
+ * {@code org.springframework.transaction.CannotCreateTransactionException} (a connection that cannot
+ * be borrowed to <em>begin</em> a transaction, for example on a synchronous batch launch) are
+ * translated to the equivalent CardDemo status semantics (record-not-found, duplicate/constraint
+ * violation, resource-unavailable, or a generic data error) and surfaced identically, preserving the
+ * underlying cause so no diagnostic detail is lost. Each handler logs before returning; nothing is silently discarded. The HTTP status
  * carried on the {@link ModelAndView} records the outcome category: {@code 404} not-found,
  * {@code 409} duplicate, {@code 503} resource-unavailable, {@code 500} logic/base/generic, and
  * {@code 200} for the informational end-of-data signal.</p>
@@ -237,6 +239,49 @@ public class GlobalExceptionHandler {
         ResourceUnavailable translated = new ResourceUnavailable("Data service unavailable. Please retry.", ex);
         log.error("Data resource failure (bridged) [FILE STATUS {}]: {}",
                 translated.getFileStatus(), translated.getMessage(), ex);
+        return errorView(translated.getMessage(), translated.getFileStatus(), HttpStatus.SERVICE_UNAVAILABLE);
+    }
+
+    /**
+     * Bridges a transaction-infrastructure failure raised while <em>beginning</em> a transaction
+     * &mdash; Spring's {@code org.springframework.transaction.CannotCreateTransactionException}
+     * &mdash; into CardDemo resource-unavailable behaviour, so a database outage surfaces
+     * identically to the pure read path.
+     *
+     * <p>A repository read whose connection cannot be obtained is translated by the persistence layer
+     * into a {@code org.springframework.dao.DataAccessResourceFailureException} (a
+     * {@link org.springframework.dao.DataAccessException}) and handled above &mdash; hence the read
+     * path already yields {@code 503}. A <em>synchronous batch launch</em> fails one layer earlier:
+     * {@code JobLauncher.run(...)} asks the {@code JobRepository}'s {@code PlatformTransactionManager}
+     * to begin a transaction, and when the connection cannot be borrowed (database unreachable, or the
+     * connection pool exhausted) the transaction manager raises a
+     * {@code CannotCreateTransactionException}. That type extends
+     * {@code org.springframework.transaction.TransactionException}, <strong>not</strong>
+     * {@code DataAccessException}, so without this handler it escapes every data-access bridge above
+     * and falls through to the container's generic {@code 500}. Mapping it here to
+     * {@link ResourceUnavailable} (FILE STATUS {@code "93"} / CICS {@code NOTOPEN}) restores parity:
+     * the same underlying &ldquo;cannot open the data resource&rdquo; condition yields the same
+     * sanitized HTTP {@code 503 Service Unavailable} and identical on-screen message, whether it
+     * arises on a read or on a batch-launch request. Referenced by fully-qualified name (no import),
+     * consistent with the data-access bridges above. Logged at {@code ERROR} with the full stack
+     * trace because the in-flight operation cannot complete.</p>
+     *
+     * <p>Origin: FILE STATUS {@code '93'} not-open / CICS {@code NOTOPEN} fatal open guard
+     * legacy/cbl/CBTRN02C.cbl (0300-DALYREJS-OPEN &rarr; 9999-ABEND-PROGRAM); the modern trigger is a
+     * transaction-begin connection failure on the report-submit batch-launch path
+     * (legacy/cbl/CORPT00C.cbl WIRTE-JOBSUB-TDQ &rarr; {@code JobLauncher.run}). See Technical
+     * Specification &sect;0.6.5.</p>
+     *
+     * @param ex the transaction-creation failure being bridged (the connection could not be obtained
+     *           to begin the transaction)
+     * @return the error screen with the message line set and HTTP {@code 503 Service Unavailable}
+     */
+    @ExceptionHandler(org.springframework.transaction.CannotCreateTransactionException.class)
+    public ModelAndView handleCannotCreateTransaction(
+            org.springframework.transaction.CannotCreateTransactionException ex) {
+        ResourceUnavailable translated = new ResourceUnavailable("Data service unavailable. Please retry.", ex);
+        log.error("Transaction could not be started (bridged from {}) [FILE STATUS {}]: {}",
+                ex.getClass().getName(), translated.getFileStatus(), translated.getMessage(), ex);
         return errorView(translated.getMessage(), translated.getFileStatus(), HttpStatus.SERVICE_UNAVAILABLE);
     }
 

@@ -2,13 +2,16 @@
 -- V3__indexes.sql
 --
 -- AWS CardDemo secondary (non-unique) indexes: the legacy VSAM ALTERNATE INDEXes
--- re-expressed as PostgreSQL B-tree indexes. This is the third and final Flyway
+-- re-expressed as PostgreSQL B-tree indexes. This is the third Flyway
 -- migration of the COBOL -> Java 25 / Spring Boot 3.5.16 migration (AAP 0.4.1,
 -- 0.6.2). Flyway applies migrations in version order:
 --   V0 (Spring Batch metadata) -> V1 (business schema) -> V2 (reference/seed data)
---   -> V3 (this file, secondary indexes)
+--   -> V3 (this file, secondary indexes) -> V4 (card_xref single-key UNIQUE
+--   constraint uk_card_xref_card_num)
 -- V3 runs AFTER the base tables exist (V1) and BEFORE Hibernate ddl-auto=validate
 -- verifies the JPA entity mappings, so these indexes are present for the runtime.
+-- (This file creates only NON-UNIQUE secondary indexes; the single UNIQUE
+-- constraint uk_card_xref_card_num is authored separately by V4.)
 --
 -- PURPOSE: every index below reproduces a legacy VSAM alternate index (AIX) and
 -- backs a confirmed Spring Data JPA derived-query method on the repositories in

@@ -107,6 +107,7 @@ class GlobalExceptionHandlerTest {
                 case "spring-dup"      -> throw new org.springframework.dao.DuplicateKeyException("spring duplicate key");
                 case "spring-integrity" -> throw new org.springframework.dao.DataIntegrityViolationException("integrity violation");
                 case "spring-resource" -> throw new org.springframework.dao.DataAccessResourceFailureException("resource failure");
+                case "spring-tx-cannot-create" -> throw new org.springframework.transaction.CannotCreateTransactionException("Could not open JPA EntityManager for transaction");
                 case "spring-generic"  -> throw new org.springframework.dao.QueryTimeoutException("query timeout");
                 default -> throw new IllegalArgumentException("unknown kind: " + kind);
             }
@@ -279,6 +280,30 @@ class GlobalExceptionHandlerTest {
     @Test
     void springResourceFailure_bridgesTo503() throws Exception {
         mockMvc.perform(get("/boom/spring-resource"))
+                .andExpect(status().isServiceUnavailable())
+                .andExpect(view().name("error"))
+                .andExpect(model().attributeExists("errorMessage"));
+    }
+
+    /**
+     * Bridge: {@code org.springframework.transaction.CannotCreateTransactionException} &mdash; the
+     * transaction-manager failure raised when a connection cannot be borrowed to <em>begin</em> a
+     * transaction (the synchronous batch-launch analogue of the read path's connection failure)
+     * &mdash; is translated to {@link ResourceUnavailable} (FILE STATUS {@code "93"} / CICS
+     * {@code NOTOPEN}) and renders the error view with HTTP {@code 503 Service Unavailable}, so a
+     * database outage surfaces identically whether it strikes a read path or a batch launch.
+     *
+     * <p>Regression guard for the batch-launch DB-outage finding: {@code CannotCreateTransactionException}
+     * extends {@code org.springframework.transaction.TransactionException}, not
+     * {@code org.springframework.dao.DataAccessException}, so before the dedicated handler was added it
+     * escaped every data-access bridge and fell through to a generic {@code 500}. This test locks the
+     * mapped {@code 503} in place. See Technical Specification &sect;0.6.5.</p>
+     *
+     * @throws Exception if the mock request cannot be performed
+     */
+    @Test
+    void springCannotCreateTransaction_bridgesTo503() throws Exception {
+        mockMvc.perform(get("/boom/spring-tx-cannot-create"))
                 .andExpect(status().isServiceUnavailable())
                 .andExpect(view().name("error"))
                 .andExpect(model().attributeExists("errorMessage"));

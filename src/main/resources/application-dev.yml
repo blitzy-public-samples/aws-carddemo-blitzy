@@ -16,12 +16,12 @@
 # Every key the base already defines is INHERITED; this profile overrides ONLY
 # what must differ for local development.
 #
-# CURRENT STATUS (this milestone): end-to-end local startup is NOT yet
-# demonstrable, so no measured startup evidence is asserted here. Only
-# db/migration/V0__spring_batch_metadata.sql exists (the business-schema
-# migrations V1/V2/V3 are downstream), and the online menu-catalog bean wiring
-# is still being completed. The diagnostics below define the intended dev
-# CONTRACT and take full effect as those downstream artifacts land.
+# CURRENT STATUS: end-to-end local startup is demonstrable - the application
+# boots against a locally-running PostgreSQL with the full Flyway schema
+# applied. All migrations are present (V0__spring_batch_metadata, V1__schema,
+# V2__reference_data, V3__indexes) and the online menu-catalog bean wiring is
+# complete. The diagnostics below define the dev CONTRACT and are in full
+# effect.
 #
 # Merge semantics: Spring Boot flattens YAML to individual leaf properties, and
 # a profile-specific document overrides the base ONLY at the leaf level. So the

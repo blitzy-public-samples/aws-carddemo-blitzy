@@ -2150,7 +2150,7 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "sum(spring_batch_job_active_seconds_active_count{application=~\"$application\", job=~\"$job\", instance=~\"$instance\"})",
+          "expr": "sum(spring_batch_job_active_seconds_count{application=~\"$application\", job=~\"$job\", instance=~\"$instance\"})",
           "range": true,
           "refId": "A",
           "legendFormat": "active"

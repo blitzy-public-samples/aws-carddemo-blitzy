@@ -1,0 +1,75 @@
+-- =============================================================================
+-- V4__card_xref_unique_card_num.sql
+--
+-- AWS CardDemo card cross-reference single-key uniqueness: adds the UNIQUE
+-- constraint uk_card_xref_card_num on card_xref(xref_card_num). This is the
+-- fourth Flyway migration of the COBOL -> Java 25 / Spring Boot 3.5.16 migration
+-- (AAP 0.6.2). Flyway applies migrations in version order:
+--   V0 (Spring Batch metadata) -> V1 (business schema) -> V2 (reference/seed
+--   data) -> V3 (secondary indexes) -> V4 (this file, card_xref single-key
+--   UNIQUE constraint).
+-- V4 runs AFTER the base card_xref table (V1) and its seed rows (V2) exist and
+-- BEFORE Hibernate ddl-auto=validate verifies the JPA entity mappings, so the
+-- constraint is present for the runtime.
+--
+-- PURPOSE (parity — VSAM KSDS single-key uniqueness): the legacy VSAM base
+-- cluster CCXREF is a key-sequenced data set whose PRIMARY key is the 16-byte
+-- card number alone (legacy/jcl/XREFFILE.jcl defines KEYS(16 0) — KEYLEN 16 at
+-- offset 0 — and legacy/catlg/LISTCAT.txt confirms the account id is only a
+-- NONUNIQUE alternate index CXACAIX at offset 25). A KSDS forbids two records
+-- sharing the same base key, so a second card_xref row with a card number that
+-- already exists must be rejected. The AAP-frozen mapping (AAP 0.4.1) retains
+-- the three-column composite @IdClass on domain/CardXref.java (card + customer
+-- + account) for structural traceability; that composite key alone would admit
+-- duplicate card numbers (differing only in customer/account), silently
+-- breaking the KSDS invariant. This constraint restores it.
+--
+-- WHY A FLYWAY MIGRATION (single DDL authority): Flyway is the single source of
+-- truth for ALL schema DDL, and spring.jpa.hibernate.ddl-auto=validate — which
+-- neither creates nor verifies entity-declared @UniqueConstraint metadata —
+-- means the @Table(uniqueConstraints=@UniqueConstraint(name=
+-- "uk_card_xref_card_num", columnNames="xref_card_num")) declared on
+-- domain/CardXref.java is documentary only and is NOT enforced at runtime unless
+-- the constraint also exists in the Flyway-authored schema. This migration
+-- creates it, reconciling the DDL authority with the entity annotation and with
+-- the design recorded in docs/decision-log.md (F6) and docs/traceability-matrix.md
+-- (CCXREF row). The constraint name matches the entity annotation exactly
+-- (uk_card_xref_card_num) so the two are unambiguously the same object.
+--
+-- WHY A FORWARD MIGRATION (not an edit to V1): V1/V2/V3 are already-applied,
+-- checksum-fixed migrations in existing databases; a forward migration adds the
+-- constraint without rewriting an applied migration's checksum, which is the
+-- production-safe Flyway idiom. The card_xref seed (V2, 50 rows) contains 50
+-- DISTINCT card numbers, so the constraint applies cleanly to already-migrated
+-- databases with no data remediation required.
+--
+-- SCOPE (DDL only): this file adds ONLY the single UNIQUE constraint above. It
+-- creates NO tables, columns, seed rows, primary/foreign-key constraints,
+-- secondary indexes, Flyway callbacks, repeatable scripts, or undo scripts. The
+-- COLLATE "C" (bytewise EBCDIC/VSAM ordering) on xref_card_num from V1 is
+-- irrelevant to uniqueness (which is decided by equality, not ordering) and is
+-- inherited unchanged. PostgreSQL backs this UNIQUE constraint with an implicit
+-- unique B-tree index named uk_card_xref_card_num; the pre-existing NONUNIQUE
+-- secondary index idx_card_xref_xref_acct_id (V3) that backs the CXACAIX access
+-- path (findByXrefAcctId) is left untouched.
+--
+-- RUNTIME CONTRACT restored: CardXrefRepository.findByXrefCardNum(String) returns
+-- Optional<CardXref>, a contract that is only sound when card numbers are unique.
+-- Without this constraint a duplicate card number would make that finder throw
+-- IncorrectResultSizeDataAccessException at runtime (online HTTP 500 via
+-- GlobalExceptionHandler; batch job abort). This constraint guarantees at most
+-- one row per card number, keeping the Optional finder sound.
+--
+-- SOURCE LINEAGE (retained read-only under legacy/**): legacy/cpy/CVACT03Y.cpy
+-- (CARD-XREF-RECORD, XREF-CARD-NUM PIC X(16)); VSAM base cluster CCXREF define/
+-- load legacy/jcl/XREFFILE.jcl (KEYS(16 0)); legacy/catlg/LISTCAT.txt (CXACAIX
+-- account alternate index, AXRKP 25, NONUNIQUE). Rationale recorded in
+-- docs/decision-log.md (F6) and docs/traceability-matrix.md (CCXREF row).
+-- =============================================================================
+
+-- Enforce the legacy KSDS single-key uniqueness of the 16-byte card number. A
+-- second card_xref row whose xref_card_num already exists (differing only in
+-- customer/account) is rejected with a unique-violation, exactly as the VSAM
+-- base cluster would reject a duplicate base key.
+ALTER TABLE card_xref
+    ADD CONSTRAINT uk_card_xref_card_num UNIQUE (xref_card_num);

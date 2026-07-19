@@ -35,8 +35,8 @@ import org.springframework.security.web.SecurityFilterChain;
  *   <li><strong>Context boot</strong> &mdash; the full {@link ApplicationContext} refreshes without
  *       error ({@link #contextLoads()}).</li>
  *   <li><strong>Exact Flyway migration set</strong> &mdash; precisely {@code V0}, {@code V1},
- *       {@code V2} and {@code V3} are applied and every one is in
- *       {@link MigrationState#SUCCESS} state ({@link #flywayMigrationsAppliedExactlyV0ThroughV3()}).</li>
+ *       {@code V2}, {@code V3} and {@code V4} are applied and every one is in
+ *       {@link MigrationState#SUCCESS} state ({@link #flywayMigrationsAppliedExactlyV0ThroughV4()}).</li>
  *   <li><strong>No pending or failed migrations</strong> &mdash; nothing is left un-applied and no
  *       migration is in a failed state ({@link #noPendingOrFailedMigrations()}).</li>
  *   <li><strong>Hibernate schema validation</strong> &mdash; because the {@code test} profile keeps
@@ -92,14 +92,15 @@ class CardDemoApplicationIT extends AbstractPostgresIntegrationTest {
     }
 
     /**
-     * Exactly the versioned migrations {@code V0}, {@code V1}, {@code V2} and {@code V3} are applied,
-     * and every one is in {@link MigrationState#SUCCESS} state. Asserting the exact set (rather than a
-     * weak {@code >= 3} lower bound) guarantees the full {@code V0} (Spring Batch metadata) &rarr;
-     * {@code V1} (schema) &rarr; {@code V2} (reference data) &rarr; {@code V3} (indexes) chain ran and
-     * that no unexpected extra migration slipped in.
+     * Exactly the versioned migrations {@code V0}, {@code V1}, {@code V2}, {@code V3} and {@code V4}
+     * are applied, and every one is in {@link MigrationState#SUCCESS} state. Asserting the exact set
+     * (rather than a weak {@code >= 3} lower bound) guarantees the full {@code V0} (Spring Batch
+     * metadata) &rarr; {@code V1} (schema) &rarr; {@code V2} (reference data) &rarr; {@code V3}
+     * (indexes) &rarr; {@code V4} (card_xref single-key UNIQUE constraint) chain ran and that no
+     * unexpected extra migration slipped in.
      */
     @Test
-    void flywayMigrationsAppliedExactlyV0ThroughV3() {
+    void flywayMigrationsAppliedExactlyV0ThroughV4() {
         MigrationInfo[] applied = flyway.info().applied();
 
         Set<String> appliedVersions = Arrays.stream(applied)
@@ -107,8 +108,8 @@ class CardDemoApplicationIT extends AbstractPostgresIntegrationTest {
                 .map(m -> m.getVersion().getVersion())
                 .collect(Collectors.toSet());
         assertThat(appliedVersions)
-                .as("exactly the versioned Flyway migrations V0..V3 must be applied")
-                .containsExactlyInAnyOrder("0", "1", "2", "3");
+                .as("exactly the versioned Flyway migrations V0..V4 must be applied")
+                .containsExactlyInAnyOrder("0", "1", "2", "3", "4");
 
         Arrays.stream(applied)
                 .filter(m -> m.getVersion() != null)
@@ -120,7 +121,7 @@ class CardDemoApplicationIT extends AbstractPostgresIntegrationTest {
 
     /**
      * No migration is left pending after startup and none is in a failed state. Combined with
-     * {@link #flywayMigrationsAppliedExactlyV0ThroughV3()} this proves the schema is fully and cleanly
+     * {@link #flywayMigrationsAppliedExactlyV0ThroughV4()} this proves the schema is fully and cleanly
      * materialised before Hibernate validation and before any test touches the database.
      */
     @Test
