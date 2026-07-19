@@ -55,7 +55,10 @@ spring:
         # Dialect is intentionally NOT pinned: Spring Boot 3.x auto-detects
         # PostgreSQLDialect from the JDBC connection. If pinning ever becomes
         # necessary, use: dialect: org.hibernate.dialect.PostgreSQLDialect
-    # Base profile stays quiet; the dev profile overrides show-sql to true.
+    # Base profile stays quiet. SQL visibility on the dev profile is provided by
+    # the structured org.hibernate.SQL logger (logback), NOT by show-sql, which
+    # stays false on every profile to avoid a duplicate unstructured stdout copy
+    # (review finding N4).
     show-sql: false
 
   flyway:

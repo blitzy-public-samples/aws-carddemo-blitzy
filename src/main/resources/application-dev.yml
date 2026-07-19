@@ -10,11 +10,18 @@
 #   or
 #     SPRING_PROFILES_ACTIVE=dev   (environment variable)
 #
-# Purpose (Onboarding rule, AAP 0.7.2): let a clean local machine reach a
-# RUNNING, INSPECTABLE application against a locally-running PostgreSQL, with
-# verbose SQL/diagnostics and live template reloading. Every key the base
-# already defines is INHERITED; this profile overrides ONLY what must differ
-# for local development.
+# Purpose (Onboarding rule, AAP 0.7.2): this profile's GOAL is to let a clean
+# local machine reach a RUNNING, INSPECTABLE application against a locally-
+# running PostgreSQL, with verbose SQL/diagnostics and live template reloading.
+# Every key the base already defines is INHERITED; this profile overrides ONLY
+# what must differ for local development.
+#
+# CURRENT STATUS (this milestone): end-to-end local startup is NOT yet
+# demonstrable, so no measured startup evidence is asserted here. Only
+# db/migration/V0__spring_batch_metadata.sql exists (the business-schema
+# migrations V1/V2/V3 are downstream), and the online menu-catalog bean wiring
+# is still being completed. The diagnostics below define the intended dev
+# CONTRACT and take full effect as those downstream artifacts land.
 #
 # Merge semantics: Spring Boot flattens YAML to individual leaf properties, and
 # a profile-specific document overrides the base ONLY at the leaf level. So the
@@ -45,14 +52,19 @@ spring:
     url: ${SPRING_DATASOURCE_URL:jdbc:postgresql://localhost:5432/carddemo}
 
   jpa:
-    # Echo every executed SQL statement to the log so developers can see exactly
-    # what Hibernate issues (the base keeps this quiet with show-sql=false).
-    show-sql: true
+    # SQL visibility for developers is routed through the STRUCTURED logger only
+    # (org.hibernate.SQL: DEBUG, see the logging section below), so each statement
+    # is emitted exactly once via logback (JSON + correlation IDs). show-sql stays
+    # false - matching the base - because spring.jpa.show-sql=true would ALSO print
+    # every statement a second time straight to unstructured stdout, bypassing
+    # logback (review finding N4: no duplicate, unstructured SQL logging).
+    show-sql: false
     properties:
       hibernate:
-        # Pretty-print the logged SQL for readability. This is a DISTINCT leaf
-        # key from the base's spring.jpa.properties.hibernate.jdbc.time_zone, so
-        # both survive the profile merge (the UTC time zone is retained).
+        # Pretty-print the SQL emitted by the org.hibernate.SQL logger for
+        # readability. This is a DISTINCT leaf key from the base's
+        # spring.jpa.properties.hibernate.jdbc.time_zone, so both survive the
+        # profile merge (the UTC time zone is retained).
         format_sql: true
     # NOTE: spring.jpa.hibernate.ddl-auto is intentionally NOT overridden here.
     # It remains 'validate' (inherited from base): Flyway is the single source of
@@ -60,8 +72,10 @@ spring:
 
   flyway:
     # Inherited 'true' from the base; restated explicitly so it is unmistakable
-    # that Flyway migrations (V0 batch metadata, then V1 schema -> V2 reference
-    # data -> V3 indexes) run on the dev profile.
+    # that Flyway migrations run on the dev profile, in version order. As of this
+    # milestone only V0 (batch metadata) exists; the business-schema migrations
+    # V1 (schema) -> V2 (reference data) -> V3 (indexes) apply automatically here
+    # once they are added downstream.
     enabled: true
     # SAFETY: never permit `flyway clean` (which would drop the entire schema).
     # Guards a developer, or an accidental automation, from wiping the local
@@ -108,7 +122,9 @@ logging:
     com.aws.carddemo: DEBUG
     # Spring JDBC core operations (statement execution, batch updates).
     org.springframework.jdbc.core: DEBUG
-    # Hibernate-generated SQL statements (pairs with spring.jpa.show-sql above).
+    # Hibernate-generated SQL statements - the SINGLE, structured source of SQL
+    # visibility on this profile (spring.jpa.show-sql stays false so there is no
+    # duplicate, unstructured stdout copy; review finding N4).
     org.hibernate.SQL: DEBUG
     # Flyway migration lifecycle (which versioned migrations apply, in order).
     org.flywaydb: INFO
