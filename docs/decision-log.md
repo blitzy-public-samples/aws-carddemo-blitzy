@@ -126,6 +126,42 @@ alternatives, the concrete constraint-driven rationale, and the residual risk.
 |---|---|---|---|
 | Ship `APICSDRB.jcl` to remove `CDEMOAPI` from `GRPLIST` and `DELETE` the group's CSD definitions (idempotent), and document the operator `CEMT DISCARD` path for a running region. No FILE restoration is needed because the group defines no files. | Provide no rollback and rely on manual edits; attempt an online `DISABLE`/`DISCARD` from batch; always re-`INSTALL GROUP(CARDDEMO)` to restore clobbered files. | A scripted, idempotent CSD-level rollback plus a documented discard path gives clean recovery without destructive manual edits. Because `CDEMOAPI` never redefines the CARDDEMO files, there is nothing to restore; the base-group re-install is documented only as legacy recovery for a pre-remediation unsafe install. | Batch DFHCSDUP cannot discard resources already installed in a running region; full removal from a live region still needs the documented operator `CEMT DISCARD` or a restart. |
 
+### D20 — API token registry key derivation and collision handling
+
+| Decision | Alternatives considered | Rationale | Risk |
+|---|---|---|---|
+| Derive each MAIN-TSQ queue name from a fixed-width numeric hash of the opaque CSPRNG token under the `AT` prefix; probe the target queue before writing; on a live-but-different occupant return `WRITE-COLLIDE` so the caller re-mints (a live entry is never overwritten), reclaim an identical or expired occupant in place, and fail closed on a clock-read failure. | Use the raw 64-character token as the queue name; keep one global index queue; overwrite on collision; ignore collisions. | CICS TSQ names are length-bounded, so a bounded hash is required to map a 64-character token into the queue-name namespace; probing and refusing to clobber a live occupant preserves one-token-to-one-session integrity and never binds a caller to another user's registry entry. | A hash collision forces the affected caller to re-authenticate; this is rare given the 15-minute TTL and `TSMODEL(CDAPITSM) EXPIRYINT(20)` reaping, and the collision path is fail-closed by design. |
+
+### D21 — Full PAN in the request URI path
+
+| Decision | Alternatives considered | Rationale | Risk |
+|---|---|---|---|
+| Keep the account/card/xref path parameters exactly as the frozen AAP contract defines them (including `{cardNum}` carrying a full 16-digit PAN on `GET /cards/{cardNum}` and `/xref/{cardNum}`); mitigate exposure operationally via loopback binding (`IPADDRESS(127.0.0.1)`), confidentiality attributes (`CONFDATA(YES)`, `DUMP(NO)`, `TRACE(NO)`, `CEDF(NO)`), and by never logging the PAN (only `requestId` is written to the console). | Switch the card key to a masked/tokenized path segment; move the PAN to a request body; hash the PAN in the path. | The endpoint shapes are frozen by the AAP and must not change; response bodies already mask PAN to last-4 and exclude CVV, so the residual exposure is confined to the request line, which loopback isolation and no-PAN-logging address. | A full PAN can still appear in an intermediary access log or a TLS-terminating proxy if the API is later exposed beyond loopback; a PAN-redacting reverse proxy / gateway is the documented production follow-up. |
+
+### D22 — Cross-origin (CORS) posture
+
+| Decision | Alternatives considered | Rationale | Risk |
+|---|---|---|---|
+| Emit no `Access-Control-Allow-Origin` or other CORS headers, leaving the API non-CORS-enabled (same-origin / server-to-server only) by default. | Emit a permissive `Access-Control-Allow-Origin: *`; emit a configurable origin allow-list. | The API is a server-to-server inquiry contract reached over loopback in this iteration, not a browser-facing endpoint; omitting CORS headers keeps the browser same-origin policy fully restrictive and avoids inadvertently authorizing cross-site script access to card/account data. | Browser-based clients on a different origin cannot call the API until an explicit, allow-listed CORS policy is added at the future gateway; this is intentional and recorded as a follow-up. |
+
+### D23 — Response header strategy (cache and security headers)
+
+| Decision | Alternatives considered | Rationale | Risk |
+|---|---|---|---|
+| Write `Cache-Control: no-store, private`, `Pragma: no-cache`, and `X-Content-Type-Options: nosniff` on every response; deliberately omit `X-Frame-Options`, `Content-Security-Policy`, and `Strict-Transport-Security`. | Add the full browser security-header suite; add none; make the set configurable. | Every response carries account/card/customer/token data that must never be cached, and `nosniff` prevents MIME-type sniffing of the JSON; the framing/CSP headers govern HTML rendering contexts a non-HTML JSON API does not have, and HSTS is meaningless while transport is cleartext HTTP over loopback. | If HTML/browser delivery or TLS is ever introduced, the omitted headers (CSP, `X-Frame-Options`, HSTS) must be revisited; recorded as a follow-up tied to the TLS/gateway work. |
+
+### D24 — Transaction and command security attributes (`RESSEC`/`CMDSEC`)
+
+| Decision | Alternatives considered | Rationale | Risk |
+|---|---|---|---|
+| Define the API alias and test transactions with `RESSEC(NO)` and `CMDSEC(NO)`, relying on application-level enforcement (bearer-token validation in `COAPISEC` and strictly read-only VSAM access in the service programs) rather than CICS resource/command security. | Enable `RESSEC(YES)`/`CMDSEC(YES)` and define RACF profiles for every file and SPI command; enable only one. | Full RACF resource/command security is an explicit out-of-scope follow-up in the AAP; the programs issue only `READ`/`STARTBR`/`READNEXT`/`ENDBR` (no write verbs), so the read-only guarantee is enforced in code and verified by test, and the token gate authenticates every non-signon route. | Without RACF resource security a program defect or a future write path would not be blocked at the CICS layer; enabling `RESSEC`/`CMDSEC` with RACF profiles is the documented hardening follow-up. |
+
+### D25 — CSD confidentiality posture and `APICSDIN.jcl` / `CARDDEMOAPI.CSD` reconciliation
+
+| Decision | Alternatives considered | Rationale | Risk |
+|---|---|---|---|
+| Harden every CDEMOAPI transaction/program with `CONFDATA(YES)`, `DUMP(NO)`, `TRACE(NO)`, `STORAGECLEAR(YES)`, and `CEDF(NO)`; bind the listener to `IPADDRESS(127.0.0.1)`; and treat `app/csd/CARDDEMOAPI.CSD` as the single source of truth — the `app/jcl/APICSDIN.jcl` inline `DFHCSDUP` SYSIN mirrors it attribute-for-attribute and defines no VSAM `FILE` resources. | Let the JCL keep its own (drifted) definitions; enable dumps/traces/EDF for easier debugging; redefine the VSAM files inside the API group. | Tokens, credentials, and PAN data flow through these tasks, so dump/trace/EDF capture and storage retention are suppressed and task data marked confidential; loopback binding limits reachability; keeping the JCL byte-identical to the CSD removes install-time drift; the eight read-only files are installed region-wide by the legacy `CARDDEMO` group, and redefining them in the API group would replace the active write-capable definitions the 3270 flows depend on (violating the additive-only mandate). | Suppressing dump/trace reduces first-failure diagnostics, so operators must enable `CETR`/auxtrace deliberately when debugging; the reconciliation is verified by a structural diff of the JCL SYSIN against `CARDDEMOAPI.CSD`. |
+
 ## Forward Traceability Matrix
 
 | # | Method and path | operationId | Router route | Service program | VSAM file(s) | Record copybook(s) | Response copybook |

@@ -79,14 +79,20 @@ existing `CARDDEMO` group is not edited.
 The new group contains:
 
 - `TCPIPSERVICE(CDAPISVC)` with `PORTNUMBER(3001)`, `PROTOCOL(HTTP)`,
-  `SSL(NO)`, and `AUTHENTICATE(NO)`.
+  `IPADDRESS(127.0.0.1)` (loopback bind), `SSL(NO)`, and `AUTHENTICATE(NO)`.
 - `URIMAP(CDAPIURI)` for `/carddemo/api/v1/*`.
-- Alias `TRANSACTION(CAPI)` and router `PROGRAM(COAPIRTR)`.
-- Eight API PROGRAM definitions (the router, the security service, the five
-  inquiry services, and the `COJSONUC` serializer).
-- `TSMODEL(CDAPITSM)` backing the bearer-token temporary-storage queue.
-- Six test-driver PROGRAM definitions (`TST*`) and their transactions
-  (`TAUT`, `TACC`, `TCUS`, `TCRD`, `TXRF`, `TTRN`).
+- Alias `TRANSACTION(CAPI)`, driven by the CICS Web Support web-attach
+  program `DFHWBA`, which links router `PROGRAM(COAPIRTR)`. The alias and
+  every program carry the confidentiality attributes `CONFDATA(YES)`,
+  `DUMP(NO)`, `TRACE(NO)`, `STORAGECLEAR(YES)`, and `CEDF(NO)` so tokens,
+  credentials, and PAN data are not captured in dumps, traces, or EDF.
+- Eight API `PROGRAM` definitions (`COAPIRTR`, `COAPISEC`, `COACSVCC`,
+  `COCUSVCC`, `COCRSVCC`, `COXRSVCC`, `COTRSVCC`, `COJSONUC`).
+- `TSMODEL(CDAPITSM)` bounding the `AT`-prefixed token-registry TSQs
+  (`LOCATION(MAIN)`, `RECOVERY(NO)`, `EXPIRYINT(20)`).
+- Six test-driver `PROGRAM`/`TRANSACTION` pairs (`TSTAUTH`/`TAUT`,
+  `TSTACCT`/`TACC`, `TSTCUST`/`TCUS`, `TSTCARD`/`TCRD`, `TSTXREF`/`TXRF`,
+  `TSTTRAN`/`TTRN`) for the region-only boundary tests.
 
 The group defines **no FILE resources**. The existing CARDDEMO VSAM files are
 shared exactly as the base region installs them and are never redefined here;
@@ -108,10 +114,41 @@ This is a region/operator action, not a source-code change.
 2. Confirm port `3001` is approved and not already bound.
 3. Inquire on `TCPIPSERVICE(CDAPISVC)` and verify `STATUS(OPEN)`.
 4. Inquire on `URIMAP(CDAPIURI)` and verify `STATUS(ENABLED)`.
-5. Verify `TRANSACTION(CAPI)` and all eight PROGRAM resources are enabled.
+5. Verify `TRANSACTION(CAPI)`, the eight API `PROGRAM` resources, and
+   `TSMODEL(CDAPITSM)` are enabled.
 
 If the operator changes the listener port, update the CSD definition before
 installing it and pass the same value as `API_PORT` to the test harness.
+
+### Network exposure and transport (loopback-only)
+
+The listener binds to `IPADDRESS(127.0.0.1)`, so it accepts connections only
+from the same z/OS image; it is **not** reachable from distributed clients as
+installed. This is deliberate: transport is cleartext HTTP with
+`AUTHENTICATE(NO)`, and the card/account endpoints carry a full PAN in the
+request URI path (see [`docs/decision-log.md`](decision-log.md), D14).
+
+Do **not** widen `IPADDRESS`, enable a routable interface, or forward the port
+to distributed clients until a TLS-terminating, PAN-redacting reverse proxy or
+API gateway (plus RACF and an OAuth/OIDC or equivalent authorization layer) is
+placed in front of the region. For same-host testing, reach the API over the
+loopback address only. These items are tracked under *Suggested next tasks*.
+
+### Token registry limitations
+
+Bearer tokens are short-lived and region-local by design:
+
+- **Lifetime.** A token is valid for 15 minutes from issue; after that
+  `COAPISEC` rejects it and the caller must sign on again.
+- **Region-local.** The registry is a `LOCATION(MAIN)` Temporary Storage
+  Queue set (the `AT` prefix, `TSMODEL(CDAPITSM)`). Tokens are not shared
+  across CICS regions or a sysplex, so a token minted in one region is not
+  valid in another.
+- **Restart-invalidated.** `MAIN` TSQs are non-recoverable, so every token is
+  discarded on a region restart or `CICS` cold/warm start; clients must
+  re-authenticate afterwards.
+- **Bounded lifecycle.** `EXPIRYINT(20)` reaps never-re-presented queues, so
+  abandoned tokens do not accumulate.
 
 ## 4. Smoke-test the installed API
 
@@ -228,6 +265,24 @@ Use cloned VSAM datasets in a disposable region for these volume cases:
 | Money extrema | Valid maximum positive and negative amounts | Signed JSON strings retain exactly two decimal places |
 
 Restore the cloned datasets after every boundary test.
+
+### Post-test cleanup
+
+After running the HTTP, token, and driver tests, remove the sensitive
+artifacts they leave behind:
+
+- **Purge the token registry.** Sign-on writes bearer tokens into the
+  `AT`-prefixed `MAIN` TSQs. Inspect and purge any that remain so live tokens
+  do not linger in a shared test region — for example inquire with
+  `CEMT INQUIRE TSQUEUE(AT*)` and purge each queue from `CEBR`. A region
+  restart also clears them (the queues are non-recoverable), and
+  `EXPIRYINT(20)` reaps idle queues automatically.
+- **Scrub captured output.** If a test wrote request/response bodies, tokens,
+  or credentials to a terminal capture, spool file, or workstation log, delete
+  those captures. The programs themselves log only a `requestId` correlation
+  value — never tokens, credentials, or a PAN.
+- **Restore data fixtures.** Return the account-99 empty-list fixture and any
+  cloned VSAM datasets to baseline as described above.
 
 ## 5. Roll back / uninstall the API layer
 

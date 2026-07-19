@@ -140,6 +140,14 @@
          05 WS-PRG-NAME-LEN        PIC S9(08) COMP VALUE 6.
          05 WS-PRG-VAL             PIC X(16) VALUE 'no-cache'.
          05 WS-PRG-VAL-LEN         PIC S9(08) COMP VALUE 8.
+      *  N3 - X-Content-Type-Options: nosniff blocks MIME-type
+      *  sniffing of the JSON responses (rationale in
+      *  docs/decision-log.md).
+         05 WS-XCTO-NAME     PIC X(24) VALUE 'X-Content-Type-Options'.
+         05 WS-XCTO-NAME-LEN PIC S9(08) COMP VALUE 22.
+         05 WS-XCTO-VAL      PIC X(16) VALUE 'nosniff'.
+         05 WS-XCTO-VAL-LEN  PIC S9(08) COMP VALUE 7.
+
 
       *----------------------------------------------------------------*
       *  N1 - Send-failure telemetry. When WEB SEND fails the client
@@ -2192,7 +2200,8 @@
 
       *----------------------------------------------------------------*
       *                    6050-WRITE-SEC-HEADERS
-      *  N2 - Write the no-store cache policy headers before the body is
+      *  N2 - Write the no-store cache-policy headers and the
+      *  X-Content-Type-Options: nosniff header before the body is
       *  sent. A header-write failure is non-fatal to the response and
       *  is intentionally not escalated.
       *----------------------------------------------------------------*
@@ -2210,6 +2219,14 @@
                 NAMELENGTH  (WS-PRG-NAME-LEN)
                 VALUE       (WS-PRG-VAL)
                 VALUELENGTH (WS-PRG-VAL-LEN)
+                RESP        (WS-RESP-CD)
+                RESP2       (WS-REAS-CD)
+           END-EXEC
+           EXEC CICS WEB WRITE
+                HTTPHEADER  (WS-XCTO-NAME)
+                NAMELENGTH  (WS-XCTO-NAME-LEN)
+                VALUE       (WS-XCTO-VAL)
+                VALUELENGTH (WS-XCTO-VAL-LEN)
                 RESP        (WS-RESP-CD)
                 RESP2       (WS-REAS-CD)
            END-EXEC.
