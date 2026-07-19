@@ -24,6 +24,8 @@
            05  TRAN-LIST-COUNT            PIC 9(04).
            05  TRAN-LIST-TRUNCATED        PIC X(01).
            88  TRAN-LIST-COMPLETE  VALUE 'N'.
+      *  Reserved state: current COTRSVCC never produces 'Y'.
+      *  COAPIRTR reads it to render the JSON truncated property.
            88  TRAN-LIST-WAS-TRUNCATED  VALUE 'Y'.
            05  TRAN-LIST-ACCT-ID          PIC 9(11).
            05  TRAN-LIST-ENTRY OCCURS 0 TO 500 TIMES

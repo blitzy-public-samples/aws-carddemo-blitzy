@@ -28,14 +28,13 @@
       * COTRSVCC and asserts BOTH of its transport contracts:
       *   DETAIL - GET /transactions/{tranId} over the COMMAREA;
       *            HTTP 200 for a known id, 404 for an unknown id,
-      *            the amount scaled S9(09)V99 and the PAN masked.
+      *            400 for a malformed id, correct money scale, and
+      *            a masked PAN with no full-PAN leakage.
       *   LIST   - GET /accounts/{acctId}/transactions over channel
       *            CDEMOAPILISTCH with request/response/status
-      *            containers; a populated list is HTTP 200 with a
-      *            positive count and every entry PAN masked, and a
-      *            cardless account is HTTP 200 with count 0 - never
-      *            404. No full PAN ever appears in a payload and no
-      *            full PAN is ever displayed. Read-only; no writes.
+      *            containers; populated and cardless accounts return
+      *            200, a missing account returns 404, and malformed
+      *            input returns 400. Read-only; no VSAM writes.
       ******************************************************************
       *
        ENVIRONMENT DIVISION.
@@ -72,6 +71,8 @@
       ******************************************************************
        01  WS-LIST-REQUEST.
            05  WS-LR-ACCT-ID      PIC 9(11).
+       01  WS-LIST-REQUEST-RAW REDEFINES WS-LIST-REQUEST.
+           05  WS-LR-ACCT-ID-RAW  PIC X(11).
       *
       ******************************************************************
       * Local mirror of the TRANLISTSTA status container (135
@@ -111,6 +112,8 @@
       ******************************************************************
        01  WS-GOOD-TRAN           PIC X(16) VALUE '0000000000683580'.
        01  WS-BAD-TRAN            PIC X(16) VALUE '9999999999999999'.
+       01  WS-BADREQ-TRAN         PIC X(16)
+                                   VALUE 'NOT-NUMERIC-ID!!'.
        01  WS-EXP-TRAN-AMT        PIC S9(09)V99 VALUE +504.77.
        01  WS-EXP-TRAN-MASK       PIC X(16) VALUE '************7065'.
       *
@@ -120,6 +123,8 @@
       * for account 50 is non-empty and every entry is masked.
       ******************************************************************
        01  WS-LIST-ACCT           PIC 9(11) VALUE 50.
+       01  WS-NOTFOUND-ACCT       PIC 9(11) VALUE 98.
+       01  WS-BADREQ-ACCT         PIC X(11) VALUE 'ABCDEFGHIJK'.
       *
       ******************************************************************
       * Empty-list account. The list contract returns HTTP 200
@@ -127,10 +132,9 @@
       * account - one that EXISTS in ACCTDAT yet resolves to
       * zero cross-referenced cards. COTRSVCC first proves the
       * account exists, so a truly non-existent id yields 404.
-      * No shipped ASCII fixture qualifies (all 50 seeded
-      * accounts own one card and six transactions), so the
-      * default 00000000099 is a placeholder an operator MUST
-      * repoint to a seeded valid-but-cardless account id.
+      * app/test/api/acctdata-empty.txt supplies account
+      * 00000000099 as one active 300-byte ACCTDAT record. It has
+      * no CCXREF row, while 00000000098 remains absent for 404.
       ******************************************************************
        01  WS-EMPTY-ACCT          PIC 9(11) VALUE 99.
       *
@@ -151,7 +155,7 @@
        PROCEDURE DIVISION.
       *
       ******************************************************************
-      * 0000-MAIN : run the four transaction checks, report, and
+      * 0000-MAIN : run the seven transaction checks, report, and
       * return control to the caller.
       ******************************************************************
        0000-MAIN.
@@ -161,8 +165,11 @@
            MOVE 0 TO WS-TEST-RC
            PERFORM 1000-TEST-DETAIL-OK
            PERFORM 2000-TEST-DETAIL-NOTFOUND
+           PERFORM 2500-TEST-DETAIL-BADREQ
            PERFORM 3000-TEST-LIST-NONEMPTY
            PERFORM 4000-TEST-LIST-EMPTY
+           PERFORM 5000-TEST-LIST-NOTFOUND
+           PERFORM 6000-TEST-LIST-BADREQ
            PERFORM 9000-REPORT
            EXEC CICS RETURN
            END-EXEC
@@ -232,6 +239,35 @@
            ELSE
                ADD 1 TO WS-TESTS-FAIL
                DISPLAY 'TSTTRAN 2000 DETAIL-NOTFOUND FAIL'
+           END-IF
+           .
+      *
+      ******************************************************************
+      * 2500-TEST-DETAIL-BADREQ : a non-numeric 16-byte transaction
+      * id must be rejected with HTTP 400 and canonical BADREQ before
+      * COTRSVCC attempts a TRANSACT read.
+      ******************************************************************
+       2500-TEST-DETAIL-BADREQ.
+           ADD 1 TO WS-TESTS-RUN
+           INITIALIZE API-COMMAREA
+           MOVE 'COTRSVCC' TO API-SERVICE-CODE
+           MOVE 'GET ' TO API-HTTP-METHOD
+           MOVE WS-BADREQ-TRAN TO API-REQ-TRAN-ID
+           EXEC CICS LINK
+                PROGRAM   (WS-PGM-COTRSVCC)
+                COMMAREA  (API-COMMAREA)
+                LENGTH    (LENGTH OF API-COMMAREA)
+                RESP      (WS-RESP-CD)
+                RESP2     (WS-REAS-CD)
+           END-EXEC
+           IF API-HTTP-BAD-REQUEST
+              AND API-ERR-BAD-REQUEST
+              AND API-RETURN-CODE = +4
+               ADD 1 TO WS-TESTS-PASS
+               DISPLAY 'TSTTRAN 2500 DETAIL-BADREQ PASS'
+           ELSE
+               ADD 1 TO WS-TESTS-FAIL
+               DISPLAY 'TSTTRAN 2500 DETAIL-BADREQ FAIL'
            END-IF
            .
       *
@@ -314,7 +350,7 @@
       * resolve to HTTP 200 with count 0 - explicitly NOT 404.
       * Same channel/container calls as 3000 (ODO preset to 500
       * before the response GET). See WS-EMPTY-ACCT for the
-      * operator repoint note on the shipped fixture data.
+      * supplied synthetic ACCTDAT fixture.
       ******************************************************************
        4000-TEST-LIST-EMPTY.
            ADD 1 TO WS-TESTS-RUN
@@ -364,6 +400,93 @@
            ELSE
                ADD 1 TO WS-TESTS-FAIL
                DISPLAY 'TSTTRAN 4000 LIST-EMPTY FAIL'
+           END-IF
+           .
+      *
+      ******************************************************************
+      * 5000-TEST-LIST-NOTFOUND : account 00000000098 is absent
+      * from ACCTDAT, so list mode must return HTTP 404/NOTFOUND.
+      * This distinguishes a missing account from test 4000's
+      * valid-but-cardless HTTP 200 response.
+      ******************************************************************
+       5000-TEST-LIST-NOTFOUND.
+           ADD 1 TO WS-TESTS-RUN
+           INITIALIZE WS-LIST-REQUEST WS-LIST-STATUS
+           MOVE WS-NOTFOUND-ACCT TO WS-LR-ACCT-ID
+           EXEC CICS PUT
+                CONTAINER (WS-CTR-REQ)
+                CHANNEL   (WS-CHANNEL)
+                FROM      (WS-LIST-REQUEST)
+                FLENGTH   (LENGTH OF WS-LIST-REQUEST)
+                RESP      (WS-RESP-CD)
+                RESP2     (WS-REAS-CD)
+           END-EXEC
+           EXEC CICS LINK
+                PROGRAM   (WS-PGM-COTRSVCC)
+                CHANNEL   (WS-CHANNEL)
+                RESP      (WS-RESP-CD)
+                RESP2     (WS-REAS-CD)
+           END-EXEC
+           MOVE LENGTH OF WS-LIST-STATUS TO WS-FLEN
+           EXEC CICS GET
+                CONTAINER (WS-CTR-STA)
+                CHANNEL   (WS-CHANNEL)
+                INTO      (WS-LIST-STATUS)
+                FLENGTH   (WS-FLEN)
+                RESP      (WS-RESP-CD)
+                RESP2     (WS-REAS-CD)
+           END-EXEC
+           IF WS-LS-HTTP-STATUS = 404
+              AND WS-LS-RETURN-CODE = +4
+              AND WS-LS-ERR-CODE = 'NOTFOUND'
+               ADD 1 TO WS-TESTS-PASS
+               DISPLAY 'TSTTRAN 5000 LIST-NOTFOUND PASS'
+           ELSE
+               ADD 1 TO WS-TESTS-FAIL
+               DISPLAY 'TSTTRAN 5000 LIST-NOTFOUND FAIL'
+           END-IF
+           .
+      *
+      ******************************************************************
+      * 6000-TEST-LIST-BADREQ : place eleven non-numeric bytes in
+      * TRANLISTREQ through its alphanumeric redefine. COTRSVCC must
+      * reject the request with HTTP 400/BADREQ before ACCTDAT access.
+      ******************************************************************
+       6000-TEST-LIST-BADREQ.
+           ADD 1 TO WS-TESTS-RUN
+           INITIALIZE WS-LIST-REQUEST WS-LIST-STATUS
+           MOVE WS-BADREQ-ACCT TO WS-LR-ACCT-ID-RAW
+           EXEC CICS PUT
+                CONTAINER (WS-CTR-REQ)
+                CHANNEL   (WS-CHANNEL)
+                FROM      (WS-LIST-REQUEST-RAW)
+                FLENGTH   (LENGTH OF WS-LIST-REQUEST-RAW)
+                RESP      (WS-RESP-CD)
+                RESP2     (WS-REAS-CD)
+           END-EXEC
+           EXEC CICS LINK
+                PROGRAM   (WS-PGM-COTRSVCC)
+                CHANNEL   (WS-CHANNEL)
+                RESP      (WS-RESP-CD)
+                RESP2     (WS-REAS-CD)
+           END-EXEC
+           MOVE LENGTH OF WS-LIST-STATUS TO WS-FLEN
+           EXEC CICS GET
+                CONTAINER (WS-CTR-STA)
+                CHANNEL   (WS-CHANNEL)
+                INTO      (WS-LIST-STATUS)
+                FLENGTH   (WS-FLEN)
+                RESP      (WS-RESP-CD)
+                RESP2     (WS-REAS-CD)
+           END-EXEC
+           IF WS-LS-HTTP-STATUS = 400
+              AND WS-LS-RETURN-CODE = +4
+              AND WS-LS-ERR-CODE = 'BADREQ'
+               ADD 1 TO WS-TESTS-PASS
+               DISPLAY 'TSTTRAN 6000 LIST-BADREQ PASS'
+           ELSE
+               ADD 1 TO WS-TESTS-FAIL
+               DISPLAY 'TSTTRAN 6000 LIST-BADREQ FAIL'
            END-IF
            .
       *
