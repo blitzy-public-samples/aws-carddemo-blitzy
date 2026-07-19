@@ -189,10 +189,33 @@ management:
 # =============================================================================
 # springdoc / OpenAPI 3 - Swagger UI for the 17 REST controllers (one per screen)
 # =============================================================================
+# SECURITY POSTURE (this base file = the PRODUCTION default): the LIVE springdoc
+# surfaces are DISABLED here. `springdoc-openapi-starter-webmvc-ui` bundles Swagger
+# UI (webjar swagger-ui 5.32.2 under the AAP-pinned springdoc 2.8.17, §0.6.1), whose
+# swagger-ui-bundle.js embeds a DOMPurify build carrying published advisories. That
+# JS bundle - and the always-current dynamic `/v3/api-docs` document - therefore must
+# NOT be exposed unauthenticated in production. Disabling `api-docs` unregisters the
+# `/v3/api-docs`(.yaml) endpoints (404) and disabling `swagger-ui` unregisters the
+# Swagger UI resources (404), removing the vulnerable client bundle from the
+# production attack surface. The springdoc version stays pinned at 2.8.17 (the
+# vulnerability lives in a transitively-bundled asset, not remediable by a version
+# bump within the pinned line). The checked-in STATIC snapshot
+# `src/main/resources/static/openapi/openapi.yaml` (served under `/openapi/**`, a
+# plain YAML resource with NO JavaScript) remains available as the published API
+# contract in every profile. The `local` profile (application-local.yml) RE-ENABLES
+# both surfaces for the developer/Swagger-UI experience. This mirrors the actuator
+# prod/local split (base `show-details: when-authorized` -> local `always`).
+# See decision-log D57. (QA finding dest-F1.)
 springdoc:
   api-docs:
+    # Disabled in production: unregisters /v3/api-docs and /v3/api-docs.yaml (-> 404).
+    # Re-enabled in the `local` profile.
+    enabled: false
     path: /v3/api-docs
   swagger-ui:
+    # Disabled in production: unregisters the Swagger UI (and its DOMPurify-bundling
+    # swagger-ui-bundle.js) so it is never served unauthenticated. Re-enabled locally.
+    enabled: false
     path: /swagger-ui.html
     operations-sorter: method
 

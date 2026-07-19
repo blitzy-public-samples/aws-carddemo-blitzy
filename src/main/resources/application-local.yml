@@ -114,3 +114,25 @@ logging:
     com.aws.carddemo: DEBUG
     # Flyway at INFO so migration apply / validate output is visible on startup.
     org.flywaydb: INFO
+
+# =============================================================================
+# springdoc / OpenAPI 3 - RE-ENABLE the live Swagger UI + dynamic /v3/api-docs
+# for LOCAL DEVELOPMENT ONLY.
+# =============================================================================
+# The base `application.yml` DISABLES both springdoc surfaces as the production
+# default (the bundled Swagger UI carries a DOMPurify build with published
+# advisories, and the dynamic doc must not be exposed unauthenticated in prod -
+# see decision-log D57 / QA finding dest-F1). On a developer machine that risk is
+# absent, and the interactive Swagger UI plus the always-current `/v3/api-docs`
+# document are valuable, so this overlay turns both back on. The `path` values are
+# inherited unchanged from the base; only the `enabled` flags are overridden here,
+# exactly mirroring the actuator prod/local split (base `show-details:
+# when-authorized` -> local `always`). Endpoints are still `permitAll` in
+# SecurityConfig, so no credentials are needed locally.
+springdoc:
+  api-docs:
+    # Serve the live /v3/api-docs and /v3/api-docs.yaml documents locally.
+    enabled: true
+  swagger-ui:
+    # Serve the interactive Swagger UI at /swagger-ui.html locally.
+    enabled: true

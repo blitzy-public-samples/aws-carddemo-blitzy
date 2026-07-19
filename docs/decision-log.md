@@ -2337,6 +2337,89 @@ decision-log entry" requirement is met for every checkpoint finding, and each is
 
 ---
 
+### D57 — Live springdoc / Swagger UI surfaces are disabled in production and re-enabled only for local development
+
+- **Status:** Accepted
+- **Type:** Intentional improvement (security hardening; no behavioral or contract change — the published
+  API contract remains available as the checked-in static snapshot)
+- **AAP references:** §0.6.1 (springdoc pinned at `springdoc-openapi-starter-webmvc-ui` 2.8.17 — the pin is
+  retained), §0.9.3 (security — no exposure of a vulnerable client bundle to unauthenticated callers),
+  §0.8.2 (Explainability — this deviation from "Swagger UI enabled everywhere" is recorded here with
+  rationale, alternatives and risk)
+- **Decision:** In the base `application.yml` (the **production** default) both springdoc surfaces are
+  disabled — `springdoc.api-docs.enabled: false` (unregisters `/v3/api-docs` and `/v3/api-docs.yaml`) and
+  `springdoc.swagger-ui.enabled: false` (unregisters the Swagger UI resources). The `local` profile overlay
+  `application-local.yml` re-enables both (`enabled: true`) for the interactive developer experience. The
+  checked-in **static** OpenAPI snapshot `src/main/resources/static/openapi/openapi.yaml`, served under
+  `/openapi/**` as a plain YAML resource with **no** JavaScript, remains the published API contract in
+  every profile (its `permitAll` matcher in `SecurityConfig` is unchanged).
+- **Why:** `springdoc-openapi-starter-webmvc-ui` 2.8.17 transitively bundles the Swagger UI webjar
+  (`org.webjars:swagger-ui:5.32.2`), whose `swagger-ui-bundle.js` embeds a DOMPurify build carrying
+  published advisories. QA (finding **dest-F1**) flagged that shipping this client bundle — and the
+  always-current dynamic `/v3/api-docs` document — to **unauthenticated** callers in production is an
+  unnecessary attack surface. The advisories are all rated below the OWASP dependency-check fail threshold
+  (CVSS < 7.0), so the SCA gate still passes and the finding is MINOR; disabling the live surfaces in
+  production removes the exposure entirely rather than relying on that rating.
+- **Alternatives:**
+  1. *Bump DOMPurify / Swagger UI to a fixed version.* **Rejected:** DOMPurify is a transitively-bundled
+     asset inside the Swagger UI webjar, not a directly-declared dependency; it cannot be upgraded without
+     moving off the AAP-pinned springdoc 2.8.17 line (§0.6.1), which the platform must not do unilaterally.
+  2. *Require authentication for `/swagger-ui/**` and `/v3/api-docs/**` instead of disabling them.*
+     **Rejected:** it still ships and executes the vulnerable client bundle in production (to any
+     authenticated user) and adds a profile-specific security-matcher split; disabling is simpler and
+     removes the bundle from the production build's served resources entirely.
+  3. *Leave both enabled everywhere (previous state).* **Rejected:** that is exactly the exposure QA
+     reported.
+- **Rationale:** The static `/openapi/openapi.yaml` snapshot already provides the machine-readable API
+  contract for consumers and CI, so disabling the *live* surfaces in production loses no contract
+  information — it only removes the interactive, JavaScript-bearing UI and the dynamic document generator
+  from the unauthenticated production surface. Developers keep the full interactive experience under the
+  `local` profile. This mirrors the existing actuator prod/local posture (base `management.endpoint.health.
+  show-details: when-authorized` -> local `always`), keeping one consistent "hardened base, relaxed local"
+  pattern across the configuration.
+- **Risk & mitigation:** a consumer who previously scraped the *live* `/v3/api-docs` in a production-like
+  deployment would now receive 404 there. *Mitigation:* the byte-for-byte equivalent contract is published
+  as the static `/openapi/openapi.yaml` (regenerated from the live document and kept in sync — see QA
+  finding w016-F1), and any environment that genuinely needs the live document/UI can opt in with the
+  `local` profile (or a future dedicated profile) without a code change. No test asserts that the live
+  `/v3/api-docs` returns 200; the only doc-path test, `ObservabilityConfigTest`, exercises the
+  metric-suppression predicate for the doc URIs and is independent of whether the endpoints are registered.
+
+---
+
+### D58 — Executive-deck CDN assets are pinned with Subresource Integrity (SRI) hashes
+
+- **Status:** Accepted
+- **Type:** Intentional improvement (security hardening; no visual or content change to the deck)
+- **AAP references:** §0.8.2 (Executive Presentation rule — CDN versions are pinned: reveal.js 5.1.0,
+  Mermaid 11.4.0, Lucide 0.460.0; the deck stays self-contained apart from those pinned CDN assets),
+  §0.9.3 (security), §0.8.2 (Explainability — recorded here with rationale)
+- **Decision:** Every external `<link>`/`<script>` in `blitzy-deck/executive-summary.html` that loads a
+  pinned CDN asset now carries an `integrity="sha384-…"` attribute (the base64 SHA-384 of the exact served
+  bytes) and `crossorigin="anonymous"`. The five assets are reveal.js `reset.min.css`, `reveal.min.css`,
+  `reveal.min.js` (cdnjs), Mermaid `mermaid.min.js` and Lucide `lucide.min.js` (jsDelivr). The CDN hosts,
+  URLs and pinned versions are unchanged — SRI is added alongside the existing version pins, not in place
+  of them.
+- **Why:** QA (finding **dest-F3**) noted the deck loaded five third-party assets over CDN with no
+  integrity metadata, so a compromised/substituted CDN response would execute unverified script in the
+  reviewer's browser. SRI makes the browser refuse any asset whose bytes do not match the pinned hash.
+- **Alternatives:**
+  1. *Vendor the five assets into the repository.* **Rejected:** the Executive Presentation rule
+     explicitly calls for pinned **CDN** assets and a single self-contained HTML file; vendoring would
+     enlarge the deliverable and diverge from the rule. SRI achieves the integrity guarantee while keeping
+     the CDN delivery the rule specifies.
+  2. *Rely on version pinning alone.* **Rejected:** a version pin selects *which* asset to request but does
+     not verify the bytes actually returned; SRI is the complementary control that closes that gap.
+- **Rationale:** the hashes were computed from the exact bytes fetched from the pinned URLs, so the deck
+  renders identically (same reveal.js, Mermaid diagrams and Lucide icons) while the browser now
+  cryptographically verifies each asset before executing it.
+- **Risk & mitigation:** if a CDN ever re-publishes different bytes under the same pinned URL the browser
+  would block that asset. *Mitigation:* that is the intended fail-closed behavior; the versions are pinned
+  (immutable content is expected), and the hash is regenerated whenever a pinned version is deliberately
+  changed.
+
+---
+
 ## Related documents
 
 - [Architecture overview](./architecture.md) — the layered target architecture these decisions realize.

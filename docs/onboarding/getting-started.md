@@ -127,6 +127,13 @@ the original behavior of a program, the authoritative COBOL is under
 
 ## 3. Start the local dependencies (Docker Compose)
 
+> **Export your environment variables first.** `docker-compose.yml` reads the database
+> credentials from `DB_USERNAME` / `DB_PASSWORD` (via fail-fast `${VAR:?}` expansion), so
+> `docker compose up -d` **errors out** if they are not set. Complete
+> [Section 4 — Configure environment variables](#4-configure-environment-variables) **before**
+> running the command below (a first-time reader can jump to §4, export the variables, then return
+> here). No credentials are ever baked into the compose file or this guide.
+
 The application needs PostgreSQL to run, and the observability tools make the
 logs, metrics, and traces visible. Bring the whole stack up with Docker Compose
 from the repository root:
@@ -212,6 +219,11 @@ export DB_USERNAME="carddemo"
 export DB_PASSWORD="change-me-locally"        # local-only, non-production
 export SPRING_PROFILES_ACTIVE="local"
 export OTLP_ENDPOINT="http://localhost:4318/v1/traces"
+# Required by the Docker Compose stack (Section 3). POSTGRES_USER/POSTGRES_PASSWORD
+# default to DB_USERNAME/DB_PASSWORD above; the Grafana admin password has no default
+# and must be set or `docker compose up -d` fails fast.
+export GF_SECURITY_ADMIN_USER="admin"
+export GF_SECURITY_ADMIN_PASSWORD="change-me-locally"   # local-only, non-production
 ```
 
 **Windows PowerShell** — set the same variables (placeholder values):
@@ -222,6 +234,11 @@ $Env:DB_USERNAME="carddemo"
 $Env:DB_PASSWORD="change-me-locally"          # local-only, non-production
 $Env:SPRING_PROFILES_ACTIVE="local"
 $Env:OTLP_ENDPOINT="http://localhost:4318/v1/traces"
+# Required by the Docker Compose stack (Section 3). POSTGRES_USER/POSTGRES_PASSWORD
+# default to DB_USERNAME/DB_PASSWORD above; the Grafana admin password has no default
+# and must be set or `docker compose up -d` fails fast.
+$Env:GF_SECURITY_ADMIN_USER="admin"
+$Env:GF_SECURITY_ADMIN_PASSWORD="change-me-locally"     # local-only, non-production
 ```
 
 Again: these are **examples**. Do not commit them, and use real values only from

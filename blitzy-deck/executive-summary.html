@@ -9,9 +9,13 @@
   <!-- Self-contained inline SVG favicon (data URI, no local file dependency) — silences the browser's automatic /favicon.ico probe. -->
   <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20viewBox='0%200%2032%2032'%3E%3Crect%20width='32'%20height='32'%20rx='7'%20fill='%230A0E17'/%3E%3Crect%20x='9'%20y='9'%20width='14'%20height='14'%20rx='3'%20fill='%235B8DEF'/%3E%3C/svg%3E" />
 
-  <!-- Pinned CDN: reveal.js 5.1.0 core stylesheets (cdnjs). No reveal theme is linked; the Blitzy theme is inlined below. -->
-  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/reveal.js/5.1.0/reset.min.css" />
-  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/reveal.js/5.1.0/reveal.min.css" />
+  <!-- Pinned CDN: reveal.js 5.1.0 core stylesheets (cdnjs). No reveal theme is linked; the Blitzy theme is inlined below.
+       Each asset carries a Subresource Integrity (SHA-384) hash + crossorigin so the browser verifies the exact
+       bytes before applying them (see decision-log D58 / QA finding dest-F3). -->
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/reveal.js/5.1.0/reset.min.css"
+        integrity="sha384-8g3WNUREoaLv+QfRi7MIf7/mmCR/jTS1HCBsSyBV85F0pPPVXcIedXY1TQUlgS8e" crossorigin="anonymous" />
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/reveal.js/5.1.0/reveal.min.css"
+        integrity="sha384-1RYZY7bWr47av1F0MzHgCbqOI7hIwg9dvdmXpRYIaK1mf1sxSE8pReydle4L0NAK" crossorigin="anonymous" />
 
   <!-- ============================================================= -->
   <!-- INLINED BLITZY BRAND THEME (self-contained; zero local deps)  -->
@@ -545,12 +549,15 @@ flowchart LR
     </div>
   </div>
 
-  <!-- Pinned CDN: reveal.js 5.1.0 core (cdnjs) -->
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/reveal.js/5.1.0/reveal.min.js"></script>
-  <!-- Pinned CDN: Mermaid 11.4.0 (jsDelivr) -->
-  <script src="https://cdn.jsdelivr.net/npm/mermaid@11.4.0/dist/mermaid.min.js"></script>
-  <!-- Pinned CDN: Lucide 0.460.0 (jsDelivr) -->
-  <script src="https://cdn.jsdelivr.net/npm/lucide@0.460.0/dist/umd/lucide.min.js"></script>
+  <!-- Pinned CDN: reveal.js 5.1.0 core (cdnjs). Subresource Integrity (SHA-384) + crossorigin per decision-log D58 / dest-F3. -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/reveal.js/5.1.0/reveal.min.js"
+          integrity="sha384-Xxv4gyBFvSgy+SmWELnBPSWXP3n3fVSRQZVduifAPNK/+S0/6C/lBAQIYRipwM9k" crossorigin="anonymous"></script>
+  <!-- Pinned CDN: Mermaid 11.4.0 (jsDelivr). Subresource Integrity (SHA-384) + crossorigin per decision-log D58 / dest-F3. -->
+  <script src="https://cdn.jsdelivr.net/npm/mermaid@11.4.0/dist/mermaid.min.js"
+          integrity="sha384-Wm9qzEgq4j1jEnuFK2FxKTlwuhbV2QqtGhcchvjDoKxeJ7WWAW7fysBq+1s6myfX" crossorigin="anonymous"></script>
+  <!-- Pinned CDN: Lucide 0.460.0 (jsDelivr). Subresource Integrity (SHA-384) + crossorigin per decision-log D58 / dest-F3. -->
+  <script src="https://cdn.jsdelivr.net/npm/lucide@0.460.0/dist/umd/lucide.min.js"
+          integrity="sha384-ieG+IKD0d/ZPXyCBTMVAbqsQdns8QGJR/e26WMw7M4fkaI/rHcS/YIoi+ah9WGge" crossorigin="anonymous"></script>
 
   <script>
     // Blitzy dark theme variables for Mermaid so diagrams match the deck.
