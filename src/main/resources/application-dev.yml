@@ -72,10 +72,10 @@ spring:
 
   flyway:
     # Inherited 'true' from the base; restated explicitly so it is unmistakable
-    # that Flyway migrations run on the dev profile, in version order. As of this
-    # milestone only V0 (batch metadata) exists; the business-schema migrations
-    # V1 (schema) -> V2 (reference data) -> V3 (indexes) apply automatically here
-    # once they are added downstream.
+    # that Flyway migrations run on the dev profile, in version order. The complete
+    # set is present under db/migration/ and applies automatically here in order:
+    # V0 (batch metadata) -> V1 (schema) -> V2 (reference data) -> V3 (indexes) ->
+    # V4 (card_xref single-key UNIQUE constraint uk_card_xref_card_num).
     enabled: true
     # SAFETY: never permit `flyway clean` (which would drop the entire schema).
     # Guards a developer, or an accidental automation, from wiping the local

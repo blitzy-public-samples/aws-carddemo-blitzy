@@ -177,7 +177,7 @@ the footnotes — the name is preserved, the description is corrected.
 
 | Business function (source behavior) | COBOL Program (legacy) | JCL / PROC (legacy) | Java Batch `@Configuration` / util (frozen name) |
 | :---------------- | :--------------------- | :------------------ | :--------------------------------- |
-| Post daily transactions | `legacy/cbl/CBTRN02C.cbl` | `legacy/jcl/POSTTRAN.jcl` | `batch/PostTransactionJobConfig.java` — reader = `DailyTransaction`, processor = validate xref + acct + credit-limit, writers = Transaction / TCATBAL / Account; over-limit → **430-byte** reject record |
+| Post daily transactions | `legacy/cbl/CBTRN02C.cbl` | `legacy/jcl/POSTTRAN.jcl` | `batch/PostTransactionJobConfig.java` — reader = `DailyTransaction`, processor = validate xref + acct + credit-limit, writers = Transaction / TCATBAL / Account; over-limit → **430-byte** reject record. **`2900-WRITE-TRANSACTION-FILE` duplicate-key parity (S2):** the writer guards the insert with `transactionRepository.existsById` and throws `DuplicateKeyException` (FILE STATUS `22`) before any save, reproducing the COBOL `9999-ABEND-PROGRAM` (non-fault-tolerant step → chunk rollback → job FAILED) instead of a silent JPA merge. **Batch concurrency parity (S3):** the account read-for-update uses `AccountRepository.findByIdForUpdate` (`PESSIMISTIC_WRITE`), reproducing the `POSTTRAN` `DISP=OLD` dataset-level ENQ so concurrent launches cannot lose updates. **RETURN-CODE ladder (S4):** `CardDemoApplication.BatchReturnCodeExitCodeGenerator` maps the job outcome to process exit `0`/`4`/`8` (clean / with-rejects / failed-abend) — see `decision-log.md` (S2/S3/S4 rows) |
 | Monthly interest calc | `legacy/cbl/CBACT04C.cbl` | `legacy/jcl/INTCALC.jcl` | `batch/InterestCalcJobConfig.java` — `(bal × rate) / 1200` truncated to 2 dp (`RoundingMode.DOWN`, no `ROUNDED` in source); `PARM` date → `JobParameter` |
 | Statement generation | `legacy/cbl/CBSTM03A.CBL` (driver) + `legacy/cbl/CBSTM03B.CBL` (I/O subprogram) | `legacy/jcl/CREASTMT.JCL` | `batch/StatementJobConfig.java` — the `CBSTM03B` flag-driven I/O subprogram is absorbed into typed Spring Data repository calls (not a standalone class; see [§8](#8-construct-level-traceability-paragraphs-executable-copybooks-subprograms)); statement layout from `COSTM01` |
 | Account file read/print | `legacy/cbl/CBACT01C.cbl` | `legacy/jcl/READACCT.jcl` | `batch/AccountPrintJobConfig.java` |
@@ -284,7 +284,7 @@ indexes (`V3__indexes.sql`) plus Spring Data **derived queries** (Technical Spec
 
 | VSAM file | Copybook | Java Repository | Key / alternate-index handling |
 | :-------- | :------- | :-------------- | :----------------------------- |
-| `ACCTDAT` | `CVACT01Y` | `repository/AccountRepository.java` | PK `acctId` |
+| `ACCTDAT` | `CVACT01Y` | `repository/AccountRepository.java` | PK `acctId`; `findByIdForUpdate` = the same PK read under a `PESSIMISTIC_WRITE` lock (`SELECT … FOR UPDATE`), **batch-only** (consumed solely by `PostTransactionJobConfig`) to reproduce the `POSTTRAN` `DISP=OLD` dataset-level ENQ (S3; see [`decision-log.md`](./decision-log.md)); the online update path stays lock-free (compare-before-rewrite) |
 | `CARDDAT` | `CVACT02Y` | `repository/CardRepository.java` | PK `cardNum`; `findByCardAcctId` replaces the `CARDAIX` alt index |
 | `CCXREF` | `CVACT03Y` | `repository/CardXrefRepository.java` | composite `@IdClass` (card + customer + account) **plus a `UNIQUE` constraint `uk_card_xref_card_num` on the 16-byte card number** (authored by Flyway `V4__card_xref_unique_card_num.sql`, the enforcing DDL authority under `ddl-auto=validate`) to preserve the VSAM KSDS single-key uniqueness (see [`decision-log.md`](./decision-log.md) F6 divergence); `findByXrefAcctId` replaces the nonunique `CXACAIX` alt index |
 | `CUSTDAT` | `CVCUS01Y` | `repository/CustomerRepository.java` | PK `custId` |
@@ -469,6 +469,7 @@ the original zoned/overpunch characters.
 | `CBTRN02C` reject | 430 | input record 1–350; reason code 351–354; description 355–430 |
 | `CBTRN03C` report | 133 | `DATEPARM` FD 80, meaningful prefix 21; padded report groups |
 | `CBSTM03` outputs | 80 / 100 | fixed statement text (80) and HTML record (100) |
+| `PRTCATBL` `OUTREC` + `REPTFILE` report (**print output** of `batch/CategoryBalancePrintJobConfig.java`; reads `CVTRA01Y`/TCATBAL, 50 — distinct from that 50-byte input record above) | **40** (`SORTOUT LRECL=40`) | acct 1–11 (`9(11)` zoned, zero-padded); space 12; type 13–14 (`X(02)`); space 15; category 16–19 (`9(04)` zoned); space 20; **balance 21–32 edited `TTTTTTTTT.TT` (12 B) — magnitude only, DFSORT `EDIT` emits no sign (`-504.77`→`000000504.77`)**; trailing spaces 33–40 (`OUTREC` `9X` capped to 8 by `LRECL=40`) |
 
 > **Collation note.** Because EBCDIC and ASCII/UTF-8 orderings differ, ordered output (notably
 > `COMBTRAN`'s `SORT FIELDS=(TRAN-ID,A)`) is reproduced with a deterministic `C`/`POSIX` collation on

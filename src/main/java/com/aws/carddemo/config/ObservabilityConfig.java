@@ -1,6 +1,9 @@
 package com.aws.carddemo.config;
 
+import io.micrometer.core.instrument.Meter;
 import io.micrometer.core.instrument.MeterRegistry;
+import io.micrometer.core.instrument.config.MeterFilter;
+import io.micrometer.core.instrument.config.MeterFilterReply;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.actuate.autoconfigure.metrics.MeterRegistryCustomizer;
 import org.springframework.context.annotation.Bean;
@@ -137,5 +140,62 @@ public class ObservabilityConfig {
     @Bean
     public MeterRegistryCustomizer<MeterRegistry> commonTagsCustomizer() {
         return registry -> registry.config().commonTags("application", applicationName);
+    }
+
+    /**
+     * Suppresses the redundant Spring Batch <em>active-job</em> meter registration that otherwise
+     * fails on every job launch, eliminating a recurring Prometheus registration WARN (review
+     * finding OBS-1).
+     *
+     * <p><strong>Root cause.</strong> With Boot's batch auto-configuration active (this project
+     * deliberately omits {@code @EnableBatchProcessing}; see {@link BatchConfig}), two framework
+     * mechanisms independently register an "active job" long-task timer that both mangle to the same
+     * Prometheus base name {@code spring_batch_job_active_seconds}:</p>
+     * <ul>
+     *   <li>the legacy {@code BatchMetrics} long-task timer, whose Prometheus tag keys are
+     *       {@code [application, spring_batch_job_active_name]}; and</li>
+     *   <li>the newer Micrometer <em>Observation</em> convention meter (Micrometer name
+     *       {@code spring.batch.job.active}), whose tag keys are
+     *       {@code [application, spring_batch_job_name, spring_batch_job_status]}.</li>
+     * </ul>
+     * <p>Prometheus requires every meter sharing a name to carry an identical tag-key set, so the
+     * second registrant is rejected with
+     * {@code "registration has failed: ... already an existing meter named
+     * 'spring_batch_job_active_seconds'"} on each run. The failure is cosmetic (jobs still complete
+     * and subsequent identical warnings are demoted to debug), but it is genuine recurring log noise.</p>
+     *
+     * <p><strong>Fix.</strong> This {@link MeterFilter} denies <em>only</em> the redundant
+     * Observation-convention active-job meter &mdash; matched precisely by its Micrometer name
+     * {@code spring.batch.job.active} <em>and</em> the presence of a {@code spring.batch.job.status}
+     * tag that the surviving legacy meter does not carry. It therefore:</p>
+     * <ul>
+     *   <li>preserves the surviving {@code spring_batch_job_active_seconds_count} series (tag key
+     *       {@code spring_batch_job_active_name}) that the bundled dashboard's <em>Active Jobs</em>
+     *       panel queries, so no panel is affected; and</li>
+     *   <li>leaves the unrelated {@code spring.batch.job} timer untouched &mdash; its
+     *       {@code spring_batch_job_seconds_*} series (tag keys {@code spring_batch_job_name} /
+     *       {@code spring_batch_job_status}) back the remaining batch panels and share no name with
+     *       the denied meter.</li>
+     * </ul>
+     * <p>The only forfeited signal is the never-consumed per-name/status granularity of the active
+     * gauge. Boot binds every {@link MeterFilter} bean to all meter registries before any meter is
+     * registered, so this filter takes effect for the batch meters that are created lazily at job
+     * launch. Rationale is recorded in {@code docs/decision-log.md}.</p>
+     *
+     * @return a {@link MeterFilter} that denies the duplicate Spring Batch active-job meter so it
+     *         never collides with the surviving {@code spring_batch_job_active_seconds} registration
+     */
+    @Bean
+    public MeterFilter suppressDuplicateBatchActiveJobMeter() {
+        return new MeterFilter() {
+            @Override
+            public MeterFilterReply accept(Meter.Id id) {
+                if ("spring.batch.job.active".equals(id.getName())
+                        && id.getTag("spring.batch.job.status") != null) {
+                    return MeterFilterReply.DENY;
+                }
+                return MeterFilterReply.NEUTRAL;
+            }
+        };
     }
 }

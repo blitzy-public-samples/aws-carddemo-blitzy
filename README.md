@@ -81,7 +81,7 @@ The migrated application is built on:
 
 The migration targets a Java application that builds and runs on any clean local machine; no mainframe or running COBOL environment is required.
 
-> **Implementation status.** This section describes the Java application, which **has been generated in full and builds, boots, and serves requests today.** Present and exercised at runtime: the Maven build (`pom.xml` + wrapper); all **10** JPA domain entities plus the reference/enum layer; the DTO layer (session context, screen forms, menu and report models); the **10** Spring Data **repositories**; the **17** online **services** and **9** MVC **controllers** covering all 18 CICS transaction ids; the **17** **Thymeleaf templates** preserving the BMS 24&times;80 contract; **`SecurityConfig`** with `CardDemoUserDetailsService` and role-based routing; the cross-cutting `config` / `exception` (including the `@ControllerAdvice` `GlobalExceptionHandler`) / `security` / `util` classes; the business **Spring Batch jobs** (`PostTransactionJob`, `InterestCalcJob`, `StatementJob`) alongside the utility/print jobs and the admin driver; the `application.yml` base config plus the `dev` and `test` **profile files**; structured logging (`logback-spring.xml`); the full Flyway migration set **`V0`&ndash;`V3`** (batch metadata, application schema, reference/seed data, and index equivalents); and the **`src/test/**`** JUnit 5 unit + Testcontainers integration + parity suites. The subsections below document commands and behavior that run end-to-end today.
+> **Implementation status.** This section describes the Java application, which **has been generated in full and builds, boots, and serves requests today.** Present and exercised at runtime: the Maven build (`pom.xml` + wrapper); all **10** JPA domain entities plus the reference/enum layer; the DTO layer (session context, screen forms, menu and report models); the **10** Spring Data **repositories**; the **17** online **services** and **9** MVC **controllers** covering all 18 CICS transaction ids; the **17** **Thymeleaf templates** preserving the BMS 24&times;80 contract; **`SecurityConfig`** with `CardDemoUserDetailsService` and role-based routing; the cross-cutting `config` / `exception` (including the `@ControllerAdvice` `GlobalExceptionHandler`) / `security` / `util` classes; the business **Spring Batch jobs** (`PostTransactionJob`, `InterestCalcJob`, `StatementJob`) alongside the utility/print jobs and the admin driver; the `application.yml` base config plus the `dev` and `test` **profile files**; structured logging (`logback-spring.xml`); the full Flyway migration set **`V0`&ndash;`V4`** (batch metadata, application schema, reference/seed data, index equivalents, and the card-xref single-key unique constraint); and the **`src/test/**`** JUnit 5 unit + Testcontainers integration + parity suites. The subsections below document commands and behavior that run end-to-end today.
 
 ### Prerequisites
 
@@ -109,7 +109,7 @@ carddemo/
 │   └── util/                       Date conversion, decimal helpers, fixed-width mappers
 ├── src/main/resources/
 │   ├── application.yml             Base config + application-dev.yml / application-test.yml profiles
-│   ├── db/migration/               Flyway: V0 batch metadata; V1/V2/V3 schema/seed/index
+│   ├── db/migration/               Flyway: V0 batch metadata; V1/V2/V3 schema/seed/index; V4 card-xref unique
 │   ├── logback-spring.xml          Structured JSON logging with correlation IDs
 │   └── templates/                  Thymeleaf screens (preserve the BMS 24x80 contract)
 ├── src/test/java/                  JUnit 5 unit + Testcontainers integration + parity tests
@@ -131,9 +131,9 @@ Configuration is environment-driven and contains **no hardcoded secrets**. The b
 | `SPRING_DATASOURCE_USERNAME` | Database user                       | supplied via environment / secret manager   |
 | `SPRING_DATASOURCE_PASSWORD` | Database password                   | supplied via environment / secret manager   |
 
-**Flyway** manages the database schema as versioned migrations, applied automatically on startup so that a freshly created database is initialized with no manual steps. The full set is present: `V0__spring_batch_metadata.sql` (the Spring Batch metadata tables), `V1__schema.sql` (application schema), `V2__reference_data.sql` (reference and sample seed data), and `V3__indexes.sql` (alternate-index equivalents).
+**Flyway** manages the database schema as versioned migrations, applied automatically on startup so that a freshly created database is initialized with no manual steps. The full set is present: `V0__spring_batch_metadata.sql` (the Spring Batch metadata tables), `V1__schema.sql` (application schema), `V2__reference_data.sql` (reference and sample seed data), `V3__indexes.sql` (alternate-index equivalents), and `V4__card_xref_unique_card_num.sql` (the `uk_card_xref_card_num` single-key unique constraint on `card_xref`).
 
-> **Benign Flyway startup warning on PostgreSQL 18.** On the target PostgreSQL 18.4 server, Flyway logs one informational `WARN` at startup &mdash; *"Flyway upgrade recommended: PostgreSQL 18.4 is newer than this version of Flyway and support has not been tested. The latest supported version of PostgreSQL is 17."* This is expected and harmless: the BOM-managed Flyway (11.7.2) has been validation-tested only up to PostgreSQL 17, but all `V0`&ndash;`V3` migrations apply cleanly and idempotently on 18.4. The warning does not appear on the supported floor (PostgreSQL 16/17) and is retired by the Spring Boot 4.x upgrade (which advances Flyway); see the rationale and risk/mitigation in [`docs/decision-log.md`](./docs/decision-log.md).
+> **Benign Flyway startup warning on PostgreSQL 18.** On the target PostgreSQL 18.4 server, Flyway logs one informational `WARN` at startup &mdash; *"Flyway upgrade recommended: PostgreSQL 18.4 is newer than this version of Flyway and support has not been tested. The latest supported version of PostgreSQL is 17."* This is expected and harmless: the BOM-managed Flyway (11.7.2) has been validation-tested only up to PostgreSQL 17, but all `V0`&ndash;`V4` migrations apply cleanly and idempotently on 18.4. The warning does not appear on the supported floor (PostgreSQL 16/17) and is retired by the Spring Boot 4.x upgrade (which advances Flyway); see the rationale and risk/mitigation in [`docs/decision-log.md`](./docs/decision-log.md).
 
 ### Build
 
@@ -175,6 +175,52 @@ These are seeded application user records. The **database** credentials, by cont
 ### Batch jobs
 
 The batch workload that ran as JCL jobs on the mainframe is implemented as **Spring Batch `Job`s** (chunk-oriented reader &rarr; processor &rarr; writer steps, with `Tasklet` steps for single-action utilities). The business jobs are present &mdash; `PostTransactionJob` (daily transaction posting), `InterestCalcJob` (monthly interest calculation), and `StatementJob` (statement generation) &mdash; alongside the utility/print jobs, the admin-driver job (`CBADMCDJ` &rarr; a documented no-op `Tasklet`), and the Spring Batch metadata schema (`V0`). Job parameters &mdash; for example the interest-calculation processing date &mdash; are supplied as Spring Batch `JobParameter`s, preserving the original JCL `PARM` semantics. See [`docs/traceability-matrix.md`](./docs/traceability-matrix.md) for the full JCL-job &rarr; Spring Batch job mapping.
+
+#### Running batch jobs locally
+
+The batch jobs do **not** run on web startup (`spring.batch.job.enabled=false` by default, so `./mvnw spring-boot:run` only serves the online app). Launch a single job explicitly by running the packaged jar in **non-web** mode, selecting the job by name and passing its parameters as `name=value` arguments:
+
+```bash
+# 1. Build the jar once (see Build above)
+./mvnw -DskipTests package
+
+# 2. Make sure PostgreSQL is running and the datasource env vars are exported
+#    (SPRING_DATASOURCE_URL / _USERNAME / _PASSWORD -- see Configuration).
+
+# 3. Launch one job -- example: daily transaction posting (CBTRN02C / POSTTRAN)
+java -jar target/carddemo-1.0.0.jar \
+  --spring.main.web-application-type=none \
+  --spring.batch.job.enabled=true \
+  --spring.batch.job.name=postTransactionJob \
+  inputPath=/path/to/DALYTRAN.txt \
+  rejectPath=/path/to/DALYREJS.txt
+echo "RETURN-CODE = $?"
+```
+
+`--spring.batch.job.enabled=true` turns the launcher on for this run, `--spring.batch.job.name=<job>` selects which job runs, and **job parameters are the non-`--` arguments** in `name=value` form. `--spring.main.web-application-type=none` makes the process exit when the job finishes (so `$?` carries the return code) instead of starting the web server.
+
+**Jobs and their parameters** (the job name is the value for `--spring.batch.job.name`):
+
+| Job | Parameters | Output artifact |
+|-----|------------|-----------------|
+| `postTransactionJob` | `inputPath` (DALYTRAN feed), `rejectPath` (DALYREJS rejects) | rejected records &rarr; `rejectPath` (430-byte reject layout) |
+| `interestCalcJob` | `processingDate` (COBOL `PARM-DATE`, `PIC X(10)`, e.g. `2022071800`) | updated balances + generated interest transactions |
+| `statementJob` | `textOutputPath`, `htmlOutputPath` | plain-text + HTML statement files |
+| `transactionReportJob` | `startDate`, `endDate` (`yyyy-MM-dd`), `outputPath` | transaction report file |
+| `transactionBackupJob` | `outputPath` | transaction backup file |
+| `transactionCombineJob` | `backupInput`, `systemInput`, `combinedOutput` | combined file sorted ascending by `tranId` |
+| `categoryBalancePrintJob` | `outputPath` | 40-byte category-balance report |
+| `accountPrintJob` | *(none)* | structured log records (mirrors the SYSOUT-only `READACCT`) |
+| `cardPrintJob` | *(none)* | structured log records (`READCARD`) |
+| `xrefPrintJob` | *(none)* | structured log records (`READXREF`) |
+| `customerLoadJob` | *(none)* | structured log records (`READCUST`) |
+| `adminBatchJob` | *(none)* | no-op `Tasklet` (the `CBADMCDJ` admin driver) |
+
+You choose the output paths (any writable location); the print/load jobs emit their output as structured log records rather than a dataset, mirroring the SYSOUT-only `READ*` JCL.
+
+**Exit code &mdash; the JCL RETURN-CODE contract.** In non-web mode the JVM exit status reproduces the mainframe RETURN-CODE ladder so a scheduler can branch on the outcome: **`0`** clean completion; **`4`** completed with business rejects (for example `postTransactionJob` wrote one or more records to `rejectPath`); **`8`** the job failed or abended (for example a duplicate transaction id &mdash; the COBOL `9999-ABEND` equivalent). Inspect it with `echo $?` immediately after the run.
+
+**Restart.** Spring Batch keys each job instance by its **identifying** parameters. To **restart** a `FAILED` run, relaunch with the **same** parameters &mdash; the job resumes that instance. To start a **new** instance (for example a fresh posting run over a new feed), change a parameter or add a unique one such as `runId=$(date +%s)`. A job instance that already `COMPLETED` cannot be re-run with identical identifying parameters (Spring Batch rejects it), which is the intended guard against accidentally reprocessing the same input twice.
 
 ### Observability
 

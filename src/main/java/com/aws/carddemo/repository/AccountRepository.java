@@ -1,7 +1,12 @@
 package com.aws.carddemo.repository;
 
 import com.aws.carddemo.domain.Account;
+import jakarta.persistence.LockModeType;
+import java.util.Optional;
 import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.Lock;
+import org.springframework.data.jpa.repository.Query;
+import org.springframework.data.repository.query.Param;
 import org.springframework.stereotype.Repository;
 
 /**
@@ -16,8 +21,14 @@ import org.springframework.stereotype.Repository;
  * the COBOL access paths exactly: random read by account id ({@code findById(Long)}),
  * read-update-rewrite of balances and cycle totals ({@code save(Account)}), and the sequential
  * account-print scan ({@code findAll(org.springframework.data.domain.Sort)} ordered by
- * {@code acctId}). No derived-query finders are declared, because the COBOL programs access
- * ACCTDAT only by its primary key; adding other finders would be feature expansion.</p>
+ * {@code acctId}). The only additional finder is {@link #findByIdForUpdate(Long)} &mdash; the
+ * <em>same</em> primary-key access path as {@link JpaRepository#findById(Object) findById}, but
+ * acquiring a pessimistic write lock (SQL {@code SELECT ... FOR UPDATE}); it is used exclusively by
+ * the daily transaction-posting batch step to reproduce the legacy batch dataset-level
+ * serialization (see that method's Javadoc and {@code docs/decision-log.md}). No <em>new</em>
+ * access path (no query by a different key) is introduced &mdash; a lock is not a new finder &mdash;
+ * so this is not feature expansion: the online read-update-rewrite path continues to use the
+ * lock-free {@code findById} + application-level compare-before-rewrite model unchanged.</p>
  *
  * <p>Consumed by the online account view and update services
  * ({@code AccountViewService}, {@code AccountUpdateService}) and by the account-print,
@@ -27,4 +38,38 @@ import org.springframework.stereotype.Repository;
  */
 @Repository
 public interface AccountRepository extends JpaRepository<Account, Long> {
+
+    /**
+     * Reads the account by its primary key while acquiring a row-level <strong>pessimistic write
+     * lock</strong> (JPA {@link LockModeType#PESSIMISTIC_WRITE}; PostgreSQL {@code SELECT ... FOR
+     * UPDATE}).
+     *
+     * <p><strong>Origin / parity (AAP &sect;0.7.1, &sect;0.6.3):</strong> the legacy daily-posting
+     * program {@code legacy/cbl/CBTRN02C.cbl} runs as JCL job {@code POSTTRAN}, which allocates the
+     * VSAM master data sets (ACCTDAT, TRANSACT, TCATBAL) with {@code DISP=OLD} &mdash; an exclusive,
+     * data-set-level ENQ that makes two concurrent {@code POSTTRAN} executions impossible (the second
+     * waits for the data set). Under the migrated stack multiple job launches can run concurrently
+     * against the shared PostgreSQL database, so the read-modify-write of the account balance and
+     * cycle totals ({@code 2800-UPDATE-ACCOUNT-REC}) would, under {@code READ COMMITTED}, lose
+     * updates &mdash; a behavioural regression the COBOL never exhibited. Acquiring this pessimistic
+     * write lock inside the chunk transaction, held until the chunk commits, serializes concurrent
+     * posters on the same account and preserves the legacy invariant that every posted transaction
+     * is reflected exactly once (a reconcilable ledger). The account row is the single serialization
+     * point: because a {@code TRANSACTION_CATEGORY_BALANCE} key is (account, type, category), the
+     * account lock also serializes the dependent {@code 2700-UPDATE-TCATBAL} update, so no second
+     * lock &mdash; and therefore no lock-ordering / deadlock concern &mdash; arises.</p>
+     *
+     * <p><strong>Scope:</strong> used only by {@code PostTransactionJobConfig}'s posting processor
+     * (batch tier). The online tier ({@code AccountViewService}, {@code AccountUpdateService})
+     * deliberately does <em>not</em> use it &mdash; it keeps the lock-free {@code findById} +
+     * application-level compare-before-rewrite model that mirrors {@code COACTUPC} (see
+     * {@code docs/decision-log.md}). Must be invoked within an active transaction (the Spring Batch
+     * chunk transaction); calling it outside a transaction has no lock effect.</p>
+     *
+     * @param acctId the account primary key ({@code ACCT-ID PIC 9(11)})
+     * @return the locked account if present, otherwise empty
+     */
+    @Lock(LockModeType.PESSIMISTIC_WRITE)
+    @Query("select a from Account a where a.acctId = :acctId")
+    Optional<Account> findByIdForUpdate(@Param("acctId") Long acctId);
 }

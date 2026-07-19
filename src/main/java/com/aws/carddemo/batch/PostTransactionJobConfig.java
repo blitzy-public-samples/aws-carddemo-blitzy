@@ -40,6 +40,7 @@ import com.aws.carddemo.domain.Transaction;
 import com.aws.carddemo.domain.TransactionCategoryBalance;
 import com.aws.carddemo.domain.TransactionCategoryBalance.TransactionCategoryBalanceId;
 import com.aws.carddemo.dto.DailyTransaction;
+import com.aws.carddemo.exception.DuplicateKeyException;
 import com.aws.carddemo.repository.AccountRepository;
 import com.aws.carddemo.repository.CardXrefRepository;
 import com.aws.carddemo.repository.TransactionCategoryBalanceRepository;
@@ -103,8 +104,14 @@ public class PostTransactionJobConfig {
     static final String DESC_OVERLIMIT = "OVERLIMIT TRANSACTION";
     static final String DESC_EXPIRED = "TRANSACTION RECEIVED AFTER ACCT EXPIRATION";
 
-    /** Custom step exit status raised when any record was rejected (maps to RETURN-CODE 4). */
-    static final String EXIT_STATUS_WITH_REJECTS = "COMPLETED_WITH_REJECTS";
+    /**
+     * Custom step/job exit status raised when any record was rejected. This is the
+     * launcher-boundary contract consumed by {@code CardDemoApplication}'s RETURN-CODE exit-code
+     * generator, which maps it to process exit code 4 (COBOL RETURN-CODE 4). Public so the
+     * bootstrap class (a different package) can reference it as the single source of truth instead
+     * of duplicating the literal.
+     */
+    public static final String EXIT_STATUS_WITH_REJECTS = "COMPLETED_WITH_REJECTS";
 
     /** Execution-context key under which the running reject count is accumulated. */
     static final String REJECT_COUNT_KEY = "postTransaction.rejectCount";
@@ -595,7 +602,16 @@ public class PostTransactionJobConfig {
             Long acctId = xref.get().getXrefAcctId();
 
             // 1500-B-LOOKUP-ACCT (CBTRN02C L393): unknown account -> reason 101.
-            Optional<Account> accountOpt = accountRepository.findById(acctId);
+            // Read the account under a pessimistic WRITE lock (SELECT ... FOR UPDATE) rather than a
+            // plain findById. This lock is acquired inside the Spring Batch chunk transaction and is
+            // held until the chunk commits (after the writer's 2800 account save), serializing
+            // concurrent POSTTRAN launches on the same account so the read-modify-write of the
+            // balance and cycle totals cannot lose updates. This reproduces the legacy dataset-level
+            // exclusivity (POSTTRAN allocates ACCTDAT with DISP=OLD); the account lock also covers
+            // the dependent 2700-UPDATE-TCATBAL row because a category-balance key contains the
+            // account id, so a single lock suffices with no deadlock risk. See
+            // AccountRepository#findByIdForUpdate and docs/decision-log.md.
+            Optional<Account> accountOpt = accountRepository.findByIdForUpdate(acctId);
             if (accountOpt.isEmpty()) {
                 return PostingOutcome.rejected(item, REASON_ACCT_NOT_FOUND, DESC_ACCT_NOT_FOUND);
             }
@@ -753,9 +769,31 @@ public class PostTransactionJobConfig {
             List<String> rejects = new ArrayList<>();
             for (PostingOutcome outcome : chunk) {
                 if (outcome.isPosted()) {
+                    Transaction transaction = outcome.getTransaction();
+                    // 2900-WRITE-TRANSACTION-FILE duplicate-key parity (CBTRN02C L562-577;
+                    // AAP 0.6.5). The COBOL WRITE to the TRANSACT master is an insert: a key that
+                    // already exists returns FILE STATUS '22' (a non-'00' status), which sets
+                    // APPL-RESULT 12 and routes to 9999-ABEND-PROGRAM (CALL 'CEE3ABD', ABCODE 999 —
+                    // a hard abend that yields a non-zero RETURN-CODE). Spring Data
+                    // JpaRepository.save() would instead MERGE onto the existing primary key
+                    // (a silent UPDATE), re-applying the already-computed 2800 account and 2700
+                    // category-balance mutations on top of the prior posting while leaving a single
+                    // transaction row — an unreconcilable ledger (balance moved twice, one tx row).
+                    // Detect the collision BEFORE any save and raise the typed DuplicateKeyException
+                    // (FILE STATUS "22"). Because the posting step is not fault-tolerant (no skip),
+                    // the throw rolls back the whole chunk transaction (category balance + account +
+                    // transaction), leaving nothing partially posted, and fails the job so the
+                    // launcher surfaces a non-zero RETURN-CODE to the operator — behaviourally
+                    // identical to the COBOL abend.
+                    if (transactionRepository.existsById(transaction.getTranId())) {
+                        throw new DuplicateKeyException(
+                                "Duplicate transaction id on WRITE to the transaction master "
+                                        + "(COBOL 2900-WRITE-TRANSACTION-FILE FILE STATUS '22'): "
+                                        + transaction.getTranId().trim());
+                    }
                     categoryBalanceRepository.save(outcome.getCategoryBalance());
                     accountRepository.save(outcome.getAccount());
-                    transactionRepository.save(outcome.getTransaction());
+                    transactionRepository.save(transaction);
                 } else {
                     rejects.add(buildRejectLine(outcome.getSource(), outcome.getReasonCode(),
                             outcome.getReasonDesc()));

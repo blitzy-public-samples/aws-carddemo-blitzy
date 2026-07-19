@@ -319,6 +319,43 @@ Batch **`JobParameter`s** — for instance, the interest-calculation **processin
 supplied as a job parameter, preserving the original JCL semantics. Job-instance versioning
 reproduces the legacy generation-data-group (GDG) output behavior.
 
+**Launching a job.** The jobs do **not** auto-run on web startup (`spring.batch.job.enabled=false`
+by default, so `./mvnw spring-boot:run` serves only the online app). Run one job explicitly by
+launching the packaged jar in **non-web** mode, selecting the job by name and passing its
+parameters as `name=value` arguments — for example the daily transaction posting job:
+
+```bash
+./mvnw -DskipTests package        # build the jar once
+# PostgreSQL must be running and the datasource env vars exported (see section 3)
+java -jar target/carddemo-1.0.0.jar \
+  --spring.main.web-application-type=none \
+  --spring.batch.job.enabled=true \
+  --spring.batch.job.name=postTransactionJob \
+  inputPath=/path/to/DALYTRAN.txt \
+  rejectPath=/path/to/DALYREJS.txt
+echo "RETURN-CODE = $?"
+```
+
+`--spring.batch.job.enabled=true` turns the launcher on for the run, `--spring.batch.job.name=<job>`
+picks the job, and job parameters are the non-`--` `name=value` arguments;
+`--spring.main.web-application-type=none` makes the JVM exit with a return code when the job
+finishes. The **full table of every job name, its parameters, and its output artifact** is the
+**Running batch jobs locally** subsection of [`README.md`](../README.md#batch-jobs) — for example
+`interestCalcJob` (`processingDate`), `statementJob` (`textOutputPath`, `htmlOutputPath`),
+`transactionReportJob` (`startDate`, `endDate` as `yyyy-MM-dd`, `outputPath`), and the read-only
+print jobs (`accountPrintJob`, `cardPrintJob`, `xrefPrintJob`, `customerLoadJob`) which take no
+parameters and emit structured log records.
+
+**Return code (JCL RETURN-CODE contract).** In non-web mode the JVM exit status reproduces the
+mainframe ladder so a scheduler can branch on it: **`0`** clean, **`4`** completed with business
+rejects (e.g. `postTransactionJob` wrote to `rejectPath`), **`8`** failed/abended (e.g. a duplicate
+transaction id — the COBOL `9999-ABEND` equivalent). Read it with `echo $?`.
+
+**Restart.** A job instance is keyed by its **identifying** parameters. Relaunch a `FAILED` run with
+the **same** parameters to resume that instance; change a parameter (or add `runId=$(date +%s)`) to
+start a **new** instance. A job that already `COMPLETED` cannot be re-run with identical parameters,
+guarding against reprocessing the same input twice.
+
 For the **complete JCL-job → Spring Batch job mapping** (including which COBOL program each
 job derives from), see [`docs/traceability-matrix.md`](./traceability-matrix.md) and the
 **Batch** table in [`README.md`](../README.md).

@@ -37,6 +37,7 @@ import org.springframework.data.jpa.repository.config.EnableJpaRepositories;
 import com.aws.carddemo.AbstractPostgresIntegrationTest;
 import com.aws.carddemo.domain.Account;
 import com.aws.carddemo.domain.CardXref;
+import com.aws.carddemo.domain.Transaction;
 import com.aws.carddemo.domain.TransactionCategoryBalance.TransactionCategoryBalanceId;
 import com.aws.carddemo.repository.AccountRepository;
 import com.aws.carddemo.repository.CardXrefRepository;
@@ -689,6 +690,95 @@ class PostTransactionJobConfigIT extends AbstractPostgresIntegrationTest {
         assertThat(rejectCount(validRun)).isZero();
         assertThat(validRun.getExitStatus().getExitCode())
                 .isEqualTo(ExitStatus.COMPLETED.getExitCode());
+    }
+
+    /**
+     * Duplicate-transaction-id abend parity ({@code 2900-WRITE-TRANSACTION-FILE}; CBTRN02C
+     * L562-577; AAP &sect;0.6.5). The COBOL {@code WRITE} to the {@code TRANSACT} master is an
+     * insert: a key that already exists returns {@code FILE STATUS '22'} (a non-{@code '00'}
+     * status), which sets {@code APPL-RESULT 12} and routes to {@code 9999-ABEND-PROGRAM}
+     * ({@code CALL 'CEE3ABD'} ABCODE 999) &mdash; a hard abend yielding a non-zero RETURN-CODE. A
+     * naive Spring Data {@code save()} would instead <em>merge</em> onto the existing primary key
+     * (a silent {@code UPDATE}), overwriting the prior transaction row <em>and</em> re-applying the
+     * {@code 2800}/{@code 2700} balance mutations, producing an unreconcilable ledger (the balance
+     * moved twice, one transaction row) while the job still reported success. The
+     * {@code existsById} guard added to the writer restores the abend behaviour.
+     *
+     * <p>The feed carries one valid, non-duplicate record followed by a record whose id was
+     * pre-seeded. Because {@link PostTransactionJobConfig#CHUNK_SIZE} is 1, the valid record
+     * commits in its own chunk before the duplicate's chunk runs and fails &mdash; exactly the
+     * legacy behaviour where records processed before the abend are already written to the
+     * (non-transactional) VSAM dataset. The assertions verify:</p>
+     * <ol>
+     *   <li>the job ends {@link BatchStatus#FAILED} (the abend / non-zero RETURN-CODE), not
+     *       {@link BatchStatus#COMPLETED}, and the duplicate is <em>not</em> a soft reject
+     *       (empty {@code DALYREJS});</li>
+     *   <li>the pre-existing transaction row is left unchanged &mdash; its distinctive seeded
+     *       amount and fields survive, proving the writer never silently merged over it;</li>
+     *   <li>the ledger is reconcilable &mdash; the valid record is posted exactly once and the
+     *       duplicate's mutations are absent, so the account balance, cycle-credit and category
+     *       balance reflect only the single legitimate posting (100.00, never 150.00).</li>
+     * </ol>
+     *
+     * @throws Exception if the job launch fails
+     */
+    @Test
+    void duplicateTransactionIdAbendsJobAndLeavesLedgerReconcilable() throws Exception {
+        long acctId = 900_000_400L;
+        String cardNum = "9000000000000400";
+        persistAccount(acctId, money("999999.99"), FUTURE_EXPIRY);
+        persistXref(cardNum, 900_000_400L, acctId);
+
+        // Pre-seed a transaction whose id the feed's second record reuses. Its distinctive amount —
+        // never produced by the feed below — is the merge sentinel: if the writer silently UPDATEs
+        // the existing primary key, this value (and the other seeded fields) would change.
+        String dupId = id16("ITDUPPOST");
+        BigDecimal sentinelAmt = money("777.77");
+        Transaction seeded = new Transaction();
+        seeded.setTranId(dupId);
+        seeded.setTranTypeCd("09");
+        seeded.setTranCatCd(99);
+        seeded.setTranSource("PRESEED");
+        seeded.setTranDesc("PRE-EXISTING TRANSACTION (MERGE SENTINEL)");
+        seeded.setTranAmt(sentinelAmt);
+        seeded.setCardNum(cardNum);
+        transactionRepository.save(seeded);
+
+        // Feed: one valid, NON-duplicate record (commits in its own chunk), then the duplicate.
+        String validId = id16("ITDUPOK");
+        BigDecimal validAmt = money("100.00");
+        Path feed = writeFeed("dalytran-dup.txt", List.of(
+                dalytran(validId, "01", 5, validAmt, cardNum, ORIG_TS),
+                dalytran(dupId, "01", 5, money("50.00"), cardNum, ORIG_TS)));
+        Path reject = tempDir.resolve("reject-dup.txt");
+
+        JobExecution execution = launch(feed, reject);
+
+        // (1) Abend parity: the duplicate WRITE fails the job (non-zero RETURN-CODE), and is NOT a
+        // soft reject (nothing written to DALYREJS).
+        assertThat(execution.getStatus()).isEqualTo(BatchStatus.FAILED);
+        assertThat(rejectCount(execution)).isZero();
+        assertThat(readRejectRecords(reject)).isEmpty();
+
+        // (2) No silent merge: the pre-existing row is untouched (sentinel amount + fields intact).
+        Transaction afterDup = transactionRepository.findById(dupId).orElseThrow();
+        assertThat(afterDup.getTranAmt()).isEqualByComparingTo(sentinelAmt);
+        assertThat(afterDup.getTranSource().trim()).isEqualTo("PRESEED");
+        assertThat(afterDup.getTranTypeCd()).isEqualTo("09");
+        assertThat(afterDup.getTranCatCd()).isEqualTo(99);
+
+        // (3) Reconcilable ledger: the valid record committed exactly once (its own chunk); the
+        // duplicate's +50 mutation and its category balance were rolled back with the failing chunk,
+        // so every figure reflects only the single legitimate posting.
+        Transaction validTx = transactionRepository.findById(validId).orElseThrow();
+        assertThat(validTx.getTranAmt()).isEqualByComparingTo(validAmt);
+        Account reloaded = accountRepository.findById(acctId).orElseThrow();
+        assertThat(reloaded.getCurrBal()).isEqualByComparingTo(validAmt);
+        assertThat(reloaded.getCurrCycCredit()).isEqualByComparingTo(validAmt);
+        assertThat(reloaded.getCurrCycDebit()).isEqualByComparingTo(money("0.00"));
+        var catBal = categoryBalanceRepository
+                .findById(new TransactionCategoryBalanceId(acctId, "01", 5)).orElseThrow();
+        assertThat(catBal.getBalance()).isEqualByComparingTo(validAmt);
     }
 
     /**

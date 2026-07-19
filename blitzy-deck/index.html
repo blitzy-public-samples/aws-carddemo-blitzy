@@ -644,6 +644,15 @@ graph TD
             </tr>
             <tr>
               <td>
+                <span class="risk-cell"><i data-lucide="shield-check"></i>
+                  <span><strong>Batch concurrency &amp; duplicate-key parity.</strong> The legacy daily-posting job serialized on a dataset-level ENQ (JCL <code>DISP=OLD</code>) and abended on a duplicate transaction write. Those guarantees are reproduced with a batch-only pessimistic account row-lock (no lost update under concurrent posting), a duplicate-key abend (no silent double-post), and the JCL <code>0&thinsp;/&thinsp;4&thinsp;/&thinsp;8</code> RETURN-CODE contract on the process exit code.</span>
+                </span>
+              </td>
+              <td><span class="sev-low">Hardened</span></td>
+              <td>Fixes in place and covered by a concurrency parity test &mdash; parity preserved, not assumed.</td>
+            </tr>
+            <tr>
+              <td>
                 <span class="risk-cell"><i data-lucide="info"></i>
                   <span><strong>Scope discipline &mdash; no feature expansion.</strong> MQ/JMS, Db2, IMS, FTP/SFTP, REST/SOAP APIs and a CI/CD pipeline are intentionally out of scope.</span>
                 </span>
