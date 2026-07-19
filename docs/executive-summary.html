@@ -1,0 +1,612 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>CardDemo REST/JSON API Layer — Executive Summary</title>
+
+  <!-- Google Fonts: Inter (body), Space Grotesk (headings), Fira Code (monospace tokens) -->
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&family=Space+Grotesk:wght@500;700&family=Fira+Code&display=swap" rel="stylesheet" />
+
+  <!-- reveal.js 5.1.0 core + base white theme (overridden by the inline Blitzy theme below) -->
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/reveal.js@5.1.0/dist/reveal.css" />
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/reveal.js@5.1.0/dist/theme/white.css" id="theme" />
+
+  <!-- ==========================================================================
+       Inline Blitzy brand theme (canonical token/class contract reproduced here;
+       the external blitzy-deck/references/blitzy-reveal-theme.css is intentionally
+       absent from the checkout and is NOT imported or linked).
+       ========================================================================== -->
+  <style>
+    :root {
+      /* Blitzy core palette */
+      --blitzy-primary: #5B39F3;
+      --blitzy-dark: #2D1C77;
+      --blitzy-teal: #94FAD5;
+      --blitzy-navy: #1A105F;
+      /* Hero gradient stops */
+      --blitzy-grad-start: #7A6DEC;
+      --blitzy-grad-mid: #5B39F3;
+      --blitzy-grad-end: #4101DB;
+      /* Neutrals */
+      --blitzy-white: #FFFFFF;
+      --blitzy-text: #333333;
+      --blitzy-panel: #F2F0FE;
+      --blitzy-panel-alt: #F4EFF6;
+      --blitzy-grey: #999999;
+      /* Exact hero gradient (canonical) */
+      --blitzy-hero: linear-gradient(68deg, #7A6DEC 15.56%, #5B39F3 62.74%, #4101DB 84.44%);
+      /* Fonts */
+      --font-body: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif;
+      --font-head: 'Space Grotesk', 'Inter', sans-serif;
+      --font-mono: 'Fira Code', 'SFMono-Regular', Consolas, monospace;
+    }
+
+    /* ---- Base typography ---- */
+    .reveal {
+      font-family: var(--font-body);
+      color: var(--blitzy-text);
+      font-size: 34px;
+    }
+    .reveal h1, .reveal h2, .reveal h3, .reveal h4 {
+      font-family: var(--font-head);
+      color: var(--blitzy-navy);
+      text-transform: none;
+      letter-spacing: -0.01em;
+      font-weight: 700;
+      line-height: 1.1;
+    }
+    .reveal h1 { font-size: 2.6rem; }
+    .reveal h2 { font-size: 1.9rem; }
+    .reveal h3 { font-size: 1.35rem; }
+    .reveal p, .reveal li { line-height: 1.4; }
+    .reveal strong { color: var(--blitzy-dark); }
+    .reveal .mono, .reveal code, .path, .method, .token {
+      font-family: var(--font-mono);
+    }
+    .reveal section { text-align: left; }
+    .reveal .slides section .kicker {
+      font-family: var(--font-head);
+      text-transform: uppercase;
+      letter-spacing: 0.14em;
+      font-size: 0.8rem;
+      font-weight: 700;
+      color: var(--blitzy-primary);
+      margin: 0 0 8px 0;
+    }
+
+    /* ---- Slide type: TITLE (hero gradient) ---- */
+    .reveal .slides section.slide-title,
+    .reveal .slides section.slide-divider {
+      background: var(--blitzy-hero);
+      color: var(--blitzy-white);
+      text-align: center;
+      border-radius: 0;
+    }
+    .reveal .slides section.slide-title h1,
+    .reveal .slides section.slide-title h2,
+    .reveal .slides section.slide-title p,
+    .reveal .slides section.slide-title .kicker,
+    .reveal .slides section.slide-divider h1,
+    .reveal .slides section.slide-divider h2,
+    .reveal .slides section.slide-divider p,
+    .reveal .slides section.slide-divider .kicker {
+      color: var(--blitzy-white);
+    }
+    .slide-title .subtitle {
+      font-size: 1.35rem;
+      font-weight: 400;
+      opacity: 0.95;
+      margin-top: 10px;
+    }
+    .slide-title .eyebrow {
+      color: var(--blitzy-teal);
+      letter-spacing: 0.2em;
+    }
+
+    /* ---- Slide type: DIVIDER ---- */
+    .reveal .slides section.slide-divider h2 { font-size: 2.4rem; }
+    .divider-icon { margin-bottom: 18px; }
+    .reveal .divider-icon svg.lucide { width: 84px; height: 84px; stroke: var(--blitzy-teal); }
+
+    /* ---- Slide type: CLOSING (dark navy) ---- */
+    .reveal .slides section.slide-closing {
+      background: var(--blitzy-navy);
+      color: var(--blitzy-white);
+      text-align: center;
+    }
+    .reveal .slides section.slide-closing h2,
+    .reveal .slides section.slide-closing p,
+    .reveal .slides section.slide-closing .kicker { color: var(--blitzy-white); }
+    .reveal .slides section.slide-closing .kicker { color: var(--blitzy-teal); }
+
+    /* ---- Hero icon cluster ---- */
+    .hero-icon { margin-bottom: 22px; display: flex; gap: 26px; justify-content: center; }
+    .reveal .hero-icon svg.lucide { width: 92px; height: 92px; stroke: var(--blitzy-teal); }
+
+    /* ---- Lucide icon defaults ---- */
+    .reveal svg.lucide { stroke: var(--blitzy-primary); width: 32px; height: 32px; vertical-align: middle; }
+
+    /* ---- KPI cards ---- */
+    .kpi-grid {
+      display: flex; flex-wrap: wrap; gap: 26px;
+      justify-content: center; align-items: stretch; margin-top: 26px;
+    }
+    .kpi-card {
+      background: var(--blitzy-panel);
+      border: 1px solid rgba(91, 57, 243, 0.14);
+      border-top: 6px solid var(--blitzy-primary);
+      border-radius: 16px;
+      padding: 30px 34px;
+      min-width: 260px; max-width: 340px;
+      box-shadow: 0 8px 22px rgba(45, 28, 119, 0.10);
+      text-align: center;
+    }
+    .kpi-card svg.lucide { width: 34px; height: 34px; stroke: var(--blitzy-primary); margin-bottom: 10px; }
+    .kpi-value {
+      font-family: var(--font-head);
+      font-size: 2.9rem; font-weight: 700; line-height: 1;
+      color: var(--blitzy-primary);
+    }
+    .kpi-label { font-size: 1.02rem; font-weight: 600; color: var(--blitzy-text); margin-top: 10px; }
+
+    /* ---- Styled table ---- */
+    .blitzy-table {
+      border-collapse: collapse; width: 100%;
+      font-size: 1.0rem; border-radius: 14px; overflow: hidden;
+      box-shadow: 0 8px 22px rgba(45, 28, 119, 0.10);
+    }
+    .blitzy-table thead th {
+      background: var(--blitzy-primary); color: var(--blitzy-white);
+      font-family: var(--font-head); font-weight: 700;
+      padding: 16px 20px; text-align: left; font-size: 1.05rem;
+    }
+    .blitzy-table td { padding: 14px 20px; border-bottom: 1px solid #E7E2F5; vertical-align: top; }
+    .blitzy-table tbody tr:nth-child(even) { background: var(--blitzy-panel-alt); }
+    .blitzy-table tbody tr:nth-child(odd) { background: var(--blitzy-white); }
+    .blitzy-table .method { font-family: var(--font-mono); font-weight: 700; color: var(--blitzy-primary); }
+    .blitzy-table .path { font-family: var(--font-mono); color: var(--blitzy-dark); }
+
+    /* ---- Icon bullet list ---- */
+    .icon-list { list-style: none; margin: 18px 0 0 0; padding: 0; }
+    .icon-list li { display: flex; align-items: center; gap: 18px; margin: 20px 0; font-size: 1.2rem; }
+    .icon-list li svg.lucide { flex: 0 0 auto; width: 36px; height: 36px; stroke: var(--blitzy-primary); }
+
+    /* ---- Security chip row ---- */
+    .chip-grid { display: flex; flex-wrap: wrap; gap: 22px; justify-content: center; margin-top: 24px; }
+    .chip {
+      display: flex; align-items: center; gap: 14px;
+      background: var(--blitzy-panel); border-radius: 999px;
+      padding: 16px 26px; font-size: 1.05rem; font-weight: 600;
+      border: 1px solid rgba(91, 57, 243, 0.16);
+    }
+    .chip svg.lucide { width: 28px; height: 28px; stroke: var(--blitzy-primary); }
+
+    /* ---- Mermaid framing ---- */
+    .reveal pre.mermaid {
+      background: transparent; box-shadow: none; width: 100%;
+      font-size: 0.5em; text-align: center; margin: 0;
+    }
+    .diagram-caption { text-align: center; color: var(--blitzy-grey); font-size: 0.9rem; margin-top: 10px; }
+
+    /* ---- Misc helpers ---- */
+    .center { text-align: center; }
+    .lead { font-size: 1.25rem; }
+    .note { color: var(--blitzy-grey); font-size: 0.95rem; }
+    .cta {
+      display: inline-flex; align-items: center; gap: 12px;
+      margin-top: 26px; padding: 16px 30px; border-radius: 12px;
+      background: var(--blitzy-primary); color: var(--blitzy-white);
+      font-family: var(--font-head); font-weight: 700; font-size: 1.1rem;
+    }
+    .cta svg.lucide { stroke: var(--blitzy-white); }
+    .reveal .slides section.slide-closing .cta { background: var(--blitzy-teal); color: var(--blitzy-navy); }
+    .reveal .slides section.slide-closing .cta svg.lucide { stroke: var(--blitzy-navy); }
+  </style>
+</head>
+<body>
+  <div class="reveal">
+    <div class="slides">
+
+      <!-- ============ SLIDE 1 — TITLE (hero) ============ -->
+      <section class="slide-title" data-background-gradient="linear-gradient(68deg, #7A6DEC 15.56%, #5B39F3 62.74%, #4101DB 84.44%)">
+        <div class="hero-icon">
+          <i data-lucide="server"></i>
+          <i data-lucide="plug"></i>
+        </div>
+        <p class="kicker eyebrow">AWS CardDemo &middot; Modernization</p>
+        <h1>CardDemo REST/JSON API Layer</h1>
+        <p class="subtitle">Read-only distributed access on base CICS Web Support</p>
+      </section>
+
+      <!-- ============ SLIDE 2 — Executive summary KPIs ============ -->
+      <section>
+        <p class="kicker">Executive Summary</p>
+        <h2>A new front door to trusted card data</h2>
+        <div class="kpi-grid">
+          <div class="kpi-card">
+            <i data-lucide="git-branch"></i>
+            <div class="kpi-value">7</div>
+            <div class="kpi-label">REST endpoints</div>
+          </div>
+          <div class="kpi-card">
+            <i data-lucide="file-code"></i>
+            <div class="kpi-value">8</div>
+            <div class="kpi-label">New COBOL programs</div>
+          </div>
+          <div class="kpi-card">
+            <i data-lucide="shield-check"></i>
+            <div class="kpi-value">0</div>
+            <div class="kpi-label">Existing files changed</div>
+          </div>
+          <div class="kpi-card">
+            <i data-lucide="lock"></i>
+            <div class="kpi-value">100%</div>
+            <div class="kpi-label">Read-only data access</div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ============ SLIDE 3 — DIVIDER: Business Value ============ -->
+      <section class="slide-divider" data-background-gradient="linear-gradient(68deg, #7A6DEC 15.56%, #5B39F3 62.74%, #4101DB 84.44%)">
+        <div class="divider-icon"><i data-lucide="trending-up"></i></div>
+        <p class="kicker">01</p>
+        <h2>Why: Business Value</h2>
+      </section>
+
+      <!-- ============ SLIDE 4 — Business value bullets ============ -->
+      <section>
+        <p class="kicker">Business Value</p>
+        <h2>Unlocking mainframe data for the enterprise</h2>
+        <ul class="icon-list">
+          <li><i data-lucide="unlock"></i>Opens account, card and transaction inquiry to distributed systems.</li>
+          <li><i data-lucide="target"></i>Advances the roadmap: exposure of transactions for distributed integration.</li>
+          <li><i data-lucide="gauge"></i>Additive and read-only, so delivery risk stays low.</li>
+          <li><i data-lucide="badge-check"></i>Reuses proven CardDemo patterns; no new license, no gateway.</li>
+        </ul>
+      </section>
+
+      <!-- ============ SLIDE 5 — Value outcome KPIs ============ -->
+      <section>
+        <p class="kicker">Outcomes</p>
+        <h2>Value delivered this increment</h2>
+        <div class="kpi-grid">
+          <div class="kpi-card">
+            <i data-lucide="rocket"></i>
+            <div class="kpi-value">Roadmap</div>
+            <div class="kpi-label">Integration item advanced</div>
+          </div>
+          <div class="kpi-card">
+            <i data-lucide="banknote"></i>
+            <div class="kpi-value">$0</div>
+            <div class="kpi-label">New license cost</div>
+          </div>
+          <div class="kpi-card">
+            <i data-lucide="gauge"></i>
+            <div class="kpi-value">Low</div>
+            <div class="kpi-label">Delivery risk (additive)</div>
+          </div>
+          <div class="kpi-card">
+            <i data-lucide="network"></i>
+            <div class="kpi-value">0</div>
+            <div class="kpi-label">External gateways</div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ============ SLIDE 6 — DIVIDER: Architecture ============ -->
+      <section class="slide-divider" data-background-gradient="linear-gradient(68deg, #7A6DEC 15.56%, #5B39F3 62.74%, #4101DB 84.44%)">
+        <div class="divider-icon"><i data-lucide="network"></i></div>
+        <p class="kicker">02</p>
+        <h2>What Changed: Architecture</h2>
+      </section>
+
+      <!-- ============ SLIDE 7 — Component architecture (Mermaid) ============ -->
+      <section>
+        <p class="kicker">Architecture</p>
+        <h2>One in-region HTTP/JSON front door</h2>
+        <pre class="mermaid">
+graph LR
+  CLIENT["Distributed HTTP client"]
+  subgraph CWS["CICS Web Support - in region"]
+    TCP["TCPIPSERVICE CDAPISVC port 3001"]
+    URI["URIMAP CDAPIURI"]
+    ALIAS["Alias transaction CAPI"]
+  end
+  RTR["Router COAPIRTR"]
+  JSON["COJSONUC JSON serialize"]
+  SEC["Auth COAPISEC"]
+  subgraph SVC["Read-only inquiry services"]
+    ACS["COACSVCC"]
+    CUS["COCUSVCC"]
+    CRD["COCRSVCC"]
+    XRF["COXRSVCC"]
+    TRN["COTRSVCC"]
+  end
+  subgraph DAT["VSAM - read only"]
+    ACCT[("ACCTDAT")]
+    CUST[("CUSTDAT")]
+    CARD[("CARDDAT")]
+    XREF[("CCXREF")]
+    TRAN[("TRANSACT")]
+    USR[("USRSEC")]
+  end
+  CLIENT --> TCP
+  TCP --> URI
+  URI --> ALIAS
+  ALIAS --> RTR
+  RTR --> JSON
+  RTR -->|token gate| SEC
+  SEC --> USR
+  RTR --> ACS
+  RTR --> CUS
+  RTR --> CRD
+  RTR --> XRF
+  RTR --> TRN
+  ACS --> ACCT
+  CUS --> CUST
+  CRD --> CARD
+  XRF --> XREF
+  TRN --> TRAN
+        </pre>
+      </section>
+
+      <!-- ============ SLIDE 8 — Flow 1 sequence (Mermaid) ============ -->
+      <section>
+        <p class="kicker">Flow 1</p>
+        <h2>Sign-on, then authenticated account inquiry</h2>
+        <pre class="mermaid">
+sequenceDiagram
+  autonumber
+  participant C as HTTP client
+  participant R as Router COAPIRTR
+  participant S as Auth COAPISEC
+  participant A as COACSVCC
+  C->>R: POST sign-on with user id and password
+  R->>S: validate credentials against USRSEC
+  S-->>R: short-lived bearer token
+  R-->>C: 200 token issued
+  C->>R: GET account by id with bearer token
+  R->>S: validate token
+  S-->>R: token accepted
+  R->>A: read ACCTDAT read-only
+  A-->>R: account record
+  R-->>C: 200 JSON account
+        </pre>
+      </section>
+
+      <!-- ============ SLIDE 9 — Flow 2 drill-down (Mermaid) ============ -->
+      <section>
+        <p class="kicker">Flow 2</p>
+        <h2>Card-to-transactions drill-down</h2>
+        <pre class="mermaid">
+graph LR
+  A["GET card cross-reference"] --> B["COXRSVCC reads CCXREF"]
+  B --> C["Account id plus customer id"]
+  C --> D["GET account transactions"]
+  D --> E["COTRSVCC browses TRANSACT"]
+  E --> F["Transaction list as JSON"]
+        </pre>
+        <p class="diagram-caption">Programmatic equivalent of the CardDemo CCDL to CT00 screen drill-down.</p>
+      </section>
+
+      <!-- ============ SLIDE 10 — The 7 endpoints (table) ============ -->
+      <section>
+        <p class="kicker">The Contract</p>
+        <h2>Seven read-only endpoints</h2>
+        <table class="blitzy-table">
+          <thead>
+            <tr><th>Method</th><th>Path</th><th>Purpose</th></tr>
+          </thead>
+          <tbody>
+            <tr><td class="method">POST</td><td class="path">/carddemo/api/v1/signon</td><td>Authenticate a user; issue a bearer token</td></tr>
+            <tr><td class="method">GET</td><td class="path">/carddemo/api/v1/accounts/{acctId}</td><td>Account status, balances, limits, dates</td></tr>
+            <tr><td class="method">GET</td><td class="path">/carddemo/api/v1/customers/{custId}</td><td>Customer demographics (PII minimized)</td></tr>
+            <tr><td class="method">GET</td><td class="path">/carddemo/api/v1/cards/{cardNum}</td><td>Card detail (PAN masked, CVV excluded)</td></tr>
+            <tr><td class="method">GET</td><td class="path">/carddemo/api/v1/xref/{cardNum}</td><td>Resolve card to account and customer</td></tr>
+            <tr><td class="method">GET</td><td class="path">/carddemo/api/v1/accounts/{acctId}/transactions</td><td>List transactions for an account</td></tr>
+            <tr><td class="method">GET</td><td class="path">/carddemo/api/v1/transactions/{tranId}</td><td>Single transaction detail</td></tr>
+          </tbody>
+        </table>
+      </section>
+
+      <!-- ============ SLIDE 11 — Security posture ============ -->
+      <section>
+        <p class="kicker">Security</p>
+        <h2>Sensitive data protected by default</h2>
+        <div class="chip-grid">
+          <div class="chip"><i data-lucide="credit-card"></i>PAN masked to last 4</div>
+          <div class="chip"><i data-lucide="eye-off"></i>CVV never returned</div>
+          <div class="chip"><i data-lucide="user-round-cog"></i>SSN &amp; gov-id masked</div>
+          <div class="chip"><i data-lucide="key-round"></i>Bearer token vs USRSEC</div>
+        </div>
+        <ul class="icon-list">
+          <li><i data-lucide="shield-check"></i>Uniform error envelope and a fixed HTTP status map.</li>
+        </ul>
+      </section>
+
+      <!-- ============ SLIDE 12 — DIVIDER: Risks &amp; Mitigations ============ -->
+      <section class="slide-divider" data-background-gradient="linear-gradient(68deg, #7A6DEC 15.56%, #5B39F3 62.74%, #4101DB 84.44%)">
+        <div class="divider-icon"><i data-lucide="shield-alert"></i></div>
+        <p class="kicker">03</p>
+        <h2>Risks &amp; Mitigations</h2>
+      </section>
+
+      <!-- ============ SLIDE 13 — Risks &amp; mitigations (table) ============ -->
+      <section>
+        <p class="kicker">Managed Risk</p>
+        <h2>Known risks, deliberate mitigations</h2>
+        <table class="blitzy-table">
+          <thead>
+            <tr><th>Risk</th><th>Mitigation</th></tr>
+          </thead>
+          <tbody>
+            <tr><td>Cleartext HTTP, no transport auth this increment</td><td>Loopback-only listener; documented TLS/keyring and RACF follow-up</td></tr>
+            <tr><td>Stateless, pseudo-conversational CICS</td><td>Token registry in a MAIN TSQ with a short 15-minute life</td></tr>
+            <tr><td>No card or account transaction index</td><td>Application-level filtering now; pagination and index later</td></tr>
+            <tr><td>Oversized transaction list payloads</td><td>CICS channel and container transport, not COMMAREA</td></tr>
+            <tr><td>Sensitive PII exposure</td><td>PAN last-4, CVV omitted, SSN and gov-id masked by default</td></tr>
+          </tbody>
+        </table>
+      </section>
+
+      <!-- ============ SLIDE 14 — Delivery &amp; quality KPIs ============ -->
+      <section>
+        <p class="kicker">Delivery &amp; Quality</p>
+        <h2>Contract-first, tested, and installable</h2>
+        <div class="kpi-grid">
+          <div class="kpi-card">
+            <i data-lucide="file-json"></i>
+            <div class="kpi-value">3.0</div>
+            <div class="kpi-label">OpenAPI contract</div>
+          </div>
+          <div class="kpi-card">
+            <i data-lucide="list-checks"></i>
+            <div class="kpi-value">8</div>
+            <div class="kpi-label">Test artifacts</div>
+          </div>
+          <div class="kpi-card">
+            <i data-lucide="workflow"></i>
+            <div class="kpi-value">2</div>
+            <div class="kpi-label">JCL jobs: APIBUILD, APICSDIN</div>
+          </div>
+          <div class="kpi-card">
+            <i data-lucide="database"></i>
+            <div class="kpi-value">CDEMOAPI</div>
+            <div class="kpi-label">One additive CSD group</div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ============ SLIDE 15 — Onboarding &amp; continuation ============ -->
+      <section>
+        <p class="kicker">Onboarding &amp; Next Steps</p>
+        <h2>From clean checkout to running API</h2>
+        <ul class="icon-list">
+          <li><i data-lucide="book-open"></i>onboarding-api.md takes a developer from clean checkout to running.</li>
+          <li><i data-lucide="file-text"></i>decision-log.md records every non-trivial decision and rationale.</li>
+          <li><i data-lucide="file-json"></i>OpenAPI contract drives client generation and contract tests.</li>
+          <li><i data-lucide="list-todo"></i>Next: TLS/keyring, RACF, OAuth, pagination, write endpoints.</li>
+        </ul>
+      </section>
+
+      <!-- ============ SLIDE 16 — CLOSING ============ -->
+      <section class="slide-closing" data-background-color="#1A105F">
+        <div class="hero-icon"><i data-lucide="badge-check"></i></div>
+        <p class="kicker">In Summary</p>
+        <h2>Additive, read-only, low-risk value</h2>
+        <div class="kpi-grid">
+          <div class="kpi-card">
+            <i data-lucide="git-branch"></i>
+            <div class="kpi-value">7</div>
+            <div class="kpi-label">Endpoints live</div>
+          </div>
+          <div class="kpi-card">
+            <i data-lucide="shield-check"></i>
+            <div class="kpi-value">0</div>
+            <div class="kpi-label">Existing files changed</div>
+          </div>
+          <div class="kpi-card">
+            <i data-lucide="lock"></i>
+            <div class="kpi-value">100%</div>
+            <div class="kpi-label">Read-only</div>
+          </div>
+        </div>
+        <span class="cta"><i data-lucide="arrow-right"></i>Explore app/api/openapi.yaml &amp; docs/onboarding-api.md</span>
+        <p class="note" style="margin-top:22px;color:#94FAD5;">Libraries load from a CDN at view time; nothing is installed on z/OS.</p>
+      </section>
+
+    </div>
+  </div>
+
+  <!-- ==========================================================================
+       Scripts: pinned CDN libraries + exact runtime configuration.
+       reveal.js 5.1.0, Mermaid 11.4.0 (ESM), Lucide 0.460.0 (UMD).
+       ========================================================================== -->
+  <script src="https://cdn.jsdelivr.net/npm/reveal.js@5.1.0/dist/reveal.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/lucide@0.460.0/dist/umd/lucide.min.js"></script>
+  <script type="module">
+    import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11.4.0/dist/mermaid.esm.min.mjs';
+
+    // Mermaid: startOnLoad MUST be false; diagrams are rendered explicitly via
+    // mermaid.run() on the reveal.js 'ready' and every 'slidechanged' event.
+    mermaid.initialize({
+      startOnLoad: false,
+      theme: 'base',
+      themeVariables: {
+        primaryColor: '#F2F0FE',
+        primaryTextColor: '#333333',
+        primaryBorderColor: '#5B39F3',
+        lineColor: '#999999',
+        secondaryColor: '#F4EFF6'
+      }
+    });
+
+    // Preserve each diagram's pristine Mermaid source so it can be (re)rendered
+    // while its slide is measurable. Flowchart layout needs real, non-zero
+    // dimensions, so a diagram rendered inside a hidden slide would collapse.
+    document.querySelectorAll('pre.mermaid').forEach((el) => {
+      el.setAttribute('data-src', el.textContent);
+    });
+
+    // Pre-render ALL diagrams once, before reveal.js hides the non-active slides.
+    // A temporary stylesheet gives every slide a real width while keeping it
+    // invisible, so Mermaid measures text correctly and no diagram collapses.
+    async function prerenderDiagrams() {
+      const measure = document.createElement('style');
+      measure.textContent =
+        '.reveal .slides > section{display:block !important;position:absolute !important;' +
+        'top:0;left:0;width:1920px !important;height:auto !important;' +
+        'visibility:hidden !important;opacity:0 !important;transform:none !important;}';
+      document.head.appendChild(measure);
+      void document.body.offsetHeight; /* force reflow so the widths apply */
+      try {
+        await mermaid.run();
+      } catch (e) {
+        console.error('mermaid pre-render failed', e);
+      }
+      measure.remove();
+      document.querySelectorAll('pre.mermaid').forEach((el) =>
+        el.setAttribute('data-mermaid-done', 'true'));
+    }
+
+    // Render the current slide's diagram(s) and (re)draw the Lucide icons. Wired to
+    // BOTH the reveal.js 'ready' event and every 'slidechanged' event. Because
+    // startOnLoad is false, mermaid.run() is the only thing that turns a Mermaid
+    // source block into an SVG, so it is invoked here every time; any node that has
+    // not yet rendered cleanly is reset first so it lays out at its full size.
+    function renderVisuals() {
+      const current = (window.Reveal && Reveal.getCurrentSlide)
+        ? Reveal.getCurrentSlide()
+        : document;
+      const nodes = Array.prototype.slice.call(
+        (current || document).querySelectorAll('pre.mermaid'));
+      nodes.forEach((el) => {
+        if (el.getAttribute('data-mermaid-done') !== 'true') {
+          el.removeAttribute('data-processed');
+          el.innerHTML = el.getAttribute('data-src');
+        }
+      });
+      mermaid.run({ nodes: nodes });
+      nodes.forEach((el) => el.setAttribute('data-mermaid-done', 'true'));
+      lucide.createIcons();
+    }
+
+    await prerenderDiagrams();
+    lucide.createIcons();
+
+    Reveal.initialize({
+      hash: true,
+      transition: 'slide',
+      controlsTutorial: false,
+      width: 1920,
+      height: 1080
+    });
+
+    Reveal.on('ready', renderVisuals);
+    Reveal.on('slidechanged', renderVisuals);
+  </script>
+</body>
+</html>
