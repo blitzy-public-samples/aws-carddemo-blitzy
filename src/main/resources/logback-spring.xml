@@ -1,0 +1,157 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  ============================================================================
+  CardDemo  -  Structured Logging Configuration  (logback-spring.xml)
+  ============================================================================
+  Purpose
+  Structured-logging configuration for the migrated CardDemo application. It
+  satisfies the Observability rule (Technical Specification sec. 0.8.2, 0.9.5):
+  "structured logging carrying correlation IDs ... verified to work in the
+  local development environment."
+
+  Why the "-spring" filename
+  The "logback-spring.xml" name (NOT "logback.xml") lets Spring Boot process
+  the <springProfile> and <springProperty> extension tags. This is what allows
+  the configuration to differ per profile (human-readable console locally,
+  structured JSON otherwise) and to read Spring Environment properties such as
+  spring.application.name.
+
+  Correlation / trace-context model  (spec sec. 0.4.1, 0.5.5, 0.7.1)
+  Three MDC keys are surfaced on EVERY log line so that a single request or
+  batch job can be followed end-to-end:
+    * traceId       - injected automatically by Micrometer Tracing
+                      (micrometer-tracing-bridge-otel) into the SLF4J MDC.
+    * spanId        - injected automatically by Micrometer Tracing.
+    * correlationId - a request/job identifier placed into the MDC by
+                      com.aws.carddemo.observability.CorrelationIdFilter (web)
+                      and by a batch job/step listener (see Batch note below).
+  Each key is rendered with the MDC default-value operator "%X{key:-}", which
+  prints an empty value (rather than the literal text "key_IS_UNDEFINED") when
+  the key is absent - e.g. for framework log lines emitted outside any request
+  or job.
+
+  NOTE: Spring Boot's imported defaults.xml also registers a "correlationId"
+  CONVERSION WORD (the CorrelationIdConverter, which renders trace+span). That
+  is deliberately NOT used here; the "%X{correlationId:-}" MDC-key form below
+  refers to the application's own per-request/per-job correlation identifier,
+  which is a distinct value. There is no collision between the two.
+
+  Dependencies
+  ZERO extra logging dependencies. Logback ships transitively with
+  spring-boot-starter, and the structured (JSON) encoder used below is Spring
+  Boot's own StructuredLogEncoder (available since Spring Boot 3.4, present in
+  the pinned 3.5.16). No logstash-logback-encoder or any other third-party JSON
+  encoder is required or added.
+
+  ============================================================================
+  SECURITY  -  NEVER LOG SENSITIVE VALUES  (spec sec. 0.7.3 "L1", 0.9.3)
+  ============================================================================
+  The card CVV (COBOL field CARD-CVV-CD) and any password (SEC-USR-PWD) MUST
+  NEVER be written to a log or placed into the MDC. The authoritative control
+  is code-side omission: mappers/services never log these fields and DTOs
+  exclude them from toString(); the CVV is never returned in full. This
+  configuration file introduces nothing that could expose them, and it must
+  never be changed to do so. Two concrete safeguards are enforced here:
+
+    1. Hibernate/JPA bind-parameter TRACE logging is left OFF (default). The
+       loggers "org.hibernate.orm.jdbc.bind" and
+       "org.hibernate.type.descriptor.sql" are intentionally NOT enabled at
+       TRACE/DEBUG, because bound SQL parameters can contain sensitive column
+       values (CVV, password).
+
+    2. Defense-in-depth masking (see CARDDEMO_CONSOLE_LOG_PATTERN below): the
+       human-readable message is passed through a Logback replace(...) that
+       redacts anything shaped like "cvv=", "password=", "pwd=" tokens. This is
+       a secondary net; it is NOT a substitute for code-side omission. For the
+       structured (JSON) profile the encoder builds output from the event and
+       MDC directly (not from a pattern), so masking there is achieved by the
+       same code-side omission plus never putting secrets in the MDC; a
+       Spring Boot StructuredLoggingJsonMembersCustomizer bean is the supported
+       place to register field-level masking should it ever become necessary.
+
+  Lifecycle note: "scan" is intentionally omitted. Spring Boot owns the
+  logback-spring.xml lifecycle, and periodic scanning re-evaluates
+  <springProfile> without a guaranteed Environment, so it is avoided here.
+-->
+<configuration>
+
+    <!-- Inherit Spring Boot's conversion rules (clr, correlationId, wEx, ...),
+         the CONSOLE_LOG_* / FILE_LOG_* properties (charset, threshold), and the
+         sensible default levels for noisy third-party loggers. -->
+    <include resource="org/springframework/boot/logging/logback/defaults.xml"/>
+
+    <!-- Service name for the log context; read from the Spring Environment and
+         defaulted to "carddemo" when spring.application.name is unset. -->
+    <springProperty scope="context" name="appName"
+                    source="spring.application.name" defaultValue="carddemo"/>
+
+    <!-- Human-readable console pattern (used by the "local" profile).
+         It appends the full trace context to Spring Boot's standard layout:
+           [appName] [traceId,spanId] [cid=correlationId]
+         The message itself is wrapped in a lightweight, comma-free Logback
+         replace(...) that redacts cvv/password/pwd tokens as defense-in-depth
+         (the primary control is code-side omission - see the SECURITY block).
+         The regex intentionally contains NO comma, because Logback's replace
+         converter splits its {regex, replacement} options on the first comma. -->
+    <property name="CARDDEMO_CONSOLE_LOG_PATTERN"
+              value="%d{yyyy-MM-dd HH:mm:ss.SSS} %-5level [${appName}] [%X{traceId:-},%X{spanId:-}] [cid=%X{correlationId:-}] %logger{36} - %replace(%msg){'(?i)(cvv|password|passwd|pwd)(\s*[=:]\s*)(\S+)', '$1$2***REDACTED***'}%n"/>
+
+    <!-- ==========================  local profile  ==========================
+         Developer-facing, human-readable console output. The local profile may
+         raise application verbosity to DEBUG via application-local.yml
+         (logging.level.com.aws.carddemo: DEBUG), which overrides the levels
+         declared in this file; DEBUG is therefore NOT hardcoded here. -->
+    <springProfile name="local">
+        <appender name="CONSOLE" class="ch.qos.logback.core.ConsoleAppender">
+            <filter class="ch.qos.logback.classic.filter.ThresholdFilter">
+                <level>${CONSOLE_LOG_THRESHOLD}</level>
+            </filter>
+            <encoder>
+                <pattern>${CARDDEMO_CONSOLE_LOG_PATTERN}</pattern>
+                <charset>${CONSOLE_LOG_CHARSET}</charset>
+            </encoder>
+        </appender>
+        <root level="INFO">
+            <appender-ref ref="CONSOLE"/>
+        </root>
+    </springProfile>
+
+    <!-- ========================  non-local profiles  =======================
+         Everything that is not "local" (test, dev, staging, prod, or no active
+         profile) emits structured JSON via Spring Boot's framework-native
+         StructuredLogEncoder using the Elastic Common Schema (ECS) format. The
+         ECS encoder automatically includes all MDC key/value pairs, so
+         traceId, spanId and correlationId appear as first-class JSON fields -
+         no extra dependency and no custom encoder required. -->
+    <springProfile name="!local">
+        <appender name="STRUCTURED_CONSOLE" class="ch.qos.logback.core.ConsoleAppender">
+            <filter class="ch.qos.logback.classic.filter.ThresholdFilter">
+                <level>${CONSOLE_LOG_THRESHOLD}</level>
+            </filter>
+            <encoder class="org.springframework.boot.logging.logback.StructuredLogEncoder">
+                <format>ecs</format>
+                <charset>${CONSOLE_LOG_CHARSET}</charset>
+            </encoder>
+        </appender>
+        <root level="INFO">
+            <appender-ref ref="STRUCTURED_CONSOLE"/>
+        </root>
+    </springProfile>
+
+    <!-- Application logger level. Kept at INFO for parity with the root level;
+         profiles override it through application(-<profile>).yml as noted
+         above. (Do NOT hardcode DEBUG here.) -->
+    <logger name="com.aws.carddemo" level="INFO"/>
+
+    <!-- ============================  Batch note  ============================
+         Correlation ID propagates across BOTH service AND batch boundaries
+         (spec sec. 0.9.5). For web traffic the correlationId MDC value is set
+         by com.aws.carddemo.observability.CorrelationIdFilter; for Spring Batch
+         a job/step execution listener under com.aws.carddemo sets the same
+         correlationId MDC key per job execution (and clears it afterwards).
+         No appender-specific change is needed for batch: the console pattern
+         already prints "%X{correlationId:-}" and the ECS encoder already emits
+         the correlationId MDC field, so batch logs carry the correlation ID
+         exactly like web-request logs. -->
+
+</configuration>

@@ -1,0 +1,274 @@
+# =============================================================================
+# CardDemo - Base (default-profile) Spring Boot configuration
+# =============================================================================
+# This file is the ENVIRONMENT-AGNOSTIC base configuration applied to ALL Spring
+# profiles. It is safe to commit because it contains NO secrets.
+#
+#   * NO credentials are stored here. The database URL, username, and password
+#     resolve EXCLUSIVELY from environment variables (DB_URL, DB_USERNAME,
+#     DB_PASSWORD) with no literal fallback default - see the datasource block.
+#     Every secret and connection value comes from the environment (documented
+#     in README.md and the root docker-compose.yml / Dockerfile).
+#
+#   * Profile-specific overrides live in the sibling file `application-local.yml`,
+#     activated at runtime with `SPRING_PROFILES_ACTIVE=local` (as set by the
+#     docker-compose stack and the local developer workflow). That profile relaxes
+#     log verbosity and points the datasource / OTLP endpoint at the local stack.
+#
+#   * `spring.profiles.active` is deliberately NOT set here: the active profile is
+#     chosen at runtime via the environment variable so this base stays neutral.
+#
+# Target platform: Java 25 (LTS) + Spring Boot 3.5.16, PostgreSQL 16, Flyway,
+# Spring Batch, Spring Security, Actuator, Micrometer + OpenTelemetry (OTLP),
+# Prometheus, and springdoc / Swagger UI.
+# =============================================================================
+
+spring:
+  # Service identity - used as the tracing/metrics service name and therefore
+  # surfaces in Tempo (traces), Prometheus (metrics), and Grafana (dashboards).
+  application:
+    name: carddemo
+
+  # ---------------------------------------------------------------------------
+  # Datasource (PostgreSQL 16) - 100% environment-driven; NO hardcoded secrets.
+  # DB_URL / DB_USERNAME / DB_PASSWORD are REQUIRED at runtime and intentionally
+  # have NO literal fallback default: a missing value must fail fast rather than
+  # silently fall back to an insecure baked-in credential. See README "Run locally".
+  # ---------------------------------------------------------------------------
+  datasource:
+    url: ${DB_URL}
+    username: ${DB_USERNAME}
+    password: ${DB_PASSWORD}
+    driver-class-name: org.postgresql.Driver
+    # HikariCP connection pool - all non-secret operational tuning; safe defaults.
+    hikari:
+      pool-name: carddemo-pool
+      maximum-pool-size: 10
+      minimum-idle: 2
+      connection-timeout: 30000
+
+  # ---------------------------------------------------------------------------
+  # JPA / Hibernate - Flyway OWNS the schema; Hibernate only validates mappings.
+  # ---------------------------------------------------------------------------
+  jpa:
+    # Disable Open-Session-In-View: transaction boundaries stay in the service
+    # layer, matching the COBOL READ-UPDATE-REWRITE unit-of-work semantics.
+    open-in-view: false
+    # Keep default-profile logs quiet; verbose SQL belongs in application-local.yml.
+    show-sql: false
+    hibernate:
+      # CRITICAL: Flyway creates and owns the schema (11 tables + indexes + FK
+      # constraints + @Version optimistic-lock columns per AAP 0.4.3). Hibernate
+      # must ONLY VALIDATE the entity mapping against that schema - never
+      # create/alter it. Do NOT change to update/create/create-drop.
+      ddl-auto: validate
+    properties:
+      hibernate:
+        # Explicit dialect (also auto-detected on PostgreSQL 16); version-agnostic
+        # in Hibernate 6.x.
+        dialect: org.hibernate.dialect.PostgreSQLDialect
+        # Store/normalize JDBC timestamps in UTC for deterministic, tz-safe values.
+        jdbc:
+          time_zone: UTC
+        # No SQL pretty-printing in the base profile (zero-noise build).
+        format_sql: false
+
+  # ---------------------------------------------------------------------------
+  # Flyway - schema + reference-data migrations
+  # (V1__schema.sql, V2__reference_data.sql (planned), ...).
+  # ---------------------------------------------------------------------------
+  flyway:
+    enabled: true
+    # Matches the sibling classpath folder src/main/resources/db/migration.
+    # NOTE: the db/seed CSVs are test/local load fixtures - NOT Flyway
+    # migrations - so they are deliberately excluded here.
+    locations: classpath:db/migration
+    baseline-on-migrate: true
+    validate-on-migrate: true
+
+  # ---------------------------------------------------------------------------
+  # Spring Batch (JCL -> Spring Batch). Jobs must NEVER auto-run on startup.
+  # ---------------------------------------------------------------------------
+  batch:
+    job:
+      # CRITICAL: do not launch batch jobs (DailyTransactionPostingJob,
+      # InterestCalculationJob, ...) at application startup. They are triggered
+      # explicitly (JobLauncher/CLI or the CI/CD workflow - the JCL-scheduling
+      # equivalent per AAP 0.4.4).
+      enabled: false
+    jdbc:
+      # Create Spring Batch's own metadata tables (BATCH_JOB_INSTANCE, ...) for
+      # PostgreSQL. These are kept separate from the Flyway-owned application
+      # schema. If the db/migration scripts later author the Batch metadata DDL
+      # themselves, switch this to `never` to avoid a conflict.
+      initialize-schema: always
+
+  # ---------------------------------------------------------------------------
+  # Jackson (JSON) - non-secret serialization defaults for the REST DTOs.
+  # ---------------------------------------------------------------------------
+  jackson:
+    # Omit null fields from responses.
+    default-property-inclusion: non_null
+    serialization:
+      # Emit ISO-8601 date/time strings, not numeric epoch timestamps.
+      write-dates-as-timestamps: false
+      # NOTE: no floating-point coercion is enabled anywhere - monetary values
+      # are BigDecimal (scale 2) and serialize faithfully as exact numbers.
+
+# =============================================================================
+# Actuator - health, readiness/liveness probes, metrics, Prometheus scrape
+# (Observability rule, AAP 0.8.2 / 0.9.5).
+# =============================================================================
+management:
+  endpoints:
+    web:
+      exposure:
+        # Expose EXACTLY the endpoints README/observability need - never "*".
+        include: health,info,metrics,prometheus
+  endpoint:
+    health:
+      # Enable the liveness/readiness probe sub-endpoints:
+      #   /actuator/health/liveness and /actuator/health/readiness
+      probes:
+        enabled: true
+      # Base profile: only show component details to authorized principals.
+      # The `local` profile may relax this to `always`.
+      show-details: when-authorized
+  health:
+    # Register the readiness/liveness state health indicators.
+    readinessstate:
+      enabled: true
+    livenessstate:
+      enabled: true
+  prometheus:
+    metrics:
+      export:
+        # Expose /actuator/prometheus (scraped by the compose Prometheus on :9090).
+        enabled: true
+  metrics:
+    enable:
+      # Suppress the `spring.batch.job.active` meter. Spring Batch is instrumented
+      # by TWO paths on this JVM: the legacy `BatchMetrics` gauge (tag keys
+      # [application, spring_batch_job_active_name]) and the observation-based
+      # variant (tag keys [application, spring_batch_job_name,
+      # spring_batch_job_status]). Both try to register the SAME meter name
+      # `spring.batch.job.active` with DIFFERENT tag-key sets, so Micrometer
+      # rejects the second registration with a one-time WARN per JVM on the first
+      # batch launch. Denying this meter id makes both registrations resolve to a
+      # no-op, eliminating the collision. PropertiesMeterFilter matches on the
+      # most-specific name prefix, so ONLY `spring.batch.job.active` is denied -
+      # the dashboard-consumed `spring.batch.job` and `spring.batch.step` timers
+      # (spring_batch_job_seconds / spring_batch_step_seconds) are unaffected, and
+      # no Grafana panel queries `spring_batch_job_active`. (QA finding F-OBS-2.)
+      spring.batch.job.active: false
+    distribution:
+      # Publish http.server.requests as a Prometheus histogram (emits the
+      # http_server_requests_seconds_bucket series) so the Grafana
+      # "HTTP Latency p95/p99" panel - which runs histogram_quantile() over those
+      # buckets - renders instead of showing "No data". Without this only the
+      # _count/_sum (avg/max) aggregates exist. Scoped to the HTTP server timer to
+      # keep metric cardinality bounded. (QA finding F-4.)
+      percentiles-histogram:
+        http.server.requests: true
+    tags:
+      # Tag every metric with the service name for Prometheus/Grafana filtering.
+      application: ${spring.application.name}
+  tracing:
+    sampling:
+      # Full sampling in the base profile for complete trace visibility during
+      # migration validation. May be tuned lower (e.g. 0.1) for high-volume prod.
+      probability: 1.0
+  otlp:
+    tracing:
+      # OTLP HTTP endpoint for span export (-> Tempo). Non-secret and overridable
+      # via OTLP_ENDPOINT; the local/compose profile points this at the Tempo
+      # service. Trace/span IDs propagate into logs automatically via MDC
+      # (traceId/spanId), consumed by logback-spring.xml - no extra property here.
+      endpoint: ${OTLP_ENDPOINT:http://localhost:4318/v1/traces}
+    metrics:
+      export:
+        # Base/production default: OTLP METRICS push is DISABLED. This is
+        # deliberate and load-bearing. Merely putting micrometer-registry-otlp
+        # on the classpath makes Spring Boot auto-configure an OtlpMeterRegistry
+        # that, left at its defaults, would push ALL metrics over OTLP to
+        # http://localhost:4318/v1/metrics - which on the compose stack is the
+        # Tempo OTLP port, not a metrics backend. Online instances are, and
+        # remain, SCRAPE-ONLY via /actuator/prometheus (management.prometheus...
+        # export.enabled above); they must not also push. The short-lived
+        # standalone batch JVMs cannot be scraped, so the `batch` profile
+        # (application-batch.yml) re-enables this push and points it at the
+        # Prometheus native OTLP receiver. (QA finding F-P6-D; decision log D65.)
+        enabled: false
+
+# =============================================================================
+# springdoc / OpenAPI 3 - Swagger UI for the 17 REST controllers (one per screen)
+# =============================================================================
+# SECURITY POSTURE (this base file = the PRODUCTION default): the LIVE springdoc
+# surfaces are DISABLED here. `springdoc-openapi-starter-webmvc-ui` bundles Swagger
+# UI (webjar swagger-ui 5.32.2 under the AAP-pinned springdoc 2.8.17, §0.6.1), whose
+# swagger-ui-bundle.js embeds a DOMPurify build carrying published advisories. That
+# JS bundle - and the always-current dynamic `/v3/api-docs` document - therefore must
+# NOT be exposed unauthenticated in production. Disabling `api-docs` unregisters the
+# `/v3/api-docs`(.yaml) endpoints (404) and disabling `swagger-ui` unregisters the
+# Swagger UI resources (404), removing the vulnerable client bundle from the
+# production attack surface. The springdoc version stays pinned at 2.8.17 (the
+# vulnerability lives in a transitively-bundled asset, not remediable by a version
+# bump within the pinned line). The checked-in STATIC snapshot
+# `src/main/resources/static/openapi/openapi.yaml` (served under `/openapi/**`, a
+# plain YAML resource with NO JavaScript) remains available as the published API
+# contract in every profile. The `local` profile (application-local.yml) RE-ENABLES
+# both surfaces for the developer/Swagger-UI experience. This mirrors the actuator
+# prod/local split (base `show-details: when-authorized` -> local `always`).
+# See decision-log D57. (QA finding dest-F1.)
+springdoc:
+  api-docs:
+    # Disabled in production: unregisters /v3/api-docs and /v3/api-docs.yaml (-> 404).
+    # Re-enabled in the `local` profile.
+    enabled: false
+    path: /v3/api-docs
+  swagger-ui:
+    # Disabled in production: unregisters the Swagger UI (and its DOMPurify-bundling
+    # swagger-ui-bundle.js) so it is never served unauthenticated. Re-enabled locally.
+    enabled: false
+    path: /swagger-ui.html
+    operations-sorter: method
+
+# =============================================================================
+# Server
+# =============================================================================
+server:
+  # Non-secret; defaults to 8080 (Dockerfile EXPOSE 8080), overridable via SERVER_PORT.
+  port: ${SERVER_PORT:8080}
+  tomcat:
+    # Defense-in-depth bound (QA finding F-P7-JSON, decision log D67). The application
+    # caps accepted request bodies at carddemo.web.max-request-body-bytes and returns
+    # 413 (RequestBodySizeLimitFilter). When that rejection is sent without the whole
+    # body having been read, this bounds how many bytes of the aborted body the
+    # container will swallow while draining the connection before resetting it, so an
+    # oversized upload cannot be forced through at the container layer. Kept modestly
+    # above the 1 MiB body cap; DataSize syntax.
+    max-swallow-size: 2MB
+
+# =============================================================================
+# Logging levels (appender/pattern with correlation IDs live in logback-spring.xml).
+# The `local` profile may raise com.aws.carddemo to DEBUG.
+# =============================================================================
+logging:
+  level:
+    root: INFO
+    com.aws.carddemo: INFO
+
+# =============================================================================
+# CardDemo application-specific settings (non-secret)
+# =============================================================================
+carddemo:
+  web:
+    # Maximum accepted HTTP request-body size, in bytes (defense-in-depth;
+    # QA finding F-P7-JSON, decision log D67). Enforced by RequestBodySizeLimitFilter:
+    # a declared Content-Length above this is rejected up front, and a chunked or
+    # length-understated body is rejected as it is read - both surfaced as
+    # 413 Payload Too Large in the standard RFC 7807 problem+json shape. The default
+    # (1 MiB) is far larger than any legitimate CardDemo request DTO while bounding the
+    # memory a single request can force the server to buffer. Overridable via
+    # CARDDEMO_WEB_MAX_REQUEST_BODY_BYTES.
+    max-request-body-bytes: ${CARDDEMO_WEB_MAX_REQUEST_BODY_BYTES:1048576}

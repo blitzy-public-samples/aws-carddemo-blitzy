@@ -1,0 +1,114 @@
+# =============================================================================
+# CardDemo - `batch` profile overrides  (application-batch.yml)
+# =============================================================================
+# This overlay is activated for the STANDALONE batch launch - the JVM started
+# with `--spring.main.web-application-type=none` and a job selected via
+# `--spring.batch.job.name=<job>` (the CI/CD replacement for the JCL scheduler,
+# AAP 0.4.4). It layers on top of the base `application.yml` and composes with
+# any other active profile, e.g.:
+#
+#     java -jar target/carddemo-1.0.0.jar \
+#       --spring.main.web-application-type=none \
+#       --spring.batch.job.enabled=true \
+#       --spring.batch.job.name=interestCalculationJob \
+#       --spring.profiles.active=batch \
+#       stamp=$(date +%s%N)
+#
+# Because the filename is `application-batch.yml`, the `batch` profile is implied
+# by convention - there is deliberately NO `spring.config.activate.on-profile`
+# guard, exactly like `application-local.yml`.
+#
+# WHY THIS PROFILE EXISTS (QA finding F-P6-D; decision log D65)
+#   A standalone batch JVM runs with NO embedded web server, so it never serves
+#   `/actuator/prometheus` and Prometheus cannot SCRAPE it; the process also exits
+#   within seconds, long before any scrape interval. The result was that the
+#   Grafana "Spring Batch (JCL-derived jobs)" panels showed "No data". This
+#   profile fixes that by having the batch JVM PUSH its metrics over OTLP to
+#   Prometheus's native OTLP receiver (`--web.enable-otlp-receiver`, enabled in
+#   docker-compose.yml). The push registry (micrometer-registry-otlp) performs a
+#   final synchronous publish when the Spring context closes - which is exactly
+#   what `SpringApplication.exit(context)` does at the end of a batch run
+#   (CardDemoApplication.main) - so the spring_batch_* series reliably reach
+#   Prometheus even for a sub-second job.
+#
+#   The ONLINE application is unaffected: it stays SCRAPE-ONLY (base
+#   `management.otlp.metrics.export.enabled: false`) and this profile is not
+#   active for it.
+#
+# MERGE SEMANTICS
+#   Spring Boot loads `application.yml` first, then layers this file on top when
+#   `batch` is active. Only the keys below are overridden/added; the datasource
+#   (`url: ${DB_URL}` - env-driven, no fallback), Flyway, JPA, Actuator exposure,
+#   tracing, and the batch return-code contract are all INHERITED unchanged.
+#
+# SECRETS POLICY (NON-NEGOTIABLE - AAP 0.8.1 / 0.9.3)
+#   No credentials are introduced here. The OTLP metrics URL is a NON-SECRET
+#   endpoint with a convenience default and stays overridable via
+#   OTLP_METRICS_URL.
+# =============================================================================
+
+management:
+  otlp:
+    metrics:
+      export:
+        # Turn the OTLP push ON for batch runs (base default is `false`). The
+        # OtlpMeterRegistry becomes an active PushMeterRegistry that publishes on
+        # its step interval AND once more, synchronously, on context close.
+        enabled: true
+        # Prometheus 3.x native OTLP receiver ingest path
+        # (`--web.enable-otlp-receiver`). Default targets the local compose
+        # Prometheus on :9090; override with OTLP_METRICS_URL (e.g. an isolated
+        # verification stack, or `http://prometheus:9090/...` from inside the
+        # compose network).
+        url: ${OTLP_METRICS_URL:http://localhost:9090/api/v1/otlp/v1/metrics}
+        # CUMULATIVE (not DELTA): Prometheus stores and expects monotonically
+        # cumulative counters/histograms; rate()/increase() in the dashboard
+        # queries assume cumulative semantics.
+        aggregation-temporality: CUMULATIVE
+        # Emit timers in SECONDS (Micrometer's OTLP registry defaults to
+        # MILLISECONDS). The base time unit drives the OTLP metric `unit`, which
+        # the Prometheus OTLP receiver turns into the name suffix: `seconds` ->
+        # `spring_batch_job_seconds_*` / `spring_batch_step_seconds_*`. This makes
+        # the OTLP-pushed batch series carry the SAME names (and seconds semantics)
+        # as the Micrometer Prometheus registry uses for scraped metrics, so the
+        # existing Grafana batch panels resolve without unit conversion. Batch
+        # timers reach Prometheus ONLY via this push (jobs never run in the scraped
+        # online JVM), so there is no naming conflict. (QA finding F-P6-D.)
+        base-time-unit: seconds
+        # Short step so any longer-running job also emits at least one interim
+        # push; the decisive push is the final one on context close regardless.
+        step: 5s
+        # Resource attributes become the Prometheus target identity: the OTLP
+        # receiver maps `service.name` -> the `job` label. `service.name` is
+        # pinned to `carddemo` so the pushed series carry the SAME `job="carddemo"`
+        # value the online scrape target already produces (docker-compose
+        # prometheus scrape_config job_name: carddemo) and therefore appear under
+        # the dashboard's `$job` variable.
+        #
+        # NO `service.instance.id` is set on purpose. Each standalone batch run is
+        # a separate, short-lived JVM whose Spring Batch counters start at zero and
+        # reach 1 for that single execution. Deliberately omitting an instance
+        # identity means every run of a given job PUSHES TO THE SAME series
+        # (job + spring_batch_job_name + status), so the latest run overwrites the
+        # previous - i.e. LAST-RUN semantics, exactly like a Prometheus Pushgateway
+        # keyed by job name, with BOUNDED cardinality. The Grafana batch panels are
+        # written as INSTANT aggregations (p95 over _bucket, _sum/_count for avg,
+        # and a status count) rather than rate() windows, because rate() over these
+        # non-monotonic, overwritten counters is meaningless. The panels also do
+        # NOT filter on `$instance` (that variable is sourced from `up`, which
+        # exists only for scraped targets, never for OTLP-pushed series).
+        resource-attributes:
+          service.name: ${spring.application.name}
+  metrics:
+    distribution:
+      # Emit explicit histogram buckets for the two batch timers so the OTLP
+      # export carries `spring_batch_job_seconds_bucket` /
+      # `spring_batch_step_seconds_bucket` series. This is required because the
+      # OTLP -> Prometheus translation produces `_bucket`/`_count`/`_sum` from an
+      # OTLP histogram but does NOT emit Micrometer's separate `_max` gauge; the
+      # dashboard's batch "duration (max)" panels therefore read the top bucket
+      # via histogram_quantile() over `_bucket`. Scoped to the two batch timers
+      # to keep metric cardinality bounded. (QA finding F-P6-D.)
+      percentiles-histogram:
+        spring.batch.job: true
+        spring.batch.step: true

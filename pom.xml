@@ -1,0 +1,554 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  ~ CardDemo - Java / Spring Boot re-platform of the AWS CardDemo mainframe application.
+  ~
+  ~ This is the single, authoritative Maven build manifest for the migrated CardDemo
+  ~ application. The legacy system (COBOL + CICS + VSAM + JCL) is re-platformed onto
+  ~ Java 25 (LTS) + Spring Boot 3.5.x with PostgreSQL, preserving 100% of the existing
+  ~ business behavior (no feature expansion).
+  ~
+  ~ Construct mapping honored by the dependencies declared below:
+  ~   * Online CICS programs      -> spring-boot-starter-web (@RestController per screen)
+  ~   * VSAM KSDS file access     -> spring-boot-starter-data-jpa over PostgreSQL
+  ~   * JCL / batch programs      -> spring-boot-starter-batch (Job / Step / chunk)
+  ~   * USRSEC / role model       -> spring-boot-starter-security
+  ~   * COBOL edit paragraphs     -> spring-boot-starter-validation (Bean Validation)
+  ~   * Observability (rule)      -> actuator + micrometer tracing/metrics + OTLP export
+  ~   * Schema + reference data   -> Flyway migrations against PostgreSQL
+  ~
+  ~ Canonical build command (reproducible, non-interactive):
+  ~     ./mvnw -B clean verify
+  ~ which runs: compile (zero warnings) -> unit tests -> integration tests (Testcontainers)
+  ~ -> JaCoCo line-coverage gate (>= 80%) -> OWASP dependency-check (fail on CVSS >= 7).
+  ~
+  ~ Licensed under the Apache License, Version 2.0 (see LICENSE / NOTICE).
+  -->
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <!--
+      Spring Boot parent BOM. Pinned to the final stable 3.x line (3.5.16), which
+      supports Java 17 through Java 25. The 3.5 support-lifecycle risk and the
+      Spring Boot 4.x forward-looking alternative are recorded in docs/decision-log.md.
+      An empty <relativePath/> forces resolution from the repository (this is the
+      root module), never from a parent directory on disk.
+    -->
+    <parent>
+        <groupId>org.springframework.boot</groupId>
+        <artifactId>spring-boot-starter-parent</artifactId>
+        <version>3.5.16</version>
+        <relativePath/>
+    </parent>
+
+    <groupId>com.aws.carddemo</groupId>
+    <artifactId>carddemo</artifactId>
+    <version>1.0.0</version>
+    <packaging>jar</packaging>
+
+    <name>CardDemo</name>
+    <description>Functionally-equivalent Java 25 + Spring Boot 3 re-platform of the AWS CardDemo mainframe credit-card account management system (migrated from COBOL, CICS, VSAM, and JCL), preserving 100% of existing business behavior.</description>
+    <inceptionYear>2026</inceptionYear>
+
+    <!-- Repository governance: the project is released under Apache License 2.0. -->
+    <licenses>
+        <license>
+            <name>Apache License, Version 2.0</name>
+            <url>https://www.apache.org/licenses/LICENSE-2.0</url>
+            <distribution>repo</distribution>
+        </license>
+    </licenses>
+
+    <organization>
+        <name>Amazon.com, Inc. or its affiliates</name>
+        <url>https://aws.amazon.com</url>
+    </organization>
+
+    <properties>
+        <!-- Language / runtime target: Java 25 (LTS). -->
+        <java.version>25</java.version>
+        <maven.compiler.release>25</maven.compiler.release>
+
+        <!-- Deterministic, UTF-8, warning-free build. -->
+        <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+        <project.reporting.outputEncoding>UTF-8</project.reporting.outputEncoding>
+
+        <!--
+          Reproducible-build timestamp (QA finding F-P3-01). Pinning a fixed,
+          non-"now" value makes every entry in the produced artifacts carry a
+          CONSTANT last-modified time, so repeated `./mvnw clean package` runs
+          yield a BYTE-FOR-BYTE identical jar (both the plain jar and the Spring
+          Boot repackaged fat jar). Maven's built-in reproducible-build support
+          consumes this single property - maven-jar-plugin, maven-resources-plugin
+          and the spring-boot-maven-plugin repackage all honor
+          project.build.outputTimestamp - so no per-plugin configuration is needed.
+          Without it, archive entries default to the wall-clock build time and the
+          artifact hash changes on every build. The value is the HEAD source
+          snapshot timestamp (ISO-8601, UTC); bump it INTENTIONALLY at each release.
+        -->
+        <project.build.outputTimestamp>2026-07-19T12:17:57Z</project.build.outputTimestamp>
+
+        <!--
+          Explicitly pinned versions. Everything else is managed transitively by the
+          Spring Boot parent BOM (3.5.16) to avoid version drift.
+            * springdoc        - NOT managed by the Spring Boot BOM; must be pinned.
+            * dependency-check - SCA plugin; pinned to the verified current release.
+            * jacoco           - NOT managed by the Spring Boot 3.5.16 parent's
+                                 pluginManagement, so it MUST be pinned explicitly to
+                                 keep the build resolvable and reproducible. 0.8.15
+                                 officially supports Java 25 (ASM 9.10.1).
+        -->
+        <springdoc.version>2.8.17</springdoc.version>
+        <dependency-check.version>12.2.2</dependency-check.version>
+        <jacoco.version>0.8.15</jacoco.version>
+
+        <!--
+          SECURITY OVERRIDE (CVE remediation). Spring Boot 3.5.16 manages the embedded
+          Tomcat via the `tomcat.version` property; its default (10.1.55) is affected by
+          CVE-2026-55956 (Improper Authorization: security constraints for the default
+          servlet ignore the configured HTTP method / method-omission), fixed in 10.1.56,
+          plus the low-severity CVE-2026-55955 / CVE-2026-55276 addressed in the same line.
+          Pin the managed embedded-Tomcat coordinate forward to the current patched 10.1.x
+          release (10.1.57). This overrides only the transitive Tomcat coordinate; the
+          Spring Boot 3.x line itself remains frozen at 3.5.16 (see docs/decision-log.md D2).
+        -->
+        <tomcat.version>10.1.57</tomcat.version>
+
+        <!--
+          SECURITY OVERRIDE (CVE remediation). Spring Boot 3.5.16 manages the Log4j 2
+          coordinates via the `log4j2.version` property; its default (2.24.3) enters the
+          dependency graph transitively through spring-boot-starter-logging (the
+          log4j-to-slf4j / log4j-api bridge that lets Logback remain the active backend).
+          2.24.3 is affected by CVE-2026-34479 (CVSS 7.5, high), and the same 2.25.x line
+          also remediates CVE-2026-34477 and CVE-2026-49844. Pin the managed Log4j 2
+          coordinate forward to the current patched release (2.25.5), which covers all
+          three. This overrides only the transitive Log4j 2 version; the logging backend
+          remains Logback (see docs/decision-log.md D49).
+        -->
+        <log4j2.version>2.25.5</log4j2.version>
+
+        <!--
+          SECURITY OVERRIDE (CVE remediation). Spring Boot 3.5.16 manages the PostgreSQL
+          JDBC driver via the `postgresql.version` property; its default (42.7.11) is a
+          direct runtime dependency of this application and is affected by CVE-2026-54291
+          (CVSS 8.2, high). Pin the managed coordinate forward to the current patched
+          release (42.7.13). See docs/decision-log.md D49.
+        -->
+        <postgresql.version>42.7.13</postgresql.version>
+
+        <!-- Minimum combined (unit + integration) line-coverage ratio enforced by JaCoCo. -->
+        <jacoco.coverage.minimum>0.80</jacoco.coverage.minimum>
+    </properties>
+
+    <!--
+      ==========================================================================
+      SECURITY OVERRIDES (transitive-dependency CVE remediation).
+      ==========================================================================
+      These entries pin vulnerable TRANSITIVE dependencies forward to their
+      first fixed release. They do NOT add new direct dependencies; each artifact
+      already enters the graph transitively (Spring Boot / springdoc / Testcontainers),
+      and dependencyManagement forces the safe version across every scope, including
+      the test scope now surfaced by the OWASP scan (see the dependency-check
+      <skipTestScope>false</skipTestScope> setting below). Rationale is recorded in
+      docs/decision-log.md; the SCA gate (failBuildOnCVSS=7) enforces the outcome.
+    -->
+    <dependencyManagement>
+        <dependencies>
+            <!--
+              Apache Commons Compress: the Spring Boot 3.5.16 BOM lands 1.24.0 on the
+              graph (pulled in transitively via the Testcontainers stack, test scope).
+              1.24.0 is affected by CVE-2024-25710 (infinite loop / DoS) and
+              CVE-2024-26308 (allocation-of-excessive-memory / DoS), both fixed in
+              1.26.0. Pin forward to the current patched 1.27.1.
+            -->
+            <dependency>
+                <groupId>org.apache.commons</groupId>
+                <artifactId>commons-compress</artifactId>
+                <version>1.27.1</version>
+            </dependency>
+
+            <!--
+              Apache Commons Lang3: resolved to 3.17.0 on the graph (via springdoc /
+              Spring transitive use). 3.17.0 is affected by CVE-2025-48924
+              (uncontrolled recursion / StackOverflowError DoS in ClassUtils.getClass),
+              fixed in 3.18.0. Pin forward to 3.20.0 (the version springdoc 2.8.x
+              itself requests), keeping the graph internally consistent.
+            -->
+            <dependency>
+                <groupId>org.apache.commons</groupId>
+                <artifactId>commons-lang3</artifactId>
+                <version>3.20.0</version>
+            </dependency>
+
+            <!--
+              OpenTelemetry Semantic Conventions: the micrometer-tracing-bridge-otel
+              1.5.12 stack (managed by the Spring Boot 3.5.16 BOM for the Observability
+              rule) lands io.opentelemetry.semconv:opentelemetry-semconv 1.32.0 on the
+              graph. That coordinate is NOT governed by the OpenTelemetry instrumentation
+              BOM that Spring Boot imports, so it is not covered by a managed property and
+              must be pinned here explicitly. 1.32.0 is affected by CVE-2026-24051 (fixed
+              in 1.40.0) and CVE-2026-39883 (CVSS 7.3, high; fixed in 1.43.0). Pin forward
+              to 1.43.0, which covers both. The semconv artifact is a passive constants
+              provider (attribute-key definitions) consumed by the Micrometer OTel bridge,
+              so the forward pin is source-compatible. See docs/decision-log.md D49.
+            -->
+            <dependency>
+                <groupId>io.opentelemetry.semconv</groupId>
+                <artifactId>opentelemetry-semconv</artifactId>
+                <version>1.43.0</version>
+            </dependency>
+        </dependencies>
+    </dependencyManagement>
+
+    <dependencies>
+        <!-- ==========================================================
+             Online layer: REST controllers replacing CICS programs.
+             ========================================================== -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-web</artifactId>
+        </dependency>
+
+        <!-- ==========================================================
+             Data layer: Spring Data JPA replacing VSAM KSDS file access.
+             ========================================================== -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-data-jpa</artifactId>
+        </dependency>
+
+        <!-- ==========================================================
+             Batch layer: Spring Batch replacing JCL/batch COBOL programs.
+             ========================================================== -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-batch</artifactId>
+        </dependency>
+
+        <!-- ==========================================================
+             Security: authentication/role model replacing USRSEC (A/U roles).
+             ========================================================== -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-security</artifactId>
+        </dependency>
+
+        <!-- ==========================================================
+             Bean Validation: replacing COBOL edit/validation paragraphs.
+             ========================================================== -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-validation</artifactId>
+        </dependency>
+
+        <!-- ==========================================================
+             Observability (rule-mandated): health/readiness, metrics.
+             ========================================================== -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-actuator</artifactId>
+        </dependency>
+
+        <!-- Distributed tracing across service/batch boundaries (Micrometer -> OpenTelemetry). -->
+        <dependency>
+            <groupId>io.micrometer</groupId>
+            <artifactId>micrometer-tracing-bridge-otel</artifactId>
+        </dependency>
+
+        <!-- OTLP exporter: ship traces to the local Tempo backend (docker-compose). -->
+        <dependency>
+            <groupId>io.opentelemetry</groupId>
+            <artifactId>opentelemetry-exporter-otlp</artifactId>
+        </dependency>
+
+        <!-- Prometheus registry: exposes the /actuator/prometheus metrics endpoint. -->
+        <dependency>
+            <groupId>io.micrometer</groupId>
+            <artifactId>micrometer-registry-prometheus</artifactId>
+        </dependency>
+
+        <!-- OTLP metrics registry: PUSHES metrics over OTLP so that short-lived
+             standalone batch JVMs (started in web-application-type=none mode and
+             therefore serving NO /actuator/prometheus endpoint to scrape) can
+             still deliver their spring_batch_* timers to Prometheus's native OTLP
+             receiver on context shutdown (the final PushMeterRegistry publish).
+             Push is DISABLED by default in application.yml (online instances stay
+             scrape-only) and is enabled ONLY by the `batch` profile
+             (application-batch.yml). Version is managed by the Spring Boot BOM,
+             and the OTLP transport reuses the already-present
+             opentelemetry-exporter-otlp. (QA finding F-P6-D; decision log D65.) -->
+        <dependency>
+            <groupId>io.micrometer</groupId>
+            <artifactId>micrometer-registry-otlp</artifactId>
+        </dependency>
+
+        <!-- ==========================================================
+             Schema management: Flyway migrations (V1__schema.sql, ...).
+             ========================================================== -->
+        <dependency>
+            <groupId>org.flywaydb</groupId>
+            <artifactId>flyway-core</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.flywaydb</groupId>
+            <artifactId>flyway-database-postgresql</artifactId>
+        </dependency>
+
+        <!-- PostgreSQL JDBC driver (runtime only). -->
+        <dependency>
+            <groupId>org.postgresql</groupId>
+            <artifactId>postgresql</artifactId>
+            <scope>runtime</scope>
+        </dependency>
+
+        <!-- ==========================================================
+             API documentation: OpenAPI 3 / Swagger UI.
+             springdoc is NOT managed by the Spring Boot BOM, so pin it.
+             ========================================================== -->
+        <dependency>
+            <groupId>org.springdoc</groupId>
+            <artifactId>springdoc-openapi-starter-webmvc-ui</artifactId>
+            <version>${springdoc.version}</version>
+        </dependency>
+
+        <!-- ==========================================================
+             Test scope (all versions BOM-managed by the Spring Boot parent).
+             ========================================================== -->
+        <!-- JUnit 5 + Mockito + AssertJ + Spring Test. -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-test</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <!-- Utilities for testing Spring Batch jobs/steps. -->
+        <dependency>
+            <groupId>org.springframework.batch</groupId>
+            <artifactId>spring-batch-test</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <!-- Security test support (mock users, roles). -->
+        <dependency>
+            <groupId>org.springframework.security</groupId>
+            <artifactId>spring-security-test</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <!-- Spring Boot <-> Testcontainers bridge: supplies @ServiceConnection so a
+             @Container PostgreSQL instance auto-configures the test datasource
+             (JDBC url/username/password injected dynamically at runtime). This keeps
+             integration tests free of @DynamicPropertySource wiring and of any
+             hardcoded credentials (AAP 0.8.1 / 0.9.3). Version BOM-managed by the
+             spring-boot-starter-parent. -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-testcontainers</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <!-- Testcontainers: real PostgreSQL 16 for integration tests. -->
+        <dependency>
+            <groupId>org.testcontainers</groupId>
+            <artifactId>junit-jupiter</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.testcontainers</groupId>
+            <artifactId>postgresql</artifactId>
+            <scope>test</scope>
+        </dependency>
+    </dependencies>
+
+    <build>
+        <!--
+          Produces target/carddemo-1.0.0.jar (matches the Dockerfile / README /
+          CI references to target/carddemo-*.jar). This is the default finalName,
+          declared explicitly to keep the executable-jar name unambiguous.
+        -->
+        <finalName>${project.artifactId}-${project.version}</finalName>
+
+        <plugins>
+            <!--
+              Packages the application as an executable ("fat") jar. The repackage
+              execution is inherited from the Spring Boot parent's pluginManagement.
+            -->
+            <plugin>
+                <groupId>org.springframework.boot</groupId>
+                <artifactId>spring-boot-maven-plugin</artifactId>
+            </plugin>
+
+            <!--
+              Compiler: target Java 25 and enforce a zero-warning build.
+              -Xlint:all surfaces every lint category; -parameters retains method
+              parameter names (needed by Spring for binding/actuator); failOnWarning
+              promotes any remaining warning to a build error. No annotation
+              processors are used (hand-written mappers, per AAP 0.6.5), so there are
+              no processor notes to contend with.
+            -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-compiler-plugin</artifactId>
+                <configuration>
+                    <release>25</release>
+                    <parameters>true</parameters>
+                    <failOnWarning>true</failOnWarning>
+                    <compilerArgs>
+                        <arg>-Xlint:all</arg>
+                        <arg>-parameters</arg>
+                    </compilerArgs>
+                </configuration>
+            </plugin>
+
+            <!--
+              Integration tests (*IT) run under the `verify` phase against a real
+              PostgreSQL 16 via Testcontainers. The Spring Boot parent declares the
+              integration-test/verify executions in pluginManagement but does NOT
+              bind the plugin into the build, so it is bound here. <argLine>@{argLine}</argLine>
+              defers to the property set by jacoco:prepare-agent so integration-test
+              coverage is recorded into the same jacoco.exec as the unit tests,
+              yielding a single combined coverage report and gate.
+            -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-failsafe-plugin</artifactId>
+                <configuration>
+                    <argLine>@{argLine}</argLine>
+                </configuration>
+            </plugin>
+
+            <!--
+              JaCoCo line-coverage gate (>= 80% combined unit + integration).
+              Pinned explicitly (see properties): the Spring Boot 3.5.16 parent does
+              not manage the JaCoCo plugin version. 0.8.15 officially supports Java 25.
+                * prepare-agent - sets the `argLine` used by surefire (unit) and,
+                                  via @{argLine}, by failsafe (integration).
+                * report        - aggregates unit + integration coverage at `verify`.
+                * check         - fails the build below the configured line ratio.
+            -->
+            <plugin>
+                <groupId>org.jacoco</groupId>
+                <artifactId>jacoco-maven-plugin</artifactId>
+                <version>${jacoco.version}</version>
+                <executions>
+                    <execution>
+                        <id>prepare-agent</id>
+                        <goals>
+                            <goal>prepare-agent</goal>
+                        </goals>
+                    </execution>
+                    <execution>
+                        <id>report</id>
+                        <phase>verify</phase>
+                        <goals>
+                            <goal>report</goal>
+                        </goals>
+                    </execution>
+                    <execution>
+                        <id>check</id>
+                        <phase>verify</phase>
+                        <goals>
+                            <goal>check</goal>
+                        </goals>
+                        <configuration>
+                            <rules>
+                                <!--
+                                  Whole-application floor: the combined unit + integration
+                                  line coverage must stay at or above the configured minimum
+                                  (AAP 0.9.2). This guards the aggregate.
+                                -->
+                                <rule>
+                                    <element>BUNDLE</element>
+                                    <limits>
+                                        <limit>
+                                            <counter>LINE</counter>
+                                            <value>COVEREDRATIO</value>
+                                            <minimum>${jacoco.coverage.minimum}</minimum>
+                                        </limit>
+                                    </limits>
+                                </rule>
+                                <!--
+                                  Per-package floor for the core business-logic package
+                                  `com.aws.carddemo.service` (QA MAJOR-1 / coverage
+                                  integrity). A bundle-only gate can mask a thinly-tested
+                                  core service behind well-tested peripheral packages; this
+                                  rule holds the service layer itself to the same >= 80% line
+                                  ratio so that a materially under-tested service (the report
+                                  proved AccountService and ReportService were) fails the
+                                  build. The PACKAGE element names the package exactly, so
+                                  the sibling `com.aws.carddemo.service.rule` package is not
+                                  in scope here (it is covered by the bundle rule).
+                                -->
+                                <rule>
+                                    <element>PACKAGE</element>
+                                    <includes>
+                                        <include>com.aws.carddemo.service</include>
+                                    </includes>
+                                    <limits>
+                                        <limit>
+                                            <counter>LINE</counter>
+                                            <value>COVEREDRATIO</value>
+                                            <minimum>${jacoco.coverage.minimum}</minimum>
+                                        </limit>
+                                    </limits>
+                                </rule>
+                            </rules>
+                        </configuration>
+                    </execution>
+                </executions>
+            </plugin>
+
+            <!--
+              OWASP dependency-check (SCA). Bound to `verify`; fails the build when any
+              dependency has a CVSS score >= 7.0 (high/critical), satisfying the
+              zero critical/high CVE constraint. NOTE: dependency-check requires the
+              NVD data feed; provide a local NVD cache or an NVD API key (via the
+              plugin's standard configuration/environment) to keep the build
+              reproducible in restricted/offline environments. That operational detail
+              is documented in docs/onboarding and docs/decision-log.md, not here.
+            -->
+            <plugin>
+                <groupId>org.owasp</groupId>
+                <artifactId>dependency-check-maven</artifactId>
+                <version>${dependency-check.version}</version>
+                <configuration>
+                    <failBuildOnCVSS>7</failBuildOnCVSS>
+                    <!--
+                      Scan the TEST scope too. dependency-check-maven skips the test
+                      scope by default (skipTestScope=true), which silently hid the
+                      vulnerable test-scope commons-compress from the gate. Scanning
+                      all scopes ensures no critical/high CVE reaches the build in any
+                      scope; the vulnerable transitive versions are already pinned
+                      forward in <dependencyManagement> above.
+                    -->
+                    <skipTestScope>false</skipTestScope>
+                    <skipProvidedScope>false</skipProvidedScope>
+                    <skipRuntimeScope>false</skipRuntimeScope>
+                    <!--
+                      Narrowly-scoped, dated, and justified false-positive / no-fix-
+                      available suppressions. Each entry pins an exact packageUrl and CVE
+                      so the suppression cannot silently mask a different or future
+                      vulnerability. Every suppression has a corresponding rationale and
+                      review date in docs/decision-log.md (D49). The versioned bumps for
+                      the remaining CVEs are handled in <dependencyManagement>/properties
+                      above; only vulnerabilities with NO patched release reachable in the
+                      dependency graph are suppressed here.
+                    -->
+                    <suppressionFiles>
+                        <suppressionFile>${project.basedir}/owasp-suppressions.xml</suppressionFile>
+                    </suppressionFiles>
+                    <formats>
+                        <format>HTML</format>
+                        <format>JSON</format>
+                    </formats>
+                </configuration>
+                <executions>
+                    <execution>
+                        <goals>
+                            <goal>check</goal>
+                        </goals>
+                        <phase>verify</phase>
+                    </execution>
+                </executions>
+            </plugin>
+        </plugins>
+    </build>
+
+</project>

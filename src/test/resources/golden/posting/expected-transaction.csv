@@ -1,0 +1,8 @@
+# Golden EXPECTED post-state of the `transaction` table after DailyTransactionPostingJob (legacy CBTRN02C,
+# 2000-POST-TRANSACTION -> 2900-WRITE-TRANSACTION-FILE) posts the ONE VALID record R1 from src/test/resources/seed/posting/.
+# Columns are the canonical `transaction` columns from src/main/resources/db/migration/V1__schema.sql.
+# proc_ts is VOLATILE: CBTRN02C sets it to a run-time DB2-format timestamp, so it is left EMPTY here and MUST be
+#   EXCLUDED from row-for-row equality (assert non-null / format-only instead). orig_ts is PRESERVED verbatim from input.
+# Monetary values are scale-2 decimals compared to the cent (NEVER float). The consuming test must ignore '#' comment lines.
+tran_id,type_cd,cat_cd,tran_source,tran_desc,tran_amt,tran_merchant_id,tran_merchant_name,tran_merchant_city,tran_merchant_zip,card_num,orig_ts,proc_ts
+"9990000000000001",01,1,POS TERM,Purchase valid,100.00,800000001,Posting Merchant One,Testville,75001,"9000000000000001",2025-01-15 10:00:00.000000,

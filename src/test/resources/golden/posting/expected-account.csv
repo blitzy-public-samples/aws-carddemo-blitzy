@@ -1,0 +1,10 @@
+# Golden EXPECTED post-state of the affected `account` row after DailyTransactionPostingJob (legacy CBTRN02C,
+# 2800-UPDATE-ACCOUNT-REC) posts the VALID record R1 (amount 100.00 >= 0) from src/test/resources/seed/posting/.
+#   curr_bal += amount; since amount >= 0, curr_cyc_credit += amount; curr_cyc_debit unchanged.
+# Columns are canonical `account` column names from V1__schema.sql (minimal affected set; the JPA `version`
+#   optimistic-lock column is intentionally omitted). Pre-state balances were all 0.00.
+# Accounts 90000000002 / 90000000003 are UNCHANGED (their transactions were rejected 102 / 103) and are therefore
+#   NOT included here; add them only if the test performs a full-table comparison (see the alternative below).
+# Monetary values are scale-2 decimals compared to the cent (NEVER float). The consuming test must ignore '#' comment lines.
+acct_id,curr_bal,curr_cyc_credit,curr_cyc_debit
+90000000001,100.00,100.00,0.00

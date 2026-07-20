@@ -1,0 +1,32 @@
+# ==========================================================================
+# CardDemo repository Git attributes.
+#
+# Purpose: guarantee byte-exact preservation of the legacy mainframe DATA
+# artifacts retained under legacy/data/**. These files are migration
+# authorities: their exact bytes (EBCDIC encoding, packed COMP-3 fields,
+# fixed-width record layouts) are the contract the Java re-platform is
+# validated against. Git end-of-line normalization or text filtering would
+# silently corrupt them, so their handling is pinned here explicitly.
+#
+# CI hash verification: the SHA-256 of every file under legacy/data/** and
+# legacy/catlg/LISTCAT.txt is recorded in docs/traceability-matrix.md
+# (Data-Artifact Inventory). Continuous integration should recompute and
+# compare those hashes on every build to prove the authorities remain
+# unmodified. See docs/onboarding/pitfalls.md ("Never edit legacy bytes").
+# ==========================================================================
+
+# --- EBCDIC physical-sequential datasets ---------------------------------
+# Pure binary: EBCDIC code page + binary packed-decimal (COMP-3) content.
+# `binary` == `-text -diff`, so Git performs no EOL conversion and shows no
+# textual diff, keeping every byte identical across clone / checkout / commit.
+legacy/data/EBCDIC/AWS.M2.CARDDEMO.*        binary
+
+# --- ASCII fixed-width seed data -----------------------------------------
+# Human-readable, so keep textual diffs, but disable EOL conversion: a CRLF
+# injection would shift every fixed-width column by one byte per line and
+# break the fixed-position load contract. `-text` prevents any normalization.
+legacy/data/ASCII/*.txt                     -text
+
+# --- VSAM catalog listing -------------------------------------------------
+# Reference report; keep as text with no EOL conversion for stable hashing.
+legacy/catlg/LISTCAT.txt                    -text

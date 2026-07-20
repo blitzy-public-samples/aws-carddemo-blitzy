@@ -1,0 +1,68 @@
+-- =============================================================================
+-- V4__add_transaction_card_num_index.sql  --  Covering index for the
+--                                              statement per-card transaction browse
+-- =============================================================================
+--
+-- PURPOSE
+--   Add a B-tree covering index on transaction (card_num, proc_ts, tran_id) to
+--   support the statement-generation job's per-card transaction retrieval.
+--   StatementFileService.readTransactionsForCard (legacy/cbl/CBSTM03A.CBL,
+--   8500-READTRNX-READ) reads every transaction for one card via
+--   TransactionRepository.findByCardNumOrderByProcTsAscTranIdAsc, whose SQL is
+--   exactly:
+--
+--       SELECT ... FROM transaction WHERE card_num = ? ORDER BY proc_ts, tran_id
+--
+--   Before this migration the transaction table carried only its primary key
+--   (tran_id) and idx_transaction_proc_ts (the TRANSACT.VSAM.AIX chronological
+--   browse over proc_ts). card_num -- although a real foreign key to card -- had
+--   NO supporting index, because PostgreSQL does not auto-create indexes on
+--   foreign-key columns (only on the referenced primary/unique key). The
+--   per-card query therefore ran a full sequential scan of the transaction table
+--   followed by an in-memory (and, on high-transaction cards, disk-spilling)
+--   sort -- an O(cards x table) access pattern whose cost grows with the whole
+--   table rather than with one card's transaction count.
+--
+--   AAP SS0.4.3 requires that the VSAM alternate-index browse patterns be preserved
+--   as "indexed, sorted repository queries" whose cost is independent of total
+--   table size, and AAP SS0.2.2 requires SORT/browse to become sorted queries with
+--   identical key ordering (the legacy statement extract is sorted by CARD-NUM
+--   then TRAN-ID in app/jcl/CREASTMT.JCL STEP010). This index restores that
+--   contract for the statement path.
+--
+-- COLUMN ORDER (why (card_num, proc_ts, tran_id))
+--   The leading column card_num serves the equality predicate; the trailing
+--   columns proc_ts then tran_id match the query's ORDER BY, so the planner can
+--   satisfy both the filter and the ordering directly from the index -- an Index
+--   Scan with no separate Sort node and no temporary-file spill. The three
+--   columns exactly mirror the WHERE ... ORDER BY shape of
+--   findByCardNumOrderByProcTsAscTranIdAsc.
+--
+-- WHY A NEW MIGRATION (NOT AN EDIT TO V1)
+--   V1__schema.sql is an already-applied, immutable Flyway migration. Flyway is
+--   configured with validate-on-migrate=true (see application.yml), so editing a
+--   migration whose checksum is already recorded would fail validation on every
+--   existing database. Schema evolution is therefore delivered as a new, higher-
+--   versioned migration (V4) that Flyway applies on top of V1/V2/V3 -- the same
+--   pattern used by V3__add_customer_version.sql.
+--
+-- EXECUTION MODEL
+--   * OWNED BY FLYWAY. Runs automatically at application startup
+--     (spring.flyway.locations=classpath:db/migration) and against a fresh
+--     Testcontainers PostgreSQL 16 during integration tests.
+--   * Hibernate NEVER generates DDL (spring.jpa.hibernate.ddl-auto=validate).
+--     Indexes are transparent to Hibernate schema validation, so no entity or
+--     mapper change is required; the added index changes only the query plan,
+--     never the result set or its ordering.
+--
+-- IDEMPOTENCE / SAFETY
+--   CREATE INDEX IF NOT EXISTS makes re-application a no-op and is safe on a
+--   database into which the index was already added out of band. Creating an
+--   index is a purely additive, non-behavioral change: it introduces no new
+--   column, constraint, or row, and preserves the exact rows and ordering the
+--   statement job already produced (verified by byte-identical golden-file
+--   output). See docs/decision-log.md (D10, "Statement per-card covering index").
+-- =============================================================================
+
+CREATE INDEX IF NOT EXISTS idx_transaction_card_num
+    ON transaction (card_num, proc_ts, tran_id);

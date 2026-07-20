@@ -1,0 +1,74 @@
+-- =============================================================================
+-- V5__add_account_last_interest_cycle.sql  --  Interest-cycle idempotency marker
+-- =============================================================================
+--
+-- PURPOSE
+--   Add a nullable last_interest_cycle marker column to the account table so the
+--   interest-calculation batch job (legacy/cbl/CBACT04C.cbl, triggered by
+--   app/jcl/INTCALC.jcl with PARM='2022071800') applies each cycle's interest to
+--   an account AT MOST ONCE, even if the job is re-run or restarted for the same
+--   cycle. The column records the 10-character run date (parmDate, e.g.
+--   '2022071800') of the most recent interest posting applied to the account.
+--
+-- WHAT IT FIXES (QA findings F-P6-A and F-P5-D)
+--   The legacy 1050-UPDATE-ACCOUNT paragraph (CBACT04C L350-370) unconditionally
+--   ADDs the accumulated per-account interest to ACCT-CURR-BAL and zeroes the
+--   cycle credit/debit. Re-running INTCALC for the same cycle on the mainframe
+--   would likewise re-apply interest -- but on the mainframe INTCALC is a
+--   scheduled, run-once-per-cycle job, so that hazard never materializes. In the
+--   relational target, a re-launch or a mid-run restart of InterestCalculationJob
+--   (whose chunk transactions commit per account) would DOUBLE-APPLY interest to
+--   accounts already finalized in the failed/previous run (curr_bal 75.02 /
+--   version 2 instead of the correct 37.51 / version 1). Recording the applied
+--   cycle and posting interest with a WHERE last_interest_cycle IS DISTINCT FROM
+--   the current cycle makes the balance update EXACTLY-ONCE per (account, cycle):
+--     * F-P6-A: a re-run for the same parmDate updates zero rows (idempotent).
+--     * F-P5-D: a restart re-reads the full TCATBAL input and rebuilds the whole
+--       SYSTRAN file into a staging file (published atomically only on success),
+--       while accounts already posted in the failed run are skipped by the
+--       cycle predicate -- so the balances stay exactly-once and the SYSTRAN file
+--       is complete rather than a partial tail.
+--
+-- CONCURRENCY SAFETY
+--   The conditional posting UPDATE (AccountRepository.applyInterestForCycle) runs
+--   as a single UPDATE ... WHERE acct_id = ? AND (last_interest_cycle IS NULL OR
+--   last_interest_cycle <> ?). Under PostgreSQL READ COMMITTED, two concurrent
+--   postings of the same (account, cycle) serialize on the row lock; the second
+--   re-evaluates the WHERE against the first's committed row, matches zero rows,
+--   and does not re-apply -- so exactly-once holds under concurrency as well as
+--   sequential re-runs.
+--
+-- WHY A NEW MIGRATION (NOT AN EDIT TO V1)
+--   V1__schema.sql is an already-applied, immutable Flyway migration. Flyway is
+--   configured with validate-on-migrate=true (see application.yml), so editing a
+--   migration whose checksum is already recorded would fail validation on every
+--   existing database. Schema evolution is therefore delivered as a new, higher-
+--   versioned migration (V5) that Flyway applies on top of V1/V2/V3/V4 -- the same
+--   pattern used by V3__add_customer_version.sql and V4__add_transaction_card_num_index.sql.
+--
+-- EXECUTION MODEL
+--   * OWNED BY FLYWAY. Runs automatically at application startup
+--     (spring.flyway.locations=classpath:db/migration) and against a fresh
+--     Testcontainers PostgreSQL 16 during integration tests.
+--   * Hibernate NEVER generates DDL (spring.jpa.hibernate.ddl-auto=validate);
+--     after this migration the com.aws.carddemo.domain.Account.lastInterestCycle
+--     mapping validates cleanly against the account table.
+--
+-- COLUMN CHOICE (nullable, no default)
+--   The column is VARCHAR(10) and intentionally NULLABLE with no default: a NULL
+--   marks an account that has never had interest posted (every pre-existing and
+--   freshly-inserted account), which the posting predicate treats as eligible.
+--   VARCHAR(10) mirrors the 10-character parmDate (the INTCALC PARM and the
+--   high-order 10 chars of every interest TRAN-ID). This is a documented,
+--   additive operational-integrity column (it stores no business field from any
+--   copybook); the rationale is recorded in docs/decision-log.md.
+--
+-- IDEMPOTENCE / SAFETY
+--   ADD COLUMN IF NOT EXISTS is a no-op on re-application and is safe on a
+--   database that already holds account rows: the new column back-fills as NULL
+--   (eligible), introducing no new constraint and changing no existing row's
+--   business data.
+-- =============================================================================
+
+ALTER TABLE account
+    ADD COLUMN IF NOT EXISTS last_interest_cycle VARCHAR(10);  -- interest-cycle idempotency marker (parmDate); NULL = never posted

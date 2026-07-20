@@ -1,0 +1,199 @@
+# CardDemo CI - GitHub Actions workflow (JCL-scheduling equivalent; AAP 0.4.1, 0.6).
+# Replaces the z/OS JCL scheduler that orchestrated the CardDemo build/batch lifecycle.
+# Quality gates (JaCoCo >= 80% line coverage, OWASP dependency-check on high/critical
+# CVEs, zero-warning compile) live in pom.xml and are inherited by running `verify`.
+name: CardDemo CI
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+  workflow_dispatch:
+  # Nightly cron is the CI/CD home for the recurring JCL batch-job scheduling that previously
+  # ran on the mainframe (AAP 0.4.4 / 0.7.2 M4). The `scheduled-batch` job below realizes that
+  # scheduling: it provisions a PostgreSQL 16 service, builds the application, and launches every
+  # parameter-free, read-only Spring Batch job -- accountMasterPrintJob (CBACT01C),
+  # cardMasterPrintJob (CBACT02C), xrefPrintJob (CBACT03C), customerMasterPrintJob (CBCUS01C) and
+  # transactionBackupJob (TRANBKP / IDCAMS REPRO) -- by name via
+  # `--spring.batch.job.enabled=true --spring.batch.job.name=<job>`, asserting a clean COMPLETED /
+  # exit-0 batch return code for each. All 12 batch jobs are implemented; the remaining 7
+  # (POSTTRAN/CBTRN02C, CBTRN01C, INTCALC/CBACT04C, CREASTMT/CBSTM03A+B, TRANREPT/CBTRN03C,
+  # COMBTRAN/SORT, and the DALYTRAN loader) are intentionally kept OUT of this correlationId-only
+  # loop because they require real job parameters or externally-staged input -- not because they are
+  # unimplemented. They are verified by the Testcontainers suite and were additionally runtime-verified
+  # standalone (all 12 COMPLETED / exit 0, parameterized where required, with clean-post prep for the
+  # posting job) -- see docs/decision-log.md D45 and Project Guide Section 4.
+  # ("JCL -> CI/CD scheduling") for the rationale and the intended external-scheduler alternative.
+  schedule:
+    - cron: '0 3 * * *'
+
+# Least-privilege token: the build only needs to read repository contents (AAP 0.8).
+permissions:
+  contents: read
+
+jobs:
+  build:
+    # ubuntu-latest ships a running Docker daemon required by the Testcontainers
+    # PostgreSQL 16 integration tests (no extra Docker/service setup needed).
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Set up JDK 25 (Temurin)
+        uses: actions/setup-java@c5195efecf7bdfc987ee8bae7a71cb8b11521c00 # v4.7.1
+        with:
+          distribution: temurin
+          java-version: '25'
+          cache: maven
+
+      - name: Make Maven wrapper executable
+        run: chmod +x mvnw
+
+      - name: Build and verify (CI == local reproducible build)
+        # OWASP SCA transparency (Refine-PR #1 / decision-log D49 addendum): this online CI run is the
+        # source of record for the FULL multi-analyzer finding inventory (the "~27 findings" count, which
+        # includes RetireJS / OSS-Index / hosted-suppression hits and current NVD advisories). The
+        # gate metric itself -- zero findings at CVSS >= 7, max active CVSS 6.1 -- is also reproducible
+        # OFFLINE against a populated NVD cache (`./mvnw org.owasp:dependency-check-maven:12.2.2:check
+        # -DautoUpdate=false` with the network analyzers disabled); dependency-check only needs the
+        # network for the periodic NVD *feed update*, not for the scan. Enabling the recurring online
+        # refresh here is tracked as M-3.
+        run: ./mvnw -B clean verify
+        env:
+          # Optional: speeds up the OWASP NVD data feed if the secret is set; harmless if unset.
+          NVD_API_KEY: ${{ secrets.NVD_API_KEY }}
+
+      - name: Upload JaCoCo coverage report
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: jacoco-report
+          path: target/site/jacoco/
+          if-no-files-found: ignore
+
+      - name: Upload OWASP dependency-check report
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: dependency-check-report
+          path: target/dependency-check-report.html
+          if-no-files-found: ignore
+
+      - name: Upload test reports
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: test-reports
+          path: |
+            target/surefire-reports/
+            target/failsafe-reports/
+          if-no-files-found: ignore
+
+  # Realizes the JCL -> CI/CD batch scheduling (AAP 0.4.4 / 0.7.2 M4): the recurring mainframe
+  # batch jobs now run as a scheduled GitHub Actions job that launches each Spring Batch job by
+  # name and asserts a clean COMPLETED / exit-0 return code (0 == COMPLETED, preserving the
+  # legacy "return code 0 = clean" contract). Runs only on the nightly schedule or an explicit
+  # manual dispatch -- never on push / pull_request (those run the build+verify gate above).
+  scheduled-batch:
+    # Build gate (QA finding F-P6-E): only run the nightly batch AFTER the
+    # build+verify quality gate (JaCoCo >= 80% coverage, OWASP dependency-check on
+    # high/critical CVEs, zero-warning compile) has passed on this same commit. The
+    # `build` job has no event filter, so it also runs on the schedule / dispatch
+    # triggers; requiring it here means a FAILED gate SKIPS the batch launch instead
+    # of exercising code that never passed verification. `needs` defaults to
+    # requiring success, so a red build blocks this job.
+    needs: build
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    # PostgreSQL 16 service container the batch jobs read/write (Flyway migrates it on start;
+    # the `local` profile's seed loader populates the demo rows the master-print jobs print).
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_DB: carddemo
+          POSTGRES_USER: carddemo
+          # No committed literal secret. Use the `CI_DB_PASSWORD` repository secret when it is set;
+          # otherwise derive a throwaway password unique to this workflow run (github.run_id /
+          # run_attempt). The identical expression is repeated on the app's DB_PASSWORD below so the
+          # service container and the application always agree on the value.
+          POSTGRES_PASSWORD: ${{ secrets.CI_DB_PASSWORD || format('ephemeral-ci-{0}-{1}', github.run_id, github.run_attempt) }}
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U carddemo -d carddemo"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Set up JDK 25 (Temurin)
+        uses: actions/setup-java@c5195efecf7bdfc987ee8bae7a71cb8b11521c00 # v4.7.1
+        with:
+          distribution: temurin
+          java-version: '25'
+          cache: maven
+
+      - name: Make Maven wrapper executable
+        run: chmod +x mvnw
+
+      - name: Package application (skip tests; the build job runs the full verify gate)
+        run: ./mvnw -B -DskipTests clean package
+
+      - name: Launch batch jobs (JCL-equivalent scheduled run)
+        env:
+          DB_URL: jdbc:postgresql://localhost:5432/carddemo
+          DB_USERNAME: carddemo
+          # Same secret-or-ephemeral expression as the postgres service's POSTGRES_PASSWORD above, so
+          # the application connects with exactly the value the service container was initialized with.
+          DB_PASSWORD: ${{ secrets.CI_DB_PASSWORD || format('ephemeral-ci-{0}-{1}', github.run_id, github.run_attempt) }}
+          # `local` activates the seed loader so the master-print jobs process real demo rows;
+          # each job is launched with the web server disabled so the process exit code equals the
+          # Spring Batch return code (0 == COMPLETED).
+          SPRING_PROFILES_ACTIVE: local
+        run: |
+          JAR="$(ls target/carddemo-*.jar | head -n1)"
+          echo "Launching Spring Batch jobs from ${JAR}"
+          overall=0
+          # Scope of this nightly smoke loop: the read-only, no-parameter jobs that read the seeded
+          # demo rows and return COMPLETED without external input. The in-scope transaction pipelines
+          # (dailyTransactionLoadJob, dailyTransactionValidateJob, dailyTransactionPostingJob,
+          # interestCalculationJob, transactionReportJob, transactionCombineJob) are intentionally NOT
+          # launched here: they require real job parameters (parmDate; startDate/endDate; inputResource)
+          # or externally-staged DALYTRAN input, so a correlationId-only launch would fail fast at the
+          # parameter validator or process zero rows. Those jobs are verified by the Testcontainers
+          # integration suite in the `build` job and documented for manual, parameterized launch in
+          # docs/onboarding/getting-started.md ("Run the batch jobs"). All 12 jobs were additionally
+          # runtime-verified standalone (COMPLETED / exit 0) via this same launch mechanism, parameterized
+          # where required and with clean-post prep for the posting job -- see decision-log D14 and D45
+          # and Project Guide Section 4.
+          for job in accountMasterPrintJob cardMasterPrintJob customerMasterPrintJob xrefPrintJob transactionBackupJob; do
+            echo "::group::Launch ${job}"
+            # A unique, identifying correlationId per launch makes each run a distinct Spring Batch
+            # job instance (the jobs use no JobParametersIncrementer), so nightly re-runs never hit
+            # JobInstanceAlreadyCompleteException; it also propagates as the batch correlation id.
+            cid="ci-${job}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+            rc=0
+            # This smoke loop asserts the return-code contract only; it does not assert metrics, and no
+            # Prometheus/OTLP receiver runs in CI. A real scheduled deployment that wants these runs to
+            # surface in the Grafana batch panels would add the 'batch' profile
+            # (--spring.profiles.active=...,batch) so the headless JVM pushes spring_batch_*_seconds via
+            # OTLP before exit (decision-log D65). Left off here by design.
+            java -jar "${JAR}" \
+              --spring.main.web-application-type=none \
+              --spring.batch.job.enabled=true \
+              --spring.batch.job.name="${job}" \
+              "correlationId=${cid}" || rc=$?
+            echo "::endgroup::"
+            if [ "${rc}" -ne 0 ]; then
+              echo "::error::Batch job ${job} returned non-zero exit code ${rc} (batch RC != COMPLETED)"
+              overall=1
+            else
+              echo "Batch job ${job} COMPLETED (exit 0)"
+            fi
+          done
+          exit "${overall}"
