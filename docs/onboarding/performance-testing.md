@@ -273,6 +273,11 @@ job against your scaled database and watch the aggregate the report quotes:
 java -jar target/carddemo-*.jar \
   --spring.batch.job.name=statementGenerationJob \
   --spring.main.web-application-type=none
+  # To publish this job's timing to Prometheus/Grafana, add the 'batch' profile to the launch
+  #   (e.g. --spring.profiles.active=<your-profiles>,batch) so the headless JVM pushes its
+  #   spring_batch_*_seconds metrics via OTLP before exit - see getting-started.md "Run the batch
+  #   jobs" (Batch metrics note) and decision-log D65. Omitted here to avoid pinning a profile on
+  #   your scaled perf database.
   # statementGenerationJob takes NO required (and no date) parameters - it reads posted transaction
   # history; override output paths with the carddemo.batch.statement.* properties. To re-run a
   # completed no-parameter job, add a unique job parameter, e.g. stamp=$(date +%s).

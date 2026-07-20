@@ -1470,8 +1470,8 @@
     {
       "id": 41,
       "type": "timeseries",
-      "title": "Batch Job Duration (max & avg) by name",
-      "description": "Duration of Spring Batch jobs (posting/interest/statement, etc.) from spring_batch_job_seconds. Appears after a job runs.",
+      "title": "Batch Job Duration (p95 & avg) by name",
+      "description": "Per-job duration from the spring_batch_job_seconds histogram, PUSHED over OTLP when a standalone batch JVM completes (it serves no /actuator/prometheus endpoint to scrape). Shows the p95 (over _bucket) and the average (_sum/_count) of the most recent run of each job.",
       "datasource": {
         "type": "prometheus",
         "uid": "${DS_PROMETHEUS}"
@@ -1556,8 +1556,8 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "spring_batch_job_seconds_max{job=\"$job\",instance=~\"$instance\"}",
-          "legendFormat": "max {{spring_batch_job_name}}",
+          "expr": "histogram_quantile(0.95, sum by (le, spring_batch_job_name) (spring_batch_job_seconds_bucket{job=\"$job\"}))",
+          "legendFormat": "p95 {{spring_batch_job_name}}",
           "range": true,
           "refId": "A"
         },
@@ -1567,7 +1567,7 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "rate(spring_batch_job_seconds_sum{job=\"$job\",instance=~\"$instance\"}[$__rate_interval]) / rate(spring_batch_job_seconds_count{job=\"$job\",instance=~\"$instance\"}[$__rate_interval])",
+          "expr": "sum by (spring_batch_job_name) (spring_batch_job_seconds_sum{job=\"$job\"}) / sum by (spring_batch_job_name) (spring_batch_job_seconds_count{job=\"$job\"})",
           "legendFormat": "avg {{spring_batch_job_name}}",
           "range": true,
           "refId": "B"
@@ -1578,7 +1578,7 @@
       "id": 42,
       "type": "timeseries",
       "title": "Batch Job Executions by name / status",
-      "description": "Cumulative job execution counts by name and COMPLETED/FAILED status (spring_batch_job_seconds_count).",
+      "description": "Job execution count by name and COMPLETED/FAILED status (spring_batch_job_seconds_count), pushed over OTLP on completion. Standalone batch JVMs are short-lived and share one series per job/status, so this reflects the MOST RECENT run of each job.",
       "datasource": {
         "type": "prometheus",
         "uid": "${DS_PROMETHEUS}"
@@ -1663,7 +1663,7 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "sum by (spring_batch_job_name, spring_batch_job_status) (spring_batch_job_seconds_count{job=\"$job\",instance=~\"$instance\"})",
+          "expr": "sum by (spring_batch_job_name, spring_batch_job_status) (spring_batch_job_seconds_count{job=\"$job\"})",
           "legendFormat": "{{spring_batch_job_name}} [{{spring_batch_job_status}}]",
           "range": true,
           "refId": "A"
@@ -1673,8 +1673,8 @@
     {
       "id": 43,
       "type": "timeseries",
-      "title": "Batch Step Duration (max) by name",
-      "description": "Max duration of Spring Batch steps (spring_batch_step_seconds_max).",
+      "title": "Batch Step Duration (p95) by name",
+      "description": "Per-step duration p95 from the spring_batch_step_seconds histogram (over _bucket), pushed over OTLP on batch completion.",
       "datasource": {
         "type": "prometheus",
         "uid": "${DS_PROMETHEUS}"
@@ -1759,8 +1759,8 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "spring_batch_step_seconds_max{job=\"$job\",instance=~\"$instance\"}",
-          "legendFormat": "{{spring_batch_step_name}}",
+          "expr": "histogram_quantile(0.95, sum by (le, spring_batch_step_name) (spring_batch_step_seconds_bucket{job=\"$job\"}))",
+          "legendFormat": "p95 {{spring_batch_step_name}}",
           "range": true,
           "refId": "A"
         }

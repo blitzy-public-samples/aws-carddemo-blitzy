@@ -511,9 +511,14 @@ public class TransactionReportWriter
      */
     @Override
     public ExitStatus afterStep(StepExecution stepExecution) {
-        final boolean stepAlreadyFailed =
-                ioError || stepExecution.getStatus() == BatchStatus.FAILED;
-        if (!stepAlreadyFailed) {
+        // Finalize EOF totals ONLY on a positively-verified clean completion (fail-closed, F-P5-E).
+        // On the mid-write connection-loss race the status is still STARTED at afterStep time (FAILED
+        // is persisted afterwards and fails on the dead DB), so a negative "== FAILED" check would
+        // wrongly treat the run as clean, write EOF totals, and then publish a partial report. See
+        // BatchFilePublishDecision.
+        final boolean cleanCompletion =
+                BatchFilePublishDecision.isCleanCompletion(stepExecution, ioError);
+        if (cleanCompletion) {
             try {
                 // EOF ELSE branch (CBTRN03C L200-204): ADD TRAN-AMT (the STALE last value) TO
                 // WS-PAGE-TOTAL WS-ACCOUNT-TOTAL, then write the page total and grand total.
@@ -543,16 +548,19 @@ public class TransactionReportWriter
         // state is cleared in the finally block so the singleton bean carries no state between runs.
         final Path temp = this.reportTempPath;
         final Path published = this.reportPath;
-        final boolean failed = ioError || stepExecution.getStatus() == BatchStatus.FAILED;
+        // Re-evaluate the fail-closed gate AFTER closeReportWriter() (a close failure sets ioError):
+        // publish ONLY on a verified-clean completion, otherwise discard the staging file (F-P5-E).
+        final boolean clean = BatchFilePublishDecision.isCleanCompletion(stepExecution, ioError);
         try {
             if (temp == null) {
                 // beforeStep never opened a staging file; nothing to publish or discard.
-                return failed ? ExitStatus.FAILED : ExitStatus.COMPLETED;
+                return clean ? ExitStatus.COMPLETED : ExitStatus.FAILED;
             }
-            if (failed) {
+            if (!clean) {
                 deleteQuietly(temp);
-                LOGGER.error("Transaction report failed; staging file {} discarded and no report was "
-                        + "published (no partial final-named file left behind).", temp);
+                LOGGER.error("Transaction report did not complete cleanly (status={}); staging file {} "
+                        + "discarded and no report was published (no partial final-named file left "
+                        + "behind).", stepExecution.getStatus(), temp);
                 return ExitStatus.FAILED;
             }
             try {

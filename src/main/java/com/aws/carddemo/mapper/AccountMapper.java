@@ -186,7 +186,7 @@ public class AccountMapper {
                 scale2(account.getCurrCycDebit()),            // currentCycleDebit
                 // --- Customer detail fields ---
                 String.format("%09d", customer.getCustId()),         // customerId
-                customer.getCustSsn(),                        // ssn (SENSITIVE - raw digits)
+                formatSsnDisplay(customer.getCustSsn()),      // ssn (SENSITIVE - NNN-NN-NNNN, COACTVWC parity)
                 customer.getCustDob(),                        // dateOfBirth (SENSITIVE)
                 ficoScore,                                    // ficoScore
                 customer.getCustFirstName(),                  // firstName
@@ -477,6 +477,32 @@ public class AccountMapper {
                 safeSubstring(ssn, 3, 5),
                 safeSubstring(ssn, 5, 9)
         };
+    }
+
+    /**
+     * Formats a raw nine-digit social security number for <em>display</em> as
+     * {@code NNN-NN-NNNN}, reproducing the Account View screen presentation of
+     * {@code COACTVWC}, which {@code STRING}s {@code CUST-SSN(1:3) '-'
+     * CUST-SSN(4:2) '-' CUST-SSN(6:4)} into {@code ACSTSSNO}
+     * [legacy/cbl/COACTVWC.cbl:L496-L503]. This is a presentation transform used
+     * only by the single-field {@link #toViewResponse view response}: the update
+     * screen keeps the SSN decomposed into its three editable parts (see
+     * {@link #toUpdateResponse}), and {@link #fromRequest} still composes the raw
+     * stored digits via {@link #composeSsn}, so the value persisted on the
+     * customer record is unchanged. Recorded as a parity correction in decision
+     * log D66.
+     *
+     * @param rawSsn the raw nine-digit SSN as stored on the customer record; may
+     *               be {@code null} or blank
+     * @return the SSN rendered as {@code NNN-NN-NNNN}, or an empty string when
+     *         {@code rawSsn} is {@code null} or blank
+     */
+    private static String formatSsnDisplay(String rawSsn) {
+        if (rawSsn == null || rawSsn.isBlank()) {
+            return "";
+        }
+        String[] parts = splitSsn(rawSsn);
+        return parts[0] + "-" + parts[1] + "-" + parts[2];
     }
 
     /**

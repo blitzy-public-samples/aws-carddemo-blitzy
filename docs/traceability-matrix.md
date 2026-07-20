@@ -259,7 +259,7 @@ One row per **named** `DFHMDF` field across all 17 BMS maps (441 fields total; s
 | `AADDGRP` | 10 | 10,23 | - | - | HILIGHT=UNDERLINE | `aaddgrp` (output (response)) |
 | `ACRCYDB` | 15 | 10,61 | - | - | PICOUT=+ZZZ,ZZZ,ZZZ.99; HILIGHT=UNDERLINE; JUSTIFY=RIGHT | `acrcydb` (output (response)) |
 | `ACSTNUM` | 9 | 12,23 | - | - | HILIGHT=UNDERLINE | `acstnum` (output (response)) |
-| `ACSTSSN` | 12 | 12,54 | - | - | HILIGHT=UNDERLINE | `acstssn` (output (response)) |
+| `ACSTSSN` | 12 | 12,54 | - | - | HILIGHT=UNDERLINE | `ssn` (output (response); rendered `NNN-NN-NNNN` by `mapper/AccountMapper.toViewResponse` to match the legacy `COACTVWC` `STRING CUST-SSN(1:3) '-' CUST-SSN(4:2) '-' CUST-SSN(6:4)` display of `ACSTSSNO`; decision log [D66](./decision-log.md#d66--account-view-ssn-is-rendered-nnn-nn-nnnn-to-match-the-legacy-coactvwc-display-contract)) |
 | `ACSTDOB` | 10 | 13,23 | - | - | HILIGHT=UNDERLINE | `acstdob` (output (response)) |
 | `ACSTFCO` | 3 | 13,61 | - | - | HILIGHT=UNDERLINE | `acstfco` (output (response)) |
 | `ACSFNAM` | 25 | 15,1 | - | - | HILIGHT=UNDERLINE | `acsfnam` (output (response)) |
@@ -1523,7 +1523,7 @@ This section provides the reverse direction required for bidirectional traceabil
 | batch/CustomerMasterPrintJob | CBCUS01C |
 | batch/TransactionCombineJob | COMBTRAN.jcl (inline `PGM=SORT` cards) |
 | batch/TransactionBackupJob | TRANBKP.jcl (IDCAMS REPRO) + REPROC.prc + REPROCT.ctl (IDCAMS REPRO control) |
-| batch/reader, batch/processor, batch/writer | Fixed-width DALYTRAN/DALYREJS/statement/report layouts |
+| batch/reader, batch/processor, batch/writer (incl. batch/writer/BatchFilePublishDecision) | Fixed-width DALYTRAN/DALYREJS/statement/report/backup layouts; the five external-file-publishing writers (TransactionBackupItemWriter, DailyTransactionPostingWriter, StatementItemWriter, TransactionReportWriter, InterestTransactionWriter) publish a final-named file **fail-closed** — only on verified clean step completion (`BatchFilePublishDecision.isCleanCompletion`) — mirroring the legacy IDCAMS `REPRO`/sequential jobs that emitted their output dataset only on RC=0 (decision log [D64](./decision-log.md#d64--batch-external-file-publication-is-fail-closed-gated-on-verified-clean-step-completion)) |
 | common/util/IdGenerator | COTRN02C ADD-TRANSACTION / COPY-LAST-TRAN-DATA (max+1) [L444-L451] |
 | common/util/FixedWidthCodec | DALYTRAN / DALYREJS / statement / report fixed-width record layouts |
 | dto/*Request, dto/*Response, mapper/*Mapper | BMS symbolic copybooks legacy/cpy-bms/*.CPY (one pair per screen) |
@@ -1546,6 +1546,8 @@ The COBOL/mainframe runtime services have no paragraph-level representation; the
 | FILE STATUS / CICS RESP codes | Typed exception hierarchy (FileStatusException, CicsRespMapper, GlobalExceptionHandler) | HTTP status (online) / batch return codes (batch) |
 | Static/dynamic CALL | Spring bean method invocation (constructor injection) | Data-passing semantics preserved |
 | COMP-3 packed decimal | java.math.BigDecimal scale 2 + RoundingMode.HALF_UP | Additive postings exact at scale 2; the interest division standardizes on HALF_UP (AAP §0.4.2) — a documented divergence from the truncating COBOL COMPUTE in the exact-half case (domain/type/Money; decision log D31) |
+| SMF / SYSOUT operational telemetry (no queryable metrics store) | Micrometer + Spring Boot Actuator: the online app is **scraped** at `/actuator/prometheus`; headless batch JVMs (`web-application-type=none`) **push** `spring_batch_job_seconds` / `spring_batch_step_seconds` via OTLP to Prometheus's native OTLP receiver under the `batch` profile, rendered in the Grafana "Spring Batch" panels | Non-functional addition (Observability rule, AAP §0.8.2/§0.9.5); no business behavior or return code changed. Online path stays scrape-only. Decision log [D23](./decision-log.md#d23--observability-stack-logs-traces-metrics-dashboard), [D65](./decision-log.md#d65--standalone-batch-jvms-push-metrics-via-otlp-to-prometheus-online-scrape-path-preserved) |
+| 3270 terminal input implicitly bounded by fixed BMS map field lengths (a terminal could not transmit more than the map defined) | `config/RequestBodySizeLimitFilter` + `server.tomcat.max-swallow-size`: inbound HTTP request bodies are bounded at `carddemo.web.max-request-body-bytes` (default 1 MiB); an oversized body (declared or streamed) is rejected as **413 Payload Too Large** in RFC 7807 `application/problem+json`, mapped by `exception/GlobalExceptionHandler` for the streaming path | Defense-in-depth addition (Security, AAP §0.9.3/§0.8.1/§0.7.3 L1); the cap is far above any legitimate CardDemo request DTO, so no screen/batch behavior or return code changes. Decision log [D67](./decision-log.md#d67--inbound-http-request-bodies-are-size-bounded-413-payload-too-large) |
 
 ## 7. Non-Paragraph Orchestration: JCL / PROC / CTL / CSD
 

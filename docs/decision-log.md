@@ -97,6 +97,10 @@ its Java target, while this log explains the reasoning behind the design those m
 | [D61](#d61--authenticated-principal-credential-is-transient-and-erasable) | F. Security | Authenticated principal credential is transient and erasable (F-P9-C) | **Intentional improvement** |
 | [D62](#d62--file-status-values-are-validated-as-two-character-codes-and-cics-resp-errors-canonicalize-to-99) | C. Online/Batch | FILE STATUS validated as two-character codes; CICS RESP errors canonicalize to 99 (F-P9-D) | Robustness (extends D15) |
 | [D63](#d63--detail-screen-informational-messages-live-literals-restored-obsolete-literals-documented) | J. Online Parity Corrections | Detail-screen info messages: live literals restored, obsolete documented (F-P9-F) | Behavior preservation (parity) + **documented deviation** |
+| [D64](#d64--batch-external-file-publication-is-fail-closed-gated-on-verified-clean-step-completion) | I. Batch Parity & Robustness | Batch external-file publication is fail-closed, gated on verified clean step completion (F-P5-E) | Robustness (extends D16) |
+| [D65](#d65--standalone-batch-jvms-push-metrics-via-otlp-to-prometheus-online-scrape-path-preserved) | G. Observability & Ops | Standalone batch JVMs push metrics via OTLP to Prometheus; online path stays scrape-only (F-P6-D) | Non-functional addition (extends D23) |
+| [D66](#d66--account-view-ssn-is-rendered-nnn-nn-nnnn-to-match-the-legacy-coactvwc-display-contract) | J. Online Parity Corrections | Account-view SSN rendered `NNN-NN-NNNN` to match the legacy COACTVWC display contract (F-P7-SSNFMT) | Behavior preservation (parity fix) |
+| [D67](#d67--inbound-http-request-bodies-are-size-bounded-413-payload-too-large) | F. Security | Inbound HTTP request bodies are size-bounded, returning 413 (F-P7-JSON) | **Intentional improvement** |
 
 ---
 
@@ -2658,6 +2662,238 @@ decision-log entry" requirement is met for every checkpoint finding, and each is
   the typed-outcome/paged-model equivalents rather than the legacy string. *Mitigation:* the user-facing
   top/bottom-of-page messages are preserved, the caller-visible error outcomes (HTTP status) are preserved,
   and the restored CAVW/CCDL success messages are covered by success-path controller tests.
+
+---
+
+### D64 — Batch external-file publication is fail-closed, gated on verified clean step completion
+
+- **Status:** Accepted
+- **Type:** Robustness (extends [D16](#d16--fixedwidthcodec-preserves-external-file-layouts))
+- **AAP references:** §0.7.2 M2 (external fixed-width file contracts — daily-transaction reject output,
+  statement/report outputs, and the transaction backup file are the real external contracts, preserved by
+  `FixedWidthCodec` + Spring Batch `FlatFileItemWriter`), §0.8.1 (external interface contracts — file
+  record layouts and batch-trigger semantics identical), §0.4.4 (JCL → Spring Batch; `TransactionBackupJob`
+  derives from `TRANBKP`'s IDCAMS `REPRO`), §0.8.3 (observable file-record-layout contracts preserved),
+  §0.9.6 (acceptance: external file contracts byte/semantically preserved), §0.8.2 (Explainability —
+  recorded here)
+- **Decision:** Every batch writer that publishes an external, final-named output file does so
+  **atomically and fail-closed**: the chunk loop writes into a discardable temporary file (`.part` /
+  `.tmp`), and the final-named file is materialized (by rename) in `afterStep` **only when the step is
+  verified to have completed cleanly**. The clean-completion test is centralized in one shared,
+  package-private helper, `batch/writer/BatchFilePublishDecision.isCleanCompletion(stepExecution, ioError)`,
+  which requires **all** of: a non-null `StepExecution`, no I/O error observed while writing (`!ioError`),
+  `stepExecution.getStatus() == BatchStatus.COMPLETED`, and `stepExecution.getFailureExceptions().isEmpty()`.
+  When the test is not satisfied, the temporary file is discarded and **no final-named file is published**.
+  The single helper is applied uniformly to all five publishing writers: `TransactionBackupItemWriter`,
+  `DailyTransactionPostingWriter` (the `DALYREJS` reject file), `StatementItemWriter`,
+  `TransactionReportWriter`, and `InterestTransactionWriter`.
+- **Why:** QA finding **F-P5-E** reproduced a mid-write database-loss race (a TCP proxy in front of
+  PostgreSQL, killed ~0.4 s after the writer opened its staging file). Spring Batch persists the terminal
+  `FAILED` status to the job repository **after** the step's `afterStep` callbacks return; when the database
+  is severed mid-step, that persistence never happens and the `StepExecution` visible inside `afterStep`
+  still reads `STARTED` (or `UNKNOWN`), with an **empty** `failureExceptions` list. The previous guard was
+  **negative** (`status != FAILED`), so in this race it evaluated *true* and published a truncated,
+  final-named partial file (observed: a 175 500-byte `TRANSACT.BKUP.*` of 500 records, and a 239 205-byte
+  `DALYREJS.dat` of 555/2000 rows) with the job still exiting RC=8 — a silent, downstream-consumable partial
+  output. Replacing the negative guard with the **positive** `== COMPLETED` gate closes the race: the only
+  status under which a final-named file is published is the one Spring Batch sets **before** `afterStep` on
+  the success path, so any STARTED / UNKNOWN / FAILED terminal state now discards the staging file instead.
+- **Alternatives:**
+  1. *Keep the negative `!= FAILED` guard and rely on the job repository's terminal status.* **Rejected:**
+     the terminal `FAILED` status is written after `afterStep`, and on database loss it is never written at
+     all, so the negative guard is fail-open precisely in the failure mode that matters.
+  2. *Duplicate an inline positive check in each of the five writers.* **Rejected:** five copies of the
+     same subtle race-sensitive predicate invite drift; a single shared helper is the one choke point every
+     writer routes through, and it is unit-tested in isolation.
+  3. *Publish always and let a downstream step validate record counts.* **Rejected:** this leaks a
+     partial, final-named file into the external contract space (§0.8.1) where a scheduled consumer could
+     ingest it before validation runs; the contract is that a final-named file exists **only** when it is
+     complete.
+- **Rationale:** the external file record layouts are observable contracts the migration must preserve
+  byte-for-byte (§0.7.2 M2, §0.9.6). A file that carries the final name but a truncated body violates that
+  contract as surely as a wrong layout would. Gating publication on verified clean completion makes
+  "final-named file exists" equivalent to "the step wrote every record and committed," which is the
+  guarantee the legacy IDCAMS `REPRO` / sequential-write jobs provided by only producing their output
+  dataset on a zero return code. Centralizing the predicate keeps that guarantee identical across all five
+  writers and traceable to one line of code, satisfying the Explainability rule.
+- **Risk & mitigation:** the gate is deliberately conservative — a step that did real work but did not reach
+  `COMPLETED` now publishes nothing, so a consumer expecting a best-effort partial file would instead find
+  none. *Mitigation:* that is the intended, safer contract (no silent partials); the happy path is unchanged
+  and was regression-guarded at runtime (a clean backup still publishes all 6 300 records to the final name
+  with no `.part` residue), and each writer has a deterministic unit test that drives a STARTED
+  `StepExecution` through `afterStep` and asserts `ExitStatus.FAILED` with **no** final-named file, alongside
+  the preserved success-path tests (which now set `BatchStatus.COMPLETED`). The five writers' unit tests and
+  the five job-level Testcontainers integration tests all pass.
+
+---
+
+### D65 — Standalone batch JVMs push metrics via OTLP to Prometheus (online scrape path preserved)
+
+- **Status:** Accepted
+- **Type:** Non-functional addition (behavior-preserving) — extends [D23](#d23--observability-stack-logs-traces-metrics-dashboard)
+- **AAP references:** §0.8.2 (Observability rule), §0.9.5 (observability verified locally), §0.4.4 / §0.8.1
+  (batch jobs are JCL-derived, run headless), §0.9.6 (acceptance checklist: logs/traces/metrics/health
+  verified locally)
+- **Decision:** Short-lived, headless batch JVMs export their Micrometer metrics by **pushing over OTLP**
+  to Prometheus's built-in OTLP receiver, enabled **only** under a new `batch` Spring profile
+  (`src/main/resources/application-batch.yml`); the online web application is left **scrape-only**
+  (Prometheus scrapes `/actuator/prometheus`). A new BOM-managed dependency
+  `io.micrometer:micrometer-registry-otlp` supplies the push registry, and Prometheus is started with
+  `--web.enable-otlp-receiver`. This completes the **batch half** of the D23 observability contract, which
+  had recorded "Grafana dashboard rendering against live [batch] data" as a tracked next task.
+- **Problem it fixes (F-P6-D):** a batch program is launched with `spring.main.web-application-type=none`,
+  so there is **no HTTP server** for Prometheus to scrape, and the JVM exits within seconds of the job
+  finishing — long before any scrape interval elapses. Under the scrape-only model the three Grafana
+  "Spring Batch (JCL-derived jobs)" panels therefore always showed **"No data."** Push-on-run is the
+  standard telemetry pattern for short-lived jobs (the OTLP analog of a Prometheus Pushgateway); the
+  JVM's final `SpringApplication.exit(context)` (see [D45](#d45--batch-process-exit-code-equals-the-spring-batch-return-code-jcl-condition-code-parity))
+  flushes the registry before exit.
+- **Mechanism (each setting is a verified requirement, not a default):**
+
+| Setting | Value | Why it is required (empirically confirmed) |
+|---------|-------|--------------------------------------------|
+| `management.otlp.metrics.export.enabled` (base/prod) | `false` | Merely adding the OTLP registry auto-enables a push to the **default** `http://localhost:4318` — the OTLP **tracing/Tempo** port — from every JVM including the online app. Disabling it in the base profile keeps the online app scrape-only; the `batch` profile re-enables it. |
+| `management.otlp.metrics.export.enabled` (`batch`) | `true` | Turns on the push only for headless batch runs. |
+| `management.otlp.metrics.export.url` (`batch`) | `${OTLP_METRICS_URL:…/api/v1/otlp/v1/metrics}` | Prometheus's OTLP **metrics** ingest path (distinct from the `/v1/traces` path used for Tempo). |
+| `management.otlp.metrics.export.base-time-unit` (`batch`) | `seconds` | Micrometer's OTLP registry defaults to **milliseconds**, which emits `spring_batch_job_milliseconds_*`; `seconds` makes the pushed series `spring_batch_job_seconds_*`, matching the online scrape naming and the dashboard's existing `_seconds` convention. |
+| `management.otlp.metrics.export.aggregation-temporality` (`batch`) | `CUMULATIVE` | Prometheus's OTLP receiver expects cumulative temporality. |
+| `management.metrics.distribution.percentiles-histogram.spring.batch.{job,step}` (`batch`) | `true` | Emits `_bucket` series so the dashboard can compute a p95 for job/step duration. |
+| Prometheus flag | `--web.enable-otlp-receiver` | Opens the native OTLP receiver in `prom/prometheus:v3.1.0`. |
+
+- **Dashboard consequence (documented deviation).** Every short-lived batch JVM pushes to a **single,
+  bounded, shared set of series** keyed by `service.name=carddemo` (which Prometheus records as the label
+  `job="carddemo"`, the same job the online scrape uses, so the dashboard `$job` variable covers both) with
+  **no per-instance label** (a `service.instance.id` resource attribute was deliberately **not** set — it
+  would create one unbounded series per run). Two facts follow, both verified against live Prometheus, and
+  the four batch panel expressions in `docs/observability/grafana-dashboard.json` were rewritten to match:
+  1. The pushed counters are **non-monotonic across runs** (each run pushes its own `count=1` to the shared
+     series), so `rate()`/`increase()` are meaningless (they returned `+Inf`). The batch panels therefore
+     use **instant, last-run semantics**: p95 via `histogram_quantile(0.95, …_bucket)`, average via
+     `_sum / _count`, and executions via `_count` grouped by `spring_batch_job_status`. A batch panel shows
+     the **most recent** run per job/step name, not a per-execution time series — the accepted trade-off for
+     bounded cardinality.
+  2. OTLP→Prometheus does **not** emit a `_max` gauge and the pushed series carry **no `instance` label**, so
+     the two former "duration (max)" panels became p95-over-`_bucket` panels and the
+     `instance=~"$instance"` matcher was dropped from all four batch expressions.
+- **Alternatives considered:**
+  1. *Prometheus Pushgateway.* **Rejected:** an extra always-on component to run and secure; the OTLP
+     receiver is already built into Prometheus 3.x and reuses the very OTLP transport the app already uses
+     for traces (D23), so no new moving part is introduced.
+  2. *Keep scrape-only and hold the batch JVM open for one scrape (or add a `--web` sidecar).* **Rejected:**
+     timing-fragile (a job faster than the scrape interval is missed) and it contradicts the batch execution
+     model — the JVM must exit with the job's return code the moment the job ends (D45).
+  3. *Log metrics only.* **Rejected:** not queryable in Grafana; fails the D23 goal of dashboard rendering.
+- **Rationale:** this is the smallest change that makes headless batch runs observable in the existing
+  Grafana dashboard while leaving the online metrics path **byte-for-byte unchanged**, and it reuses the
+  OTLP transport already chosen in D23. It adds no business logic and changes no batch return code.
+- **Risk & mitigation:** (a) a misconfigured `OTLP_METRICS_URL`, or omitting the `batch` profile, silently
+  drops batch metrics — *mitigated* by the documented launch recipe (`--spring.profiles.active=…,batch`) in
+  the onboarding/performance docs and by runtime verification. (b) The shared-series model surfaces only the
+  latest run per job — *mitigated* by documenting it here and keeping cardinality bounded (one series per
+  job/step name). **Verified locally:** two standalone runs (`transactionBackupJob` RC=0 and
+  `interestCalculationJob parmDate=2022071800` RC=0) both appear in Prometheus as
+  `spring_batch_job_seconds_count{job="carddemo",spring_batch_job_status="COMPLETED"}` and render in all
+  three Grafana batch panels (job p95/avg duration, executions-by-status, step p95 duration); the online
+  base/default profile continues to serve `/actuator/prometheus` (HTTP 200, `jvm_*`/`hikaricp_*`/
+  `http_server_requests_*` families present) with **no** OTLP push started. Full context boot
+  (`CardDemoApplicationTests`) plus the observability unit tests remain green.
+
+---
+
+### D66 — Account-view SSN is rendered NNN-NN-NNNN to match the legacy COACTVWC display contract
+
+- **Status:** Accepted
+- **Type:** Behavior preservation (parity fix)
+- **AAP references:** §0.7.1 H2 (BMS field-level UI contract — the on-screen SSN format is part of the
+  observable screen contract), §0.5.3 (each BMS symbolic copybook → request/response DTO preserving field
+  names/lengths/edit rules), §0.8.3 (public/observable contracts preserved), §0.2.2 (DATA DIVISION field
+  semantics preserved), §0.8.2 (Explainability — deviations/corrections recorded here)
+- **Decision:** QA finding F-P7-SSNFMT observed the Account View screen (CICS `CAVW` / program
+  `COACTVWC`) returning the customer SSN as raw nine digits (`020973888`). The legacy program formats the
+  field for display: in `legacy/cbl/COACTVWC.cbl` the map field `ACSTSSNO` (`X(12)`) is built with
+  `STRING CUST-SSN(1:3) '-' CUST-SSN(4:2) '-' CUST-SSN(6:4)`, while the raw nine-digit `MOVE` into the same
+  field is commented out. The Java `mapper/AccountMapper.toViewResponse` now applies the identical
+  `NNN-NN-NNNN` formatting via a private `formatSsnDisplay` helper (which reuses the existing `splitSsn`
+  3/2/4 decomposition), so the account-view `ssn` field returns `020-97-3888` — byte-for-byte the legacy
+  on-screen contract for that 12-character field.
+- **Scope of change (deliberately narrow):** ONLY the read-only Account View response path is touched. The
+  Account Update screen (`CAUP` / `COACTUPC`), whose symbolic map exposes the SSN as three separate input
+  sub-fields, is unchanged — `AccountMapper.toUpdateResponse` still decomposes into `ssnPart1/2/3` and
+  `fromRequest`/`composeSsn` still reassembles the stored nine-digit value. The persisted
+  `customer.cust_ssn` is unchanged (still nine digits); only the view *presentation* is formatted.
+- **Why:** parity is defined by what the legacy screen actually presents. COACTVWC's live emit path is the
+  dash-formatted `STRING`, not the commented-out raw `MOVE`, so returning raw digits was the divergence;
+  formatting the view field restores the real contract.
+- **Alternatives:**
+  1. *Document the raw digits as an accepted deviation and change no code.* **Rejected:** this is a genuine
+     field-contract parity gap against the live legacy emit path; the fix is a localized presentation
+     change with no downside.
+  2. *Store the formatted value in the database.* **Rejected:** would corrupt the data model (`CUST-SSN` is
+     nine digits), break the update round-trip, and mislead any numeric consumer; formatting is strictly a
+     presentation concern.
+- **Rationale:** the account-view DTO is a display contract (H2); its SSN field mirrors the 12-character
+  `ACSTSSNO` map field verbatim, hyphens included, while the value stays masked in the record's
+  `toString()` and the stored value is untouched.
+- **Risk & mitigation:** a consumer that parsed the view SSN as nine contiguous digits would now see
+  hyphens. *Mitigation:* the field is documented as the `X(12)` display format matching the legacy map; the
+  update path (the only write path) still uses the unformatted parts; `AccountMapperTest` and
+  `AccountViewControllerTest` assert the `NNN-NN-NNNN` shape.
+- **Verified locally:** `POST /api/v1/accounts/view` for account 1 as `ADMIN001` returns
+  `"ssn":"020-97-3888"`, cross-checked against the seed value `customer.cust_ssn = 020973888`; the mapper
+  and web-slice tests are green.
+
+---
+
+### D67 — Inbound HTTP request bodies are size-bounded (413 Payload Too Large)
+
+- **Status:** Accepted
+- **Type:** **Intentional improvement** (defense-in-depth); non-functional addition
+- **AAP references:** §0.9.3 (Security validation criteria), §0.8.1 (production-readiness / security
+  constraints), §0.7.3 L1 (security posture around the intentionally-vulnerable legacy demo), §0.5.3 (the
+  online REST surface re-expressing the CICS programs), §0.3.3 (no feature expansion — this adds a
+  guardrail, not a capability), §0.8.2 (Explainability)
+- **Decision:** QA finding F-P7-JSON observed that a JSON write endpoint accepted a 25 MiB request body
+  with no upper bound (HTTP 200 path), so a single oversized request could force the server to buffer an
+  arbitrarily large body into memory before Bean Validation ran. A new
+  `config/RequestBodySizeLimitFilter` (`@Order(HIGHEST_PRECEDENCE + 1)`, immediately after the
+  observability `CorrelationIdFilter`) bounds every request body at `carddemo.web.max-request-body-bytes`
+  (default 1 MiB). It applies two complementary checks: (a) a **fast path** rejecting a declared
+  `Content-Length` already over the cap before any body byte is read, and (b) a **streaming path** that
+  wraps the request so a chunked or length-understated body is counted as it is read and throws
+  `RequestBodyTooLargeException` (an `IOException`) the moment the cap is crossed. Both surface as
+  `413 Payload Too Large` in the standard RFC 7807 `application/problem+json` shape carrying the correlation
+  ID — the fast path writes it directly; the streaming path's `IOException` is wrapped by the HTTP message
+  converter into `HttpMessageNotReadableException`, which `exception/GlobalExceptionHandler.handleNotReadable`
+  now maps to 413 (instead of its usual 400) when it finds `RequestBodyTooLargeException` in the cause
+  chain. `server.tomcat.max-swallow-size` (2 MB) bounds how much of an aborted oversized body the container
+  drains after the 413 is sent.
+- **No behavior/parity impact:** the 1 MiB cap is orders of magnitude larger than any legitimate CardDemo
+  DTO (an account update or transaction add is a few hundred bytes), so no in-scope screen or batch trigger
+  is affected and no COBOL business rule or return code changes. This is a guardrail, not a new feature, so
+  the "no feature expansion" boundary (§0.3.3) is respected.
+- **Why:** an unbounded request body is a denial-of-service vector with no legitimate use in this
+  application; a bounded body cap that returns the correct 413 is standard production hardening and closes
+  the finding.
+- **Alternatives:**
+  1. *Rely on Tomcat `maxPostSize`.* **Rejected:** it bounds only form / `x-www-form-urlencoded` parameter
+     parsing, not a raw JSON `@RequestBody`, so it would not have closed the finding.
+  2. *Use `spring.servlet.multipart.max-request-size`.* **Rejected:** applies only to multipart uploads; the
+     finding is raw JSON.
+  3. *A hard-coded global limit with no property.* **Rejected:** the Explainability/onboarding rules favor an
+     externally-tunable, documented knob (`CARDDEMO_WEB_MAX_REQUEST_BODY_BYTES`).
+- **Rationale:** the filter runs before Spring Security so an oversized body is rejected as early as
+  possible (an unauthenticated oversized POST returns 413, not 401), it reuses the existing RFC 7807
+  problem+json contract and correlation-ID propagation the rest of the API uses, and it never reads,
+  buffers, copies, or logs body content — it counts bytes only — so no sensitive data can leak through it.
+- **Risk & mitigation:** a future endpoint legitimately needing larger bodies would require the cap raised.
+  *Mitigation:* `carddemo.web.max-request-body-bytes` is environment-overridable and documented inline in
+  `application.yml`.
+- **Verified locally:** a 2 MiB body → 413 `application/problem+json` (`title:"Payload Too Large"`,
+  `status:413`, `instance`, `correlationId`) **both** with and without auth (pre-security rejection
+  confirmed — 413, not 401); a chunked 2 MiB body with no `Content-Length` → 413 via the streaming wrapper
+  (logged by `GlobalExceptionHandler` as "Rejected oversized request body while reading"); a normal small
+  body → 200 (no regression); no 5xx/stack traces emitted. `RequestBodySizeLimitFilterTest` (4 tests) and
+  `GlobalExceptionHandlerTest#mapsOversizedBodyNotReadableTo413` are green under the zero-warning build.
 
 ---
 

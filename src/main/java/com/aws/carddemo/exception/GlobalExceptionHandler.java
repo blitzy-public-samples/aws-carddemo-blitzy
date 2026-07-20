@@ -86,6 +86,10 @@ import jakarta.validation.ConstraintViolationException;
  *           response carries the mandatory {@code Allow} header)</td></tr>
  *   <tr><td>{@link HttpMessageNotReadableException}</td><td>400 Bad&nbsp;Request</td>
  *       <td>Spring MVC unreadable/malformed or missing request body (client error)</td></tr>
+ *   <tr><td>{@link HttpMessageNotReadableException} wrapping
+ *           {@link RequestBodyTooLargeException}</td><td>413 Payload&nbsp;Too&nbsp;Large</td>
+ *       <td>request body exceeded the configured size limit while being read
+ *           (streaming path of {@code RequestBodySizeLimitFilter}; client error)</td></tr>
  *   <tr><td>{@link HttpMediaTypeNotSupportedException}</td><td>415 Unsupported&nbsp;Media&nbsp;Type</td>
  *       <td>Spring MVC unsupported request {@code Content-Type} (client error)</td></tr>
  *   <tr><td>{@link FileStatusException} (base)</td><td>500 Internal&nbsp;Server&nbsp;Error</td>
@@ -406,14 +410,57 @@ public class GlobalExceptionHandler {
      * a fixed, non-revealing detail is returned and the signal is logged at
      * {@code WARN} with no stack trace and without the body content.</p>
      *
+     * <p><strong>Oversized body.</strong> When the request body is rejected for
+     * exceeding the configured size limit while it is being read (the streaming path
+     * of {@code RequestBodySizeLimitFilter}), the filter's
+     * {@link RequestBodyTooLargeException} &mdash; an {@link java.io.IOException} &mdash;
+     * is wrapped by the HTTP message converter into this
+     * {@link HttpMessageNotReadableException}. That case is not a malformed body, so it
+     * is reported as {@code 413 Payload Too Large} (matching the fast-path rejection the
+     * same filter writes when the declared {@code Content-Length} already exceeds the
+     * limit) by detecting {@link RequestBodyTooLargeException} anywhere in the cause
+     * chain (QA finding F-P7-JSON, decision log D67).</p>
+     *
      * @param ex the not-readable signal raised by the HTTP message converter
-     * @return a {@link ProblemDetail} with status 400 and title "Malformed Request"
+     * @return a {@link ProblemDetail} with status 413 and title "Payload Too Large" when
+     *         the cause is an oversized body, otherwise status 400 and title
+     *         "Malformed Request"
      */
     @ExceptionHandler(HttpMessageNotReadableException.class)
     public ProblemDetail handleNotReadable(HttpMessageNotReadableException ex) {
+        if (containsBodyTooLarge(ex)) {
+            log.warn("Rejected oversized request body while reading: {}", ex.getClass().getSimpleName());
+            return problem(HttpStatus.PAYLOAD_TOO_LARGE, "Payload Too Large",
+                    "The request body exceeds the maximum permitted size.");
+        }
         log.warn("Malformed request body: {}", ex.getClass().getSimpleName());
         return problem(HttpStatus.BAD_REQUEST, "Malformed Request",
                 "The request body is missing or malformed.");
+    }
+
+    /**
+     * Walks the cause chain of the given throwable looking for a
+     * {@link RequestBodyTooLargeException} raised by {@code RequestBodySizeLimitFilter}
+     * while the request body was being read. The walk is guarded against a
+     * self-referential cause so it always terminates.
+     *
+     * @param ex the throwable whose cause chain is inspected (may itself be the target type)
+     * @return {@code true} if a {@link RequestBodyTooLargeException} appears anywhere in the
+     *         chain, {@code false} otherwise
+     */
+    private static boolean containsBodyTooLarge(Throwable ex) {
+        Throwable cause = ex;
+        while (cause != null) {
+            if (cause instanceof RequestBodyTooLargeException) {
+                return true;
+            }
+            Throwable next = cause.getCause();
+            if (next == cause) {
+                break;
+            }
+            cause = next;
+        }
+        return false;
     }
 
     /**

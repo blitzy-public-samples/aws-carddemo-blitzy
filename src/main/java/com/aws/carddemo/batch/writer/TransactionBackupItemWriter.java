@@ -499,15 +499,20 @@ public class TransactionBackupItemWriter
      * generation-style name (on success) or <strong>deleting</strong> it (on any failure), so a
      * consumer never observes a final-named partial file (QA finding F-P5-E).
      *
-     * <p>The step is treated as failed when the {@link StepExecution} status is
-     * {@link BatchStatus#FAILED} (for example the reader threw because the database connection was
-     * terminated mid-backup) or when the stream cannot be flushed/closed cleanly. In either case the
-     * staging file is discarded and {@link ExitStatus#FAILED} (the return-code-8 analog) is returned.
-     * On a clean run the staging file is renamed to the final path with an atomic move (falling back
-     * to a same-directory rename only where the filesystem cannot perform an atomic move), and the
-     * step's existing {@link ExitStatus} is returned unchanged so a clean run maps to return code
-     * 0. All per-step state is cleared in a {@code finally} block so the singleton bean carries no
-     * state between runs.</p>
+     * <p>The publish is gated <strong>fail-closed</strong> on a positively-verified clean completion
+     * ({@link BatchFilePublishDecision#isCleanCompletion}): the staging file is renamed to its final
+     * name only when the step status is {@link BatchStatus#COMPLETED}, no failure exception was
+     * recorded, and the stream flushed/closed without I/O error. Every other outcome discards the
+     * staging file and returns {@link ExitStatus#FAILED} (the return-code-8 analog) &mdash; including
+     * an explicit {@code FAILED} status and, critically, the mid-write connection-loss race in which
+     * the reader threw because the database connection was terminated: in that race the durable
+     * {@code FAILED} status is persisted only <em>after</em> {@code afterStep} (and then fails on the
+     * dead connection), so at this point the in-memory status is still {@code STARTED}; a negative
+     * {@code != FAILED} gate would have wrongly published the partial file. On a clean run the atomic
+     * move (falling back to a same-directory rename only where the filesystem cannot perform an atomic
+     * move) publishes the final file and the step's existing {@link ExitStatus} is returned unchanged
+     * so a clean run maps to return code 0. All per-step state is cleared in a {@code finally} block
+     * so the singleton bean carries no state between runs.</p>
      *
      * @param stepExecution the current step execution; never {@code null}
      * @return {@link ExitStatus#FAILED} if the step failed or the backup could not be closed and
@@ -519,7 +524,7 @@ public class TransactionBackupItemWriter
         final Writer target = this.writer;
         final Path temp = this.tempFile;
         final Path published = this.backupFile;
-        boolean failed = stepExecution.getStatus() == BatchStatus.FAILED;
+        boolean ioError = false;
         try {
             if (target != null) {
                 try {
@@ -527,17 +532,25 @@ public class TransactionBackupItemWriter
                     target.close();
                 } catch (IOException ex) {
                     LOGGER.error("Failed to flush/close transaction backup staging file {}", temp, ex);
-                    failed = true;
+                    ioError = true;
                 }
             }
+            // Fail-CLOSED publish gate (QA finding F-P5-E): publish ONLY on a positively-verified
+            // clean completion (step status COMPLETED, no failure exceptions, no I/O error). On the
+            // mid-write connection-loss race the step status is still STARTED at afterStep time
+            // (FAILED is persisted afterwards and itself fails on the dead DB), so the previous
+            // negative "status == FAILED" gate was fail-open and wrongly renamed the partial staging
+            // file to its final name. See BatchFilePublishDecision.
+            final boolean clean = BatchFilePublishDecision.isCleanCompletion(stepExecution, ioError);
             if (temp == null) {
                 // beforeStep never opened a staging file; nothing to publish or discard.
-                return failed ? ExitStatus.FAILED : stepExecution.getExitStatus();
+                return clean ? stepExecution.getExitStatus() : ExitStatus.FAILED;
             }
-            if (failed) {
+            if (!clean) {
                 deleteQuietly(temp);
-                LOGGER.error("Transaction backup failed; staging file {} discarded and no backup was "
-                        + "published (no partial final-named file left behind).", temp);
+                LOGGER.error("Transaction backup did not complete cleanly (status={}); staging file {} "
+                        + "discarded and no backup was published (no partial final-named file left "
+                        + "behind).", stepExecution.getStatus(), temp);
                 return ExitStatus.FAILED;
             }
             try {

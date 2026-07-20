@@ -692,7 +692,9 @@ class AccountMapperTest {
         void sensitivePresentInViewResponse() {
             AccountViewResponse response =
                     mapper.toViewResponse(sampleAccount(), sampleCustomer(), null, null, NOW);
-            assertThat(response.ssn()).isEqualTo("123456789");
+            // COACTVWC presents the SSN dash-formatted NNN-NN-NNNN (raw 123456789 -> 123-45-6789);
+            // see AccountMapper#formatSsnDisplay and decision log D66.
+            assertThat(response.ssn()).isEqualTo("123-45-6789");
             assertThat(response.dateOfBirth()).isEqualTo("1985-06-20");
             assertThat(response.governmentId()).isEqualTo("G-ABC-1234567");
         }

@@ -157,6 +157,8 @@ class TransactionBackupItemWriterTest {
 
         writer.beforeStep(stepExecution);
         writer.write(Chunk.of(sampleTransaction()));
+        // A clean run reaches afterStep already marked COMPLETED (see runEmptyBackup javadoc).
+        stepExecution.setStatus(BatchStatus.COMPLETED);
         writer.afterStep(stepExecution);
 
         List<Path> files = listBackupFiles();
@@ -199,6 +201,39 @@ class TransactionBackupItemWriterTest {
     }
 
     /**
+     * F-P5-E (the exact production race): when the datasource drops mid-step, the framework may run
+     * {@code afterStep} while the persisted status is still the in-flight {@link BatchStatus#STARTED}
+     * value, because it could not itself transition the row to {@code FAILED} against the dead
+     * database. In that window {@link StepExecution#getFailureExceptions()} is also still empty. The
+     * superseded fail-open gate ({@code status != FAILED}) treated this as success and published a
+     * truncated final-named backup that a downstream restore could silently pick up. The fail-closed
+     * gate ({@code status == COMPLETED}) must publish nothing and leave no staging file.
+     */
+    @Test
+    @DisplayName("F-P5-E: a step still STARTED at afterStep (status-persist race) publishes no backup file")
+    void stepStillStartedAtAfterStepPublishesNoBackupFile() throws Exception {
+        TransactionBackupItemWriter writer =
+                new TransactionBackupItemWriter(backupDir.toString(), FILE_PREFIX);
+        StepExecution stepExecution = jobStep(55L, 66L);
+
+        writer.beforeStep(stepExecution);
+        writer.write(Chunk.of(sampleTransaction()));
+        // Reproduce the observed race precisely: status is STARTED (not FAILED) and there are no
+        // recorded failure exceptions when afterStep runs.
+        stepExecution.setStatus(BatchStatus.STARTED);
+        assertThat(stepExecution.getFailureExceptions())
+                .as("precondition: the framework has not yet recorded a failure exception")
+                .isEmpty();
+
+        ExitStatus exit = writer.afterStep(stepExecution);
+
+        assertThat(exit).isEqualTo(ExitStatus.FAILED);
+        assertThat(listBackupFiles())
+                .as("no final-named or staging backup file may be published for a non-COMPLETED step")
+                .isEmpty();
+    }
+
+    /**
      * F-P12: a transaction whose text field carries characters outside the single-byte output charset
      * (an omega and a supplementary emoji) must not abort the ISO-8859-1 backup writer. The codec
      * replaces each offending code unit with {@code '?'} before the record is written, so the step
@@ -217,6 +252,8 @@ class TransactionBackupItemWriterTest {
 
         writer.beforeStep(stepExecution);
         writer.write(Chunk.of(unicodeTxn));
+        // A clean run reaches afterStep already marked COMPLETED (see runEmptyBackup javadoc).
+        stepExecution.setStatus(BatchStatus.COMPLETED);
         ExitStatus exit = writer.afterStep(stepExecution);
 
         // The writer never aborted on an unmappable character.
@@ -240,14 +277,22 @@ class TransactionBackupItemWriterTest {
     // -------------------------------------------------------------------------
 
     /**
-     * Runs an empty backup step (open then close, no records) for the given execution, producing one
-     * output file whose name is what these tests assert on.
+     * Runs a <em>clean</em> empty backup step (open then close, no records) for the given execution,
+     * producing one output file whose name is what these tests assert on.
+     *
+     * <p>The step is transitioned to {@link BatchStatus#COMPLETED} before {@code afterStep} to mirror
+     * a real successful launch: the framework's {@code AbstractStep} upgrades the persisted status to
+     * {@code COMPLETED} <em>before</em> invoking step-execution listeners on the success path. The
+     * fail-closed publish gate introduced for F-P5-E ({@link BatchFilePublishDecision#isCleanCompletion})
+     * publishes the final-named backup only for a {@code COMPLETED} step, so a fixture that left the
+     * default {@code STARTING} status would (correctly) publish nothing.</p>
      *
      * @param writer        the writer under test
      * @param stepExecution the step execution driving the filename
      */
     private static void runEmptyBackup(TransactionBackupItemWriter writer, StepExecution stepExecution) {
         writer.beforeStep(stepExecution);
+        stepExecution.setStatus(BatchStatus.COMPLETED);
         writer.afterStep(stepExecution);
     }
 

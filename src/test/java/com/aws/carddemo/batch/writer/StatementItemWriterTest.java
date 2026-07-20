@@ -509,6 +509,35 @@ class StatementItemWriterTest {
         assertThat(anyFilesInOutputDir()).isEmpty();
     }
 
+    /**
+     * F-P5-E (the exact production race): when the datasource drops mid-step, {@code afterStep} can
+     * run while the persisted status is still the in-flight {@link BatchStatus#STARTED} value —
+     * the framework could not itself transition the row to {@code FAILED} against the dead database —
+     * and {@link StepExecution#getFailureExceptions()} is still empty. The superseded fail-open gate
+     * ({@code status != FAILED}) published truncated statement files here; the fail-closed gate
+     * ({@code status == COMPLETED}) must publish nothing and remove the temporary work files.
+     */
+    @Test
+    @DisplayName("F-P5-E: a step still STARTED at afterStep (status-persist race) publishes no statement files")
+    void startedStepPublishesNothingAndCleansUp() throws Exception {
+        StatementItemWriter writer = newWriter();
+        StepExecution se = newStep();
+        writer.beforeStep(se);
+        writer.write(Chunk.of(doc(List.of("A", "B"), List.of("H1", "H2"))));
+        // Reproduce the race: status is STARTED (not FAILED) and no failure exception was recorded.
+        se.setStatus(BatchStatus.STARTED);
+        assertThat(se.getFailureExceptions())
+                .as("precondition: the framework has not yet recorded a failure exception")
+                .isEmpty();
+
+        assertThat(writer.afterStep(se)).isEqualTo(ExitStatus.FAILED);
+        // No partial statement file was published for the non-COMPLETED run.
+        assertThat(Files.exists(textPath())).isFalse();
+        assertThat(Files.exists(htmlPath())).isFalse();
+        assertThat(leftoverTempFiles()).isEmpty();
+        assertThat(anyFilesInOutputDir()).isEmpty();
+    }
+
     // ------------------------------------------------------------------------
     // Case 15 — F20: an open failure leaves no partial final file and no orphaned temp
     // ------------------------------------------------------------------------
@@ -572,8 +601,21 @@ class StatementItemWriterTest {
         return new StatementItemWriter(tempDir.toString(), TEXT_FILE, HTML_FILE);
     }
 
+    /**
+     * Builds a {@link StepExecution} already marked {@link BatchStatus#COMPLETED}, mirroring the
+     * state a successful step carries when its listeners run: Spring Batch's {@code AbstractStep}
+     * upgrades the persisted status to {@code COMPLETED} <em>before</em> invoking {@code afterStep}
+     * on the success path. The fail-closed publish gate added for F-P5-E
+     * ({@link BatchFilePublishDecision#isCleanCompletion}) publishes the statement files only for a
+     * {@code COMPLETED} step, so success-path fixtures must present that status; the failure and
+     * status-race tests deliberately override it (FAILED / STARTED) to prove nothing is published.
+     *
+     * @return a step execution whose status is {@code COMPLETED}
+     */
     private static StepExecution newStep() {
-        return MetaDataInstanceFactory.createStepExecution();
+        StepExecution stepExecution = MetaDataInstanceFactory.createStepExecution();
+        stepExecution.setStatus(BatchStatus.COMPLETED);
+        return stepExecution;
     }
 
     private static StatementProcessor.StatementDocument doc(List<String> textLines, List<String> htmlLines) {

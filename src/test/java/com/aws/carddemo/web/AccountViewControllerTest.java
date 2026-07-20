@@ -149,6 +149,8 @@ class AccountViewControllerTest {
 
     // Sensitive fixture values (present on this display screen for legacy parity).
     private static final String STUB_SSN = "123456789";
+    /** The stored SSN as presented on the view screen: dash-formatted NNN-NN-NNNN (COACTVWC parity, decision log D66). */
+    private static final String STUB_SSN_DISPLAY = "123-45-6789";
     private static final String STUB_DOB = "1985-06-15";
     private static final String STUB_GOVT_ID = "GOVID1234567890";
 
@@ -416,8 +418,9 @@ class AccountViewControllerTest {
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(toJson(new AccountViewRequest(ACCOUNT_ID, PfKeyAction.ENTER))))
                 .andExpect(status().isOk())
-                // Displayed for legacy parity -> present with the exact stub values.
-                .andExpect(jsonPath("$.ssn").value(STUB_SSN))
+                // Displayed for legacy parity -> present with the exact stub values
+                // (SSN dash-formatted NNN-NN-NNNN per COACTVWC; decision log D66).
+                .andExpect(jsonPath("$.ssn").value(STUB_SSN_DISPLAY))
                 .andExpect(jsonPath("$.dateOfBirth").value(STUB_DOB))
                 .andExpect(jsonPath("$.governmentId").value(STUB_GOVT_ID))
                 // This screen has no password and no CVV field.

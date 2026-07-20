@@ -555,8 +555,12 @@ public class StatementItemWriter
         stepExecution.getExecutionContext().putLong("statement.textRecordCount", textRecordCount);
         stepExecution.getExecutionContext().putLong("statement.htmlRecordCount", htmlRecordCount);
 
-        // Publish only a fully successful run. Any prior I/O error or a FAILED step must NOT publish.
-        final boolean succeeded = !ioError && stepExecution.getStatus() != BatchStatus.FAILED;
+        // Fail-CLOSED publish gate (QA finding F-P5-E): publish BOTH files only on a positively-
+        // verified clean completion (status COMPLETED, no failure exceptions, no I/O error). On the
+        // mid-write connection-loss race the status is still STARTED at afterStep time, so the previous
+        // negative "status != FAILED" gate was fail-open and could publish a partial statement file.
+        // See BatchFilePublishDecision.
+        final boolean succeeded = BatchFilePublishDecision.isCleanCompletion(stepExecution, ioError);
         if (succeeded) {
             try {
                 // Atomic publish (text first, then HTML): a reader sees either the fully written new
@@ -584,8 +588,10 @@ public class StatementItemWriter
                 + "{} HTML record(s) (HTMLFILE={}).",
                 documentCount, textRecordCount, textPath, htmlRecordCount, htmlPath);
 
-        // Return-code mapping: statements have NO reject path. I/O error or failed step -> RC 8; else RC 0.
-        if (ioError || stepExecution.getStatus() == BatchStatus.FAILED) {
+        // Return-code mapping: statements have NO reject path. A non-clean run (F-P5-E: the
+        // connection-loss race, an explicit FAILED, or a publish failure that set ioError) -> RC 8;
+        // a verified-clean completion -> RC 0.
+        if (!succeeded || ioError) {
             return ExitStatus.FAILED;
         }
         return ExitStatus.COMPLETED;

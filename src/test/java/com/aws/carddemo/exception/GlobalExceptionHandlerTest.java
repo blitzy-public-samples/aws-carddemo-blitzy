@@ -478,6 +478,26 @@ class GlobalExceptionHandlerTest {
     }
 
     /**
+     * When the unreadable-body signal wraps a {@link RequestBodyTooLargeException} &mdash; the
+     * streaming path of {@code RequestBodySizeLimitFilter}, where the body was rejected for
+     * exceeding the configured size limit while being read &mdash; the same handler reports HTTP
+     * {@code 413 Payload Too Large} rather than {@code 400}, matching the fast-path rejection the
+     * filter writes for an oversized declared {@code Content-Length}. The detail is a fixed,
+     * non-revealing constant (QA finding F-P7-JSON, decision log D67).
+     */
+    @Test
+    void mapsOversizedBodyNotReadableTo413() {
+        HttpMessageNotReadableException ex = Mockito.mock(HttpMessageNotReadableException.class);
+        Mockito.when(ex.getCause()).thenReturn(new RequestBodyTooLargeException(1024L));
+
+        ProblemDetail problem = handler.handleNotReadable(ex);
+
+        assertThat(problem.getStatus()).isEqualTo(HttpStatus.PAYLOAD_TOO_LARGE.value());
+        assertThat(problem.getTitle()).isEqualTo("Payload Too Large");
+        assertThat(problem.getDetail()).isEqualTo("The request body exceeds the maximum permitted size.");
+    }
+
+    /**
      * An unsupported request {@code Content-Type} maps to HTTP 415 with a fixed,
      * non-revealing detail (the offending content type is not echoed). This is the
      * executable proof that {@link HttpMediaTypeNotSupportedException} is no longer

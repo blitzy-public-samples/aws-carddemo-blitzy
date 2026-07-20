@@ -230,6 +230,21 @@ services:
   prometheus:
     image: prom/prometheus:v3.1.0
     restart: unless-stopped
+    # The image default command consumes the mounted config; we override it ONLY
+    # to add `--web.enable-otlp-receiver` (Prometheus 3.x native OTLP ingest at
+    # /api/v1/otlp/v1/metrics) so the short-lived STANDALONE batch JVMs - which
+    # serve no /actuator/prometheus endpoint to scrape - can PUSH their
+    # spring_batch_* metrics here on shutdown (QA finding F-P6-D; app `batch`
+    # profile, decision log D65). The remaining flags reproduce the image's
+    # defaults verbatim (config path matches the mounted config; storage path
+    # matches the carddemo-prometheus-data volume) so scraping behavior for the
+    # online app is UNCHANGED.
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.path=/prometheus"
+      - "--web.console.libraries=/usr/share/prometheus/console_libraries"
+      - "--web.console.templates=/usr/share/prometheus/consoles"
+      - "--web.enable-otlp-receiver"
     configs:
       - source: prometheus_config
         target: /etc/prometheus/prometheus.yml

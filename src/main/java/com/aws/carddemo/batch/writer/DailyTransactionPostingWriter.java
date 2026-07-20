@@ -566,7 +566,14 @@ public class DailyTransactionPostingWriter
         // the run completed cleanly (no reject-file I/O error AND the step did not fail for any other
         // reason). On any failure the temp is discarded and the previous file is left untouched, so a
         // failed run never destroys a prior good output and never leaves a partial final file.
-        boolean cleanRun = !ioError && stepExecution.getStatus() != BatchStatus.FAILED;
+        // Fail-CLOSED publish gate (QA finding F-P5-E): publish the reject file ONLY on a
+        // positively-verified clean completion (status COMPLETED, no failure exceptions, no reject-file
+        // I/O error). COMPLETED also covers the RC-4 "completed with rejects" case (the warning lives
+        // in the ExitStatus code string below, not in the BatchStatus). On the mid-write
+        // connection-loss race the status is still STARTED at afterStep time, so the previous negative
+        // "status != FAILED" gate was fail-open and wrongly published a partial DALYREJS.dat. See
+        // BatchFilePublishDecision.
+        boolean cleanRun = BatchFilePublishDecision.isCleanCompletion(stepExecution, ioError);
         if (rejectTempPath != null && rejectFinalPath != null) {
             if (cleanRun) {
                 try {
@@ -590,8 +597,10 @@ public class DailyTransactionPostingWriter
         log.info("Transactions processed: {}", transactionCount);
         log.info("Transactions rejected: {}", rejectCount);
 
-        // Return-code mapping (L229-L231).
-        if (ioError || stepExecution.getStatus() == BatchStatus.FAILED) {
+        // Return-code mapping (L229-L231). Keyed off the same fail-closed clean-completion signal
+        // (F-P5-E): a non-clean run (including the connection-loss race and a publish failure that set
+        // ioError) maps to RC 8, never to RC 0/4.
+        if (!cleanRun || ioError) {
             return ExitStatus.FAILED;                       // RC 8
         }
         if (rejectCount > 0) {

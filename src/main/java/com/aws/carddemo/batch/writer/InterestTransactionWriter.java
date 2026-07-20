@@ -647,11 +647,19 @@ public class InterestTransactionWriter
         final Path temp = this.tempFile;
         final Path published = this.outputFile;
 
+        // Fail-CLOSED gate (QA finding F-P5-E): finalize the LAST account and publish the SYSTRAN file
+        // ONLY on a positively-verified clean completion (status COMPLETED, no failure exceptions, no
+        // I/O error). On the mid-write connection-loss race the status is still STARTED at afterStep
+        // time (FAILED is persisted afterwards and itself fails on the dead DB), so the previous
+        // negative "== FAILED" gate was fail-open. Gating the last-account DB finalize on the same
+        // signal also prevents it from running against a failing step. See BatchFilePublishDecision.
+        boolean clean = BatchFilePublishDecision.isCleanCompletion(stepExecution, ioError);
+
         // Finalize the LAST account (documented deviation). afterStep runs OUTSIDE the chunk
         // transaction, so run the DB work in a programmatic transaction. If it throws (genuine missing
         // account), discard the staging file and propagate so the step is FAILED (batch RC 8).
         try {
-            if (currentAcctId != null) {
+            if (clean && currentAcctId != null) {
                 final Long acctToFinalize = currentAcctId;
                 final BigDecimal total = totalInterest;
                 transactionTemplate.executeWithoutResult(
@@ -670,18 +678,20 @@ public class InterestTransactionWriter
         // Flush and close the staging stream (null-guard: the open may have failed).
         closeWriterQuietly();
 
-        final boolean failed = ioError || stepExecution.getStatus() == BatchStatus.FAILED;
+        // Re-evaluate the fail-closed gate AFTER close (a close failure sets ioError).
+        clean = BatchFilePublishDecision.isCleanCompletion(stepExecution, ioError);
         try {
             if (temp == null) {
                 // beforeStep never opened a staging file; nothing to publish or discard.
                 log.info("Interest calculation writer finished: {} interest record(s) written, "
                         + "{} account(s) finalized.", recordsWritten, accountsFinalized);
-                return failed ? ExitStatus.FAILED : ExitStatus.COMPLETED;
+                return clean ? ExitStatus.COMPLETED : ExitStatus.FAILED;
             }
-            if (failed) {
+            if (!clean) {
                 deleteQuietly(temp);
-                log.error("Interest calculation failed; staging file {} discarded and no SYSTRAN file "
-                        + "was published (no partial final-named file left behind).", temp);
+                log.error("Interest calculation did not complete cleanly; staging file {} discarded "
+                        + "and no SYSTRAN file was published (no partial final-named file left "
+                        + "behind).", temp);
                 return ExitStatus.FAILED;
             }
             try {

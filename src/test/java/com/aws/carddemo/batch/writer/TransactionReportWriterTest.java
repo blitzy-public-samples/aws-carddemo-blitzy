@@ -337,6 +337,7 @@ class TransactionReportWriterTest {
         StepExecution se = stepWithDates("2022-07-18", "2022-07-19");
         writer.beforeStep(se);
         writer.write(new Chunk<>(List.<TransactionReportProcessor.ReportLine>of()));
+        se.setStatus(BatchStatus.COMPLETED);
         ExitStatus exitStatus = writer.afterStep(se);
 
         List<String> lines = readLines();
@@ -361,6 +362,7 @@ class TransactionReportWriterTest {
         StepExecution se = stepWithDates("2022-07-18", "2022-07-19");
         writer.beforeStep(se);
         writer.write(chunk(line("T0000000000001", 1L, CARD_A, "01", "P", 5, "G", "POS", "1.00")));
+        se.setStatus(BatchStatus.COMPLETED);
         ExitStatus exitStatus = writer.afterStep(se);
 
         assertThat(exitStatus).isEqualTo(ExitStatus.COMPLETED);
@@ -412,6 +414,7 @@ class TransactionReportWriterTest {
                 line("T0000000000001", 111L, CARD_A, "01", "P", 5, "G", "POS", "100.00"),
                 line("T0000000000002", 111L, CARD_A, "01", "P", 5, "G", "POS", "200.00"),
                 line("T0000000000003", 111L, CARD_A, "01", "P", 5, "G", "POS", "300.00")));
+        se.setStatus(BatchStatus.COMPLETED);
         writer.afterStep(se);
 
         ExecutionContext ctx = se.getExecutionContext();
@@ -493,6 +496,31 @@ class TransactionReportWriterTest {
     }
 
     @Test
+    @DisplayName("F-P5-E: a step still STARTED at afterStep (status-persist race) publishes no report and no staging file")
+    void startedStepLeavesNoFinalReportAndNoStagingFile() throws Exception {
+        TransactionReportWriter writer = newWriter();
+        StepExecution se = stepWithDates("2022-07-18", "2022-07-19");
+        writer.beforeStep(se);
+        writer.write(chunk(line("T0000000000001", 1L, CARD_A, "01", "P", 5, "G", "POS", "1.00")));
+
+        // Reproduce the exact production race: the datasource dropped mid-step, so the framework ran
+        // afterStep while the persisted status was still STARTED (it could not itself transition the
+        // row to FAILED against the dead database) and no failure exception had been recorded. The
+        // superseded fail-open gate (status != FAILED) treated this as success and published a report
+        // that was missing its EOF page/grand totals; the fail-closed gate (status == COMPLETED) must
+        // publish nothing.
+        se.setStatus(BatchStatus.STARTED);
+        assertThat(se.getFailureExceptions())
+                .as("precondition: the framework has not yet recorded a failure exception")
+                .isEmpty();
+        ExitStatus exit = writer.afterStep(se);
+
+        assertThat(exit).isEqualTo(ExitStatus.FAILED);
+        assertThat(Files.exists(tempDir.resolve(REPORT_FILE))).isFalse();
+        assertThat(Files.exists(tempDir.resolve(STAGING_FILE))).isFalse();
+    }
+
+    @Test
     @DisplayName("F-P5-C: a re-run atomically replaces a pre-existing final report with the complete rebuilt report")
     void rerunAtomicallyReplacesPreexistingFinalReport() throws Exception {
         // A stale final-named report from a prior run/attempt. In the pre-fix design a restart
@@ -530,6 +558,7 @@ class TransactionReportWriterTest {
         // units is above the single-byte charset, so each is replaced 1:1 with '?': "A?" + "??" + "B".
         writer.write(chunk(line("T0000000000001", 1L, CARD_A, "01", "P", 5, "G",
                 "A\u03A9\uD83D\uDE00B", "1.00")));
+        se.setStatus(BatchStatus.COMPLETED);
         ExitStatus exit = writer.afterStep(se);
 
         // The writer never aborted on an unmappable character: the step completed with RC0 and the
@@ -565,12 +594,22 @@ class TransactionReportWriterTest {
         return MetaDataInstanceFactory.createStepExecution(params);
     }
 
-    /** Runs the full beforeStep/write/afterStep lifecycle and returns the file's 133-byte lines. */
+    /**
+     * Runs the full clean beforeStep/write/afterStep lifecycle and returns the file's 133-byte lines.
+     *
+     * <p>The step is transitioned to {@link BatchStatus#COMPLETED} before {@code afterStep} to mirror
+     * a real successful launch: Spring Batch's {@code AbstractStep} upgrades the persisted status to
+     * {@code COMPLETED} before invoking {@code afterStep} on the success path. The fail-closed publish
+     * gate added for F-P5-E ({@link BatchFilePublishDecision#isCleanCompletion}) atomically publishes
+     * the report only for a {@code COMPLETED} step, so a clean-lifecycle fixture must present that
+     * status.</p>
+     */
     private List<String> runFull(StepExecution stepExecution,
             Chunk<TransactionReportProcessor.ReportLine> chunk) throws Exception {
         TransactionReportWriter writer = newWriter();
         writer.beforeStep(stepExecution);
         writer.write(chunk);
+        stepExecution.setStatus(BatchStatus.COMPLETED);
         writer.afterStep(stepExecution);
         return readLines();
     }

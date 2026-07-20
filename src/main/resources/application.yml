@@ -185,6 +185,20 @@ management:
       # service. Trace/span IDs propagate into logs automatically via MDC
       # (traceId/spanId), consumed by logback-spring.xml - no extra property here.
       endpoint: ${OTLP_ENDPOINT:http://localhost:4318/v1/traces}
+    metrics:
+      export:
+        # Base/production default: OTLP METRICS push is DISABLED. This is
+        # deliberate and load-bearing. Merely putting micrometer-registry-otlp
+        # on the classpath makes Spring Boot auto-configure an OtlpMeterRegistry
+        # that, left at its defaults, would push ALL metrics over OTLP to
+        # http://localhost:4318/v1/metrics - which on the compose stack is the
+        # Tempo OTLP port, not a metrics backend. Online instances are, and
+        # remain, SCRAPE-ONLY via /actuator/prometheus (management.prometheus...
+        # export.enabled above); they must not also push. The short-lived
+        # standalone batch JVMs cannot be scraped, so the `batch` profile
+        # (application-batch.yml) re-enables this push and points it at the
+        # Prometheus native OTLP receiver. (QA finding F-P6-D; decision log D65.)
+        enabled: false
 
 # =============================================================================
 # springdoc / OpenAPI 3 - Swagger UI for the 17 REST controllers (one per screen)
@@ -225,6 +239,15 @@ springdoc:
 server:
   # Non-secret; defaults to 8080 (Dockerfile EXPOSE 8080), overridable via SERVER_PORT.
   port: ${SERVER_PORT:8080}
+  tomcat:
+    # Defense-in-depth bound (QA finding F-P7-JSON, decision log D67). The application
+    # caps accepted request bodies at carddemo.web.max-request-body-bytes and returns
+    # 413 (RequestBodySizeLimitFilter). When that rejection is sent without the whole
+    # body having been read, this bounds how many bytes of the aborted body the
+    # container will swallow while draining the connection before resetting it, so an
+    # oversized upload cannot be forced through at the container layer. Kept modestly
+    # above the 1 MiB body cap; DataSize syntax.
+    max-swallow-size: 2MB
 
 # =============================================================================
 # Logging levels (appender/pattern with correlation IDs live in logback-spring.xml).
@@ -234,3 +257,18 @@ logging:
   level:
     root: INFO
     com.aws.carddemo: INFO
+
+# =============================================================================
+# CardDemo application-specific settings (non-secret)
+# =============================================================================
+carddemo:
+  web:
+    # Maximum accepted HTTP request-body size, in bytes (defense-in-depth;
+    # QA finding F-P7-JSON, decision log D67). Enforced by RequestBodySizeLimitFilter:
+    # a declared Content-Length above this is rejected up front, and a chunked or
+    # length-understated body is rejected as it is read - both surfaced as
+    # 413 Payload Too Large in the standard RFC 7807 problem+json shape. The default
+    # (1 MiB) is far larger than any legitimate CardDemo request DTO while bounding the
+    # memory a single request can force the server to buffer. Overridable via
+    # CARDDEMO_WEB_MAX_REQUEST_BODY_BYTES.
+    max-request-body-bytes: ${CARDDEMO_WEB_MAX_REQUEST_BODY_BYTES:1048576}

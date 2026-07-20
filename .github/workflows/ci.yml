@@ -163,6 +163,11 @@ jobs:
             # JobInstanceAlreadyCompleteException; it also propagates as the batch correlation id.
             cid="ci-${job}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
             rc=0
+            # This smoke loop asserts the return-code contract only; it does not assert metrics, and no
+            # Prometheus/OTLP receiver runs in CI. A real scheduled deployment that wants these runs to
+            # surface in the Grafana batch panels would add the 'batch' profile
+            # (--spring.profiles.active=...,batch) so the headless JVM pushes spring_batch_*_seconds via
+            # OTLP before exit (decision-log D65). Left off here by design.
             java -jar "${JAR}" \
               --spring.main.web-application-type=none \
               --spring.batch.job.enabled=true \

@@ -281,7 +281,9 @@ the no-feature-expansion boundary.
 > parity tests — including the byte-exact statement fixtures under
 > `src/test/resources/golden/statement/` — and the per-reject-code coverage
 > (`100` / `101` / `102` / `103`); the local observability stack (`docker-compose.yml` with
-> PostgreSQL + Prometheus + Tempo + Grafana, verified locally); the CI workflow
+> PostgreSQL + Prometheus + Tempo + Grafana, verified locally — including **headless batch-job metrics**,
+> which the `batch` profile pushes over OTLP to Prometheus's native receiver so the Grafana Spring Batch
+> panels render for short-lived batch JVMs, decision-log D65); the CI workflow
 > (`.github/workflows/ci.yml`); and the Maven wrapper (`mvnw` / `mvnw.cmd` / `.mvn/`). Those items are
 > removed from the list below.
 

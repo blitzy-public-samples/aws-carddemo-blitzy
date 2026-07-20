@@ -268,6 +268,21 @@
             <artifactId>micrometer-registry-prometheus</artifactId>
         </dependency>
 
+        <!-- OTLP metrics registry: PUSHES metrics over OTLP so that short-lived
+             standalone batch JVMs (started in web-application-type=none mode and
+             therefore serving NO /actuator/prometheus endpoint to scrape) can
+             still deliver their spring_batch_* timers to Prometheus's native OTLP
+             receiver on context shutdown (the final PushMeterRegistry publish).
+             Push is DISABLED by default in application.yml (online instances stay
+             scrape-only) and is enabled ONLY by the `batch` profile
+             (application-batch.yml). Version is managed by the Spring Boot BOM,
+             and the OTLP transport reuses the already-present
+             opentelemetry-exporter-otlp. (QA finding F-P6-D; decision log D65.) -->
+        <dependency>
+            <groupId>io.micrometer</groupId>
+            <artifactId>micrometer-registry-otlp</artifactId>
+        </dependency>
+
         <!-- ==========================================================
              Schema management: Flyway migrations (V1__schema.sql, ...).
              ========================================================== -->

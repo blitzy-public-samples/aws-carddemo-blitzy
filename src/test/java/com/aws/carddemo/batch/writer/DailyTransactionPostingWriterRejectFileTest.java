@@ -87,6 +87,12 @@ class DailyTransactionPostingWriterRejectFileTest {
                                  PostingResult result) throws Exception {
         writer.beforeStep(step);
         writer.write(new Chunk<>(result));
+        // A clean run reaches afterStep already marked COMPLETED: Spring Batch's AbstractStep
+        // upgrades the persisted status to COMPLETED before invoking afterStep on the success path.
+        // The fail-closed publish gate added for F-P5-E (BatchFilePublishDecision.isCleanCompletion)
+        // atomically publishes the reject file only for a COMPLETED step, so a clean-lifecycle
+        // fixture must present that status; the failure/race tests override it (FAILED / STARTED).
+        step.setStatus(BatchStatus.COMPLETED);
         return writer.afterStep(step);
     }
 
@@ -214,6 +220,42 @@ class DailyTransactionPostingWriterRejectFileTest {
         // The prior good file is intact, the temp was discarded, and the run reports RC 8.
         assertThat(Files.readAllBytes(finalFile))
                 .as("a failed run must not destroy or replace the prior good reject file")
+                .isEqualTo(goodBytes);
+        assertThat(dir.resolve(REJECT_FILE + ".tmp")).doesNotExist();
+        assertThat(exit.getExitCode()).isEqualTo(ExitStatus.FAILED.getExitCode());
+    }
+
+    /**
+     * F-P5-E (the exact production race): when the datasource drops mid-step, the framework may run
+     * {@code afterStep} while the persisted status is still the in-flight {@code STARTED} value —
+     * it could not itself transition the row to {@code FAILED} against the dead database — and no
+     * failure exception has been recorded yet. The superseded fail-open gate ({@code status != FAILED})
+     * treated this as a clean run and atomically replaced the prior good reject file with a truncated
+     * one; the fail-closed gate ({@code status == COMPLETED}) must publish nothing and leave the prior
+     * good file untouched.
+     */
+    @Test
+    void priorGoodFileIsPreservedWhenLaterRunIsStillStarted(@TempDir Path dir) throws Exception {
+        // Run 1 (clean): publishes a good reject file.
+        DailyTransactionPostingWriter goodWriter = newWriter(dir);
+        runReject(goodWriter, newStepExecution(), rejectWith("GOOD RECORD", "4859452612877065"));
+        Path finalFile = dir.resolve(REJECT_FILE);
+        byte[] goodBytes = Files.readAllBytes(finalFile);
+
+        // Run 2 reproduces the race: status is still STARTED (not FAILED) at afterStep.
+        DailyTransactionPostingWriter racing = newWriter(dir);
+        StepExecution step2 = newStepExecution();
+        racing.beforeStep(step2);
+        racing.write(new Chunk<>(rejectWith("REPLACEMENT THAT MUST NOT LAND", "9999999999999999")));
+        step2.setStatus(BatchStatus.STARTED);
+        assertThat(step2.getFailureExceptions())
+                .as("precondition: the framework has not yet recorded a failure exception")
+                .isEmpty();
+        ExitStatus exit = racing.afterStep(step2);
+
+        // The prior good file is intact, the temp was discarded, and the run reports RC 8.
+        assertThat(Files.readAllBytes(finalFile))
+                .as("a non-COMPLETED run must not destroy or replace the prior good reject file")
                 .isEqualTo(goodBytes);
         assertThat(dir.resolve(REJECT_FILE + ".tmp")).doesNotExist();
         assertThat(exit.getExitCode()).isEqualTo(ExitStatus.FAILED.getExitCode());

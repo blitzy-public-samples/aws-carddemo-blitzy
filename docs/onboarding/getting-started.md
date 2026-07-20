@@ -437,7 +437,9 @@ equals the Spring Batch return code** (`0` = `COMPLETED`, `4` = completed with r
 
 **Prerequisites:** the [local stack is up](#3-start-the-local-dependencies-docker-compose), your
 [environment variables are exported](#4-configure-environment-variables) (including
-`SPRING_PROFILES_ACTIVE=local`), and you have built the jar
+`SPRING_PROFILES_ACTIVE=local` — add the `batch` profile, i.e. `SPRING_PROFILES_ACTIVE=local,batch`, to
+publish batch-job metrics to Prometheus/Grafana; see the **Batch metrics** note after the launch pattern),
+and you have built the jar
 (`./mvnw -B clean package` — see [Build and test](#5-build-and-test)).
 
 ### Launch pattern
@@ -449,6 +451,19 @@ java -jar target/carddemo-1.0.0.jar \
   --spring.batch.job.name=<jobName> \
   <parameter=value> ...
 ```
+
+> **Batch metrics (optional but recommended).** A batch JVM runs headless
+> (`--spring.main.web-application-type=none`), so there is **no** `/actuator/prometheus` endpoint for
+> Prometheus to scrape, and the process exits within seconds of the job finishing. To make a run appear
+> in the Grafana **Spring Batch** panels, activate the **`batch`** profile so the JVM **pushes** its
+> `spring_batch_job_seconds` / `spring_batch_step_seconds` metrics over OTLP to Prometheus's native OTLP
+> receiver just before it exits — either export `SPRING_PROFILES_ACTIVE=local,batch` (as in the
+> prerequisites, which every `$J` example below then inherits) or append
+> `--spring.profiles.active=local,batch` to a single launch. It is safe even when the observability stack
+> is down: the push simply fails with a logged warning and the job's return code is unaffected. Mechanism
+> and dashboard details (why the panels use last-run p95/avg semantics, and `OTLP_METRICS_URL`):
+> decision-log
+> [**D65**](../decision-log.md#d65--standalone-batch-jvms-push-metrics-via-otlp-to-prometheus-online-scrape-path-preserved).
 
 `<jobName>` is the job's Spring bean name. The in-scope pipelines and the parameters each one
 requires are:
