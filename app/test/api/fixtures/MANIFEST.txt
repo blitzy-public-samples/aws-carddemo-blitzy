@@ -1,0 +1,21 @@
+# CardDemo API boundary/fault fixtures - deterministic manifest.
+# Regenerate + verify: python3 app/test/api/gen-boundary-fixtures.py --verify --manifest app/test/api/fixtures/MANIFEST.txt
+# Each fixture is a fixed-width ASCII VSAM record image (one LF per record; the LF is a transfer delimiter, not part of the record).
+# Columns: filename  records  reclen  bytes  sha256
+#
+# Scenario outcomes:
+#   GET /accounts/00000000101/transactions: card table exactly full (50); proceeds, no 500.
+#   GET /accounts/00000000102/transactions: 51 cards overflow WS-MAX-CARDS -> deterministic HTTP 500.
+#   GET /accounts/00000000103/transactions: exactly 50 matches -> 50 entries, truncated=false, HTTP 200.
+#   GET /accounts/00000000103/transactions: matches beyond the 50 cap -> first 50 entries, truncated=true, HTTP 200 (never 500).
+#
+card-boundary-50.carddat.txt         50    150     7550 13ae75c72f6d64644f09b69690e2992a62013ebc6ee1cb4ebf007381053af0e5
+card-boundary-50.ccxref.txt          50     36     1850 5b68fe16269a354eeb24bca61a9c7a288991778cb82b199ffceef774d5576481
+card-overflow-51.carddat.txt         51    150     7701 2fca68764bdb6e0d7914c0e1119c808ae4e3f33535f8bb6e7063fcf631204837
+card-overflow-51.ccxref.txt          51     36     1887 bf1916c62aa7c949d09f47118ac0fda3f396826e5646bac0e2f43204632c8db9
+tran-boundary-50.ccxref.txt           1     36       37 0e37fa8636c0da99c2ad41ba17e2f880f8d25b08b97833f563dc3cabcf153a14
+tran-boundary-50.carddat.txt          1    150      151 d065afc508d1b59f9859140394b42264970630f6b8f0b3e8b45a6c35e85d61f6
+tran-boundary-50.transact.txt        50    350    17550 ff683ca3b5f78ca28e1c06632fac97e3b651c913c0480663aa77494df0c7e333
+tran-truncate-51.ccxref.txt           1     36       37 0e37fa8636c0da99c2ad41ba17e2f880f8d25b08b97833f563dc3cabcf153a14
+tran-truncate-51.carddat.txt          1    150      151 d065afc508d1b59f9859140394b42264970630f6b8f0b3e8b45a6c35e85d61f6
+tran-truncate-51.transact.txt        51    350    17901 4cbc8f07b505c648d4772efd9d3542ca5e25ec3d63f831df6078aec7868ca740

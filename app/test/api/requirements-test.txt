@@ -1,0 +1,26 @@
+# Pinned, reproducible dependencies for the CardDemo REST/JSON API contract
+# test (app/test/api/openapi-contract-test.py).
+#
+# These are TEST-ONLY dependencies. They are never installed into, and never
+# run on, the CICS/z/OS runtime -- the API layer itself has no third-party
+# runtime dependency (see AAP 0.3.1). They exist only so a developer or a CI
+# release gate can reproduce the contract test deterministically:
+#
+#     python3 -m pip install -r app/test/api/requirements-test.txt
+#     RELEASE_MODE=1 python3 app/test/api/openapi-contract-test.py
+#
+# In RELEASE_MODE the test FAILs (exit 1) rather than SKIPs (exit 0) when any
+# of these packages -- or the spec file -- is absent, so an incomplete run can
+# never pass the gate. The test performs no network access and never installs
+# packages on its own.
+
+# --- Direct dependencies (imported by the contract test) ---------------------
+PyYAML==6.0.3          # parse app/api/openapi.yaml
+jsonschema==4.26.0     # Draft-07 structural / $ref validation
+
+# --- Transitive dependencies of jsonschema>=4.18 (the modern "referencing"
+# resolution path used by the test), pinned for a fully reproducible install ---
+referencing==0.37.0
+jsonschema-specifications==2025.9.1
+attrs==26.1.0
+rpds-py==2026.6.3

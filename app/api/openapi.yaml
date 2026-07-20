@@ -1,0 +1,965 @@
+# CardDemo REST/JSON API - OpenAPI 3.0 contract (additive, read-only).
+# Exposes CardDemo core inquiry functions (accounts, customers, cards,
+# cross-reference, transactions) plus sign-on over base CICS Web Support.
+# This contract is authored first and is the authoritative source that the
+# COBOL router/service programs and the API contract tests conform to.
+# Licensed under the Apache License, Version 2.0 (see repository copybook
+# headers): http://www.apache.org/licenses/LICENSE-2.0
+---
+openapi: 3.0.3
+info:
+  title: CardDemo REST/JSON API
+  version: 1.0.0
+  description: >-
+    Read-only inquiry API that exposes the AWS CardDemo core functions -
+    accounts, customers, cards, card cross-reference, and transactions -
+    together with a sign-on endpoint that issues a short-lived bearer token.
+    The API is delivered through base CICS Web Support (no additional licensed
+    products) and every VSAM interaction is strictly read-only. The base path
+    is /carddemo/api/v1. All endpoints except POST /signon require a bearer
+    token obtained from sign-on and validated against the USRSEC security file.
+    Every response uses a uniform envelope: successful payloads are returned
+    under a top-level "data" object and failures under a top-level "error"
+    object containing exactly code, message, and requestId. Sensitive data is
+    minimized: the primary account number (PAN) is masked to the last four
+    digits, the card security code is never returned, credentials are never
+    returned, and customer Social Security Number and government-issued
+    identification are masked to the last four digits (full values are never
+    returned). Monetary values are signed decimals with exactly two fractional
+    digits and are represented as strings to preserve
+    exact scale and sign (the underlying COBOL fields are implied-decimal
+    numerics stored with no decimal point).
+  license:
+    name: Apache-2.0
+    url: https://www.apache.org/licenses/LICENSE-2.0
+servers:
+  - url: /carddemo/api/v1
+    description: >-
+      CardDemo API base path (relative to the CICS Web Support
+      host:port).
+tags:
+  - name: Authentication
+    description: >-
+      Sign-on endpoint that authenticates a CardDemo user and issues a
+      bearer token.
+  - name: Accounts
+    description: Read-only account inquiry endpoints.
+  - name: Customers
+    description: Read-only customer demographic inquiry endpoints.
+  - name: Cards
+    description: >-
+      Read-only card inquiry endpoints (PAN masked, security code
+      excluded).
+  - name: CrossReference
+    description: >-
+      Card-to-account and card-to-customer cross-reference resolution.
+  - name: Transactions
+    description: Read-only transaction list and detail endpoints.
+security:
+  - bearerAuth: []
+paths:
+  /signon:
+    post:
+      tags:
+        - Authentication
+      operationId: signon
+      summary: Authenticate a CardDemo user and issue a bearer token.
+      description: >-
+        Validates the supplied credentials against the USRSEC security file
+        and, on success, issues a short-lived opaque bearer token to be sent on
+        all subsequent requests. This is the only endpoint that does not require
+        a bearer token.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SignonRequest'
+      responses:
+        '200':
+          description: Authentication succeeded; a bearer token is returned.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SignonResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /accounts/{acctId}:
+    get:
+      tags:
+        - Accounts
+      operationId: getAccount
+      summary: Retrieve an account by id.
+      description: >-
+        Returns account status, balances, limits, cycle credit and debit, key
+        dates, and group id for the given account id. Reads the ACCTDAT file
+        read-only.
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/AcctId'
+      responses:
+        '200':
+          description: The requested account.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AccountResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /customers/{custId}:
+    get:
+      tags:
+        - Customers
+      operationId: getCustomer
+      summary: Retrieve a customer by id.
+      description: >-
+        Returns customer demographic and identification fields for the given
+        customer id. Reads the CUSTDAT file read-only. Social Security Number is
+        masked as 'XXX-XX-####' and government-issued identification is masked
+        to the last four digits; full values are never returned.
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/CustId'
+      responses:
+        '200':
+          description: The requested customer.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CustomerResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /cards/{cardNum}:
+    get:
+      tags:
+        - Cards
+      operationId: getCard
+      summary: Retrieve a card by number.
+      description: >-
+        Returns card detail for the given card number. Reads the CARDDAT file
+        read-only. The PAN is masked to the last four digits and the card
+        security code is never returned.
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/CardNum'
+      responses:
+        '200':
+          description: The requested card.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CardResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /xref/{cardNum}:
+    get:
+      tags:
+        - CrossReference
+      operationId: getCardXref
+      summary: Resolve a card to its account and customer.
+      description: >-
+        Resolves the given card number to the associated account id and
+        customer id via the card cross-reference (CCXREF), read-only. The PAN is
+        masked to the last four digits.
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/CardNum'
+      responses:
+        '200':
+          description: The cross-reference for the requested card.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/XrefResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /accounts/{acctId}/transactions:
+    get:
+      tags:
+        - Transactions
+      operationId: listAccountTransactions
+      summary: List transactions for an account.
+      description: >-
+        Returns the list of transactions associated with the given account. The
+        account is resolved to its card(s) via the cross-reference and matching
+        TRANSACT records are returned read-only. An account that exists but has
+        no transactions returns HTTP 200 with an empty array (not 404). Card
+        numbers are masked to the last four digits. The list is capped at 50
+        transactions; when an account's matching transactions exceed the cap
+        the first 50 are returned with truncated=true (a disclosed partial
+        list) and HTTP 200, so request volume never yields HTTP 500.
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/AcctId'
+      responses:
+        '200':
+          description: The list of transactions for the account (may be empty).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TransactionListResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /transactions/{tranId}:
+    get:
+      tags:
+        - Transactions
+      operationId: getTransaction
+      summary: Retrieve a transaction by id.
+      description: >-
+        Returns a single transaction detail for the given transaction id. Reads
+        the TRANSACT file read-only. The card number is masked to the last four
+        digits.
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/TranId'
+      responses:
+        '200':
+          description: The requested transaction.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TransactionResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: opaque
+      description: >-
+        Short-lived CardDemo bearer token obtained from POST /signon and
+        validated against USRSEC. Send as: Authorization: Bearer <token>.
+  parameters:
+    AcctId:
+      name: acctId
+      in: path
+      required: true
+      description: Eleven-digit numeric account id (ACCT-ID PIC 9(11)).
+      schema:
+        type: string
+        pattern: '^[0-9]{1,11}$'
+        maxLength: 11
+      example: "00000000011"
+    CustId:
+      name: custId
+      in: path
+      required: true
+      description: Nine-digit numeric customer id (CUST-ID PIC 9(09)).
+      schema:
+        type: string
+        pattern: '^[0-9]{1,9}$'
+        maxLength: 9
+      example: "000000001"
+    CardNum:
+      name: cardNum
+      in: path
+      required: true
+      description: >-
+        Sixteen-character card number (CARD-NUM PIC X(16)). The full PAN is
+        supplied on input; responses return it masked to the last four digits.
+      schema:
+        type: string
+        pattern: '^[0-9]{16}$'
+        maxLength: 16
+      example: "4111111111111111"
+    TranId:
+      name: tranId
+      in: path
+      required: true
+      description: >-
+        Transaction id of 1 to 16 numeric digits (TRAN-ID PIC X(16)); the
+        router left-pads the value with zeros to sixteen digits before the
+        read. Non-numeric or over-length values are rejected with HTTP 400.
+      schema:
+        type: string
+        pattern: '^[0-9]{1,16}$'
+        minLength: 1
+        maxLength: 16
+      example: "0000000000000001"
+  responses:
+    BadRequest:
+      description: Malformed JSON, unknown route, or an invalid parameter.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            error:
+              code: "BAD_REQUEST"
+              message: >-
+                The request could not be understood (malformed body,
+                unknown route, or invalid parameter).
+              requestId: "b1c2d3e4-0000-4000-8000-000000000400"
+    Unauthorized:
+      description: Missing, invalid, or expired token, or invalid credentials.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            error:
+              code: "UNAUTHORIZED"
+              message: >-
+                Authentication is required or the supplied token or
+                credentials are invalid.
+              requestId: "b1c2d3e4-0000-4000-8000-000000000401"
+    NotFound:
+      description: The requested resource key was not found.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            error:
+              code: "NOT_FOUND"
+              message: "The requested resource was not found."
+              requestId: "b1c2d3e4-0000-4000-8000-000000000404"
+    InternalError:
+      description: An unexpected internal error occurred.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            error:
+              code: "INTERNAL_ERROR"
+              message: >-
+                An unexpected error occurred while processing the
+                request.
+              requestId: "b1c2d3e4-0000-4000-8000-000000000500"
+
+  schemas:
+    Error:
+      type: object
+      additionalProperties: false
+      description: Error detail carried inside the uniform failure envelope.
+      required:
+        - code
+        - message
+        - requestId
+      properties:
+        code:
+          type: string
+          minLength: 1
+          enum:
+            - BAD_REQUEST
+            - UNAUTHORIZED
+            - NOT_FOUND
+            - INTERNAL_ERROR
+          description: >-
+            Machine-readable error code; one of the fixed API error codes.
+          example: "NOT_FOUND"
+        message:
+          type: string
+          minLength: 1
+          description: Human-readable description of the error.
+          example: "The requested resource was not found."
+        requestId:
+          type: string
+          minLength: 1
+          description: Correlation id for tracing a single request end to end.
+          example: "b1c2d3e4-0000-4000-8000-000000000404"
+    ErrorResponse:
+      type: object
+      additionalProperties: false
+      description: Uniform failure envelope wrapping a single error object.
+      required:
+        - error
+      properties:
+        error:
+          $ref: '#/components/schemas/Error'
+    SignonResponse:
+      type: object
+      additionalProperties: false
+      description: Success envelope for a sign-on result.
+      required:
+        - data
+      properties:
+        data:
+          $ref: '#/components/schemas/SignonData'
+    AccountResponse:
+      type: object
+      additionalProperties: false
+      description: Success envelope for an account.
+      required:
+        - data
+      properties:
+        data:
+          $ref: '#/components/schemas/Account'
+    CustomerResponse:
+      type: object
+      additionalProperties: false
+      description: Success envelope for a customer.
+      required:
+        - data
+      properties:
+        data:
+          $ref: '#/components/schemas/Customer'
+    CardResponse:
+      type: object
+      additionalProperties: false
+      description: Success envelope for a card.
+      required:
+        - data
+      properties:
+        data:
+          $ref: '#/components/schemas/Card'
+    XrefResponse:
+      type: object
+      additionalProperties: false
+      description: Success envelope for a card cross-reference.
+      required:
+        - data
+      properties:
+        data:
+          $ref: '#/components/schemas/Xref'
+    TransactionResponse:
+      type: object
+      additionalProperties: false
+      description: Success envelope for a single transaction.
+      required:
+        - data
+      properties:
+        data:
+          $ref: '#/components/schemas/Transaction'
+    TransactionListResponse:
+      type: object
+      additionalProperties: false
+      description: Success envelope for a list of transactions.
+      required:
+        - data
+      properties:
+        data:
+          $ref: '#/components/schemas/TransactionList'
+    MonetaryAmount:
+      type: string
+      format: decimal
+      pattern: '^-?\d+\.\d{2}$'
+      example: "1234.56"
+      description: >-
+        Signed decimal monetary value with exactly two fractional digits.
+        Serialized from a COBOL implied-decimal field (for example S9(10)V99):
+        the decimal point is inserted and the sign preserved (a leading '-' for
+        negative values). Represented as a STRING to preserve exact scale and
+        avoid floating-point rounding.
+    MaskedPan:
+      type: string
+      pattern: '^\*{12}\d{4}$'
+      example: "************1234"
+      description: >-
+        Primary account number masked to the last four digits. The full PAN is
+        never returned.
+    SignonRequest:
+      type: object
+      additionalProperties: false
+      description: Sign-on request carrying CardDemo user credentials.
+      required:
+        - userId
+        - password
+      properties:
+        userId:
+          type: string
+          minLength: 1
+          maxLength: 8
+          description: CardDemo user id (SEC-USR-ID PIC X(08)).
+          example: "USER0001"
+        password:
+          type: string
+          format: password
+          minLength: 1
+          maxLength: 8
+          description: >-
+            User password (SEC-USR-PWD PIC X(08)). Accepted inbound only for
+            authentication and never returned in any response.
+          example: "PASS0001"
+    SignonData:
+      type: object
+      additionalProperties: false
+      description: >-
+        Sign-on result carrying the issued bearer token, the authenticated user
+        id and type, and the absolute token expiry timestamp.
+      required:
+        - token
+        - userId
+        - userType
+        - expiresAt
+      properties:
+        token:
+          type: string
+          minLength: 64
+          maxLength: 64
+          pattern: '^[0-9A-Z]{64}$'
+          description: >-
+            Short-lived opaque bearer token to send on subsequent calls in the
+            Authorization header. It is exactly 64 characters drawn from the
+            [0-9A-Z] alphabet: COAPISEC mints it from a cryptographically
+            secure RNG (PIC X(64)) as an opaque registry key, not a signed
+            JWT. The token lifetime is fixed at 900 seconds (15 minutes) from
+            issue.
+          # yamllint disable-line rule:line-length
+          example: "FGFOUCBUXUDL919QK393NUHDXEZEDPVQNW4DEFTDMWG7YUUN1CX1ZRNBECAFHZVL"
+        userId:
+          type: string
+          maxLength: 8
+          description: >-
+            Authenticated CardDemo user id echoed from SEC-USR-ID PIC X(08)
+            (SGNO-USER-ID); identifies the subject bound to the token.
+          example: "USER0001"
+        userType:
+          type: string
+          maxLength: 1
+          description: >-
+            User type echoed from SEC-USR-TYPE PIC X(01); typical values are
+            'A' (admin) and 'U' (regular user).
+          example: "U"
+        expiresAt:
+          type: string
+          maxLength: 26
+          description: >-
+            Absolute token expiry timestamp (SGNO-TOKEN-EXPIRY-TS PIC X(26)),
+            formatted 'YYYY-MM-DD HH:MM:SS.ffffff'. The token is valid until
+            this instant; the fixed lifetime is 900 seconds (15 minutes) from
+            issue.
+            Represented as a string to preserve the exact stored format.
+          example: "2026-07-19 08:15:00.000000"
+    Account:
+      type: object
+      additionalProperties: false
+      description: >-
+        Account entity mapped from CVACT01Y ACCOUNT-RECORD (read-only).
+      required:
+        - accountId
+        - activeStatus
+        - currentBalance
+        - creditLimit
+        - cashCreditLimit
+        - openDate
+        - expirationDate
+        - reissueDate
+        - currentCycleCredit
+        - currentCycleDebit
+        - groupId
+      properties:
+        accountId:
+          type: string
+          maxLength: 11
+          description: Account id (ACCT-ID PIC 9(11)).
+          example: "00000000011"
+        activeStatus:
+          type: string
+          maxLength: 1
+          description: Account active status (ACCT-ACTIVE-STATUS PIC X(01)).
+          example: "Y"
+        currentBalance:
+          allOf:
+            - $ref: '#/components/schemas/MonetaryAmount'
+          description: Current account balance (ACCT-CURR-BAL PIC S9(10)V99).
+          example: "1250.75"
+        creditLimit:
+          allOf:
+            - $ref: '#/components/schemas/MonetaryAmount'
+          description: Credit limit (ACCT-CREDIT-LIMIT PIC S9(10)V99).
+          example: "5000.00"
+        cashCreditLimit:
+          allOf:
+            - $ref: '#/components/schemas/MonetaryAmount'
+          description: Cash credit limit (ACCT-CASH-CREDIT-LIMIT PIC S9(10)V99).
+          example: "1000.00"
+        openDate:
+          type: string
+          maxLength: 10
+          description: Account open date (ACCT-OPEN-DATE PIC X(10)).
+          example: "2020-01-15"
+        expirationDate:
+          type: string
+          maxLength: 10
+          description: >-
+            Account expiration date (ACCT-EXPIRAION-DATE PIC X(10); the COBOL
+            field name is spelled as stored in the copybook).
+          example: "2025-01-31"
+        reissueDate:
+          type: string
+          maxLength: 10
+          description: Account reissue date (ACCT-REISSUE-DATE PIC X(10)).
+          example: "2023-01-15"
+        currentCycleCredit:
+          allOf:
+            - $ref: '#/components/schemas/MonetaryAmount'
+          description: >-
+            Current cycle credit (ACCT-CURR-CYC-CREDIT PIC S9(10)V99).
+          example: "250.00"
+        currentCycleDebit:
+          allOf:
+            - $ref: '#/components/schemas/MonetaryAmount'
+          description: Current cycle debit (ACCT-CURR-CYC-DEBIT PIC S9(10)V99).
+          example: "375.25"
+        groupId:
+          type: string
+          maxLength: 10
+          description: Account group id (ACCT-GROUP-ID PIC X(10)).
+          example: "DEFAULT"
+    Card:
+      type: object
+      additionalProperties: false
+      description: >-
+        Card entity mapped from CVACT02Y CARD-RECORD (read-only). The PAN is
+        masked to the last four digits and the card security code is excluded
+        entirely and never serialized.
+      required:
+        - cardNumberMasked
+        - accountId
+        - embossedName
+        - expirationDate
+        - activeStatus
+      properties:
+        cardNumberMasked:
+          allOf:
+            - $ref: '#/components/schemas/MaskedPan'
+          description: >-
+            Card number masked to the last four digits (from CARD-NUM
+            PIC X(16)).
+          example: "************1111"
+        accountId:
+          type: string
+          maxLength: 11
+          description: Account id the card belongs to (CARD-ACCT-ID PIC 9(11)).
+          example: "00000000011"
+        embossedName:
+          type: string
+          maxLength: 50
+          description: Name embossed on the card (CARD-EMBOSSED-NAME PIC X(50)).
+          example: "JOHN Q PUBLIC"
+        expirationDate:
+          type: string
+          maxLength: 10
+          description: >-
+            Card expiration date (CARD-EXPIRAION-DATE PIC X(10); the COBOL field
+            name is spelled as stored in the copybook).
+          example: "2025-01-31"
+        activeStatus:
+          type: string
+          maxLength: 1
+          description: Card active status (CARD-ACTIVE-STATUS PIC X(01)).
+          example: "Y"
+    Xref:
+      type: object
+      additionalProperties: false
+      description: >-
+        Card cross-reference mapped from CVACT03Y CARD-XREF-RECORD
+        (read-only).
+      required:
+        - cardNumberMasked
+        - accountId
+        - customerId
+      properties:
+        cardNumberMasked:
+          allOf:
+            - $ref: '#/components/schemas/MaskedPan'
+          description: >-
+            Card number masked to the last four digits (from
+            XREF-CARD-NUM PIC X(16)).
+          example: "************1111"
+        accountId:
+          type: string
+          maxLength: 11
+          description: Associated account id (XREF-ACCT-ID PIC 9(11)).
+          example: "00000000011"
+        customerId:
+          type: string
+          maxLength: 9
+          description: Associated customer id (XREF-CUST-ID PIC 9(09)).
+          example: "000000001"
+    Customer:
+      type: object
+      additionalProperties: false
+      description: >-
+        Customer entity mapped from CVCUS01Y CUSTOMER-RECORD (read-only). Social
+        Security Number and government-issued identification are masked to the
+        last four digits for PII minimization; full values are never returned.
+      required:
+        - customerId
+        - firstName
+        - middleName
+        - lastName
+        - addressLine1
+        - addressLine2
+        - addressLine3
+        - stateCode
+        - countryCode
+        - addressZip
+        - phone1
+        - phone2
+        - ssnMasked
+        - govtIdMasked
+        - dateOfBirth
+        - primaryCardHolderIndicator
+        - ficoCreditScore
+      properties:
+        customerId:
+          type: string
+          maxLength: 9
+          description: Customer id (CUST-ID PIC 9(09)).
+          example: "000000001"
+        firstName:
+          type: string
+          maxLength: 25
+          description: Customer first name (CUST-FIRST-NAME PIC X(25)).
+          example: "JOHN"
+        middleName:
+          type: string
+          maxLength: 25
+          description: Customer middle name (CUST-MIDDLE-NAME PIC X(25)).
+          example: "Q"
+        lastName:
+          type: string
+          maxLength: 25
+          description: Customer last name (CUST-LAST-NAME PIC X(25)).
+          example: "PUBLIC"
+        addressLine1:
+          type: string
+          maxLength: 50
+          description: Address line 1 (CUST-ADDR-LINE-1 PIC X(50)).
+          example: "123 MAIN ST"
+        addressLine2:
+          type: string
+          maxLength: 50
+          description: Address line 2 (CUST-ADDR-LINE-2 PIC X(50)).
+          example: "APT 4B"
+        addressLine3:
+          type: string
+          maxLength: 50
+          description: Address line 3 (CUST-ADDR-LINE-3 PIC X(50)).
+          example: "SPRINGFIELD"
+        stateCode:
+          type: string
+          maxLength: 2
+          description: State code (CUST-ADDR-STATE-CD PIC X(02)).
+          example: "IL"
+        countryCode:
+          type: string
+          maxLength: 3
+          description: Country code (CUST-ADDR-COUNTRY-CD PIC X(03)).
+          example: "USA"
+        addressZip:
+          type: string
+          maxLength: 10
+          description: Postal or ZIP code (CUST-ADDR-ZIP PIC X(10)).
+          example: "62704"
+        phone1:
+          type: string
+          maxLength: 15
+          description: Primary phone number (CUST-PHONE-NUM-1 PIC X(15)).
+          example: "+1-217-555-0100"
+        phone2:
+          type: string
+          maxLength: 15
+          description: Secondary phone number (CUST-PHONE-NUM-2 PIC X(15)).
+          example: "+1-217-555-0101"
+        ssnMasked:
+          type: string
+          maxLength: 11
+          pattern: '^(XXX-XX-\d{4})?\s*$'
+          description: >-
+            Social Security Number masked to the last four digits
+            (CUST-SSN-MASKED PIC X(11)), formatted 'XXX-XX-####'; blank when the
+            source SSN is absent. The full SSN is never returned.
+          example: "XXX-XX-6789"
+        govtIdMasked:
+          type: string
+          maxLength: 4
+          description: >-
+            Government-issued identification masked to the last four significant
+            characters (CUST-GOVT-ID-MASKED PIC X(04)). The full identifier is
+            never returned.
+          example: "6789"
+        dateOfBirth:
+          type: string
+          maxLength: 10
+          description: Date of birth (CUST-DOB-YYYY-MM-DD PIC X(10)).
+          example: "1980-05-20"
+        primaryCardHolderIndicator:
+          type: string
+          maxLength: 1
+          description: >-
+            Primary card holder indicator (CUST-PRI-CARD-HOLDER-IND
+            PIC X(01)).
+          example: "Y"
+        ficoCreditScore:
+          type: integer
+          description: FICO credit score (CUST-FICO-CREDIT-SCORE PIC 9(03)).
+          example: 750
+    Transaction:
+      type: object
+      additionalProperties: false
+      description: >-
+        Transaction entity mapped from CVTRA05Y TRAN-RECORD (read-only).
+      required:
+        - transactionId
+        - typeCode
+        - categoryCode
+        - source
+        - description
+        - amount
+        - merchantId
+        - merchantName
+        - merchantCity
+        - merchantZip
+        - cardNumberMasked
+        - originTimestamp
+        - processTimestamp
+      properties:
+        transactionId:
+          type: string
+          maxLength: 16
+          description: Transaction id (TRAN-ID PIC X(16)).
+          example: "0000000000000001"
+        typeCode:
+          type: string
+          maxLength: 2
+          description: Transaction type code (TRAN-TYPE-CD PIC X(02)).
+          example: "01"
+        categoryCode:
+          type: string
+          maxLength: 4
+          description: >-
+            Transaction category code (TRAN-CAT-CD PIC 9(04)); kept as a string
+            to preserve leading zeros.
+          example: "0001"
+        source:
+          type: string
+          maxLength: 10
+          description: Transaction source (TRAN-SOURCE PIC X(10)).
+          example: "POS"
+        description:
+          type: string
+          maxLength: 100
+          description: Transaction description (TRAN-DESC PIC X(100)).
+          example: "POS PURCHASE - ACME STORE"
+        amount:
+          allOf:
+            - $ref: '#/components/schemas/MonetaryAmount'
+          description: Transaction amount (TRAN-AMT PIC S9(09)V99).
+          example: "42.50"
+        merchantId:
+          type: string
+          maxLength: 9
+          description: Merchant id (TRAN-MERCHANT-ID PIC 9(09)).
+          example: "000012345"
+        merchantName:
+          type: string
+          maxLength: 50
+          description: Merchant name (TRAN-MERCHANT-NAME PIC X(50)).
+          example: "ACME STORE"
+        merchantCity:
+          type: string
+          maxLength: 50
+          description: Merchant city (TRAN-MERCHANT-CITY PIC X(50)).
+          example: "SPRINGFIELD"
+        merchantZip:
+          type: string
+          maxLength: 10
+          description: Merchant ZIP code (TRAN-MERCHANT-ZIP PIC X(10)).
+          example: "62704"
+        cardNumberMasked:
+          allOf:
+            - $ref: '#/components/schemas/MaskedPan'
+          description: >-
+            Card number masked to the last four digits (from
+            TRAN-CARD-NUM PIC X(16)).
+          example: "************1111"
+        originTimestamp:
+          type: string
+          maxLength: 26
+          description: Origination timestamp (TRAN-ORIG-TS PIC X(26)).
+          example: "2022-07-19 23:16:01.000000"
+        processTimestamp:
+          type: string
+          maxLength: 26
+          description: Processing timestamp (TRAN-PROC-TS PIC X(26)).
+          example: "2022-07-20 02:00:00.000000"
+    TransactionList:
+      type: object
+      additionalProperties: false
+      description: >-
+        A list of transactions for a single account. The list is capped at 50
+        transactions; when an account's matching transactions exceed the cap
+        the first 50 are returned with truncated=true (a disclosed partial
+        list) and HTTP 200, so request volume never yields HTTP 500.
+      required:
+        - accountId
+        - transactions
+        - count
+        - truncated
+      properties:
+        accountId:
+          type: string
+          maxLength: 11
+          description: The account id the list belongs to.
+          example: "00000000011"
+        transactions:
+          type: array
+          maxItems: 50
+          description: The transactions for the account; may be empty.
+          items:
+            $ref: '#/components/schemas/Transaction'
+        count:
+          type: integer
+          description: Number of transactions returned; 0 for an empty list.
+          example: 2
+        truncated:
+          type: boolean
+          description: >-
+            Whether the returned list was truncated (from TRAN-LIST-TRUNCATED
+            PIC X(01): 'N' -> false, 'Y' -> true). true when the account's
+            matching transactions exceeded the 50-entry cap and only the first
+            50 are returned; the response is still HTTP 200 with a partial list.
+          example: false

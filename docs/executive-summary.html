@@ -1,0 +1,917 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="description" content="Executive summary of the AWS CardDemo REST/JSON API layer — a read-only, additive HTTP/JSON channel for account, card and transaction inquiry on base CICS Web Support." />
+  <title>CardDemo REST/JSON API Layer — Executive Summary</title>
+
+  <!-- Content-Security-Policy (defense-in-depth alongside the SRI hashes below):
+       deny-by-default, then allow exactly the pinned CDN origin (jsDelivr) and
+       Google Fonts that this self-contained deck legitimately needs. SRI is the
+       primary integrity control for the classic <link>/<script> tags; this CSP
+       constrains the origins a compromised page could reach. 'unsafe-inline' is
+       required for the inline Blitzy <style> and the inline reveal/mermaid init
+       module; it does not weaken the SRI byte-integrity guarantee. See
+       docs/decision-log.md (D40/MAJ-13) for the full rationale and the ESM/SRI
+       and Mermaid-advisory notes. -->
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; base-uri 'self'; img-src 'self' data:; font-src https://fonts.gstatic.com https://cdn.jsdelivr.net data:; style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net https://fonts.googleapis.com; script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; connect-src https://cdn.jsdelivr.net" />
+
+  <!-- Inline, self-contained data-URI favicon (Blitzy mark): prevents a browser
+       /favicon.ico request; adds zero network egress and no sibling asset file. -->
+  <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20viewBox='0%200%2032%2032'%3E%3Crect%20width='32'%20height='32'%20rx='6'%20fill='%235B39F3'/%3E%3Ccircle%20cx='16'%20cy='16'%20r='7'%20fill='%2394FAD5'/%3E%3C/svg%3E" />
+
+  <!-- Google Fonts: Inter (body), Space Grotesk (headings), Fira Code (monospace tokens) -->
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&family=Space+Grotesk:wght@500;700&family=Fira+Code&display=swap" rel="stylesheet" />
+
+  <!-- reveal.js 5.1.0 core + base white theme (overridden by the inline Blitzy theme below).
+       Subresource Integrity (SRI) sha384 digests pin the exact bytes served for
+       these pinned versions; crossorigin=anonymous is required for SRI on a
+       cross-origin resource. Digests were computed from the decoded CDN bytes
+       (see docs/decision-log.md D40/MAJ-13). -->
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/reveal.js@5.1.0/dist/reveal.css"
+        integrity="sha384-YgvgKeZJykuztG+iQPoZHNZENTFZvOcOJ/uRzmJTje6GHYN9zAw+y5rx/L8MQKA/"
+        crossorigin="anonymous" />
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/reveal.js@5.1.0/dist/theme/white.css" id="theme"
+        integrity="sha384-/TZMdZeq0ZGi4iePTHhOMXOkyv2f72ZcwmhAtOmSZlPkx+5qCOfyc/U1kjd5Su6S"
+        crossorigin="anonymous" />
+
+  <!-- Mermaid 11.4.0 is loaded as an ES module (import), which cannot carry an
+       integrity attribute directly. This modulepreload pins the entry module's
+       sha384 so the browser fetches + integrity-checks it once, and the later
+       import reuses it. The entry's dynamically-imported chunks are covered by
+       version pinning (jsDelivr serves immutable bytes per version) and the CSP
+       script-src origin allow-list. See docs/decision-log.md D40/MAJ-13. -->
+  <link rel="modulepreload" href="https://cdn.jsdelivr.net/npm/mermaid@11.4.0/dist/mermaid.esm.min.mjs"
+        integrity="sha384-HbZodwcydhFoeJkM8JD85LgJ4EGrGW8p7/jgYlNNjwawbrvYc5jzWjzs8Z8Lgsvo"
+        crossorigin="anonymous" />
+
+  <!-- ==========================================================================
+       Inline Blitzy brand theme (canonical token/class contract reproduced here;
+       the external blitzy-deck/references/blitzy-reveal-theme.css is intentionally
+       absent from the checkout and is NOT imported or linked).
+       ========================================================================== -->
+  <style>
+    :root {
+      /* Blitzy core palette */
+      --blitzy-primary: #5B39F3;
+      --blitzy-dark: #2D1C77;
+      --blitzy-teal: #94FAD5;
+      --blitzy-navy: #1A105F;
+      /* Hero gradient stops */
+      --blitzy-grad-start: #7A6DEC;
+      --blitzy-grad-mid: #5B39F3;
+      --blitzy-grad-end: #4101DB;
+      /* Neutrals */
+      --blitzy-white: #FFFFFF;
+      --blitzy-text: #333333;
+      --blitzy-panel: #F2F0FE;
+      --blitzy-panel-alt: #F4EFF6;
+      --blitzy-grey: #999999;
+      /* Exact hero gradient (canonical) */
+      --blitzy-hero: linear-gradient(68deg, #7A6DEC 15.56%, #5B39F3 62.74%, #4101DB 84.44%);
+      /* Fonts */
+      --font-body: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif;
+      --font-head: 'Space Grotesk', 'Inter', sans-serif;
+      --font-mono: 'Fira Code', 'SFMono-Regular', Consolas, monospace;
+    }
+
+    /* ---- Base typography ---- */
+    .reveal {
+      font-family: var(--font-body);
+      color: var(--blitzy-text);
+      font-size: 34px;
+    }
+    .reveal h1, .reveal h2, .reveal h3, .reveal h4 {
+      font-family: var(--font-head);
+      color: var(--blitzy-navy);
+      text-transform: none;
+      letter-spacing: -0.01em;
+      font-weight: 700;
+      line-height: 1.1;
+    }
+    .reveal h1 { font-size: 2.6rem; }
+    .reveal h2 { font-size: 1.9rem; }
+    .reveal h3 { font-size: 1.35rem; }
+    .reveal p, .reveal li { line-height: 1.4; }
+    .reveal strong { color: var(--blitzy-dark); }
+    .reveal .mono, .reveal code, .path, .method, .token {
+      font-family: var(--font-mono);
+    }
+    .reveal section { text-align: left; }
+    .reveal .slides section .kicker {
+      font-family: var(--font-head);
+      text-transform: uppercase;
+      letter-spacing: 0.14em;
+      font-size: 0.8rem;
+      font-weight: 700;
+      color: var(--blitzy-primary);
+      margin: 0 0 8px 0;
+    }
+
+    /* ---- Slide type: TITLE (hero gradient) ---- */
+    .reveal .slides section.slide-title,
+    .reveal .slides section.slide-divider {
+      color: var(--blitzy-white);
+      text-align: center;
+      border-radius: 0;
+    }
+    .reveal .slides section.slide-title h1,
+    .reveal .slides section.slide-title h2,
+    .reveal .slides section.slide-title p,
+    .reveal .slides section.slide-title .kicker,
+    .reveal .slides section.slide-divider h1,
+    .reveal .slides section.slide-divider h2,
+    .reveal .slides section.slide-divider p,
+    .reveal .slides section.slide-divider .kicker {
+      color: var(--blitzy-white);
+    }
+    .slide-title .subtitle {
+      font-size: 1.35rem;
+      font-weight: 400;
+      opacity: 0.95;
+      margin-top: 10px;
+    }
+    .slide-title .eyebrow {
+      color: var(--blitzy-teal);
+      letter-spacing: 0.2em;
+    }
+
+    /* ---- Slide type: DIVIDER ---- */
+    .reveal .slides section.slide-divider h2 { font-size: 2.4rem; }
+    .divider-icon { margin-bottom: 18px; }
+    .reveal .divider-icon svg.lucide { width: 84px; height: 84px; stroke: var(--blitzy-teal); }
+
+    /* ---- Slide type: CLOSING (dark navy) ---- */
+    .reveal .slides section.slide-closing {
+      background: var(--blitzy-navy);
+      color: var(--blitzy-white);
+      text-align: center;
+    }
+    .reveal .slides section.slide-closing h2,
+    .reveal .slides section.slide-closing p,
+    .reveal .slides section.slide-closing .kicker { color: var(--blitzy-white); }
+    .reveal .slides section.slide-closing .kicker { color: var(--blitzy-teal); }
+
+    /* ---- Hero icon cluster ---- */
+    .hero-icon { margin-bottom: 22px; display: flex; gap: 26px; justify-content: center; }
+    .reveal .hero-icon svg.lucide { width: 92px; height: 92px; stroke: var(--blitzy-teal); }
+
+    /* ---- Lucide icon defaults ---- */
+    .reveal svg.lucide { stroke: var(--blitzy-primary); width: 32px; height: 32px; vertical-align: middle; }
+
+    /* ---- KPI cards ---- */
+    .kpi-grid {
+      display: flex; flex-wrap: wrap; gap: 26px;
+      justify-content: center; align-items: stretch; margin-top: 26px;
+    }
+    .kpi-card {
+      background: var(--blitzy-panel);
+      border: 1px solid rgba(91, 57, 243, 0.14);
+      border-top: 6px solid var(--blitzy-primary);
+      border-radius: 16px;
+      padding: 30px 34px;
+      min-width: 260px; max-width: 340px;
+      box-shadow: 0 8px 22px rgba(45, 28, 119, 0.10);
+      text-align: center;
+    }
+    .kpi-card svg.lucide { width: 34px; height: 34px; stroke: var(--blitzy-primary); margin-bottom: 10px; }
+    .kpi-value {
+      font-family: var(--font-head);
+      font-size: 2.9rem; font-weight: 700; line-height: 1;
+      color: var(--blitzy-primary);
+    }
+    .kpi-label { font-size: 1.02rem; font-weight: 600; color: var(--blitzy-text); margin-top: 10px; }
+
+    /* ---- Styled table ---- */
+    .blitzy-table {
+      border-collapse: collapse; width: 100%;
+      font-size: 1.0rem; border-radius: 14px; overflow: hidden;
+      box-shadow: 0 8px 22px rgba(45, 28, 119, 0.10);
+    }
+    .blitzy-table thead th {
+      background: var(--blitzy-primary); color: var(--blitzy-white);
+      font-family: var(--font-head); font-weight: 700;
+      padding: 16px 20px; text-align: left; font-size: 1.05rem;
+    }
+    .blitzy-table td { padding: 14px 20px; border-bottom: 1px solid #E7E2F5; vertical-align: top; }
+    .blitzy-table tbody tr:nth-child(even) { background: var(--blitzy-panel-alt); }
+    .blitzy-table tbody tr:nth-child(odd) { background: var(--blitzy-white); }
+    .blitzy-table .method { font-family: var(--font-mono); font-weight: 700; color: var(--blitzy-primary); }
+    .blitzy-table .path { font-family: var(--font-mono); color: var(--blitzy-dark); }
+
+    /* ---- Icon bullet list ---- */
+    .icon-list { list-style: none; margin: 18px 0 0 0; padding: 0; }
+    .icon-list li { display: flex; align-items: center; gap: 18px; margin: 20px 0; font-size: 1.2rem; }
+    .icon-list li svg.lucide { flex: 0 0 auto; width: 36px; height: 36px; stroke: var(--blitzy-primary); }
+
+    /* ---- Security chip row ---- */
+    .chip-grid { display: flex; flex-wrap: wrap; gap: 22px; justify-content: center; margin-top: 24px; }
+    .chip {
+      display: flex; align-items: center; gap: 14px;
+      background: var(--blitzy-panel); border-radius: 999px;
+      padding: 16px 26px; font-size: 1.05rem; font-weight: 600;
+      border: 1px solid rgba(91, 57, 243, 0.16);
+    }
+    .chip svg.lucide { width: 28px; height: 28px; stroke: var(--blitzy-primary); }
+
+    /* ---- Mermaid framing ---- */
+    .reveal pre.mermaid {
+      background: transparent; box-shadow: none; width: 100%;
+      font-size: 0.5em; text-align: center; margin: 0;
+    }
+    /* Caption uses an accessible mid-grey (#666 = 5.7:1 on white, WCAG AA) rather
+       than --blitzy-grey (#999 = 2.8:1) because the mobile linear-reflow view makes
+       every slide's text visible to the accessibility audit simultaneously. The
+       brand --blitzy-grey token is retained for non-text use (e.g. Mermaid lineColor). */
+    .diagram-caption { text-align: center; color: #666666; font-size: 0.9rem; margin-top: 10px; }
+
+    /* ---- Misc helpers ---- */
+    .center { text-align: center; }
+    .lead { font-size: 1.25rem; }
+    .note { color: var(--blitzy-grey); font-size: 0.95rem; }
+    .cta {
+      display: inline-flex; align-items: center; gap: 12px;
+      margin-top: 26px; padding: 16px 30px; border-radius: 12px;
+      background: var(--blitzy-primary); color: var(--blitzy-white);
+      font-family: var(--font-head); font-weight: 700; font-size: 1.1rem;
+    }
+    .cta svg.lucide { stroke: var(--blitzy-white); }
+    .reveal .slides section.slide-closing .cta { background: var(--blitzy-teal); color: var(--blitzy-navy); }
+    .reveal .slides section.slide-closing .cta svg.lucide { stroke: var(--blitzy-navy); }
+
+    /* Responsive guard: reveal.js Scroll View activates on narrow phones and
+       scales each slide, clipping left-aligned headings/kickers/table columns
+       below ~384px. Inset scaled content; scoped to .reveal-scroll so the
+       desktop scaled-canvas layout is unaffected. */
+    .reveal-viewport.reveal-scroll .slides section {
+      box-sizing: border-box;
+      padding-inline: calc(36px / var(--slide-scale, 1));
+    }
+
+    /* ---- Accessibility: skip link, visible focus, hit targets, semantic CTA ---- */
+    .visually-hidden {
+      position: absolute !important; width: 1px; height: 1px;
+      padding: 0; margin: -1px; overflow: hidden; clip: rect(0 0 0 0);
+      white-space: nowrap; border: 0;
+    }
+    .skip-link {
+      position: absolute; left: 12px; top: -60px; z-index: 1000;
+      background: var(--blitzy-navy); color: var(--blitzy-white);
+      padding: 12px 20px; border-radius: 8px; text-decoration: none;
+      font-family: var(--font-head); font-weight: 700;
+      transition: top 0.15s ease;
+    }
+    .skip-link:focus { top: 12px; }
+    /* The call-to-action is a real link (a.cta); keep the button look, remove
+       underline, guarantee a >=44px tap/click target. */
+    a.cta { text-decoration: none; cursor: pointer; min-height: 44px; }
+    a.cta:hover { filter: brightness(1.06); }
+    /* Visible keyboard focus for every interactive element (WCAG 2.4.7). */
+    a:focus-visible, button:focus-visible, .cta:focus-visible, [tabindex]:focus-visible {
+      outline: 3px solid var(--blitzy-teal);
+      outline-offset: 3px;
+      border-radius: 6px;
+    }
+    /* reveal.js navigation arrows: >=44px hit area + visible focus ring. */
+    .reveal .controls button {
+      width: 44px; height: 44px;
+      min-width: 44px; min-height: 44px;
+    }
+    .reveal .controls button:focus-visible {
+      outline: 3px solid var(--blitzy-teal); outline-offset: 2px;
+    }
+    /* On the dark title/divider/closing slides, use a white focus ring for
+       contrast against the purple/navy background. */
+    .slide-title a.cta:focus-visible,
+    .slide-divider a.cta:focus-visible,
+    .slide-closing a.cta:focus-visible { outline-color: var(--blitzy-white); }
+
+    /* =====================================================================
+       Portrait / small-screen layout (MAJ-17). reveal.js scales the fixed
+       1920x1080 canvas to fit; on a ~375px phone that shrinks 34px body text
+       to ~6px and hides controls. Below 768px we replace the scaled canvas
+       with a readable, vertically-scrolling linear layout: every slide is
+       shown at real, fluid font sizes and stacks top-to-bottom. This removes
+       the unreadable-text, hidden-controls, and scroll/hash-desync failures
+       while preserving the Blitzy brand (gradients/navy re-applied per slide
+       type because the scaled background layer is hidden here).
+       ===================================================================== */
+    @media (max-width: 768px) {
+      html, body {
+        height: auto !important;
+        overflow-x: hidden !important;
+        overflow-y: auto !important;
+      }
+      .reveal-viewport, .reveal {
+        position: static !important;
+        height: auto !important;
+        overflow: visible !important;
+        background: var(--blitzy-white);
+      }
+      /* Hide the scaled background layer; sections carry their own brand bg. */
+      .reveal .backgrounds { display: none !important; }
+      .reveal .slides {
+        position: static !important;
+        transform: none !important;
+        left: 0 !important; top: 0 !important;
+        width: 100% !important; height: auto !important;
+        margin: 0 !important; padding: 0 !important;
+      }
+      .reveal .slides > section,
+      .reveal .slides > section.present,
+      .reveal .slides > section.past,
+      .reveal .slides > section.future,
+      .reveal .slides > section.stack {
+        display: block !important;
+        position: static !important;
+        transform: none !important;
+        top: auto !important; left: auto !important;
+        width: 100% !important; height: auto !important;
+        min-height: 100vh;
+        opacity: 1 !important; visibility: visible !important;
+        pointer-events: auto !important;
+        box-sizing: border-box;
+        padding: 9vw 7vw !important;
+        background: var(--blitzy-white);
+        border-bottom: 1px solid rgba(148, 250, 213, 0.25);
+      }
+      .reveal .slides > section .fragment {
+        opacity: 1 !important; visibility: visible !important;
+      }
+      /* Re-apply brand backgrounds per slide type in linear mode. */
+      .reveal .slides > section.slide-title,
+      .reveal .slides > section.slide-divider {
+        background: var(--blitzy-hero) !important;
+      }
+      .reveal .slides > section.slide-closing {
+        background: var(--blitzy-navy) !important;
+      }
+      /* Fluid, readable typography (approx: 4.4vw ~= 16.5px @375, ~34px @768). */
+      .reveal { font-size: 4.4vw !important; }
+      .reveal h1 { font-size: 8.4vw !important; }
+      .reveal h2 { font-size: 6.2vw !important; }
+      .reveal h3 { font-size: 5vw !important; }
+      .reveal .slides section .kicker { font-size: 3.4vw !important; }
+      .slide-title .subtitle { font-size: 4.6vw !important; }
+      /* Stack card/chip grids into a single readable column. */
+      .kpi-grid, .chip-grid, .hero-icon { flex-direction: column; align-items: stretch; gap: 16px; }
+      .kpi-card { min-width: 0; max-width: 100%; }
+      .icon-list li { font-size: 4vw !important; }
+      /* Wide data tables reflow to stacked key/value cards on narrow viewports so
+         EVERY column (Method/Path/Purpose, Risk/Mitigation) stays fully readable
+         with no horizontal scroll or clipping. A prior overflow-x:auto approach left
+         the Path/Purpose columns hidden behind an invisible scrollbar at 375px
+         (unbreakable monospace paths forced the content to ~560px). The <caption>
+         and header cells are preserved — the header row is only visually hidden
+         (kept for assistive tech) — and each cell surfaces its column name via a
+         data-label. Scoped to <=768px, so the desktop table is unaffected. */
+      .blitzy-table { display: block; width: 100%; box-shadow: none; border-radius: 0; overflow: visible; font-size: 3.6vw !important; }
+      .blitzy-table thead {
+        position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+        overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0;
+      }
+      .blitzy-table tbody { display: block; width: 100%; }
+      .blitzy-table tbody tr {
+        display: block; width: 100%; box-sizing: border-box;
+        background: var(--blitzy-white) !important;
+        border: 1px solid rgba(91, 57, 243, 0.18);
+        border-radius: 14px; margin: 0 0 14px 0; overflow: hidden;
+        box-shadow: 0 6px 16px rgba(45, 28, 119, 0.08);
+      }
+      .blitzy-table td {
+        display: block; width: 100%; box-sizing: border-box;
+        padding: 10px 16px !important; border-bottom: 1px solid #E7E2F5;
+        white-space: normal; overflow-wrap: anywhere; word-break: break-word;
+      }
+      .blitzy-table tr td:last-child { border-bottom: 0; }
+      .blitzy-table td::before {
+        content: attr(data-label); display: block;
+        font-family: var(--font-head); font-weight: 700;
+        font-size: 0.72em; text-transform: uppercase; letter-spacing: 0.08em;
+        color: var(--blitzy-primary); margin-bottom: 3px;
+      }
+      .blitzy-table td.path { word-break: break-all; }
+      pre.mermaid { font-size: 2.6vw !important; }
+      /* Keep the reveal controls visible and reachable on touch. */
+      .reveal .controls { display: block !important; bottom: 10px !important; right: 10px !important; }
+    }
+  </style>
+</head>
+<body>
+  <!-- Skip link + banner + main landmarks (WCAG 1.3.1 / 2.4.1). The main landmark
+       (role="main") is placed DIRECTLY on the reveal.js root rather than a wrapping
+       <main> element: reveal.js assigns the .reveal-viewport class to .reveal's
+       parent and resolves the deck height against it, so an intermediate wrapper
+       with no height collapses .reveal to 0px at desktop widths. role="main" on
+       .reveal itself yields the identical landmark without disturbing that layout
+       contract. A visually-hidden <header> provides the document banner and the
+       single descriptive top-level heading. (See decision log D39.) -->
+  <a class="skip-link" href="#deck-main">Skip to presentation</a>
+  <header class="visually-hidden">
+    <h1>CardDemo REST/JSON API Layer — Executive Summary</h1>
+    <p>A sixteen-slide reveal.js presentation covering the business value,
+       architecture, security, risks, and onboarding of the read-only
+       REST/JSON API layer.</p>
+  </header>
+  <div class="reveal" id="deck-main" role="main" aria-label="CardDemo REST/JSON API executive summary presentation">
+    <div class="slides">
+
+      <!-- ============ SLIDE 1 — TITLE (hero) ============ -->
+      <section class="slide-title" data-background-gradient="linear-gradient(68deg, #7A6DEC 15.56%, #5B39F3 62.74%, #4101DB 84.44%)">
+        <div class="hero-icon">
+          <i data-lucide="server"></i>
+          <i data-lucide="plug"></i>
+        </div>
+        <p class="kicker eyebrow">AWS CardDemo &middot; Modernization</p>
+        <h1>CardDemo REST/JSON API Layer</h1>
+        <p class="subtitle">Read-only HTTP/JSON inquiry on base CICS Web Support</p>
+      </section>
+
+      <!-- ============ SLIDE 2 — Executive summary KPIs ============ -->
+      <section>
+        <p class="kicker">Executive Summary</p>
+        <h2>A new front door to trusted card data</h2>
+        <div class="kpi-grid">
+          <div class="kpi-card">
+            <i data-lucide="git-branch"></i>
+            <div class="kpi-value">7</div>
+            <div class="kpi-label">REST endpoints</div>
+          </div>
+          <div class="kpi-card">
+            <i data-lucide="file-code"></i>
+            <div class="kpi-value">8</div>
+            <div class="kpi-label">New COBOL programs</div>
+          </div>
+          <div class="kpi-card">
+            <i data-lucide="shield-check"></i>
+            <div class="kpi-value">0</div>
+            <div class="kpi-label">Existing code files changed</div>
+          </div>
+          <div class="kpi-card">
+            <i data-lucide="lock"></i>
+            <div class="kpi-value">100%</div>
+            <div class="kpi-label">Read-only data access</div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ============ SLIDE 3 — DIVIDER: Business Value ============ -->
+      <section class="slide-divider" data-background-gradient="linear-gradient(68deg, #7A6DEC 15.56%, #5B39F3 62.74%, #4101DB 84.44%)">
+        <div class="divider-icon"><i data-lucide="trending-up"></i></div>
+        <p class="kicker">01</p>
+        <h2>Why: Business Value</h2>
+      </section>
+
+      <!-- ============ SLIDE 4 — Business value bullets ============ -->
+      <section>
+        <p class="kicker">Business Value</p>
+        <h2>Unlocking mainframe data for the enterprise</h2>
+        <ul class="icon-list">
+          <li><i data-lucide="unlock"></i>Exposes account, card and transaction inquiry over HTTP/JSON.</li>
+          <li><i data-lucide="target"></i>Advances the roadmap toward distributed integration.</li>
+          <li><i data-lucide="gauge"></i>Additive and read-only: no existing file is changed.</li>
+          <li><i data-lucide="badge-check"></i>Reuses proven CardDemo patterns; no new license or gateway.</li>
+        </ul>
+      </section>
+
+      <!-- ============ SLIDE 5 — Value outcome KPIs ============ -->
+      <section>
+        <p class="kicker">Outcomes</p>
+        <h2>Value delivered this increment</h2>
+        <div class="kpi-grid">
+          <div class="kpi-card">
+            <i data-lucide="rocket"></i>
+            <div class="kpi-value">Roadmap</div>
+            <div class="kpi-label">Integration item advanced</div>
+          </div>
+          <div class="kpi-card">
+            <i data-lucide="banknote"></i>
+            <div class="kpi-value">$0</div>
+            <div class="kpi-label">New license cost</div>
+          </div>
+          <div class="kpi-card">
+            <i data-lucide="gauge"></i>
+            <div class="kpi-value">0</div>
+            <div class="kpi-label">Write paths (read-only)</div>
+          </div>
+          <div class="kpi-card">
+            <i data-lucide="network"></i>
+            <div class="kpi-value">0</div>
+            <div class="kpi-label">External gateways</div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ============ SLIDE 6 — DIVIDER: Architecture ============ -->
+      <section class="slide-divider" data-background-gradient="linear-gradient(68deg, #7A6DEC 15.56%, #5B39F3 62.74%, #4101DB 84.44%)">
+        <div class="divider-icon"><i data-lucide="network"></i></div>
+        <p class="kicker">02</p>
+        <h2>What Changed: Architecture</h2>
+      </section>
+
+      <!-- ============ SLIDE 7 — Component architecture (Mermaid) ============ -->
+      <section>
+        <p class="kicker">Architecture</p>
+        <h2>One in-region HTTP/JSON front door</h2>
+        <pre class="mermaid">
+graph LR
+  CLIENT["HTTP client<br/>same-host loopback 127.0.0.1"]
+  subgraph CWS["CICS Web Support - in region"]
+    TCP["TCPIPSERVICE CDAPISVC"]
+    URI["URIMAP CDAPIURI"]
+    ALIAS["Alias transaction CAPI"]
+  end
+  RTR["Router COAPIRTR"]
+  JSON["COJSONUC JSON serialize"]
+  SEC["Auth COAPISEC"]
+  TSQ[("MAIN TSQ<br/>token registry")]
+  subgraph SVC["Read-only inquiry services"]
+    ACS["COACSVCC"]
+    CUS["COCUSVCC"]
+    CRD["COCRSVCC"]
+    XRF["COXRSVCC"]
+    TRN["COTRSVCC"]
+  end
+  subgraph DAT["VSAM - read only (base + AIX)"]
+    ACCT[("ACCTDAT")]
+    CUST[("CUSTDAT")]
+    CARD[("CARDDAT / CARDAIX")]
+    XREF[("CCXREF / CXACAIX")]
+    TRAN[("TRANSACT")]
+    USR[("USRSEC")]
+  end
+  CLIENT -->|HTTP/JSON| TCP
+  TCP --> URI
+  URI --> ALIAS
+  ALIAS --> RTR
+  RTR --> JSON
+  RTR -->|token gate| SEC
+  SEC -->|read| USR
+  SEC -->|"issue / validate token"| TSQ
+  RTR -->|COMMAREA| ACS
+  RTR -->|COMMAREA| CUS
+  RTR -->|COMMAREA| CRD
+  RTR -->|COMMAREA| XRF
+  RTR -->|"channel/container, 50-entry cap"| TRN
+  ACS -->|read| ACCT
+  CUS -->|read| CUST
+  CRD -->|"read via CARDAIX"| CARD
+  XRF -->|"read via CXACAIX"| XREF
+  TRN -->|"resolve acct to cards"| XREF
+  TRN -->|"browse + filter by card"| TRAN
+        </pre>
+      </section>
+
+      <!-- ============ SLIDE 8 — Flow 1 sequence (Mermaid) ============ -->
+      <section>
+        <p class="kicker">Flow 1</p>
+        <h2>Sign-on, then authenticated account inquiry</h2>
+        <pre class="mermaid">
+sequenceDiagram
+  autonumber
+  participant C as HTTP client
+  participant R as Router COAPIRTR
+  participant S as Auth COAPISEC
+  participant T as MAIN TSQ registry
+  participant A as COACSVCC
+  C->>R: POST sign-on (user id + password)
+  R->>S: validate credentials vs USRSEC
+  S->>T: register short-lived token (15-min life)
+  S-->>R: bearer token
+  R-->>C: 200 token issued
+  C->>R: GET account by id + bearer token
+  R->>S: validate token
+  S->>T: look up token (unknown/expired to 401)
+  S-->>R: token accepted
+  R->>A: read ACCTDAT (read-only)
+  A-->>R: account record
+  R-->>C: 200 JSON account
+        </pre>
+      </section>
+
+      <!-- ============ SLIDE 9 — Flow 2 drill-down (Mermaid) ============ -->
+      <section>
+        <p class="kicker">Flow 2</p>
+        <h2>Card-to-transactions drill-down</h2>
+        <pre class="mermaid">
+graph LR
+  A["GET card cross-reference"] --> B["COXRSVCC reads CCXREF"]
+  B --> C["Account id plus customer id"]
+  C --> D["GET account transactions"]
+  D --> E["COTRSVCC browses TRANSACT"]
+  E --> F["Transaction list as JSON"]
+        </pre>
+        <p class="diagram-caption">Programmatic equivalent of the CardDemo CCDL to CT00 screen drill-down.</p>
+      </section>
+
+      <!-- ============ SLIDE 10 — The 7 endpoints (table) ============ -->
+      <section>
+        <p class="kicker">The Contract</p>
+        <h2>Seven read-only endpoints</h2>
+        <table class="blitzy-table">
+          <caption class="visually-hidden">The seven read-only REST endpoints with method, path, and purpose.</caption>
+          <thead>
+            <tr><th scope="col">Method</th><th scope="col">Path</th><th scope="col">Purpose</th></tr>
+          </thead>
+          <tbody>
+            <tr><td class="method" data-label="Method">POST</td><td class="path" data-label="Path">/carddemo/api/v1/signon</td><td data-label="Purpose">Authenticate; issue bearer token</td></tr>
+            <tr><td class="method" data-label="Method">GET</td><td class="path" data-label="Path">/carddemo/api/v1/accounts/{acctId}</td><td data-label="Purpose">Status, balances, limits, dates</td></tr>
+            <tr><td class="method" data-label="Method">GET</td><td class="path" data-label="Path">/carddemo/api/v1/customers/{custId}</td><td data-label="Purpose">Demographics (PII minimized)</td></tr>
+            <tr><td class="method" data-label="Method">GET</td><td class="path" data-label="Path">/carddemo/api/v1/cards/{cardNum}</td><td data-label="Purpose">Detail (PAN masked, CVV excluded)</td></tr>
+            <tr><td class="method" data-label="Method">GET</td><td class="path" data-label="Path">/carddemo/api/v1/xref/{cardNum}</td><td data-label="Purpose">Card to account + customer</td></tr>
+            <tr><td class="method" data-label="Method">GET</td><td class="path" data-label="Path">/carddemo/api/v1/accounts/{acctId}/transactions</td><td data-label="Purpose">List account transactions</td></tr>
+            <tr><td class="method" data-label="Method">GET</td><td class="path" data-label="Path">/carddemo/api/v1/transactions/{tranId}</td><td data-label="Purpose">Single transaction</td></tr>
+          </tbody>
+        </table>
+      </section>
+
+      <!-- ============ SLIDE 11 — Security posture ============ -->
+      <section>
+        <p class="kicker">Security</p>
+        <h2>Sensitive data protected by default</h2>
+        <div class="chip-grid">
+          <div class="chip"><i data-lucide="credit-card"></i>PAN masked to last 4</div>
+          <div class="chip"><i data-lucide="eye-off"></i>CVV never returned</div>
+          <div class="chip"><i data-lucide="user-round-cog"></i>SSN &amp; gov-id masked</div>
+          <div class="chip"><i data-lucide="key-round"></i>Bearer token vs USRSEC</div>
+        </div>
+        <ul class="icon-list">
+          <li><i data-lucide="shield-check"></i>Uniform error envelope and a fixed HTTP status map.</li>
+        </ul>
+      </section>
+
+      <!-- ============ SLIDE 12 — DIVIDER: Risks &amp; Mitigations ============ -->
+      <section class="slide-divider" data-background-gradient="linear-gradient(68deg, #7A6DEC 15.56%, #5B39F3 62.74%, #4101DB 84.44%)">
+        <div class="divider-icon"><i data-lucide="shield-alert"></i></div>
+        <p class="kicker">03</p>
+        <h2>Risks &amp; Mitigations</h2>
+      </section>
+
+      <!-- ============ SLIDE 13 — Risks &amp; mitigations (table) ============ -->
+      <section>
+        <p class="kicker">Managed Risk</p>
+        <h2>Known risks, deliberate mitigations</h2>
+        <table class="blitzy-table">
+          <caption class="visually-hidden">Known risks and their deliberate mitigations.</caption>
+          <thead>
+            <tr><th scope="col">Risk</th><th scope="col">Mitigation</th></tr>
+          </thead>
+          <tbody>
+            <tr><td data-label="Risk">Cleartext HTTP, no transport auth yet</td><td data-label="Mitigation">Loopback-only listener; TLS/keyring and RACF documented follow-up</td></tr>
+            <tr><td data-label="Risk">Stateless pseudo-conversational CICS</td><td data-label="Mitigation">Token registry in a MAIN TSQ, short 15-minute life</td></tr>
+            <tr><td data-label="Risk">No card or account transaction index</td><td data-label="Mitigation">Application-level filtering; pagination and index later</td></tr>
+            <tr><td data-label="Risk">Oversized transaction-list payloads</td><td data-label="Mitigation">CICS channel/container transport, not COMMAREA</td></tr>
+            <tr><td data-label="Risk">Sensitive PII exposure</td><td data-label="Mitigation">PAN last-4, CVV omitted, SSN/gov-id masked by default</td></tr>
+            <tr><td data-label="Risk">Deck CDN supply-chain integrity</td><td data-label="Mitigation">Pinned CDN versions with SRI + CSP; static author-only diagrams (decision-log D40)</td></tr>
+          </tbody>
+        </table>
+      </section>
+
+      <!-- ============ SLIDE 14 — Delivery &amp; quality KPIs ============ -->
+      <section>
+        <p class="kicker">Delivery &amp; Quality</p>
+        <h2>Contract-first, with tests and install jobs</h2>
+        <div class="kpi-grid">
+          <div class="kpi-card">
+            <i data-lucide="file-json"></i>
+            <div class="kpi-value">3.0</div>
+            <div class="kpi-label">OpenAPI contract</div>
+          </div>
+          <div class="kpi-card">
+            <i data-lucide="list-checks"></i>
+            <div class="kpi-value">8</div>
+            <div class="kpi-label">Test artifacts</div>
+          </div>
+          <div class="kpi-card">
+            <i data-lucide="workflow"></i>
+            <div class="kpi-value">4</div>
+            <div class="kpi-label">JCL jobs (build, install, rollback, test)</div>
+          </div>
+          <div class="kpi-card">
+            <i data-lucide="database"></i>
+            <div class="kpi-value">CDEMOAPI</div>
+            <div class="kpi-label">One additive CSD group</div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ============ SLIDE 15 — Onboarding &amp; continuation ============ -->
+      <section>
+        <p class="kicker">Onboarding &amp; Next Steps</p>
+        <h2>From clean checkout to running API</h2>
+        <ul class="icon-list">
+          <li><i data-lucide="book-open"></i>onboarding-api.md takes developers from checkout to running.</li>
+          <li><i data-lucide="file-text"></i>decision-log.md records every non-trivial decision and rationale.</li>
+          <li><i data-lucide="file-json"></i>OpenAPI contract drives client generation and contract tests.</li>
+          <li><i data-lucide="list-todo"></i>Next: TLS/keyring, RACF, OAuth, pagination, write endpoints.</li>
+        </ul>
+      </section>
+
+      <!-- ============ SLIDE 16 — CLOSING ============ -->
+      <section class="slide-closing" data-background-color="#1A105F">
+        <div class="hero-icon"><i data-lucide="badge-check"></i></div>
+        <p class="kicker">In Summary</p>
+        <h2>Additive, read-only, contract-first value</h2>
+        <div class="kpi-grid">
+          <div class="kpi-card">
+            <i data-lucide="git-branch"></i>
+            <div class="kpi-value">7</div>
+            <div class="kpi-label">REST endpoints</div>
+          </div>
+          <div class="kpi-card">
+            <i data-lucide="shield-check"></i>
+            <div class="kpi-value">0</div>
+            <div class="kpi-label">Existing code files changed</div>
+          </div>
+          <div class="kpi-card">
+            <i data-lucide="lock"></i>
+            <div class="kpi-value">100%</div>
+            <div class="kpi-label">Read-only</div>
+          </div>
+        </div>
+        <a class="cta" href="../app/api/openapi.yaml" aria-label="Explore app/api/openapi.yaml &amp; docs/onboarding-api.md — the OpenAPI contract and onboarding guide"><i data-lucide="arrow-right"></i>Explore app/api/openapi.yaml &amp; docs/onboarding-api.md</a>
+        <p class="note" style="margin-top:22px;color:#94FAD5;">Libraries load from a pinned CDN (with SRI) at view time; nothing is installed on z/OS. An internet connection is required to view this deck; offline it degrades to unstyled text (see decision-log D40).</p>
+      </section>
+
+    </div>
+  </div>
+
+  <!-- ==========================================================================
+       Scripts: pinned CDN libraries + exact runtime configuration.
+       reveal.js 5.1.0, Mermaid 11.4.0 (ESM), Lucide 0.460.0 (UMD).
+       ========================================================================== -->
+  <script src="https://cdn.jsdelivr.net/npm/reveal.js@5.1.0/dist/reveal.js"
+          integrity="sha384-M/JtqCVlLcK9lwVnBnMXP0V577CBULkjodKsR/PITOe4MSKNbbwqCemEyluOw0+5"
+          crossorigin="anonymous"></script>
+  <script src="https://cdn.jsdelivr.net/npm/lucide@0.460.0/dist/umd/lucide.min.js"
+          integrity="sha384-ieG+IKD0d/ZPXyCBTMVAbqsQdns8QGJR/e26WMw7M4fkaI/rHcS/YIoi+ah9WGge"
+          crossorigin="anonymous"></script>
+  <script type="module">
+    // Mermaid entry is integrity-pinned via the <link rel="modulepreload"> in
+    // <head>; this import reuses that integrity-checked module.
+    import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11.4.0/dist/mermaid.esm.min.mjs';
+
+    // Mermaid: startOnLoad MUST be false; diagrams are rendered explicitly via
+    // mermaid.run() on the reveal.js 'ready' and every 'slidechanged' event.
+    mermaid.initialize({
+      startOnLoad: false,
+      theme: 'base',
+      themeVariables: {
+        primaryColor: '#F2F0FE',
+        primaryTextColor: '#333333',
+        primaryBorderColor: '#5B39F3',
+        lineColor: '#999999',
+        secondaryColor: '#F4EFF6'
+      }
+    });
+
+    // Preserve each diagram's pristine Mermaid source so it can be (re)rendered
+    // while its slide is measurable. Flowchart layout needs real, non-zero
+    // dimensions, so a diagram rendered inside a hidden slide would collapse.
+    document.querySelectorAll('pre.mermaid').forEach((el) => {
+      el.setAttribute('data-src', el.textContent);
+    });
+
+    // Pre-render ALL diagrams once, before reveal.js hides the non-active slides.
+    // A temporary stylesheet gives every slide a real width while keeping it
+    // invisible, so Mermaid measures text correctly and no diagram collapses.
+    async function prerenderDiagrams() {
+      const measure = document.createElement('style');
+      measure.textContent =
+        '.reveal .slides > section{display:block !important;position:absolute !important;' +
+        'top:0;left:0;width:1920px !important;height:auto !important;' +
+        'visibility:hidden !important;opacity:0 !important;transform:none !important;}';
+      document.head.appendChild(measure);
+      void document.body.offsetHeight; /* force reflow so the widths apply */
+      try {
+        await mermaid.run();
+      } catch (e) {
+        console.error('mermaid pre-render failed', e);
+      }
+      measure.remove();
+      document.querySelectorAll('pre.mermaid').forEach((el) =>
+        el.setAttribute('data-mermaid-done', 'true'));
+    }
+
+    // Render the current slide's diagram(s) and (re)draw the Lucide icons. Wired to
+    // BOTH the reveal.js 'ready' event and every 'slidechanged' event. Because
+    // startOnLoad is false, mermaid.run() is the only thing that turns a Mermaid
+    // source block into an SVG, so it is invoked here every time; any node that has
+    // not yet rendered cleanly is reset first so it lays out at its full size.
+    function renderVisuals() {
+      const current = (window.Reveal && Reveal.getCurrentSlide)
+        ? Reveal.getCurrentSlide()
+        : document;
+      const nodes = Array.prototype.slice.call(
+        (current || document).querySelectorAll('pre.mermaid'));
+      nodes.forEach((el) => {
+        if (el.getAttribute('data-mermaid-done') !== 'true') {
+          el.removeAttribute('data-processed');
+          el.innerHTML = el.getAttribute('data-src');
+        }
+      });
+      mermaid.run({ nodes: nodes });
+      nodes.forEach((el) => el.setAttribute('data-mermaid-done', 'true'));
+      lucide.createIcons();
+      enhanceA11y();
+    }
+
+    // Accessibility enhancements applied after every icon/diagram (re)render
+    // (MAJ-18): decorative Lucide icons are hidden from assistive tech; each
+    // Mermaid diagram is exposed as one labelled image; every slide becomes a
+    // labelled region with a "slide" roledescription.
+    function enhanceA11y() {
+      // reveal.js assigns role="application" to the .reveal root during init, which
+      // suppresses the main landmark. Re-assert role="main" (the .reveal element
+      // already carries id="deck-main" + aria-label from the markup) so the deck is
+      // exposed as the page's primary landmark for screen-reader users (WCAG 1.3.1 /
+      // 2.4.1). Keyboard navigation is unaffected because reveal.js binds its key
+      // handlers to document, not to this role. Re-applied on every render so it
+      // survives any later reveal re-configuration. (See decision log D39.)
+      const deckMain = document.querySelector('.reveal#deck-main');
+      if (deckMain) { deckMain.setAttribute('role', 'main'); }
+      document.querySelectorAll('svg.lucide').forEach((s) => {
+        s.setAttribute('aria-hidden', 'true');
+        s.setAttribute('focusable', 'false');
+      });
+      document.querySelectorAll('pre.mermaid').forEach((el) => {
+        const sec = el.closest('section');
+        const h = sec && sec.querySelector('h2, h1');
+        const k = sec && sec.querySelector('.kicker');
+        const label = (k ? k.textContent.trim() + ': ' : '') +
+                      (h ? h.textContent.trim() : 'Architecture') + ' (diagram)';
+        el.setAttribute('role', 'img');
+        el.setAttribute('aria-label', label);
+        const svg = el.querySelector('svg');
+        if (svg) { svg.setAttribute('aria-hidden', 'true'); svg.setAttribute('focusable', 'false'); }
+      });
+      // In the mobile linear-reflow view (@media max-width:768px) every slide is
+      // rendered visible and vertically stacked, so reveal.js's off-canvas
+      // aria-hidden="true" is stale: it would remove focusable content (the
+      // closing-slide "Explore" call-to-action) from the accessibility tree while
+      // that content is visually present, tripping axe aria-hidden-focus / WCAG
+      // 4.1.2. Clear aria-hidden in linear mode so the a11y tree matches what is on
+      // screen; on desktop reveal's single-slide model (and its aria-hidden) is left
+      // untouched. Re-run on every render and on resize so it tracks viewport flips.
+      const linear = window.matchMedia('(max-width: 768px)').matches;
+      const slides = document.querySelectorAll('.reveal .slides > section');
+      slides.forEach((sec, i) => {
+        const h = sec.querySelector('h1, h2');
+        const k = sec.querySelector('.kicker');
+        const base = (k ? k.textContent.trim() + ' — ' : '') +
+                     (h ? h.textContent.trim() : ('Slide ' + (i + 1)));
+        sec.setAttribute('role', 'region');
+        sec.setAttribute('aria-roledescription', 'slide');
+        sec.setAttribute('aria-label',
+          base + ' (slide ' + (i + 1) + ' of ' + slides.length + ')');
+        if (linear) { sec.removeAttribute('aria-hidden'); }
+      });
+    }
+
+    await prerenderDiagrams();
+    lucide.createIcons();
+    enhanceA11y();
+
+    Reveal.initialize({
+      hash: true,
+      transition: 'slide',
+      controlsTutorial: false,
+      width: 1920,
+      height: 1080,
+      // Disable reveal.js 5.x automatic scroll-view (default scrollActivationWidth
+      // = 435px). On sub-435px phones scroll-view keeps the fixed 1920-wide canvas
+      // and merely scales it down (~0.2x), shrinking 34px body text to ~7px --
+      // unreadable, the exact defect MAJ-17 flags. Setting this to 0 keeps the deck
+      // in its normal DOM at every width so the @media (max-width:768px) rules can
+      // reflow each slide into a readable, vertically-stacked linear layout, and the
+      // hash/scroll state stays in reveal's normal single-canvas model (see
+      // decision log D26 / D38).
+      scrollActivationWidth: 0,
+      // Allow the fixed 1920-wide canvas to scale below reveal's 0.2 floor at the
+      // 769-1920px range; below 768px the @media rules null the transform entirely.
+      minScale: 0.1
+    });
+
+    Reveal.on('ready', renderVisuals);
+    Reveal.on('slidechanged', renderVisuals);
+
+    // Recompute layout on resize / orientation change so the scaled canvas and
+    // the hash/scroll position stay in sync when the viewport flips (MAJ-17).
+    let layoutTimer;
+    function relayout() {
+      clearTimeout(layoutTimer);
+      layoutTimer = setTimeout(function () {
+        if (window.Reveal && Reveal.layout) { Reveal.layout(); }
+        // Re-sync the linear-mode aria-hidden handling when the viewport crosses
+        // the 768px breakpoint (e.g. orientation flip) so it tracks the layout.
+        enhanceA11y();
+      }, 150);
+    }
+    window.addEventListener('resize', relayout);
+    window.addEventListener('orientationchange', relayout);
+  </script>
+</body>
+</html>

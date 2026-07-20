@@ -1,0 +1,249 @@
+//APICSDIN JOB (COBOL),'AWSCODR',CLASS=A,MSGCLASS=H,MSGLEVEL=(1,1),
+//         NOTIFY=&SYSUID,TIME=1440
+//*********************************************************************
+//* Copyright Amazon.com, Inc. or its affiliates.
+//* All Rights Reserved.
+//*
+//* Licensed under the Apache License, Version 2.0 (the "License").
+//* You may not use this file except in compliance with the License.
+//* You may obtain a copy of the License at
+//*
+//*    http://www.apache.org/licenses/LICENSE-2.0
+//*
+//* Unless required by applicable law or agreed to in writing,
+//* software distributed under the License is distributed on an
+//* "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND,
+//* either express or implied. See the License for the specific
+//* language governing permissions and limitations under the License.
+//*********************************************************************
+//*  Define the CardDemo REST/JSON API CICS resource group CDEMOAPI.
+//*  The inline DFHCSDUP stream below is kept byte-consistent with the
+//*  reviewed member app/csd/CARDDEMOAPI.CSD; the drift guard
+//*  app/test/api/check-csd-drift.sh fails the build on any mismatch.
+//*  Additive / read-only: the existing CARDDEMO FILE resources are
+//*  NOT redefined here (they are shared as installed by the CARDDEMO
+//*  group); API read-only access is enforced in the service programs.
+//*  Design rationale is recorded in docs/decision-log.md.
+//*  Modeled on app/jcl/CBADMCDJ.jcl.
+//*********************************************************************
+//*  Environment parameters (edit to match the target region):
+//*   GRPLIST  - startup group list to receive CDEMOAPI so the group
+//*              installs automatically at the next CICS start.
+//*   SDFHLOAD - CICS SDFHLOAD load library (for DFHCSDUP).
+//*   DFHCSD   - the region CSD dataset to update.
+//*********************************************************************
+//   SET GRPLIST=DFHLIST
+//   SET SDFHLOAD=OEM.CICSTS.V05R06M0.CICS.SDFHLOAD
+//   SET DFHCSD=OEM.CICSTS.DFHCSD
+//*********************************************************************
+//*  STEP 1 - DFHCSDUP: DELETE (idempotent rerun) + DEFINE the
+//*  CDEMOAPI group, ADD it to &GRPLIST, then LIST it.
+//*********************************************************************
+//DEFGRP  EXEC PGM=DFHCSDUP,REGION=0M,
+//         PARM='CSD(READWRITE),PAGESIZE(60),NOCOMPAT'
+//STEPLIB  DD DSN=&SDFHLOAD,DISP=SHR
+//DFHCSD   DD UNIT=SYSDA,DISP=SHR,DSN=&DFHCSD
+//OUTDD    DD SYSOUT=*
+//SYSPRINT DD SYSOUT=*
+//SYSIN    DD *,SYMBOLS=JCLONLY
+*/********************************************************************/
+*/* CARDDEMO REST/JSON API - CICS RESOURCE GROUP CDEMOAPI            */
+*/* Base CICS Web Support (TCPIPSERVICE/URIMAP/alias) + API PROGRAMs */
+*/* + token TSMODEL + test-driver resources. NO FILE definitions:   */
+*/* the CARDDEMO FILE resources are shared, never redefined here.    */
+*/********************************************************************/
+* Rerun is idempotent and deterministic. First REMOVE CDEMOAPI from
+* the startup list, then DELETE the group, THEN (re)DEFINE and re-ADD
+* below. REMOVE-before-DELETE guarantees a prior half-wired group is
+* unlinked from &GRPLIST before its defs are dropped, so every rerun
+* converges to a single clean copy (mirrors app/jcl/APICSDRB.jcl). On
+* the very first run "group/list entry not found" (RC=4) on REMOVE and
+* DELETE is expected and harmless; the DEFINEs still process. A genuine
+* failure (RC>4) is undone by the conditional cleanup step (CLNGRP)
+* below. Rationale: docs/decision-log.md (D36).
+ REMOVE GROUP(CDEMOAPI) LIST(&GRPLIST)
+ DELETE GROUP(CDEMOAPI)
+ DEFINE TCPIPSERVICE(CDAPISVC) GROUP(CDEMOAPI)
+ DESCRIPTION(CARDDEMO REST/JSON API HTTP LISTENER - CWS)
+        PORTNUMBER(3001) STATUS(OPEN) PROTOCOL(HTTP)
+        TRANSACTION(CWXN) URM(NO) BACKLOG(5)
+        IPADDRESS(127.0.0.1) SOCKETCLOSE(NO) MAXDATALEN(32)
+        SSL(NO) AUTHENTICATE(NO)
+ DEFINE URIMAP(CDAPIURI) GROUP(CDEMOAPI)
+ DESCRIPTION(INBOUND ROUTE /carddemo/api/v1/* TO COAPIRTR)
+        STATUS(ENABLED) USAGE(SERVER) SCHEME(HTTP)
+        HOST(*) PATH(/carddemo/api/v1/*)
+        TCPIPSERVICE(CDAPISVC) TRANSACTION(CAPI)
+        PROGRAM(COAPIRTR) ANALYZER(NO) REDIRECTTYPE(NONE)
+ DEFINE TRANSACTION(CAPI) GROUP(CDEMOAPI)
+ DESCRIPTION(CARDDEMO REST/JSON API ALIAS TRANSACTION)
+        PROGRAM(DFHWBA) TWASIZE(0) PROFILE(DFHCICST)
+        STATUS(ENABLED) TASKDATALOC(ANY) TASKDATAKEY(USER)
+        STORAGECLEAR(YES) RUNAWAY(SYSTEM) SHUTDOWN(DISABLED)
+        ISOLATE(YES) DYNAMIC(NO) ROUTABLE(NO) PRIORITY(1)
+        TRANCLASS(DFHTCL00) DTIMOUT(NO) RESTART(NO) SPURGE(YES)
+        TPURGE(YES) DUMP(NO) TRACE(NO) CONFDATA(YES)
+        OTSTIMEOUT(NO) ACTION(BACKOUT) WAIT(YES) WAITTIME(0,0,0)
+        RESSEC(NO) CMDSEC(NO)
+ DEFINE PROGRAM(COAPIRTR) GROUP(CDEMOAPI)
+ DESCRIPTION(REST API ROUTER / FRONT DOOR)
+        LANGUAGE(COBOL) RELOAD(NO) RESIDENT(NO) USAGE(NORMAL)
+        USELPACOPY(NO) STATUS(ENABLED) CEDF(NO) DATALOCATION(ANY)
+        EXECKEY(USER) CONCURRENCY(QUASIRENT) API(CICSAPI) DYNAMIC(NO)
+        EXECUTIONSET(FULLAPI) JVM(NO)
+ DEFINE PROGRAM(COAPISEC) GROUP(CDEMOAPI)
+ DESCRIPTION(REST API AUTH / TOKEN SERVICE)
+        LANGUAGE(COBOL) RELOAD(NO) RESIDENT(NO) USAGE(NORMAL)
+        USELPACOPY(NO) STATUS(ENABLED) CEDF(NO) DATALOCATION(ANY)
+        EXECKEY(USER) CONCURRENCY(QUASIRENT) API(CICSAPI) DYNAMIC(NO)
+        EXECUTIONSET(FULLAPI) JVM(NO)
+ DEFINE PROGRAM(COACSVCC) GROUP(CDEMOAPI)
+ DESCRIPTION(REST API ACCOUNT INQUIRY SERVICE)
+        LANGUAGE(COBOL) RELOAD(NO) RESIDENT(NO) USAGE(NORMAL)
+        USELPACOPY(NO) STATUS(ENABLED) CEDF(NO) DATALOCATION(ANY)
+        EXECKEY(USER) CONCURRENCY(QUASIRENT) API(CICSAPI) DYNAMIC(NO)
+        EXECUTIONSET(FULLAPI) JVM(NO)
+ DEFINE PROGRAM(COCUSVCC) GROUP(CDEMOAPI)
+ DESCRIPTION(REST API CUSTOMER INQUIRY SERVICE)
+        LANGUAGE(COBOL) RELOAD(NO) RESIDENT(NO) USAGE(NORMAL)
+        USELPACOPY(NO) STATUS(ENABLED) CEDF(NO) DATALOCATION(ANY)
+        EXECKEY(USER) CONCURRENCY(QUASIRENT) API(CICSAPI) DYNAMIC(NO)
+        EXECUTIONSET(FULLAPI) JVM(NO)
+ DEFINE PROGRAM(COCRSVCC) GROUP(CDEMOAPI)
+ DESCRIPTION(REST API CARD INQUIRY SERVICE)
+        LANGUAGE(COBOL) RELOAD(NO) RESIDENT(NO) USAGE(NORMAL)
+        USELPACOPY(NO) STATUS(ENABLED) CEDF(NO) DATALOCATION(ANY)
+        EXECKEY(USER) CONCURRENCY(QUASIRENT) API(CICSAPI) DYNAMIC(NO)
+        EXECUTIONSET(FULLAPI) JVM(NO)
+ DEFINE PROGRAM(COXRSVCC) GROUP(CDEMOAPI)
+ DESCRIPTION(REST API CARD XREF SERVICE)
+        LANGUAGE(COBOL) RELOAD(NO) RESIDENT(NO) USAGE(NORMAL)
+        USELPACOPY(NO) STATUS(ENABLED) CEDF(NO) DATALOCATION(ANY)
+        EXECKEY(USER) CONCURRENCY(QUASIRENT) API(CICSAPI) DYNAMIC(NO)
+        EXECUTIONSET(FULLAPI) JVM(NO)
+ DEFINE PROGRAM(COTRSVCC) GROUP(CDEMOAPI)
+ DESCRIPTION(REST API TRANSACTION SERVICE)
+        LANGUAGE(COBOL) RELOAD(NO) RESIDENT(NO) USAGE(NORMAL)
+        USELPACOPY(NO) STATUS(ENABLED) CEDF(NO) DATALOCATION(ANY)
+        EXECKEY(USER) CONCURRENCY(QUASIRENT) API(CICSAPI) DYNAMIC(NO)
+        EXECUTIONSET(FULLAPI) JVM(NO)
+ DEFINE PROGRAM(COJSONUC) GROUP(CDEMOAPI)
+ DESCRIPTION(REST API JSON SERIALIZER SUBPROGRAM)
+        LANGUAGE(COBOL) RELOAD(NO) RESIDENT(NO) USAGE(NORMAL)
+        USELPACOPY(NO) STATUS(ENABLED) CEDF(NO) DATALOCATION(ANY)
+        EXECKEY(USER) CONCURRENCY(QUASIRENT) API(CICSAPI) DYNAMIC(NO)
+        EXECUTIONSET(FULLAPI) JVM(NO)
+* Token TSQ model (mirror of CARDDEMOAPI.CSD): EXPIRYINT(20) = 20
+* MINUTES; CICS rounds up to the next 10-minute multiple; 20 is the
+* smallest such multiple that outlives the 15-min token life. Unit
+* and rationale: docs/decision-log.md (D2, D35).
+ DEFINE TSMODEL(CDAPITSM) GROUP(CDEMOAPI)
+ DESCRIPTION(API TOKEN REGISTRY - BOUNDED MAIN TSQ LIFECYCLE)
+        PREFIX(AT) LOCATION(MAIN) RECOVERY(NO) EXPIRYINT(20)
+ DEFINE PROGRAM(TSTAUTH) GROUP(CDEMOAPI)
+ DESCRIPTION(API TEST DRIVER - SIGNON / TOKEN)
+        LANGUAGE(COBOL) RELOAD(NO) RESIDENT(NO) USAGE(NORMAL)
+        USELPACOPY(NO) STATUS(ENABLED) CEDF(NO) DATALOCATION(ANY)
+        EXECKEY(USER) CONCURRENCY(QUASIRENT) API(CICSAPI) DYNAMIC(NO)
+        EXECUTIONSET(FULLAPI) JVM(NO)
+ DEFINE TRANSACTION(TAUT) GROUP(CDEMOAPI)
+ DESCRIPTION(API TEST DRIVER TRANSACTION - TSTAUTH)
+        PROGRAM(TSTAUTH) PROFILE(DFHCICST) STATUS(ENABLED)
+        TASKDATALOC(ANY) TASKDATAKEY(USER) STORAGECLEAR(YES)
+        DUMP(NO) TRACE(NO) CONFDATA(YES) SPURGE(YES) TPURGE(YES)
+ DEFINE PROGRAM(TSTACCT) GROUP(CDEMOAPI)
+ DESCRIPTION(API TEST DRIVER - ACCOUNT INQUIRY)
+        LANGUAGE(COBOL) RELOAD(NO) RESIDENT(NO) USAGE(NORMAL)
+        USELPACOPY(NO) STATUS(ENABLED) CEDF(NO) DATALOCATION(ANY)
+        EXECKEY(USER) CONCURRENCY(QUASIRENT) API(CICSAPI) DYNAMIC(NO)
+        EXECUTIONSET(FULLAPI) JVM(NO)
+ DEFINE TRANSACTION(TACC) GROUP(CDEMOAPI)
+ DESCRIPTION(API TEST DRIVER TRANSACTION - TSTACCT)
+        PROGRAM(TSTACCT) PROFILE(DFHCICST) STATUS(ENABLED)
+        TASKDATALOC(ANY) TASKDATAKEY(USER) STORAGECLEAR(YES)
+        DUMP(NO) TRACE(NO) CONFDATA(YES) SPURGE(YES) TPURGE(YES)
+ DEFINE PROGRAM(TSTCUST) GROUP(CDEMOAPI)
+ DESCRIPTION(API TEST DRIVER - CUSTOMER INQUIRY)
+        LANGUAGE(COBOL) RELOAD(NO) RESIDENT(NO) USAGE(NORMAL)
+        USELPACOPY(NO) STATUS(ENABLED) CEDF(NO) DATALOCATION(ANY)
+        EXECKEY(USER) CONCURRENCY(QUASIRENT) API(CICSAPI) DYNAMIC(NO)
+        EXECUTIONSET(FULLAPI) JVM(NO)
+ DEFINE TRANSACTION(TCUS) GROUP(CDEMOAPI)
+ DESCRIPTION(API TEST DRIVER TRANSACTION - TSTCUST)
+        PROGRAM(TSTCUST) PROFILE(DFHCICST) STATUS(ENABLED)
+        TASKDATALOC(ANY) TASKDATAKEY(USER) STORAGECLEAR(YES)
+        DUMP(NO) TRACE(NO) CONFDATA(YES) SPURGE(YES) TPURGE(YES)
+ DEFINE PROGRAM(TSTCARD) GROUP(CDEMOAPI)
+ DESCRIPTION(API TEST DRIVER - CARD INQUIRY)
+        LANGUAGE(COBOL) RELOAD(NO) RESIDENT(NO) USAGE(NORMAL)
+        USELPACOPY(NO) STATUS(ENABLED) CEDF(NO) DATALOCATION(ANY)
+        EXECKEY(USER) CONCURRENCY(QUASIRENT) API(CICSAPI) DYNAMIC(NO)
+        EXECUTIONSET(FULLAPI) JVM(NO)
+ DEFINE TRANSACTION(TCRD) GROUP(CDEMOAPI)
+ DESCRIPTION(API TEST DRIVER TRANSACTION - TSTCARD)
+        PROGRAM(TSTCARD) PROFILE(DFHCICST) STATUS(ENABLED)
+        TASKDATALOC(ANY) TASKDATAKEY(USER) STORAGECLEAR(YES)
+        DUMP(NO) TRACE(NO) CONFDATA(YES) SPURGE(YES) TPURGE(YES)
+ DEFINE PROGRAM(TSTXREF) GROUP(CDEMOAPI)
+ DESCRIPTION(API TEST DRIVER - CARD XREF)
+        LANGUAGE(COBOL) RELOAD(NO) RESIDENT(NO) USAGE(NORMAL)
+        USELPACOPY(NO) STATUS(ENABLED) CEDF(NO) DATALOCATION(ANY)
+        EXECKEY(USER) CONCURRENCY(QUASIRENT) API(CICSAPI) DYNAMIC(NO)
+        EXECUTIONSET(FULLAPI) JVM(NO)
+ DEFINE TRANSACTION(TXRF) GROUP(CDEMOAPI)
+ DESCRIPTION(API TEST DRIVER TRANSACTION - TSTXREF)
+        PROGRAM(TSTXREF) PROFILE(DFHCICST) STATUS(ENABLED)
+        TASKDATALOC(ANY) TASKDATAKEY(USER) STORAGECLEAR(YES)
+        DUMP(NO) TRACE(NO) CONFDATA(YES) SPURGE(YES) TPURGE(YES)
+ DEFINE PROGRAM(TSTTRAN) GROUP(CDEMOAPI)
+ DESCRIPTION(API TEST DRIVER - TRANSACTION LIST/DETAIL)
+        LANGUAGE(COBOL) RELOAD(NO) RESIDENT(NO) USAGE(NORMAL)
+        USELPACOPY(NO) STATUS(ENABLED) CEDF(NO) DATALOCATION(ANY)
+        EXECKEY(USER) CONCURRENCY(QUASIRENT) API(CICSAPI) DYNAMIC(NO)
+        EXECUTIONSET(FULLAPI) JVM(NO)
+ DEFINE TRANSACTION(TTRN) GROUP(CDEMOAPI)
+ DESCRIPTION(API TEST DRIVER TRANSACTION - TSTTRAN)
+        PROGRAM(TSTTRAN) PROFILE(DFHCICST) STATUS(ENABLED)
+        TASKDATALOC(ANY) TASKDATAKEY(USER) STORAGECLEAR(YES)
+        DUMP(NO) TRACE(NO) CONFDATA(YES) SPURGE(YES) TPURGE(YES)
+* Wire CDEMOAPI into the region startup group list so the group is
+* installed automatically at the next CICS initialization.
+ ADD GROUP(CDEMOAPI) LIST(&GRPLIST)
+ LIST GROUP(CDEMOAPI)
+/*
+//*********************************************************************
+//*  STEP 2 (CONDITIONAL CLEANUP): runs ONLY if STEP 1 failed with a
+//*  real error (RC > 4 - i.e. a DEFINE/ADD failure, NOT the harmless
+//*  RC=4 that a first-run "not found" REMOVE/DELETE produces). It
+//*  unlinks CDEMOAPI from &GRPLIST and drops the partially-defined
+//*  group so a broken group is never left installed at next startup.
+//*  Rationale: docs/decision-log.md (D36).
+//*********************************************************************
+// IF (DEFGRP.RC GT 4) THEN
+//CLNGRP  EXEC PGM=DFHCSDUP,REGION=0M,
+//         PARM='CSD(READWRITE),PAGESIZE(60),NOCOMPAT'
+//STEPLIB  DD DSN=&SDFHLOAD,DISP=SHR
+//DFHCSD   DD UNIT=SYSDA,DISP=SHR,DSN=&DFHCSD
+//OUTDD    DD SYSOUT=*
+//SYSPRINT DD SYSOUT=*
+//SYSIN    DD *,SYMBOLS=JCLONLY
+* Undo a failed STEP 1: unlink CDEMOAPI from the startup list and drop
+* the partial group. Both statements tolerate a first-run "not found"
+* (RC=4) if STEP 1 failed before wiring or defining anything.
+ REMOVE GROUP(CDEMOAPI) LIST(&GRPLIST)
+ DELETE GROUP(CDEMOAPI)
+ LIST GROUP(CDEMOAPI)
+/*
+// ENDIF
+//*********************************************************************
+//*  ONLINE ACTIVATION (operator action - no reliable batch path).
+//*  DFHCSDUP has no INSTALL verb and CEDA is a terminal transaction,
+//*  so this job intentionally does NOT auto-install online. Use a
+//*  supported path:
+//*   1. Restart pickup - STEP 1 added CDEMOAPI to &GRPLIST, so the
+//*      group installs automatically at the next CICS start.
+//*   2. Immediate install in a running region - from an authorized
+//*      CICS terminal run:  CEDA INSTALL GROUP(CDEMOAPI)
+//*      or drive the same install through the CMCI/SPI.
+//*  See docs/onboarding-api.md. Roll back with app/jcl/APICSDRB.jcl.
+//*********************************************************************
