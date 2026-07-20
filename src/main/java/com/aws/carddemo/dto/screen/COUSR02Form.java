@@ -68,6 +68,17 @@ public class COUSR02Form {
     private String errmsg;
 
     /**
+     * Single-use confirmation nonce (review finding F12). No BMS origin: this hidden field carries
+     * the server-armed token that binds a PF5/PF3 save to the user the server fetched and displayed,
+     * so a tampered re-post cannot re-aim the save at a different {@code usridin} or replay it.
+     * Populated by the controller on the confirm-prompt render and echoed back on the saving submit;
+     * validated and consumed server-side by
+     * {@link com.aws.carddemo.web.support.ConfirmationTokenService}.
+     */
+    @Size(max = 64)
+    private String confirmToken;
+
+    /**
      * Creates an empty user-update screen form. Required for Spring MVC
      * {@code @ModelAttribute} binding and standard JavaBean instantiation;
      * all properties are populated by request binding.
@@ -293,6 +304,24 @@ public class COUSR02Form {
      */
     public void setErrmsg(String errmsg) {
         this.errmsg = errmsg;
+    }
+
+    /**
+     * Returns the single-use confirmation nonce (review finding F12), or {@code null} if unset.
+     *
+     * @return the confirmation nonce (max 64 characters)
+     */
+    public String getConfirmToken() {
+        return confirmToken;
+    }
+
+    /**
+     * Sets the single-use confirmation nonce (review finding F12).
+     *
+     * @param confirmToken the confirmation nonce (max 64 characters)
+     */
+    public void setConfirmToken(String confirmToken) {
+        this.confirmToken = confirmToken;
     }
 
     /**

@@ -29,6 +29,7 @@ import com.aws.carddemo.repository.CustomerRepository;
 import java.math.BigDecimal;
 import java.time.LocalDate;
 import java.util.List;
+import io.micrometer.observation.annotation.Observed;
 import org.springframework.stereotype.Service;
 
 /**
@@ -304,6 +305,7 @@ public class AccountViewService {
      * @throws RecordNotFoundException if the read chain cannot locate a required record
      * @throws IllegalStateException   for the {@code WHEN OTHER} abend scenario
      */
+    @Observed(name = "carddemo.account.view", contextualName = "account-view")
     public AccountViewResult mainEntry(COACTVWForm form, PfKey pfKey) {
         // INITIALIZE CC-WORK-AREA: a fresh per-interaction work area (the account
         // filter is carried between the edit paragraphs via this holder). The

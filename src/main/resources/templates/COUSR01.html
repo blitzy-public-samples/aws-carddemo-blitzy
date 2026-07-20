@@ -19,6 +19,7 @@
 -->
 <html lang="en" xmlns:th="http://www.thymeleaf.org">
 <head>
+    <th:block th:replace="~{fragments/bms-palette :: palette}"></th:block>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Add User</title>
@@ -68,12 +69,12 @@
         }
 
         /* ---- BMS color map (COLOR=... -> hex) ---------------------------- */
-        .blue      { color: #0000CD; }   /* BLUE      */
-        .yellow    { color: #CCCC00; }   /* YELLOW    */
-        .turquoise { color: #00CDCD; }   /* TURQUOISE */
-        .green     { color: #00CD00; }   /* GREEN     */
-        .red       { color: #CD0000; }   /* RED       */
-        .neutral   { color: #FFFFFF; }   /* NEUTRAL   */
+        .blue      { color: var(--bms-blue); }   /* BLUE      */
+        .yellow    { color: var(--bms-yellow); }   /* YELLOW    */
+        .turquoise { color: var(--bms-turquoise); }   /* TURQUOISE */
+        .green     { color: var(--bms-green); }   /* GREEN     */
+        .red       { color: var(--bms-red); }   /* RED       */
+        .neutral   { color: var(--bms-neutral); }   /* NEUTRAL   */
         .bright    { font-weight: bold; } /* ATTRB=BRT */
 
         /* ---- Unprotected entry fields (BMS UNPROT + HILIGHT=UNDERLINE) --- */
@@ -85,11 +86,11 @@
             font-size: 1em;
             line-height: 1.25;
             height: 1.25em;
-            color: #00CD00;                 /* GREEN input text */
+            color: var(--bms-green);                 /* GREEN input text */
             background: transparent;
             border: 0;
             border-bottom: 1px solid #00CD00; /* UNDERLINE hilight */
-            caret-color: #00CD00;
+            caret-color: var(--bms-green);
             white-space: pre;
         }
         .inp:focus-visible {
@@ -100,7 +101,7 @@
         /* ---- PF-key legend rendered as clickable submit buttons ---------- */
         .legend {
             white-space: nowrap;
-            color: #CCCC00;                 /* YELLOW legend */
+            color: var(--bms-yellow);                 /* YELLOW legend */
         }
         .legend button {
             font-family: inherit;
@@ -114,6 +115,7 @@
             cursor: pointer;
         }
         .legend button:focus-visible { outline: 1px dotted #CCCC00; }
+        .legend button:active { text-decoration: underline; filter: brightness(1.3); }
         @media (hover: hover) {
             .legend button:hover { text-decoration: underline; }
         }

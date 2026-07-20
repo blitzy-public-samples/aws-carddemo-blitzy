@@ -17,6 +17,7 @@ package com.aws.carddemo.domain;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+import com.aws.carddemo.TestCredentials;
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
 import jakarta.persistence.Id;
@@ -69,7 +70,8 @@ class UserSecurityTest {
     private static final String SEEDED_USR_ID = "ADMIN001";
 
     /** Seeded cleartext password value that must never surface in {@code toString()}. */
-    private static final String SEEDED_PWD = "PASSWORD";
+    // Review finding #5: non-secret unit fixture (value immaterial; only masked/carried through here).
+    private static final String SEEDED_PWD = TestCredentials.UNIT_FIXTURE_PASSWORD;
 
     /** Administrator role discriminator ({@code SEC-USR-TYPE} value that maps to {@code ROLE_ADMIN}). */
     private static final String ADMIN_TYPE = "A";

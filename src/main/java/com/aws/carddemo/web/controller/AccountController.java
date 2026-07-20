@@ -31,10 +31,15 @@ import com.aws.carddemo.service.online.AccountViewService.RoutingAction;
 import com.aws.carddemo.util.PfKeyHandler;
 import com.aws.carddemo.util.constants.ScreenTitles;
 import jakarta.servlet.http.HttpSession;
+import jakarta.validation.Valid;
 import java.time.LocalDateTime;
 import java.util.Locale;
 import org.springframework.stereotype.Controller;
+import org.springframework.ui.Model;
+import org.springframework.validation.BindingResult;
+import org.springframework.web.bind.WebDataBinder;
 import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.InitBinder;
 import org.springframework.web.bind.annotation.ModelAttribute;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestParam;
@@ -125,8 +130,25 @@ public class AccountController {
     /** Logical Thymeleaf view name for CAUP; resolves to {@code templates/COACTUP.html}. */
     private static final String VIEW_ACCOUNT_UPDATE = "COACTUP";
 
+    /**
+     * Neutral banner shown when data binding rejects a field for exceeding its declared
+     * {@code @Size} width (review finding #11). Only reachable by a crafted client (the template
+     * {@code maxlength} / 3270 field width makes it impossible otherwise), so it carries no COBOL
+     * business message and simply re-displays the screen without performing any account work.
+     */
+    private static final String MSG_FIELD_LENGTH =
+            "Input exceeds the maximum length for a field.";
+
     /** Model attribute name bound by the COACTVW / COACTUP templates ({@code th:object="${form}"}). */
     private static final String MODEL_ATTR_FORM = "form";
+
+    /**
+     * Model attribute driving the COACTUP {@code th:readonly} guards (review finding
+     * #10). {@code true} only in the "awaiting PF5 confirm" state, where every
+     * editable field is rendered read-only so the confirmation screen presents - and
+     * commits - exactly the validated values.
+     */
+    private static final String MODEL_ATTR_CONFIRM_MODE = "confirmMode";
 
     /** GET/POST route for the account-view screen (CICS tran CAVW). */
     private static final String ROUTE_ACCOUNT_VIEW = "/account/view";
@@ -324,8 +346,17 @@ public class AccountController {
      *         logical view name {@link #VIEW_ACCOUNT_VIEW} with the account displayed
      */
     @PostMapping(ROUTE_ACCOUNT_VIEW)
-    public String handleAccountView(@ModelAttribute(MODEL_ATTR_FORM) COACTVWForm form,
+    public String handleAccountView(@Valid @ModelAttribute(MODEL_ATTR_FORM) COACTVWForm form,
+            BindingResult bindingResult,
             @RequestParam(name = PARAM_PFKEY, required = false, defaultValue = ENTER_TOKEN) String pfkey) {
+        // Review finding #11: an over-width field (only reachable by a crafted client bypassing the
+        // template maxlength / 3270 field width) re-displays the screen with a neutral banner and
+        // performs no lookup, so the COBOL account-view edit ordering is untouched.
+        if (bindingResult.hasErrors()) {
+            populateViewHeader(form);
+            form.setErrmsg(MSG_FIELD_LENGTH);
+            return VIEW_ACCOUNT_VIEW;
+        }
         PfKey key = resolvePfKey(pfkey);
         AccountViewResult result = accountViewService.mainEntry(form, key);
         if (result.action() == RoutingAction.REDIRECT) {
@@ -361,13 +392,17 @@ public class AccountController {
      */
     @GetMapping(ROUTE_ACCOUNT_UPDATE)
     public String showAccountUpdate(@ModelAttribute(MODEL_ATTR_FORM) COACTUPForm form,
-            HttpSession session) {
+            HttpSession session, Model model) {
         AccountUpdateState state = new AccountUpdateState();
         session.setAttribute(SESSION_ATTR_UPDATE_STATE, state);
         populateUpdateHeader(form);
         form.setAcctsid(formattedContextAcctId());
         form.setInfomsg(infoForAccountUpdate(state.getChangeAction()));
         form.setErrmsg("");
+        // Review finding #10: a fresh not-fetched screen is never in the confirm
+        // state, so fields are editable and no confirmation token is issued.
+        model.addAttribute(MODEL_ATTR_CONFIRM_MODE, Boolean.FALSE);
+        form.setConfirmToken(state.getConfirmToken());
         // CDEMO-PGM-CONTEXT: flip to re-enter; the service owns further flips on POST.
         context.markReenter();
         context.markInitialized();
@@ -403,9 +438,21 @@ public class AccountController {
      *         logical view name {@link #VIEW_ACCOUNT_UPDATE}
      */
     @PostMapping(ROUTE_ACCOUNT_UPDATE)
-    public String handleAccountUpdate(@ModelAttribute(MODEL_ATTR_FORM) COACTUPForm form,
+    public String handleAccountUpdate(@Valid @ModelAttribute(MODEL_ATTR_FORM) COACTUPForm form,
+            BindingResult bindingResult,
             @RequestParam(name = PARAM_PFKEY, required = false, defaultValue = ENTER_TOKEN) String pfkey,
-            HttpSession session) {
+            HttpSession session, Model model) {
+        // Review finding #11: an over-width field (only reachable by a crafted client bypassing the
+        // template maxlength / 3270 field width) re-displays the screen (not confirm mode, no armed
+        // token) with a neutral banner and performs no update, so the COBOL account-update edit
+        // ordering owned by AccountUpdateService is untouched.
+        if (bindingResult.hasErrors()) {
+            populateUpdateHeader(form);
+            form.setErrmsg(MSG_FIELD_LENGTH);
+            model.addAttribute(MODEL_ATTR_CONFIRM_MODE, false);
+            form.setConfirmToken(null);
+            return VIEW_ACCOUNT_UPDATE;
+        }
         PfKey key = resolvePfKey(pfkey);
         AccountUpdateState state = resolveUpdateState(session);
         AccountUpdateResult result = accountUpdateService.process(form, key, state);
@@ -421,6 +468,13 @@ public class AccountController {
         populateUpdateHeader(form);
         form.setInfomsg(infoForAccountUpdate(result.changeAction()));
         form.setErrmsg(result.message());
+        // Review finding #10: when the resulting action is "awaiting PF5 confirm" the
+        // editable fields are made read-only and the freshly issued single-use token
+        // is echoed to the hidden field; every other state clears both. The token is
+        // read from the session state that process() mutated in place.
+        model.addAttribute(MODEL_ATTR_CONFIRM_MODE,
+                result.changeAction() == ChangeAction.CHANGES_OK_NOT_CONFIRMED);
+        form.setConfirmToken(state.getConfirmToken());
         return VIEW_ACCOUNT_UPDATE;
     }
 
@@ -462,6 +516,40 @@ public class AccountController {
         DateStruct now = DateStruct.from(LocalDateTime.now());
         form.setCurdate(now.getFormattedDateMmDdYy());
         form.setCurtime(now.getFormattedTimeHhMmSs());
+    }
+
+    /**
+     * Restricts request-parameter binding to the fields each account screen actually submits
+     * (review finding #11), switching on the bound form type since both screens share the
+     * {@code form} model attribute. The account-view screen submits only the search key
+     * ({@code acctsid}); the account-update screen submits its editable detail fields plus the
+     * single-use confirmation token ({@code confirmToken}, finding #10). Display-only header/title/
+     * date/message fields and the read-only balance are excluded, so they can no longer be
+     * over-posted; {@code pfkey} arrives as a {@code @RequestParam} and is not bound through the
+     * form.
+     *
+     * @param binder the per-request data binder for the bound form
+     */
+    @InitBinder
+    protected void restrictBinding(WebDataBinder binder) {
+        // NOTE: Spring MVC instantiates the @ModelAttribute command lazily, so binder.getTarget()
+        // is null when @InitBinder runs; the resolved binder.getTargetType() is the reliable
+        // discriminator here (it is null for simple @RequestParam binders such as pfkey).
+        Class<?> targetType = binder.getTargetType() != null ? binder.getTargetType().resolve() : null;
+        if (COACTVWForm.class.equals(targetType)) {
+            binder.setAllowedFields("acctsid");
+        } else if (COACTUPForm.class.equals(targetType)) {
+            binder.setAllowedFields(
+                    "acctsid", "acsttus", "acurbal", "acrcycr", "acrcydb",
+                    "opnyear", "opnmon", "opnday", "expyear", "expmon", "expday",
+                    "risyear", "rismon", "risday", "acrdlim", "acshlim", "aaddgrp",
+                    "actssn1", "actssn2", "actssn3", "acstfco", "acstnum",
+                    "dobyear", "dobmon", "dobday",
+                    "acsfnam", "acsmnam", "acslnam",
+                    "acsadl1", "acsadl2", "acscity", "acsstte", "acszipc", "acsctry",
+                    "acsph1a", "acsph1b", "acsph1c", "acsph2a", "acsph2b", "acsph2c",
+                    "acsgovt", "acseftc", "acspflg", "confirmToken");
+        }
     }
 
     /**

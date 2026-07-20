@@ -19,10 +19,11 @@ import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
+import java.util.Collections;
 import java.util.List;
 import java.util.Locale;
 
-import org.springframework.data.domain.Sort;
+import org.springframework.data.domain.Limit;
 import org.springframework.stereotype.Service;
 
 import com.aws.carddemo.domain.Transaction;
@@ -100,11 +101,14 @@ import com.aws.carddemo.repository.TransactionRepository;
  *
  * <h2>Browse model (AAP &sect;0.3.3, &sect;0.6.6)</h2>
  * <p>The VSAM {@code STARTBR}/{@code READNEXT}/{@code READPREV}/{@code ENDBR} browse over the
- * {@code TRANSACT} KSDS is reproduced with Spring Data: the full transaction set is read once via
- * the inherited {@code findAll(Sort)} sorted ascending by {@code tranId}, and the cursor is then
- * navigated in memory over that ordered list ({@link BrowseCursor}). Transaction ids are
- * sixteen-character zero-padded numeric strings, so ASCII/{@code String} ordering matches the
- * legacy key order under the database's {@code C}/{@code POSIX} collation. The page size is
+ * {@code TRANSACT} KSDS is reproduced with Spring Data: each page is read as a bounded, key-ordered
+ * window (review finding #21) &mdash; a forward page via
+ * {@code findByTranIdGreaterThanEqualOrderByTranIdAsc} and a backward page via
+ * {@code findByTranIdLessThanEqualOrderByTranIdDesc}, each capped at the page size plus the
+ * browse's skip-one and look-ahead reads &mdash; and the cursor is then navigated in memory over
+ * that ordered window ({@link BrowseCursor}), rather than materialising the whole table. Transaction
+ * ids are sixteen-character zero-padded numeric strings, so ASCII/{@code String} ordering matches
+ * the legacy key order under the database's {@code C}/{@code POSIX} collation. The page size is
  * exactly ten, matching the BMS map. {@code STARTBR NOTFND} maps to
  * {@link RecordNotFoundException} and {@code READNEXT}/{@code READPREV ENDFILE} map to
  * {@link EndOfFileException}; both are treated as <em>normal</em> end-of-page control signals
@@ -172,11 +176,21 @@ public class TransactionListService {
      */
     private static final int PAGE_SIZE = 10;
 
+    /**
+     * Number of records fetched into one browse window (review finding #21).
+     *
+     * <p>The forward browse issues at most a skip-one {@code READNEXT} (the PF8 case), then up to
+     * {@link #PAGE_SIZE} row {@code READNEXT}s, then one look-ahead {@code READNEXT}; the backward
+     * browse issues the symmetric {@code READPREV} sequence. The most records the browse can consume
+     * from the positioned start key is therefore {@code PAGE_SIZE + 2}. Fetching exactly this many
+     * rows in the bounded keyset window guarantees the window contains every record the legacy
+     * browse would have read for the page, so the paged output is byte-identical to the full-table
+     * scan it replaces while never materialising the whole {@code TRANSACT} table.</p>
+     */
+    private static final int BROWSE_WINDOW = PAGE_SIZE + 2;
+
     /** Width of the {@code TRAN-ID} key ({@code PIC X(16)}), used when right-padding a filter. */
     private static final int TRAN_ID_WIDTH = 16;
-
-    /** JPA property name of the transaction primary key, used to build the ascending sort. */
-    private static final String TRAN_ID_PROPERTY = "tranId";
 
     /**
      * Number of high-order integer digits displayed in the amount field. COBOL moves
@@ -708,7 +722,7 @@ public class TransactionListService {
      */
     TransactionListResult processPageForward(COTRN00Form form, CardDemoContext ctx,
             boolean skipFirst, String startKey) {
-        List<Transaction> ordered = loadOrderedTransactions();
+        List<Transaction> ordered = loadForwardWindow(startKey);
         int pageNum = parsePageNum(form.getPagenum());
 
         // PERFORM STARTBR-TRANSACT-FILE. NOTFND -> top-of-file message, empty page.
@@ -811,7 +825,7 @@ public class TransactionListService {
      * @return a list redisplay, optionally carrying a boundary message
      */
     TransactionListResult processPageBackward(COTRN00Form form, CardDemoContext ctx, String startKey) {
-        List<Transaction> ordered = loadOrderedTransactions();
+        List<Transaction> ordered = loadBackwardWindow(startKey);
         int pageNum = parsePageNum(form.getPagenum());
 
         // PERFORM STARTBR-TRANSACT-FILE. NOTFND -> top-of-file message, rows unchanged.
@@ -1169,19 +1183,70 @@ public class TransactionListService {
 
 
     /**
-     * Reads the whole transaction set ordered ascending by transaction id, the Spring Data
-     * equivalent of opening the {@code TRANSACT} KSDS for a browse (AAP &sect;0.3.3, &sect;0.6.6).
+     * Loads the forward browse window: the bounded, ascending slice of {@code TRANSACT} at or after
+     * {@code startKey} (review finding #21).
      *
-     * <p>Uses the repository's inherited {@code findAll(Sort)} with {@code Sort.by("tranId")}. The
-     * transaction ids are sixteen-character zero-padded numeric strings, so the ascending
-     * {@code String} order matches the legacy key order under the database's {@code C}/{@code POSIX}
-     * collation. Any genuinely abnormal data-access failure is left to propagate to the global
-     * exception handler.</p>
+     * <p>Reproduces the VSAM {@code STARTBR}-at-key plus forward {@code READNEXT} sequence of the
+     * COBOL transaction-list browse without materialising the whole {@code TRANSACT} table. The
+     * forward browse reads at most {@link #BROWSE_WINDOW} records from the positioned start key (a
+     * possible PF8 skip-one, a page of rows, and a look-ahead), so fetching exactly that many rows
+     * &ge; {@code startKey} in ascending key order yields a window that contains every record the
+     * legacy browse would have read for the page. The window is handed to
+     * {@link #startBrowseTransactFile(List, String)}, whose {@code firstIndexGE} re-derives the
+     * greater-than-or-equal position with the identical comparison, so the emitted rows are
+     * byte-identical to the previous full-table scan. The transaction ids are sixteen-character
+     * zero-padded numeric strings and the {@code transaction.tran_id} {@code CHAR(16)} column uses
+     * the {@code C}/{@code POSIX} collation, so the query's key order matches the legacy KSDS order.
+     * </p>
      *
-     * @return the ordered transaction snapshot backing the in-memory browse
+     * <p>A {@code startKey} of {@code ""} is the COBOL {@code LOW-VALUES} start (first page): the
+     * {@code >=} predicate treats it as a lower bound below every real id, selecting the first
+     * {@link #BROWSE_WINDOW} rows. A {@code HIGH-VALUES} sentinel start key is above every real id,
+     * so the window is empty and {@code startBrowseTransactFile} reports {@code NOTFND} &mdash;
+     * exactly the legacy {@code STARTBR} outcome.</p>
+     *
+     * @param startKey the inclusive lower-bound start key ({@code ""} for {@code LOW-VALUES}, a
+     *                 padded id, or a {@code HIGH-VALUES} sentinel)
+     * @return the ascending forward window, at most {@link #BROWSE_WINDOW} records (possibly empty)
      */
-    private List<Transaction> loadOrderedTransactions() {
-        return transactionRepository.findAll(Sort.by(Sort.Direction.ASC, TRAN_ID_PROPERTY));
+    private List<Transaction> loadForwardWindow(String startKey) {
+        String lowerBound = (startKey == null) ? "" : startKey;
+        return transactionRepository.findByTranIdGreaterThanEqualOrderByTranIdAsc(
+                lowerBound, Limit.of(BROWSE_WINDOW));
+    }
+
+    /**
+     * Loads the backward browse window: the bounded slice of {@code TRANSACT} at or before
+     * {@code startKey}, returned ascending for the browse cursor (review finding #21).
+     *
+     * <p>Reproduces the VSAM {@code STARTBR} plus backward {@code READPREV} sequence of paragraph
+     * {@code PROCESS-PAGE-BACKWARD} without materialising the whole table. The backward browse reads
+     * at most {@link #BROWSE_WINDOW} records at or before the start key, so the repository fetches
+     * that many rows &le; {@code startKey} in <em>descending</em> key order and this method reverses
+     * them to ascending &mdash; the order {@link #startBrowseTransactFile(List, String)} always
+     * expects. The cursor positions at the greater-than-or-equal index (the start key, the last
+     * element of the reversed window) and reads backward from it, so the paged output is
+     * byte-identical to the full-table scan it replaces.</p>
+     *
+     * <p>A {@code startKey} of {@code ""} is the {@code LOW-VALUES} start (the PF7-with-blank-first
+     * case): the backward browse then positions before the first record and reads backward, so the
+     * first record must be present. The same ascending head window as the forward low-values case is
+     * returned, which places the first transaction at index zero exactly as the full-table scan
+     * did.</p>
+     *
+     * @param startKey the inclusive upper-bound start key (the current page's first id, or
+     *                 {@code ""} for {@code LOW-VALUES})
+     * @return the ascending backward window, at most {@link #BROWSE_WINDOW} records (possibly empty)
+     */
+    private List<Transaction> loadBackwardWindow(String startKey) {
+        if (startKey == null || startKey.isEmpty()) {
+            return transactionRepository.findByTranIdGreaterThanEqualOrderByTranIdAsc(
+                    "", Limit.of(BROWSE_WINDOW));
+        }
+        List<Transaction> descending = transactionRepository
+                .findByTranIdLessThanEqualOrderByTranIdDesc(startKey, Limit.of(BROWSE_WINDOW));
+        Collections.reverse(descending);
+        return descending;
     }
 
     /**
@@ -1200,14 +1265,7 @@ public class TransactionListService {
         if (lastKey == null || lastKey.isEmpty()) {
             return false;
         }
-        for (Transaction tran : loadOrderedTransactions()) {
-            String tid = tran.getTranId();
-            String candidate = (tid == null) ? "" : tid;
-            if (candidate.compareTo(lastKey) > 0) {
-                return true;
-            }
-        }
-        return false;
+        return transactionRepository.existsByTranIdGreaterThan(lastKey);
     }
 
     /**

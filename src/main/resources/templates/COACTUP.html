@@ -22,6 +22,7 @@
 -->
 <html lang="en" xmlns:th="http://www.thymeleaf.org">
 <head>
+    <th:block th:replace="~{fragments/bms-palette :: palette}"></th:block>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Update Account - CardDemo</title>
@@ -37,13 +38,13 @@
             --lh: 21px;   /* height of one terminal row  */
             --fs: 16px;   /* terminal font size          */
             /* 3270 color palette mapped to inline hex (see agent prompt). */
-            --c-blue:  #0000CD;
-            --c-yellow:#CCCC00;
-            --c-turq:  #00CDCD;
-            --c-green: #00CD00;
-            --c-red:   #CD0000;
-            --c-neu:   #FFFFFF;
-            --c-bg:    #000000;
+            --c-blue:  var(--bms-blue);
+            --c-yellow:var(--bms-yellow);
+            --c-turq:  var(--bms-turquoise);
+            --c-green: var(--bms-green);
+            --c-red:   var(--bms-red);
+            --c-neu:   var(--bms-neutral);
+            --c-bg:    var(--bms-bg);
         }
 
         * { box-sizing: border-box; }
@@ -58,8 +59,18 @@
             color: var(--c-green);
             font-family: "Courier New", Courier, "DejaVu Sans Mono", monospace;
             display: flex;
-            justify-content: center;
+            justify-content: safe center;
             align-items: flex-start;
+            /* Finding #54: horizontal scroll keeps the 80ch artboard's left
+               origin reachable at 375x667; `safe center` falls back to
+               start-alignment (left edge at scrollLeft 0) when it overflows. */
+            overflow-x: auto;
+        }
+
+        /* Finding #54: the terminal artboard must never shrink below 80ch, so
+           its left origin remains reachable inside the horizontal scroller. */
+        body > * {
+            flex-shrink: 0;
         }
 
         /* Screen-reader-only content: present for assistive tech, no visual box. */
@@ -164,6 +175,7 @@
             cursor: pointer;
         }
         button.pf:hover { text-decoration: underline; }
+        button.pf:active { text-decoration: underline; filter: brightness(1.3); }
         button.pf:focus-visible {
             outline: 2px solid var(--c-yellow);
             outline-offset: 0;
@@ -191,6 +203,14 @@
       processor inject the hidden _csrf token automatically. Never a plain action.
     -->
     <form class="scr" th:object="${form}" th:action="@{/account/update}" method="post" autocomplete="off">
+        <!-- Review finding #10: single-use server confirmation token. Issued by the
+             service when the screen enters the "awaiting PF5 confirm" state and
+             echoed back on submit; the server validates it against the session-held
+             token and commits its own carried-forward validated snapshot, so a
+             crafted/replayed PF5 cannot substitute unvalidated identity or values.
+             Bound via th:field so it renders the controller-set value and binds back
+             on submit; empty in every non-confirmation state. -->
+        <input type="hidden" th:field="*{confirmToken}" />
 
         <!-- ============================ Header ============================ -->
         <!-- Row 1: Tran id (left) and current date (right). -->
@@ -213,61 +233,66 @@
         <!-- ========================= Account block ========================= -->
         <!-- Row 5: Account number (autofocus, BMS IC) and active status. -->
         <span class="c turq" style="left:18ch;top:calc(4*var(--lh))">Account Number :</span>
-        <input class="f" type="text" th:field="*{acctsid}" maxlength="11" autofocus="autofocus"
+        <input th:readonly="${confirmMode}" class="f" type="text" th:field="*{acctsid}" maxlength="11" autofocus="autofocus"
                aria-label="Account Number" style="left:37ch;top:calc(4*var(--lh));width:11ch" />
         <span class="c turq" style="left:56ch;top:calc(4*var(--lh))">Active Y/N: </span>
-        <input class="f" type="text" th:field="*{acsttus}" maxlength="1"
+        <input th:readonly="${confirmMode}" class="f" type="text" th:field="*{acsttus}" maxlength="1"
                aria-label="Active status, Y or N" style="left:69ch;top:calc(4*var(--lh));width:1ch" />
 
         <!-- Row 6: Opened date (year-month-day) and Credit Limit (display). -->
         <span class="c turq" style="left:7ch;top:calc(5*var(--lh))">Opened :</span>
-        <input class="f rj" type="text" th:field="*{opnyear}" maxlength="4"
+        <input th:readonly="${confirmMode}" class="f rj" type="text" th:field="*{opnyear}" maxlength="4"
                aria-label="Opened date year" style="left:16ch;top:calc(5*var(--lh));width:4ch" />
         <span class="c grn" style="left:21ch;top:calc(5*var(--lh))">-</span>
-        <input class="f rj" type="text" th:field="*{opnmon}" maxlength="2"
+        <input th:readonly="${confirmMode}" class="f rj" type="text" th:field="*{opnmon}" maxlength="2"
                aria-label="Opened date month" style="left:23ch;top:calc(5*var(--lh));width:2ch" />
         <span class="c grn" style="left:26ch;top:calc(5*var(--lh))">-</span>
-        <input class="f rj" type="text" th:field="*{opnday}" maxlength="2"
+        <input th:readonly="${confirmMode}" class="f rj" type="text" th:field="*{opnday}" maxlength="2"
                aria-label="Opened date day" style="left:28ch;top:calc(5*var(--lh));width:2ch" />
         <span class="c turq" style="left:38ch;top:calc(5*var(--lh))">Credit Limit        :</span>
-        <span class="c m" style="left:60ch;top:calc(5*var(--lh));width:15ch" th:text="*{acrdlim}"></span>
+        <input th:readonly="${confirmMode}" class="f rj" type="text" th:field="*{acrdlim}" maxlength="15"
+               aria-label="Credit Limit" style="left:60ch;top:calc(5*var(--lh));width:15ch" />
 
         <!-- Row 7: Expiry date (year-month-day) and Cash credit Limit (display). -->
         <span class="c turq" style="left:7ch;top:calc(6*var(--lh))">Expiry :</span>
-        <input class="f rj" type="text" th:field="*{expyear}" maxlength="4"
+        <input th:readonly="${confirmMode}" class="f rj" type="text" th:field="*{expyear}" maxlength="4"
                aria-label="Expiry date year" style="left:16ch;top:calc(6*var(--lh));width:4ch" />
         <span class="c grn" style="left:21ch;top:calc(6*var(--lh))">-</span>
-        <input class="f rj" type="text" th:field="*{expmon}" maxlength="2"
+        <input th:readonly="${confirmMode}" class="f rj" type="text" th:field="*{expmon}" maxlength="2"
                aria-label="Expiry date month" style="left:23ch;top:calc(6*var(--lh));width:2ch" />
         <span class="c grn" style="left:26ch;top:calc(6*var(--lh))">-</span>
-        <input class="f rj" type="text" th:field="*{expday}" maxlength="2"
+        <input th:readonly="${confirmMode}" class="f rj" type="text" th:field="*{expday}" maxlength="2"
                aria-label="Expiry date day" style="left:28ch;top:calc(6*var(--lh));width:2ch" />
         <span class="c turq" style="left:38ch;top:calc(6*var(--lh))">Cash credit Limit   :</span>
-        <span class="c m" style="left:60ch;top:calc(6*var(--lh));width:15ch" th:text="*{acshlim}"></span>
+        <input th:readonly="${confirmMode}" class="f rj" type="text" th:field="*{acshlim}" maxlength="15"
+               aria-label="Cash credit Limit" style="left:60ch;top:calc(6*var(--lh));width:15ch" />
 
         <!-- Row 8: Reissue date (year-month-day) and Current Balance (display). -->
         <span class="c turq" style="left:7ch;top:calc(7*var(--lh))">Reissue:</span>
-        <input class="f rj" type="text" th:field="*{risyear}" maxlength="4"
+        <input th:readonly="${confirmMode}" class="f rj" type="text" th:field="*{risyear}" maxlength="4"
                aria-label="Reissue date year" style="left:16ch;top:calc(7*var(--lh));width:4ch" />
         <span class="c grn" style="left:21ch;top:calc(7*var(--lh))">-</span>
-        <input class="f rj" type="text" th:field="*{rismon}" maxlength="2"
+        <input th:readonly="${confirmMode}" class="f rj" type="text" th:field="*{rismon}" maxlength="2"
                aria-label="Reissue date month" style="left:23ch;top:calc(7*var(--lh));width:2ch" />
         <span class="c grn" style="left:26ch;top:calc(7*var(--lh))">-</span>
-        <input class="f rj" type="text" th:field="*{risday}" maxlength="2"
+        <input th:readonly="${confirmMode}" class="f rj" type="text" th:field="*{risday}" maxlength="2"
                aria-label="Reissue date day" style="left:28ch;top:calc(7*var(--lh));width:2ch" />
         <span class="c turq" style="left:38ch;top:calc(7*var(--lh))">Current Balance     :</span>
-        <span class="c m" style="left:60ch;top:calc(7*var(--lh));width:15ch" th:text="*{acurbal}"></span>
+        <input th:readonly="${confirmMode}" class="f rj" type="text" th:field="*{acurbal}" maxlength="15"
+               aria-label="Current Balance" style="left:60ch;top:calc(7*var(--lh));width:15ch" />
 
         <!-- Row 9: Current Cycle Credit (display). -->
         <span class="c turq" style="left:38ch;top:calc(8*var(--lh))">Current Cycle Credit:</span>
-        <span class="c m" style="left:60ch;top:calc(8*var(--lh));width:15ch" th:text="*{acrcycr}"></span>
+        <input th:readonly="${confirmMode}" class="f rj" type="text" th:field="*{acrcycr}" maxlength="15"
+               aria-label="Current Cycle Credit" style="left:60ch;top:calc(8*var(--lh));width:15ch" />
 
         <!-- Row 10: Account Group (entry) and Current Cycle Debit (display). -->
         <span class="c turq" style="left:7ch;top:calc(9*var(--lh))">Account Group:</span>
-        <input class="f" type="text" th:field="*{aaddgrp}" maxlength="10"
+        <input th:readonly="${confirmMode}" class="f" type="text" th:field="*{aaddgrp}" maxlength="10"
                aria-label="Account Group" style="left:22ch;top:calc(9*var(--lh));width:10ch" />
         <span class="c turq" style="left:38ch;top:calc(9*var(--lh))">Current Cycle Debit :</span>
-        <span class="c m" style="left:60ch;top:calc(9*var(--lh));width:15ch" th:text="*{acrcydb}"></span>
+        <input th:readonly="${confirmMode}" class="f rj" type="text" th:field="*{acrcydb}" maxlength="15"
+               aria-label="Current Cycle Debit" style="left:60ch;top:calc(9*var(--lh));width:15ch" />
 
         <!-- ======================= Customer block ======================= -->
         <!-- Row 11: Customer Details heading (NEUTRAL bright). -->
@@ -275,30 +300,30 @@
 
         <!-- Row 12: Customer id and SSN (three parts separated by '-'). -->
         <span class="c turq" style="left:7ch;top:calc(11*var(--lh))">Customer id  :</span>
-        <input class="f" type="text" th:field="*{acstnum}" maxlength="9"
+        <input th:readonly="${confirmMode}" class="f" type="text" th:field="*{acstnum}" maxlength="9"
                aria-label="Customer id" style="left:22ch;top:calc(11*var(--lh));width:9ch" />
         <span class="c turq" style="left:48ch;top:calc(11*var(--lh))">SSN:</span>
-        <input class="f" type="text" th:field="*{actssn1}" maxlength="3"
+        <input th:readonly="${confirmMode}" class="f" type="text" th:field="*{actssn1}" maxlength="3"
                aria-label="SSN area number" style="left:54ch;top:calc(11*var(--lh));width:3ch" />
         <span class="c grn" style="left:58ch;top:calc(11*var(--lh))">-</span>
-        <input class="f" type="text" th:field="*{actssn2}" maxlength="2"
+        <input th:readonly="${confirmMode}" class="f" type="text" th:field="*{actssn2}" maxlength="2"
                aria-label="SSN group number" style="left:60ch;top:calc(11*var(--lh));width:2ch" />
         <span class="c grn" style="left:63ch;top:calc(11*var(--lh))">-</span>
-        <input class="f" type="text" th:field="*{actssn3}" maxlength="4"
+        <input th:readonly="${confirmMode}" class="f" type="text" th:field="*{actssn3}" maxlength="4"
                aria-label="SSN serial number" style="left:65ch;top:calc(11*var(--lh));width:4ch" />
 
         <!-- Row 13: Date of birth (year-month-day) and FICO score. -->
         <span class="c turq" style="left:7ch;top:calc(12*var(--lh))">Date of birth:</span>
-        <input class="f rj" type="text" th:field="*{dobyear}" maxlength="4"
+        <input th:readonly="${confirmMode}" class="f rj" type="text" th:field="*{dobyear}" maxlength="4"
                aria-label="Date of birth year" style="left:22ch;top:calc(12*var(--lh));width:4ch" />
         <span class="c grn" style="left:27ch;top:calc(12*var(--lh))">-</span>
-        <input class="f rj" type="text" th:field="*{dobmon}" maxlength="2"
+        <input th:readonly="${confirmMode}" class="f rj" type="text" th:field="*{dobmon}" maxlength="2"
                aria-label="Date of birth month" style="left:29ch;top:calc(12*var(--lh));width:2ch" />
         <span class="c grn" style="left:32ch;top:calc(12*var(--lh))">-</span>
-        <input class="f rj" type="text" th:field="*{dobday}" maxlength="2"
+        <input th:readonly="${confirmMode}" class="f rj" type="text" th:field="*{dobday}" maxlength="2"
                aria-label="Date of birth day" style="left:34ch;top:calc(12*var(--lh));width:2ch" />
         <span class="c turq" style="left:48ch;top:calc(12*var(--lh))">FICO Score:</span>
-        <input class="f" type="text" th:field="*{acstfco}" maxlength="3"
+        <input th:readonly="${confirmMode}" class="f" type="text" th:field="*{acstfco}" maxlength="3"
                aria-label="FICO Score" style="left:61ch;top:calc(12*var(--lh));width:3ch" />
 
         <!-- Row 14: Name column labels. -->
@@ -307,61 +332,61 @@
         <span class="c turq" style="left:54ch;top:calc(13*var(--lh))">Last Name : </span>
 
         <!-- Row 15: Name entry fields. -->
-        <input class="f" type="text" th:field="*{acsfnam}" maxlength="25"
+        <input th:readonly="${confirmMode}" class="f" type="text" th:field="*{acsfnam}" maxlength="25"
                aria-label="First Name" style="left:0ch;top:calc(14*var(--lh));width:25ch" />
-        <input class="f" type="text" th:field="*{acsmnam}" maxlength="25"
+        <input th:readonly="${confirmMode}" class="f" type="text" th:field="*{acsmnam}" maxlength="25"
                aria-label="Middle Name" style="left:27ch;top:calc(14*var(--lh));width:25ch" />
-        <input class="f" type="text" th:field="*{acslnam}" maxlength="25"
+        <input th:readonly="${confirmMode}" class="f" type="text" th:field="*{acslnam}" maxlength="25"
                aria-label="Last Name" style="left:54ch;top:calc(14*var(--lh));width:25ch" />
 
         <!-- Row 16: Address line 1 and State. -->
         <span class="c turq" style="left:0ch;top:calc(15*var(--lh))">Address:</span>
-        <input class="f" type="text" th:field="*{acsadl1}" maxlength="50"
+        <input th:readonly="${confirmMode}" class="f" type="text" th:field="*{acsadl1}" maxlength="50"
                aria-label="Address line 1" style="left:9ch;top:calc(15*var(--lh));width:50ch" />
         <span class="c turq" style="left:62ch;top:calc(15*var(--lh))">State </span>
-        <input class="f" type="text" th:field="*{acsstte}" maxlength="2"
+        <input th:readonly="${confirmMode}" class="f" type="text" th:field="*{acsstte}" maxlength="2"
                aria-label="State" style="left:72ch;top:calc(15*var(--lh));width:2ch" />
 
         <!-- Row 17: Address line 2 and Zip. -->
-        <input class="f" type="text" th:field="*{acsadl2}" maxlength="50"
+        <input th:readonly="${confirmMode}" class="f" type="text" th:field="*{acsadl2}" maxlength="50"
                aria-label="Address line 2" style="left:9ch;top:calc(16*var(--lh));width:50ch" />
         <span class="c turq" style="left:62ch;top:calc(16*var(--lh))">Zip</span>
-        <input class="f" type="text" th:field="*{acszipc}" maxlength="5"
+        <input th:readonly="${confirmMode}" class="f" type="text" th:field="*{acszipc}" maxlength="5"
                aria-label="Zip code" style="left:72ch;top:calc(16*var(--lh));width:5ch" />
 
         <!-- Row 18: City and Country. -->
         <span class="c turq" style="left:0ch;top:calc(17*var(--lh))">City </span>
-        <input class="f" type="text" th:field="*{acscity}" maxlength="50"
+        <input th:readonly="${confirmMode}" class="f" type="text" th:field="*{acscity}" maxlength="50"
                aria-label="City" style="left:9ch;top:calc(17*var(--lh));width:50ch" />
         <span class="c turq" style="left:62ch;top:calc(17*var(--lh))">Country</span>
-        <input class="f" type="text" th:field="*{acsctry}" maxlength="3"
+        <input th:readonly="${confirmMode}" class="f" type="text" th:field="*{acsctry}" maxlength="3"
                aria-label="Country" style="left:72ch;top:calc(17*var(--lh));width:3ch" />
 
         <!-- Row 19: Phone 1 (area/prefix/line) and Government Issued Id Ref. -->
         <span class="c turq" style="left:0ch;top:calc(18*var(--lh))">Phone 1:</span>
-        <input class="f rj" type="text" th:field="*{acsph1a}" maxlength="3"
+        <input th:readonly="${confirmMode}" class="f rj" type="text" th:field="*{acsph1a}" maxlength="3"
                aria-label="Phone 1 area code" style="left:9ch;top:calc(18*var(--lh));width:3ch" />
-        <input class="f rj" type="text" th:field="*{acsph1b}" maxlength="3"
+        <input th:readonly="${confirmMode}" class="f rj" type="text" th:field="*{acsph1b}" maxlength="3"
                aria-label="Phone 1 prefix" style="left:13ch;top:calc(18*var(--lh));width:3ch" />
-        <input class="f rj" type="text" th:field="*{acsph1c}" maxlength="4"
+        <input th:readonly="${confirmMode}" class="f rj" type="text" th:field="*{acsph1c}" maxlength="4"
                aria-label="Phone 1 line number" style="left:17ch;top:calc(18*var(--lh));width:4ch" />
         <span class="c turq" style="left:23ch;top:calc(18*var(--lh))">Government Issued Id Ref    : </span>
-        <input class="f" type="text" th:field="*{acsgovt}" maxlength="20"
+        <input th:readonly="${confirmMode}" class="f" type="text" th:field="*{acsgovt}" maxlength="20"
                aria-label="Government Issued Id Ref" style="left:57ch;top:calc(18*var(--lh));width:20ch" />
 
         <!-- Row 20: Phone 2 (area/prefix/line), EFT Account Id, Primary Card Holder. -->
         <span class="c turq" style="left:0ch;top:calc(19*var(--lh))">Phone 2:</span>
-        <input class="f rj" type="text" th:field="*{acsph2a}" maxlength="3"
+        <input th:readonly="${confirmMode}" class="f rj" type="text" th:field="*{acsph2a}" maxlength="3"
                aria-label="Phone 2 area code" style="left:9ch;top:calc(19*var(--lh));width:3ch" />
-        <input class="f rj" type="text" th:field="*{acsph2b}" maxlength="3"
+        <input th:readonly="${confirmMode}" class="f rj" type="text" th:field="*{acsph2b}" maxlength="3"
                aria-label="Phone 2 prefix" style="left:13ch;top:calc(19*var(--lh));width:3ch" />
-        <input class="f rj" type="text" th:field="*{acsph2c}" maxlength="4"
+        <input th:readonly="${confirmMode}" class="f rj" type="text" th:field="*{acsph2c}" maxlength="4"
                aria-label="Phone 2 line number" style="left:17ch;top:calc(19*var(--lh));width:4ch" />
         <span class="c turq" style="left:23ch;top:calc(19*var(--lh))">EFT Account Id: </span>
-        <input class="f" type="text" th:field="*{acseftc}" maxlength="10"
+        <input th:readonly="${confirmMode}" class="f" type="text" th:field="*{acseftc}" maxlength="10"
                aria-label="EFT Account Id" style="left:40ch;top:calc(19*var(--lh));width:10ch" />
         <span class="c turq" style="left:52ch;top:calc(19*var(--lh))">Primary Card Holder Y/N:</span>
-        <input class="f" type="text" th:field="*{acspflg}" maxlength="1"
+        <input th:readonly="${confirmMode}" class="f" type="text" th:field="*{acspflg}" maxlength="1"
                aria-label="Primary Card Holder, Y or N" style="left:77ch;top:calc(19*var(--lh));width:1ch" />
 
         <!-- ===================== Messages & legend ===================== -->
@@ -369,7 +394,7 @@
         <span class="c neu" style="left:22ch;top:calc(21*var(--lh));width:45ch" th:text="*{infomsg}"></span>
 
         <!-- Row 23: Error message (RED, bold) - rendered only when populated. -->
-        <span class="c err" style="left:0ch;top:calc(22*var(--lh));width:78ch"
+        <span role="alert" aria-live="assertive" class="c err" style="left:0ch;top:calc(22*var(--lh));width:78ch"
               th:if="${!#strings.isEmpty(form.errmsg)}" th:text="*{errmsg}"></span>
 
         <!-- Row 24: PF-key legend as submit controls (physical PF keys -> buttons).

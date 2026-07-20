@@ -27,15 +27,25 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.redirectedUrlPattern;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.view;
+import static org.assertj.core.api.Assertions.assertThat;
 
 import com.aws.carddemo.AbstractPostgresIntegrationTest;
+import com.aws.carddemo.domain.Account;
+import com.aws.carddemo.domain.Customer;
+import com.aws.carddemo.dto.screen.COACTUPForm;
+import com.aws.carddemo.repository.AccountRepository;
+import com.aws.carddemo.repository.CustomerRepository;
+import java.math.BigDecimal;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
 import org.springframework.mock.web.MockHttpSession;
 import org.springframework.security.test.context.support.WithMockUser;
 import org.springframework.test.web.servlet.MockMvc;
+import org.springframework.test.web.servlet.MvcResult;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.util.LinkedMultiValueMap;
+import org.springframework.util.MultiValueMap;
 
 /**
  * Failsafe integration test for {@link AccountController} - the Spring MVC web tier that
@@ -166,8 +176,101 @@ class AccountControllerIT extends AbstractPostgresIntegrationTest {
     /** COACTUPC cross-reference not-found banner fragment re-rendered on the update screen. */
     private static final String UPDATE_NOT_FOUND_FRAGMENT = "not found in Cross ref file";
 
+    // --- Confirmation-integrity (findings #48, #10) constants ---
+
+    /** Model attribute the controller sets to {@code true} only in the {@code CHANGES_OK_NOT_CONFIRMED} state. */
+    private static final String MODEL_ATTR_CONFIRM_MODE = "confirmMode";
+
+    /** Request-parameter / form property carrying the single-use confirmation token (hidden field). */
+    private static final String PARAM_CONFIRM_TOKEN = "confirmToken";
+
+    /** Primary key (as a JPA id) of the seeded, fully cross-referenced account under test. */
+    private static final long ACCT1_KEY = 1L;
+
+    /** Primary key of the customer linked to {@link #ACCT1_KEY} via {@code card_xref} (cust_id 1). */
+    private static final long CUST1_KEY = 1L;
+
+    /**
+     * The seeded account 1 rendered as the 11-digit zero-padded filter CAUP's {@code 1210-EDIT-ACCOUNT}
+     * requires ("Account Number if supplied must be a 11 digit Non-Zero Number"); parses to id 1.
+     */
+    private static final String CAUP_ACCT_ID = "00000000001";
+
+    /** A second seeded account id (11-digit) used as the swapped-target victim; must never be written. */
+    private static final String SWAP_ACCT_ID = "00000000002";
+
+    /** Primary key of the swapped-target victim account. */
+    private static final long ACCT2_KEY = 2L;
+
+    /** Seeded credit limit of {@link #ACCT1_KEY} ({@code acct_credit_limit} 2020.00); the pre-edit value. */
+    private static final BigDecimal SEED_ACCT1_CREDIT_LIMIT = new BigDecimal("2020.00");
+
+    /** Seeded credit limit of {@link #ACCT2_KEY} ({@code acct_credit_limit} 6130.00); must stay untouched. */
+    private static final BigDecimal SEED_ACCT2_CREDIT_LIMIT = new BigDecimal("6130.00");
+
+    /** The meaningful, valid monetary edit applied through the confirm flow (finding #48): 1000.00. */
+    private static final String EDITED_CREDIT_LIMIT = "1000.00";
+
+    /** Expected committed credit limit after a legitimate confirm+PF5 write. */
+    private static final BigDecimal COMMITTED_CREDIT_LIMIT = new BigDecimal("1000.00");
+
+    /** Expected committed cash credit limit (form acshlim 500.00). */
+    private static final BigDecimal COMMITTED_CASH_LIMIT = new BigDecimal("500.00");
+
+    /** Expected committed current balance (form acurbal 250.00). */
+    private static final BigDecimal COMMITTED_CURR_BAL = new BigDecimal("250.00");
+
+    /** A tampered, well-formed credit limit posted on the PF5 turn that MUST be ignored (overpost, #10). */
+    private static final String OVERPOST_CREDIT_LIMIT = "9999999.99";
+
+    /** A second tampered credit limit used to prove a replayed token performs no further write (#10). */
+    private static final String REPLAY_CREDIT_LIMIT = "8888888.88";
+
+    /** A syntactically valid but wrong 64-hex confirmation token used to prove forged tokens are rejected. */
+    private static final String FORGED_TOKEN =
+            "0000000000000000000000000000000000000000000000000000000000000000";
+
+    /** Fragment of {@code MSG_CONFIRM_INTEGRITY} re-rendered on the red error line when a token is rejected. */
+    private static final String CONFIRM_INTEGRITY_FRAGMENT = "Confirmation could not be validated";
+
+    /** Fragment of the finding #11 neutral length banner re-rendered when an over-width field is rejected. */
+    private static final String FIELD_LENGTH_FRAGMENT = "exceeds the maximum length";
+
+    /** A 12-digit account id (one over the {@code acctsid} PIC 9(11) / {@code @Size(max = 11)} width). */
+    private static final String OVER_WIDTH_ACCT_ID = "123456789012";
+
+    /** Non-submitted, non-allowlisted COACTUPForm display property used to prove mass-assignment is blocked. */
+    private static final String OVERPOST_PROP_FKEYS = "fkeys";
+
+    /** Hostile value an attacker tries to inject into the non-allowlisted {@link #OVERPOST_PROP_FKEYS} property. */
+    private static final String OVERPOST_FKEYS_VALUE = "INJECTED_FKEYS";
+
+    /** Fragment of {@code MSG_DATA_CHANGED} re-rendered when the 9700 re-read detects concurrent drift. */
+    private static final String DATA_CHANGED_FRAGMENT = "Record changed by some one else";
+
+    /** Trimmed first name committed by a legitimate write (form acsfnam JOHN); DB column is {@code CHAR(25)}. */
+    private static final String COMMITTED_FIRST_NAME = "JOHN";
+
+    /** Trimmed last name committed by a legitimate write (form acslnam DOE). */
+    private static final String COMMITTED_LAST_NAME = "DOE";
+
+    /** SSN committed by a legitimate write (form actssn1/2/3 -> 123456789). */
+    private static final long COMMITTED_SSN = 123456789L;
+
+    /** FICO score committed by a legitimate write (form acstfco 700). */
+    private static final int COMMITTED_FICO = 700;
+
+    /** Injected drift status written directly to the datastore between confirm and PF5 to force 9700 drift. */
+    private static final String DRIFT_STATUS = "N";
+
     @Autowired
     private MockMvc mockMvc;
+
+    @Autowired
+    private AccountRepository accountRepository;
+
+    @Autowired
+    private CustomerRepository customerRepository;
 
     // ------------------------------------------------------------------
     // Phase 1 - Authorization and first-entry GET rendering
@@ -415,5 +518,388 @@ class AccountControllerIT extends AbstractPostgresIntegrationTest {
                         .param(PARAM_ACCT_ID, SEEDED_ACCT_ID)
                         .param(PARAM_PFKEY, PFKEY_ENTER))
                 .andExpect(status().isForbidden());
+    }
+
+    // ------------------------------------------------------------------
+    // Phase 5 - CAUP confirmation integrity (findings #48 monetary binding, #10 overposting)
+    //
+    // These tests drive the real pseudo-conversational edit->confirm->PF5 flow end-to-end against the
+    // Testcontainers PostgreSQL instance (no @Transactional; committed state is isolated by the base
+    // class per-test clean+migrate). They verify (a) that the five BMS FSET,UNPROT monetary inputs now
+    // bind and reach the transactional write as BigDecimal (finding #48), and (b) that the single-use
+    // server-side confirmation token + server-carried pending snapshot defeat overposting, target
+    // swapping, token replay, forged tokens, and concurrent-change drift (finding #10, CWE-20/CWE-639),
+    // exactly reproducing the mainframe contract where the confirmation-screen fields are protected and
+    // the PF5 turn can only re-present the validated ACUP-NEW-DETAILS.
+    // ------------------------------------------------------------------
+
+    /**
+     * A fully valid COACTUP edit for the seeded account 1: every one of the 24 field edits passes
+     * (dates are real, valid calendar dates validated by the production {@code DateConversionService}),
+     * and the credit limit is changed from the seeded 2020.00 to {@link #EDITED_CREDIT_LIMIT} so
+     * {@code 1205-COMPARE-OLD-NEW} detects a change and the edit pass advances to the confirm state.
+     * A fresh map is returned on each call so a test may tamper with a single field in isolation.
+     *
+     * @return a mutable request-parameter map of the account-update form fields
+     */
+    private static MultiValueMap<String, String> validEditForm() {
+        LinkedMultiValueMap<String, String> p = new LinkedMultiValueMap<>();
+        p.add("acctsid", CAUP_ACCT_ID);
+        p.add("acsttus", "Y");
+        p.add("acrdlim", EDITED_CREDIT_LIMIT); // the meaningful, valid monetary change (finding #48)
+        p.add("acshlim", "500.00");
+        p.add("acurbal", "250.00");
+        p.add("acrcycr", "100.00");
+        p.add("acrcydb", "50.00");
+        p.add("opnyear", "2020");
+        p.add("opnmon", "01");
+        p.add("opnday", "15");
+        p.add("expyear", "2025");
+        p.add("expmon", "12");
+        p.add("expday", "31");
+        p.add("risyear", "2021");
+        p.add("rismon", "06");
+        p.add("risday", "01");
+        p.add("aaddgrp", "GROUP01");
+        p.add("acstnum", "000000001");
+        p.add("actssn1", "123");
+        p.add("actssn2", "45");
+        p.add("actssn3", "6789");
+        p.add("dobyear", "1980");
+        p.add("dobmon", "05");
+        p.add("dobday", "20");
+        p.add("acstfco", "700");
+        p.add("acsfnam", "JOHN");
+        p.add("acsmnam", "QUINCY");
+        p.add("acslnam", "DOE");
+        p.add("acsadl1", "123 MAIN ST");
+        p.add("acsstte", "CA");
+        p.add("acsadl2", "APT 4");
+        p.add("acszipc", "90001");
+        p.add("acscity", "LOS ANGELES");
+        p.add("acsctry", "USA");
+        p.add("acsph1a", "212");
+        p.add("acsph1b", "555");
+        p.add("acsph1c", "1234");
+        p.add("acsgovt", "GOVT123");
+        p.add("acsph2a", "");
+        p.add("acsph2b", "");
+        p.add("acsph2c", "");
+        p.add("acseftc", "1234567890");
+        p.add("acspflg", "Y");
+        return p;
+    }
+
+    /**
+     * Extracts the single-use confirmation token the controller echoed onto the rendered form model
+     * attribute (the hidden {@code confirmToken} field bound with {@code th:field}).
+     *
+     * @param result the {@link MvcResult} of a confirm-state render
+     * @return the issued confirmation token
+     */
+    private static String tokenFrom(MvcResult result) {
+        COACTUPForm form = (COACTUPForm) result.getModelAndView().getModel().get(MODEL_ATTR_FORM);
+        return form.getConfirmToken();
+    }
+
+    /**
+     * Drives the first three pseudo-conversational turns - first-entry GET, an ENTER fetch of the
+     * seeded account, and an ENTER edit pass - leaving the program in the armed confirm state, and
+     * returns the issued single-use token. Asserts the confirm state was actually reached (so a
+     * date-edit regression would fail fast here rather than silently skipping the write path).
+     *
+     * @param session the shared HTTP session standing in for the 3270 pseudo-conversation
+     * @return the non-blank single-use confirmation token issued by the edit pass
+     * @throws Exception if the MockMvc exchange fails
+     */
+    private String driveToConfirm(MockHttpSession session) throws Exception {
+        // Turn 1 (GET, first entry): render the empty prompt and flip the context to re-enter.
+        mockMvc.perform(get(ROUTE_ACCOUNT_UPDATE).session(session))
+                .andExpect(status().isOk())
+                .andExpect(view().name(VIEW_ACCOUNT_UPDATE));
+        // Turn 2 (POST ENTER, fetch): 9000-READ-ACCT stores the old snapshot + server-carried identity.
+        mockMvc.perform(post(ROUTE_ACCOUNT_UPDATE)
+                        .session(session)
+                        .param(PARAM_ACCT_ID, CAUP_ACCT_ID)
+                        .param(PARAM_PFKEY, PFKEY_ENTER)
+                        .with(csrf()))
+                .andExpect(status().isOk())
+                .andExpect(view().name(VIEW_ACCOUNT_UPDATE));
+        // Turn 3 (POST ENTER, edits): the full 1200 edit pass validates and advances to the confirm
+        // state, arming the server-side pending snapshot + single-use token echoed to the form.
+        MvcResult confirm = mockMvc.perform(post(ROUTE_ACCOUNT_UPDATE)
+                        .session(session)
+                        .params(validEditForm())
+                        .param(PARAM_PFKEY, PFKEY_ENTER)
+                        .with(csrf()))
+                .andExpect(status().isOk())
+                .andExpect(view().name(VIEW_ACCOUNT_UPDATE))
+                .andExpect(model().attribute(MODEL_ATTR_CONFIRM_MODE, equalTo(Boolean.TRUE)))
+                .andReturn();
+        String token = tokenFrom(confirm);
+        assertThat(token)
+                .as("the confirm turn must issue a non-blank single-use confirmation token")
+                .isNotBlank();
+        return token;
+    }
+
+    /**
+     * (Finding #48 + #10 happy path) A real edit&rarr;confirm&rarr;PF5 flow commits BOTH the account and
+     * its customer atomically with the edited values, proving the monetary inputs now bind and reach the
+     * transactional write as scale-2 {@link BigDecimal} (never float/double).
+     */
+    @Test
+    @WithMockUser(roles = ROLE_USER)
+    void accountUpdateEditConfirmPf5CommitsAccountAndCustomerAtomically() throws Exception {
+        MockHttpSession session = new MockHttpSession();
+        String token = driveToConfirm(session);
+
+        // Turn 4 (POST PF5 + issued token): commit the server-carried validated snapshot.
+        mockMvc.perform(post(ROUTE_ACCOUNT_UPDATE)
+                        .session(session)
+                        .params(validEditForm())
+                        .param(PARAM_PFKEY, PFKEY_PF5)
+                        .param(PARAM_CONFIRM_TOKEN, token)
+                        .with(csrf()))
+                .andExpect(status().isOk())
+                .andExpect(view().name(VIEW_ACCOUNT_UPDATE))
+                .andExpect(model().attribute(MODEL_ATTR_CONFIRM_MODE, equalTo(Boolean.FALSE)));
+
+        Account saved = accountRepository.findById(ACCT1_KEY).orElseThrow();
+        assertThat(saved.getCreditLimit()).isInstanceOf(BigDecimal.class);
+        assertThat(saved.getCreditLimit()).isEqualByComparingTo(COMMITTED_CREDIT_LIMIT);
+        assertThat(saved.getCreditLimit().scale()).isEqualTo(2);
+        assertThat(saved.getCashCreditLimit()).isEqualByComparingTo(COMMITTED_CASH_LIMIT);
+        assertThat(saved.getCurrBal()).isEqualByComparingTo(COMMITTED_CURR_BAL);
+
+        Customer savedCust = customerRepository.findById(CUST1_KEY).orElseThrow();
+        assertThat(savedCust.getFirstName().trim()).isEqualTo(COMMITTED_FIRST_NAME);
+        assertThat(savedCust.getLastName().trim()).isEqualTo(COMMITTED_LAST_NAME);
+        assertThat(savedCust.getSsn()).isEqualTo(COMMITTED_SSN);
+        assertThat(savedCust.getFicoCreditScore()).isEqualTo(COMMITTED_FICO);
+    }
+
+    /**
+     * (Finding #10 overpost) A PF5 turn that carries a valid token but a tampered, well-formed credit
+     * limit must be ignored: because {@code editMapInputs} skips re-validation in the confirm state, only
+     * the server-carried pending snapshot (the confirmed 1000.00) may be written - never the re-post.
+     */
+    @Test
+    @WithMockUser(roles = ROLE_USER)
+    void accountUpdatePf5OverpostIsIgnoredCommittingServerCarriedValue() throws Exception {
+        MockHttpSession session = new MockHttpSession();
+        String token = driveToConfirm(session);
+
+        MultiValueMap<String, String> tampered = validEditForm();
+        tampered.set("acrdlim", OVERPOST_CREDIT_LIMIT);
+        mockMvc.perform(post(ROUTE_ACCOUNT_UPDATE)
+                        .session(session)
+                        .params(tampered)
+                        .param(PARAM_PFKEY, PFKEY_PF5)
+                        .param(PARAM_CONFIRM_TOKEN, token)
+                        .with(csrf()))
+                .andExpect(status().isOk())
+                .andExpect(view().name(VIEW_ACCOUNT_UPDATE));
+
+        Account saved = accountRepository.findById(ACCT1_KEY).orElseThrow();
+        assertThat(saved.getCreditLimit())
+                .as("the PF5 overpost must be ignored; the confirmed value is committed")
+                .isEqualByComparingTo(COMMITTED_CREDIT_LIMIT);
+        assertThat(saved.getCreditLimit()).isNotEqualByComparingTo(new BigDecimal(OVERPOST_CREDIT_LIMIT));
+    }
+
+    /**
+     * (Finding #10 swapped target) A PF5 turn that swaps the account-id filter to a different seeded
+     * account must still write the server-carried identity captured at fetch (account 1), leaving the
+     * swapped-in victim account untouched. {@code editAccount} runs only before the fetch, so the client
+     * cannot re-aim the write on the confirm turn.
+     */
+    @Test
+    @WithMockUser(roles = ROLE_USER)
+    void accountUpdatePf5SwappedTargetWritesServerCarriedIdentityOnly() throws Exception {
+        MockHttpSession session = new MockHttpSession();
+        String token = driveToConfirm(session); // server-carried target = account 1
+
+        MultiValueMap<String, String> swapped = validEditForm();
+        swapped.set("acctsid", SWAP_ACCT_ID);
+        mockMvc.perform(post(ROUTE_ACCOUNT_UPDATE)
+                        .session(session)
+                        .params(swapped)
+                        .param(PARAM_PFKEY, PFKEY_PF5)
+                        .param(PARAM_CONFIRM_TOKEN, token)
+                        .with(csrf()))
+                .andExpect(status().isOk())
+                .andExpect(view().name(VIEW_ACCOUNT_UPDATE));
+
+        assertThat(accountRepository.findById(ACCT1_KEY).orElseThrow().getCreditLimit())
+                .as("the server-carried target (account 1) is the one written")
+                .isEqualByComparingTo(COMMITTED_CREDIT_LIMIT);
+        assertThat(accountRepository.findById(ACCT2_KEY).orElseThrow().getCreditLimit())
+                .as("the swapped-in victim account must be untouched")
+                .isEqualByComparingTo(SEED_ACCT2_CREDIT_LIMIT);
+    }
+
+    /**
+     * (Finding #10 replay) After a legitimate PF5 commit consumes the single-use token, replaying the
+     * same token with a different tampered value performs no further write - the state has advanced past
+     * confirm and the token is cleared, so the second attempt cannot re-drive the transactional write.
+     */
+    @Test
+    @WithMockUser(roles = ROLE_USER)
+    void accountUpdatePf5ReplayedTokenPerformsNoFurtherWrite() throws Exception {
+        MockHttpSession session = new MockHttpSession();
+        String token = driveToConfirm(session);
+
+        mockMvc.perform(post(ROUTE_ACCOUNT_UPDATE)
+                        .session(session)
+                        .params(validEditForm())
+                        .param(PARAM_PFKEY, PFKEY_PF5)
+                        .param(PARAM_CONFIRM_TOKEN, token)
+                        .with(csrf()))
+                .andExpect(status().isOk());
+        assertThat(accountRepository.findById(ACCT1_KEY).orElseThrow().getCreditLimit())
+                .isEqualByComparingTo(COMMITTED_CREDIT_LIMIT);
+
+        MultiValueMap<String, String> replay = validEditForm();
+        replay.set("acrdlim", REPLAY_CREDIT_LIMIT);
+        mockMvc.perform(post(ROUTE_ACCOUNT_UPDATE)
+                        .session(session)
+                        .params(replay)
+                        .param(PARAM_PFKEY, PFKEY_PF5)
+                        .param(PARAM_CONFIRM_TOKEN, token)
+                        .with(csrf()))
+                .andExpect(status().isOk());
+        Account after = accountRepository.findById(ACCT1_KEY).orElseThrow();
+        assertThat(after.getCreditLimit())
+                .as("a replayed, consumed token must not drive a second write")
+                .isEqualByComparingTo(COMMITTED_CREDIT_LIMIT);
+        assertThat(after.getCreditLimit()).isNotEqualByComparingTo(new BigDecimal(REPLAY_CREDIT_LIMIT));
+    }
+
+    /**
+     * (Finding #10 forged token) A PF5 turn carrying a syntactically valid but wrong token is rejected:
+     * the server writes nothing, keeps the operator in the confirm window, re-issues a fresh token, and
+     * re-renders the red integrity banner.
+     */
+    @Test
+    @WithMockUser(roles = ROLE_USER)
+    void accountUpdatePf5ForgedTokenIsRejectedWithNoWrite() throws Exception {
+        MockHttpSession session = new MockHttpSession();
+        driveToConfirm(session); // arm the confirm state, then submit a forged token instead of the issued one
+
+        mockMvc.perform(post(ROUTE_ACCOUNT_UPDATE)
+                        .session(session)
+                        .params(validEditForm())
+                        .param(PARAM_PFKEY, PFKEY_PF5)
+                        .param(PARAM_CONFIRM_TOKEN, FORGED_TOKEN)
+                        .with(csrf()))
+                .andExpect(status().isOk())
+                .andExpect(view().name(VIEW_ACCOUNT_UPDATE))
+                .andExpect(model().attribute(MODEL_ATTR_CONFIRM_MODE, equalTo(Boolean.TRUE)))
+                .andExpect(model().attribute(MODEL_ATTR_FORM,
+                        hasProperty(PROP_ERR_MSG, containsString(CONFIRM_INTEGRITY_FRAGMENT))));
+
+        assertThat(accountRepository.findById(ACCT1_KEY).orElseThrow().getCreditLimit())
+                .as("a forged confirmation token must not write anything")
+                .isEqualByComparingTo(SEED_ACCT1_CREDIT_LIMIT);
+    }
+
+    /**
+     * (Finding #10 drift) A concurrent change committed by another writer between the snapshot (fetch)
+     * and PF5 is detected by the {@code 9700} re-read: the confirm turn re-displays with the
+     * "record changed" banner and applies no edit, and the injected drift persists (proving no overwrite).
+     */
+    @Test
+    @WithMockUser(roles = ROLE_USER)
+    void accountUpdatePf5ConcurrentDriftIsRejectedWithNoSave() throws Exception {
+        MockHttpSession session = new MockHttpSession();
+        String token = driveToConfirm(session);
+
+        // Inject a concurrent change: another writer flips the account status after the snapshot was
+        // taken (turn 2) but before PF5. Committed in its own transaction (this test is not @Transactional).
+        Account concurrent = accountRepository.findById(ACCT1_KEY).orElseThrow();
+        concurrent.setActiveStatus(DRIFT_STATUS);
+        accountRepository.saveAndFlush(concurrent);
+
+        mockMvc.perform(post(ROUTE_ACCOUNT_UPDATE)
+                        .session(session)
+                        .params(validEditForm())
+                        .param(PARAM_PFKEY, PFKEY_PF5)
+                        .param(PARAM_CONFIRM_TOKEN, token)
+                        .with(csrf()))
+                .andExpect(status().isOk())
+                .andExpect(view().name(VIEW_ACCOUNT_UPDATE))
+                .andExpect(model().attribute(MODEL_ATTR_FORM,
+                        hasProperty(PROP_ERR_MSG, containsString(DATA_CHANGED_FRAGMENT))));
+
+        Account after = accountRepository.findById(ACCT1_KEY).orElseThrow();
+        assertThat(after.getCreditLimit())
+                .as("a concurrent-change (drift) confirmation must not apply the edit")
+                .isEqualByComparingTo(SEED_ACCT1_CREDIT_LIMIT);
+        assertThat(after.getActiveStatus().trim())
+                .as("the drift-injected status persists, proving the confirm turn overwrote nothing")
+                .isEqualTo(DRIFT_STATUS);
+    }
+
+    /**
+     * (Finding #11 - {@code @Valid} + {@code BindingResult} length guard) An {@code acctsid} one digit
+     * wider than its {@code PIC 9(11)} / {@code @Size(max = 11)} width - only reachable by a crafted
+     * request, since the {@code COACTUP} template pins {@code maxlength="11"} - must be bounced by the
+     * controller with the neutral length banner and NO service call, before any fetch/edit/write. This
+     * proves the update handler now honours the bean-validation constraint that was previously ignored
+     * (no controller used {@code @Valid}); the confirm mode is reset so a rejected post cannot leave a
+     * stale confirmation armed.
+     */
+    @Test
+    @WithMockUser(roles = ROLE_USER)
+    void accountUpdateOverWidthFieldRejectedWithNeutralBannerNoWrite() throws Exception {
+        BigDecimal before = accountRepository.findById(ACCT1_KEY).orElseThrow().getCreditLimit();
+
+        mockMvc.perform(post(ROUTE_ACCOUNT_UPDATE)
+                        .param(PARAM_ACCT_ID, OVER_WIDTH_ACCT_ID)
+                        .param(PARAM_PFKEY, PFKEY_ENTER)
+                        .with(csrf()))
+                .andExpect(status().isOk())
+                .andExpect(view().name(VIEW_ACCOUNT_UPDATE))
+                .andExpect(model().attribute(MODEL_ATTR_FORM,
+                        hasProperty(PROP_ERR_MSG, containsString(FIELD_LENGTH_FRAGMENT))))
+                .andExpect(model().attribute(MODEL_ATTR_CONFIRM_MODE, equalTo(Boolean.FALSE)));
+
+        assertThat(accountRepository.findById(ACCT1_KEY).orElseThrow().getCreditLimit())
+                .as("an over-width field must be rejected before any write reaches the datastore")
+                .isEqualByComparingTo(before);
+    }
+
+    /**
+     * (Finding #11 - {@code @InitBinder} allowlist / mass-assignment defense, CWE-915) The COACTUP screen
+     * never submits the {@code fkeys} display property and {@code AccountController} never sets it, yet it
+     * is a public settable bean property. A crafted request that injects {@code fkeys} must be dropped by
+     * the per-form {@code setAllowedFields(...)} allowlist so it never binds - if the {@code @InitBinder}
+     * were removed, the rendered form would carry the injected value and this test would fail. The
+     * legitimate {@code acctsid} filter still binds (the ENTER fetch renders the update screen), proving
+     * the allowlist restricts rather than disables binding.
+     */
+    @Test
+    @WithMockUser(roles = ROLE_USER)
+    void accountUpdateOverpostedNonAllowlistedFieldIsIgnored() throws Exception {
+        MockHttpSession session = new MockHttpSession();
+        mockMvc.perform(get(ROUTE_ACCOUNT_UPDATE).session(session))
+                .andExpect(status().isOk())
+                .andExpect(view().name(VIEW_ACCOUNT_UPDATE));
+
+        MvcResult fetch = mockMvc.perform(post(ROUTE_ACCOUNT_UPDATE)
+                        .session(session)
+                        .param(PARAM_ACCT_ID, CAUP_ACCT_ID)
+                        .param(PARAM_PFKEY, PFKEY_ENTER)
+                        .param(OVERPOST_PROP_FKEYS, OVERPOST_FKEYS_VALUE)
+                        .with(csrf()))
+                .andExpect(status().isOk())
+                .andExpect(view().name(VIEW_ACCOUNT_UPDATE))
+                .andReturn();
+
+        COACTUPForm rendered = (COACTUPForm) fetch.getModelAndView().getModel().get(MODEL_ATTR_FORM);
+        assertThat(rendered.getFkeys())
+                .as("a non-allowlisted property must not bind from the request (@InitBinder allowlist)")
+                .isNotEqualTo(OVERPOST_FKEYS_VALUE);
     }
 }

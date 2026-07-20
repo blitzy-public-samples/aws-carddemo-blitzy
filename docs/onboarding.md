@@ -29,7 +29,7 @@ and extension. It **complements — it does not duplicate — the root
 | [`docs/decision-log.md`](./decision-log.md) | Every non-trivial migration decision with its alternatives, rationale, and risks (the *why* behind the design). |
 | [`docs/traceability-matrix.md`](./traceability-matrix.md) | The bidirectional COBOL-construct → Java-artifact mapping (programs, copybooks, BMS maps, JCL jobs). |
 | [`docs/architecture/`](./architecture/) | Mermaid **before / after** architecture diagrams — the original z/OS state and the target Spring Boot state. |
-| [`blitzy-deck/index.html`](../blitzy-deck/index.html) | A self-contained reveal.js executive-summary presentation of the migration. |
+| [`blitzy-deck/index.html`](../blitzy-deck/index.html) | A reveal.js executive-summary presentation of the migration. It loads reveal.js, Mermaid, and Lucide from the jsDelivr CDN (SRI-pinned, under a restrictive CSP), so it needs network access when opened. |
 
 > **Note on migration status.** CardDemo was migrated in a single phase, and the Java
 > application has been generated in full: it builds, boots, applies its Flyway schema, and
@@ -103,7 +103,7 @@ carddemo/
 │   ├── application.yml             Base configuration (environment-driven; no secrets)
 │   ├── application-dev.yml         `dev` profile (local development)
 │   ├── application-test.yml        `test` profile (used by the test suite / Testcontainers)
-│   ├── db/migration/               Flyway migrations: V1 schema, V2 reference/seed data, V3 indexes
+│   ├── db/migration/               Flyway migrations: V0 batch metadata, V1 schema, V2 reference/seed data, V3 indexes, V4 card-xref unique
 │   ├── logback-spring.xml          Structured JSON logging with correlation IDs
 │   └── templates/                  Thymeleaf screens (preserve the BMS 24×80 field/label/PF-key contract)
 ├── src/test/java/                  JUnit 5 unit + Testcontainers integration + parity tests
@@ -222,15 +222,14 @@ Because Flyway initializes everything, the **only** manual database step is crea
 empty database ([§3.1](#31-start-postgresql)); a freshly created database is fully populated
 the first time the application starts.
 
-> **Common pitfall — a benign Flyway warning on PostgreSQL 18.** If you run against
-> PostgreSQL 18.x (the target server is 18.4), Flyway logs one informational line at startup:
-> *"Flyway upgrade recommended: PostgreSQL 18.4 is newer than this version of Flyway and support
-> has not been tested. The latest supported version of PostgreSQL is 17."* This is expected and
-> safe to ignore — the BOM-managed Flyway (11.7.2) is validation-tested only up to PostgreSQL 17,
-> but every migration (`V0`–`V3`) applies cleanly and idempotently on 18.4, and startup proceeds
-> normally. The warning does not appear on the supported floor (PostgreSQL 16/17) and is retired
-> by the Spring Boot 4.x upgrade (which advances Flyway). Rationale and risk/mitigation are
-> recorded in [`docs/decision-log.md`](./decision-log.md).
+> **Flyway is pinned to a PostgreSQL 18–tested release — no compatibility warning.** The
+> project overrides the Spring Boot 3.5.16 parent BOM's Flyway version (`11.7.2`, whose highest
+> *tested* PostgreSQL is 17) to `11.20.3` through the `flyway.version` property in `pom.xml`.
+> Flyway 11.20.3 marks PostgreSQL 18 as tested, so running against the target PostgreSQL 18.4
+> server produces **no** "support has not been tested" warning and startup logs stay
+> warning-free. Every migration (`V0`–`V4`) applies cleanly and idempotently on 16/17/18. The
+> override stays within the Flyway 11.x major line the BOM already uses (API-stable, low-risk).
+> Rationale and risk/mitigation are recorded in [`docs/decision-log.md`](./decision-log.md).
 
 ---
 
@@ -510,8 +509,15 @@ These are **explicitly out of scope for the current migration** (which preserves
 behavior without feature expansion) and are recorded as follow-ups in
 [`docs/decision-log.md`](./decision-log.md):
 
-* **Upgrade to Spring Boot 4.x.** The Spring Boot **3.5** line reached open-source
-  end-of-life on **2026-06-30**, so future CVE patches require an upgrade off 3.5.16.
+* **Upgrade to Spring Boot 4.x — or procure commercial/extended 3.5 support (pre-production prerequisite).**
+  The Spring Boot **3.5** line reached open-source end-of-life on **2026-06-30**, so no future
+  *upstream* CVE patches will be published for 3.5.16 (this is review finding #52). The framework
+  version is fixed at 3.5.16 by the frozen migration plan (AAP §0.7.3), so the upgrade is out of
+  scope for *this* migration; **documenting the EOL is not a substitute for vendor support**, so
+  before any production deployment you must either obtain supported commercial/extended maintenance
+  for 3.5.16 **or** complete the 4.x upgrade and re-run every parity and security gate
+  (`./mvnw clean verify`). Shipped-artifact CVEs are already patched at source via `pom.xml`
+  version overrides, but no future upstream patches will arrive on the EOL line.
 * **Introduce password hashing (BCrypt).** The current implementation preserves the legacy
   **cleartext** password comparison for behavioral parity; replacing it with a modern
   password-hashing scheme is a recommended hardening step (a deliberate behavior change, so
@@ -536,8 +542,10 @@ behavior without feature expansion) and are recorded as follow-ups in
 * [`docs/traceability-matrix.md`](./traceability-matrix.md) — the bidirectional
   COBOL-construct → Java-artifact mapping.
 * [`docs/architecture/`](./architecture/) — Mermaid before/after architecture diagrams.
-* [`blitzy-deck/index.html`](../blitzy-deck/index.html) — the self-contained reveal.js
-  executive-summary presentation.
+* [`blitzy-deck/index.html`](../blitzy-deck/index.html) — the reveal.js executive-summary
+  presentation. It loads reveal.js, Mermaid, and Lucide from the jsDelivr CDN (each SRI-pinned,
+  under a restrictive Content-Security-Policy), so it requires network access when opened; serve
+  it over a local web server (e.g. `python3 -m http.server` from `blitzy-deck/`).
 
 Welcome aboard — with a clean machine, this guide, and the README, you can build, run, test,
 and start extending CardDemo without ever touching a mainframe.

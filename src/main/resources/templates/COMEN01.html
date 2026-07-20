@@ -16,27 +16,27 @@
 -->
 <html lang="en" xmlns:th="http://www.thymeleaf.org">
 <head>
+    <th:block th:replace="~{fragments/bms-palette :: palette}"></th:block>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Main Menu - AWS CardDemo</title>
     <!--
-      BLITZY [A11Y]: The 3270 color palette is mapped verbatim from the AAP/BMS
-      color contract (BLUE #0000CD, YELLOW #CCCC00, TURQUOISE #00CDCD, GREEN
-      #00CD00, RED #CD0000, NEUTRAL #FFFFFF) on a black screen. Blue and red text
-      on black compute below the WCAG AA 4.5:1 contrast minimum. The BMS/AAP
-      color contract is authoritative here (faithful terminal reproduction), so
-      the palette is implemented exactly as specified and flagged for designer
-      review rather than silently adjusted.
+      BLITZY [A11Y / review finding #53]: the 3270 colour palette is centralized in
+      templates/fragments/bms-palette.html and referenced via var(--bms-*). The two BMS
+      foreground colours that failed WCAG 2.1 AA contrast on the black background (BLUE,
+      RED) are replaced with accessible equivalents brightened along the same hue axis
+      (>= 4.5:1); the remaining colours keep their legacy values. Contrast is asserted by
+      BmsPaletteContrastTest; rationale in docs/decision-log.md.
     -->
     <style>
         :root {
-            --blue: #0000CD;
-            --yellow: #CCCC00;
-            --turquoise: #00CDCD;
-            --green: #00CD00;
-            --red: #CD0000;
-            --neutral: #FFFFFF;
-            --screen-bg: #000000;
+            --blue: var(--bms-blue);
+            --yellow: var(--bms-yellow);
+            --turquoise: var(--bms-turquoise);
+            --green: var(--bms-green);
+            --red: var(--bms-red);
+            --neutral: var(--bms-neutral);
+            --screen-bg: var(--bms-bg);
             --page-bg: #101418;
             --frame-border: #333333;
             --row-height: 1.25rem;
@@ -57,8 +57,18 @@
             color: var(--neutral);
             font-family: "Courier New", "DejaVu Sans Mono", Consolas, monospace;
             display: flex;
-            justify-content: center;
+            justify-content: safe center;
             align-items: flex-start;
+            /* Finding #54: horizontal scroll keeps the 80ch artboard's left
+               origin reachable at 375x667; `safe center` falls back to
+               start-alignment (left edge at scrollLeft 0) when it overflows. */
+            overflow-x: auto;
+        }
+
+        /* Finding #54: the terminal artboard must never shrink below 80ch, so
+           its left origin remains reachable inside the horizontal scroller. */
+        body > * {
+            flex-shrink: 0;
         }
 
         main {
@@ -192,6 +202,7 @@
             outline: 1px solid var(--yellow);
             outline-offset: 0;
         }
+        .pfkey:active { text-decoration: underline; filter: brightness(1.3); }
         @media (hover: hover) {
             .pfkey:hover {
                 text-decoration: underline;

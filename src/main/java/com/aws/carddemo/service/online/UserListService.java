@@ -16,9 +16,10 @@
 package com.aws.carddemo.service.online;
 
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
 
-import org.springframework.data.domain.Sort;
+import org.springframework.data.domain.Limit;
 import org.springframework.stereotype.Service;
 
 import com.aws.carddemo.domain.UserSecurity;
@@ -164,6 +165,20 @@ public class UserListService {
      * {@code WS-IDX >= 11}).
      */
     private static final int ROW_LOOP_LIMIT = ROWS_PER_PAGE + 1;
+
+    /**
+     * Number of records fetched into one browse window (review finding #21).
+     *
+     * <p>The forward browse issues at most a skip-one {@code READNEXT} (the PF8 case), then up to
+     * {@link #ROWS_PER_PAGE} row {@code READNEXT}s, then one look-ahead {@code READNEXT}; the
+     * backward browse issues the symmetric {@code READPREV} sequence. The most records the browse
+     * can consume from the positioned start key is therefore {@code ROWS_PER_PAGE + 2}. Fetching
+     * exactly this many rows in the bounded keyset window guarantees the window always contains
+     * every record the legacy browse would have read for the page, so the paged output is
+     * byte-identical to the full-table scan it replaces while never materialising the whole
+     * {@code USRSEC} table.</p>
+     */
+    private static final int BROWSE_WINDOW = ROWS_PER_PAGE + 2;
 
     /**
      * Width of the {@code SEC-USR-ID} key ({@code PIC X(08)}). Browse keys are right-padded to
@@ -735,7 +750,7 @@ public class UserListService {
     private void processPageForward(BrowseWork work, String startKey, AidKey aid) {
         // A browse runs, so the display rows are (re)populated (even to an empty page).
         work.browsed = true;
-        UserSecBrowse browse = new UserSecBrowse(loadSortedUsers());
+        UserSecBrowse browse = new UserSecBrowse(loadForwardWindow(startKey));
 
         // PERFORM STARTBR-USER-SEC-FILE. NOTFND is not an error: set EOF + message and stop.
         try {
@@ -824,7 +839,7 @@ public class UserListService {
     private void processPageBackward(BrowseWork work, String startKey, AidKey aid) {
         // A browse runs, so the display rows are (re)populated (even to an empty page).
         work.browsed = true;
-        UserSecBrowse browse = new UserSecBrowse(loadSortedUsers());
+        UserSecBrowse browse = new UserSecBrowse(loadBackwardWindow(startKey));
 
         // PERFORM STARTBR-USER-SEC-FILE. NOTFND is not an error: set EOF + message and stop.
         try {
@@ -1111,17 +1126,67 @@ public class UserListService {
     }
 
     /**
-     * Loads the {@code USRSEC} users ordered ascending by user id, the data source for the browse.
+     * Loads the forward browse window: the bounded, ascending slice of {@code USRSEC} users at or
+     * after {@code startKey} (review finding #21).
      *
-     * <p>Reproduces the VSAM KSDS ascending key order via
-     * {@link UserSecurityRepository#findAll(Sort)} sorted on {@code usrId}. The database column is
-     * defined with the {@code C} collation, so the ordering is the byte-wise ordering the legacy
-     * browse relied on. The list is used as the backing store for the in-memory browse cursor.</p>
+     * <p>Reproduces the VSAM {@code STARTBR}-at-key plus forward {@code READNEXT} sequence of the
+     * COBOL user-list browse without materialising the whole {@code USRSEC} table. The forward
+     * browse reads at most {@link #BROWSE_WINDOW} records from the positioned start key (a possible
+     * skip-one, a page of rows, and a look-ahead), so fetching exactly that many rows &ge;
+     * {@code startKey} in ascending key order yields a window that contains every record the legacy
+     * browse would have read for the page. The window is handed to the in-memory
+     * {@link UserSecBrowse} cursor, whose {@link #startBrowse(UserSecBrowse, String)} re-derives the
+     * greater-than-or-equal position with the identical {@code pad8} comparison, so the emitted rows
+     * are byte-identical to the previous full-table scan.</p>
      *
-     * @return the users sorted ascending by user id
+     * <p>A {@code null} {@code startKey} is the COBOL low-values start (first page): it is passed to
+     * the repository as the empty string, which the {@code C}-collation {@code >=} predicate treats
+     * as a lower bound below every real user id, selecting the first {@link #BROWSE_WINDOW} rows. A
+     * {@code startKey} of {@link #HIGH_VALUES} (the PF8-with-blank-last-key case) is above every real
+     * user id, so the window is empty and the cursor reports "top of page" &mdash; exactly the legacy
+     * {@code STARTBR} "not found" outcome.</p>
+     *
+     * @param startKey the inclusive lower-bound start key ({@code SEC-USR-ID}); {@code null} means
+     *                 low-values (first page)
+     * @return the ascending forward window, at most {@link #BROWSE_WINDOW} records (possibly empty)
      */
-    private List<UserSecurity> loadSortedUsers() {
-        return userSecurityRepository.findAll(Sort.by(Sort.Direction.ASC, "usrId"));
+    private List<UserSecurity> loadForwardWindow(String startKey) {
+        String lowerBound = (startKey == null) ? "" : pad8(startKey);
+        return userSecurityRepository.findByUsrIdGreaterThanEqualOrderByUsrIdAsc(
+                lowerBound, Limit.of(BROWSE_WINDOW));
+    }
+
+    /**
+     * Loads the backward browse window: the bounded slice of {@code USRSEC} users at or before
+     * {@code startKey}, returned ascending for the browse cursor (review finding #21).
+     *
+     * <p>Reproduces the VSAM {@code STARTBR} plus backward {@code READPREV} sequence of paragraph
+     * {@code PROCESS-PAGE-BACKWARD} without materialising the whole table. The backward browse reads
+     * at most {@link #BROWSE_WINDOW} records at or before the start key, so the repository fetches
+     * that many rows &le; {@code startKey} in <em>descending</em> key order and this method reverses
+     * them to ascending &mdash; the order the shared {@link UserSecBrowse} cursor always expects. The
+     * cursor positions at the greater-than-or-equal index (the start key, which is the last element
+     * of the reversed window) and reads backward from it, so the paged output is byte-identical to
+     * the full-table scan it replaces.</p>
+     *
+     * <p>A {@code null} {@code startKey} is the low-values start: the backward browse then positions
+     * before the first record and reads backward, so the first record must be present. The same
+     * ascending head window as the forward low-values case is returned, which places the first user
+     * at index zero exactly as the full-table scan did.</p>
+     *
+     * @param startKey the inclusive upper-bound start key ({@code SEC-USR-ID}); {@code null} means
+     *                 low-values
+     * @return the ascending backward window, at most {@link #BROWSE_WINDOW} records (possibly empty)
+     */
+    private List<UserSecurity> loadBackwardWindow(String startKey) {
+        if (startKey == null) {
+            return userSecurityRepository.findByUsrIdGreaterThanEqualOrderByUsrIdAsc(
+                    "", Limit.of(BROWSE_WINDOW));
+        }
+        List<UserSecurity> descending = userSecurityRepository
+                .findByUsrIdLessThanEqualOrderByUsrIdDesc(pad8(startKey), Limit.of(BROWSE_WINDOW));
+        Collections.reverse(descending);
+        return descending;
     }
 
     /**

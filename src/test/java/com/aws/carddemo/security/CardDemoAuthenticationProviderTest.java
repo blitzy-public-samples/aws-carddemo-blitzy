@@ -12,6 +12,8 @@ import org.springframework.security.core.Authentication;
 import org.springframework.security.core.GrantedAuthority;
 import org.springframework.security.core.userdetails.UsernameNotFoundException;
 
+import com.aws.carddemo.TestCredentials;
+
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.Mockito.when;
@@ -80,6 +82,14 @@ import static org.mockito.Mockito.when;
 class CardDemoAuthenticationProviderTest {
 
     /**
+     * Non-secret unit fixture password (review finding #5). These are algorithm test vectors, not a
+     * committed account credential &mdash; the real seed password is environment-provided
+     * ({@code CARDDEMO_SEED_PASSWORD}). All-uppercase so the uppercase-fold comparison and the
+     * lowercase-entry test below stay representative.
+     */
+    private static final String PWD = TestCredentials.UNIT_FIXTURE_PASSWORD;
+
+    /**
      * Mock of the user store and authority producer. It stands in for the legacy
      * {@code READ-USER-SEC-FILE} {@code EXEC CICS READ} of the {@code USRSEC} KSDS; its single relevant
      * method, {@link CardDemoUserDetailsService#loadUserByUsername(String)}, is stubbed per test to
@@ -119,9 +129,9 @@ class CardDemoAuthenticationProviderTest {
     @DisplayName("correct password authenticates admin; success token has null credentials and ROLE_ADMIN")
     void correctPasswordAuthenticatesAdminWithNulledCredentials() {
         when(userDetailsService.loadUserByUsername("ADMIN001"))
-                .thenReturn(principal("ADMIN001", "PASSWORD", "A"));
+                .thenReturn(principal("ADMIN001", PWD, "A"));
 
-        Authentication req = new UsernamePasswordAuthenticationToken("ADMIN001", "PASSWORD");
+        Authentication req = new UsernamePasswordAuthenticationToken("ADMIN001", PWD);
         Authentication result = provider.authenticate(req);
 
         assertThat(result.isAuthenticated()).isTrue();
@@ -138,11 +148,12 @@ class CardDemoAuthenticationProviderTest {
     @DisplayName("presented password is uppercased (Locale.ROOT) before compare; lowercase input still matches")
     void presentedPasswordIsUppercasedBeforeCompare() {
         when(userDetailsService.loadUserByUsername("USER0001"))
-                .thenReturn(principal("USER0001", "PASSWORD", "U"));
+                .thenReturn(principal("USER0001", PWD, "U"));
 
-        // Entered password is lowercase; the provider folds it to "PASSWORD" before the compare
-        // (COBOL MOVE FUNCTION UPPER-CASE(PASSWDI ...) TO WS-USER-PWD).
-        Authentication req = new UsernamePasswordAuthenticationToken("USER0001", "password");
+        // Entered password is lowercase; the provider folds it to the uppercase fixture before compare
+        // (COBOL MOVE FUNCTION UPPER-CASE(PASSWDI ...) TO WS-USER-PWD). The entered value is the
+        // fixture folded to lowercase, so uppercasing it reproduces the stored (uppercase) PWD.
+        Authentication req = new UsernamePasswordAuthenticationToken("USER0001", PWD.toLowerCase(java.util.Locale.ROOT));
         Authentication result = provider.authenticate(req);
 
         assertThat(result.isAuthenticated()).isTrue();
@@ -168,7 +179,7 @@ class CardDemoAuthenticationProviderTest {
     @DisplayName("wrong password throws BadCredentialsException (COBOL 'Wrong Password. Try again ...')")
     void wrongPasswordThrowsBadCredentials() {
         when(userDetailsService.loadUserByUsername("ADMIN001"))
-                .thenReturn(principal("ADMIN001", "PASSWORD", "A"));
+                .thenReturn(principal("ADMIN001", PWD, "A"));
 
         Authentication req = new UsernamePasswordAuthenticationToken("ADMIN001", "WRONGPWD");
 
@@ -195,7 +206,7 @@ class CardDemoAuthenticationProviderTest {
         // Credentials are non-null so the provider proceeds to the lookup; the service's
         // UsernameNotFoundException must propagate unchanged to keep "User not found" distinct from
         // "Wrong Password" (COBOL WHEN 13 vs the wrong-password ELSE branch).
-        Authentication req = new UsernamePasswordAuthenticationToken("GHOST", "PASSWORD");
+        Authentication req = new UsernamePasswordAuthenticationToken("GHOST", PWD);
 
         assertThatThrownBy(() -> provider.authenticate(req))
                 .isInstanceOf(UsernameNotFoundException.class);

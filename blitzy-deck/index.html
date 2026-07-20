@@ -5,13 +5,31 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>CardDemo Modernization &mdash; Executive Summary | Blitzy</title>
   <meta name="description" content="Executive summary of the AWS CardDemo mainframe COBOL to Java 25 and Spring Boot migration, delivered by Blitzy with 100% behavioral parity.">
-  <!-- Inline empty-data-URI favicon: keeps the deck self-contained and prevents a
-       stray /favicon.ico network request (and its console 404). -->
+  <!--
+    Content-Security-Policy. The deck loads three pinned libraries (reveal.js,
+    Mermaid, Lucide) from a single CDN origin (jsDelivr). default-src 'self'
+    blocks every other origin; script/style are restricted to 'self' plus the
+    jsDelivr origin, object/frame are denied outright, and each CDN asset is
+    additionally pinned by a Subresource-Integrity (SRI) sha384 hash with
+    crossorigin="anonymous" (below) so a tampered CDN payload is rejected by the
+    browser. The inline init logic has been moved to references/deck-init.js so
+    that script-src needs neither 'unsafe-inline' nor 'unsafe-eval'. -->
+  <meta http-equiv="Content-Security-Policy"
+        content="default-src 'self'; base-uri 'self'; object-src 'none'; frame-src 'none'; img-src 'self' data:; font-src 'self' data:; style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; script-src 'self' https://cdn.jsdelivr.net; connect-src 'self' https://cdn.jsdelivr.net">
+
+  <!-- Empty-data-URI favicon: avoids a stray /favicon.ico request (and its 404).
+       NOTE: the presentation libraries below load from the pinned jsDelivr CDN,
+       so the deck requires network access when it is opened; it is not a fully
+       offline, self-contained bundle. See blitzy-deck/references/ for details. -->
   <link rel="icon" href="data:,">
 
-  <!-- Pinned reveal.js core stylesheets (exact versions) -->
-  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/reveal.js@5.1.0/dist/reset.css">
-  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/reveal.js@5.1.0/dist/reveal.css">
+  <!-- Pinned reveal.js core stylesheets (exact versions), each SRI-verified. -->
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/reveal.js@5.1.0/dist/reset.css"
+        integrity="sha384-AJKv9Ui5SfA0VsFksFI9GuA1ztX9Ca3CLP6HGfX4YY/tYSVodC+PUszaQZFIlkuy"
+        crossorigin="anonymous">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/reveal.js@5.1.0/dist/reveal.css"
+        integrity="sha384-YgvgKeZJykuztG+iQPoZHNZENTFZvOcOJ/uRzmJTje6GHYN9zAw+y5rx/L8MQKA/"
+        crossorigin="anonymous">
   <!-- Blitzy brand theme MUST come after reveal.css so it takes precedence -->
   <link rel="stylesheet" href="references/blitzy-reveal-theme.css">
 
@@ -101,6 +119,16 @@
     .reveal .metric-compact .blitzy-card { padding: 0.75em 0.85em; }
     .reveal .coverage-wrap { margin-top: 0.7em; }
 
+    /* Risk matrix (slide 14): compact sizing so all four risk rows fit the
+       1280x720 canvas (the same fit approach already used for slides 13 and 15).
+       Sizing only (font-size / padding / heading margins) - all color and surface
+       styling stays in the theme. */
+    .reveal .risk-compact h2 { margin-bottom: 0.12em; }
+    .reveal .risk-compact .content-lead { margin: 0.15em 0 0.5em; }
+    .reveal .risk-compact .risk-table { font-size: 0.64em; }
+    .reveal .risk-compact .risk-table td,
+    .reveal .risk-compact .risk-table th { padding: 0.3em 0.55em; }
+
     /* Onboarding timeline (slide 15): wrap the theme's horizontal flex timeline into
        a compact 3-across, 2-row layout that fits the 1280x720 canvas.
        - flex-wrap + a sub-third basis (with border-box so the theme's padding is
@@ -129,8 +157,36 @@
       width: 1.4em; height: 1.4em;
     }
 
-    /* Closing stat-strip items reuse .blitzy-stat; give them a comfortable min-width. */
-    .reveal .slide-closing .stat-strip .blitzy-stat { min-width: 8.5em; }
+    /* ------------------------------------------------------------------
+       #38 Canvas-fit corrections (layout/sizing ONLY; the theme keeps
+       ownership of color, surface, border and typography). Both were
+       verified in-browser against the 1280x720 reveal canvas.
+
+       (a) Mermaid diagrams (slides 6 & 9). The <pre class="mermaid">
+           inherits white-space:pre from reveal.css, which let the element
+           box grow to its un-wrapped width (~1324px) and spill ~42px off
+           the right edge. Neutralize white-space, own the width and clip
+           any sub-pixel residue; cap the SVG height so diagram + title +
+           two-line legend clear the slide bottom instead of overflowing. */
+    .reveal .mermaid {
+      width: 100%;
+      max-width: 100%;
+      box-sizing: border-box;
+      overflow: hidden;
+      white-space: normal;
+    }
+    .reveal .mermaid svg {
+      max-width: 100% !important;
+      max-height: 492px;
+      width: auto;
+      height: auto;
+    }
+
+    /* (b) Closing slide (16). The four stats each carried min-width:8.5em,
+           so the strip wrapped onto two rows and pushed the wordmark ~6px
+           below the canvas. Let the stats shrink to share one row. */
+    .reveal .slide-closing .stat-strip { flex-wrap: nowrap; gap: 0.9em; margin-top: 0.6em; }
+    .reveal .slide-closing .stat-strip .blitzy-stat { min-width: 0; }
 
     /* Accent icon shown above the big numeral on stat cards. */
     .reveal .blitzy-stat .stat-icon {
@@ -612,7 +668,7 @@ graph TD
            SLIDE 14 - CONTENT: Risks &amp; mitigations (MANDATORY risk slide)
            Visual: risk matrix / severity-chip table with Lucide alert icons.
            =================================================================== -->
-      <section class="slide-content" data-slide-type="content">
+      <section class="slide-content risk-compact" data-slide-type="content">
         <h2>Risks &amp; Mitigations</h2>
         <p class="content-lead">Flagged openly, each with a mitigation or suggested next step.</p>
         <table class="blitzy-table risk-table">
@@ -645,11 +701,11 @@ graph TD
             <tr>
               <td>
                 <span class="risk-cell"><i data-lucide="shield-check"></i>
-                  <span><strong>Batch concurrency &amp; duplicate-key parity.</strong> The legacy daily-posting job serialized on a dataset-level ENQ (JCL <code>DISP=OLD</code>) and abended on a duplicate transaction write. Those guarantees are reproduced with a batch-only pessimistic account row-lock (no lost update under concurrent posting), a duplicate-key abend (no silent double-post), and the JCL <code>0&thinsp;/&thinsp;4&thinsp;/&thinsp;8</code> RETURN-CODE contract on the process exit code.</span>
+                  <span><strong>Concurrency &amp; duplicate-key parity.</strong> The legacy locked records under update in <em>both</em> tiers &mdash; online <code>CICS READ&nbsp;&hellip;&nbsp;UPDATE</code> and the posting job&rsquo;s dataset ENQ (<code>DISP=OLD</code>) &mdash; and abended on a duplicate write. Both are reproduced with row-level pessimistic locks (<code>SELECT&nbsp;&hellip;&nbsp;FOR UPDATE</code>) across the online services and the batch poster (no lost update), a true-<code>INSERT</code> duplicate-key abend (no silent double-post), and the JCL <code>0&thinsp;/&thinsp;4&thinsp;/&thinsp;8</code> RETURN-CODE contract.</span>
                 </span>
               </td>
               <td><span class="sev-low">Hardened</span></td>
-              <td>Fixes in place and covered by a concurrency parity test &mdash; parity preserved, not assumed.</td>
+              <td>Fixes in place, proven by multi-thread parity tests (<code>ConcurrencyParityIT</code>) &mdash; parity preserved, not assumed.</td>
             </tr>
             <tr>
               <td>
@@ -741,86 +797,21 @@ graph TD
     </div>
   </div>
 
-  <!-- Pinned presentation libraries (exact versions; UMD/global builds for file:// robustness) -->
-  <script src="https://cdn.jsdelivr.net/npm/reveal.js@5.1.0/dist/reveal.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/mermaid@11.4.0/dist/mermaid.min.js"></script>
-  <script src="https://unpkg.com/lucide@0.460.0"></script>
-  <script>
-    /* =====================================================================
-       Init: Mermaid (manual render), Reveal, and Lucide icons.
-       Mermaid uses startOnLoad:false and is rendered per-slide so diagrams on
-       initially-hidden slides are measured while visible (avoids the tiny-SVG
-       bug). themeVariables mirror the Blitzy dark palette declared in the theme.
-       ===================================================================== */
-    mermaid.initialize({
-      startOnLoad: false,
-      theme: 'base',
-      securityLevel: 'loose',
-      /* Force SVG <text> labels globally (Mermaid 11 honors the top-level flag). */
-      htmlLabels: false,
-      themeVariables: {
-        background: '#0A0A0F',
-        primaryColor: '#1C1930',
-        primaryBorderColor: '#7C5CFC',
-        primaryTextColor: '#F4F4FB',
-        secondaryColor: '#141221',
-        tertiaryColor: '#141221',
-        lineColor: '#9D7BFF',
-        clusterBkg: '#141221',
-        clusterBorder: '#2A2740',
-        fontFamily: 'Inter, system-ui, sans-serif'
-      },
-      /* htmlLabels:false renders node/edge labels as SVG <text> sized by the
-         browser's actual glyph metrics, avoiding the foreignObject clipping that
-         htmlLabels:true exhibits when the applied font is wider than Mermaid's
-         internal measurement. All labels here are single-line plain text. */
-      flowchart: { useMaxWidth: true, htmlLabels: false, curve: 'basis' }
-    });
-
-    /* Render only the diagrams on the given slide, then re-fit the layout. */
-    async function renderMermaidIn(slide) {
-      if (!slide) return;
-      const nodes = slide.querySelectorAll('.mermaid:not([data-processed])');
-      if (nodes.length) {
-        try {
-          await mermaid.run({ nodes: [...nodes] });
-        } catch (err) {
-          console.error('[deck] Mermaid render error:', err);
-        }
-        if (window.Reveal) Reveal.layout();
-      }
-    }
-
-    /* Resolve any <i data-lucide> placeholders into inline SVGs. */
-    function refreshIcons() {
-      if (window.lucide && typeof lucide.createIcons === 'function') {
-        lucide.createIcons();
-      }
-    }
-
-    Reveal.initialize({
-      width: 1280,
-      height: 720,
-      margin: 0.04,
-      hash: true,
-      controls: true,
-      progress: true,
-      center: true,
-      slideNumber: 'c/t',
-      transition: 'slide'
-    }).then(() => {
-      refreshIcons();
-      renderMermaidIn(Reveal.getCurrentSlide());
-    });
-
-    /* Render diagrams + re-resolve icons whenever a new slide is shown. */
-    Reveal.on('slidechanged', (event) => {
-      renderMermaidIn(event.currentSlide);
-      refreshIcons();
-    });
-
-    /* Also resolve static icons as soon as the DOM is ready. */
-    document.addEventListener('DOMContentLoaded', refreshIcons);
-  </script>
+  <!-- Pinned presentation libraries (exact versions; UMD/global builds for file:// robustness).
+       Each is integrity-verified (SRI sha384) with crossorigin="anonymous", and all three are
+       served from a single origin (jsDelivr) to match the restrictive Content-Security-Policy in
+       <head>. Mermaid is pinned to 11.16.0 (>= 11.15.0) to clear the sequence/architecture-label
+       and state-diagram classDef advisories that affect 11.4.0 (CVE-2025-54880, CVE-2025-54881,
+       GHSA-ghcm-xqfw-q4vr / CVE-2026-41149). -->
+  <script src="https://cdn.jsdelivr.net/npm/reveal.js@5.1.0/dist/reveal.js"
+          integrity="sha384-M/JtqCVlLcK9lwVnBnMXP0V577CBULkjodKsR/PITOe4MSKNbbwqCemEyluOw0+5"
+          crossorigin="anonymous"></script>
+  <script src="https://cdn.jsdelivr.net/npm/mermaid@11.16.0/dist/mermaid.min.js"
+          integrity="sha384-T/0lMUdJpd2S1ZHtRiofG3htU3xPCrFVeAQ1UUE2TJwlEJSV5NUwn30kP28n238E"
+          crossorigin="anonymous"></script>
+  <script src="https://cdn.jsdelivr.net/npm/lucide@0.460.0/dist/umd/lucide.min.js"
+          integrity="sha384-ieG+IKD0d/ZPXyCBTMVAbqsQdns8QGJR/e26WMw7M4fkaI/rHcS/YIoi+ah9WGge"
+          crossorigin="anonymous"></script>
+  <script src="references/deck-init.js"></script>
 </body>
 </html>

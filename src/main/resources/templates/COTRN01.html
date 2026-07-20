@@ -1,6 +1,7 @@
 <!DOCTYPE html>
 <html lang="en" xmlns:th="http://www.thymeleaf.org">
 <head>
+    <th:block th:replace="~{fragments/bms-palette :: palette}"></th:block>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>View Transaction - AWS CardDemo</title>
@@ -13,22 +14,23 @@
       Layout      : fixed 24x80 monospaced 3270 grid (1 char = 1ch, 1 line = --row-h).
       PF keys     : controller reads request param "pfkey" (ENTER, PF3, PF4, PF5).
 
-      BLITZY [A11Y]: The BMS COLOR=BLUE (#0000CD) display fields render at a low contrast
-      ratio (~2.4:1) against the black terminal background, below the WCAG AA 4.5:1
-      recommendation. The 3270/BMS color contract is the authoritative design source for
-      this migration, so the color is preserved verbatim and flagged here for designer
-      review rather than being silently altered.
+      BLITZY [A11Y / review finding #53]: BMS colours are centralized in
+      templates/fragments/bms-palette.html and referenced via var(--bms-*). The two BMS
+      foreground colours that failed WCAG 2.1 AA contrast on the black background (BLUE,
+      RED) are replaced with accessible equivalents brightened along the same hue axis
+      (>= 4.5:1); the rest keep their legacy values. Contrast is asserted by
+      BmsPaletteContrastTest.
     -->
     <style>
         :root {
             /* BMS color contract -> inline hex (authoritative design source) */
-            --c-blue: #0000CD;
-            --c-yellow: #CCCC00;
-            --c-turquoise: #00CDCD;
-            --c-green: #00CD00;
-            --c-red: #CD0000;
-            --c-neutral: #FFFFFF;
-            --screen-bg: #000000;
+            --c-blue: var(--bms-blue);
+            --c-yellow: var(--bms-yellow);
+            --c-turquoise: var(--bms-turquoise);
+            --c-green: var(--bms-green);
+            --c-red: var(--bms-red);
+            --c-neutral: var(--bms-neutral);
+            --screen-bg: var(--bms-bg);
             /* Fixed 3270 artboard geometry */
             --cols: 80;
             --rows: 24;
@@ -140,6 +142,7 @@
             outline: 2px solid var(--c-neutral);
         }
 
+        .pfkey:active { text-decoration: underline; filter: brightness(1.3); }
         @media (hover: hover) {
             .pfkey:hover { text-decoration: underline; }
         }
@@ -167,6 +170,9 @@
 <body>
     <a class="skip-link" href="#trnidin">Skip to Transaction ID input</a>
     <main class="screen-wrap">
+        <!-- Off-grid semantic heading for assistive tech (review finding #56); the visible
+             title cell is unchanged. -->
+        <h1 class="visually-hidden">View Transaction</h1>
         <form th:object="${form}" th:action="@{/transaction/view}" method="post"
               class="screen" aria-label="View Transaction">
 

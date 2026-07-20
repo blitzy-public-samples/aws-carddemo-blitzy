@@ -24,8 +24,9 @@ import com.aws.carddemo.exception.EndOfFileException;
 import com.aws.carddemo.repository.CardRepository;
 import com.aws.carddemo.repository.CardXrefRepository;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
-import org.springframework.data.domain.Sort;
+import org.springframework.data.domain.Limit;
 import org.springframework.stereotype.Service;
 
 /**
@@ -120,9 +121,12 @@ import org.springframework.stereotype.Service;
  * session-scoped {@link CardDemoContext}, the {@link CardRepository}, and the
  * {@link CardXrefRepository}. Card-list browsing reads the {@code CARDDAT} base
  * cluster through {@link CardRepository}: the ascending {@code CARD-NUM} browse
- * ({@code STARTBR}/{@code READNEXT}) becomes {@code findAll(Sort)} ascending by card
- * number, and the account-filtered {@code CARDAIX} alternate-index path becomes the
- * derived query {@link CardRepository#findByCardAcctIdOrderByCardNumAsc(Long)} (AAP
+ * ({@code STARTBR}/{@code READNEXT}) becomes a bounded keyset paging window
+ * ({@link CardRepository#findByCardNumGreaterThanEqualOrderByCardNumAsc(String,
+ * org.springframework.data.domain.Limit)} and its descending page-up counterpart) so the
+ * whole base cluster is never materialized (review finding&nbsp;#21), and the
+ * account-filtered {@code CARDAIX} alternate-index path becomes the derived query
+ * {@link CardRepository#findByCardAcctIdOrderByCardNumAsc(Long)} (AAP
  * &sect;0.4.1, which assigns {@code CARDAIX} to this program). {@link CardXrefRepository}
  * is injected to satisfy the shared online card-service constructor contract used by
  * the paired {@code CardController}; the AAP assigns the {@code CCXREF}
@@ -170,8 +174,16 @@ public class CardListService {
     /** COBOL {@code WS-MAX-SCREEN-LINES PIC S9(4) COMP VALUE 7} - rows per page. */
     private static final int MAX_SCREEN_LINES = 7;
 
-    /** Persisted card-number property name used to build the ascending browse {@link Sort}. */
-    private static final String CARD_NUM_PROPERTY = "cardNum";
+    /**
+     * Size of the bounded keyset browse window read per page for the unfiltered base-cluster
+     * browse (review finding&nbsp;#21). A single {@link #readForward} page reads at most
+     * {@value #MAX_SCREEN_LINES} surviving rows plus one look-ahead ({@code READNEXT}) record, and
+     * a single {@link #readBackwards} page reads one priming {@code READPREV} plus at most
+     * {@value #MAX_SCREEN_LINES} surviving rows; {@code MAX_SCREEN_LINES + 2} therefore bounds the
+     * records either direction can touch, so a window of this size reproduces the full-cluster
+     * browse (including the page-boundary look-ahead) without materializing the whole table.
+     */
+    private static final int BROWSE_WINDOW = MAX_SCREEN_LINES + 2;
 
     /** Row-select code {@code 'S'} - view the card (COBOL 88-level {@code VIEW-REQUESTED-ON}). */
     private static final String SELECT_VIEW = "S";
@@ -243,9 +255,11 @@ public class CardListService {
     private final CardDemoContext context;
 
     /**
-     * Repository over the {@code CARDDAT} base cluster (VSAM KSDS). Supplies the
-     * ascending {@code CARD-NUM} browse ({@code findAll(Sort)}) and the account-filtered
-     * {@code CARDAIX} alternate-index path
+     * Repository over the {@code CARDDAT} base cluster (VSAM KSDS). Supplies the bounded
+     * ascending {@code CARD-NUM} browse windows
+     * ({@link CardRepository#findByCardNumGreaterThanEqualOrderByCardNumAsc(String,
+     * org.springframework.data.domain.Limit)} and its descending page-up counterpart) and the
+     * account-filtered {@code CARDAIX} alternate-index path
      * ({@link CardRepository#findByCardAcctIdOrderByCardNumAsc(Long)}).
      */
     private final CardRepository cardRepository;
@@ -688,9 +702,10 @@ public class CardListService {
      * "{@value #MSG_NO_RECORDS_FOUND}" message - never a hard error.</p>
      *
      * <p>The COBOL browse is realized against an in-memory, ascending-by-card-number list
-     * built by {@link #buildScopedOrderedList(CardListState)}: the account-filtered path uses
-     * the {@code CARDAIX} alternate-index-equivalent derived query, otherwise the full base
-     * cluster is browsed. This service performs no writes.</p>
+     * built by {@link #buildForwardWindow(CardListState)}: the account-filtered path uses the
+     * {@code CARDAIX} alternate-index-equivalent derived query, a card-number filter resolves to a
+     * unique primary-key point lookup, and the unfiltered path reads a bounded keyset window rather
+     * than the whole base cluster (review finding&nbsp;#21). This service performs no writes.</p>
      *
      * @param form   the bound card-list screen whose row fields are populated for display
      * @param work   the card work area (unused for I/O here; carried for signature symmetry
@@ -706,7 +721,7 @@ public class CardListService {
         paging.clearRows();                    // MOVE LOW-VALUES TO WS-ALL-ROWS
         clearFormRows(form);
 
-        CardBrowseCursor cursor = new CardBrowseCursor(buildScopedOrderedList(state));
+        CardBrowseCursor cursor = new CardBrowseCursor(buildForwardWindow(state));
         cursor.startBrowseGteq(state.getRidCardNum());     // EXEC CICS STARTBR ... GTEQ
 
         int counter = 0;                       // MOVE ZEROES TO WS-SCRN-COUNTER
@@ -798,7 +813,7 @@ public class CardListService {
         paging.setLastCardNum(paging.getFirstCardNum());
         paging.setLastCardAcctId(paging.getFirstCardAcctId());
 
-        CardBrowseCursor cursor = new CardBrowseCursor(buildScopedOrderedList(state));
+        CardBrowseCursor cursor = new CardBrowseCursor(buildBackwardWindow(state));
         cursor.startBrowseGteq(state.getRidCardNum());     // EXEC CICS STARTBR ... GTEQ
 
         int counter = MAX_SCREEN_LINES + 1;    // COMPUTE WS-SCRN-COUNTER = MAX + 1
@@ -850,8 +865,8 @@ public class CardListService {
      * <p>A record is excluded when a valid account filter does not match the card's account id,
      * or when a valid card filter does not match the card number; otherwise it is retained.
      * When the account filter is valid the browse is already scoped by
-     * {@link #buildScopedOrderedList(CardListState)}, so the account comparison is redundant
-     * yet preserved for one-for-one parity with the COBOL.</p>
+     * {@link #buildForwardWindow(CardListState)} / {@link #buildBackwardWindow(CardListState)}, so
+     * the account comparison is redundant yet preserved for one-for-one parity with the COBOL.</p>
      *
      * @param card  the candidate card record read from the browse
      * @param state the per-request state carrying the active filters
@@ -950,21 +965,81 @@ public class CardListService {
     }
 
     /**
-     * Builds the ascending-by-card-number list that the in-memory browse iterates - the
-     * {@code STARTBR}/{@code READNEXT} data source. A valid account filter takes the
-     * {@code CARDAIX} alternate-index-equivalent path
-     * ({@link CardRepository#findByCardAcctIdOrderByCardNumAsc(Long)}); otherwise the full base
-     * cluster is browsed ascending by card number, matching the VSAM primary-key order under a
-     * bytewise ({@code C}) collation (AAP &sect;0.6.6).
+     * Builds the ascending-by-card-number list backing a single {@link #readForward} page - the
+     * {@code STARTBR ... GTEQ}/{@code READNEXT} data source, bounded so the whole base cluster is
+     * never materialized (review finding&nbsp;#21). The returned list is always sorted ascending by
+     * card number because {@link CardBrowseCursor} positions and reads over an ascending list.
      *
-     * @param state the per-request state carrying the account filter
-     * @return the scoped, ascending-ordered list of cards to browse
+     * <p>Three cases mirror the COBOL {@code 9500-FILTER-RECORDS} outcomes exactly:</p>
+     * <ol>
+     *   <li><strong>Valid account filter</strong> ({@code FLG-ACCTFILTER-ISVALID}): the
+     *       {@code CARDAIX} alternate-index-equivalent path
+     *       ({@link CardRepository#findByCardAcctIdOrderByCardNumAsc(Long)}), inherently bounded to a
+     *       single account and therefore left unwindowed. The in-loop account comparison in
+     *       {@link #filterRecords(Card, CardListState)} is redundant on this path (kept for parity),
+     *       and a co-active card filter still selects the unique matching card within the account.</li>
+     *   <li><strong>Valid card filter only</strong> ({@code FLG-CARDFILTER-ISVALID}, no account
+     *       filter): {@code CARD-NUM} is the unique primary key, so at most one record survives the
+     *       in-loop filter. The full-cluster browse-to-{@code ENDFILE} is reproduced by a single
+     *       primary-key point lookup ({@link CardRepository#findById(Object)}); an out-of-range or
+     *       absent key yields an empty list, exactly matching the COBOL "no records found" outcome
+     *       because every excluded record leaves the counter, rows, keys and next-page flag
+     *       untouched.</li>
+     *   <li><strong>No filter</strong>: a bounded ascending keyset window at or beyond the browse key
+     *       ({@link CardRepository#findByCardNumGreaterThanEqualOrderByCardNumAsc(String, Limit)}). A
+     *       blank/{@code LOW-VALUES} key (the empty string) selects the first page. The
+     *       {@value #BROWSE_WINDOW}-row window covers the {@value #MAX_SCREEN_LINES} display rows plus
+     *       the page-boundary look-ahead.</li>
+     * </ol>
+     *
+     * @param state the per-request state carrying the filters and the forward browse key
+     * @return the scoped, ascending-ordered list of cards to browse forward
      */
-    private List<Card> buildScopedOrderedList(CardListState state) {
+    private List<Card> buildForwardWindow(CardListState state) {
         if (state.getAcctFilter() == CardListState.FilterFlag.VALID) {
             return cardRepository.findByCardAcctIdOrderByCardNumAsc(state.getAcctFilterValue());
         }
-        return cardRepository.findAll(Sort.by(Sort.Direction.ASC, CARD_NUM_PROPERTY));
+        if (state.getCardFilter() == CardListState.FilterFlag.VALID) {
+            return cardRepository.findById(state.getCardFilterValue())
+                    .map(List::of)
+                    .orElseGet(List::of);
+        }
+        return cardRepository.findByCardNumGreaterThanEqualOrderByCardNumAsc(
+                state.getRidCardNum(), Limit.of(BROWSE_WINDOW));
+    }
+
+    /**
+     * Builds the ascending-by-card-number list backing a single {@link #readBackwards} page - the
+     * {@code STARTBR ... GTEQ}/{@code READPREV} data source, bounded so the whole base cluster is
+     * never materialized (review finding&nbsp;#21). Like {@link #buildForwardWindow(CardListState)}
+     * the returned list is ascending, because the cursor positions with {@code startBrowseGteq} and
+     * walks backward with {@code readPrev} over an ascending list.
+     *
+     * <p>The account-filter and card-filter cases are identical to
+     * {@link #buildForwardWindow(CardListState)} (an account-scoped list and a unique-key point
+     * lookup are both valid in either direction). For the unfiltered case a descending keyset window
+     * at or below the browse key
+     * ({@link CardRepository#findByCardNumLessThanEqualOrderByCardNumDesc(String, Limit)}) is read
+     * and then reversed to ascending order; the cursor positions at the boundary key, the priming
+     * {@code READPREV} skips it, and the preceding {@value #MAX_SCREEN_LINES} rows are read. The
+     * {@value #BROWSE_WINDOW}-row window covers the priming read plus the display rows.</p>
+     *
+     * @param state the per-request state carrying the filters and the backward browse key
+     * @return the scoped, ascending-ordered list of cards to browse backward
+     */
+    private List<Card> buildBackwardWindow(CardListState state) {
+        if (state.getAcctFilter() == CardListState.FilterFlag.VALID) {
+            return cardRepository.findByCardAcctIdOrderByCardNumAsc(state.getAcctFilterValue());
+        }
+        if (state.getCardFilter() == CardListState.FilterFlag.VALID) {
+            return cardRepository.findById(state.getCardFilterValue())
+                    .map(List::of)
+                    .orElseGet(List::of);
+        }
+        List<Card> window = new ArrayList<>(cardRepository.findByCardNumLessThanEqualOrderByCardNumDesc(
+                state.getRidCardNum(), Limit.of(BROWSE_WINDOW)));
+        Collections.reverse(window);
+        return window;
     }
 
     /**

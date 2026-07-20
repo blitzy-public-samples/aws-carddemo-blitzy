@@ -32,14 +32,19 @@ import com.aws.carddemo.util.DateConversionSupport.DateEditResult;
 import com.aws.carddemo.util.DateConversionSupport.FieldFlag;
 import java.io.Serializable;
 import java.math.BigDecimal;
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.security.SecureRandom;
 import java.time.LocalDate;
 import java.time.format.DateTimeFormatter;
 import java.time.format.DateTimeParseException;
 import java.util.EnumMap;
+import java.util.HexFormat;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
+import io.micrometer.observation.annotation.Observed;
 import org.springframework.dao.DataAccessException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.NoTransactionException;
@@ -345,6 +350,29 @@ public class AccountUpdateService {
 
     /** {@code WS-EXIT-MESSAGE VALUE 'PF03 pressed.Exiting'} (COBOL line 481). */
     private static final String MSG_PF3_EXITING = "PF03 pressed.Exiting";
+
+    /**
+     * Banner shown when a {@code PF5} confirmation arrives with a missing, forged, or
+     * replayed confirmation token (review finding #10). This has no COBOL source line -
+     * on the mainframe the confirmation fields are protected ({@code ASKIP}) so an
+     * out-of-band re-post is physically impossible; the browser cannot enforce that,
+     * so the server rejects the write and re-issues a fresh single-use token, asking
+     * the operator to confirm again. Kept terse and screen-safe to match the
+     * surrounding 78-character {@code WS-RETURN-MSG} banner style.
+     */
+    private static final String MSG_CONFIRM_INTEGRITY =
+            "Confirmation could not be validated. Please review and press F5 again.";
+
+    /**
+     * Cryptographically strong source for the single-use confirmation tokens issued
+     * by {@link #newConfirmToken()} (review finding #10). One shared
+     * {@link SecureRandom} instance is thread-safe and is the standard idiom for
+     * anti-replay / anti-double-submit nonces.
+     */
+    private static final SecureRandom CONFIRM_TOKEN_RNG = new SecureRandom();
+
+    /** Byte length of a raw confirmation token (256 bits) before hex encoding. */
+    private static final int CONFIRM_TOKEN_BYTES = 32;
 
     /**
      * CICS {@code DFHRESP(NOTFND)} response value (13), surfaced in the read
@@ -738,15 +766,46 @@ public class AccountUpdateService {
      * shared {@code COCOM01Y}). It carries the {@code ACUP-CHANGE-ACTION} and the
      * {@code ACUP-OLD-DETAILS} snapshot across pseudo-conversational turns; the
      * controller stores it in the HTTP session and passes it back on each request.
-     * The {@code ACUP-NEW-DETAILS} are deliberately absent - they are rebuilt from
-     * the submitted form every request.
+     *
+     * <p><b>Review finding #10 (confirmation integrity, CWE-20/CWE-639).</b> This
+     * state now also carries the validated {@code ACUP-NEW-DETAILS} pending
+     * snapshot and a single-use confirmation token across the ENTER&rarr;PF5 turns,
+     * exactly as the COBOL {@code WS-THIS-PROGCOMMAREA} carries {@code
+     * ACUP-NEW-DETAILS} (COACTUPC lines 689+). The earlier translation rebuilt the
+     * new details from the submitted form on <em>every</em> request, so a crafted or
+     * replayed PF5 could substitute unvalidated identity/values that were never
+     * shown for confirmation. Carrying the server-side validated snapshot (and
+     * committing it, not the PF5 re-post) restores the source behaviour where the
+     * confirmation-state fields are protected and the confirmed values equal the
+     * validated ones. The {@link #confirmToken} is issued when the state advances to
+     * {@link ChangeAction#CHANGES_OK_NOT_CONFIRMED} and consumed (single-use) on the
+     * PF5 commit, defeating replay/double-submit.</p>
      */
     public static final class AccountUpdateState implements Serializable {
 
-        private static final long serialVersionUID = 1L;
+        private static final long serialVersionUID = 2L;
 
         private ChangeAction changeAction;
         private AccountSnapshot oldSnapshot;
+
+        /**
+         * The validated {@code ACUP-NEW-DETAILS} pending snapshot captured when the
+         * edits passed and the state advanced to
+         * {@link ChangeAction#CHANGES_OK_NOT_CONFIRMED}. On the PF5 confirm turn the
+         * service commits <em>this</em> server-carried snapshot, never the re-posted
+         * client values (review finding #10). {@code null} outside the awaiting-confirm
+         * window. Package-visible to the enclosing service only.
+         */
+        private NewInput pendingInput;
+
+        /**
+         * Single-use confirmation token bound to the {@link #pendingInput}. Issued
+         * (a fresh random value) when the state advances to
+         * {@link ChangeAction#CHANGES_OK_NOT_CONFIRMED}, echoed to the confirm screen
+         * as a hidden field, and validated then cleared on the PF5 commit so a
+         * replayed or forged confirmation is rejected (review finding #10).
+         */
+        private String confirmToken;
 
         /** Creates a fresh state in the {@code ACUP-DETAILS-NOT-FETCHED} condition. */
         public AccountUpdateState() {
@@ -783,13 +842,56 @@ public class AccountUpdateService {
         }
 
         /**
+         * @return the validated {@code ACUP-NEW-DETAILS} pending snapshot committed
+         *     on the PF5 confirm turn, or {@code null} when not awaiting confirmation
+         *     (review finding #10)
+         */
+        NewInput getPendingInput() {
+            return pendingInput;
+        }
+
+        /**
+         * Stores the validated pending snapshot when the state advances to
+         * {@link ChangeAction#CHANGES_OK_NOT_CONFIRMED} (review finding #10).
+         *
+         * @param pendingInput the validated {@code ACUP-NEW-DETAILS} snapshot (may be {@code null})
+         */
+        void setPendingInput(NewInput pendingInput) {
+            this.pendingInput = pendingInput;
+        }
+
+        /**
+         * @return the single-use confirmation token bound to {@link #getPendingInput()},
+         *     or {@code null} when not awaiting confirmation (review finding #10). Public
+         *     so the controller can echo it to the confirm screen's hidden field.
+         */
+        public String getConfirmToken() {
+            return confirmToken;
+        }
+
+        /**
+         * Sets the single-use confirmation token issued when the state advances to
+         * {@link ChangeAction#CHANGES_OK_NOT_CONFIRMED} (review finding #10).
+         *
+         * @param confirmToken the freshly generated token (may be {@code null} to clear)
+         */
+        void setConfirmToken(String confirmToken) {
+            this.confirmToken = confirmToken;
+        }
+
+        /**
          * Reproduces {@code INITIALIZE WS-THIS-PROGCOMMAREA} plus
-         * {@code SET ACUP-DETAILS-NOT-FETCHED}: clears the snapshot and returns to
-         * the not-fetched condition.
+         * {@code SET ACUP-DETAILS-NOT-FETCHED}: clears the snapshot, the pending
+         * new-details snapshot, and the confirmation token, and returns to the
+         * not-fetched condition. Clearing {@link #pendingInput}/{@link #confirmToken}
+         * here keeps the single-use confirmation window from surviving a reset
+         * (review finding #10).
          */
         public void reset() {
             this.changeAction = ChangeAction.DETAILS_NOT_FETCHED;
             this.oldSnapshot = null;
+            this.pendingInput = null;
+            this.confirmToken = null;
         }
 
         /** @return {@code true} when in the {@code ACUP-DETAILS-NOT-FETCHED} condition */
@@ -1268,8 +1370,16 @@ public class AccountUpdateService {
      *
      * <p>Origin: {@code legacy/cbl/COACTUPC.cbl}, {@code ACUP-NEW-DETAILS}
      * (working storage) and {@code 1100-RECEIVE-MAP}.</p>
+     *
+     * <p>Implements {@link Serializable} so the validated snapshot can be carried
+     * server-side on {@link AccountUpdateState#pendingInput} across the
+     * ENTER&rarr;PF5 pseudo-conversational turns (review finding #10), mirroring the
+     * COBOL {@code ACUP-NEW-DETAILS} residing in {@code WS-THIS-PROGCOMMAREA}. All
+     * fields are {@link String} or {@link BigDecimal} and therefore serializable.</p>
      */
-    private static final class NewInput {
+    private static final class NewInput implements Serializable {
+
+        private static final long serialVersionUID = 1L;
 
         // --- account data ---
         private String accountFilter;   // ACCTSIDI -> CC-ACCT-ID (search key)
@@ -3133,6 +3243,12 @@ public class AccountUpdateService {
         // IF INPUT-ERROR CONTINUE ELSE SET ACUP-CHANGES-OK-NOT-CONFIRMED TO TRUE
         if (!edit.isInputError()) {
             session.setChangeAction(ChangeAction.CHANGES_OK_NOT_CONFIRMED);
+            // Review finding #10: capture the just-validated ACUP-NEW-DETAILS server
+            // side and issue the single-use confirmation token. The COBOL leaves the
+            // validated new details in WS-THIS-PROGCOMMAREA; the Java equivalent must
+            // carry them explicitly so the PF5 commit uses the validated values, not
+            // the (protected on the mainframe, but forgeable over HTTP) re-post.
+            armConfirmation(session, st);
         }
     }
 
@@ -3747,11 +3863,16 @@ public class AccountUpdateService {
      * unit-of-work that commits the edited account and customer together.
      *
      * <p>Origin: legacy/cbl/COACTUPC.cbl paragraph {@code 9600-WRITE-PROCESSING}
-     * (COBOL lines 3888-4107). The CICS {@code READ ... UPDATE} locks map to
-     * {@link AccountRepository#findById(Object)} /
-     * {@link CustomerRepository#findById(Object)}: a present record is the locked
-     * baseline, an empty result maps to {@code COULD-NOT-LOCK-ACCT-FOR-UPDATE} /
-     * {@code COULD-NOT-LOCK-CUST-FOR-UPDATE}. {@code 9700-CHECK-CHANGE-IN-REC} then
+     * (COBOL lines 3888-4107). The CICS {@code READ ... UPDATE} locks map to the
+     * pessimistic-write-lock finders
+     * {@link AccountRepository#findByIdForUpdate(Long)} /
+     * {@link CustomerRepository#findByIdForUpdate(Long)} (PostgreSQL {@code SELECT ...
+     * FOR UPDATE}): a present record is the locked baseline, an empty result maps to
+     * {@code COULD-NOT-LOCK-ACCT-FOR-UPDATE} / {@code COULD-NOT-LOCK-CUST-FOR-UPDATE}.
+     * The account is locked first and the customer second &mdash; the exact COBOL
+     * lock order &mdash; and both locks are held until this unit-of-work commits, so
+     * the change-check and the dual rewrite are one atomic critical section with no
+     * lost-update window (review finding #14, CWE-362). {@code 9700-CHECK-CHANGE-IN-REC} then
      * compares the freshly re-read records against the fetch-time baseline; a
      * concurrent change aborts the save for re-display. Otherwise the edited values
      * are applied and both records are rewritten via
@@ -3774,9 +3895,12 @@ public class AccountUpdateService {
         EditContext edit = st.getEdit();
 
         // Read the account file for update (lock). MOVE CC-ACCT-ID TO WS-CARD-RID-ACCT-ID.
+        // EXEC CICS READ FILE(ACCTDAT) UPDATE -> pessimistic write lock (SELECT ... FOR UPDATE),
+        // acquired FIRST (the COBOL 9600 lock order: account, then customer), held until this
+        // @Transactional unit-of-work commits so the change-check and REWRITE are atomic (#14).
         Long acctId = this.context.getAcctId();
         Optional<Account> acctOpt =
-                (acctId == null) ? Optional.empty() : this.accountRepository.findById(acctId);
+                (acctId == null) ? Optional.empty() : this.accountRepository.findByIdForUpdate(acctId);
         if (acctOpt.isEmpty()) {
             // Could we lock the account record ?  -> no.
             edit.markInputError();                       // SET INPUT-ERROR
@@ -3789,9 +3913,11 @@ public class AccountUpdateService {
         Account account = acctOpt.get();
 
         // Read the customer file for update (lock). MOVE CDEMO-CUST-ID TO WS-CARD-RID-CUST-ID.
+        // EXEC CICS READ FILE(CUSTDAT) UPDATE -> pessimistic write lock, acquired SECOND (after the
+        // account) matching the COBOL 9600 lock order; held until commit (#14).
         Long custId = this.context.getCustId();
         Optional<Customer> custOpt =
-                (custId == null) ? Optional.empty() : this.customerRepository.findById(custId);
+                (custId == null) ? Optional.empty() : this.customerRepository.findByIdForUpdate(custId);
         if (custOpt.isEmpty()) {
             // Could we lock the customer record ?  -> no.
             edit.markInputError();                       // SET INPUT-ERROR
@@ -4198,6 +4324,7 @@ public class AccountUpdateService {
      *         flag, resulting change action, and per-field validity flags
      */
     @Transactional
+    @Observed(name = "carddemo.account.update", contextualName = "account-update")
     public AccountUpdateResult process(COACTUPForm form, PfKey pfKey, AccountUpdateState state) {
         // 0000-MAIN line 866: INITIALIZE CC-WORK-AREA WS-MISC-STORAGE WS-COMMAREA.
         // Every per-request work area is rebuilt from the submitted form and the
@@ -4363,6 +4490,119 @@ public class AccountUpdateService {
     }
 
     /**
+     * Generates a fresh, single-use confirmation token (review finding #10).
+     *
+     * <p>Returns a 256-bit {@link SecureRandom} value hex-encoded to a 64-character
+     * string. The token is issued by {@link #armConfirmation} at the moment the state
+     * advances to {@link ChangeAction#CHANGES_OK_NOT_CONFIRMED}, echoed to the confirm
+     * screen as a hidden field, and validated then consumed on the {@code PF5} commit
+     * so a replayed or forged confirmation cannot re-drive the write.</p>
+     *
+     * @return a new random hexadecimal confirmation token
+     */
+    private static String newConfirmToken() {
+        byte[] raw = new byte[CONFIRM_TOKEN_BYTES];
+        CONFIRM_TOKEN_RNG.nextBytes(raw);
+        return HexFormat.of().formatHex(raw);
+    }
+
+    /**
+     * Constant-time comparison of the presented and expected confirmation tokens
+     * (review finding #10). Uses {@link MessageDigest#isEqual(byte[], byte[])} so the
+     * check does not leak token contents through timing, and treats a {@code null}
+     * expected or presented token as a non-match.
+     *
+     * @param expected  the server-side token bound to the pending snapshot (may be {@code null})
+     * @param presented the token echoed back by the client on {@code PF5} (may be {@code null})
+     * @return {@code true} only when both are non-{@code null} and byte-equal
+     */
+    private static boolean confirmTokensMatch(String expected, String presented) {
+        if (expected == null || presented == null) {
+            return false;
+        }
+        return MessageDigest.isEqual(
+                expected.getBytes(StandardCharsets.UTF_8),
+                presented.getBytes(StandardCharsets.UTF_8));
+    }
+
+    /**
+     * Arms the confirmation window - captures the validated {@code ACUP-NEW-DETAILS}
+     * snapshot server-side and issues a fresh single-use token (review finding #10).
+     *
+     * <p>Called at each point where the state advances to
+     * {@link ChangeAction#CHANGES_OK_NOT_CONFIRMED} (the {@code SET
+     * ACUP-CHANGES-OK-NOT-CONFIRMED} of COBOL 1200 line 1674 and 2000 line 2590). The
+     * captured {@link NewInput} is the values the operator is shown for confirmation;
+     * on the {@code PF5} turn {@link #decideAction} commits exactly this snapshot -
+     * never the re-posted client values - reproducing the mainframe behaviour where
+     * the confirmation-screen fields are protected and therefore unchangeable. The
+     * per-request {@link ProcessingState} rebuilds its {@link NewInput} from the form
+     * each turn, so the reference captured here is detached from later turns and is
+     * safe to hold on the session-scoped state.</p>
+     *
+     * @param session the session-scoped state that carries the snapshot and token
+     * @param st      the per-request state whose validated {@link NewInput} is captured
+     */
+    private static void armConfirmation(AccountUpdateState session, ProcessingState st) {
+        session.setPendingInput(st.getNewInput());
+        session.setConfirmToken(newConfirmToken());
+    }
+
+    /**
+     * Rejects a {@code PF5} confirmation whose single-use token is missing, forged, or
+     * replayed (review finding #10) - no write is performed and the re-posted client
+     * values are discarded. When a validated pending snapshot is still held, the
+     * confirmation window stays open with a freshly re-issued token and the
+     * {@link #MSG_CONFIRM_INTEGRITY} banner, so a legitimate operator can simply
+     * confirm again; when no snapshot is held (a {@code PF5} that could not have
+     * legitimately reached the confirm state), the action falls back to
+     * {@link ChangeAction#SHOW_DETAILS}.
+     *
+     * @param session the session-scoped state
+     * @param st      the per-request state whose red banner is set
+     */
+    private void rejectConfirmation(AccountUpdateState session, ProcessingState st) {
+        if (session.getPendingInput() != null) {
+            // Re-issue the token: the stale or forged value is now worthless and the
+            // caller cannot learn the replacement, but the operator can retry.
+            session.setConfirmToken(newConfirmToken());
+        } else {
+            session.setConfirmToken(null);
+            session.setChangeAction(ChangeAction.SHOW_DETAILS);
+        }
+        st.getEdit().fail(MSG_CONFIRM_INTEGRITY);
+    }
+
+    /**
+     * Restores the server-carried validated confirmation before the write (review
+     * finding #10). The pending {@code ACUP-NEW-DETAILS} snapshot replaces whatever
+     * the {@code PF5} turn re-posted, and the account/customer identity is re-affirmed
+     * from the fetched {@code ACUP-OLD-DETAILS} baseline so {@link #writeProcessing}
+     * updates exactly the record shown for confirmation. Identity is already
+     * server-carried on {@link CardDemoContext} (editAccount runs only in the
+     * not-fetched state, so it is never re-derived from the client on the confirm
+     * turn); re-affirming it here is defense in depth that also guards against future
+     * refactors.
+     *
+     * @param session the session-scoped state holding the pending snapshot and old baseline
+     * @param st      the per-request state whose {@link NewInput} is replaced
+     */
+    private void restoreServerCarriedConfirmation(AccountUpdateState session, ProcessingState st) {
+        st.setNewInput(session.getPendingInput());
+        AccountSnapshot old = session.getOldSnapshot();
+        if (old != null) {
+            Long acctId = parseLongOrNull(old.getAcctId());
+            if (acctId != null) {
+                context.setAcctId(acctId);
+            }
+            Long custId = parseLongOrNull(old.getCustId());
+            if (custId != null) {
+                context.setCustId(custId);
+            }
+        }
+    }
+
+    /**
      * Action state machine - migration of paragraph {@code 2000-DECIDE-ACTION}
      * ({@code legacy/cbl/COACTUPC.cbl} lines 2557-2640). Reproduces the
      * {@code EVALUATE TRUE} (first-match) that, from the current
@@ -4448,6 +4688,11 @@ public class AccountUpdateService {
                 return;                                          // CONTINUE
             }
             session.setChangeAction(ChangeAction.CHANGES_OK_NOT_CONFIRMED);
+            // Review finding #10: arm the confirmation window here too (this WHEN
+            // ACUP-SHOW-DETAILS advance is the second SET ACUP-CHANGES-OK-NOT-CONFIRMED
+            // site, COBOL line 2590), so the pending snapshot and token are always in
+            // place before the confirm screen is shown.
+            armConfirmation(session, st);
             return;
         }
 
@@ -4459,6 +4704,21 @@ public class AccountUpdateService {
         // Lines 2604-2616: WHEN ACUP-CHANGES-OK-NOT-CONFIRMED AND CCARD-AID-PFK05 ->
         // confirmation given: perform the update, then map the write result.
         if (action == ChangeAction.CHANGES_OK_NOT_CONFIRMED && aid == PfKey.PFK05) {
+            // Review finding #10 (confirmation integrity, CWE-20/CWE-639). On the
+            // mainframe the confirmation-screen fields are protected, so the PF5 turn
+            // can only re-present the validated ACUP-NEW-DETAILS. Over HTTP a crafted
+            // PF5 can re-post arbitrary values, and editMapInputs deliberately skips
+            // re-validation in the confirm state (COBOL 1200 line 1464), so the server
+            // must (a) reject a missing / forged / replayed single-use token and
+            // (b) commit the server-carried validated snapshot and identity - never
+            // the re-post.
+            boolean tokenOk = confirmTokensMatch(session.getConfirmToken(),
+                    st.getForm().getConfirmToken());
+            if (!tokenOk || session.getPendingInput() == null) {
+                rejectConfirmation(session, st);
+                return;
+            }
+            restoreServerCarriedConfirmation(session, st);      // commit validated snapshot + identity
             writeProcessing(st);                                // PERFORM 9600-WRITE-PROCESSING
             switch (st.getWriteResult()) {                      // inner EVALUATE (lines 2606-2615)
                 case COULD_NOT_LOCK_ACCT ->
@@ -4472,6 +4732,10 @@ public class AccountUpdateService {
                         // customer-lock failure both land here (see method Javadoc).
                         session.setChangeAction(ChangeAction.CHANGES_OKAYED_AND_DONE);
             }
+            // Consume the single-use confirmation regardless of the write result so a
+            // replay cannot re-drive the write; a fresh cycle re-arms via 1200 / 2000.
+            session.setPendingInput(null);
+            session.setConfirmToken(null);
             return;
         }
 

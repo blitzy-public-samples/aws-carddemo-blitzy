@@ -13,7 +13,6 @@ import org.springframework.batch.repeat.RepeatStatus;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
-import org.springframework.data.domain.Sort;
 import org.springframework.transaction.PlatformTransactionManager;
 
 import com.aws.carddemo.domain.Account;
@@ -30,8 +29,10 @@ import com.aws.carddemo.util.CobolDecimal;
 
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
+import java.util.Iterator;
 import java.util.List;
 import java.util.Optional;
+import java.util.stream.Stream;
 
 /**
  * Spring Batch job configuration translating the mainframe interest-calculation program
@@ -57,7 +58,7 @@ import java.util.Optional;
  * calls, per the migration rule that each paragraph becomes a method):</p>
  * <ul>
  *   <li>{@code PROCEDURE DIVISION} main loop (L180-222) &rarr; {@link #calculateInterest(String)}</li>
- *   <li>{@code 1000-TCATBALF-GET-NEXT} (L325) &rarr; the {@link Sort}ed {@code findAll} scan +
+ *   <li>{@code 1000-TCATBALF-GET-NEXT} (L325) &rarr; the cursor-backed key-order stream scan +
  *       for-each iteration in {@link #calculateInterest(String)}</li>
  *   <li>{@code 1050-UPDATE-ACCOUNT} (L350) &rarr; {@link #updateAccount(Account, BigDecimal)}</li>
  *   <li>{@code 1100-GET-ACCT-DATA} (L372) &rarr; {@link #getAccountData(Long)}</li>
@@ -296,10 +297,14 @@ public class InterestCalcJobConfig {
      * account-key-ordered pass over the transaction-category-balance file that computes and posts
      * interest and writes back each account's accumulated interest on a control break.
      *
-     * <p>The category balances are read in ascending composite-key order
-     * ({@code Sort.by("acctId", "typeCd", "catCd")}), matching the COBOL {@code ACCESS MODE IS
-     * SEQUENTIAL} / {@code RECORD KEY IS FD-TRAN-CAT-KEY} scan so that rows for the same account are
-     * contiguous. For each row:</p>
+     * <p>The category balances are read in ascending composite-key order through
+     * {@link TransactionCategoryBalanceRepository#streamAllByAccountKeyOrder()}, a forward-only
+     * cursor-backed stream ({@code order by acctId, typeCd, catCd}), matching the COBOL
+     * {@code ACCESS MODE IS SEQUENTIAL} / {@code RECORD KEY IS FD-TRAN-CAT-KEY} scan so that rows for
+     * the same account are contiguous. Streaming (rather than a materialized {@code findAll} list)
+     * processes one row at a time with bounded memory, never loading the whole {@code TCATBAL} dataset
+     * into the heap (review finding&#160;#21); the stream is consumed inside a try-with-resources block
+     * so the JDBC cursor is released. For each row:</p>
      * <ol>
      *   <li><strong>Account control break</strong> ({@code IF TRANCAT-ACCT-ID NOT = WS-LAST-ACCT-NUM},
      *       L194): on a change, write the <em>previous</em> account back via
@@ -339,9 +344,6 @@ public class InterestCalcJobConfig {
                     "Job parameter '" + PROCESSING_DATE_PARAM + "' is required (COBOL PARM-DATE)");
         }
 
-        List<TransactionCategoryBalance> categoryBalances =
-                categoryBalanceRepository.findAll(Sort.by("acctId", "typeCd", "catCd"));
-
         Long lastAcctNum = null;                 // WS-LAST-ACCT-NUM (VALUE SPACES) -> null sentinel
         boolean firstTime = true;                // WS-FIRST-TIME = 'Y'
         BigDecimal totalInterest = BigDecimal.ZERO;  // WS-TOTAL-INT (reset per account)
@@ -351,37 +353,47 @@ public class InterestCalcJobConfig {
         Account currentAccount = null;
         String currentCardNum = null;
 
-        for (TransactionCategoryBalance row : categoryBalances) {
-            recordCount++;                       // ADD 1 TO WS-RECORD-COUNT (L192)
-            Long acctId = row.getAcctId();
+        // 1000-TCATBALF-GET-NEXT: forward-only cursor-backed key-order scan (review finding #21). The
+        // stream is consumed inside try-with-resources so the JDBC cursor is released; the enclosing
+        // Spring Batch tasklet transaction keeps the persistence context open for the whole scan. An
+        // explicit iterator (not forEach) is used so the control-break state below is mutated as
+        // ordinary locals rather than captured by a lambda.
+        try (Stream<TransactionCategoryBalance> categoryBalances =
+                categoryBalanceRepository.streamAllByAccountKeyOrder()) {
+            Iterator<TransactionCategoryBalance> iterator = categoryBalances.iterator();
+            while (iterator.hasNext()) {
+                TransactionCategoryBalance row = iterator.next();
+                recordCount++;                       // ADD 1 TO WS-RECORD-COUNT (L192)
+                Long acctId = row.getAcctId();
 
-            // 1) Account control break (L194): TRANCAT-ACCT-ID NOT = WS-LAST-ACCT-NUM.
-            if (!acctId.equals(lastAcctNum)) {
-                if (!firstTime) {
-                    // Write the PREVIOUS account's accumulated interest (1050) -- L195-196.
-                    updateAccount(currentAccount, totalInterest);
-                } else {
-                    firstTime = false;           // MOVE 'N' TO WS-FIRST-TIME (L197-198)
+                // 1) Account control break (L194): TRANCAT-ACCT-ID NOT = WS-LAST-ACCT-NUM.
+                if (!acctId.equals(lastAcctNum)) {
+                    if (!firstTime) {
+                        // Write the PREVIOUS account's accumulated interest (1050) -- L195-196.
+                        updateAccount(currentAccount, totalInterest);
+                    } else {
+                        firstTime = false;           // MOVE 'N' TO WS-FIRST-TIME (L197-198)
+                    }
+                    totalInterest = BigDecimal.ZERO; // MOVE 0 TO WS-TOTAL-INT (L200)
+                    lastAcctNum = acctId;            // MOVE TRANCAT-ACCT-ID TO WS-LAST-ACCT-NUM (L201)
+                    currentAccount = getAccountData(acctId);   // 1100-GET-ACCT-DATA (L203)
+                    currentCardNum = getCardNumber(acctId);    // 1110-GET-XREF-DATA (L205)
                 }
-                totalInterest = BigDecimal.ZERO; // MOVE 0 TO WS-TOTAL-INT (L200)
-                lastAcctNum = acctId;            // MOVE TRANCAT-ACCT-ID TO WS-LAST-ACCT-NUM (L201)
-                currentAccount = getAccountData(acctId);   // 1100-GET-ACCT-DATA (L203)
-                currentCardNum = getCardNumber(acctId);    // 1110-GET-XREF-DATA (L205)
-            }
 
-            // 2) Disclosure key mixes the account's group id with the row's type + category
-            //    (L210-212): group from ACCT-GROUP-ID, type from TRANCAT-TYPE-CD, cat from TRANCAT-CD.
-            BigDecimal interestRate = resolveInterestRate(
-                    currentAccount.getGroupId(), row.getTypeCd(), row.getCatCd());  // 1200 (+1200-A)
+                // 2) Disclosure key mixes the account's group id with the row's type + category
+                //    (L210-212): group from ACCT-GROUP-ID, type from TRANCAT-TYPE-CD, cat from TRANCAT-CD.
+                BigDecimal interestRate = resolveInterestRate(
+                        currentAccount.getGroupId(), row.getTypeCd(), row.getCatCd());  // 1200 (+1200-A)
 
-            // 4) IF DIS-INT-RATE NOT = 0 (L214): compute + post; a zero rate is skipped entirely.
-            if (CobolDecimal.nullToZero(interestRate).compareTo(BigDecimal.ZERO) != 0) {
-                BigDecimal monthlyInterest =
-                        computeMonthlyInterest(row.getBalance(), interestRate);     // 1300-COMPUTE-INTEREST
-                totalInterest = totalInterest.add(monthlyInterest);                 // ADD ... TO WS-TOTAL-INT (L467)
-                tranIdSuffix = writeInterestTransaction(
-                        processingDate, tranIdSuffix, currentAccount, currentCardNum, monthlyInterest); // 1300-B
-                computeFees();                                                      // 1400-COMPUTE-FEES (no-op)
+                // 4) IF DIS-INT-RATE NOT = 0 (L214): compute + post; a zero rate is skipped entirely.
+                if (CobolDecimal.nullToZero(interestRate).compareTo(BigDecimal.ZERO) != 0) {
+                    BigDecimal monthlyInterest =
+                            computeMonthlyInterest(row.getBalance(), interestRate);     // 1300-COMPUTE-INTEREST
+                    totalInterest = totalInterest.add(monthlyInterest);                 // ADD ... TO WS-TOTAL-INT (L467)
+                    tranIdSuffix = writeInterestTransaction(
+                            processingDate, tranIdSuffix, currentAccount, currentCardNum, monthlyInterest); // 1300-B
+                    computeFees();                                                      // 1400-COMPUTE-FEES (no-op)
+                }
             }
         }
 

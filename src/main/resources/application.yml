@@ -68,6 +68,17 @@ spring:
     enabled: true
     locations: classpath:db/migration
     baseline-on-migrate: false
+    # Seed-credential externalization (review finding #5, AAP 0.7.1 "no hardcoded
+    # credentials"). V2__reference_data.sql seeds the USRSEC principals with the
+    # placeholder ${carddemo_seed_password} instead of a committed literal. It is
+    # bound here to the CARDDEMO_SEED_PASSWORD environment variable with NO default,
+    # so a clean checkout carries no reusable secret and the migration fails closed
+    # if the value is not provisioned on the host (mirrors the datasource password).
+    # The value must be all-uppercase and at most 8 characters (usr_pwd is CHAR(8);
+    # the signon provider uppercases the entered password before the fixed-width
+    # comparison, AAP 0.6.7). Provisioned locally in /etc/profile.d (see docs/onboarding.md).
+    placeholders:
+      carddemo_seed_password: ${CARDDEMO_SEED_PASSWORD}
 
   # EBCDIC/ASCII collation parity (AAP 0.6.6): the CardDemo PostgreSQL database
   # should be created with 'C'/'POSIX' (bytewise) collation, and order-sensitive
@@ -77,7 +88,7 @@ spring:
   # creation - this note is a documentation pointer only.
   batch:
     job:
-      # CRITICAL: prevents the 13 migrated JCL-equivalent Spring Batch jobs from
+      # CRITICAL: prevents the 12 migrated JCL-equivalent Spring Batch jobs from
       # auto-running at application startup. Jobs are launched explicitly on demand.
       enabled: false
     jdbc:
@@ -109,13 +120,12 @@ management:
   endpoints:
     web:
       exposure:
-        # Expose ONLY these three endpoints (least exposure). NOTE (F26): 'info' and
-        # 'prometheus' are currently reachable without authentication for local observability.
-        # A forthcoming SecurityConfig SecurityFilterChain MUST restrict detailed health, info
-        # and prometheus to a monitoring/admin authority (or bind them to an isolated management
-        # port) and explicitly permit only the sanitized liveness/readiness probes for anonymous
-        # callers. Adding that chain makes Boot's actuator security auto-configuration back off,
-        # so the restriction has to be asserted there and tested for anonymous/user/admin access.
+        # Expose ONLY these three endpoints (least exposure). Access is restricted by the
+        # SecurityConfig SecurityFilterChain (review findings F26/#7): '/actuator/health/**' is
+        # anonymous (liveness/readiness probes) while '/actuator/info' and '/actuator/prometheus'
+        # require ROLE_ADMIN and are NOT readable anonymously. Because that explicit chain is active,
+        # Boot's actuator security auto-configuration backs off, so this restriction is enforced in
+        # SecurityConfig and asserted by SecurityConfigIT for anonymous / user / admin access.
         include: health,info,prometheus
   endpoint:
     health:

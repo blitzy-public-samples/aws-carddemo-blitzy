@@ -158,7 +158,7 @@ class BillPayServiceTest {
     @Mock
     private CardDemoContext context;
 
-    /** Account repository (VSAM {@code ACCTDAT}); mocked for {@code findById}/{@code save}. */
+    /** Account repository (VSAM {@code ACCTDAT}); mocked for {@code findByIdForUpdate}/{@code save}. */
     @Mock
     private AccountRepository accountRepository;
 
@@ -297,7 +297,7 @@ class BillPayServiceTest {
      */
     @Test
     void processEnterKey_accountNotFound_throwsRecordNotFound() {
-        when(accountRepository.findById(ACCT_ID)).thenReturn(Optional.empty());
+        when(accountRepository.findByIdForUpdate(ACCT_ID)).thenReturn(Optional.empty());
 
         COBIL00Form form = form(ACCT_ID_FIELD, "Y");
 
@@ -306,7 +306,7 @@ class BillPayServiceTest {
                 .hasMessage(MSG_ACCT_NOT_FOUND)
                 .hasFieldOrPropertyWithValue("fileStatus", RecordNotFoundException.FILE_STATUS);
 
-        verify(accountRepository).findById(ACCT_ID);
+        verify(accountRepository).findByIdForUpdate(ACCT_ID);
         verify(accountRepository, never()).save(any(Account.class));
         verifyNoInteractions(cardXrefRepository, transactionRepository, context);
     }
@@ -320,7 +320,7 @@ class BillPayServiceTest {
     @Test
     void processEnterKey_blankConfirm_readsAccountAndPromptsForConfirmation() {
         Account account = accountWithBalance(new BigDecimal("500.00"));
-        when(accountRepository.findById(ACCT_ID)).thenReturn(Optional.of(account));
+        when(accountRepository.findByIdForUpdate(ACCT_ID)).thenReturn(Optional.of(account));
 
         COBIL00Form form = form(ACCT_ID_FIELD, "");
         BillPayResult result = service.processEnterKey(form);
@@ -329,7 +329,7 @@ class BillPayServiceTest {
         assertThat(result.message()).isEqualTo(MSG_CONFIRM_PAYMENT);
         assertThat(result.isRedirect()).isFalse();
         assertThat(form.getCurbal()).isEqualTo("+0000000500.00");
-        verify(accountRepository).findById(ACCT_ID);
+        verify(accountRepository).findByIdForUpdate(ACCT_ID);
         verify(accountRepository, never()).save(any(Account.class));
         verifyNoInteractions(cardXrefRepository, transactionRepository, context);
     }
@@ -346,13 +346,13 @@ class BillPayServiceTest {
     @Test
     void processEnterKey_zeroBalance_returnsNothingToPayWithoutWriting() {
         Account account = accountWithBalance(new BigDecimal("0.00"));
-        when(accountRepository.findById(ACCT_ID)).thenReturn(Optional.of(account));
+        when(accountRepository.findByIdForUpdate(ACCT_ID)).thenReturn(Optional.of(account));
 
         BillPayResult result = service.processEnterKey(form(ACCT_ID_FIELD, "Y"));
 
         assertThat(result.severity()).isEqualTo(MessageSeverity.ERROR);
         assertThat(result.message()).isEqualTo(MSG_NOTHING_TO_PAY);
-        verify(accountRepository).findById(ACCT_ID);
+        verify(accountRepository).findByIdForUpdate(ACCT_ID);
         verify(accountRepository, never()).save(any(Account.class));
         verifyNoInteractions(cardXrefRepository, transactionRepository, context);
     }
@@ -364,7 +364,7 @@ class BillPayServiceTest {
     @Test
     void processEnterKey_negativeBalance_returnsNothingToPay() {
         Account account = accountWithBalance(new BigDecimal("-25.00"));
-        when(accountRepository.findById(ACCT_ID)).thenReturn(Optional.of(account));
+        when(accountRepository.findByIdForUpdate(ACCT_ID)).thenReturn(Optional.of(account));
 
         BillPayResult result = service.processEnterKey(form(ACCT_ID_FIELD, "Y"));
 
@@ -391,7 +391,7 @@ class BillPayServiceTest {
     void processEnterKey_confirmedPayment_paysEntireBalanceDownToZero() {
         BigDecimal originalBalance = new BigDecimal("500.00");
         Account account = accountWithBalance(originalBalance);
-        when(accountRepository.findById(ACCT_ID)).thenReturn(Optional.of(account));
+        when(accountRepository.findByIdForUpdate(ACCT_ID)).thenReturn(Optional.of(account));
         when(cardXrefRepository.findByXrefAcctId(ACCT_ID)).thenReturn(List.of(cardXref()));
         when(transactionRepository.findAll(any(Pageable.class))).thenReturn(noTransactions());
 
@@ -437,7 +437,7 @@ class BillPayServiceTest {
     @Test
     void processEnterKey_confirmedPayment_writesTransactionWithCobolConstants() {
         Account account = accountWithBalance(new BigDecimal("1234.56"));
-        when(accountRepository.findById(ACCT_ID)).thenReturn(Optional.of(account));
+        when(accountRepository.findByIdForUpdate(ACCT_ID)).thenReturn(Optional.of(account));
         when(cardXrefRepository.findByXrefAcctId(ACCT_ID)).thenReturn(List.of(cardXref()));
         when(transactionRepository.findAll(any(Pageable.class))).thenReturn(noTransactions());
 
@@ -473,7 +473,7 @@ class BillPayServiceTest {
     @Test
     void processEnterKey_confirmedPayment_setsWholeSecondOrigAndProcTimestamps() {
         Account account = accountWithBalance(new BigDecimal("10.00"));
-        when(accountRepository.findById(ACCT_ID)).thenReturn(Optional.of(account));
+        when(accountRepository.findByIdForUpdate(ACCT_ID)).thenReturn(Optional.of(account));
         when(cardXrefRepository.findByXrefAcctId(ACCT_ID)).thenReturn(List.of(cardXref()));
         when(transactionRepository.findAll(any(Pageable.class))).thenReturn(noTransactions());
 
@@ -502,14 +502,14 @@ class BillPayServiceTest {
     @Test
     void processEnterKey_confirmedPayment_writesTransactionBeforeUpdatingAccount() {
         Account account = accountWithBalance(new BigDecimal("500.00"));
-        when(accountRepository.findById(ACCT_ID)).thenReturn(Optional.of(account));
+        when(accountRepository.findByIdForUpdate(ACCT_ID)).thenReturn(Optional.of(account));
         when(cardXrefRepository.findByXrefAcctId(ACCT_ID)).thenReturn(List.of(cardXref()));
         when(transactionRepository.findAll(any(Pageable.class))).thenReturn(noTransactions());
 
         service.processEnterKey(form(ACCT_ID_FIELD, "Y"));
 
         InOrder inOrder = inOrder(accountRepository, cardXrefRepository, transactionRepository);
-        inOrder.verify(accountRepository).findById(ACCT_ID);
+        inOrder.verify(accountRepository).findByIdForUpdate(ACCT_ID);
         inOrder.verify(cardXrefRepository).findByXrefAcctId(ACCT_ID);
         inOrder.verify(transactionRepository).findAll(any(Pageable.class));
         inOrder.verify(transactionRepository).saveAndFlush(any(Transaction.class));
@@ -525,7 +525,7 @@ class BillPayServiceTest {
     @Test
     void processEnterKey_confirmedPayment_crossReferenceNotFound_throwsRecordNotFound() {
         Account account = accountWithBalance(new BigDecimal("500.00"));
-        when(accountRepository.findById(ACCT_ID)).thenReturn(Optional.of(account));
+        when(accountRepository.findByIdForUpdate(ACCT_ID)).thenReturn(Optional.of(account));
         when(cardXrefRepository.findByXrefAcctId(ACCT_ID)).thenReturn(List.of());
 
         COBIL00Form form = form(ACCT_ID_FIELD, "Y");
@@ -549,7 +549,7 @@ class BillPayServiceTest {
         Account account = accountWithBalance(new BigDecimal("500.00"));
         Transaction highest = new Transaction();
         highest.setTranId("0000000000000041");
-        when(accountRepository.findById(ACCT_ID)).thenReturn(Optional.of(account));
+        when(accountRepository.findByIdForUpdate(ACCT_ID)).thenReturn(Optional.of(account));
         when(cardXrefRepository.findByXrefAcctId(ACCT_ID)).thenReturn(List.of(cardXref()));
         when(transactionRepository.findAll(any(Pageable.class))).thenReturn(highestTransaction(highest));
 
@@ -572,7 +572,7 @@ class BillPayServiceTest {
     @Test
     void processEnterKey_confirmedPayment_duplicateTransactionId_throwsCardDemoDuplicateKey() {
         Account account = accountWithBalance(new BigDecimal("500.00"));
-        when(accountRepository.findById(ACCT_ID)).thenReturn(Optional.of(account));
+        when(accountRepository.findByIdForUpdate(ACCT_ID)).thenReturn(Optional.of(account));
         when(cardXrefRepository.findByXrefAcctId(ACCT_ID)).thenReturn(List.of(cardXref()));
         when(transactionRepository.findAll(any(Pageable.class))).thenReturn(noTransactions());
         when(transactionRepository.saveAndFlush(any(Transaction.class)))
@@ -627,7 +627,7 @@ class BillPayServiceTest {
     void mainEntry_reentryWithEnter_processesPaymentToZeroBalance() {
         BigDecimal originalBalance = new BigDecimal("500.00");
         Account account = accountWithBalance(originalBalance);
-        when(accountRepository.findById(ACCT_ID)).thenReturn(Optional.of(account));
+        when(accountRepository.findByIdForUpdate(ACCT_ID)).thenReturn(Optional.of(account));
         when(cardXrefRepository.findByXrefAcctId(ACCT_ID)).thenReturn(List.of(cardXref()));
         when(transactionRepository.findAll(any(Pageable.class))).thenReturn(noTransactions());
 
@@ -655,14 +655,14 @@ class BillPayServiceTest {
         when(context.isProgramEnter()).thenReturn(true);
         when(context.getAcctId()).thenReturn(ACCT_ID);
         Account account = accountWithBalance(new BigDecimal("500.00"));
-        when(accountRepository.findById(ACCT_ID)).thenReturn(Optional.of(account));
+        when(accountRepository.findByIdForUpdate(ACCT_ID)).thenReturn(Optional.of(account));
 
         BillPayResult result = service.mainEntry(AidKey.ENTER, new COBIL00Form());
 
         assertThat(result.severity()).isEqualTo(MessageSeverity.NEUTRAL);
         assertThat(result.message()).isEqualTo(MSG_CONFIRM_PAYMENT);
         verify(context).markReenter();
-        verify(accountRepository).findById(ACCT_ID);
+        verify(accountRepository).findByIdForUpdate(ACCT_ID);
         verify(accountRepository, never()).save(any(Account.class));
         verify(transactionRepository, never()).saveAndFlush(any(Transaction.class));
         verifyNoInteractions(cardXrefRepository);

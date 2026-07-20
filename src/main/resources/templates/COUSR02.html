@@ -16,6 +16,7 @@
 */-->
 <html lang="en" xmlns:th="http://www.thymeleaf.org">
 <head>
+    <th:block th:replace="~{fragments/bms-palette :: palette}"></th:block>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>CardDemo - Update User (CU02)</title>
@@ -30,13 +31,13 @@
            ============================================================ */
         :root {
             --row-h: 1.3rem;            /* height of one 3270 text row */
-            --c-blue: #0000CD;          /* BMS BLUE      */
-            --c-yellow: #CCCC00;        /* BMS YELLOW    */
-            --c-turquoise: #00CDCD;     /* BMS TURQUOISE */
-            --c-green: #00CD00;         /* BMS GREEN     */
-            --c-red: #CD0000;           /* BMS RED       */
-            --c-neutral: #FFFFFF;       /* BMS NEUTRAL   */
-            --c-bg: #000000;            /* dark terminal background */
+            --c-blue: var(--bms-blue);          /* BMS BLUE      */
+            --c-yellow: var(--bms-yellow);        /* BMS YELLOW    */
+            --c-turquoise: var(--bms-turquoise);     /* BMS TURQUOISE */
+            --c-green: var(--bms-green);         /* BMS GREEN     */
+            --c-red: var(--bms-red);           /* BMS RED       */
+            --c-neutral: var(--bms-neutral);       /* BMS NEUTRAL   */
+            --c-bg: var(--bms-bg);            /* dark terminal background */
         }
 
         *, *::before, *::after { box-sizing: border-box; }
@@ -51,7 +52,7 @@
             color: var(--c-green);
             font-family: "Courier New", Courier, "DejaVu Sans Mono", monospace;
             display: flex;
-            justify-content: center;
+            justify-content: safe center;
             align-items: flex-start;
             overflow: auto;
         }
@@ -140,6 +141,7 @@
             cursor: pointer;
         }
         .legend-key:focus-visible { outline: 2px solid var(--c-neutral); }
+        .legend-key:active { text-decoration: underline; filter: brightness(1.3); }
         @media (hover: hover) {
             .legend-key:hover { color: var(--c-neutral); text-decoration: underline; }
         }
@@ -210,9 +212,14 @@
             <span class="cell blue" style="--r:15; --c:19;">(A=Admin, U=User)</span>
 
             <!-- ============== Error message (row 23, conditional) ============== -->
-            <span class="cell red bright out" style="--r:23; --c:1; --len:78;"
+            <span role="alert" aria-live="assertive" class="cell red bright out" style="--r:23; --c:1; --len:78;"
                   th:if="${form.errmsg != null and !#strings.isEmpty(form.errmsg)}"
                   th:text="*{errmsg}">error message</span>
+
+            <!-- Single-use confirmation nonce (review finding F12). Binds a PF5/PF3 save to the
+                 user the server fetched and displayed, so a tampered re-post cannot re-aim or
+                 replay the save. The RequestDataValueProcessor injects the hidden _csrf field. -->
+            <input type="hidden" th:field="*{confirmToken}">
 
             <!-- ============== PF-key legend (row 24) ==========================
                  Rendered as transparent submit buttons. ENTER is first in the DOM

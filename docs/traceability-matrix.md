@@ -68,6 +68,7 @@ traced back to its originating `legacy/` source.
 6. [BMS Maps → Thymeleaf Templates + Screen Form DTOs](#6-bms-maps--thymeleaf-templates--screen-form-dtos)
 7. [Infrastructure JCL / PROC / CTL / CSD → Schema, Config, Sort](#7-infrastructure-jcl--proc--ctl--csd--schema-config-sort)
 8. [Construct-Level Traceability (Paragraphs, Executable Copybooks, Subprograms)](#8-construct-level-traceability-paragraphs-executable-copybooks-subprograms)
+   - 8.1 [Exhaustive Paragraph / Section → `class.method` → Test Enumeration](#81-exhaustive-paragraph--section--classmethod--test-enumeration)
 9. [Exact Record Contracts (Offsets, Keys, Signs, FILLER)](#9-exact-record-contracts-offsets-keys-signs-filler)
 10. [Source-Quirk Ledger (Preserve-or-Deviate + Parity-Test Obligations)](#10-source-quirk-ledger-preserve-or-deviate--parity-test-obligations)
 11. [Sensitive-Field Classification & Authorization Matrix](#11-sensitive-field-classification--authorization-matrix)
@@ -95,6 +96,13 @@ dead code, and `OPENFIL.jcl` / `CLOSEFIL.jcl` — N/A under a Spring-managed con
 | Sort control (`legacy/ctl/*.ctl`) | 1 | 1 | 1 | 0 |
 | CICS resource definitions (`legacy/csd/CARDDEMO.CSD`) | 1 | 1 *(incl. `COCRDSEC` program logged → `SecurityConfig`)* | 1 | 0 |
 | **Total primary constructs** | **123** | **123** | **120** | **0** |
+
+**Paragraph-level coverage:** beyond this construct-level roll-up, every one of the **528**
+`PROCEDURE DIVISION` paragraph/section declarations across the 28 programs is enumerated and bound
+to its target `class.method` and covering test(s) in
+[§8.1](#81-exhaustive-paragraph--section--classmethod--test-enumeration); that appendix is
+generated directly from `legacy/cbl/**` and reproduces the authoritative 528 / 527-unique counts,
+so forward traceability is complete at paragraph granularity with no gaps.
 
 **How to read this:** *inventory* coverage is **100 %** (no legacy construct is unaccounted-for),
 and *implementation* coverage is complete for every migratable construct: **120 of 123** primary
@@ -441,6 +449,748 @@ concrete report DTOs (see [§4](#4-copybooks--entities--dtos--enums--constants))
 providing the shared `PIC -ZZZ,ZZZ,ZZZ.ZZ` edit-mask formatting. The previous non-deterministic
 `dto/report/*.java` wildcard is replaced by these concrete, present targets.
 
+### 8.1 Exhaustive Paragraph / Section → `class.method` → Test Enumeration
+
+This appendix satisfies the Explainability rule's mandate for a **paragraph-level** forward mapping (review finding #37). It enumerates **every one of the 528** `PROCEDURE DIVISION` paragraph/section declarations across the 28 programs — the same population summarised in §8 — and binds each to its target Java `class.method` and the test(s) that exercise it. The reverse (Java → legacy) direction is the Javadoc origin-tag convention recorded in [§13](#13-reverse-direction-convention-java--legacy).
+
+**How this table was produced (auditable, regenerable).** The paragraph population is extracted directly from the retained COBOL under `legacy/cbl/**` (the parity oracle): for each program the scanner reads from `PROCEDURE DIVISION` to end-of-file and records every Area-A label (columns 8–11) that terminates in a period — both numbered (`NNNN-NAME`) and non-numbered (`MAIN-PARA`, `PROCESS-ENTER-KEY`, …) styles, plus `SECTION` headers — skipping comment lines (indicator `*`/`/`). This reproduces the authoritative counts exactly: **528 declarations, 527 unique `program+label` pairs, and the single duplicate `COACTVWC.cbl / 0000-MAIN-EXIT`** documented in §8, so the enumeration is provably complete with no silent drop.
+
+**Attribution categories (source-grounded, not inferred).** Each paragraph's target `class.method` is resolved from the **origin citation in the ported Java source itself** — the `{@code LABEL}` tag in the Javadoc block immediately preceding a method declaration:
+
+- **230 paragraphs → a named method.** The paragraph label is cited in that method's own Javadoc as its COBOL origin (a documented 1→N split lists up to two methods, with `(+n)` for further continuations — e.g. the sign-on `READ-USER-SEC-FILE` splits into the success and failure-branch methods).
+
+- **127 `-EXIT` paragraphs → `PERFORM`-return no-ops.** COBOL `-EXIT` paragraphs are empty landing points for `PERFORM … THRU`; they carry no logic and are absorbed into their base paragraph's method (named where that base method is cited).
+
+- **171 structural paragraphs → folded into control flow (§0.3.3).** Non-branching plumbing — file `OPEN`/`CLOSE` wrappers, `SEND`/`RECEIVE`-screen and `POPULATE-HEADER-INFO` routines (which become the controller + Thymeleaf render), `GET-NEXT` cursor advances, and `ABEND`/`DISPLAY-IO-STATUS` helpers — is absorbed into the enclosing control-flow method, the Spring Batch reader/processor/writer lambda, or the exception translation path rather than a dedicated public method. These are ported behaviour, not dropped logic; the batch-config Javadoc cites them at class/step granularity.
+
+Coverage is therefore **100%**: every one of the 528 declarations is accounted for in exactly one category. The per-program tables below give the source line, the label, and the resolved target; the `@Service`/`@Configuration` class and covering test(s) are stated once in each program's sub-heading.
+
+
+#### `legacy/cbl/COSGN00C.cbl` → `SignonService` &nbsp;·&nbsp; tests: `SignonServiceTest` · `SignonControllerIT` · `SecurityConfigIT`
+
+_6 declaration(s): 3 method-mapped, 0 `-EXIT` no-op, 3 folded._
+
+| Src line | Paragraph / section | Target `class.method` (source-grounded) |
+| -------: | :------------------ | :--------------------------------------- |
+| 73 | `MAIN-PARA` | `SignonService.mainEntry(…)` |
+| 108 | `PROCESS-ENTER-KEY` | `SignonService.processEnterKey(…)` / `SignonService.isBlankOrLowValues(…)` |
+| 145 | `SEND-SIGNON-SCREEN` | folded into `SignonService` control flow (§0.3.3) |
+| 162 | `SEND-PLAIN-TEXT` | folded into `SignonService` control flow (§0.3.3) |
+| 177 | `POPULATE-HEADER-INFO` | folded into `SignonService` control flow (§0.3.3) |
+| 209 | `READ-USER-SEC-FILE` | `SignonService.processEnterKey(…)` / `SignonService.readUserSecFile(…)` (+1) |
+
+#### `legacy/cbl/COMEN01C.cbl` → `MainMenuService` &nbsp;·&nbsp; tests: `MainMenuServiceTest` · `MenuControllerIT`
+
+_7 declaration(s): 5 method-mapped, 0 `-EXIT` no-op, 2 folded._
+
+| Src line | Paragraph / section | Target `class.method` (source-grounded) |
+| -------: | :------------------ | :--------------------------------------- |
+| 75 | `MAIN-PARA` | `MainMenuService.mainEntry(…)` |
+| 115 | `PROCESS-ENTER-KEY` | `MainMenuService.processEnterKey(…)` |
+| 170 | `RETURN-TO-SIGNON-SCREEN` | `MainMenuService.returnToSignonScreen(…)` |
+| 182 | `SEND-MENU-SCREEN` | `MainMenuService.showMenu(…)` |
+| 199 | `RECEIVE-MENU-SCREEN` | folded into `MainMenuService` control flow (§0.3.3) |
+| 212 | `POPULATE-HEADER-INFO` | folded into `MainMenuService` control flow (§0.3.3) |
+| 236 | `BUILD-MENU-OPTIONS` | `MainMenuService.buildMenuOptions(…)` |
+
+#### `legacy/cbl/COADM01C.cbl` → `AdminMenuService` &nbsp;·&nbsp; tests: `AdminMenuServiceTest` · `AdminMenuControllerIT`
+
+_7 declaration(s): 4 method-mapped, 0 `-EXIT` no-op, 3 folded._
+
+| Src line | Paragraph / section | Target `class.method` (source-grounded) |
+| -------: | :------------------ | :--------------------------------------- |
+| 75 | `MAIN-PARA` | `AdminMenuService.mainEntry(…)` |
+| 115 | `PROCESS-ENTER-KEY` | `AdminMenuService.processEnterKey(…)` / `AdminMenuService.normalizeOptionField(…)` |
+| 160 | `RETURN-TO-SIGNON-SCREEN` | `AdminMenuService.returnToSignonScreen(…)` |
+| 172 | `SEND-MENU-SCREEN` | folded into `AdminMenuService` control flow (§0.3.3) |
+| 189 | `RECEIVE-MENU-SCREEN` | folded into `AdminMenuService` control flow (§0.3.3) |
+| 202 | `POPULATE-HEADER-INFO` | folded into `AdminMenuService` control flow (§0.3.3) |
+| 226 | `BUILD-MENU-OPTIONS` | `AdminMenuService.buildMenuOptions(…)` |
+
+#### `legacy/cbl/COACTVWC.cbl` → `AccountViewService` &nbsp;·&nbsp; tests: `AccountViewServiceTest` · `AccountControllerIT`
+
+_35 declaration(s): 10 method-mapped, 17 `-EXIT` no-op, 8 folded._
+
+| Src line | Paragraph / section | Target `class.method` (source-grounded) |
+| -------: | :------------------ | :--------------------------------------- |
+| 262 | `0000-MAIN` | `AccountViewService.mainEntry(…)` / `AccountViewService.handlePf3Return(…)` |
+| 394 | `COMMON-RETURN` | folded into `AccountViewService` control flow (§0.3.3) |
+| 408 | `0000-MAIN-EXIT` | exit no-op — `PERFORM`-return landing for `AccountViewService.mainEntry(…)` |
+| 411 | `0000-MAIN-EXIT` *(duplicate label — disambiguated, see §8)* | exit no-op — `PERFORM`-return landing for `AccountViewService.mainEntry(…)` |
+| 416 | `1000-SEND-MAP` | folded into `AccountViewService` control flow (§0.3.3) |
+| 427 | `1000-SEND-MAP-EXIT` | exit no-op — `PERFORM`-return landing (folded in `AccountViewService`) |
+| 431 | `1100-SCREEN-INIT` | folded into `AccountViewService` control flow (§0.3.3) |
+| 457 | `1100-SCREEN-INIT-EXIT` | exit no-op — `PERFORM`-return landing (folded in `AccountViewService`) |
+| 460 | `1200-SETUP-SCREEN-VARS` | `AccountViewService.mainEntry(…)` / `AccountViewService.readAcct(…)` (+2) |
+| 537 | `1200-SETUP-SCREEN-VARS-EXIT` | exit no-op — `PERFORM`-return landing for `AccountViewService.mainEntry(…)` |
+| 541 | `1300-SETUP-SCREEN-ATTRS` | folded into `AccountViewService` control flow (§0.3.3) |
+| 574 | `1300-SETUP-SCREEN-ATTRS-EXIT` | exit no-op — `PERFORM`-return landing (folded in `AccountViewService`) |
+| 577 | `1400-SEND-SCREEN` | folded into `AccountViewService` control flow (§0.3.3) |
+| 592 | `1400-SEND-SCREEN-EXIT` | exit no-op — `PERFORM`-return landing (folded in `AccountViewService`) |
+| 596 | `2000-PROCESS-INPUTS` | `AccountViewService.processInputs(…)` |
+| 607 | `2000-PROCESS-INPUTS-EXIT` | exit no-op — `PERFORM`-return landing for `AccountViewService.processInputs(…)` |
+| 610 | `2100-RECEIVE-MAP` | `AccountViewService.processInputs(…)` |
+| 619 | `2100-RECEIVE-MAP-EXIT` | exit no-op — `PERFORM`-return landing for `AccountViewService.processInputs(…)` |
+| 622 | `2200-EDIT-MAP-INPUTS` | `AccountViewService.processInputs(…)` / `AccountViewService.editMapInputs(…)` |
+| 645 | `2200-EDIT-MAP-INPUTS-EXIT` | exit no-op — `PERFORM`-return landing for `AccountViewService.processInputs(…)` |
+| 649 | `2210-EDIT-ACCOUNT` | `AccountViewService.editAccount(…)` |
+| 683 | `2210-EDIT-ACCOUNT-EXIT` | exit no-op — `PERFORM`-return landing for `AccountViewService.editAccount(…)` |
+| 687 | `9000-READ-ACCT` | `AccountViewService.readAcct(…)` |
+| 720 | `9000-READ-ACCT-EXIT` | exit no-op — `PERFORM`-return landing for `AccountViewService.readAcct(…)` |
+| 723 | `9200-GETCARDXREF-BYACCT` | `AccountViewService.getCardXrefByAccount(…)` |
+| 771 | `9200-GETCARDXREF-BYACCT-EXIT` | exit no-op — `PERFORM`-return landing for `AccountViewService.getCardXrefByAccount(…)` |
+| 774 | `9300-GETACCTDATA-BYACCT` | `AccountViewService.getAcctDataByAccount(…)` |
+| 821 | `9300-GETACCTDATA-BYACCT-EXIT` | exit no-op — `PERFORM`-return landing for `AccountViewService.getAcctDataByAccount(…)` |
+| 825 | `9400-GETCUSTDATA-BYCUST` | `AccountViewService.getCustDataByCust(…)` |
+| 870 | `9400-GETCUSTDATA-BYCUST-EXIT` | exit no-op — `PERFORM`-return landing for `AccountViewService.getCustDataByCust(…)` |
+| 877 | `SEND-PLAIN-TEXT` | folded into `AccountViewService` control flow (§0.3.3) |
+| 888 | `SEND-PLAIN-TEXT-EXIT` | exit no-op — `PERFORM`-return landing (folded in `AccountViewService`) |
+| 896 | `SEND-LONG-TEXT` | folded into `AccountViewService` control flow (§0.3.3) |
+| 907 | `SEND-LONG-TEXT-EXIT` | exit no-op — `PERFORM`-return landing (folded in `AccountViewService`) |
+| 916 | `ABEND-ROUTINE` | folded into `AccountViewService` control flow (§0.3.3) |
+
+#### `legacy/cbl/COACTUPC.cbl` → `AccountUpdateService` &nbsp;·&nbsp; tests: `AccountUpdateServiceTest` · `AccountControllerIT`
+
+_85 declaration(s): 33 method-mapped, 41 `-EXIT` no-op, 11 folded._
+
+| Src line | Paragraph / section | Target `class.method` (source-grounded) |
+| -------: | :------------------ | :--------------------------------------- |
+| 859 | `0000-MAIN` | `AccountUpdateService.processInputs(…)` / `AccountUpdateService.process(…)` (+2) |
+| 1007 | `COMMON-RETURN` | `AccountUpdateService.process(…)` |
+| 1021 | `0000-MAIN-EXIT` | exit no-op — `PERFORM`-return landing for `AccountUpdateService.processInputs(…)` |
+| 1025 | `1000-PROCESS-INPUTS` | `AccountUpdateService.processInputs(…)` |
+| 1036 | `1000-PROCESS-INPUTS-EXIT` | exit no-op — `PERFORM`-return landing for `AccountUpdateService.processInputs(…)` |
+| 1039 | `1100-RECEIVE-MAP` | `AccountUpdateService.processInputs(…)` / `AccountUpdateService.captureNewDetails(…)` |
+| 1426 | `1100-RECEIVE-MAP-EXIT` | exit no-op — `PERFORM`-return landing for `AccountUpdateService.processInputs(…)` |
+| 1429 | `1200-EDIT-MAP-INPUTS` | `AccountUpdateService.processInputs(…)` / `AccountUpdateService.editMapInputs(…)` |
+| 1678 | `1200-EDIT-MAP-INPUTS-EXIT` | exit no-op — `PERFORM`-return landing for `AccountUpdateService.processInputs(…)` |
+| 1681 | `1205-COMPARE-OLD-NEW` | `AccountUpdateService.editMapInputs(…)` / `AccountUpdateService.compareOldNew(…)` (+4) |
+| 1777 | `1205-COMPARE-OLD-NEW-EXIT` | exit no-op — `PERFORM`-return landing for `AccountUpdateService.editMapInputs(…)` |
+| 1783 | `1210-EDIT-ACCOUNT` | `AccountUpdateService.editAccount(…)` / `AccountUpdateService.editMapInputs(…)` |
+| 1820 | `1210-EDIT-ACCOUNT-EXIT` | exit no-op — `PERFORM`-return landing for `AccountUpdateService.editAccount(…)` |
+| 1824 | `1215-EDIT-MANDATORY` | `AccountUpdateService.editMandatory(…)` |
+| 1852 | `1215-EDIT-MANDATORY-EXIT` | exit no-op — `PERFORM`-return landing for `AccountUpdateService.editMandatory(…)` |
+| 1856 | `1220-EDIT-YESNO` | `AccountUpdateService.editYesNo(…)` |
+| 1894 | `1220-EDIT-YESNO-EXIT` | exit no-op — `PERFORM`-return landing for `AccountUpdateService.editYesNo(…)` |
+| 1898 | `1225-EDIT-ALPHA-REQD` | `AccountUpdateService.editAlphaReqd(…)` |
+| 1951 | `1225-EDIT-ALPHA-REQD-EXIT` | exit no-op — `PERFORM`-return landing for `AccountUpdateService.editAlphaReqd(…)` |
+| 1955 | `1230-EDIT-ALPHANUM-REQD` | `AccountUpdateService.editAlphanumReqd(…)` |
+| 2009 | `1230-EDIT-ALPHANUM-REQD-EXIT` | exit no-op — `PERFORM`-return landing for `AccountUpdateService.editAlphanumReqd(…)` |
+| 2012 | `1235-EDIT-ALPHA-OPT` | `AccountUpdateService.editAlphaOpt(…)` |
+| 2057 | `1235-EDIT-ALPHA-OPT-EXIT` | exit no-op — `PERFORM`-return landing for `AccountUpdateService.editAlphaOpt(…)` |
+| 2061 | `1240-EDIT-ALPHANUM-OPT` | `AccountUpdateService.editAlphanumOpt(…)` |
+| 2105 | `1240-EDIT-ALPHANUM-OPT-EXIT` | exit no-op — `PERFORM`-return landing for `AccountUpdateService.editAlphanumOpt(…)` |
+| 2109 | `1245-EDIT-NUM-REQD` | `AccountUpdateService.editNumReqd(…)` / `AccountUpdateService.editUsSsn(…)` (+1) |
+| 2176 | `1245-EDIT-NUM-REQD-EXIT` | exit no-op — `PERFORM`-return landing for `AccountUpdateService.editNumReqd(…)` |
+| 2180 | `1250-EDIT-SIGNED-9V2` | `AccountUpdateService.editSigned9v2(…)` |
+| 2221 | `1250-EDIT-SIGNED-9V2-EXIT` | exit no-op — `PERFORM`-return landing for `AccountUpdateService.editSigned9v2(…)` |
+| 2225 | `1260-EDIT-US-PHONE-NUM` | `AccountUpdateService.editUsPhoneNum(…)` |
+| 2246 | `EDIT-AREA-CODE` | `AccountUpdateService.editAreaCode(…)` |
+| 2316 | `EDIT-US-PHONE-PREFIX` | `AccountUpdateService.editUsPhonePrefix(…)` |
+| 2370 | `EDIT-US-PHONE-LINENUM` | `AccountUpdateService.editUsPhoneLineNum(…)` |
+| 2424 | `EDIT-US-PHONE-EXIT` | exit no-op — `PERFORM`-return landing (folded in `AccountUpdateService`) |
+| 2427 | `1260-EDIT-US-PHONE-NUM-EXIT` | exit no-op — `PERFORM`-return landing for `AccountUpdateService.editUsPhoneNum(…)` |
+| 2431 | `1265-EDIT-US-SSN` | `AccountUpdateService.editUsSsn(…)` |
+| 2489 | `1265-EDIT-US-SSN-EXIT` | exit no-op — `PERFORM`-return landing for `AccountUpdateService.editUsSsn(…)` |
+| 2493 | `1270-EDIT-US-STATE-CD` | `AccountUpdateService.editUsStateCd(…)` |
+| 2511 | `1270-EDIT-US-STATE-CD-EXIT` | exit no-op — `PERFORM`-return landing for `AccountUpdateService.editUsStateCd(…)` |
+| 2514 | `1275-EDIT-FICO-SCORE` | `AccountUpdateService.editFicoScore(…)` |
+| 2531 | `1275-EDIT-FICO-SCORE-EXIT` | exit no-op — `PERFORM`-return landing for `AccountUpdateService.editFicoScore(…)` |
+| 2536 | `1280-EDIT-US-STATE-ZIP-CD` | `AccountUpdateService.editUsStateZipCd(…)` |
+| 2558 | `1280-EDIT-US-STATE-ZIP-CD-EXIT` | exit no-op — `PERFORM`-return landing for `AccountUpdateService.editUsStateZipCd(…)` |
+| 2562 | `2000-DECIDE-ACTION` | `AccountUpdateService.resetMessage(…)` / `AccountUpdateService.decideAction(…)` |
+| 2643 | `2000-DECIDE-ACTION-EXIT` | exit no-op — `PERFORM`-return landing for `AccountUpdateService.resetMessage(…)` |
+| 2649 | `3000-SEND-MAP` | folded into `AccountUpdateService` control flow (§0.3.3) |
+| 2664 | `3000-SEND-MAP-EXIT` | exit no-op — `PERFORM`-return landing (folded in `AccountUpdateService`) |
+| 2668 | `3100-SCREEN-INIT` | folded into `AccountUpdateService` control flow (§0.3.3) |
+| 2694 | `3100-SCREEN-INIT-EXIT` | exit no-op — `PERFORM`-return landing (folded in `AccountUpdateService`) |
+| 2698 | `3200-SETUP-SCREEN-VARS` | folded into `AccountUpdateService` control flow (§0.3.3) |
+| 2727 | `3200-SETUP-SCREEN-VARS-EXIT` | exit no-op — `PERFORM`-return landing (folded in `AccountUpdateService`) |
+| 2731 | `3201-SHOW-INITIAL-VALUES` | folded into `AccountUpdateService` control flow (§0.3.3) |
+| 2783 | `3201-SHOW-INITIAL-VALUES-EXIT` | exit no-op — `PERFORM`-return landing (folded in `AccountUpdateService`) |
+| 2787 | `3202-SHOW-ORIGINAL-VALUES` | folded into `AccountUpdateService` control flow (§0.3.3) |
+| 2867 | `3202-SHOW-ORIGINAL-VALUES-EXIT` | exit no-op — `PERFORM`-return landing (folded in `AccountUpdateService`) |
+| 2870 | `3203-SHOW-UPDATED-VALUES` | folded into `AccountUpdateService` control flow (§0.3.3) |
+| 2951 | `3203-SHOW-UPDATED-VALUES-EXIT` | exit no-op — `PERFORM`-return landing (folded in `AccountUpdateService`) |
+| 2955 | `3250-SETUP-INFOMSG` | `AccountUpdateService.process(…)` |
+| 2983 | `3250-SETUP-INFOMSG-EXIT` | exit no-op — `PERFORM`-return landing for `AccountUpdateService.process(…)` |
+| 2986 | `3300-SETUP-SCREEN-ATTRS` | folded into `AccountUpdateService` control flow (§0.3.3) |
+| 3437 | `3300-SETUP-SCREEN-ATTRS-EXIT` | exit no-op — `PERFORM`-return landing (folded in `AccountUpdateService`) |
+| 3441 | `3310-PROTECT-ALL-ATTRS` | folded into `AccountUpdateService` control flow (§0.3.3) |
+| 3496 | `3310-PROTECT-ALL-ATTRS-EXIT` | exit no-op — `PERFORM`-return landing (folded in `AccountUpdateService`) |
+| 3500 | `3320-UNPROTECT-FEW-ATTRS` | folded into `AccountUpdateService` control flow (§0.3.3) |
+| 3562 | `3320-UNPROTECT-FEW-ATTRS-EXIT` | exit no-op — `PERFORM`-return landing (folded in `AccountUpdateService`) |
+| 3566 | `3390-SETUP-INFOMSG-ATTRS` | folded into `AccountUpdateService` control flow (§0.3.3) |
+| 3584 | `3390-SETUP-INFOMSG-ATTRS-EXIT` | exit no-op — `PERFORM`-return landing (folded in `AccountUpdateService`) |
+| 3589 | `3400-SEND-SCREEN` | folded into `AccountUpdateService` control flow (§0.3.3) |
+| 3603 | `3400-SEND-SCREEN-EXIT` | exit no-op — `PERFORM`-return landing (folded in `AccountUpdateService`) |
+| 3608 | `9000-READ-ACCT` | `AccountUpdateService.readAcct(…)` / `AccountUpdateService.storeFetchedData(…)` |
+| 3647 | `9000-READ-ACCT-EXIT` | exit no-op — `PERFORM`-return landing for `AccountUpdateService.readAcct(…)` |
+| 3650 | `9200-GETCARDXREF-BYACCT` | `AccountUpdateService.readAcct(…)` / `AccountUpdateService.getCardXrefByAcct(…)` (+1) |
+| 3698 | `9200-GETCARDXREF-BYACCT-EXIT` | exit no-op — `PERFORM`-return landing for `AccountUpdateService.readAcct(…)` |
+| 3701 | `9300-GETACCTDATA-BYACCT` | `AccountUpdateService.readAcct(…)` / `AccountUpdateService.getAcctDataByAcct(…)` |
+| 3748 | `9300-GETACCTDATA-BYACCT-EXIT` | exit no-op — `PERFORM`-return landing for `AccountUpdateService.readAcct(…)` |
+| 3752 | `9400-GETCUSTDATA-BYCUST` | `AccountUpdateService.readAcct(…)` / `AccountUpdateService.getCustDataByCust(…)` |
+| 3797 | `9400-GETCUSTDATA-BYCUST-EXIT` | exit no-op — `PERFORM`-return landing for `AccountUpdateService.readAcct(…)` |
+| 3801 | `9500-STORE-FETCHED-DATA` | `AccountUpdateService.readAcct(…)` / `AccountUpdateService.storeFetchedData(…)` (+1) |
+| 3885 | `9500-STORE-FETCHED-DATA-EXIT` | exit no-op — `PERFORM`-return landing for `AccountUpdateService.readAcct(…)` |
+| 3888 | `9600-WRITE-PROCESSING` | `AccountUpdateService.composePhone1(…)` / `AccountUpdateService.composePhone2(…)` (+3) |
+| 4105 | `9600-WRITE-PROCESSING-EXIT` | exit no-op — `PERFORM`-return landing for `AccountUpdateService.composePhone1(…)` |
+| 4109 | `9700-CHECK-CHANGE-IN-REC` | `AccountUpdateService.storeFetchedData(…)` / `AccountUpdateService.buildSnapshot(…)` (+3) |
+| 4193 | `9700-CHECK-CHANGE-IN-REC-EXIT` | exit no-op — `PERFORM`-return landing for `AccountUpdateService.storeFetchedData(…)` |
+| 4203 | `ABEND-ROUTINE` | `AccountUpdateService.abendRoutine(…)` |
+| 4226 | `ABEND-ROUTINE-EXIT` | exit no-op — `PERFORM`-return landing for `AccountUpdateService.abendRoutine(…)` |
+
+#### `legacy/cbl/COCRDLIC.cbl` → `CardListService` &nbsp;·&nbsp; tests: `CardListServiceTest` · `CardControllerIT`
+
+_39 declaration(s): 11 method-mapped, 19 `-EXIT` no-op, 9 folded._
+
+| Src line | Paragraph / section | Target `class.method` (source-grounded) |
+| -------: | :------------------ | :--------------------------------------- |
+| 298 | `0000-MAIN` | `CardListService.mainEntry(…)` / `CardListService.dispatchSelection(…)` |
+| 604 | `COMMON-RETURN` | folded into `CardListService` control flow (§0.3.3) |
+| 621 | `0000-MAIN-EXIT` | exit no-op — `PERFORM`-return landing for `CardListService.mainEntry(…)` |
+| 624 | `1000-SEND-MAP` | `CardListService.setFormRow(…)` |
+| 639 | `1000-SEND-MAP-EXIT` | exit no-op — `PERFORM`-return landing for `CardListService.setFormRow(…)` |
+| 642 | `1100-SCREEN-INIT` | folded into `CardListService` control flow (§0.3.3) |
+| 674 | `1100-SCREEN-INIT-EXIT` | exit no-op — `PERFORM`-return landing (folded in `CardListService`) |
+| 678 | `1200-SCREEN-ARRAY-INIT` | folded into `CardListService` control flow (§0.3.3) |
+| 745 | `1200-SCREEN-ARRAY-INIT-EXIT` | exit no-op — `PERFORM`-return landing (folded in `CardListService`) |
+| 748 | `1250-SETUP-ARRAY-ATTRIBS` | folded into `CardListService` control flow (§0.3.3) |
+| 834 | `1250-SETUP-ARRAY-ATTRIBS-EXIT` | exit no-op — `PERFORM`-return landing (folded in `CardListService`) |
+| 837 | `1300-SETUP-SCREEN-ATTRS` | folded into `CardListService` control flow (§0.3.3) |
+| 890 | `1300-SETUP-SCREEN-ATTRS-EXIT` | exit no-op — `PERFORM`-return landing (folded in `CardListService`) |
+| 895 | `1400-SETUP-MESSAGE` | folded into `CardListService` control flow (§0.3.3) |
+| 933 | `1400-SETUP-MESSAGE-EXIT` | exit no-op — `PERFORM`-return landing (folded in `CardListService`) |
+| 938 | `1500-SEND-SCREEN` | folded into `CardListService` control flow (§0.3.3) |
+| 948 | `1500-SEND-SCREEN-EXIT` | exit no-op — `PERFORM`-return landing (folded in `CardListService`) |
+| 951 | `2000-RECEIVE-MAP` | `CardListService.mainEntry(…)` |
+| 959 | `2000-RECEIVE-MAP-EXIT` | exit no-op — `PERFORM`-return landing for `CardListService.mainEntry(…)` |
+| 962 | `2100-RECEIVE-SCREEN` | `CardListService.mainEntry(…)` |
+| 981 | `2100-RECEIVE-SCREEN-EXIT` | exit no-op — `PERFORM`-return landing for `CardListService.mainEntry(…)` |
+| 985 | `2200-EDIT-INPUTS` | `CardListService.editInputs(…)` |
+| 999 | `2200-EDIT-INPUTS-EXIT` | exit no-op — `PERFORM`-return landing for `CardListService.editInputs(…)` |
+| 1003 | `2210-EDIT-ACCOUNT` | `CardListService.editAccount(…)` |
+| 1032 | `2210-EDIT-ACCOUNT-EXIT` | exit no-op — `PERFORM`-return landing for `CardListService.editAccount(…)` |
+| 1036 | `2220-EDIT-CARD` | `CardListService.editCard(…)` |
+| 1069 | `2220-EDIT-CARD-EXIT` | exit no-op — `PERFORM`-return landing for `CardListService.editCard(…)` |
+| 1073 | `2250-EDIT-ARRAY` | `CardListService.editArray(…)` |
+| 1119 | `2250-EDIT-ARRAY-EXIT` | exit no-op — `PERFORM`-return landing for `CardListService.editArray(…)` |
+| 1123 | `9000-READ-FORWARD` | `CardListService.readForward(…)` |
+| 1261 | `9000-READ-FORWARD-EXIT` | exit no-op — `PERFORM`-return landing for `CardListService.readForward(…)` |
+| 1264 | `9100-READ-BACKWARDS` | `CardListService.readBackwards(…)` |
+| 1374 | `9100-READ-BACKWARDS-EXIT` | exit no-op — `PERFORM`-return landing for `CardListService.readBackwards(…)` |
+| 1382 | `9500-FILTER-RECORDS` | `CardListService.filterRecords(…)` / `CardListService.buildForwardWindow(…)` |
+| 1409 | `9500-FILTER-RECORDS-EXIT` | exit no-op — `PERFORM`-return landing for `CardListService.filterRecords(…)` |
+| 1422 | `SEND-PLAIN-TEXT` | folded into `CardListService` control flow (§0.3.3) |
+| 1433 | `SEND-PLAIN-TEXT-EXIT` | exit no-op — `PERFORM`-return landing (folded in `CardListService`) |
+| 1441 | `SEND-LONG-TEXT` | folded into `CardListService` control flow (§0.3.3) |
+| 1452 | `SEND-LONG-TEXT-EXIT` | exit no-op — `PERFORM`-return landing (folded in `CardListService`) |
+
+#### `legacy/cbl/COCRDSLC.cbl` → `CardDetailService` &nbsp;·&nbsp; tests: `CardDetailServiceTest` · `CardControllerIT`
+
+_34 declaration(s): 12 method-mapped, 16 `-EXIT` no-op, 6 folded._
+
+| Src line | Paragraph / section | Target `class.method` (source-grounded) |
+| -------: | :------------------ | :--------------------------------------- |
+| 248 | `0000-MAIN` | `CardDetailService.mainEntry(…)` / `CardDetailService.handleExit(…)` (+1) |
+| 394 | `COMMON-RETURN` | folded into `CardDetailService` control flow (§0.3.3) |
+| 408 | `0000-MAIN-EXIT` | exit no-op — `PERFORM`-return landing for `CardDetailService.mainEntry(…)` |
+| 412 | `1000-SEND-MAP` | `CardDetailService.buildShowResult(…)` |
+| 423 | `1000-SEND-MAP-EXIT` | exit no-op — `PERFORM`-return landing for `CardDetailService.buildShowResult(…)` |
+| 427 | `1100-SCREEN-INIT` | folded into `CardDetailService` control flow (§0.3.3) |
+| 453 | `1100-SCREEN-INIT-EXIT` | exit no-op — `PERFORM`-return landing (folded in `CardDetailService`) |
+| 457 | `1200-SETUP-SCREEN-VARS` | `CardDetailService.getCardByAccountCard(…)` / `CardDetailService.populateCardData(…)` (+1) |
+| 499 | `1200-SETUP-SCREEN-VARS-EXIT` | exit no-op — `PERFORM`-return landing for `CardDetailService.getCardByAccountCard(…)` |
+| 502 | `1300-SETUP-SCREEN-ATTRS` | folded into `CardDetailService` control flow (§0.3.3) |
+| 559 | `1300-SETUP-SCREEN-ATTRS-EXIT` | exit no-op — `PERFORM`-return landing (folded in `CardDetailService`) |
+| 563 | `1400-SEND-SCREEN` | `CardDetailService.buildShowResult(…)` |
+| 578 | `1400-SEND-SCREEN-EXIT` | exit no-op — `PERFORM`-return landing for `CardDetailService.buildShowResult(…)` |
+| 582 | `2000-PROCESS-INPUTS` | `CardDetailService.processInputs(…)` |
+| 593 | `2000-PROCESS-INPUTS-EXIT` | exit no-op — `PERFORM`-return landing for `CardDetailService.processInputs(…)` |
+| 596 | `2100-RECEIVE-MAP` | `CardDetailService.processInputs(…)` |
+| 605 | `2100-RECEIVE-MAP-EXIT` | exit no-op — `PERFORM`-return landing for `CardDetailService.processInputs(…)` |
+| 608 | `2200-EDIT-MAP-INPUTS` | `CardDetailService.editMapInputs(…)` |
+| 643 | `2200-EDIT-MAP-INPUTS-EXIT` | exit no-op — `PERFORM`-return landing for `CardDetailService.editMapInputs(…)` |
+| 647 | `2210-EDIT-ACCOUNT` | `CardDetailService.editAccount(…)` |
+| 681 | `2210-EDIT-ACCOUNT-EXIT` | exit no-op — `PERFORM`-return landing for `CardDetailService.editAccount(…)` |
+| 685 | `2220-EDIT-CARD` | `CardDetailService.editCard(…)` |
+| 722 | `2220-EDIT-CARD-EXIT` | exit no-op — `PERFORM`-return landing for `CardDetailService.editCard(…)` |
+| 726 | `9000-READ-DATA` | `CardDetailService.readData(…)` |
+| 732 | `9000-READ-DATA-EXIT` | exit no-op — `PERFORM`-return landing for `CardDetailService.readData(…)` |
+| 736 | `9100-GETCARD-BYACCTCARD` | `CardDetailService.readData(…)` / `CardDetailService.getCardByAccountCard(…)` |
+| 775 | `9100-GETCARD-BYACCTCARD-EXIT` | exit no-op — `PERFORM`-return landing for `CardDetailService.readData(…)` |
+| 779 | `9150-GETCARD-BYACCT` | `CardDetailService.readData(…)` / `CardDetailService.getCardByAccount(…)` |
+| 810 | `9150-GETCARD-BYACCT-EXIT` | exit no-op — `PERFORM`-return landing for `CardDetailService.readData(…)` |
+| 820 | `SEND-LONG-TEXT` | folded into `CardDetailService` control flow (§0.3.3) |
+| 831 | `SEND-LONG-TEXT-EXIT` | exit no-op — `PERFORM`-return landing (folded in `CardDetailService`) |
+| 838 | `SEND-PLAIN-TEXT` | folded into `CardDetailService` control flow (§0.3.3) |
+| 849 | `SEND-PLAIN-TEXT-EXIT` | exit no-op — `PERFORM`-return landing (folded in `CardDetailService`) |
+| 857 | `ABEND-ROUTINE` | folded into `CardDetailService` control flow (§0.3.3) |
+
+#### `legacy/cbl/COCRDUPC.cbl` → `CardUpdateService` &nbsp;·&nbsp; tests: `CardUpdateServiceTest` · `CardControllerIT`
+
+_45 declaration(s): 16 method-mapped, 22 `-EXIT` no-op, 7 folded._
+
+| Src line | Paragraph / section | Target `class.method` (source-grounded) |
+| -------: | :------------------ | :--------------------------------------- |
+| 367 | `0000-MAIN` | `CardUpdateService.mainEntry(…)` |
+| 546 | `COMMON-RETURN` | folded into `CardUpdateService` control flow (§0.3.3) |
+| 560 | `0000-MAIN-EXIT` | exit no-op — `PERFORM`-return landing for `CardUpdateService.mainEntry(…)` |
+| 564 | `1000-PROCESS-INPUTS` | `CardUpdateService.processInputs(…)` |
+| 575 | `1000-PROCESS-INPUTS-EXIT` | exit no-op — `PERFORM`-return landing for `CardUpdateService.processInputs(…)` |
+| 578 | `1100-RECEIVE-MAP` | `CardUpdateService.processInputs(…)` / `CardUpdateService.normalizeStar(…)` |
+| 638 | `1100-RECEIVE-MAP-EXIT` | exit no-op — `PERFORM`-return landing for `CardUpdateService.processInputs(…)` |
+| 641 | `1200-EDIT-MAP-INPUTS` | `CardUpdateService.editMapInputs(…)` / `CardUpdateService.armConfirmation(…)` |
+| 717 | `1200-EDIT-MAP-INPUTS-EXIT` | exit no-op — `PERFORM`-return landing for `CardUpdateService.editMapInputs(…)` |
+| 721 | `1210-EDIT-ACCOUNT` | `CardUpdateService.editAccount(…)` |
+| 758 | `1210-EDIT-ACCOUNT-EXIT` | exit no-op — `PERFORM`-return landing for `CardUpdateService.editAccount(…)` |
+| 762 | `1220-EDIT-CARD` | `CardUpdateService.editCard(…)` |
+| 802 | `1220-EDIT-CARD-EXIT` | exit no-op — `PERFORM`-return landing for `CardUpdateService.editCard(…)` |
+| 806 | `1230-EDIT-NAME` | `CardUpdateService.editName(…)` / `CardUpdateService.isAlphaSpaces(…)` |
+| 841 | `1230-EDIT-NAME-EXIT` | exit no-op — `PERFORM`-return landing for `CardUpdateService.editName(…)` |
+| 845 | `1240-EDIT-CARDSTATUS` | `CardUpdateService.editCardStatus(…)` |
+| 874 | `1240-EDIT-CARDSTATUS-EXIT` | exit no-op — `PERFORM`-return landing for `CardUpdateService.editCardStatus(…)` |
+| 877 | `1250-EDIT-EXPIRY-MON` | `CardUpdateService.editExpiryMonth(…)` |
+| 910 | `1250-EDIT-EXPIRY-MON-EXIT` | exit no-op — `PERFORM`-return landing for `CardUpdateService.editExpiryMonth(…)` |
+| 913 | `1260-EDIT-EXPIRY-YEAR` | `CardUpdateService.editExpiryYear(…)` |
+| 945 | `1260-EDIT-EXPIRY-YEAR-EXIT` | exit no-op — `PERFORM`-return landing for `CardUpdateService.editExpiryYear(…)` |
+| 948 | `2000-DECIDE-ACTION` | `CardUpdateService.decideAction(…)` / `CardUpdateService.armConfirmation(…)` (+1) |
+| 1029 | `2000-DECIDE-ACTION-EXIT` | exit no-op — `PERFORM`-return landing for `CardUpdateService.decideAction(…)` |
+| 1035 | `3000-SEND-MAP` | folded into `CardUpdateService` control flow (§0.3.3) |
+| 1048 | `3000-SEND-MAP-EXIT` | exit no-op — `PERFORM`-return landing (folded in `CardUpdateService`) |
+| 1052 | `3100-SCREEN-INIT` | folded into `CardUpdateService` control flow (§0.3.3) |
+| 1078 | `3100-SCREEN-INIT-EXIT` | exit no-op — `PERFORM`-return landing (folded in `CardUpdateService`) |
+| 1082 | `3200-SETUP-SCREEN-VARS` | folded into `CardUpdateService` control flow (§0.3.3) |
+| 1135 | `3200-SETUP-SCREEN-VARS-EXIT` | exit no-op — `PERFORM`-return landing (folded in `CardUpdateService`) |
+| 1138 | `3250-SETUP-INFOMSG` | folded into `CardUpdateService` control flow (§0.3.3) |
+| 1165 | `3250-SETUP-INFOMSG-EXIT` | exit no-op — `PERFORM`-return landing (folded in `CardUpdateService`) |
+| 1168 | `3300-SETUP-SCREEN-ATTRS` | folded into `CardUpdateService` control flow (§0.3.3) |
+| 1319 | `3300-SETUP-SCREEN-ATTRS-EXIT` | exit no-op — `PERFORM`-return landing (folded in `CardUpdateService`) |
+| 1324 | `3400-SEND-SCREEN` | folded into `CardUpdateService` control flow (§0.3.3) |
+| 1338 | `3400-SEND-SCREEN-EXIT` | exit no-op — `PERFORM`-return landing (folded in `CardUpdateService`) |
+| 1343 | `9000-READ-DATA` | `CardUpdateService.readData(…)` |
+| 1372 | `9000-READ-DATA-EXIT` | exit no-op — `PERFORM`-return landing for `CardUpdateService.readData(…)` |
+| 1376 | `9100-GETCARD-BYACCTCARD` | `CardUpdateService.getCardByAccountCard(…)` |
+| 1415 | `9100-GETCARD-BYACCTCARD-EXIT` | exit no-op — `PERFORM`-return landing for `CardUpdateService.getCardByAccountCard(…)` |
+| 1420 | `9200-WRITE-PROCESSING` | `CardUpdateService.writeProcessing(…)` |
+| 1494 | `9200-WRITE-PROCESSING-EXIT` | exit no-op — `PERFORM`-return landing for `CardUpdateService.writeProcessing(…)` |
+| 1498 | `9300-CHECK-CHANGE-IN-REC` | `CardUpdateService.checkChangeInRec(…)` |
+| 1521 | `9300-CHECK-CHANGE-IN-REC-EXIT` | exit no-op — `PERFORM`-return landing for `CardUpdateService.checkChangeInRec(…)` |
+| 1531 | `ABEND-ROUTINE` | `CardUpdateService.abendRoutine(…)` |
+| 1554 | `ABEND-ROUTINE-EXIT` | exit no-op — `PERFORM`-return landing for `CardUpdateService.abendRoutine(…)` |
+
+#### `legacy/cbl/COTRN00C.cbl` → `TransactionListService` &nbsp;·&nbsp; tests: `TransactionListServiceTest` · `TransactionControllerIT`
+
+_16 declaration(s): 15 method-mapped, 0 `-EXIT` no-op, 1 folded._
+
+| Src line | Paragraph / section | Target `class.method` (source-grounded) |
+| -------: | :------------------ | :--------------------------------------- |
+| 95 | `MAIN-PARA` | `TransactionListService.mainEntry(…)` |
+| 146 | `PROCESS-ENTER-KEY` | `TransactionListService.mainEntry(…)` / `TransactionListService.processEnterKey(…)` |
+| 234 | `PROCESS-PF7-KEY` | `TransactionListService.processPf7Key(…)` |
+| 257 | `PROCESS-PF8-KEY` | `TransactionListService.processPf8Key(…)` |
+| 279 | `PROCESS-PAGE-FORWARD` | `TransactionListService.processEnterKey(…)` / `TransactionListService.processPageForward(…)` |
+| 333 | `PROCESS-PAGE-BACKWARD` | `TransactionListService.processPageBackward(…)` / `TransactionListService.loadBackwardWindow(…)` |
+| 381 | `POPULATE-TRAN-DATA` | `TransactionListService.populateTranData(…)` / `TransactionListService.setRowFields(…)` |
+| 450 | `INITIALIZE-TRAN-DATA` | `TransactionListService.initializeTranData(…)` / `TransactionListService.setRowFields(…)` |
+| 510 | `RETURN-TO-PREV-SCREEN` | `TransactionListService.returnToPrevScreen(…)` |
+| 527 | `SEND-TRNLST-SCREEN` | `TransactionListService.mainEntry(…)` |
+| 554 | `RECEIVE-TRNLST-SCREEN` | `TransactionListService.mainEntry(…)` |
+| 567 | `POPULATE-HEADER-INFO` | folded into `TransactionListService` control flow (§0.3.3) |
+| 591 | `STARTBR-TRANSACT-FILE` | `TransactionListService.startBrowseTransactFile(…)` |
+| 624 | `READNEXT-TRANSACT-FILE` | `TransactionListService.readNextTransactFile(…)` |
+| 658 | `READPREV-TRANSACT-FILE` | `TransactionListService.readPrevTransactFile(…)` |
+| 692 | `ENDBR-TRANSACT-FILE` | `TransactionListService.endBrowseTransactFile(…)` |
+
+#### `legacy/cbl/COTRN01C.cbl` → `TransactionViewService` &nbsp;·&nbsp; tests: `TransactionViewServiceTest` · `TransactionControllerIT`
+
+_9 declaration(s): 7 method-mapped, 0 `-EXIT` no-op, 2 folded._
+
+| Src line | Paragraph / section | Target `class.method` (source-grounded) |
+| -------: | :------------------ | :--------------------------------------- |
+| 86 | `MAIN-PARA` | `TransactionViewService.mainEntry(…)` |
+| 144 | `PROCESS-ENTER-KEY` | `TransactionViewService.processEnterKey(…)` / `TransactionViewService.clearDisplayFields(…)` (+1) |
+| 197 | `RETURN-TO-PREV-SCREEN` | `TransactionViewService.TransactionViewResult(…)` / `TransactionViewService.returnToPreviousScreen(…)` |
+| 213 | `SEND-TRNVIEW-SCREEN` | `TransactionViewService.TransactionViewResult(…)` / `TransactionViewService.ofShow(…)` |
+| 230 | `RECEIVE-TRNVIEW-SCREEN` | folded into `TransactionViewService` control flow (§0.3.3) |
+| 243 | `POPULATE-HEADER-INFO` | folded into `TransactionViewService` control flow (§0.3.3) |
+| 267 | `READ-TRANSACT-FILE` | `TransactionViewService.readTransactFile(…)` |
+| 301 | `CLEAR-CURRENT-SCREEN` | `TransactionViewService.clearCurrentScreen(…)` |
+| 309 | `INITIALIZE-ALL-FIELDS` | `TransactionViewService.initializeAllFields(…)` |
+
+#### `legacy/cbl/COTRN02C.cbl` → `TransactionAddService` &nbsp;·&nbsp; tests: `TransactionAddServiceTest` · `TransactionControllerIT`
+
+_18 declaration(s): 16 method-mapped, 0 `-EXIT` no-op, 2 folded._
+
+| Src line | Paragraph / section | Target `class.method` (source-grounded) |
+| -------: | :------------------ | :--------------------------------------- |
+| 107 | `MAIN-PARA` | `TransactionAddService.mainEntry(…)` |
+| 164 | `PROCESS-ENTER-KEY` | `TransactionAddService.processEnterKey(…)` |
+| 193 | `VALIDATE-INPUT-KEY-FIELDS` | `TransactionAddService.validateInputKeyFields(…)` |
+| 235 | `VALIDATE-INPUT-DATA-FIELDS` | `TransactionAddService.validateInputDataFields(…)` |
+| 442 | `ADD-TRANSACTION` | `TransactionAddService.addTransaction(…)` |
+| 471 | `COPY-LAST-TRAN-DATA` | `TransactionAddService.copyLastTranData(…)` / `TransactionAddService.copyTransactionToForm(…)` (+1) |
+| 500 | `RETURN-TO-PREV-SCREEN` | `TransactionAddService.beginReturnToPrevScreen(…)` |
+| 516 | `SEND-TRNADD-SCREEN` | `TransactionAddService.validateInputKeyFields(…)` / `TransactionAddService.validateInputDataFields(…)` (+1) |
+| 539 | `RECEIVE-TRNADD-SCREEN` | folded into `TransactionAddService` control flow (§0.3.3) |
+| 552 | `POPULATE-HEADER-INFO` | folded into `TransactionAddService` control flow (§0.3.3) |
+| 576 | `READ-CXACAIX-FILE` | `TransactionAddService.readCxacaixFile(…)` |
+| 609 | `READ-CCXREF-FILE` | `TransactionAddService.readCcxrefFile(…)` |
+| 642 | `STARTBR-TRANSACT-FILE` | `TransactionAddService.readLastTransaction(…)` |
+| 673 | `READPREV-TRANSACT-FILE` | `TransactionAddService.readLastTransaction(…)` |
+| 702 | `ENDBR-TRANSACT-FILE` | `TransactionAddService.readLastTransaction(…)` |
+| 711 | `WRITE-TRANSACT-FILE` | `TransactionAddService.processEnterKey(…)` / `TransactionAddService.writeTransactFile(…)` |
+| 754 | `CLEAR-CURRENT-SCREEN` | `TransactionAddService.clearCurrentScreen(…)` |
+| 762 | `INITIALIZE-ALL-FIELDS` | `TransactionAddService.writeTransactFile(…)` / `TransactionAddService.initializeAllFields(…)` (+1) |
+
+#### `legacy/cbl/COBIL00C.cbl` → `BillPayService` &nbsp;·&nbsp; tests: `BillPayServiceTest` · `BillPayControllerIT`
+
+_16 declaration(s): 13 method-mapped, 0 `-EXIT` no-op, 3 folded._
+
+| Src line | Paragraph / section | Target `class.method` (source-grounded) |
+| -------: | :------------------ | :--------------------------------------- |
+| 99 | `MAIN-PARA` | `BillPayService.mainEntry(…)` |
+| 154 | `PROCESS-ENTER-KEY` | `BillPayService.mainEntry(…)` / `BillPayService.processEnterKey(…)` (+1) |
+| 249 | `GET-CURRENT-TIMESTAMP` | `BillPayService.getCurrentTimestamp(…)` |
+| 273 | `RETURN-TO-PREV-SCREEN` | `BillPayService.BillPayResult(…)` / `BillPayService.mainEntry(…)` (+1) |
+| 289 | `SEND-BILLPAY-SCREEN` | folded into `BillPayService` control flow (§0.3.3) |
+| 306 | `RECEIVE-BILLPAY-SCREEN` | folded into `BillPayService` control flow (§0.3.3) |
+| 319 | `POPULATE-HEADER-INFO` | folded into `BillPayService` control flow (§0.3.3) |
+| 343 | `READ-ACCTDAT-FILE` | `BillPayService.readAcctdatFile(…)` |
+| 377 | `UPDATE-ACCTDAT-FILE` | `BillPayService.updateAcctdatFile(…)` |
+| 408 | `READ-CXACAIX-FILE` | `BillPayService.readCxacaixFile(…)` |
+| 441 | `STARTBR-TRANSACT-FILE` | `BillPayService.nextTransactionId(…)` |
+| 472 | `READPREV-TRANSACT-FILE` | `BillPayService.nextTransactionId(…)` |
+| 501 | `ENDBR-TRANSACT-FILE` | `BillPayService.nextTransactionId(…)` |
+| 510 | `WRITE-TRANSACT-FILE` | `BillPayService.writeTransactFile(…)` / `BillPayService.buildSuccessMessage(…)` |
+| 552 | `CLEAR-CURRENT-SCREEN` | `BillPayService.clearCurrentScreen(…)` |
+| 560 | `INITIALIZE-ALL-FIELDS` | `BillPayService.initializeAllFields(…)` / `BillPayService.writeTransactFile(…)` |
+
+#### `legacy/cbl/CORPT00C.cbl` → `ReportSubmitService` &nbsp;·&nbsp; tests: `ReportSubmitServiceTest` · `ReportControllerIT`
+
+_10 declaration(s): 7 method-mapped, 0 `-EXIT` no-op, 3 folded._
+
+| Src line | Paragraph / section | Target `class.method` (source-grounded) |
+| -------: | :------------------ | :--------------------------------------- |
+| 163 | `MAIN-PARA` | `ReportSubmitService.mainEntry(…)` |
+| 208 | `PROCESS-ENTER-KEY` | `ReportSubmitService.processEnterKey(…)` / `ReportSubmitService.validateCustomRange(…)` |
+| 462 | `SUBMIT-JOB-TO-INTRDR` | `ReportSubmitService.submitJobToIntrdr(…)` |
+| 515 | `WIRTE-JOBSUB-TDQ` | `ReportSubmitService.writeJobSubmitTdq(…)` |
+| 540 | `RETURN-TO-PREV-SCREEN` | `ReportSubmitService.ReportSubmitResult(…)` / `ReportSubmitService.returnToPrevScreen(…)` |
+| 556 | `SEND-TRNRPT-SCREEN` | `ReportSubmitService.processEnterKey(…)` / `ReportSubmitService.submitJobToIntrdr(…)` |
+| 585 | `RETURN-TO-CICS` | folded into `ReportSubmitService` control flow (§0.3.3) |
+| 596 | `RECEIVE-TRNRPT-SCREEN` | folded into `ReportSubmitService` control flow (§0.3.3) |
+| 609 | `POPULATE-HEADER-INFO` | folded into `ReportSubmitService` control flow (§0.3.3) |
+| 633 | `INITIALIZE-ALL-FIELDS` | `ReportSubmitService.submitJobToIntrdr(…)` / `ReportSubmitService.initializeAllFields(…)` |
+
+#### `legacy/cbl/COUSR00C.cbl` → `UserListService` &nbsp;·&nbsp; tests: `UserListServiceTest` · `UserAdminControllerIT`
+
+_16 declaration(s): 15 method-mapped, 0 `-EXIT` no-op, 1 folded._
+
+| Src line | Paragraph / section | Target `class.method` (source-grounded) |
+| -------: | :------------------ | :--------------------------------------- |
+| 98 | `MAIN-PARA` | `UserListService.mainEntry(…)` |
+| 149 | `PROCESS-ENTER-KEY` | `UserListService.mainEntry(…)` / `UserListService.processEnterKey(…)` |
+| 237 | `PROCESS-PF7-KEY` | `UserListService.processPf7Key(…)` |
+| 260 | `PROCESS-PF8-KEY` | `UserListService.processPf8Key(…)` |
+| 282 | `PROCESS-PAGE-FORWARD` | `UserListService.processEnterKey(…)` / `UserListService.processPageForward(…)` |
+| 336 | `PROCESS-PAGE-BACKWARD` | `UserListService.processPageBackward(…)` / `UserListService.loadBackwardWindow(…)` |
+| 384 | `POPULATE-USER-DATA` | `UserListService.UserRow(…)` / `UserListService.populateUserData(…)` |
+| 446 | `INITIALIZE-USER-DATA` | `UserListService.blank(…)` / `UserListService.initializeUserData(…)` |
+| 506 | `RETURN-TO-PREV-SCREEN` | `UserListService.mainEntry(…)` / `UserListService.returnToPrevScreen(…)` |
+| 522 | `SEND-USRLST-SCREEN` | `UserListService.UserListResult(…)` / `UserListService.ofScreen(…)` (+2) |
+| 549 | `RECEIVE-USRLST-SCREEN` | `UserListService.mainEntry(…)` |
+| 562 | `POPULATE-HEADER-INFO` | folded into `UserListService` control flow (§0.3.3) |
+| 586 | `STARTBR-USER-SEC-FILE` | `UserListService.startBrowse(…)` |
+| 619 | `READNEXT-USER-SEC-FILE` | `UserListService.readNext(…)` |
+| 653 | `READPREV-USER-SEC-FILE` | `UserListService.readPrev(…)` |
+| 687 | `ENDBR-USER-SEC-FILE` | `UserListService.endBrowse(…)` |
+
+#### `legacy/cbl/COUSR01C.cbl` → `UserAddService` &nbsp;·&nbsp; tests: `UserAddServiceTest` · `UserAdminControllerIT`
+
+_9 declaration(s): 6 method-mapped, 0 `-EXIT` no-op, 3 folded._
+
+| Src line | Paragraph / section | Target `class.method` (source-grounded) |
+| -------: | :------------------ | :--------------------------------------- |
+| 71 | `MAIN-PARA` | `UserAddService.mainEntry(…)` |
+| 115 | `PROCESS-ENTER-KEY` | `UserAddService.processEnterKey(…)` |
+| 165 | `RETURN-TO-PREV-SCREEN` | `UserAddService.UserAddResult(…)` / `UserAddService.mainEntry(…)` (+1) |
+| 184 | `SEND-USRADD-SCREEN` | folded into `UserAddService` control flow (§0.3.3) |
+| 201 | `RECEIVE-USRADD-SCREEN` | folded into `UserAddService` control flow (§0.3.3) |
+| 214 | `POPULATE-HEADER-INFO` | folded into `UserAddService` control flow (§0.3.3) |
+| 238 | `WRITE-USER-SEC-FILE` | `UserAddService.writeUserSecFile(…)` |
+| 279 | `CLEAR-CURRENT-SCREEN` | `UserAddService.ofRedisplay(…)` / `UserAddService.clearCurrentScreen(…)` |
+| 287 | `INITIALIZE-ALL-FIELDS` | `UserAddService.writeUserSecFile(…)` / `UserAddService.initializeAllFields(…)` |
+
+#### `legacy/cbl/COUSR02C.cbl` → `UserUpdateService` &nbsp;·&nbsp; tests: `UserUpdateServiceTest` · `UserAdminControllerIT`
+
+_11 declaration(s): 9 method-mapped, 0 `-EXIT` no-op, 2 folded._
+
+| Src line | Paragraph / section | Target `class.method` (source-grounded) |
+| -------: | :------------------ | :--------------------------------------- |
+| 82 | `MAIN-PARA` | `UserUpdateService.mainEntry(…)` |
+| 143 | `PROCESS-ENTER-KEY` | `UserUpdateService.processEnterKey(…)` |
+| 177 | `UPDATE-USER-INFO` | `UserUpdateService.mainEntry(…)` / `UserUpdateService.updateUserInfo(…)` (+1) |
+| 250 | `RETURN-TO-PREV-SCREEN` | `UserUpdateService.returnToPrevScreen(…)` |
+| 266 | `SEND-USRUPD-SCREEN` | `UserUpdateService.showScreen(…)` |
+| 283 | `RECEIVE-USRUPD-SCREEN` | folded into `UserUpdateService` control flow (§0.3.3) |
+| 296 | `POPULATE-HEADER-INFO` | folded into `UserUpdateService` control flow (§0.3.3) |
+| 320 | `READ-USER-SEC-FILE` | `UserUpdateService.readUserSecFile(…)` |
+| 358 | `UPDATE-USER-SEC-FILE` | `UserUpdateService.updateUserSecFile(…)` / `UserUpdateService.buildUpdatedMessage(…)` |
+| 395 | `CLEAR-CURRENT-SCREEN` | `UserUpdateService.clearCurrentScreen(…)` |
+| 403 | `INITIALIZE-ALL-FIELDS` | `UserUpdateService.initializeAllFields(…)` |
+
+#### `legacy/cbl/COUSR03C.cbl` → `UserDeleteService` &nbsp;·&nbsp; tests: `UserDeleteServiceTest` · `UserAdminControllerIT`
+
+_11 declaration(s): 9 method-mapped, 0 `-EXIT` no-op, 2 folded._
+
+| Src line | Paragraph / section | Target `class.method` (source-grounded) |
+| -------: | :------------------ | :--------------------------------------- |
+| 82 | `MAIN-PARA` | `UserDeleteService.mainEntry(…)` |
+| 142 | `PROCESS-ENTER-KEY` | `UserDeleteService.processEnterKey(…)` |
+| 174 | `DELETE-USER-INFO` | `UserDeleteService.deleteUserInfo(…)` |
+| 197 | `RETURN-TO-PREV-SCREEN` | `UserDeleteService.redirect(…)` / `UserDeleteService.mainEntry(…)` |
+| 213 | `SEND-USRDEL-SCREEN` | `UserDeleteService.showScreen(…)` / `UserDeleteService.readUserSecFile(…)` |
+| 230 | `RECEIVE-USRDEL-SCREEN` | folded into `UserDeleteService` control flow (§0.3.3) |
+| 243 | `POPULATE-HEADER-INFO` | folded into `UserDeleteService` control flow (§0.3.3) |
+| 267 | `READ-USER-SEC-FILE` | `UserDeleteService.readUserSecFile(…)` |
+| 305 | `DELETE-USER-SEC-FILE` | `UserDeleteService.deleteUserSecFile(…)` / `UserDeleteService.buildDeletedMessage(…)` |
+| 341 | `CLEAR-CURRENT-SCREEN` | `UserDeleteService.clearCurrentScreen(…)` |
+| 349 | `INITIALIZE-ALL-FIELDS` | `UserDeleteService.initializeAllFields(…)` |
+
+#### `legacy/cbl/CBTRN02C.cbl` → `PostTransactionJobConfig` &nbsp;·&nbsp; tests: `PostTransactionJobConfigIT`
+
+_26 declaration(s): 8 method-mapped, 0 `-EXIT` no-op, 18 folded._
+
+| Src line | Paragraph / section | Target `class.method` (source-grounded) |
+| -------: | :------------------ | :--------------------------------------- |
+| 236 | `0000-DALYTRAN-OPEN` | folded into `PostTransactionJobConfig` control flow (§0.3.3) |
+| 254 | `0100-TRANFILE-OPEN` | folded into `PostTransactionJobConfig` control flow (§0.3.3) |
+| 273 | `0200-XREFFILE-OPEN` | folded into `PostTransactionJobConfig` control flow (§0.3.3) |
+| 291 | `0300-DALYREJS-OPEN` | folded into `PostTransactionJobConfig` control flow (§0.3.3) |
+| 309 | `0400-ACCTFILE-OPEN` | folded into `PostTransactionJobConfig` control flow (§0.3.3) |
+| 327 | `0500-TCATBALF-OPEN` | folded into `PostTransactionJobConfig` control flow (§0.3.3) |
+| 345 | `1000-DALYTRAN-GET-NEXT` | folded into `PostTransactionJobConfig` control flow (§0.3.3) |
+| 370 | `1500-VALIDATE-TRAN` | `PostTransactionJobConfig.postTransactionProcessor(…)` |
+| 380 | `1500-A-LOOKUP-XREF` | `PostTransactionJobConfig.PostTransactionJobConfig(…)` |
+| 393 | `1500-B-LOOKUP-ACCT` | `PostTransactionJobConfig.PostTransactionJobConfig(…)` |
+| 424 | `2000-POST-TRANSACTION` | `PostTransactionJobConfig.postTransactionProcessor(…)` / `PostTransactionJobConfig.postTransactionWriter(…)` |
+| 446 | `2500-WRITE-REJECT-REC` | `PostTransactionJobConfig.buildRejectLine(…)` |
+| 467 | `2700-UPDATE-TCATBAL` | `PostTransactionJobConfig.PostTransactionJobConfig(…)` / `PostTransactionJobConfig.resolveCategoryBalance(…)` |
+| 503 | `2700-A-CREATE-TCATBAL-REC` | folded into `PostTransactionJobConfig` control flow (§0.3.3) |
+| 526 | `2700-B-UPDATE-TCATBAL-REC` | folded into `PostTransactionJobConfig` control flow (§0.3.3) |
+| 545 | `2800-UPDATE-ACCOUNT-REC` | `PostTransactionJobConfig.applyAccountMutation(…)` |
+| 562 | `2900-WRITE-TRANSACTION-FILE` | `PostTransactionJobConfig.PostTransactionJobConfig(…)` |
+| 582 | `9000-DALYTRAN-CLOSE` | folded into `PostTransactionJobConfig` control flow (§0.3.3) |
+| 600 | `9100-TRANFILE-CLOSE` | folded into `PostTransactionJobConfig` control flow (§0.3.3) |
+| 619 | `9200-XREFFILE-CLOSE` | folded into `PostTransactionJobConfig` control flow (§0.3.3) |
+| 637 | `9300-DALYREJS-CLOSE` | folded into `PostTransactionJobConfig` control flow (§0.3.3) |
+| 655 | `9400-ACCTFILE-CLOSE` | folded into `PostTransactionJobConfig` control flow (§0.3.3) |
+| 674 | `9500-TCATBALF-CLOSE` | folded into `PostTransactionJobConfig` control flow (§0.3.3) |
+| 692 | `Z-GET-DB2-FORMAT-TIMESTAMP` | folded into `PostTransactionJobConfig` control flow (§0.3.3) |
+| 707 | `9999-ABEND-PROGRAM` | folded into `PostTransactionJobConfig` control flow (§0.3.3) |
+| 714 | `9910-DISPLAY-IO-STATUS` | folded into `PostTransactionJobConfig` control flow (§0.3.3) |
+
+#### `legacy/cbl/CBACT04C.cbl` → `InterestCalcJobConfig` &nbsp;·&nbsp; tests: `InterestCalcJobConfigIT`
+
+_22 declaration(s): 10 method-mapped, 0 `-EXIT` no-op, 12 folded._
+
+| Src line | Paragraph / section | Target `class.method` (source-grounded) |
+| -------: | :------------------ | :--------------------------------------- |
+| 234 | `0000-TCATBALF-OPEN` | folded into `InterestCalcJobConfig` control flow (§0.3.3) |
+| 252 | `0100-XREFFILE-OPEN` | folded into `InterestCalcJobConfig` control flow (§0.3.3) |
+| 270 | `0200-DISCGRP-OPEN` | folded into `InterestCalcJobConfig` control flow (§0.3.3) |
+| 289 | `0300-ACCTFILE-OPEN` | folded into `InterestCalcJobConfig` control flow (§0.3.3) |
+| 307 | `0400-TRANFILE-OPEN` | folded into `InterestCalcJobConfig` control flow (§0.3.3) |
+| 325 | `1000-TCATBALF-GET-NEXT` | folded into `InterestCalcJobConfig` control flow (§0.3.3) |
+| 350 | `1050-UPDATE-ACCOUNT` | `InterestCalcJobConfig.updateAccount(…)` |
+| 372 | `1100-GET-ACCT-DATA` | `InterestCalcJobConfig.getAccountData(…)` |
+| 393 | `1110-GET-XREF-DATA` | `InterestCalcJobConfig.getCardNumber(…)` |
+| 415 | `1200-GET-INTEREST-RATE` | `InterestCalcJobConfig.resolveInterestRate(…)` |
+| 443 | `1200-A-GET-DEFAULT-INT-RATE` | `InterestCalcJobConfig.resolveInterestRate(…)` |
+| 462 | `1300-COMPUTE-INTEREST` | `InterestCalcJobConfig.computeMonthlyInterest(…)` |
+| 473 | `1300-B-WRITE-TX` | `InterestCalcJobConfig.writeInterestTransaction(…)` |
+| 518 | `1400-COMPUTE-FEES` | `InterestCalcJobConfig.calculateInterest(…)` / `InterestCalcJobConfig.computeFees(…)` |
+| 522 | `9000-TCATBALF-CLOSE` | folded into `InterestCalcJobConfig` control flow (§0.3.3) |
+| 541 | `9100-XREFFILE-CLOSE` | folded into `InterestCalcJobConfig` control flow (§0.3.3) |
+| 559 | `9200-DISCGRP-CLOSE` | folded into `InterestCalcJobConfig` control flow (§0.3.3) |
+| 577 | `9300-ACCTFILE-CLOSE` | folded into `InterestCalcJobConfig` control flow (§0.3.3) |
+| 595 | `9400-TRANFILE-CLOSE` | folded into `InterestCalcJobConfig` control flow (§0.3.3) |
+| 613 | `Z-GET-DB2-FORMAT-TIMESTAMP` | `InterestCalcJobConfig.writeInterestTransaction(…)` |
+| 628 | `9999-ABEND-PROGRAM` | `InterestCalcJobConfig.interestCalcTasklet(…)` / `InterestCalcJobConfig.getAccountData(…)` (+1) |
+| 635 | `9910-DISPLAY-IO-STATUS` | folded into `InterestCalcJobConfig` control flow (§0.3.3) |
+
+#### `legacy/cbl/CBSTM03A.CBL` → `StatementJobConfig` &nbsp;·&nbsp; tests: `StatementJobConfigIT`
+
+_25 declaration(s): 9 method-mapped, 3 `-EXIT` no-op, 13 folded._
+
+| Src line | Paragraph / section | Target `class.method` (source-grounded) |
+| -------: | :------------------ | :--------------------------------------- |
+| 296 | `0000-START` | folded into `StatementJobConfig` control flow (§0.3.3) |
+| 316 | `1000-MAINLINE` | `StatementJobConfig.statementProcessor(…)` / `StatementJobConfig.statementStep(…)` |
+| 341 | `9999-GOBACK` | folded into `StatementJobConfig` control flow (§0.3.3) |
+| 345 | `1000-XREFFILE-GET-NEXT` | `StatementJobConfig.statementXrefReader(…)` |
+| 368 | `2000-CUSTFILE-GET` | `StatementJobConfig.statementProcessor(…)` |
+| 392 | `3000-ACCTFILE-GET` | `StatementJobConfig.statementProcessor(…)` |
+| 416 | `4000-TRNXFILE-GET` | `StatementJobConfig.appendHtmlFooter(…)` |
+| 458 | `5000-CREATE-STATEMENT` | `StatementJobConfig.buildName(…)` / `StatementJobConfig.buildAddr3(…)` (+1) |
+| 506 | `5100-WRITE-HTML-HEADER` | `StatementJobConfig.appendHtmlHeader(…)` |
+| 554 | `5100-EXIT` | exit no-op — `PERFORM`-return landing (folded in `StatementJobConfig`) |
+| 558 | `5200-WRITE-HTML-NMADBS` | `StatementJobConfig.appendHtmlDetail(…)` / `StatementJobConfig.beforeDoubleSpace(…)` |
+| 671 | `5200-EXIT` | exit no-op — `PERFORM`-return landing (folded in `StatementJobConfig`) |
+| 675 | `6000-WRITE-TRANS` | `StatementJobConfig.appendHtmlTransaction(…)` |
+| 726 | `8100-FILE-OPEN` | folded into `StatementJobConfig` control flow (§0.3.3) |
+| 730 | `8100-TRNXFILE-OPEN` | folded into `StatementJobConfig` control flow (§0.3.3) |
+| 765 | `8200-XREFFILE-OPEN` | folded into `StatementJobConfig` control flow (§0.3.3) |
+| 783 | `8300-CUSTFILE-OPEN` | folded into `StatementJobConfig` control flow (§0.3.3) |
+| 801 | `8400-ACCTFILE-OPEN` | folded into `StatementJobConfig` control flow (§0.3.3) |
+| 818 | `8500-READTRNX-READ` | folded into `StatementJobConfig` control flow (§0.3.3) |
+| 849 | `8599-EXIT` | exit no-op — `PERFORM`-return landing (folded in `StatementJobConfig`) |
+| 856 | `9100-TRNXFILE-CLOSE` | folded into `StatementJobConfig` control flow (§0.3.3) |
+| 873 | `9200-XREFFILE-CLOSE` | folded into `StatementJobConfig` control flow (§0.3.3) |
+| 889 | `9300-CUSTFILE-CLOSE` | folded into `StatementJobConfig` control flow (§0.3.3) |
+| 905 | `9400-ACCTFILE-CLOSE` | folded into `StatementJobConfig` control flow (§0.3.3) |
+| 921 | `9999-ABEND-PROGRAM` | folded into `StatementJobConfig` control flow (§0.3.3) |
+
+#### `legacy/cbl/CBSTM03B.CBL` → `StatementJobConfig` &nbsp;·&nbsp; tests: `StatementJobConfigIT`
+
+_14 declaration(s): 0 method-mapped, 8 `-EXIT` no-op, 6 folded._
+
+| Src line | Paragraph / section | Target `class.method` (source-grounded) |
+| -------: | :------------------ | :--------------------------------------- |
+| 116 | `0000-START` | folded into `StatementJobConfig` control flow (§0.3.3) |
+| 130 | `9999-GOBACK` | folded into `StatementJobConfig` control flow (§0.3.3) |
+| 133 | `1000-TRNXFILE-PROC` | folded into `StatementJobConfig` control flow (§0.3.3) |
+| 151 | `1900-EXIT` | exit no-op — `PERFORM`-return landing (folded in `StatementJobConfig`) |
+| 154 | `1999-EXIT` | exit no-op — `PERFORM`-return landing (folded in `StatementJobConfig`) |
+| 157 | `2000-XREFFILE-PROC` | folded into `StatementJobConfig` control flow (§0.3.3) |
+| 175 | `2900-EXIT` | exit no-op — `PERFORM`-return landing (folded in `StatementJobConfig`) |
+| 178 | `2999-EXIT` | exit no-op — `PERFORM`-return landing (folded in `StatementJobConfig`) |
+| 181 | `3000-CUSTFILE-PROC` | folded into `StatementJobConfig` control flow (§0.3.3) |
+| 200 | `3900-EXIT` | exit no-op — `PERFORM`-return landing (folded in `StatementJobConfig`) |
+| 203 | `3999-EXIT` | exit no-op — `PERFORM`-return landing (folded in `StatementJobConfig`) |
+| 206 | `4000-ACCTFILE-PROC` | folded into `StatementJobConfig` control flow (§0.3.3) |
+| 225 | `4900-EXIT` | exit no-op — `PERFORM`-return landing (folded in `StatementJobConfig`) |
+| 228 | `4999-EXIT` | exit no-op — `PERFORM`-return landing (folded in `StatementJobConfig`) |
+
+#### `legacy/cbl/CBACT01C.cbl` → `AccountPrintJobConfig` &nbsp;·&nbsp; tests: `AccountPrintJobConfigIT`
+
+_6 declaration(s): 2 method-mapped, 0 `-EXIT` no-op, 4 folded._
+
+| Src line | Paragraph / section | Target `class.method` (source-grounded) |
+| -------: | :------------------ | :--------------------------------------- |
+| 92 | `1000-ACCTFILE-GET-NEXT` | `AccountPrintJobConfig.accountItemReader(…)` |
+| 118 | `1100-DISPLAY-ACCT-RECORD` | `AccountPrintJobConfig.accountPrintWriter(…)` |
+| 133 | `0000-ACCTFILE-OPEN` | folded into `AccountPrintJobConfig` control flow (§0.3.3) |
+| 151 | `9000-ACCTFILE-CLOSE` | folded into `AccountPrintJobConfig` control flow (§0.3.3) |
+| 169 | `9999-ABEND-PROGRAM` | folded into `AccountPrintJobConfig` control flow (§0.3.3) |
+| 176 | `9910-DISPLAY-IO-STATUS` | folded into `AccountPrintJobConfig` control flow (§0.3.3) |
+
+#### `legacy/cbl/CBACT02C.cbl` → `CardPrintJobConfig` &nbsp;·&nbsp; tests: `CardPrintJobConfigIT`
+
+_5 declaration(s): 1 method-mapped, 0 `-EXIT` no-op, 4 folded._
+
+| Src line | Paragraph / section | Target `class.method` (source-grounded) |
+| -------: | :------------------ | :--------------------------------------- |
+| 92 | `1000-CARDFILE-GET-NEXT` | `CardPrintJobConfig.cardPrintReader(…)` |
+| 118 | `0000-CARDFILE-OPEN` | folded into `CardPrintJobConfig` control flow (§0.3.3) |
+| 136 | `9000-CARDFILE-CLOSE` | folded into `CardPrintJobConfig` control flow (§0.3.3) |
+| 154 | `9999-ABEND-PROGRAM` | folded into `CardPrintJobConfig` control flow (§0.3.3) |
+| 161 | `9910-DISPLAY-IO-STATUS` | folded into `CardPrintJobConfig` control flow (§0.3.3) |
+
+#### `legacy/cbl/CBACT03C.cbl` → `XrefPrintJobConfig` &nbsp;·&nbsp; tests: `XrefPrintJobConfigIT`
+
+_5 declaration(s): 1 method-mapped, 0 `-EXIT` no-op, 4 folded._
+
+| Src line | Paragraph / section | Target `class.method` (source-grounded) |
+| -------: | :------------------ | :--------------------------------------- |
+| 92 | `1000-XREFFILE-GET-NEXT` | `XrefPrintJobConfig.xrefItemReader(…)` |
+| 118 | `0000-XREFFILE-OPEN` | folded into `XrefPrintJobConfig` control flow (§0.3.3) |
+| 136 | `9000-XREFFILE-CLOSE` | folded into `XrefPrintJobConfig` control flow (§0.3.3) |
+| 154 | `9999-ABEND-PROGRAM` | folded into `XrefPrintJobConfig` control flow (§0.3.3) |
+| 161 | `9910-DISPLAY-IO-STATUS` | folded into `XrefPrintJobConfig` control flow (§0.3.3) |
+
+#### `legacy/cbl/CBCUS01C.cbl` → `CustomerLoadJobConfig` &nbsp;·&nbsp; tests: `CustomerLoadJobConfigIT`
+
+_5 declaration(s): 1 method-mapped, 0 `-EXIT` no-op, 4 folded._
+
+| Src line | Paragraph / section | Target `class.method` (source-grounded) |
+| -------: | :------------------ | :--------------------------------------- |
+| 92 | `1000-CUSTFILE-GET-NEXT` | `CustomerLoadJobConfig.customerItemReader(…)` |
+| 118 | `0000-CUSTFILE-OPEN` | folded into `CustomerLoadJobConfig` control flow (§0.3.3) |
+| 136 | `9000-CUSTFILE-CLOSE` | folded into `CustomerLoadJobConfig` control flow (§0.3.3) |
+| 154 | `Z-ABEND-PROGRAM` | folded into `CustomerLoadJobConfig` control flow (§0.3.3) |
+| 161 | `Z-DISPLAY-IO-STATUS` | folded into `CustomerLoadJobConfig` control flow (§0.3.3) |
+
+#### `legacy/cbl/CBTRN01C.cbl` → `TransactionBackupJobConfig` &nbsp;·&nbsp; tests: `TransactionBackupJobConfigIT`
+
+_18 declaration(s): 0 method-mapped, 0 `-EXIT` no-op, 18 folded._
+
+| Src line | Paragraph / section | Target `class.method` (source-grounded) |
+| -------: | :------------------ | :--------------------------------------- |
+| 155 | `MAIN-PARA` | folded into `TransactionBackupJobConfig` control flow (§0.3.3) |
+| 202 | `1000-DALYTRAN-GET-NEXT` | folded into `TransactionBackupJobConfig` control flow (§0.3.3) |
+| 227 | `2000-LOOKUP-XREF` | folded into `TransactionBackupJobConfig` control flow (§0.3.3) |
+| 241 | `3000-READ-ACCOUNT` | folded into `TransactionBackupJobConfig` control flow (§0.3.3) |
+| 252 | `0000-DALYTRAN-OPEN` | folded into `TransactionBackupJobConfig` control flow (§0.3.3) |
+| 271 | `0100-CUSTFILE-OPEN` | folded into `TransactionBackupJobConfig` control flow (§0.3.3) |
+| 289 | `0200-XREFFILE-OPEN` | folded into `TransactionBackupJobConfig` control flow (§0.3.3) |
+| 307 | `0300-CARDFILE-OPEN` | folded into `TransactionBackupJobConfig` control flow (§0.3.3) |
+| 325 | `0400-ACCTFILE-OPEN` | folded into `TransactionBackupJobConfig` control flow (§0.3.3) |
+| 343 | `0500-TRANFILE-OPEN` | folded into `TransactionBackupJobConfig` control flow (§0.3.3) |
+| 361 | `9000-DALYTRAN-CLOSE` | folded into `TransactionBackupJobConfig` control flow (§0.3.3) |
+| 379 | `9100-CUSTFILE-CLOSE` | folded into `TransactionBackupJobConfig` control flow (§0.3.3) |
+| 397 | `9200-XREFFILE-CLOSE` | folded into `TransactionBackupJobConfig` control flow (§0.3.3) |
+| 415 | `9300-CARDFILE-CLOSE` | folded into `TransactionBackupJobConfig` control flow (§0.3.3) |
+| 433 | `9400-ACCTFILE-CLOSE` | folded into `TransactionBackupJobConfig` control flow (§0.3.3) |
+| 451 | `9500-TRANFILE-CLOSE` | folded into `TransactionBackupJobConfig` control flow (§0.3.3) |
+| 469 | `Z-ABEND-PROGRAM` | folded into `TransactionBackupJobConfig` control flow (§0.3.3) |
+| 476 | `Z-DISPLAY-IO-STATUS` | folded into `TransactionBackupJobConfig` control flow (§0.3.3) |
+
+#### `legacy/cbl/CBTRN03C.cbl` → `TransactionReportJobConfig` &nbsp;·&nbsp; tests: `TransactionReportJobConfigIT`
+
+_26 declaration(s): 7 method-mapped, 0 `-EXIT` no-op, 19 folded._
+
+| Src line | Paragraph / section | Target `class.method` (source-grounded) |
+| -------: | :------------------ | :--------------------------------------- |
+| 220 | `0550-DATEPARM-READ` | `TransactionReportJobConfig.transactionReportTasklet(…)` / `TransactionReportJobConfig.parseRequiredDate(…)` |
+| 248 | `1000-TRANFILE-GET-NEXT` | folded into `TransactionReportJobConfig` control flow (§0.3.3) |
+| 274 | `1100-WRITE-TRANSACTION-REPORT` | `TransactionReportJobConfig.writeTransactionReport(…)` |
+| 293 | `1110-WRITE-PAGE-TOTALS` | `TransactionReportJobConfig.writePageTotals(…)` |
+| 306 | `1120-WRITE-ACCOUNT-TOTALS` | `TransactionReportJobConfig.writeAccountTotals(…)` |
+| 318 | `1110-WRITE-GRAND-TOTALS` | `TransactionReportJobConfig.writeGrandTotals(…)` |
+| 324 | `1120-WRITE-HEADERS` | `TransactionReportJobConfig.writeHeaders(…)` |
+| 343 | `1111-WRITE-REPORT-REC` | folded into `TransactionReportJobConfig` control flow (§0.3.3) |
+| 361 | `1120-WRITE-DETAIL` | `TransactionReportJobConfig.writeDetail(…)` |
+| 376 | `0000-TRANFILE-OPEN` | folded into `TransactionReportJobConfig` control flow (§0.3.3) |
+| 394 | `0100-REPTFILE-OPEN` | folded into `TransactionReportJobConfig` control flow (§0.3.3) |
+| 412 | `0200-CARDXREF-OPEN` | folded into `TransactionReportJobConfig` control flow (§0.3.3) |
+| 430 | `0300-TRANTYPE-OPEN` | folded into `TransactionReportJobConfig` control flow (§0.3.3) |
+| 448 | `0400-TRANCATG-OPEN` | folded into `TransactionReportJobConfig` control flow (§0.3.3) |
+| 466 | `0500-DATEPARM-OPEN` | folded into `TransactionReportJobConfig` control flow (§0.3.3) |
+| 484 | `1500-A-LOOKUP-XREF` | folded into `TransactionReportJobConfig` control flow (§0.3.3) |
+| 494 | `1500-B-LOOKUP-TRANTYPE` | folded into `TransactionReportJobConfig` control flow (§0.3.3) |
+| 504 | `1500-C-LOOKUP-TRANCATG` | folded into `TransactionReportJobConfig` control flow (§0.3.3) |
+| 514 | `9000-TRANFILE-CLOSE` | folded into `TransactionReportJobConfig` control flow (§0.3.3) |
+| 532 | `9100-REPTFILE-CLOSE` | folded into `TransactionReportJobConfig` control flow (§0.3.3) |
+| 551 | `9200-CARDXREF-CLOSE` | folded into `TransactionReportJobConfig` control flow (§0.3.3) |
+| 569 | `9300-TRANTYPE-CLOSE` | folded into `TransactionReportJobConfig` control flow (§0.3.3) |
+| 587 | `9400-TRANCATG-CLOSE` | folded into `TransactionReportJobConfig` control flow (§0.3.3) |
+| 605 | `9500-DATEPARM-CLOSE` | folded into `TransactionReportJobConfig` control flow (§0.3.3) |
+| 626 | `9999-ABEND-PROGRAM` | folded into `TransactionReportJobConfig` control flow (§0.3.3) |
+| 633 | `9910-DISPLAY-IO-STATUS` | folded into `TransactionReportJobConfig` control flow (§0.3.3) |
+
+#### `legacy/cbl/CSUTLDTC.cbl` → `DateConversionService` &nbsp;·&nbsp; tests: `DateConversionServiceTest`
+
+_2 declaration(s): 0 method-mapped, 1 `-EXIT` no-op, 1 folded._
+
+| Src line | Paragraph / section | Target `class.method` (source-grounded) |
+| -------: | :------------------ | :--------------------------------------- |
+| 103 | `A000-MAIN` | folded into `DateConversionService` control flow (§0.3.3) |
+| 152 | `A000-MAIN-EXIT` | exit no-op — `PERFORM`-return landing (folded in `DateConversionService`) |
+
+
 ---
 
 ## 9. Exact Record Contracts (Offsets, Keys, Signs, FILLER)
@@ -584,11 +1334,25 @@ intentional non-migrations ledgered in this section.
 Traceability is designed to be **bidirectional**. In addition to the forward tables above, generated
 Java classes carry a Javadoc **origin-tag convention** citing the `legacy/` source path (and, where
 relevant, the CICS transaction id or JCL job) they were derived from. **This convention is applied
-across the generated application:** of the **115** Java files under `src/main/java/**`, **95 carry an
-explicit `Origin:` Javadoc tag** and a further **18** cite their `legacy/` source in class-Javadoc
-prose — so **113 of 115** carry a legacy-origin citation. Only the **2** net-new infrastructure
-classes with no COBOL antecedent (`config/ObservabilityConfig`, `config/WebConfig`) omit a legacy
-origin, which is correct.
+across the generated application:** of the **121** Java files under `src/main/java/**`, **96 carry an
+explicit `Origin:` Javadoc tag** and a further **20** cite their `legacy/` source in class-Javadoc
+prose — so **116 of 121** carry a legacy-origin citation. The remaining **5** are net-new
+cross-cutting infrastructure classes with **no COBOL antecedent**, for which omitting a legacy origin
+is correct:
+
+| Net-new class (no legacy origin) | Why there is no COBOL antecedent |
+| :------------------------------- | :------------------------------- |
+| `config/ObservabilityConfig` | Observability rule deliverable (metrics filters / tracing) — no mainframe equivalent |
+| `security/SessionRevocationService` | Spring Security live-session revocation (#8/#43); CICS pseudo-conversational had no session-registry concept |
+| `util/batch/BatchFilePathResolver` | Path-traversal-safe dataset resolution (#18) — a security hardening with no COBOL counterpart |
+| `util/batch/AtomicFileStepPublisher` | Atomic (temp-fsync-rename, 0600) output publication (#18/#34) — infrastructure, not a ported program |
+| `util/batch/FixedBlockLineAggregator` | Reusable `RECFM=FB` output framing helper (#17); it realises a COBOL *concept* but is generic Spring Batch infrastructure, not a 1:1 program port |
+
+This 121 / 116 / 5 split is verifiable directly from the tree (`grep -rl 'legacy/\|Origin:'
+src/main/java`). The paragraph-level reverse detail — which Java method each COBOL paragraph maps to —
+is the forward enumeration in [§8.1](#81-exhaustive-paragraph--section--classmethod--test-enumeration);
+each method there carries the corresponding `Origin:`/legacy citation in its own Javadoc, closing the
+loop at method granularity.
 
 The convention is a Javadoc line of the form:
 

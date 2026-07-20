@@ -3,16 +3,19 @@ package com.aws.carddemo.batch;
 import static org.assertj.core.api.Assertions.assertThat;
 
 import com.aws.carddemo.AbstractPostgresIntegrationTest;
+import com.aws.carddemo.config.BatchConfig;
 import com.aws.carddemo.domain.Transaction;
 import com.aws.carddemo.repository.TransactionRepository;
 import com.aws.carddemo.util.FixedWidthRecordMapper;
 
+import java.io.IOException;
 import java.math.BigDecimal;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
+import java.util.ArrayList;
 import java.util.List;
 
 import org.junit.jupiter.api.BeforeEach;
@@ -116,11 +119,18 @@ import org.springframework.test.context.TestPropertySource;
  * @see TransactionBackupJobConfigTest
  * @see AbstractPostgresIntegrationTest
  */
+// Non-web batch parity slice: WebEnvironment.NONE suppresses the servlet security auto-config
+// generated dev-password WARN, and disabling Prometheus export lets the slice fall back to a
+// SimpleMeterRegistry so Spring Batch's duplicate spring.batch.job.active meter never trips the
+// Prometheus same-tag-keys collision WARN — keeps start logs warning-free (review finding #35).
 @SpringBootTest(classes = {
         TransactionBackupJobConfigIT.BackupJobSliceConfig.class,
         TransactionBackupJobConfigIT.BatchTestHarnessConfig.class
+}, webEnvironment = SpringBootTest.WebEnvironment.NONE)
+@TestPropertySource(properties = {
+        "spring.jpa.hibernate.ddl-auto=none",
+        "management.prometheus.metrics.export.enabled=false"
 })
-@TestPropertySource(properties = "spring.jpa.hibernate.ddl-auto=none")
 class TransactionBackupJobConfigIT extends AbstractPostgresIntegrationTest {
 
     /**
@@ -144,7 +154,7 @@ class TransactionBackupJobConfigIT extends AbstractPostgresIntegrationTest {
     @EnableAutoConfiguration
     @EntityScan(basePackageClasses = Transaction.class)
     @EnableJpaRepositories(basePackageClasses = TransactionRepository.class)
-    @Import(TransactionBackupJobConfig.class)
+    @Import({TransactionBackupJobConfig.class, BatchConfig.class})
     static class BackupJobSliceConfig {
     }
 
@@ -250,7 +260,7 @@ class TransactionBackupJobConfigIT extends AbstractPostgresIntegrationTest {
                 .as("exported record count")
                 .isEqualTo(rowCount);
 
-        List<String> lines = Files.readAllLines(backupOut, StandardCharsets.ISO_8859_1);
+        List<String> lines = readRecords(backupOut);
         assertThat(lines).hasSize((int) rowCount);
     }
 
@@ -270,7 +280,7 @@ class TransactionBackupJobConfigIT extends AbstractPostgresIntegrationTest {
         JobExecution execution = launchBackup(backupOut);
         assertThat(execution.getStatus()).isEqualTo(BatchStatus.COMPLETED);
 
-        List<String> lines = Files.readAllLines(backupOut, StandardCharsets.ISO_8859_1);
+        List<String> lines = readRecords(backupOut);
         assertThat(lines).isNotEmpty();
         for (String line : lines) {
             assertThat(line.getBytes(StandardCharsets.ISO_8859_1))
@@ -295,7 +305,7 @@ class TransactionBackupJobConfigIT extends AbstractPostgresIntegrationTest {
         JobExecution execution = launchBackup(backupOut);
         assertThat(execution.getStatus()).isEqualTo(BatchStatus.COMPLETED);
 
-        List<String> lines = Files.readAllLines(backupOut, StandardCharsets.ISO_8859_1);
+        List<String> lines = readRecords(backupOut);
         // The 16-byte TRAN-ID key occupies the leading bytes of every record.
         List<String> tranIds = lines.stream()
                 .map(line -> line.substring(0, 16))
@@ -327,7 +337,7 @@ class TransactionBackupJobConfigIT extends AbstractPostgresIntegrationTest {
         Transaction db = transactionRepository.findById(TID_2).orElseThrow();
 
         // Locate the backup line for that key (match by TRAN-ID rather than assuming a position).
-        List<String> lines = Files.readAllLines(backupOut, StandardCharsets.ISO_8859_1);
+        List<String> lines = readRecords(backupOut);
         String line = lines.stream()
                 .filter(candidate -> candidate.startsWith(TID_2))
                 .findFirst()
@@ -465,5 +475,32 @@ class TransactionBackupJobConfigIT extends AbstractPostgresIntegrationTest {
         return execution.getStepExecutions().stream()
                 .mapToLong(StepExecution::getWriteCount)
                 .sum();
+    }
+
+    /**
+     * Reads an <em>undelimited</em> {@code RECFM=FB} backup file and slices it into fixed
+     * {@value TransactionBackupJobConfig#RECORD_LENGTH}-byte records (review finding&nbsp;#17). The
+     * migrated writer emits records back-to-back with no line delimiter (matching the native EBCDIC
+     * {@code TRANSACT} image byte-for-byte; the LF-delimited ASCII fixtures are a convenience form only,
+     * AAP&nbsp;&sect;0.6.6), so the file is parsed by fixed width rather than by newline. Each record is
+     * decoded with the single-byte {@link StandardCharsets#ISO_8859_1} charset, so one 350-byte record
+     * maps to exactly one 350-character string. The total file length is asserted to be a whole multiple
+     * of the record width, which itself proves the framing carries no stray delimiter bytes.
+     *
+     * @param file the published backup file
+     * @return the ordered list of 350-character records
+     * @throws IOException if the file cannot be read
+     */
+    private static List<String> readRecords(Path file) throws IOException {
+        byte[] all = Files.readAllBytes(file);
+        int len = TransactionBackupJobConfig.RECORD_LENGTH;
+        assertThat(all.length % len)
+                .as("undelimited RECFM=FB file length is a whole multiple of the 350-byte record")
+                .isZero();
+        List<String> records = new ArrayList<>(all.length / len);
+        for (int off = 0; off < all.length; off += len) {
+            records.add(new String(all, off, len, StandardCharsets.ISO_8859_1));
+        }
+        return records;
     }
 }

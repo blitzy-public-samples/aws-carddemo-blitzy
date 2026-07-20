@@ -18,6 +18,7 @@ package com.aws.carddemo.service.online;
 import java.time.LocalDate;
 import java.time.format.DateTimeFormatter;
 import java.util.Optional;
+import java.util.UUID;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -28,6 +29,7 @@ import org.springframework.batch.core.JobParameters;
 import org.springframework.batch.core.JobParametersBuilder;
 import org.springframework.batch.core.launch.JobLauncher;
 import org.springframework.beans.factory.annotation.Qualifier;
+import org.springframework.core.task.TaskRejectedException;
 import org.springframework.stereotype.Service;
 
 import com.aws.carddemo.dto.CardDemoContext;
@@ -183,6 +185,17 @@ public class ReportSubmitService {
      */
     private static final String PARAM_SUBMIT_TIMESTAMP = "submitTimestamp";
 
+    /**
+     * Spring Batch job parameter key carrying a per-submission universally-unique identifier. A fresh
+     * {@link UUID} is added on every submit so each launch is guaranteed a distinct
+     * {@link org.springframework.batch.core.JobInstance} even when two submissions occur within the
+     * same millisecond (which {@link #PARAM_SUBMIT_TIMESTAMP} alone cannot guarantee). This reproduces
+     * the COBOL behavior of enqueuing a brand-new job to the JES2 internal reader on every request and
+     * keeps concurrent submissions collision-free (review finding&nbsp;#34, and the concurrency
+     * hardening behind finding&nbsp;#15).
+     */
+    private static final String PARAM_SUBMIT_ID = "submitId";
+
     // --- Exact COBOL screen messages (WS-MESSAGE literals) ------------------
 
     /** COBOL {@code CCDA-MSG-INVALID-KEY} (copybook {@code CSMSG01Y}). */
@@ -268,7 +281,15 @@ public class ReportSubmitService {
      */
     private final DateConversionService dateConversionService;
 
-    /** Spring Batch launcher used to submit the transaction-report job (the {@code WRITEQ TD} equivalent). */
+    /**
+     * Bounded, <em>asynchronous</em> Spring Batch launcher used to submit the transaction-report job
+     * (the {@code EXEC CICS WRITEQ TD QUEUE('JOBS')} equivalent). Injected by name via
+     * {@link Qualifier} as the {@code reportJobLauncher} bean (declared in
+     * {@code com.aws.carddemo.config.BatchConfig}), <em>not</em> the synchronous primary launcher.
+     * Launching on this bean returns immediately once the job is accepted and durably recorded,
+     * reproducing the COBOL enqueue-and-return semantics rather than blocking the HTTP worker thread
+     * until the batch job finishes (review finding&nbsp;#34).
+     */
     private final JobLauncher jobLauncher;
 
     /**
@@ -288,13 +309,14 @@ public class ReportSubmitService {
      *                              not be {@code null}
      * @param dateConversionService the {@code CSUTLDTC} date-validation service; must not be
      *                              {@code null}
-     * @param jobLauncher           the Spring Batch job launcher; must not be {@code null}
+     * @param jobLauncher           the bounded <em>asynchronous</em> Spring Batch launcher (bean
+     *                              {@code reportJobLauncher}); must not be {@code null}
      * @param transactionReportJob  the transaction-report batch job (bean
      *                              {@code transactionReportJob}); must not be {@code null}
      */
     public ReportSubmitService(CardDemoContext context,
                                DateConversionService dateConversionService,
-                               JobLauncher jobLauncher,
+                               @Qualifier("reportJobLauncher") JobLauncher jobLauncher,
                                @Qualifier("transactionReportJob") Job transactionReportJob) {
         this.context = context;
         this.dateConversionService = dateConversionService;
@@ -834,20 +856,30 @@ public class ReportSubmitService {
      * its original misspelling of "write"; the Java method is named sensibly).
      *
      * <p>The COBOL {@code EXEC CICS WRITEQ TD QUEUE('JOBS')} enqueues one 80-byte JCL record to the
-     * JES2 internal reader; the surrounding {@code PERFORM VARYING} loop writes the whole job stream.
-     * In the modernized architecture the entire enqueue collapses into a single
-     * {@link JobLauncher#run(Job, JobParameters)} that launches the {@code transactionReportJob}. The
-     * report type and window are passed as job parameters, and a per-submission timestamp guarantees
-     * a distinct {@link org.springframework.batch.core.JobInstance} on every submit &mdash;
-     * reproducing the COBOL behavior of enqueuing a new job on each request.</p>
+     * JES2 internal reader and returns to the terminal immediately; the surrounding
+     * {@code PERFORM VARYING} loop writes the whole job stream, after which JES2 runs the job
+     * asynchronously. In the modernized architecture the entire enqueue collapses into a single
+     * {@link JobLauncher#run(Job, JobParameters)} on the bounded <em>asynchronous</em>
+     * {@code reportJobLauncher}: {@code run(...)} validates the parameters and creates the durable
+     * {@link org.springframework.batch.core.JobExecution} synchronously, then dispatches the job to a
+     * background worker and returns immediately with an {@code STARTING}/{@code STARTED} execution
+     * &mdash; it does <em>not</em> block the HTTP worker thread until the batch job finishes. The
+     * report type and window are passed as job parameters, and a per-submission {@link UUID}
+     * ({@link #PARAM_SUBMIT_ID}) alongside a timestamp guarantees a distinct
+     * {@link org.springframework.batch.core.JobInstance} on every submit &mdash; even under concurrent
+     * submissions &mdash; reproducing the COBOL behavior of enqueuing a new job on each request.</p>
      *
      * <p>The COBOL {@code EVALUATE WS-RESP-CD} response handling is preserved: {@code DFHRESP(NORMAL)}
-     * (a clean launch) falls through to success ({@link Optional#empty()}); any launch failure - the
-     * checked {@link JobExecutionException} family thrown by {@code run(...)}: job already running,
-     * restart failure, instance already complete, or invalid parameters - maps to the COBOL
-     * {@code WHEN OTHER} branch and returns {@code 'Unable to Write TDQ (JOBS)...'}. Consistent with
-     * the CICS enqueue semantics, a <em>launched</em> job is treated as submitted regardless of its
-     * later batch outcome (a failing step is recorded in the {@link JobExecution}, not thrown here).</p>
+     * (the job was accepted for asynchronous execution) falls through to success
+     * ({@link Optional#empty()}); a launch failure maps to the COBOL {@code WHEN OTHER} branch and
+     * returns {@code 'Unable to Write TDQ (JOBS)...'}. Two failure families are caught: the checked
+     * {@link JobExecutionException} family thrown synchronously by {@code run(...)} (job already
+     * running, restart failure, instance already complete, or invalid parameters) and the
+     * {@link TaskRejectedException} thrown when the bounded launcher's pool and queue are saturated.
+     * Consistent with the CICS enqueue-and-return semantics, an <em>accepted</em> job is treated as
+     * submitted regardless of its later batch outcome: a step that fails after acceptance is recorded
+     * asynchronously in the durable {@link JobExecution} (queryable via {@code JobExplorer}), not
+     * thrown from this method.</p>
      *
      * @param reportName the report name recorded as the {@code reportType} job parameter; must not be
      *                   {@code null}
@@ -865,15 +897,26 @@ public class ReportSubmitService {
                 .addString(PARAM_START_DATE, startDate)
                 .addString(PARAM_END_DATE, endDate)
                 .addLong(PARAM_SUBMIT_TIMESTAMP, System.currentTimeMillis())
+                .addString(PARAM_SUBMIT_ID, UUID.randomUUID().toString())
                 .toJobParameters();
 
         try {
+            // Bounded ASYNC launch: run(...) validates and creates the JobExecution synchronously
+            // (so a launch failure still surfaces here), then hands job.execute(...) to the bounded
+            // background executor and returns an STARTING/STARTED execution without waiting for the
+            // batch job to finish - the modern equivalent of EXEC CICS WRITEQ TD returning to the
+            // terminal while JES2 runs the job later.
             JobExecution execution = jobLauncher.run(transactionReportJob, parameters);
-            LOGGER.info("Submitted transaction report job '{}' (execution id {}), type={}, window {}..{}",
-                    transactionReportJob.getName(), execution.getId(), reportName, startDate, endDate);
+            LOGGER.info("Accepted transaction report job '{}' (execution id {}, status {}), type={}, window {}..{}",
+                    transactionReportJob.getName(), execution.getId(), execution.getStatus(),
+                    reportName, startDate, endDate);
             return Optional.empty();
-        } catch (JobExecutionException ex) {
-            LOGGER.error("Unable to launch transaction report job (type={}, window {}..{})",
+        } catch (JobExecutionException | TaskRejectedException ex) {
+            // JobExecutionException: the pre-flight failure family (already running, restart failure,
+            // instance already complete, invalid parameters). TaskRejectedException: the bounded
+            // executor's pool and queue are saturated. Both map to the COBOL EVALUATE WS-RESP-CD
+            // WHEN OTHER branch and return the 'Unable to Write TDQ (JOBS)...' error line.
+            LOGGER.error("Unable to submit transaction report job (type={}, window {}..{})",
                     reportName, startDate, endDate, ex);
             return Optional.of(ReportSubmitResult.error(MSG_UNABLE_TO_WRITE_TDQ));
         }

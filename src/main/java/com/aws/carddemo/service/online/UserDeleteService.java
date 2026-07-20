@@ -21,12 +21,15 @@ import org.springframework.dao.DataAccessException;
 import org.springframework.dao.EmptyResultDataAccessException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionSynchronization;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 
 import com.aws.carddemo.domain.UserSecurity;
 import com.aws.carddemo.dto.CardDemoContext;
 import com.aws.carddemo.dto.screen.COUSR03Form;
 import com.aws.carddemo.exception.RecordNotFoundException;
 import com.aws.carddemo.repository.UserSecurityRepository;
+import com.aws.carddemo.security.SessionRevocationService;
 
 /**
  * Administrative user-delete online service, the Java migration of the CICS COBOL program
@@ -102,6 +105,17 @@ import com.aws.carddemo.repository.UserSecurityRepository;
  * service catches to reproduce the exact COBOL {@code "Unable to ..."} message on the re-displayed
  * screen without aborting. Because {@link RecordNotFoundException} is <em>not</em> a
  * {@link DataAccessException}, the {@code OTHER} catch never swallows a not-found signal.</p>
+ *
+ * <h2>Session lifecycle on delete (review findings #8, #43)</h2>
+ * <p><b>Self-delete is allowed, matching the source.</b> {@code COUSR03C} has no guard preventing an
+ * administrator from deleting their own {@code USRSEC} record, so none is added here (that would be a
+ * behavioral change, not a migration). <b>Revocation is integrated:</b> once the delete commits, the
+ * deleted user's live HTTP sessions are expired via {@link SessionRevocationService} so a deleted
+ * identity cannot continue operating with an already-authenticated session &mdash; restoring the legacy
+ * property that each pseudo-conversational turn re-checked the user. Revocation is registered as an
+ * {@link TransactionSynchronization#afterCommit() afterCommit} callback so a rolled-back delete revokes
+ * nothing. In the self-delete case this simply logs the acting administrator out on their next request,
+ * which is the correct and intended outcome.</p>
  *
  * <h2>Access and design constraints</h2>
  * <ul>
@@ -202,19 +216,29 @@ public class UserDeleteService {
     private final UserSecurityRepository userSecurityRepository;
 
     /**
+     * Revokes the deleted user's live HTTP sessions so a deleted identity cannot keep operating with an
+     * already-authenticated session (review findings #8, #43). Invoked only after the delete commits.
+     */
+    private final SessionRevocationService sessionRevocationService;
+
+    /**
      * Creates the user-delete service via Spring constructor injection.
      *
-     * <p>A single constructor means no {@code @Autowired} annotation is required. Neither argument is
+     * <p>A single constructor means no {@code @Autowired} annotation is required. No argument is
      * dereferenced here, so the constructor introduces no {@code this}-escape.</p>
      *
-     * @param context                the session-scoped CardDemo context (COMMAREA replacement); must
-     *                               not be {@code null}
-     * @param userSecurityRepository the {@code USRSEC} repository used for the read-then-delete; must
-     *                               not be {@code null}
+     * @param context                  the session-scoped CardDemo context (COMMAREA replacement); must
+     *                                 not be {@code null}
+     * @param userSecurityRepository   the {@code USRSEC} repository used for the read-then-delete; must
+     *                                 not be {@code null}
+     * @param sessionRevocationService the session-revocation collaborator invoked after a committed
+     *                                 delete; must not be {@code null}
      */
-    public UserDeleteService(CardDemoContext context, UserSecurityRepository userSecurityRepository) {
+    public UserDeleteService(CardDemoContext context, UserSecurityRepository userSecurityRepository,
+            SessionRevocationService sessionRevocationService) {
         this.context = context;
         this.userSecurityRepository = userSecurityRepository;
+        this.sessionRevocationService = sessionRevocationService;
     }
 
     /**
@@ -613,7 +637,10 @@ public class UserDeleteService {
      * @throws RecordNotFoundException if no record exists for {@code userId} (COBOL {@code NOTFND})
      */
     UserSecurity readUserSecFile(String userId) {
-        Optional<UserSecurity> found = userSecurityRepository.findByUsrId(userId);
+        // EXEC CICS READ DATASET(USRSEC) RIDFLD(SEC-USR-ID) UPDATE -> pessimistic write lock
+        // (SELECT ... FOR UPDATE), held until this @Transactional unit-of-work commits so the
+        // read-then-DELETE is atomic and cannot race a concurrent update/delete (#14, CWE-362).
+        Optional<UserSecurity> found = userSecurityRepository.findByUsrIdForUpdate(userId);
         return found.orElseThrow(() -> new RecordNotFoundException(MSG_USER_ID_NOT_FOUND));
     }
 
@@ -651,8 +678,38 @@ public class UserDeleteService {
             return UserDeleteResult.error(MSG_UNABLE_TO_UPDATE);
         }
         // COBOL WHEN NORMAL: INITIALIZE-ALL-FIELDS, MOVE DFHGREEN TO ERRMSGC, STRING the success line.
+        // Revoke the deleted user's live sessions once this delete commits (findings #8/#43). Includes
+        // the self-delete case: the COBOL COUSR03C has no self-delete guard, so self-delete is allowed
+        // for parity, and revocation simply logs the acting admin out on their next request (the deleted
+        // identity no longer exists) - documented as the session-lifecycle decision.
+        scheduleSessionRevocation(user.getUsrId());
         initializeAllFields(form);
         return UserDeleteResult.success(buildDeletedMessage(user.getUsrId()));
+    }
+
+    /**
+     * Schedules revocation of a user's live sessions so it runs only once the surrounding delete has
+     * committed (review findings #8, #43).
+     *
+     * <p>When a transaction synchronization is active (the normal path, since {@code deleteUserInfo} is
+     * {@code @Transactional}), an {@link TransactionSynchronization#afterCommit() afterCommit} callback
+     * is registered so that a rolled-back delete never revokes any session. When no synchronization is
+     * active (e.g. a direct unit-test call outside a transaction) the revocation runs immediately, which
+     * is safe because there is no pending rollback to race.</p>
+     *
+     * @param userId the id of the user whose sessions must be revoked after commit
+     */
+    private void scheduleSessionRevocation(String userId) {
+        if (TransactionSynchronizationManager.isSynchronizationActive()) {
+            TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+                @Override
+                public void afterCommit() {
+                    sessionRevocationService.revokeSessions(userId);
+                }
+            });
+        } else {
+            sessionRevocationService.revokeSessions(userId);
+        }
     }
 
     /**

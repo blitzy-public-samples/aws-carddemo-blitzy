@@ -1,6 +1,7 @@
 package com.aws.carddemo.batch;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import java.io.IOException;
 import java.math.BigDecimal;
@@ -21,6 +22,7 @@ import org.springframework.batch.core.JobParameters;
 import org.springframework.batch.core.JobParametersBuilder;
 import org.springframework.batch.core.StepExecution;
 import org.springframework.batch.core.launch.JobLauncher;
+import org.springframework.batch.core.repository.JobInstanceAlreadyCompleteException;
 import org.springframework.batch.core.repository.JobRepository;
 import org.springframework.batch.test.JobLauncherTestUtils;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -35,6 +37,7 @@ import org.springframework.context.annotation.Import;
 import org.springframework.data.jpa.repository.config.EnableJpaRepositories;
 
 import com.aws.carddemo.AbstractPostgresIntegrationTest;
+import com.aws.carddemo.config.BatchConfig;
 import com.aws.carddemo.domain.Account;
 import com.aws.carddemo.domain.CardXref;
 import com.aws.carddemo.domain.Transaction;
@@ -105,10 +108,18 @@ import com.aws.carddemo.repository.TransactionRepository;
  * 350-byte {@code DALYTRAN} prefix plus a 4-digit reason code and 76-char description trailer (AAP
  * &sect;0.6.4/&sect;0.6.5).</p>
  */
+// Non-web batch parity slice: WebEnvironment.NONE suppresses the servlet security auto-config
+// generated dev-password WARN, and disabling Prometheus export lets the slice fall back to a
+// SimpleMeterRegistry so Spring Batch's duplicate spring.batch.job.active meter never trips the
+// Prometheus same-tag-keys collision WARN — keeps start logs warning-free (review finding #35).
 @SpringBootTest(
         classes = {PostTransactionJobConfigIT.BatchTestConfig.class,
                 PostTransactionJobConfigIT.HarnessConfig.class},
-        properties = "spring.jpa.hibernate.ddl-auto=none")
+        webEnvironment = SpringBootTest.WebEnvironment.NONE,
+        properties = {
+            "spring.jpa.hibernate.ddl-auto=none",
+            "management.prometheus.metrics.export.enabled=false"
+        })
 class PostTransactionJobConfigIT extends AbstractPostgresIntegrationTest {
 
     /**
@@ -127,7 +138,7 @@ class PostTransactionJobConfigIT extends AbstractPostgresIntegrationTest {
     @EnableAutoConfiguration
     @EntityScan(basePackageClasses = Account.class)
     @EnableJpaRepositories(basePackageClasses = AccountRepository.class)
-    @Import(PostTransactionJobConfig.class)
+    @Import({PostTransactionJobConfig.class, BatchConfig.class})
     static class BatchTestConfig {
     }
 
@@ -272,11 +283,18 @@ class PostTransactionJobConfigIT extends AbstractPostgresIntegrationTest {
     }
 
     /**
-     * Writes the supplied 350-byte lines (each terminated by {@code \n}, matching the seed feed) to a
-     * file inside the per-test {@link TempDir}.
+     * Writes the supplied 350-byte records to a feed file inside the per-test {@link TempDir} in
+     * <em>undelimited</em> {@code RECFM=FB} framing (review finding&nbsp;#17): the records are written
+     * back-to-back with <strong>no</strong> line delimiter, exactly as the native z/OS
+     * {@code DALYTRAN.PS} dataset stores them ({@code LRECL=350,RECFM=FB}) and exactly as the production
+     * {@link com.aws.carddemo.util.batch.FixedLengthItemReader} consumes them &mdash; it slices the
+     * stream into fixed 350-byte blocks and makes no newline assumption. (The LF-delimited ASCII fixture
+     * {@code legacy/data/ASCII/dailytran.txt} is a convenience form only; AAP&nbsp;&sect;0.6.6.) Every
+     * record supplied by {@link #dalytran} is byte-exactly 350 characters, so the concatenation aligns
+     * on 350-byte boundaries.
      *
      * @param fileName the temp file name
-     * @param lines    the fixed-width records
+     * @param lines    the fixed-width 350-byte records
      * @return the path to the written feed
      * @throws IOException if the file cannot be written
      */
@@ -284,7 +302,7 @@ class PostTransactionJobConfigIT extends AbstractPostgresIntegrationTest {
         Path feed = tempDir.resolve(fileName);
         StringBuilder content = new StringBuilder();
         for (String line : lines) {
-            content.append(line).append('\n');
+            content.append(line);
         }
         Files.write(feed, content.toString().getBytes(StandardCharsets.ISO_8859_1));
         return feed;
@@ -335,11 +353,16 @@ class PostTransactionJobConfigIT extends AbstractPostgresIntegrationTest {
     }
 
     /**
-     * Reads the reject file and returns its records, splitting on the {@code \n} line separator used by
-     * the reject writer. An absent or empty file yields an empty list.
+     * Reads the reject file and slices it into fixed 430-byte records in <em>undelimited</em>
+     * {@code RECFM=FB} framing (review finding&nbsp;#17). The {@code DALYREJS} reject writer emits each
+     * 430-byte record (350-byte {@code DALYTRAN} prefix + 80-byte trailer) back-to-back with no
+     * delimiter, matching the native reject dataset, so the file is parsed by fixed width using the
+     * authoritative {@link PostTransactionJobConfig#REJECT_MAPPER} record length rather than by newline.
+     * An absent or empty file yields an empty list; a non-empty file whose length is not a whole
+     * multiple of the record width fails fast (proving the framing carries no stray delimiter bytes).
      *
      * @param rejectFile the reject-file path
-     * @return the reject records (each expected to be a 430-character line)
+     * @return the reject records (each exactly 430 characters, decoded with ISO-8859-1)
      * @throws IOException if the file cannot be read
      */
     private static List<String> readRejectRecords(Path rejectFile) throws IOException {
@@ -347,14 +370,16 @@ class PostTransactionJobConfigIT extends AbstractPostgresIntegrationTest {
         if (!Files.exists(rejectFile)) {
             return records;
         }
-        String content = new String(Files.readAllBytes(rejectFile), StandardCharsets.ISO_8859_1);
-        if (content.isEmpty()) {
+        byte[] all = Files.readAllBytes(rejectFile);
+        if (all.length == 0) {
             return records;
         }
-        for (String line : content.split("\n", -1)) {
-            if (!line.isEmpty()) {
-                records.add(line);
-            }
+        int len = PostTransactionJobConfig.REJECT_MAPPER.getRecordLength();
+        assertThat(all.length % len)
+                .as("undelimited RECFM=FB reject file length is a whole multiple of the 430-byte record")
+                .isZero();
+        for (int off = 0; off < all.length; off += len) {
+            records.add(new String(all, off, len, StandardCharsets.ISO_8859_1));
         }
         return records;
     }
@@ -782,19 +807,233 @@ class PostTransactionJobConfigIT extends AbstractPostgresIntegrationTest {
     }
 
     /**
-     * Volume smoke test: points {@code inputPath} at the full seed feed
-     * {@code legacy/data/ASCII/dailytran.txt} (300 records &times; 350 bytes) to exercise the reader,
-     * processor and writer at volume. Every read record is either posted or rejected (the processor
-     * never filters), so read count, write count and posted+rejected all equal 300.
+     * Builds the identifying {@link JobParameters} for a posting launch. Reusing one instance's exact
+     * parameters across two launches makes the second launch a <em>restart</em> when the first failed
+     * (Spring Batch opens a new {@code JobExecution} for the same {@code JobInstance}, and the
+     * {@code saveState=true} reader resumes past the already-committed items) or a rejected rerun when
+     * the first completed; supplying a fresh {@code runId} yields a brand-new
+     * {@link org.springframework.batch.core.JobInstance}. Review finding&nbsp;#19.
+     *
+     * @param feed       the DALYTRAN input feed path
+     * @param rejectFile the desired reject-file path
+     * @param runId      the identifying run id (same value = same instance; new value = new instance)
+     * @return the identifying job parameters
+     */
+    private static JobParameters postingParams(Path feed, Path rejectFile, long runId) {
+        return new JobParametersBuilder()
+                .addString("inputPath", feed.toString())
+                .addString("rejectPath", rejectFile.toString())
+                .addLong("run.id", runId)
+                .toJobParameters();
+    }
+
+    /**
+     * Counts the {@code .inprogress} atomic-publication temp files currently present in the per-test
+     * {@link org.junit.jupiter.api.io.TempDir}. {@link com.aws.carddemo.util.batch.AtomicFileStepPublisher}
+     * names each in-flight output {@code <target>.<instanceId>.inprogress} and, on a COMPLETED step,
+     * either moves it to its final target or removes it &mdash; so a completed run must leave zero
+     * {@code .inprogress} files behind. Review finding&nbsp;#19 (cleanup).
+     *
+     * @return the number of {@code .inprogress} temp files under {@link #tempDir}
+     * @throws IOException if the directory cannot be listed
+     */
+    private long inProgressTempCount() throws IOException {
+        try (var entries = Files.list(tempDir)) {
+            return entries.filter(p -> p.getFileName().toString().contains(".inprogress")).count();
+        }
+    }
+
+    /**
+     * Restart correctness + record-level exactly-once + output rollback safety (review finding&nbsp;#19).
+     *
+     * <p>A two-record feed is posted with {@link PostTransactionJobConfig#CHUNK_SIZE} = 1: the first
+     * record commits in its own chunk; the second reuses a pre-seeded transaction id, so the writer's
+     * {@code existsById} guard abends its chunk. The job therefore ends {@link BatchStatus#FAILED} with
+     * exactly the first record posted. The pre-seeded conflict is then removed and the job is relaunched
+     * with the <em>same identifying parameters</em>, which restarts the failed instance. The assertions
+     * prove the three properties the finding demands:</p>
+     * <ol>
+     *   <li><strong>Rollback safety / no overwritten output:</strong> the FAILED step never publishes
+     *       its final reject target ({@code !Files.exists(reject)}); the in-progress temp is retained
+     *       for the restart to resume.</li>
+     *   <li><strong>Restart resume + exactly-once:</strong> the restart resumes <em>past</em> the
+     *       already-committed first record (the {@code saveState=true} reader repositions via
+     *       {@code jumpToItem}), so it is never posted twice; the final account balance equals the sum
+     *       of both records (150.00), never the first record double-counted (200.00).</li>
+     *   <li><strong>Cleanup:</strong> the successful restart consumes the in-progress temp, leaving
+     *       zero {@code .inprogress} files behind.</li>
+     * </ol>
+     *
+     * @throws Exception if a job launch fails
+     */
+    @Test
+    void failedPostingRestartsResumesAndPostsEachRecordExactlyOnce() throws Exception {
+        long acctId = 900_000_410L;
+        String cardNum = "9000000000000410";
+        persistAccount(acctId, money("999999.99"), FUTURE_EXPIRY);
+        persistXref(cardNum, 900_000_410L, acctId);
+
+        // Deterministic mid-run failure: pre-seed a row whose id the feed's SECOND record reuses, so
+        // the writer's existsById guard abends the duplicate's chunk AFTER the first record's chunk
+        // has already committed (CHUNK_SIZE = 1).
+        String recAId = id16("ITRSTOK");
+        String recBId = id16("ITRSTDUP");
+        BigDecimal amtA = money("100.00");
+        BigDecimal amtB = money("50.00");
+        Transaction conflict = new Transaction();
+        conflict.setTranId(recBId);
+        conflict.setTranTypeCd("09");
+        conflict.setTranCatCd(99);
+        conflict.setTranSource("PRESEED");
+        conflict.setTranDesc("PRE-EXISTING (RESTART CONFLICT)");
+        conflict.setTranAmt(money("777.77"));
+        conflict.setCardNum(cardNum);
+        transactionRepository.save(conflict);
+
+        Path feed = writeFeed("dalytran-restart.txt", List.of(
+                dalytran(recAId, "01", 5, amtA, cardNum, ORIG_TS),
+                dalytran(recBId, "01", 5, amtB, cardNum, ORIG_TS)));
+        Path reject = tempDir.resolve("reject-restart.txt");
+        JobParameters params = postingParams(feed, reject, 4_100L);
+
+        // Launch #1: record A commits in its own chunk; record B abends the step.
+        JobExecution first = jobLauncherTestUtils.launchJob(params);
+        assertThat(first.getStatus()).isEqualTo(BatchStatus.FAILED);
+        assertThat(transactionRepository.findById(recAId)).isPresent();
+        assertThat(accountRepository.findById(acctId).orElseThrow().getCurrBal())
+                .isEqualByComparingTo(amtA);
+
+        // Rollback safety: the FAILED step publishes NO final reject output (never overwrites).
+        assertThat(Files.exists(reject))
+                .as("a failed step must not publish its final reject target")
+                .isFalse();
+
+        // Remove the conflict so the restart's record B can post.
+        transactionRepository.deleteById(recBId);
+
+        // Launch #2 with the SAME identifying parameters => restart of the failed instance.
+        JobExecution second = jobLauncherTestUtils.launchJob(params);
+        assertThat(second.getStatus()).isEqualTo(BatchStatus.COMPLETED);
+
+        // Exactly-once: A posted once + B posted once => 150.00; A is NOT reprocessed on restart.
+        assertThat(accountRepository.findById(acctId).orElseThrow().getCurrBal())
+                .as("restart must resume past the committed record A, never double-post it")
+                .isEqualByComparingTo(money("150.00"));
+        assertThat(transactionRepository.findById(recBId).orElseThrow().getTranAmt())
+                .as("record B posts from the feed (50.00), not the removed 777.77 sentinel")
+                .isEqualByComparingTo(amtB);
+
+        // Cleanup: the completed restart leaves no in-progress temp files behind.
+        assertThat(inProgressTempCount())
+                .as("a completed run consumes every .inprogress temp")
+                .isZero();
+    }
+
+    /**
+     * Completed-instance rerun protection (review finding&nbsp;#19). Once the posting job completes for
+     * a given set of identifying parameters, relaunching with those <em>same</em> parameters must be
+     * rejected with {@link JobInstanceAlreadyCompleteException} rather than silently reprocessing the
+     * feed &mdash; the Spring Batch exactly-once guard that stops an operator double-posting a daily
+     * file by rerunning the identical instance.
+     *
+     * @throws Exception if the initial (successful) launch fails
+     */
+    @Test
+    void rerunningCompletedPostingInstanceIsRejected() throws Exception {
+        long acctId = 900_000_420L;
+        String cardNum = "9000000000000420";
+        persistAccount(acctId, money("999999.99"), FUTURE_EXPIRY);
+        persistXref(cardNum, 900_000_420L, acctId);
+
+        Path feed = writeFeed("dalytran-rerun.txt", List.of(
+                dalytran(id16("ITRERUN1"), "01", 5, money("100.00"), cardNum, ORIG_TS)));
+        Path reject = tempDir.resolve("reject-rerun.txt");
+        JobParameters params = postingParams(feed, reject, 4_200L);
+
+        assertThat(jobLauncherTestUtils.launchJob(params).getStatus())
+                .isEqualTo(BatchStatus.COMPLETED);
+
+        // Relaunching the SAME completed instance is refused (no second, duplicate posting run).
+        assertThatThrownBy(() -> jobLauncherTestUtils.launchJob(params))
+                .isInstanceOf(JobInstanceAlreadyCompleteException.class);
+    }
+
+    /**
+     * Cross-instance duplicate-effect protection (review finding&nbsp;#19). Re-posting the same feed as
+     * a brand-new {@link org.springframework.batch.core.JobInstance} (a fresh {@code runId} &mdash; e.g.
+     * an operator resubmitting yesterday's file) must not silently double-post: the transaction primary
+     * key already exists from the first run, so the writer's {@code existsById} guard abends the second
+     * run and the ledger is left untouched. This proves exactly-once is enforced at the data layer even
+     * when the per-instance batch guard does not apply.
+     *
+     * @throws Exception if the initial (successful) launch fails
+     */
+    @Test
+    void freshInstanceReprocessingSameFeedFailsOnDuplicateWithoutDoublePosting() throws Exception {
+        long acctId = 900_000_430L;
+        String cardNum = "9000000000000430";
+        persistAccount(acctId, money("999999.99"), FUTURE_EXPIRY);
+        persistXref(cardNum, 900_000_430L, acctId);
+
+        String recId = id16("ITDUPEFF");
+        BigDecimal amt = money("100.00");
+        Path feed = writeFeed("dalytran-dupeffect.txt", List.of(
+                dalytran(recId, "01", 5, amt, cardNum, ORIG_TS)));
+
+        // Run #1 (fresh instance): posts the record; balance = 100.00.
+        assertThat(jobLauncherTestUtils
+                .launchJob(postingParams(feed, tempDir.resolve("rej-1.txt"), 4_301L)).getStatus())
+                .isEqualTo(BatchStatus.COMPLETED);
+        assertThat(accountRepository.findById(acctId).orElseThrow().getCurrBal())
+                .isEqualByComparingTo(amt);
+
+        // Run #2 (brand-new instance, same feed): the id already exists => abend, no double posting.
+        JobExecution second = jobLauncherTestUtils.launchJob(
+                postingParams(feed, tempDir.resolve("rej-2.txt"), 4_302L));
+        assertThat(second.getStatus()).isEqualTo(BatchStatus.FAILED);
+
+        // Ledger untouched: still exactly one posting; balance unchanged (never 200.00).
+        assertThat(accountRepository.findById(acctId).orElseThrow().getCurrBal())
+                .as("a duplicate reprocess must not double-post")
+                .isEqualByComparingTo(amt);
+    }
+
+    /**
+     * Volume smoke test: exercises the reader, processor and writer at volume against the full seed
+     * feed (300 records &times; 350 bytes).
+     *
+     * <p>The seed ships as the LF-delimited ASCII <em>convenience</em> form
+     * {@code legacy/data/ASCII/dailytran.txt} (AAP&nbsp;&sect;0.6.6); the canonical {@code DALYTRAN}
+     * contract &mdash; and the production {@link com.aws.carddemo.util.batch.FixedLengthItemReader}
+     * (review finding&nbsp;#17) &mdash; is <em>undelimited</em> {@code RECFM=FB}. The test therefore
+     * re-frames the 300 convenience lines into a contiguous 350-byte-per-record undelimited image
+     * (byte-identical to the native EBCDIC {@code DALYTRAN.PS} framing) before feeding the job, so the
+     * volume run exercises the real fixed-block reader rather than the delimiter-dependent form. Every
+     * read record is either posted or rejected (the processor never filters), so read count, write
+     * count and posted+rejected all equal 300.</p>
      *
      * @throws Exception if the job launch fails
      */
     @Test
     void volumeSmokeTest_processesAll300SeedFeedRecords() throws Exception {
-        Path feed = Path.of("legacy/data/ASCII/dailytran.txt");
-        assertThat(Files.exists(feed))
-                .as("seed DALYTRAN feed present at %s", feed.toAbsolutePath())
+        Path seed = Path.of("legacy/data/ASCII/dailytran.txt");
+        assertThat(Files.exists(seed))
+                .as("seed DALYTRAN feed present at %s", seed.toAbsolutePath())
                 .isTrue();
+        // Re-frame the LF-delimited convenience fixture into the canonical undelimited RECFM=FB image
+        // that the production FixedLengthItemReader (finding #17) consumes: strip the convenience LF
+        // delimiters and re-concatenate on exact 350-byte boundaries. Assert the per-record width so a
+        // malformed fixture fails loudly rather than silently misaligning the fixed-block reader.
+        List<String> records = Files.readAllLines(seed, StandardCharsets.ISO_8859_1);
+        assertThat(records)
+                .as("seed feed must contain exactly 300 convenience records")
+                .hasSize(300);
+        for (int i = 0; i < records.size(); i++) {
+            assertThat(records.get(i).getBytes(StandardCharsets.ISO_8859_1).length)
+                    .as("seed feed record %d must be exactly 350 bytes", i + 1)
+                    .isEqualTo(350);
+        }
+        Path feed = writeFeed("dailytran-fb.txt", records);
         Path reject = tempDir.resolve("reject-volume.txt");
 
         JobExecution execution = launch(feed, reject);

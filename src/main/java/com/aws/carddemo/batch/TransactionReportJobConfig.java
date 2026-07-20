@@ -1,17 +1,23 @@
 package com.aws.carddemo.batch;
 
+import java.io.BufferedWriter;
 import java.io.IOException;
+import java.io.OutputStreamWriter;
+import java.io.UncheckedIOException;
+import java.io.Writer;
 import java.math.BigDecimal;
-import java.nio.file.Files;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
-import java.nio.file.Paths;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.time.format.DateTimeParseException;
 import java.util.ArrayList;
+import java.util.Iterator;
 import java.util.List;
 import java.util.Objects;
+import java.util.function.Consumer;
+import java.util.stream.Stream;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -22,18 +28,10 @@ import org.springframework.batch.core.job.builder.JobBuilder;
 import org.springframework.batch.core.repository.JobRepository;
 import org.springframework.batch.core.step.builder.StepBuilder;
 import org.springframework.batch.core.step.tasklet.Tasklet;
-import org.springframework.batch.item.Chunk;
-import org.springframework.batch.item.ExecutionContext;
-import org.springframework.batch.item.file.FlatFileItemWriter;
-import org.springframework.batch.item.file.builder.FlatFileItemWriterBuilder;
-import org.springframework.batch.item.file.transform.PassThroughLineAggregator;
 import org.springframework.batch.repeat.RepeatStatus;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
-import org.springframework.core.io.FileSystemResource;
-import org.springframework.core.io.WritableResource;
-import org.springframework.data.domain.Sort;
 import org.springframework.transaction.PlatformTransactionManager;
 
 import com.aws.carddemo.domain.CardXref;
@@ -51,6 +49,7 @@ import com.aws.carddemo.repository.TransactionCategoryRepository;
 import com.aws.carddemo.repository.TransactionRepository;
 import com.aws.carddemo.repository.TransactionTypeRepository;
 import com.aws.carddemo.util.CobolDecimal;
+import com.aws.carddemo.util.batch.BatchFilePathResolver;
 
 /**
  * Spring Batch job configuration that reproduces the AWS CardDemo daily transaction detail report.
@@ -77,10 +76,12 @@ import com.aws.carddemo.util.CobolDecimal;
  * <h2>File / DD to Spring binding (AAP &sect;0.4.1, &sect;0.4.2)</h2>
  * <ul>
  *   <li>{@code TRANSACT-FILE} (sequential {@code CVTRA05Y}, pre-sorted by card number by the
- *       {@code TRANREPT.prc} {@code SORT}) &rarr; {@link TransactionRepository#findAll(Sort)} with
- *       {@code Sort.by("cardNum", "tranId")}: card number is the primary sort key (matching
- *       {@code SORT FIELDS=(TRAN-CARD-NUM,A)}); {@code tranId} is a deterministic secondary key so
- *       ties order reproducibly. The database uses {@code C}/{@code POSIX} collation, giving the
+ *       {@code TRANREPT.prc} {@code SORT}) &rarr; {@link TransactionRepository#streamAllByCardOrder()},
+ *       a forward-only, cursor-backed stream ordered by card number then {@code tranId} ascending:
+ *       card number is the primary sort key (matching {@code SORT FIELDS=(TRAN-CARD-NUM,A)});
+ *       {@code tranId} is a deterministic secondary key so ties order reproducibly. Streaming (rather
+ *       than a materialized {@code findAll} list) processes one row at a time with bounded memory
+ *       (review finding #21). The database uses {@code C}/{@code POSIX} collation, giving the
  *       bytewise/ASCII ordering of the {@code CHAR} card key required for legacy ordering parity
  *       (&sect;0.6.6).</li>
  *   <li>{@code XREF-FILE} ({@code CARDXREF} KSDS by card number, {@code CVACT03Y}) &rarr;
@@ -100,11 +101,17 @@ import com.aws.carddemo.util.CobolDecimal;
  *       an internal control file, not an external interface, so modeling the window as job
  *       parameters preserves behavior without introducing a new interface (the choice is recorded in
  *       {@code docs/decision-log.md}).</li>
- *   <li>{@code REPORT-FILE} ({@code TRANREPT}, {@code LRECL 133 RECFM FB}) &rarr; a
- *       {@link FlatFileItemWriter} of exactly-133-character lines. The JCL output is a
- *       generation-data-group ({@code +1}); absent an explicit {@code outputPath} job parameter this
- *       job writes a timestamped file (job-instance versioning), preserving the GDG semantics
- *       (&sect;0.6.3).</li>
+ *   <li>{@code REPORT-FILE} ({@code TRANREPT}, {@code LRECL 133 RECFM FB}) &rarr; an undelimited
+ *       fixed-block file of exactly-133-byte records (no line separator), written through the shared
+ *       {@link BatchFilePathResolver}: the path is resolved against the batch safe root (traversal and
+ *       symlink rejected), content is streamed to an owner-only ({@code 0600}) sibling temporary file,
+ *       flushed to durable storage and atomically renamed onto the target, and the temporary file is
+ *       removed if the step fails so a partial report is never published (review findings #17, #18).
+ *       The JCL output is a generation-data-group ({@code +1}); absent an explicit {@code outputPath}
+ *       job parameter this job writes {@value #DEFAULT_OUTPUT_DIR}{@code /}{@value
+ *       #DEFAULT_OUTPUT_BASENAME}{@code .<jobInstanceId>.txt}, using the Spring Batch job-instance id
+ *       as the restart-stable generation number so a restarted instance re-publishes the same file
+ *       (&sect;0.6.3, review finding #19).</li>
  * </ul>
  *
  * <h2>Report structure (paragraph {@code 1120-WRITE-HEADERS} and helpers)</h2>
@@ -126,19 +133,35 @@ import com.aws.carddemo.util.CobolDecimal;
  *       rounding (the COBOL {@code ADD} statements carry no {@code ROUNDED}). Only their reset
  *       boundaries differ. The grand total therefore equals the sum of all included detail amounts,
  *       as required by the migration spec. Floating-point types are never used (&sect;0.6.1).</li>
- *   <li><strong>Pagination on a detail-line counter.</strong> {@code WS-PAGE-SIZE} = 20. A per-page
- *       detail-line counter is maintained; when it reaches {@value #PAGE_SIZE} the page-total line is
- *       written, the page total and counter reset, and the header block is re-emitted for the next
- *       page (paragraphs {@code 1110-WRITE-PAGE-TOTALS} then {@code 1120-WRITE-HEADERS}).</li>
+ *   <li><strong>Pagination on the running line counter.</strong> {@code WS-PAGE-SIZE} = 20 and
+ *       {@code WS-LINE-COUNTER} counts <em>every</em> physical record written to the report (each
+ *       header line, each detail line, and each total/separator line), exactly as the COBOL
+ *       {@code ADD 1 TO WS-LINE-COUNTER} statements in {@code 1120-WRITE-HEADERS} (+4),
+ *       {@code 1120-WRITE-DETAIL} (+1), {@code 1110-WRITE-PAGE-TOTALS} (+2) and
+ *       {@code 1120-WRITE-ACCOUNT-TOTALS} (+2) do. Before writing each detail line
+ *       {@code 1100-WRITE-TRANSACTION-REPORT} evaluates {@code FUNCTION MOD(WS-LINE-COUNTER,
+ *       WS-PAGE-SIZE) = 0}; when true it emits the page-total line and a fresh header block. Because
+ *       the four header lines pre-charge the counter, the first page carries 16 detail lines and each
+ *       subsequent page carries 14 (the page break itself adds 6 lines: a page total + separator then
+ *       a 4-line header). Control-break account totals also advance the counter, so they shift
+ *       pagination exactly as in the source.</li>
  *   <li><strong>Control break on card number.</strong> When {@code TRAN-CARD-NUM} changes, the
- *       previous card's account total is written and reset before the new card's first detail line,
- *       then {@code XREF-ACCT-ID} is resolved once for the new card. The account id printed on detail
+ *       previous card's account total is written and reset before the new card's first detail line
+ *       (only once {@code WS-FIRST-TIME = 'N'}, i.e. not before the very first card), then
+ *       {@code XREF-ACCT-ID} is resolved once for the new card. The account id printed on detail
  *       lines comes from the cross-reference, not from the transaction record (key insight from the
  *       migration spec).</li>
- *   <li><strong>End of report.</strong> After the last transaction the final account total (for the
- *       last card) is written, then the grand total. This follows the migration spec's explicit
- *       end-of-report ordering (AAP &sect;0.4.1 "Phase G" and the validation checklist); the
- *       divergence from the literal COBOL end-of-file path is recorded in the decision log.</li>
+ *   <li><strong>End of report (source-faithful, review finding #31).</strong> The COBOL end-of-file
+ *       branch ({@code CBTRN03C} lines 197-203) does <em>not</em> write a final account total for the
+ *       last card. Instead, because {@code READ ... INTO TRAN-RECORD} leaves {@code TRAN-RECORD}
+ *       unchanged at {@code AT END}, the last physical record's {@code TRAN-AMT} is still present and
+ *       is added once more to both the page and account totals (the "stale-add" quirk); the final
+ *       page-total line (with its {@code WS-GRAND-TOTAL} accumulation and 133-dash separator) and then
+ *       the grand-total line are written. An empty input therefore yields exactly a zero page total,
+ *       a separator and a zero grand total, with no header block (because {@code WS-FIRST-TIME} never
+ *       flips). This job reproduces that behavior exactly; the earlier divergence (a forbidden final
+ *       account total and a per-detail grand accumulation) is corrected and the fidelity decision is
+ *       recorded in the decision log.</li>
  *   <li><strong>Missing reference data.</strong> A missing card cross-reference, transaction type or
  *       transaction category surfaces as an {@link IllegalStateException} that fails the job,
  *       mirroring the COBOL {@code INVALID KEY} abend in paragraphs {@code 1500-A}/{@code 1500-B}/
@@ -157,8 +180,9 @@ import com.aws.carddemo.util.CobolDecimal;
  *       used statically via {@link CobolDecimal#nullToZero(BigDecimal)} to guard total accumulation,
  *       never constructor-injected.</li>
  *   <li>{@code exception.EndOfFileException} models a streaming-read end-of-file signal; it is not
- *       needed here because {@link TransactionRepository#findAll(Sort)} returns a materialized list
- *       whose iteration ends naturally, matching {@code FILE STATUS 10} as normal termination.</li>
+ *       needed here because {@link TransactionRepository#streamAllByCardOrder()} ends its cursor
+ *       naturally when the last row is consumed, matching {@code FILE STATUS 10} as normal
+ *       termination.</li>
  * </ul>
  *
  * <h2>Wiring note (AAP binding constraint)</h2>
@@ -170,9 +194,9 @@ import com.aws.carddemo.util.CobolDecimal;
  * {@code docs/decision-log.md} rather than in code comments.</p>
  *
  * <p>This configuration is stateless and thread-safe: it holds only immutable collaborators, and all
- * mutable report state lives in method-local variables within {@link #buildReportLines(List,
- * LocalDate, LocalDate)}. The {@code @StepScope} tasklet reads its inputs exclusively from the
- * per-execution job parameters.</p>
+ * mutable report state lives in a fresh {@code ReportGenerator} instance created per invocation of
+ * {@link #buildReportLines(List, LocalDate, LocalDate)} (and per tasklet run). The {@code @StepScope}
+ * tasklet reads its inputs exclusively from the per-execution job parameters.</p>
  */
 @Configuration
 public class TransactionReportJobConfig {
@@ -224,13 +248,10 @@ public class TransactionReportJobConfig {
 
     /**
      * Base name of the generation-data-group report dataset ({@code TRANREPT}). The default output
-     * file name combines this with a timestamp to emulate the GDG {@code +1} generation.
+     * file name combines this with the Spring Batch job-instance id to emulate the GDG {@code +1}
+     * generation while remaining restart-stable (a restarted instance re-publishes the same file).
      */
     private static final String DEFAULT_OUTPUT_BASENAME = "TRANREPT";
-
-    /** Timestamp pattern used to emulate GDG generation versioning in the default output file name. */
-    private static final DateTimeFormatter OUTPUT_TIMESTAMP =
-            DateTimeFormatter.ofPattern("yyyyMMdd'T'HHmmss");
 
     /**
      * Formatter used both to parse the {@code startDate}/{@code endDate} job parameters and to render
@@ -259,6 +280,14 @@ public class TransactionReportJobConfig {
     private final TransactionCategoryRepository transactionCategoryRepository;
 
     /**
+     * Shared safe-path resolver used to resolve the report output path against the batch safe root and
+     * to publish the report atomically (secure {@code 0600} temp &rarr; fsync &rarr; atomic rename,
+     * with cleanup of the temp on failure). Centralizes review findings #17 (raw fixed-block output)
+     * and #18 (safe path resolution + atomic publication).
+     */
+    private final BatchFilePathResolver batchFilePathResolver;
+
+    /**
      * Creates the configuration with the collaborators supplied by Spring Boot's Batch
      * auto-configuration and component scanning.
      *
@@ -268,19 +297,22 @@ public class TransactionReportJobConfig {
      * @param cardXrefRepository            card cross-reference for {@code XREF-ACCT-ID} ({@code XREF-FILE})
      * @param transactionTypeRepository     transaction-type reference lookup ({@code TRANTYPE-FILE})
      * @param transactionCategoryRepository transaction-category reference lookup ({@code TRANCATG-FILE})
+     * @param batchFilePathResolver         shared safe-path resolver for atomic report publication
      */
     public TransactionReportJobConfig(JobRepository jobRepository,
             PlatformTransactionManager transactionManager,
             TransactionRepository transactionRepository,
             CardXrefRepository cardXrefRepository,
             TransactionTypeRepository transactionTypeRepository,
-            TransactionCategoryRepository transactionCategoryRepository) {
+            TransactionCategoryRepository transactionCategoryRepository,
+            BatchFilePathResolver batchFilePathResolver) {
         this.jobRepository = jobRepository;
         this.transactionManager = transactionManager;
         this.transactionRepository = transactionRepository;
         this.cardXrefRepository = cardXrefRepository;
         this.transactionTypeRepository = transactionTypeRepository;
         this.transactionCategoryRepository = transactionCategoryRepository;
+        this.batchFilePathResolver = batchFilePathResolver;
     }
 
     /**
@@ -322,21 +354,43 @@ public class TransactionReportJobConfig {
                                 + startDate + ")");
             }
 
-            // TRANREPT.prc SORT FIELDS=(TRAN-CARD-NUM,A): read the transactions in card-number order
-            // (tranId as a deterministic secondary key). The C/POSIX database collation gives the
-            // bytewise ordering of the CHAR card key required for legacy parity (AAP 0.6.6).
-            List<Transaction> transactions =
-                    transactionRepository.findAll(Sort.by("cardNum", "tranId"));
+            // The report file name uses the Spring Batch job-instance id as a restart-stable GDG
+            // generation number so a restarted instance re-publishes the same file (finding #19).
+            long jobInstanceId = chunkContext.getStepContext().getStepExecution()
+                    .getJobExecution().getJobInstance().getInstanceId();
+            Path target = batchFilePathResolver
+                    .resolveOutputTarget(resolveReportPath(outputPathParam, jobInstanceId));
 
-            List<String> reportLines = buildReportLines(transactions, startDate, endDate);
+            // Counters carried across the streaming publish callback: [0] transactions scanned,
+            // [1] report records written (final long[] so the sink lambda can mutate them).
+            final long[] counters = new long[2];
 
-            WritableResource resource = resolveOutputResource(outputPathParam);
-            writeReport(reportLines, resource);
+            // REPORT-FILE is LRECL 133 RECFM FB: write undelimited, exactly-133-byte records to a
+            // secure 0600 temp and atomically publish, deleting the temp if the step fails so a
+            // partial report is never left in place (findings #17, #18). TRANREPT.prc
+            // SORT FIELDS=(TRAN-CARD-NUM,A) is reproduced by streamAllByCardOrder() (card number then
+            // tranId ascending under C/POSIX collation, AAP 0.6.6); the cursor-backed stream is
+            // consumed inside the step transaction so it stays valid and uses bounded memory
+            // (finding #21).
+            batchFilePathResolver.publish(target, out -> {
+                Writer writer = new BufferedWriter(
+                        new OutputStreamWriter(out, StandardCharsets.ISO_8859_1));
+                Consumer<String> sink = line -> writeFixedRecord(writer, line, counters);
+                try (Stream<Transaction> transactions = transactionRepository.streamAllByCardOrder()) {
+                    ReportGenerator generator = new ReportGenerator(startDate, endDate, sink);
+                    Iterator<Transaction> iterator = transactions.iterator();
+                    while (iterator.hasNext()) {
+                        generator.process(iterator.next());
+                        counters[0]++;
+                    }
+                    generator.finish();
+                }
+                writer.flush();
+            });
 
             LOGGER.info("Daily transaction report generated: window=[{} .. {}], "
                             + "transactionsScanned={}, reportRecords={}, output=[{}]",
-                    startDate, endDate, transactions.size(), reportLines.size(),
-                    resource.getDescription());
+                    startDate, endDate, counters[0], counters[1], target.getFileName());
             return RepeatStatus.FINISHED;
         };
     }
@@ -372,41 +426,17 @@ public class TransactionReportJobConfig {
     }
 
     /**
-     * Builds the complete daily transaction report as an ordered list of exactly-133-byte records,
-     * reproducing the {@code CBTRN03C} main procedure and its {@code 1100}/{@code 1110}/{@code 1120}
-     * write helpers.
+     * Builds the complete daily transaction report as an ordered list of exactly-{@value
+     * #REPORT_RECORD_WIDTH}-byte records, reproducing the {@code CBTRN03C} main procedure and its
+     * {@code 1100}/{@code 1110}/{@code 1120} write helpers.
      *
-     * <p>This method is the behavioral heart of the job and is deliberately pure with respect to its
-     * {@code transactions} input: it accepts the already card-ordered transaction list, applies the
-     * inclusive processing-date filter, and drives the control-break + pagination state machine using
-     * only method-local state, delegating every reference lookup to the injected repositories and
-     * every line rendering to the {@code dto.report} DTOs. Keeping the logic here (rather than in the
-     * tasklet lambda) makes it unit-testable with mocked repositories and without a database or file
-     * system.</p>
-     *
-     * <p>Sequence for each included transaction (matching COBOL):</p>
-     * <ol>
-     *   <li><strong>Date filter</strong> ({@code TRAN-PROC-TS(1:10)} between {@code WS-START-DATE} and
-     *       {@code WS-END-DATE} inclusive): a record whose {@code procTs} date is outside
-     *       {@code [startDate, endDate]} (or is {@code null}) is skipped.</li>
-     *   <li><strong>Control break</strong> on {@code TRAN-CARD-NUM}: on the first card, and on every
-     *       card-number change, the previous card's account total is written and reset (except before
-     *       the very first card), then {@code XREF-ACCT-ID} is resolved once for the new card
-     *       (paragraph {@code 1500-A}).</li>
-     *   <li><strong>Pagination</strong> ({@code 1110-WRITE-PAGE-TOTALS} then {@code 1120-WRITE-HEADERS}):
-     *       when the page already holds {@value #PAGE_SIZE} detail lines, the page-total line is
-     *       written, the page total and counter reset, and the header block is re-emitted before the
-     *       next detail line.</li>
-     *   <li><strong>Detail line</strong> ({@code 1120-WRITE-DETAIL}): the type and category
-     *       descriptions are resolved (paragraphs {@code 1500-B}/{@code 1500-C}) and a
-     *       {@link TransactionDetailReport} line is emitted, printing the cross-referenced account id
-     *       rather than any value from the transaction record.</li>
-     *   <li><strong>Accumulate</strong>: the page, account and grand totals are each incremented by
-     *       the detail amount.</li>
-     * </ol>
-     *
-     * <p>After the last transaction, the final account total (for the last card, if any detail line
-     * was written) is emitted, then the grand total (AAP &sect;0.4.1 "Phase G").</p>
+     * <p>This overload is the in-memory, list-based entry point used by unit tests (mocked
+     * repositories, no database or file system): it constructs a {@link ReportGenerator}, feeds it the
+     * already card-ordered {@code transactions} in order, then finalizes the report. The streaming
+     * tasklet ({@link #transactionReportTasklet(String, String, String)}) uses the same
+     * {@link ReportGenerator} against a cursor-backed stream, so both paths share one behavioral
+     * implementation. See {@link ReportGenerator} for the exact per-record and end-of-file semantics
+     * (control break, line-counter pagination and the source end-of-file stale-add quirk).</p>
      *
      * @param transactions the card-ordered transactions to report (never {@code null})
      * @param startDate    the inclusive start of the reporting window ({@code WS-START-DATE})
@@ -418,62 +448,209 @@ public class TransactionReportJobConfig {
     List<String> buildReportLines(List<Transaction> transactions, LocalDate startDate,
             LocalDate endDate) {
         List<String> out = new ArrayList<>();
-
-        // Report name header carries the reporting window rendered as two 10-char yyyy-MM-dd strings.
-        ReportNameHeader nameHeader =
-                new ReportNameHeader(startDate.format(DATE_FORMAT), endDate.format(DATE_FORMAT));
-        appendHeaderBlock(out, nameHeader);
-
-        // WS-PAGE-TOTAL / WS-ACCOUNT-TOTAL / WS-GRAND-TOTAL (all S9(09)V99): three independent
-        // accumulators, each incremented by every included detail amount, differing only in reset
-        // boundary. No rounding: the COBOL ADD statements carry no ROUNDED (AAP 0.6.1).
-        BigDecimal pageTotal = BigDecimal.ZERO;
-        BigDecimal accountTotal = BigDecimal.ZERO;
-        BigDecimal grandTotal = BigDecimal.ZERO;
-
-        int pageDetailCount = 0;
-        String currentCardNum = null;
-        String currentAccountId = null;
-        boolean firstCard = true;
-
+        ReportGenerator generator = new ReportGenerator(startDate, endDate, out::add);
         for (Transaction transaction : transactions) {
+            generator.process(transaction);
+        }
+        generator.finish();
+        return out;
+    }
+
+    /**
+     * Stateful reproduction of the {@code CBTRN03C} report state machine, shared by the list-based
+     * {@link #buildReportLines(List, LocalDate, LocalDate)} unit path and the streaming tasklet. Each
+     * composed record is normalized to exactly {@value #REPORT_RECORD_WIDTH} bytes and pushed to the
+     * supplied {@link Consumer} sink (a list accumulator in tests, the fixed-block file writer in the
+     * job).
+     *
+     * <p><strong>Line counter (the pivot of source parity, review finding #31).</strong> The single
+     * {@code lineCounter} mirrors {@code WS-LINE-COUNTER} and is incremented for <em>every</em>
+     * physical record written, exactly as the COBOL {@code ADD 1 TO WS-LINE-COUNTER} statements do:
+     * the four-line header block adds 4, each detail line adds 1, and each page-total and
+     * account-total block adds 2 (its total line plus a 133-dash separator). Before writing each
+     * detail line, {@code 1100-WRITE-TRANSACTION-REPORT} tests {@code FUNCTION MOD(WS-LINE-COUNTER,
+     * WS-PAGE-SIZE) = 0}; when true it emits the page total and a fresh header block. This is why the
+     * first page holds 16 detail lines (the opening header pre-charges the counter to 4, so the 17th
+     * detail's pre-write test at counter 20 triggers the break) and each later page holds 14.</p>
+     *
+     * <p><strong>Per-record sequence ({@code process}).</strong> Every physical record first refreshes
+     * {@link #lastPhysicalAmount} (the source {@code READ ... INTO TRAN-RECORD} overwrites
+     * {@code TRAN-RECORD} on each successful read). A record whose {@code procTs} date lies outside
+     * {@code [startDate, endDate]} (or is {@code null}) is skipped, mirroring the inclusive
+     * {@code TRAN-PROC-TS(1:10)} filter (the source's {@code NEXT SENTENCE} on the else branch is
+     * treated as a per-record skip; the ambiguity is recorded in the decision log). On a
+     * {@code TRAN-CARD-NUM} change the previous card's account total is written (once
+     * {@code WS-FIRST-TIME = 'N'}) and {@code XREF-ACCT-ID} is resolved once for the new card
+     * ({@code 1500-A}). Then {@code 1100-WRITE-TRANSACTION-REPORT} writes the one-time opening headers,
+     * applies the line-counter page break, adds the detail amount to the page and account totals, and
+     * writes the {@link TransactionDetailReport} detail line (printing the cross-referenced account id,
+     * not any value from the transaction record).</p>
+     *
+     * <p><strong>End of file ({@code finish}).</strong> Faithful to {@code CBTRN03C} lines 197-203, no
+     * final account total is written; instead the retained last-record {@code TRAN-AMT} is added once
+     * more to the page and account totals (the "stale-add" quirk), then the final page-total line
+     * (which accumulates {@code WS-GRAND-TOTAL}) with its separator and the grand-total line are
+     * written. For an empty input this yields exactly a zero page total, a separator and a zero grand
+     * total, with no header block (because {@code WS-FIRST-TIME} never flips).</p>
+     *
+     * <p><strong>Totals.</strong> {@code WS-PAGE-TOTAL}, {@code WS-ACCOUNT-TOTAL} and
+     * {@code WS-GRAND-TOTAL} are all {@code S9(09)V99} {@link BigDecimal} accumulators with no rounding
+     * (the COBOL {@code ADD}s carry no {@code ROUNDED}; AAP &sect;0.6.1). The grand total is
+     * accumulated only inside {@code 1110-WRITE-PAGE-TOTALS} (grand {@code +=} page), never per detail,
+     * so it equals the sum of the page totals as the source computes it.</p>
+     */
+    private final class ReportGenerator {
+
+        /** Sink receiving each exactly-133-byte record (list accumulator or file writer). */
+        private final Consumer<String> sink;
+
+        /** Inclusive start of the reporting window ({@code WS-START-DATE}). */
+        private final LocalDate startDate;
+
+        /** Inclusive end of the reporting window ({@code WS-END-DATE}). */
+        private final LocalDate endDate;
+
+        /** Report name header carrying the reporting window as two 10-char {@code yyyy-MM-dd} strings. */
+        private final ReportNameHeader nameHeader;
+
+        /** {@code WS-LINE-COUNTER}: counts every physical record written; drives pagination. */
+        private long lineCounter;
+
+        /** {@code WS-PAGE-TOTAL} ({@code S9(09)V99}). */
+        private BigDecimal pageTotal = BigDecimal.ZERO;
+
+        /** {@code WS-ACCOUNT-TOTAL} ({@code S9(09)V99}). */
+        private BigDecimal accountTotal = BigDecimal.ZERO;
+
+        /** {@code WS-GRAND-TOTAL} ({@code S9(09)V99}); accumulated only from page totals. */
+        private BigDecimal grandTotal = BigDecimal.ZERO;
+
+        /** {@code WS-CURR-CARD-NUM} (control-break key); {@code null} models the initial SPACES. */
+        private String currentCardNum;
+
+        /** Cross-referenced {@code XREF-ACCT-ID} for the current card, resolved once per control break. */
+        private String currentAccountId;
+
+        /** {@code WS-FIRST-TIME}: {@code true} until the first detail line writes the opening headers. */
+        private boolean firstTime = true;
+
+        /**
+         * {@code TRAN-AMT} of the last physically read record, retained for the end-of-file stale-add
+         * ({@code READ ... INTO} leaves {@code TRAN-RECORD} unchanged at {@code AT END}); {@code null}
+         * when no record was read (empty input).
+         */
+        private BigDecimal lastPhysicalAmount;
+
+        /**
+         * @param startDate the inclusive start of the reporting window ({@code WS-START-DATE})
+         * @param endDate   the inclusive end of the reporting window ({@code WS-END-DATE})
+         * @param sink      receiver of each exactly-133-byte report record
+         */
+        ReportGenerator(LocalDate startDate, LocalDate endDate, Consumer<String> sink) {
+            this.startDate = startDate;
+            this.endDate = endDate;
+            this.sink = sink;
+            this.nameHeader =
+                    new ReportNameHeader(startDate.format(DATE_FORMAT), endDate.format(DATE_FORMAT));
+        }
+
+        /**
+         * Processes one physically-read transaction: refresh the retained amount, apply the inclusive
+         * processing-date filter, handle the card-number control break, then write the transaction
+         * report line(s). Mirrors the body of the {@code CBTRN03C} main {@code PERFORM UNTIL} loop
+         * (lines 170-196).
+         *
+         * @param transaction the next card-ordered transaction (never {@code null})
+         */
+        void process(Transaction transaction) {
+            // Every physical READ INTO TRAN-RECORD refreshes TRAN-AMT; the value survives at AT END.
+            lastPhysicalAmount = CobolDecimal.nullToZero(transaction.getTranAmt());
+
             LocalDateTime procTs = transaction.getProcTs();
             if (procTs == null) {
-                continue;
+                return;
             }
             LocalDate procDate = procTs.toLocalDate();
             if (procDate.isBefore(startDate) || procDate.isAfter(endDate)) {
-                continue;
+                // TRAN-PROC-TS(1:10) outside [WS-START-DATE, WS-END-DATE]: per-record skip.
+                return;
             }
 
             String cardNum = transaction.getCardNum();
-
-            // Control break on card number (TRAN-CARD-NUM != WS-CURR-CARD-NUM).
-            if (firstCard || !Objects.equals(cardNum, currentCardNum)) {
-                if (!firstCard) {
-                    out.add(toRecord(new ReportAccountTotals(accountTotal).toReportLine()));
-                    accountTotal = BigDecimal.ZERO;
+            // Control break on TRAN-CARD-NUM (main loop lines 181-189).
+            if (!Objects.equals(cardNum, currentCardNum)) {
+                if (!firstTime) {
+                    writeAccountTotals();
                 }
                 currentCardNum = cardNum;
                 currentAccountId = resolveAccountId(cardNum);
-                firstCard = false;
             }
+            writeTransactionReport(transaction);
+        }
 
-            // Pagination: close the full page before writing the next detail line
-            // (1110-WRITE-PAGE-TOTALS then 1120-WRITE-HEADERS).
-            if (pageDetailCount == PAGE_SIZE) {
-                out.add(toRecord(new ReportPageTotals(pageTotal).toReportLine()));
-                pageTotal = BigDecimal.ZERO;
-                pageDetailCount = 0;
-                appendHeaderBlock(out, nameHeader);
+        /**
+         * Finalizes the report at end of file, reproducing the main loop's end-of-file else branch
+         * ({@code CBTRN03C} lines 197-203): the retained last-record {@code TRAN-AMT} is added once
+         * more to the page and account totals (the stale-add quirk), then the page totals and grand
+         * totals are written. No final account total is written.
+         */
+        void finish() {
+            if (lastPhysicalAmount != null) {
+                pageTotal = pageTotal.add(lastPhysicalAmount);
+                accountTotal = accountTotal.add(lastPhysicalAmount);
             }
+            writePageTotals();
+            writeGrandTotals();
+        }
 
+        /**
+         * Reproduces {@code 1100-WRITE-TRANSACTION-REPORT}: write the one-time opening headers, apply
+         * the {@code FUNCTION MOD(WS-LINE-COUNTER, WS-PAGE-SIZE) = 0} page break, add the amount to the
+         * page and account totals, then write the detail line.
+         *
+         * @param transaction the current in-window transaction
+         */
+        private void writeTransactionReport(Transaction transaction) {
+            if (firstTime) {
+                firstTime = false;
+                writeHeaders();
+            }
+            if (lineCounter % PAGE_SIZE == 0) {
+                writePageTotals();
+                writeHeaders();
+            }
+            BigDecimal amount = CobolDecimal.nullToZero(transaction.getTranAmt());
+            pageTotal = pageTotal.add(amount);
+            accountTotal = accountTotal.add(amount);
+            writeDetail(transaction);
+        }
+
+        /**
+         * Reproduces {@code 1120-WRITE-HEADERS}: the report name header, a blank line, the
+         * column-heading line ({@link TransactionReportHeaders#TRANSACTION_HEADER_1}) and the 133-dash
+         * separator ({@link TransactionReportHeaders#TRANSACTION_HEADER_2}); advances the line counter
+         * by four.
+         */
+        private void writeHeaders() {
+            sink.accept(toRecord(composeNameHeaderLine(nameHeader)));
+            sink.accept(toRecord(""));
+            sink.accept(toRecord(TransactionReportHeaders.TRANSACTION_HEADER_1));
+            sink.accept(toRecord(TransactionReportHeaders.TRANSACTION_HEADER_2));
+            lineCounter += 4;
+        }
+
+        /**
+         * Reproduces {@code 1120-WRITE-DETAIL}: resolve the type/category descriptions
+         * ({@code 1500-B}/{@code 1500-C}), emit the {@link TransactionDetailReport} line printing the
+         * cross-referenced account id, then advance the line counter by one.
+         *
+         * @param transaction the current in-window transaction
+         */
+        private void writeDetail(Transaction transaction) {
             String typeCd = transaction.getTranTypeCd();
             Integer catCd = transaction.getTranCatCd();
             String typeDesc = resolveTypeDescription(typeCd);
             String catDesc = resolveCategoryDescription(typeCd, catCd);
-            BigDecimal amount = CobolDecimal.nullToZero(transaction.getTranAmt());
-
             TransactionDetailReport detail = new TransactionDetailReport(
                     transaction.getTranId(),
                     currentAccountId,
@@ -483,38 +660,44 @@ public class TransactionReportJobConfig {
                     catDesc,
                     transaction.getTranSource(),
                     transaction.getTranAmt());
-            out.add(toRecord(detail.toReportLine()));
-
-            pageTotal = pageTotal.add(amount);
-            accountTotal = accountTotal.add(amount);
-            grandTotal = grandTotal.add(amount);
-            pageDetailCount++;
+            sink.accept(toRecord(detail.toReportLine()));
+            lineCounter += 1;
         }
 
-        // End of report: final account total for the last card (if any), then the grand total.
-        if (!firstCard) {
-            out.add(toRecord(new ReportAccountTotals(accountTotal).toReportLine()));
+        /**
+         * Reproduces {@code 1110-WRITE-PAGE-TOTALS}: write the page-total line, accumulate it into the
+         * grand total, reset the page total, then write the 133-dash separator; advances the line
+         * counter by two. The grand total is accumulated here (never per detail), matching the source.
+         */
+        private void writePageTotals() {
+            sink.accept(toRecord(new ReportPageTotals(pageTotal).toReportLine()));
+            grandTotal = grandTotal.add(pageTotal);
+            pageTotal = BigDecimal.ZERO;
+            lineCounter += 1;
+            sink.accept(toRecord(TransactionReportHeaders.TRANSACTION_HEADER_2));
+            lineCounter += 1;
         }
-        out.add(toRecord(new ReportGrandTotals(grandTotal).toReportLine()));
 
-        return out;
-    }
+        /**
+         * Reproduces {@code 1120-WRITE-ACCOUNT-TOTALS}: write the account-total line for the card just
+         * ended, reset the account total, then write the 133-dash separator; advances the line counter
+         * by two.
+         */
+        private void writeAccountTotals() {
+            sink.accept(toRecord(new ReportAccountTotals(accountTotal).toReportLine()));
+            accountTotal = BigDecimal.ZERO;
+            lineCounter += 1;
+            sink.accept(toRecord(TransactionReportHeaders.TRANSACTION_HEADER_2));
+            lineCounter += 1;
+        }
 
-    /**
-     * Appends the four-line page header block, reproducing paragraph {@code 1120-WRITE-HEADERS}: the
-     * report name header, a blank line, the column-heading line
-     * ({@link TransactionReportHeaders#TRANSACTION_HEADER_1}) and the 133-dash separator rule
-     * ({@link TransactionReportHeaders#TRANSACTION_HEADER_2}). Every line is normalized to exactly
-     * {@value #REPORT_RECORD_WIDTH} bytes.
-     *
-     * @param out        the report accumulator to append to
-     * @param nameHeader the populated report name header for the current reporting window
-     */
-    private static void appendHeaderBlock(List<String> out, ReportNameHeader nameHeader) {
-        out.add(toRecord(composeNameHeaderLine(nameHeader)));
-        out.add(toRecord(""));
-        out.add(toRecord(TransactionReportHeaders.TRANSACTION_HEADER_1));
-        out.add(toRecord(TransactionReportHeaders.TRANSACTION_HEADER_2));
+        /**
+         * Reproduces {@code 1110-WRITE-GRAND-TOTALS}: write the grand-total line only (the source does
+         * not change the line counter here).
+         */
+        private void writeGrandTotals() {
+            sink.accept(toRecord(new ReportGrandTotals(grandTotal).toReportLine()));
+        }
     }
 
     /**
@@ -651,55 +834,52 @@ public class TransactionReportJobConfig {
     }
 
     /**
-     * Resolves the report output resource. An explicit {@code outputPath} job parameter is used
-     * verbatim; otherwise a timestamped file under {@value #DEFAULT_OUTPUT_DIR} named after the
-     * {@code TRANREPT} dataset is generated, emulating the JCL generation-data-group {@code +1}
-     * output. The parent directory is created if necessary.
+     * Resolves the raw report output path. An explicit {@code outputPath} job parameter is used
+     * verbatim (trimmed); otherwise a file under {@value #DEFAULT_OUTPUT_DIR} named after the
+     * {@code TRANREPT} dataset and the Spring Batch job-instance id is generated, emulating the JCL
+     * generation-data-group {@code +1} output while remaining restart-stable (finding #19). The
+     * returned string is later passed to {@link BatchFilePathResolver#resolveOutputTarget(String)},
+     * which enforces safe-root containment, rejects symbolic links and creates the parent directory.
      *
-     * @param outputPath the optional target path ({@code null}/blank selects the default)
-     * @return a writable resource for the report file
-     * @throws IOException if the parent directory cannot be created
+     * @param outputPath    the optional target path ({@code null}/blank selects the default)
+     * @param jobInstanceId the Spring Batch job-instance id used as the default generation number
+     * @return the raw output path string to resolve against the batch safe root
      */
-    private static WritableResource resolveOutputResource(String outputPath) throws IOException {
-        String target = (outputPath == null || outputPath.isBlank())
-                ? DEFAULT_OUTPUT_DIR + "/" + DEFAULT_OUTPUT_BASENAME + "."
-                        + OUTPUT_TIMESTAMP.format(LocalDateTime.now()) + ".txt"
-                : outputPath.trim();
-        Path path = Paths.get(target);
-        Path parent = path.getParent();
-        if (parent != null) {
-            Files.createDirectories(parent);
+    private static String resolveReportPath(String outputPath, long jobInstanceId) {
+        if (outputPath != null && !outputPath.isBlank()) {
+            return outputPath.trim();
         }
-        return new FileSystemResource(path);
+        return DEFAULT_OUTPUT_DIR + "/" + DEFAULT_OUTPUT_BASENAME + "." + jobInstanceId + ".txt";
     }
 
     /**
-     * Writes the 133-byte report records to the target resource using a {@link FlatFileItemWriter}
-     * with a {@link PassThroughLineAggregator} (each already-formatted record is written verbatim,
-     * followed by a newline). The writer is opened and closed within this call; the file is
-     * overwritten if it already exists.
+     * Writes one already-composed report record to the fixed-block writer with no trailing delimiter,
+     * enforcing the exact {@value #REPORT_RECORD_WIDTH}-byte record length ({@code FD-REPTFILE-REC
+     * PIC X(133)}, {@code LRECL 133 RECFM FB}). The record content is pure ASCII (digits, uppercase
+     * letters, spaces, dashes and edit-mask punctuation), so under {@link StandardCharsets#ISO_8859_1}
+     * one character equals one byte and the {@link String#length()} check equals the byte-length
+     * contract enforced elsewhere by {@code FixedBlockLineAggregator} (finding #17).
      *
-     * @param reportLines the exactly-133-byte report records to write
-     * @param resource    the target report resource ({@code REPORT-FILE})
-     * @throws Exception if the writer fails to open, write or close (surfaced as a step failure)
+     * @param writer   the fixed-block report writer (ISO-8859-1, unbuffered flushing deferred to the
+     *                 caller)
+     * @param line     the composed record, already normalized to exactly {@value #REPORT_RECORD_WIDTH}
+     *                 characters by {@link #toRecord(String)}
+     * @param counters the shared counter array; index {@code 1} (records written) is incremented
+     * @throws IllegalStateException if {@code line} is not exactly {@value #REPORT_RECORD_WIDTH}
+     *                               characters (a programming error in record composition)
+     * @throws UncheckedIOException  if the underlying writer fails (surfaced as a step failure so the
+     *                               partial temp file is cleaned up and no report is published)
      */
-    private static void writeReport(List<String> reportLines, WritableResource resource)
-            throws Exception {
-        FlatFileItemWriter<String> writer = new FlatFileItemWriterBuilder<String>()
-                .name("transactionReportItemWriter")
-                .resource(resource)
-                .lineAggregator(new PassThroughLineAggregator<>())
-                .lineSeparator("\n")
-                .encoding("UTF-8")
-                .shouldDeleteIfExists(true)
-                .transactional(false)
-                .build();
-        writer.afterPropertiesSet();
-        writer.open(new ExecutionContext());
-        try {
-            writer.write(new Chunk<>(reportLines));
-        } finally {
-            writer.close();
+    private static void writeFixedRecord(Writer writer, String line, long[] counters) {
+        if (line.length() != REPORT_RECORD_WIDTH) {
+            throw new IllegalStateException("Report record must be exactly " + REPORT_RECORD_WIDTH
+                    + " bytes but was " + line.length());
         }
+        try {
+            writer.write(line);
+        } catch (IOException ex) {
+            throw new UncheckedIOException("Failed to write report record", ex);
+        }
+        counters[1]++;
     }
 }

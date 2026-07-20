@@ -87,7 +87,15 @@ import org.springframework.test.context.TestPropertySource;
     AdminBatchJobConfigIT.BatchSliceConfig.class,
     AdminBatchJobConfigIT.BatchTestConfig.class
 })
-@TestPropertySource(properties = "spring.jpa.hibernate.ddl-auto=none")
+// Zero-warning start (review finding #35): this slice inherits @SpringBootTest from the base class, so
+// it forces a non-web context via spring.main.web-application-type=none (suppressing the servlet
+// security auto-config dev-password WARN) and disables Prometheus export so Spring Batch's duplicate
+// spring.batch.job.active meter falls back to a SimpleMeterRegistry (no Prometheus collision WARN).
+@TestPropertySource(properties = {
+    "spring.jpa.hibernate.ddl-auto=none",
+    "spring.main.web-application-type=none",
+    "management.prometheus.metrics.export.enabled=false"
+})
 class AdminBatchJobConfigIT extends AbstractPostgresIntegrationTest {
 
     /** Bean name of the single {@code Step} declared by {@link AdminBatchJobConfig}. */

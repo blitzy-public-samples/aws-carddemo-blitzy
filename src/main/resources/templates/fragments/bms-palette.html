@@ -1,0 +1,59 @@
+<!DOCTYPE html>
+<html xmlns:th="http://www.thymeleaf.org">
+<!--/*
+  BLITZY [A11Y / review finding #53]: Centralized BMS 3270 colour palette.
+
+  This is the SINGLE SOURCE OF TRUTH for the CardDemo terminal palette. Every screen
+  template includes it via  <th:block th:replace="~{fragments/bms-palette :: palette}">
+  so all screens share one definition and a future designer changes a colour in ONE place.
+
+  The two legacy BMS foreground colours that failed WCAG 2.1 AA normal-text contrast on the
+  black (#000000) background are replaced with accessible equivalents obtained by brightening
+  the SAME hue axis until >= 4.5:1 (preserving colour semantics):
+    * BLUE  #0000CD (1.88:1, fail) -> #6E6EFF (5.34:1, pass) -- hue 240 preserved (R=G lifts luminance)
+    * RED   #CD0000 (3.60:1, fail) -> #FF0000 (5.25:1, pass) -- hue 0 preserved (authentic 3270 bright red)
+  The remaining BMS colours already pass AA and keep their exact legacy values:
+    GREEN #00CD00 (9.73:1), TURQUOISE #00CDCD (10.6:1), YELLOW #CCCC00 (12.2:1), NEUTRAL #FFFFFF (21:1).
+  Rationale and the contrast figures are recorded in docs/decision-log.md; contrast is asserted
+  automatically by BmsPaletteContrastTest.
+
+  BLITZY [A11Y / review finding #56]: this shared fragment also defines the .visually-hidden
+  screen-reader utility so every screen can expose an off-grid semantic <h1> heading (and other
+  assistive-only content) WITHOUT altering the visible 24x80 character grid. It matches the
+  definition already used inline by several screens (e.g. COACTVW, COUSR01); defining it once here
+  makes it available to every template that lacked it. Screens that still declare it locally simply
+  re-state an identical rule (harmless).
+*/-->
+<head>
+<th:block th:fragment="palette">
+<style>
+    :root {
+        --bms-blue:      #6E6EFF; /* was #0000CD - accessible, hue 240 preserved (WCAG AA 5.34:1) */
+        --bms-red:       #FF0000; /* was #CD0000 - accessible, hue 0 preserved   (WCAG AA 5.25:1) */
+        --bms-green:     #00CD00; /* legacy value retained (9.73:1)  */
+        --bms-turquoise: #00CDCD; /* legacy value retained (10.6:1)  */
+        --bms-yellow:    #CCCC00; /* legacy value retained (12.2:1)  */
+        --bms-neutral:   #FFFFFF; /* legacy value retained (21:1)    */
+        --bms-bg:        #000000; /* terminal background             */
+    }
+
+    /*
+     * Screen-reader-only utility (review finding #56). Removes the element from the visual
+     * layout while keeping it in the accessibility tree, so an off-grid <h1> and assistive
+     * text announce correctly without changing the visible terminal geometry.
+     */
+    .visually-hidden {
+        position: absolute;
+        width: 1px;
+        height: 1px;
+        padding: 0;
+        margin: -1px;
+        overflow: hidden;
+        clip: rect(0 0 0 0);
+        white-space: nowrap;
+        border: 0;
+    }
+</style>
+</th:block>
+</head>
+</html>

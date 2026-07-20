@@ -1,8 +1,7 @@
 package com.aws.carddemo.batch;
 
-import java.io.IOException;
 import java.math.BigDecimal;
-import java.nio.file.Files;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
@@ -15,6 +14,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.batch.core.Job;
 import org.springframework.batch.core.Step;
+import org.springframework.batch.core.StepExecution;
 import org.springframework.batch.core.configuration.annotation.StepScope;
 import org.springframework.batch.core.job.builder.JobBuilder;
 import org.springframework.batch.core.repository.JobRepository;
@@ -37,6 +37,8 @@ import com.aws.carddemo.repository.TransactionCategoryBalanceRepository;
 import com.aws.carddemo.util.CobolDecimal;
 import com.aws.carddemo.util.FixedWidthRecordMapper;
 import com.aws.carddemo.util.FixedWidthRecordMapper.FieldDef;
+import com.aws.carddemo.util.batch.AtomicFileStepPublisher;
+import com.aws.carddemo.util.batch.FixedBlockLineAggregator;
 
 /**
  * Spring Batch job configuration translating the mainframe transaction-category-balance report job
@@ -181,9 +183,6 @@ public class CategoryBalancePrintJobConfig {
     /** Chunk size and reader page size; a report is read-mostly so a moderate page keeps memory flat. */
     private static final int CHUNK_SIZE = 100;
 
-    /** Unix line separator, set explicitly so report output is byte-identical across platforms. */
-    private static final String LINE_SEPARATOR = "\n";
-
     /**
      * Report-mapper field label for the account id; also the JPA property name used for ordering
      * (must equal {@link TransactionCategoryBalance}'s {@code acctId} property).
@@ -276,19 +275,28 @@ public class CategoryBalancePrintJobConfig {
     private final TransactionCategoryBalanceRepository categoryBalanceRepository;
 
     /**
+     * Shared listener publishing the report file atomically from a deterministic in-progress temp file
+     * on {@code COMPLETED} (review findings&nbsp;#18/#19).
+     */
+    private final AtomicFileStepPublisher atomicFileStepPublisher;
+
+    /**
      * Creates the configuration with the collaborators supplied by Spring Boot's Batch
      * auto-configuration and component scanning.
      *
      * @param jobRepository             the auto-configured Spring Batch {@link JobRepository}
      * @param transactionManager        the auto-configured {@link PlatformTransactionManager}
      * @param categoryBalanceRepository  the repository over the migrated {@code TCATBALF} table
+     * @param atomicFileStepPublisher   shared safe-path atomic-publication step listener
      */
     public CategoryBalancePrintJobConfig(JobRepository jobRepository,
             PlatformTransactionManager transactionManager,
-            TransactionCategoryBalanceRepository categoryBalanceRepository) {
+            TransactionCategoryBalanceRepository categoryBalanceRepository,
+            AtomicFileStepPublisher atomicFileStepPublisher) {
         this.jobRepository = jobRepository;
         this.transactionManager = transactionManager;
         this.categoryBalanceRepository = categoryBalanceRepository;
+        this.atomicFileStepPublisher = atomicFileStepPublisher;
     }
 
     /**
@@ -358,30 +366,44 @@ public class CategoryBalancePrintJobConfig {
      * The parent directory is created if necessary, and an existing target is overwritten so a run
      * always produces a complete report.</p>
      *
-     * <p>Because the bean is {@code @StepScope}, the {@code @Value} expression is resolved lazily per
-     * step execution; {@link #categoryBalancePrintStep()} passes a {@code null} placeholder that the
-     * scoped proxy replaces with the real parameter value at run time.</p>
+     * <p>The report is written in <em>undelimited</em> {@code RECFM=FB} framing (review
+     * finding&nbsp;#17): {@code lineSeparator("")} emits the 40-byte records back-to-back and a
+     * {@link FixedBlockLineAggregator} rejects any line that is not exactly
+     * {@value #REPORT_RECORD_LENGTH} bytes, matching the {@code SORTOUT LRECL=40} dataset byte-for-byte.
+     * The path is validated through the safe-root resolver and the writer streams into a deterministic
+     * in-progress temp file that {@link #atomicFileStepPublisher} atomically publishes on
+     * {@code COMPLETED} (findings&nbsp;#18/#19).</p>
      *
-     * @param outputPath the report output path, bound from job parameter {@code outputPath};
-     *                   {@code null}/blank selects the timestamped default
+     * <p>Because the bean is {@code @StepScope}, the {@code @Value} expression and the
+     * {@code stepExecution} are resolved lazily per step execution; {@link #categoryBalancePrintStep()}
+     * passes {@code null} placeholders that the scoped proxy replaces with the real values at run
+     * time.</p>
+     *
+     * @param outputPath    the report output path, bound from job parameter {@code outputPath};
+     *                      {@code null}/blank selects the timestamped default
+     * @param stepExecution the running step execution (source of the atomic-publication temp/target)
      * @return the {@code categoryBalanceReportWriter}
      */
     @Bean
     @StepScope
     public FlatFileItemWriter<String> categoryBalanceReportWriter(
-            @Value("#{jobParameters['outputPath']}") String outputPath) {
+            @Value("#{jobParameters['outputPath']}") String outputPath,
+            @Value("#{stepExecution}") StepExecution stepExecution) {
         Path reportFile = resolveReportFile(outputPath);
-        ensureParentDirectory(reportFile);
         boolean usingDefault = outputPath == null || outputPath.isBlank();
         LOGGER.info("PRTCATBL category-balance report (REPT, LRECL={}) will be written to [{}] "
                         + "(job parameter '{}' {})",
                 REPORT_RECORD_LENGTH, reportFile, OUTPUT_PATH_PARAMETER,
                 usingDefault ? "absent; using timestamped default" : "supplied");
+        Path temp = atomicFileStepPublisher.prepare(reportFile.toString(), stepExecution);
         return new FlatFileItemWriterBuilder<String>()
                 .name(WRITER_NAME)
-                .resource(new FileSystemResource(reportFile))
-                .lineAggregator(new PassThroughLineAggregator<>())
-                .lineSeparator(LINE_SEPARATOR)
+                .resource(new FileSystemResource(temp.toFile()))
+                .lineAggregator(new FixedBlockLineAggregator<>(
+                        new PassThroughLineAggregator<>(), REPORT_RECORD_LENGTH,
+                        StandardCharsets.ISO_8859_1))
+                .encoding(StandardCharsets.ISO_8859_1.name())
+                .lineSeparator("")
                 .shouldDeleteIfExists(true)
                 .build();
     }
@@ -401,7 +423,8 @@ public class CategoryBalancePrintJobConfig {
                 .<TransactionCategoryBalance, String>chunk(CHUNK_SIZE, transactionManager)
                 .reader(categoryBalanceReportReader())
                 .processor(categoryBalanceReportProcessor())
-                .writer(categoryBalanceReportWriter(null))
+                .writer(categoryBalanceReportWriter(null, null))
+                .listener(atomicFileStepPublisher)
                 .build();
     }
 
@@ -507,25 +530,5 @@ public class CategoryBalancePrintJobConfig {
         String generation = DateTimeFormatter.ofPattern("yyyyMMddHHmmssSSS", Locale.ROOT)
                 .format(LocalDateTime.now());
         return Path.of(System.getProperty("java.io.tmpdir"), DEFAULT_REPORT_BASENAME + "." + generation);
-    }
-
-    /**
-     * Ensures the report file's parent directory exists, creating it (and any missing ancestors) if
-     * necessary, so the writer never fails merely because the target directory is absent.
-     *
-     * @param file the resolved report file
-     * @throws IllegalStateException if the parent directory cannot be created
-     */
-    private static void ensureParentDirectory(Path file) {
-        Path parent = file.getParent();
-        if (parent == null) {
-            return;
-        }
-        try {
-            Files.createDirectories(parent);
-        } catch (IOException e) {
-            throw new IllegalStateException(
-                    "Unable to create the report output directory [" + parent + "]", e);
-        }
     }
 }

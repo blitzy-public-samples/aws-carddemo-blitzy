@@ -25,12 +25,16 @@ import com.aws.carddemo.service.online.MainMenuService.RoutingAction;
 import com.aws.carddemo.util.PfKeyHandler;
 import com.aws.carddemo.util.constants.Messages;
 import com.aws.carddemo.util.constants.ScreenTitles;
+import jakarta.validation.Valid;
 import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import org.springframework.stereotype.Controller;
+import org.springframework.validation.BindingResult;
+import org.springframework.web.bind.WebDataBinder;
 import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.InitBinder;
 import org.springframework.web.bind.annotation.ModelAttribute;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestParam;
@@ -113,6 +117,15 @@ public class MenuController {
 
     /** Logical Thymeleaf view name; resolves to {@code templates/COMEN01.html}. */
     private static final String VIEW_MENU = "COMEN01";
+
+    /**
+     * Neutral banner shown when data binding rejects a field for exceeding its declared
+     * {@code @Size} width (review finding #11). Only reachable by a crafted client (the template
+     * {@code maxlength} / 3270 field width makes it impossible otherwise), so it carries no COBOL
+     * business message and simply re-displays the menu without routing.
+     */
+    private static final String MSG_FIELD_LENGTH =
+            "Input exceeds the maximum length for a field.";
 
     /** COBOL {@code WS-TRANID VALUE 'CM00'} - this screen's CICS transaction id. */
     private static final String TRANSACTION_ID = "CM00";
@@ -243,8 +256,16 @@ public class MenuController {
      *         logical view name {@link #VIEW_MENU} when the menu is re-displayed
      */
     @PostMapping("/menu")
-    public String handleMenu(@ModelAttribute("form") COMEN01Form form,
+    public String handleMenu(@Valid @ModelAttribute("form") COMEN01Form form,
+            BindingResult bindingResult,
             @RequestParam(name = PARAM_PFKEY, required = false, defaultValue = ENTER_TOKEN) String pfkey) {
+        // Review finding #11: an over-width field (only reachable by a crafted client bypassing the
+        // template maxlength / 3270 field width) re-displays the menu with a neutral banner and does
+        // no option routing, so the COBOL menu edit ordering is untouched.
+        if (bindingResult.hasErrors()) {
+            renderMenu(form, MSG_FIELD_LENGTH);
+            return VIEW_MENU;
+        }
         PfKey key = resolvePfKey(pfkey);
         return switch (key) {
             case ENTER -> processEnter(form);
@@ -332,6 +353,24 @@ public class MenuController {
         populateHeader(form);
         populateOptions(form);
         form.setErrmsg(message);
+    }
+
+    /**
+     * Restricts request-parameter binding to the single field the {@code COMEN01} menu submits -
+     * the option selector {@code option} (review finding #11). Header, title, date and message
+     * fields are display-only and can no longer be over-posted; {@code pfkey} arrives as a
+     * {@code @RequestParam} and is not bound through the form.
+     *
+     * @param binder the per-request data binder for the bound form
+     */
+    @InitBinder
+    protected void restrictBinding(WebDataBinder binder) {
+        // Spring MVC instantiates the @ModelAttribute command lazily, so binder.getTarget() is null
+        // when @InitBinder runs; the resolved binder.getTargetType() is the reliable discriminator.
+        Class<?> targetType = binder.getTargetType() != null ? binder.getTargetType().resolve() : null;
+        if (COMEN01Form.class.equals(targetType)) {
+            binder.setAllowedFields("option");
+        }
     }
 
     /**

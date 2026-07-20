@@ -31,6 +31,7 @@ import org.springframework.batch.core.JobExecution;
 import org.springframework.batch.core.JobParameters;
 import org.springframework.batch.core.launch.JobLauncher;
 import org.springframework.batch.core.repository.JobExecutionAlreadyRunningException;
+import org.springframework.core.task.TaskRejectedException;
 
 import com.aws.carddemo.dto.CardDemoContext;
 import com.aws.carddemo.dto.screen.CORPT00Form;
@@ -48,6 +49,7 @@ import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.doReturn;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.spy;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
@@ -154,6 +156,9 @@ class ReportSubmitServiceTest {
     private static final String PARAM_START_DATE = "startDate";
     private static final String PARAM_END_DATE = "endDate";
     private static final String PARAM_SUBMIT_TIMESTAMP = "submitTimestamp";
+
+    /** Job-parameter key carrying the per-submission {@link java.util.UUID} uniqueness token. */
+    private static final String PARAM_SUBMIT_ID = "submitId";
 
     /** The {@code CEEDAYS} message number ({@code 2513}) that {@code CORPT00C} tolerates as valid. */
     private static final int CEE_MSG_UNSUPP_RANGE = 2513;
@@ -729,6 +734,58 @@ class ReportSubmitServiceTest {
         assertThat(result.severity()).isEqualTo(MessageSeverity.ERROR);
         assertThat(result.message()).isEqualTo(MSG_UNABLE_TO_WRITE_TDQ);
         verify(jobLauncher).run(eq(transactionReportJob), any(JobParameters.class));
+    }
+
+    /**
+     * {@code WIRTE-JOBSUB-TDQ}, bounded-executor rejection (review finding&nbsp;#34): the report is
+     * launched on a <em>bounded</em> asynchronous launcher, so when its thread pool and work queue are
+     * saturated the launch is rejected with a {@link TaskRejectedException} (the modern back-pressure
+     * equivalent of the internal reader being unable to accept the job). The service maps that
+     * rejection to the same COBOL {@code EVALUATE WS-RESP-CD WHEN OTHER} "Unable to Write TDQ
+     * (JOBS)..." error line as a checked launch failure, and does not leak the runtime exception to
+     * the HTTP tier. The launch was attempted exactly once.
+     *
+     * @throws Exception never; declared because {@link JobLauncher#run} is referenced
+     */
+    @Test
+    void processEnterKey_jobLaunchRejectedByBoundedExecutor_reportsUnableToWriteTdq() throws Exception {
+        when(jobLauncher.run(eq(transactionReportJob), any(JobParameters.class)))
+                .thenThrow(new TaskRejectedException("report launcher pool and queue are saturated"));
+
+        ReportSubmitResult result = service.processEnterKey(reportForm("Y", null, null, "Y"));
+
+        assertThat(result.severity()).isEqualTo(MessageSeverity.ERROR);
+        assertThat(result.message()).isEqualTo(MSG_UNABLE_TO_WRITE_TDQ);
+        verify(jobLauncher).run(eq(transactionReportJob), any(JobParameters.class));
+    }
+
+    /**
+     * {@code WIRTE-JOBSUB-TDQ}, per-submission uniqueness (review finding&nbsp;#34): every confirmed
+     * submission adds a fresh {@link java.util.UUID} {@code submitId} job parameter so each launch is a
+     * distinct {@link org.springframework.batch.core.JobInstance}, faithfully reproducing the COBOL
+     * behavior of enqueuing a brand-new job to the JES2 internal reader on each request (and keeping
+     * concurrent submissions collision-free rather than colliding on a same-millisecond timestamp).
+     * Two back-to-back submissions therefore carry two different {@code submitId} values while sharing
+     * the same report type and window.
+     *
+     * @throws Exception never; declared because {@link JobLauncher#run} is referenced
+     */
+    @Test
+    void processEnterKey_eachSubmissionGetsUniqueSubmitId() throws Exception {
+        when(jobLauncher.run(eq(transactionReportJob), any(JobParameters.class)))
+                .thenReturn(new JobExecution(1L));
+
+        service.processEnterKey(reportForm("Y", null, null, "Y"));
+        service.processEnterKey(reportForm("Y", null, null, "Y"));
+
+        ArgumentCaptor<JobParameters> captor = ArgumentCaptor.forClass(JobParameters.class);
+        verify(jobLauncher, times(2)).run(eq(transactionReportJob), captor.capture());
+
+        String firstId = captor.getAllValues().get(0).getString(PARAM_SUBMIT_ID);
+        String secondId = captor.getAllValues().get(1).getString(PARAM_SUBMIT_ID);
+        assertThat(firstId).isNotBlank();
+        assertThat(secondId).isNotBlank();
+        assertThat(firstId).isNotEqualTo(secondId);
     }
 
     // ==========================================================================================

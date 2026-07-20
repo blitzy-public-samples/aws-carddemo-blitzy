@@ -65,6 +65,35 @@
         <tomcat.version>10.1.57</tomcat.version>
         <postgresql.version>42.7.13</postgresql.version>
         <log4j2.version>2.26.1</log4j2.version>
+        <!--
+          Flyway PostgreSQL-18 compatibility override (#49). The Spring Boot 3.5.16 parent BOM
+          manages Flyway (flyway-core + flyway-database-postgresql) at 11.7.2 via the
+          `flyway.version` property. Flyway 11.7.2 encodes its highest *tested* PostgreSQL major
+          version as 17, so running against the target PostgreSQL 18.4 server emits, on every
+          launch (and once per Testcontainers boot), a WARN from
+          org.flywaydb.core.internal.database.base.Database:
+            "Flyway upgrade recommended: PostgreSQL 18.4 is newer than this version of Flyway and
+             support has not been tested. The latest supported version of PostgreSQL is 17."
+          That single line accounted for the bulk of the non-warning-free build/start logs
+          (hundreds of occurrences across the full test suite). Flyway raised its tested-PostgreSQL
+          ceiling to 18 in 11.16.0 (verified empirically: the PostgreSQLDatabase max-version
+          constant is "17" through 11.13.0 and "18" from 11.16.0 onward). Pinning to the latest
+          Flyway 11.x (11.20.3) stays WITHIN the Flyway 11 major line the parent BOM already uses
+          (API-stable, low-risk, preserves Spring Boot 3.5.16 compatibility) while marking
+          PostgreSQL 18 as tested, which removes the warning at its root cause rather than
+          suppressing it. Overriding this property retargets BOTH version-less Flyway artifacts
+          below consistently. Rationale + risk/mitigation are recorded in docs/decision-log.md.
+        -->
+        <flyway.version>11.20.3</flyway.version>
+        <!--
+          Empty default for the test-fork JVM argLine (#35). The JaCoCo prepare-agent goals set
+          this property to the coverage `-javaagent:...jacocoagent.jar=...` string (prepending to
+          any existing value); Surefire/Failsafe reference it below via late-bound @{argLine} and
+          append the Mockito startup agent. Defining an empty default means @{argLine} resolves
+          cleanly to just the Mockito agent when coverage is skipped (e.g. -Djacoco.skip=true),
+          instead of a literal unresolved token.
+        -->
+        <argLine></argLine>
     </properties>
 
     <dependencies>
@@ -207,6 +236,29 @@
             </plugin>
 
             <!--
+              Resolve dependency artifact paths into build properties (#35). The `properties`
+              goal binds ${org.mockito:mockito-core:jar} (and every other resolved dependency) to
+              the absolute path of its jar in the local repository, BEFORE the test phases run.
+              Surefire/Failsafe reference ${org.mockito:mockito-core:jar} in their argLine to load
+              Mockito as a startup -javaagent, which stops the inline mock-maker from
+              self-attaching byte-buddy-agent at runtime (removing the "self-attaching" /
+              "dynamic agent loaded" / "dynamic loading disallowed" JDK+Mockito warnings).
+            -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-dependency-plugin</artifactId>
+                <executions>
+                    <execution>
+                        <id>resolve-dependency-artifact-paths</id>
+                        <phase>initialize</phase>
+                        <goals>
+                            <goal>properties</goal>
+                        </goals>
+                    </execution>
+                </executions>
+            </plugin>
+
+            <!--
               Unit tests via JUnit 5 (M-02). Non-overlapping naming contract: unit tests end in
               `*Test` and run here (surefire); integration/parity tests end in `*IT` and run in
               failsafe below - the two sets never overlap. failIfNoTests=true makes an empty unit
@@ -218,6 +270,23 @@
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-surefire-plugin</artifactId>
                 <configuration>
+                    <!--
+                      Load Mockito as a startup -javaagent (#35). mockito-core 5.17.0 declares
+                      Premain-Class org.mockito.internal.PremainAttach, so passing its jar via
+                      -javaagent means the inline mock-maker is already attached at JVM start and
+                      no longer SELF-attaches byte-buddy-agent at runtime - this removes the
+                      "Mockito is currently self-attaching", "A Java agent has been loaded
+                      dynamically", "Dynamic loading of agents will be disallowed" and the JDK
+                      dynamic-agent hint warnings. @{argLine} is late-bound so the JaCoCo coverage
+                      agent argLine (set by prepare-agent) is preserved; ${org.mockito:mockito-core:jar}
+                      is bound by the maven-dependency-plugin `properties` goal above. -Xshare:off
+                      disables class-data sharing for the test fork so the agent's necessary
+                      append to the bootstrap classpath no longer triggers the OpenJDK "Sharing is
+                      only supported for boot loader classes ..." warning (CDS is a JVM startup
+                      optimization, not a correctness feature; opting the test fork out of it is a
+                      standard, side-effect-free way to keep the logs warning-free).
+                    -->
+                    <argLine>@{argLine} -javaagent:${org.mockito:mockito-core:jar} -Xshare:off</argLine>
                     <failIfNoTests>true</failIfNoTests>
                     <includes>
                         <include>**/*Test.java</include>
@@ -237,6 +306,12 @@
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-failsafe-plugin</artifactId>
                 <configuration>
+                    <!-- Load Mockito as a startup -javaagent (#35), same rationale as surefire
+                         above: prevents the inline mock-maker's runtime self-attach so the
+                         "self-attaching" / "dynamic agent loaded" / CDS "Sharing" warnings never
+                         appear in integration-test logs. @{argLine} preserves the JaCoCo
+                         integration coverage agent argLine (set by prepare-agent-integration). -->
+                    <argLine>@{argLine} -javaagent:${org.mockito:mockito-core:jar} -Xshare:off</argLine>
                     <!-- Integration / parity tests only (*IT); disjoint from surefire's *Test set.
                          failIfNoTests=true makes an empty integration suite fail verify so the
                          combined coverage gate genuinely requires integration tests (M-02). -->

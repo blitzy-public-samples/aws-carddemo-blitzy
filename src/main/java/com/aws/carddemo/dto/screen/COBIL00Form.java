@@ -67,6 +67,16 @@ public class COBIL00Form {
     @Size(max = 78)
     private String errmsg;
 
+    /**
+     * Single-use confirmation nonce (review finding F12). No BMS origin: this hidden field carries
+     * the server-armed token that binds a {@code confirm=Y} payment to the account whose balance the
+     * server displayed, so a tampered re-post cannot re-aim or replay the payment. Populated by the
+     * controller on the confirm-prompt render and echoed back on the confirming submit; validated
+     * and consumed server-side by {@link com.aws.carddemo.web.support.ConfirmationTokenService}.
+     */
+    @Size(max = 64)
+    private String confirmToken;
+
     /** Creates an empty bill-payment screen form. */
     public COBIL00Form() {
     }
@@ -249,6 +259,24 @@ public class COBIL00Form {
      */
     public void setErrmsg(String errmsg) {
         this.errmsg = errmsg;
+    }
+
+    /**
+     * Returns the single-use confirmation nonce (review finding F12), or {@code null} if unset.
+     *
+     * @return the confirmation nonce (max 64 characters)
+     */
+    public String getConfirmToken() {
+        return confirmToken;
+    }
+
+    /**
+     * Sets the single-use confirmation nonce (review finding F12).
+     *
+     * @param confirmToken the confirmation nonce (max 64 characters)
+     */
+    public void setConfirmToken(String confirmToken) {
+        this.confirmToken = confirmToken;
     }
 
     /**

@@ -30,12 +30,16 @@ import com.aws.carddemo.service.online.TransactionViewService;
 import com.aws.carddemo.service.online.TransactionViewService.TransactionViewResult;
 import com.aws.carddemo.util.PfKeyHandler;
 import com.aws.carddemo.util.constants.ScreenTitles;
+import jakarta.validation.Valid;
 import java.time.LocalDateTime;
 import java.util.Locale;
 import java.util.Map;
 import org.springframework.stereotype.Controller;
 import org.springframework.ui.Model;
+import org.springframework.validation.BindingResult;
+import org.springframework.web.bind.WebDataBinder;
 import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.InitBinder;
 import org.springframework.web.bind.annotation.ModelAttribute;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestParam;
@@ -138,6 +142,15 @@ public class TransactionController {
 
     /** Logical Thymeleaf view for CT02 ({@code COTRN02C}); resolves to {@code templates/COTRN02.html}. */
     private static final String VIEW_ADD = "COTRN02";
+
+    /**
+     * Neutral banner shown when data binding rejects a field for exceeding its declared
+     * {@code @Size} width (review finding #11). Only reachable by a crafted client (the template
+     * {@code maxlength} / 3270 field width makes it impossible otherwise), so it carries no COBOL
+     * business message and simply re-displays the screen without performing any transaction work.
+     */
+    private static final String MSG_FIELD_LENGTH =
+            "Input exceeds the maximum length for a field.";
 
     /** Route for CT00 (transaction browse). */
     private static final String ROUTE_LIST = "/transaction/list";
@@ -285,9 +298,18 @@ public class TransactionController {
      * @return a {@code redirect:} to the selected view / menu / sign-on, or {@link #VIEW_LIST}
      */
     @PostMapping(ROUTE_LIST)
-    public String handleTransactionList(@ModelAttribute(ATTR_FORM) COTRN00Form form,
+    public String handleTransactionList(@Valid @ModelAttribute(ATTR_FORM) COTRN00Form form,
+            BindingResult bindingResult,
             @RequestParam(name = PARAM_PFKEY, required = false, defaultValue = TOKEN_ENTER) String pfkey,
             RedirectAttributes redirectAttributes) {
+        // Review finding #11: an over-width field (only reachable by a crafted client bypassing the
+        // template maxlength / 3270 field width) re-displays the list header with a neutral banner
+        // and performs no browse, so the COBOL transaction-list edit ordering is untouched.
+        if (bindingResult.hasErrors()) {
+            populateHeader(form);
+            form.setErrmsg(MSG_FIELD_LENGTH);
+            return VIEW_LIST;
+        }
         TransactionListResult result = transactionListService.mainEntry(toListAid(resolvePfKey(pfkey)), form);
         if (result.isRedirect()) {
             if (result.hasSelection()) {
@@ -369,8 +391,17 @@ public class TransactionController {
      * @return a {@code redirect:} to the list / caller / sign-on, or {@link #VIEW_DETAIL}
      */
     @PostMapping(ROUTE_VIEW)
-    public String handleTransactionView(@ModelAttribute(ATTR_FORM) COTRN01Form form,
+    public String handleTransactionView(@Valid @ModelAttribute(ATTR_FORM) COTRN01Form form,
+            BindingResult bindingResult,
             @RequestParam(name = PARAM_PFKEY, required = false, defaultValue = TOKEN_ENTER) String pfkey) {
+        // Review finding #11: an over-width field (only reachable by a crafted client bypassing the
+        // template maxlength / 3270 field width) re-displays the view header with a neutral banner
+        // and performs no lookup, so the COBOL transaction-view edit ordering is untouched.
+        if (bindingResult.hasErrors()) {
+            populateHeader(form);
+            form.setErrmsg(MSG_FIELD_LENGTH);
+            return VIEW_DETAIL;
+        }
         TransactionViewResult result =
                 transactionViewService.mainEntry(form, toViewAid(resolvePfKey(pfkey)), null);
         if (result.isRedirect()) {
@@ -446,8 +477,17 @@ public class TransactionController {
      * @return a {@code redirect:} to the caller / sign-on, or {@link #VIEW_ADD}
      */
     @PostMapping(ROUTE_ADD)
-    public String handleTransactionAdd(@ModelAttribute(ATTR_FORM) COTRN02Form form,
+    public String handleTransactionAdd(@Valid @ModelAttribute(ATTR_FORM) COTRN02Form form,
+            BindingResult bindingResult,
             @RequestParam(name = PARAM_PFKEY, required = false, defaultValue = TOKEN_ENTER) String pfkey) {
+        // Review finding #11: an over-width field (only reachable by a crafted client bypassing the
+        // template maxlength / 3270 field width) re-displays the add screen with a neutral banner
+        // and performs no add, so the COBOL transaction-add edit ordering is untouched.
+        if (bindingResult.hasErrors()) {
+            populateHeader(form);
+            form.setErrmsg(MSG_FIELD_LENGTH);
+            return VIEW_ADD;
+        }
         TransactionAddResult result = transactionAddService.mainEntry(form, resolvePfKey(pfkey));
         if (result.action() == ScreenAction.REDIRECT) {
             return REDIRECT_PREFIX + routeForProgram(context.getToProgram());
@@ -626,5 +666,48 @@ public class TransactionController {
         DateStruct now = DateStruct.from(LocalDateTime.now());
         form.setCurdate(now.getFormattedDateMmDdYy());
         form.setCurtime(now.getFormattedTimeHhMmSs());
+    }
+
+    /**
+     * Restricts request-parameter binding to the fields each transaction screen actually submits
+     * (review finding #11), switching on the bound form type since all three screens share the
+     * {@code form} model attribute. The browse screen submits the transaction-id search key, the
+     * ten per-row selectors, and the ten per-row transaction ids; the view screen submits only the
+     * transaction-id key; the add screen submits its entry fields. {@code pfkey} arrives as a
+     * {@code @RequestParam} and is not bound through the form.
+     *
+     * <p>The ten {@code trnid0N} cells are intentionally allow-listed because they round-trip from
+     * the screen: the legacy BMS map defines each {@code TRNIDnn} field with {@code ATTRB=(ASKIP,
+     * FSET,...)} so the pre-set modified-data tag re-transmits the field on ENTER, and
+     * {@code COTRN00C} paragraph {@code PROCESS-ENTER-KEY} resolves the chosen row by reading
+     * {@code TRNIDnnI} from the received map (never a re-browsed value). Preserving that contract
+     * requires the browser to re-submit {@code trnid0N} (rendered as hidden inputs in
+     * {@code COTRN00.html}) and this binder to accept them. The remaining display cells
+     * ({@code tdate0N}, {@code tdesc0N}, {@code tamt00N}, {@code pagenum}) are never read back by the
+     * COBOL — they are re-derived from the file on each SEND — so they stay excluded and cannot be
+     * over-posted. Display-only header/title/date/message fields are likewise excluded.
+     *
+     * @param binder the per-request data binder for the bound form
+     */
+    @InitBinder
+    protected void restrictBinding(WebDataBinder binder) {
+        // Spring MVC instantiates the @ModelAttribute command lazily, so binder.getTarget() is null
+        // when @InitBinder runs; the resolved binder.getTargetType() is the reliable discriminator
+        // (it is null for simple @RequestParam binders such as pfkey).
+        Class<?> targetType = binder.getTargetType() != null ? binder.getTargetType().resolve() : null;
+        if (COTRN00Form.class.equals(targetType)) {
+            binder.setAllowedFields(
+                    "trnidin",
+                    "sel0001", "sel0002", "sel0003", "sel0004", "sel0005",
+                    "sel0006", "sel0007", "sel0008", "sel0009", "sel0010",
+                    "trnid01", "trnid02", "trnid03", "trnid04", "trnid05",
+                    "trnid06", "trnid07", "trnid08", "trnid09", "trnid10");
+        } else if (COTRN01Form.class.equals(targetType)) {
+            binder.setAllowedFields("trnidin");
+        } else if (COTRN02Form.class.equals(targetType)) {
+            binder.setAllowedFields(
+                    "actidin", "cardnin", "ttypcd", "tcatcd", "trnsrc", "tdesc",
+                    "trnamt", "torigdt", "tprocdt", "mid", "mname", "mcity", "mzip", "confirm");
+        }
     }
 }

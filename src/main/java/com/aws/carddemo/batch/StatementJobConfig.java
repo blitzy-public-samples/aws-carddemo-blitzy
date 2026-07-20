@@ -3,6 +3,8 @@ package com.aws.carddemo.batch;
 import java.math.BigDecimal;
 import java.math.BigInteger;
 import java.math.RoundingMode;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -11,6 +13,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.batch.core.Job;
 import org.springframework.batch.core.Step;
+import org.springframework.batch.core.StepExecution;
 import org.springframework.batch.core.configuration.annotation.StepScope;
 import org.springframework.batch.core.job.builder.JobBuilder;
 import org.springframework.batch.core.repository.JobRepository;
@@ -41,6 +44,8 @@ import com.aws.carddemo.repository.CardXrefRepository;
 import com.aws.carddemo.repository.CustomerRepository;
 import com.aws.carddemo.repository.TransactionRepository;
 import com.aws.carddemo.util.CobolDecimal;
+import com.aws.carddemo.util.batch.AtomicFileStepPublisher;
+import com.aws.carddemo.util.batch.FixedBlockLineAggregator;
 
 /**
  * Spring Batch job configuration translating the mainframe customer-statement generation program
@@ -167,28 +172,37 @@ public class StatementJobConfig {
     private final TransactionRepository transactionRepository;
 
     /**
+     * Shared listener publishing both statement output files (text and HTML) atomically from
+     * deterministic in-progress temp files on {@code COMPLETED} (review findings&nbsp;#18/#19).
+     */
+    private final AtomicFileStepPublisher atomicFileStepPublisher;
+
+    /**
      * Creates the configuration with the collaborators supplied by Spring Boot's Batch
      * auto-configuration and component scanning.
      *
-     * @param jobRepository         the auto-configured Spring Batch {@link JobRepository}
-     * @param transactionManager    the auto-configured {@link PlatformTransactionManager}
-     * @param cardXrefRepository    driving repository over card cross-references ({@code XREFFILE})
-     * @param customerRepository    keyed customer access ({@code CUSTFILE})
-     * @param accountRepository     keyed account access ({@code ACCTFILE})
-     * @param transactionRepository ordered per-card transaction access ({@code TRNXFILE})
+     * @param jobRepository           the auto-configured Spring Batch {@link JobRepository}
+     * @param transactionManager      the auto-configured {@link PlatformTransactionManager}
+     * @param cardXrefRepository      driving repository over card cross-references ({@code XREFFILE})
+     * @param customerRepository      keyed customer access ({@code CUSTFILE})
+     * @param accountRepository       keyed account access ({@code ACCTFILE})
+     * @param transactionRepository   ordered per-card transaction access ({@code TRNXFILE})
+     * @param atomicFileStepPublisher shared safe-path atomic-publication step listener (text + HTML)
      */
     public StatementJobConfig(JobRepository jobRepository,
             PlatformTransactionManager transactionManager,
             CardXrefRepository cardXrefRepository,
             CustomerRepository customerRepository,
             AccountRepository accountRepository,
-            TransactionRepository transactionRepository) {
+            TransactionRepository transactionRepository,
+            AtomicFileStepPublisher atomicFileStepPublisher) {
         this.jobRepository = jobRepository;
         this.transactionManager = transactionManager;
         this.cardXrefRepository = cardXrefRepository;
         this.customerRepository = customerRepository;
         this.accountRepository = accountRepository;
         this.transactionRepository = transactionRepository;
+        this.atomicFileStepPublisher = atomicFileStepPublisher;
     }
 
     /**
@@ -281,43 +295,59 @@ public class StatementJobConfig {
     }
 
     /**
-     * Step-scoped writer for the plain-text statement file ({@code STMT-FILE}, {@code LRECL 80}).
-     * Each line handed to it is already exactly {@value #TEXT_RECORD_LENGTH} characters; a single
-     * {@code "\n"} record separator is appended so every persisted record body is 80 bytes,
-     * matching the {@code RECFM=FB,LRECL=80} dataset in {@code CREASTMT.JCL}.
+     * Step-scoped writer for the plain-text statement file ({@code STMT-FILE}, {@code LRECL 80}) in
+     * <em>undelimited</em> {@code RECFM=FB} framing (review finding&nbsp;#17).
+     *
+     * <p>Each line handed to it is already exactly {@value #TEXT_RECORD_LENGTH} characters. The writer
+     * emits records back-to-back with no delimiter ({@code lineSeparator("")}) and a
+     * {@link FixedBlockLineAggregator} guard rejects any line that is not exactly 80 bytes, so the
+     * file matches the {@code RECFM=FB,LRECL=80} dataset in {@code CREASTMT.JCL} byte-for-byte. The
+     * path is validated through the safe-root resolver and streamed into a deterministic in-progress
+     * temp file that {@link #atomicFileStepPublisher} atomically publishes on {@code COMPLETED}
+     * (findings&nbsp;#18/#19).</p>
      *
      * @param textOutputPath explicit output path from the {@code textOutputPath} job parameter,
      *                       or blank to use a generated, generation-versioned default
-     * @param jobExecutionId the current job execution id, used as the GDG-style generation suffix
+     * @param stepExecution  the running step execution (source of the generation suffix and the
+     *                       atomic-publication temp/target)
      * @return the configured text {@link FlatFileItemWriter}
      */
     @Bean
     @StepScope
     public FlatFileItemWriter<String> statementTextWriter(
             @Value("#{jobParameters['textOutputPath']}") String textOutputPath,
-            @Value("#{stepExecution.jobExecutionId}") Long jobExecutionId) {
-        String path = resolveOutputPath(textOutputPath, "txt", jobExecutionId);
-        return buildLineWriter("statementTextWriter", path);
+            @Value("#{stepExecution}") StepExecution stepExecution) {
+        long instanceId = stepExecution.getJobExecution().getJobInstance().getInstanceId();
+        String path = resolveOutputPath(textOutputPath, "txt", instanceId);
+        Path temp = atomicFileStepPublisher.prepare(path, stepExecution, "statementText");
+        return buildLineWriter("statementTextWriter", temp, TEXT_RECORD_LENGTH);
     }
 
     /**
-     * Step-scoped writer for the HTML statement file ({@code HTML-FILE}, {@code LRECL 100}).
-     * Each line handed to it is already exactly {@value #HTML_RECORD_LENGTH} characters; a single
-     * {@code "\n"} record separator is appended so every persisted record body is 100 bytes,
-     * matching the {@code RECFM=FB,LRECL=100} dataset in {@code CREASTMT.JCL}.
+     * Step-scoped writer for the HTML statement file ({@code HTML-FILE}, {@code LRECL 100}) in
+     * <em>undelimited</em> {@code RECFM=FB} framing (review finding&nbsp;#17).
+     *
+     * <p>Each line handed to it is already exactly {@value #HTML_RECORD_LENGTH} characters. As with the
+     * text writer, records are emitted with no delimiter, the {@link FixedBlockLineAggregator} enforces
+     * the exact 100-byte length, and the output is published atomically from a safe-root-validated temp
+     * file (findings&nbsp;#17/#18/#19), matching the {@code RECFM=FB,LRECL=100} dataset in
+     * {@code CREASTMT.JCL}.</p>
      *
      * @param htmlOutputPath explicit output path from the {@code htmlOutputPath} job parameter,
      *                       or blank to use a generated, generation-versioned default
-     * @param jobExecutionId the current job execution id, used as the GDG-style generation suffix
+     * @param stepExecution  the running step execution (source of the generation suffix and the
+     *                       atomic-publication temp/target)
      * @return the configured HTML {@link FlatFileItemWriter}
      */
     @Bean
     @StepScope
     public FlatFileItemWriter<String> statementHtmlWriter(
             @Value("#{jobParameters['htmlOutputPath']}") String htmlOutputPath,
-            @Value("#{stepExecution.jobExecutionId}") Long jobExecutionId) {
-        String path = resolveOutputPath(htmlOutputPath, "html", jobExecutionId);
-        return buildLineWriter("statementHtmlWriter", path);
+            @Value("#{stepExecution}") StepExecution stepExecution) {
+        long instanceId = stepExecution.getJobExecution().getJobInstance().getInstanceId();
+        String path = resolveOutputPath(htmlOutputPath, "html", instanceId);
+        Path temp = atomicFileStepPublisher.prepare(path, stepExecution, "statementHtml");
+        return buildLineWriter("statementHtmlWriter", temp, HTML_RECORD_LENGTH);
     }
 
     /**
@@ -378,6 +408,7 @@ public class StatementJobConfig {
                 .writer(statementCompositeWriter)
                 .stream(textWriter)
                 .stream(htmlWriter)
+                .listener(atomicFileStepPublisher)
                 .build();
     }
 
@@ -401,15 +432,16 @@ public class StatementJobConfig {
      * job parameter), it is used verbatim; otherwise a generation-versioned default file name is built
      * under the directory named by the {@value #OUTPUT_DIR_PROPERTY} system property, or under a
      * {@code carddemo-statements} folder in the JVM temporary directory when that property is absent.
-     * The generation suffix (the job execution id) reproduces the GDG generation semantics of the
-     * legacy {@code SYSTRAN}/GDG outputs (AAP &sect;0.6.3).
+     * The generation suffix (the job <em>instance</em> id) reproduces the GDG generation semantics of
+     * the legacy {@code SYSTRAN}/GDG outputs (AAP &sect;0.6.3) while remaining stable across restarts of
+     * the same instance, so a restart resumes the same generation (finding&nbsp;#19).
      *
-     * @param providedPath   the explicit path from a job parameter, may be {@code null}/blank
-     * @param extension      the file extension ({@code "txt"} or {@code "html"})
-     * @param jobExecutionId the job execution id used as the generation suffix, may be {@code null}
+     * @param providedPath the explicit path from a job parameter, may be {@code null}/blank
+     * @param extension    the file extension ({@code "txt"} or {@code "html"})
+     * @param generationId the job instance id used as the generation suffix
      * @return the resolved absolute-or-relative file path for the writer's resource
      */
-    private static String resolveOutputPath(String providedPath, String extension, Long jobExecutionId) {
+    private static String resolveOutputPath(String providedPath, String extension, long generationId) {
         if (providedPath != null && !providedPath.isBlank()) {
             return providedPath;
         }
@@ -417,33 +449,31 @@ public class StatementJobConfig {
         java.io.File directory = (configuredDir != null && !configuredDir.isBlank())
                 ? new java.io.File(configuredDir)
                 : new java.io.File(System.getProperty("java.io.tmpdir"), DEFAULT_OUTPUT_SUBDIR);
-        long generation = (jobExecutionId != null) ? jobExecutionId : 0L;
-        return new java.io.File(directory, "carddemo-statement-" + generation + "." + extension).getPath();
+        return new java.io.File(directory, "carddemo-statement-" + generationId + "." + extension).getPath();
     }
 
     /**
      * Builds a {@link FlatFileItemWriter} that writes each pre-formatted, fixed-width line verbatim
-     * (via a {@link PassThroughLineAggregator}) followed by a single {@code "\n"} separator, deleting
-     * any pre-existing file first. The parent directory is created if necessary.
+     * (via a {@link PassThroughLineAggregator}) in <em>undelimited</em> {@code RECFM=FB} framing:
+     * {@code lineSeparator("")} emits records back-to-back and a {@link FixedBlockLineAggregator}
+     * rejects any line that is not exactly {@code recordLength} bytes in ISO-8859-1 (review
+     * finding&nbsp;#17). The writer targets the supplied in-progress {@code temp} path (its parent was
+     * already created and validated by the safe-root resolver during
+     * {@link AtomicFileStepPublisher#prepare}), deleting any stale temp first.
      *
-     * @param name the writer name (used for restart execution-context keys); must be unique per step
-     * @param path the target file path
+     * @param name         the writer name (used for restart execution-context keys); unique per step
+     * @param temp         the in-progress temporary file the writer streams into
+     * @param recordLength the exact fixed record length in bytes (80 text, 100 HTML)
      * @return the configured {@link FlatFileItemWriter}
      */
-    private static FlatFileItemWriter<String> buildLineWriter(String name, String path) {
-        java.io.File file = new java.io.File(path);
-        java.io.File parent = file.getParentFile();
-        if (parent != null && !parent.exists()) {
-            boolean created = parent.mkdirs();
-            if (!created && !parent.isDirectory()) {
-                throw new IllegalStateException("Unable to create statement output directory: " + parent);
-            }
-        }
+    private static FlatFileItemWriter<String> buildLineWriter(String name, Path temp, int recordLength) {
         return new FlatFileItemWriterBuilder<String>()
                 .name(name)
-                .resource(new FileSystemResource(file))
-                .lineAggregator(new PassThroughLineAggregator<>())
-                .lineSeparator("\n")
+                .resource(new FileSystemResource(temp.toFile()))
+                .lineAggregator(new FixedBlockLineAggregator<>(
+                        new PassThroughLineAggregator<>(), recordLength, StandardCharsets.ISO_8859_1))
+                .encoding(StandardCharsets.ISO_8859_1.name())
+                .lineSeparator("")
                 .shouldDeleteIfExists(true)
                 .build();
     }
@@ -711,7 +741,7 @@ public class StatementJobConfig {
             addHtml(html, HTML_LTRS);
             addHtml(html, HTML_L10);
             // HTML-L11: prefix(34) + L11-ACCT(20) + suffix(5); MOVE ACCT-ID TO L11-ACCT (L529-L530)
-            addHtml(html, HTML_L11_PREFIX + stAcctId + HTML_L11_SUFFIX);
+            addHtml(html, HTML_L11_PREFIX + htmlEscape(stAcctId) + HTML_L11_SUFFIX);
             addHtml(html, HTML_LTDE);
             addHtml(html, HTML_LTRE);
             addHtml(html, HTML_LTRS);
@@ -745,14 +775,14 @@ public class StatementJobConfig {
                 String stAdd2, String stAdd3, String stAcctId, String stCurrBal, String stFico) {
             // Name line (L560-L568): L23-NAME = first 50 chars of ST-NAME, DELIMITED BY '  '
             String l23Name = pad(stName, NAME_HTML_LEN);
-            addHtml(html, HTML_NAME_PREFIX + beforeDoubleSpace(l23Name)
+            addHtml(html, HTML_NAME_PREFIX + htmlEscape(beforeDoubleSpace(l23Name))
                     + HTML_TRAILING_SPACES + HTML_PARA_CLOSE);
             // Address lines (L569-L592): '<p>' + field DELIMITED BY '  ' + '  ' + '</p>'
-            addHtml(html, HTML_PARA_OPEN + beforeDoubleSpace(stAdd1)
+            addHtml(html, HTML_PARA_OPEN + htmlEscape(beforeDoubleSpace(stAdd1))
                     + HTML_TRAILING_SPACES + HTML_PARA_CLOSE);
-            addHtml(html, HTML_PARA_OPEN + beforeDoubleSpace(stAdd2)
+            addHtml(html, HTML_PARA_OPEN + htmlEscape(beforeDoubleSpace(stAdd2))
                     + HTML_TRAILING_SPACES + HTML_PARA_CLOSE);
-            addHtml(html, HTML_PARA_OPEN + beforeDoubleSpace(stAdd3)
+            addHtml(html, HTML_PARA_OPEN + htmlEscape(beforeDoubleSpace(stAdd3))
                     + HTML_TRAILING_SPACES + HTML_PARA_CLOSE);
 
             addHtml(html, HTML_LTDE);
@@ -766,9 +796,9 @@ public class StatementJobConfig {
             addHtml(html, HTML_L22_35);
 
             // Basic-detail lines (L613-L633): DELIMITED BY '*' -> full fixed fields incl. trailing spaces
-            addHtml(html, HTML_BSIC_ACCT_PREFIX + stAcctId + HTML_PARA_CLOSE);
-            addHtml(html, HTML_BSIC_BAL_PREFIX + stCurrBal + HTML_PARA_CLOSE);
-            addHtml(html, HTML_BSIC_FICO_PREFIX + stFico + HTML_PARA_CLOSE);
+            addHtml(html, HTML_BSIC_ACCT_PREFIX + htmlEscape(stAcctId) + HTML_PARA_CLOSE);
+            addHtml(html, HTML_BSIC_BAL_PREFIX + htmlEscape(stCurrBal) + HTML_PARA_CLOSE);
+            addHtml(html, HTML_BSIC_FICO_PREFIX + htmlEscape(stFico) + HTML_PARA_CLOSE);
 
             addHtml(html, HTML_LTDE);
             addHtml(html, HTML_LTRE);
@@ -804,13 +834,13 @@ public class StatementJobConfig {
                 String tranAmt) {
             addHtml(html, HTML_LTRS);
             addHtml(html, HTML_L58);
-            addHtml(html, HTML_PARA_OPEN + tranId + HTML_PARA_CLOSE);
+            addHtml(html, HTML_PARA_OPEN + htmlEscape(tranId) + HTML_PARA_CLOSE);
             addHtml(html, HTML_LTDE);
             addHtml(html, HTML_L61);
-            addHtml(html, HTML_PARA_OPEN + tranDesc + HTML_PARA_CLOSE);
+            addHtml(html, HTML_PARA_OPEN + htmlEscape(tranDesc) + HTML_PARA_CLOSE);
             addHtml(html, HTML_LTDE);
             addHtml(html, HTML_L64);
-            addHtml(html, HTML_PARA_OPEN + tranAmt + HTML_PARA_CLOSE);
+            addHtml(html, HTML_PARA_OPEN + htmlEscape(tranAmt) + HTML_PARA_CLOSE);
             addHtml(html, HTML_LTDE);
             addHtml(html, HTML_LTRE);
         }
@@ -1012,6 +1042,37 @@ public class StatementJobConfig {
          */
         private static String safe(String value) {
             return (value == null) ? "" : value;
+        }
+
+        /**
+         * Minimal, context-correct HTML text escaper (review finding #42).
+         *
+         * <p>Persisted customer and transaction fields (name, address lines, account id, balance,
+         * FICO, transaction id/description/amount) are concatenated into the HTML statement body.
+         * Without escaping, a short malicious source value (for example a description or name
+         * containing {@code <script>...</script>}) would execute when the generated statement is
+         * opened in a browser (stored cross-site scripting). This method neutralizes that by
+         * encoding the five HTML text metacharacters.</p>
+         *
+         * <p>The documented output contract is preserved: for legitimate fixed-width ASCII data
+         * (letters, digits, spaces, punctuation other than the five metacharacters) this method is
+         * an exact no-op, so those records are byte-identical to the legacy output; and because
+         * escaping is applied <em>before</em> {@link #fixed(String, int)}, every emitted record is
+         * still exactly {@value #HTML_RECORD_LENGTH} bytes. The ampersand is replaced first so that
+         * the entity ampersands introduced by the later replacements are not themselves re-encoded.
+         * When rendered in a browser the escaped entities display as the original characters, so the
+         * visible statement is unchanged for legitimate data.</p>
+         *
+         * @param value the raw field value (may be {@code null}, treated as {@code ""} per {@link #safe})
+         * @return the HTML-text-safe value
+         */
+        private static String htmlEscape(String value) {
+            return safe(value)
+                    .replace("&", "&amp;")
+                    .replace("<", "&lt;")
+                    .replace(">", "&gt;")
+                    .replace("\"", "&quot;")
+                    .replace("'", "&#39;");
         }
 
         /**

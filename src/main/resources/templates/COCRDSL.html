@@ -12,15 +12,16 @@
   Routes: GET /card/detail (display), POST /card/detail (search/submit).
   Backing bean: com.aws.carddemo.dto.screen.COCRDSLForm (model attribute "form").
 
-  BLITZY [A11Y]: The 3270 terminal palette is reproduced verbatim from the
-  authoritative BMS source (BLUE #0000CD, YELLOW #CCCC00, TURQUOISE #00CDCD,
-  GREEN #00CD00, RED #CD0000, NEUTRAL #FFFFFF) on a black background. BLUE and
-  RED text on black fall below the WCAG AA 4.5:1 contrast minimum for normal
-  text. Per design-source precedence the original colors are implemented exactly
-  and flagged here for designer review rather than silently auto-corrected.
+  BLITZY [A11Y / review finding #53]: the 3270 terminal palette is centralized in
+  templates/fragments/bms-palette.html (single source of truth) and referenced via
+  var(--bms-*). The two BMS foreground colours that failed WCAG 2.1 AA contrast on the
+  black background (BLUE, RED) are replaced with accessible equivalents brightened along
+  the same hue axis (>= 4.5:1); the remaining colours keep their legacy values (all pass
+  AA). Contrast is asserted by BmsPaletteContrastTest; rationale in docs/decision-log.md.
 -->
 <html lang="en" xmlns:th="http://www.thymeleaf.org">
 <head>
+    <th:block th:replace="~{fragments/bms-palette :: palette}"></th:block>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>View Credit Card Detail</title>
@@ -29,7 +30,7 @@
         *, *::before, *::after { box-sizing: border-box; }
 
         html {
-            background-color: #000000;
+            background-color: var(--bms-bg);
         }
 
         body {
@@ -37,11 +38,21 @@
             min-height: 100vh;
             display: flex;
             align-items: flex-start;
-            justify-content: center;
+            justify-content: safe center;
+            /* Finding #54: horizontal scroll keeps the 80ch artboard's left
+               origin reachable at 375x667; `safe center` falls back to
+               start-alignment (left edge at scrollLeft 0) when it overflows. */
+            overflow-x: auto;
             padding: 1rem;
-            background-color: #000000;
+            background-color: var(--bms-bg);
             /* px on decorative border only; rem for scalable metrics elsewhere. */
             font-family: "Courier New", Courier, "Lucida Console", monospace;
+        }
+
+        /* Finding #54: the terminal artboard must never shrink below 80ch, so
+           its left origin remains reachable inside the horizontal scroller. */
+        body > * {
+            flex-shrink: 0;
         }
 
         /* -- 24x80 terminal grid ------------------------------------------- */
@@ -56,8 +67,8 @@
             margin: 0;
             font-size: 16px;             /* fixes the ch advance for the grid */
             line-height: 1.5rem;
-            background-color: #000000;
-            color: #FFFFFF;
+            background-color: var(--bms-bg);
+            color: var(--bms-neutral);
             overflow: hidden;
         }
 
@@ -116,6 +127,7 @@
             outline: 2px solid #FFFFFF;
             outline-offset: 0;
         }
+        .pf:active { text-decoration: underline; filter: brightness(1.3); }
         @media (hover: hover) {
             .pf:hover { text-decoration: underline; }
         }
@@ -127,8 +139,8 @@
             top: 0;
             z-index: 10;
             padding: 0.5rem 0.75rem;
-            background-color: #000000;
-            color: #FFFFFF;
+            background-color: var(--bms-bg);
+            color: var(--bms-neutral);
             font-family: inherit;
         }
         .skip-link:focus { left: 0; }
@@ -145,68 +157,68 @@
               aria-label="View Credit Card Detail screen">
 
             <!-- ============================ Row 1 ============================ -->
-            <span class="cell" style="top:0;left:0;color:#0000CD;">Tran:</span>
-            <span class="cell" style="top:0;left:6ch;color:#0000CD;" th:text="*{trnname}"></span>
-            <span class="cell" style="top:0;left:20ch;color:#CCCC00;" th:text="*{title01}"></span>
-            <span class="cell" style="top:0;left:64ch;color:#0000CD;">Date:</span>
-            <span class="cell" style="top:0;left:70ch;color:#0000CD;" th:text="*{curdate} ?: 'mm/dd/yy'">mm/dd/yy</span>
+            <span class="cell" style="top:0;left:0;color:var(--bms-blue);">Tran:</span>
+            <span class="cell" style="top:0;left:6ch;color:var(--bms-blue);" th:text="*{trnname}"></span>
+            <span class="cell" style="top:0;left:20ch;color:var(--bms-yellow);" th:text="*{title01}"></span>
+            <span class="cell" style="top:0;left:64ch;color:var(--bms-blue);">Date:</span>
+            <span class="cell" style="top:0;left:70ch;color:var(--bms-blue);" th:text="*{curdate} ?: 'mm/dd/yy'">mm/dd/yy</span>
 
             <!-- ============================ Row 2 ============================ -->
-            <span class="cell" style="top:1.5rem;left:0;color:#0000CD;">Prog:</span>
-            <span class="cell" style="top:1.5rem;left:6ch;color:#0000CD;" th:text="*{pgmname}"></span>
-            <span class="cell" style="top:1.5rem;left:20ch;color:#CCCC00;" th:text="*{title02}"></span>
-            <span class="cell" style="top:1.5rem;left:64ch;color:#0000CD;">Time:</span>
-            <span class="cell" style="top:1.5rem;left:70ch;color:#0000CD;" th:text="*{curtime} ?: 'hh:mm:ss'">hh:mm:ss</span>
+            <span class="cell" style="top:1.5rem;left:0;color:var(--bms-blue);">Prog:</span>
+            <span class="cell" style="top:1.5rem;left:6ch;color:var(--bms-blue);" th:text="*{pgmname}"></span>
+            <span class="cell" style="top:1.5rem;left:20ch;color:var(--bms-yellow);" th:text="*{title02}"></span>
+            <span class="cell" style="top:1.5rem;left:64ch;color:var(--bms-blue);">Time:</span>
+            <span class="cell" style="top:1.5rem;left:70ch;color:var(--bms-blue);" th:text="*{curtime} ?: 'hh:mm:ss'">hh:mm:ss</span>
 
             <!-- ===================== Row 4: screen title ===================== -->
-            <h1 class="cell" style="top:4.5rem;left:29ch;color:#FFFFFF;font-weight:normal;font-size:1rem;">View Credit Card Detail</h1>
+            <h1 class="cell" style="top:4.5rem;left:29ch;color:var(--bms-neutral);font-weight:normal;font-size:1rem;">View Credit Card Detail</h1>
 
             <!-- ================= Row 7: Account Number (input) ============== -->
-            <label class="cell" for="acctsid" style="top:9rem;left:22ch;color:#00CDCD;">Account Number    :</label>
+            <label class="cell" for="acctsid" style="top:9rem;left:22ch;color:var(--bms-turquoise);">Account Number    :</label>
             <input type="text" class="cell"
                    th:field="*{acctsid}"
                    maxlength="11" size="11"
                    autocomplete="off" spellcheck="false" autofocus
-                   style="top:9rem;left:44ch;width:11ch;color:#00CD00;">
+                   style="top:9rem;left:44ch;width:11ch;color:var(--bms-green);">
 
             <!-- ================= Row 8: Card Number (input) ================= -->
-            <label class="cell" for="cardsid" style="top:10.5rem;left:22ch;color:#00CDCD;">Card Number       :</label>
+            <label class="cell" for="cardsid" style="top:10.5rem;left:22ch;color:var(--bms-turquoise);">Card Number       :</label>
             <input type="text" class="cell"
                    th:field="*{cardsid}"
                    maxlength="16" size="16"
                    autocomplete="off" spellcheck="false"
-                   style="top:10.5rem;left:44ch;width:16ch;color:#00CD00;">
+                   style="top:10.5rem;left:44ch;width:16ch;color:var(--bms-green);">
 
             <!-- ============ Row 11: Name on card (read-only view) ========== -->
-            <span class="cell" id="crdname-lbl" style="top:15rem;left:3ch;color:#00CDCD;">Name on card      :</span>
+            <span class="cell" id="crdname-lbl" style="top:15rem;left:3ch;color:var(--bms-turquoise);">Name on card      :</span>
             <span class="cell field" aria-labelledby="crdname-lbl"
-                  style="top:15rem;left:24ch;width:50ch;color:#00CD00;" th:text="*{crdname}"></span>
+                  style="top:15rem;left:24ch;width:50ch;color:var(--bms-green);" th:text="*{crdname}"></span>
 
             <!-- ========== Row 13: Card Active Y/N (read-only view) ========= -->
-            <span class="cell" id="crdstcd-lbl" style="top:18rem;left:3ch;color:#00CDCD;">Card Active Y/N   : </span>
+            <span class="cell" id="crdstcd-lbl" style="top:18rem;left:3ch;color:var(--bms-turquoise);">Card Active Y/N   : </span>
             <span class="cell field" aria-labelledby="crdstcd-lbl"
-                  style="top:18rem;left:24ch;width:1ch;color:#00CD00;" th:text="*{crdstcd}"></span>
+                  style="top:18rem;left:24ch;width:1ch;color:var(--bms-green);" th:text="*{crdstcd}"></span>
 
             <!-- ============ Row 15: Expiry Date (read-only view) ========== -->
-            <span class="cell" id="expiry-lbl" style="top:21rem;left:3ch;color:#00CDCD;">Expiry Date       : </span>
+            <span class="cell" id="expiry-lbl" style="top:21rem;left:3ch;color:var(--bms-turquoise);">Expiry Date       : </span>
             <span class="cell field" aria-label="Card expiry month"
-                  style="top:21rem;left:24ch;width:2ch;color:#00CD00;" th:text="*{expmon}"></span>
-            <span class="cell" style="top:21rem;left:27ch;color:#00CD00;">/</span>
+                  style="top:21rem;left:24ch;width:2ch;color:var(--bms-green);" th:text="*{expmon}"></span>
+            <span class="cell" style="top:21rem;left:27ch;color:var(--bms-green);">/</span>
             <span class="cell field" aria-label="Card expiry year"
-                  style="top:21rem;left:29ch;width:4ch;color:#00CD00;" th:text="*{expyear}"></span>
+                  style="top:21rem;left:29ch;width:4ch;color:var(--bms-green);" th:text="*{expyear}"></span>
 
             <!-- ============ Row 20: informational message (cond.) ========== -->
             <span class="cell" role="status" aria-live="polite"
                   th:if="${!#strings.isEmpty(form.infomsg)}"
                   th:text="*{infomsg}"
-                  style="top:28.5rem;left:24ch;max-width:40ch;color:#FFFFFF;"></span>
+                  style="top:28.5rem;left:24ch;max-width:40ch;color:var(--bms-neutral);"></span>
 
             <!-- =============== Row 23: error message (cond., X(80)) ========= -->
             <!-- errmsg is PIC X(80) on this screen (NOT X(78)); the wider error line. -->
             <div class="cell" role="alert"
                  th:if="${!#strings.isEmpty(form.errmsg)}"
                  th:text="*{errmsg}"
-                 style="top:33rem;left:0;max-width:80ch;color:#CD0000;font-weight:bold;"></div>
+                 style="top:33rem;left:0;max-width:80ch;color:var(--bms-red);font-weight:bold;"></div>
 
             <!-- ================= Row 24: PF-key legend (FKEYS) ============== -->
             <!-- BMS FKEYS PIC X(75) INITIAL='ENTER=Search Cards  F3=Exit'.
@@ -214,7 +226,7 @@
                  ENTER is the first submit button so pressing Enter in a field
                  submits with pfkey=ENTER (Search Cards). The two literal spaces
                  between the buttons reproduce the BMS legend text exactly. -->
-            <div class="cell" style="top:34.5rem;left:0;color:#CCCC00;"><button type="submit" name="pfkey" value="ENTER" class="pf">ENTER=Search Cards</button>  <button type="submit" name="pfkey" value="PF3" class="pf">F3=Exit</button></div>
+            <div class="cell" style="top:34.5rem;left:0;color:var(--bms-yellow);"><button type="submit" name="pfkey" value="ENTER" class="pf">ENTER=Search Cards</button>  <button type="submit" name="pfkey" value="PF3" class="pf">F3=Exit</button></div>
 
         </form>
     </main>

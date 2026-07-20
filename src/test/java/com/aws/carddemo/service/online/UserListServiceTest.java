@@ -27,7 +27,7 @@ import org.junit.jupiter.params.provider.ValueSource;
 import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
-import org.springframework.data.domain.Sort;
+import org.springframework.data.domain.Limit;
 
 import com.aws.carddemo.domain.UserSecurity;
 import com.aws.carddemo.dto.CardDemoContext;
@@ -40,6 +40,7 @@ import com.aws.carddemo.service.online.UserListService.UserRow;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.atLeastOnce;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
@@ -97,17 +98,26 @@ import static org.mockito.Mockito.when;
  * {@code CardDemoContext.setToTranid}, which the program does not perform; routing is therefore
  * verified through the returned redirect target plus the context hand-off writes.</p>
  *
- * <p><b>Browse data.</b> {@link UserListService} loads the {@code USRSEC} users through
- * {@link UserSecurityRepository#findAll(Sort)} ordered ascending by {@code usrId} and pages through
- * them in memory. The tests stub that call with a controlled, pre-sorted user fixture and assert
- * both the exact {@link Sort} used and the ten-row page window, so the VSAM KSDS ascending-key
- * browse is reproduced faithfully.</p>
+ * <p><b>Browse data.</b> {@link UserListService} loads each page as a bounded, key-ordered window
+ * (review finding #21): a forward page comes from
+ * {@link UserSecurityRepository#findByUsrIdGreaterThanEqualOrderByUsrIdAsc(String, Limit)} and a
+ * backward page from
+ * {@link UserSecurityRepository#findByUsrIdLessThanEqualOrderByUsrIdDesc(String, Limit)}, each
+ * capped at the page size plus the browse's skip-one and look-ahead reads, rather than
+ * materialising the whole {@code USRSEC} table. The tests stub those window finders with a
+ * controlled, pre-sorted user fixture &mdash; each stub computes the exact slice a real
+ * {@code C}-collated, key-ordered query would return for the requested start key and limit &mdash;
+ * and assert the ten-row page window, the first/last page keys, and the page arithmetic, so the
+ * VSAM KSDS ascending-key browse is reproduced faithfully while the query stays bounded.</p>
  */
 @ExtendWith(MockitoExtension.class)
 class UserListServiceTest {
 
     /** Rows displayed per page &mdash; COBOL {@code USER-REC OCCURS 10 TIMES}. */
     private static final int ROWS_PER_PAGE = 10;
+
+    /** Width of the {@code SEC-USR-ID} key ({@code PIC X(08)}), used to right-pad browse keys. */
+    private static final int USER_ID_LENGTH = 8;
 
     /** Byte-exact invalid-selection literal (COBOL {@code PROCESS-ENTER-KEY}, oracle line 212). */
     private static final String MSG_INVALID_SELECTION = "Invalid selection. Valid values are U and D";
@@ -192,8 +202,8 @@ class UserListServiceTest {
     /**
      * Builds {@code count} user-security records with eight-character ids {@code USER0001},
      * {@code USER0002}, &hellip; in ascending order, alternating the {@code U}/{@code A} type. The
-     * ids are already sorted ascending, reproducing the ordered result the repository would return
-     * from {@code findAll(Sort.by(ASC, "usrId"))} over the {@code C}-collated key column.
+     * ids are already sorted ascending, reproducing the ordered result a {@code C}-collated,
+     * key-ordered browse window query would return over the {@code SEC-USR-ID} key column.
      *
      * @param count the number of users to build
      * @return an ascending, pre-sorted list of {@code count} user-security records
@@ -274,13 +284,101 @@ class UserListServiceTest {
     }
 
     /**
-     * The exact {@link Sort} the service must use to load the browse: ascending by {@code usrId},
-     * reproducing the VSAM KSDS ascending-key order.
+     * Stubs the <em>forward</em> browse window finder to behave like the real {@code C}-collated,
+     * key-ordered query: for a requested inclusive lower-bound start key and {@link Limit}, it
+     * returns the ascending slice of {@code ascending} whose right-padded user id is greater than
+     * or equal to the padded start key, capped at the limit. Only the forward finder is stubbed, so
+     * forward-paging tests raise no unnecessary-stubbing error under strict stubs.
      *
-     * @return {@code Sort.by(ASC, "usrId")}
+     * @param ascending the full fixture, already sorted ascending by user id
      */
-    private static Sort expectedSort() {
-        return Sort.by(Sort.Direction.ASC, "usrId");
+    private void stubForwardWindows(List<UserSecurity> ascending) {
+        when(userSecurityRepository.findByUsrIdGreaterThanEqualOrderByUsrIdAsc(anyString(),
+                any(Limit.class)))
+                .thenAnswer(invocation -> forwardWindow(ascending, invocation.getArgument(0),
+                        invocation.getArgument(1)));
+    }
+
+    /**
+     * Stubs the <em>backward</em> browse window finder to behave like the real {@code C}-collated,
+     * key-ordered query: for a requested inclusive upper-bound start key and {@link Limit}, it
+     * returns the <em>descending</em> slice of {@code ascending} whose right-padded user id is less
+     * than or equal to the padded start key, capped at the limit (the service reverses it to
+     * ascending for the cursor). Only the backward finder is stubbed.
+     *
+     * @param ascending the full fixture, already sorted ascending by user id
+     */
+    private void stubBackwardWindows(List<UserSecurity> ascending) {
+        when(userSecurityRepository.findByUsrIdLessThanEqualOrderByUsrIdDesc(anyString(),
+                any(Limit.class)))
+                .thenAnswer(invocation -> backwardWindow(ascending, invocation.getArgument(0),
+                        invocation.getArgument(1)));
+    }
+
+    /**
+     * Computes the forward (ascending, greater-than-or-equal) window a real key-ordered query would
+     * return, using the same eight-byte right-padded key comparison the service and the
+     * {@code C}-collated column use.
+     *
+     * @param ascending the full fixture sorted ascending by user id
+     * @param startKey  the inclusive lower-bound start key (already padded by the service)
+     * @param limit     the row cap
+     * @return the ascending window, at most {@code limit} records
+     */
+    private static List<UserSecurity> forwardWindow(List<UserSecurity> ascending, String startKey,
+                                                    Limit limit) {
+        String padded = pad8(startKey);
+        List<UserSecurity> window = new ArrayList<>();
+        for (UserSecurity candidate : ascending) {
+            if (pad8(candidate.getUsrId()).compareTo(padded) >= 0) {
+                window.add(candidate);
+                if (window.size() == limit.max()) {
+                    break;
+                }
+            }
+        }
+        return window;
+    }
+
+    /**
+     * Computes the backward (descending, less-than-or-equal) window a real key-ordered query would
+     * return, matching the repository contract that hands back rows in descending key order for the
+     * service to reverse.
+     *
+     * @param ascending the full fixture sorted ascending by user id
+     * @param startKey  the inclusive upper-bound start key (already padded by the service)
+     * @param limit     the row cap
+     * @return the descending window, at most {@code limit} records
+     */
+    private static List<UserSecurity> backwardWindow(List<UserSecurity> ascending, String startKey,
+                                                     Limit limit) {
+        String padded = pad8(startKey);
+        List<UserSecurity> window = new ArrayList<>();
+        for (int i = ascending.size() - 1; i >= 0; i--) {
+            UserSecurity candidate = ascending.get(i);
+            if (pad8(candidate.getUsrId()).compareTo(padded) <= 0) {
+                window.add(candidate);
+                if (window.size() == limit.max()) {
+                    break;
+                }
+            }
+        }
+        return window;
+    }
+
+    /**
+     * Right-pads (or truncates) a key to the eight-byte {@code SEC-USR-ID} width, reproducing the
+     * fixed-width key comparison the browse and the {@code C}-collated {@code CHAR(8)} column use.
+     *
+     * @param value the raw key (may be {@code null} or shorter/longer than eight characters)
+     * @return the value padded with spaces (or truncated) to exactly eight characters
+     */
+    private static String pad8(String value) {
+        String safe = (value == null) ? "" : value;
+        if (safe.length() >= USER_ID_LENGTH) {
+            return safe.substring(0, USER_ID_LENGTH);
+        }
+        return safe + " ".repeat(USER_ID_LENGTH - safe.length());
     }
 
     // ------------------------------------------------------------------------------------------
@@ -296,7 +394,7 @@ class UserListServiceTest {
      */
     @Test
     void processEnterKey_firstPage_populatesExactlyTenRowsOrderedByUserId() {
-        when(userSecurityRepository.findAll(any(Sort.class))).thenReturn(usersUpTo(12));
+        stubForwardWindows(usersUpTo(12));
 
         UserListResult result = service.processEnterKey(emptyForm(), context);
 
@@ -312,7 +410,8 @@ class UserListServiceTest {
         assertThat(result.nextPageAvailable()).isTrue();
         assertThat(result.error()).isFalse();
 
-        verify(userSecurityRepository).findAll(expectedSort());
+        verify(userSecurityRepository).findByUsrIdGreaterThanEqualOrderByUsrIdAsc(anyString(),
+                any(Limit.class));
         verifyNoInteractions(context);
     }
 
@@ -404,7 +503,7 @@ class UserListServiceTest {
      */
     @Test
     void processEnterKey_withInvalidSelectionFlag_showsInvalidSelectionMessageAndBrowsesFirstPage() {
-        when(userSecurityRepository.findAll(any(Sort.class))).thenReturn(usersUpTo(12));
+        stubForwardWindows(usersUpTo(12));
 
         UserListResult result = service.processEnterKey(formSelecting(1, "X", "USER0001"), context);
 
@@ -415,7 +514,8 @@ class UserListServiceTest {
         assertThat(result.rows().get(0).userId()).isEqualTo("USER0001");
         assertThat(result.pageNumber()).isEqualTo(1);
 
-        verify(userSecurityRepository).findAll(expectedSort());
+        verify(userSecurityRepository).findByUsrIdGreaterThanEqualOrderByUsrIdAsc(anyString(),
+                any(Limit.class));
         verifyNoInteractions(context);
     }
 
@@ -433,7 +533,7 @@ class UserListServiceTest {
      */
     @Test
     void processPf8Key_withNextPageAvailable_advancesToNextPage() {
-        when(userSecurityRepository.findAll(any(Sort.class))).thenReturn(usersUpTo(12));
+        stubForwardWindows(usersUpTo(12));
 
         UserListResult result = service.processPf8Key(stateAt(1, "USER0001", "USER0010", true));
 
@@ -445,7 +545,8 @@ class UserListServiceTest {
         assertThat(result.pageNumber()).isEqualTo(2);
         assertThat(result.nextPageAvailable()).isFalse();
 
-        verify(userSecurityRepository).findAll(expectedSort());
+        verify(userSecurityRepository).findByUsrIdGreaterThanEqualOrderByUsrIdAsc(anyString(),
+                any(Limit.class));
         verifyNoInteractions(context);
     }
 
@@ -480,7 +581,7 @@ class UserListServiceTest {
      */
     @Test
     void processPf7Key_beyondFirstPage_pagesBackToPreviousPage() {
-        when(userSecurityRepository.findAll(any(Sort.class))).thenReturn(usersUpTo(12));
+        stubBackwardWindows(usersUpTo(12));
 
         UserListResult result = service.processPf7Key(stateAt(2, "USER0011", "USER0012", false));
 
@@ -493,7 +594,8 @@ class UserListServiceTest {
         assertThat(result.pageNumber()).isEqualTo(1);
         assertThat(result.firstUserId()).isEqualTo("USER0001");
 
-        verify(userSecurityRepository).findAll(expectedSort());
+        verify(userSecurityRepository).findByUsrIdLessThanEqualOrderByUsrIdDesc(anyString(),
+                any(Limit.class));
         verifyNoInteractions(context);
     }
 
@@ -560,7 +662,7 @@ class UserListServiceTest {
     void mainEntry_firstDisplay_browsesFirstPageFromTopAndIgnoresReceivedForm() {
         when(context.isNew()).thenReturn(false);
         when(context.isProgramEnter()).thenReturn(true);
-        when(userSecurityRepository.findAll(any(Sort.class))).thenReturn(usersUpTo(12));
+        stubForwardWindows(usersUpTo(12));
 
         UserListResult result = service.mainEntry(AidKey.ENTER, formSelecting(1, "U", "USER0001"),
                 stateAt(3, "USER0021", "USER0030", true));
@@ -572,7 +674,8 @@ class UserListServiceTest {
         assertThat(result.nextPageAvailable()).isTrue();
 
         verify(context).markReenter();
-        verify(userSecurityRepository).findAll(expectedSort());
+        verify(userSecurityRepository).findByUsrIdGreaterThanEqualOrderByUsrIdAsc(anyString(),
+                any(Limit.class));
     }
 
     /**
@@ -654,7 +757,7 @@ class UserListServiceTest {
     void mainEntry_reentryPf8_delegatesToPageForwardAdvance() {
         when(context.isNew()).thenReturn(false);
         when(context.isProgramEnter()).thenReturn(false);
-        when(userSecurityRepository.findAll(any(Sort.class))).thenReturn(usersUpTo(12));
+        stubForwardWindows(usersUpTo(12));
 
         UserListResult result = service.mainEntry(AidKey.PF8, emptyForm(),
                 stateAt(1, "USER0001", "USER0010", true));
@@ -663,7 +766,8 @@ class UserListServiceTest {
         assertThat(result.rows().get(0).userId()).isEqualTo("USER0011");
         assertThat(result.pageNumber()).isEqualTo(2);
 
-        verify(userSecurityRepository).findAll(expectedSort());
+        verify(userSecurityRepository).findByUsrIdGreaterThanEqualOrderByUsrIdAsc(anyString(),
+                any(Limit.class));
     }
 
     /**

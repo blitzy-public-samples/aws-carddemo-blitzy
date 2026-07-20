@@ -3,10 +3,14 @@ package com.aws.carddemo.domain;
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
 import jakarta.persistence.Id;
+import jakarta.persistence.PostLoad;
+import jakarta.persistence.PostPersist;
 import jakarta.persistence.Table;
+import jakarta.persistence.Transient;
 
 import org.hibernate.annotations.JdbcTypeCode;
 import org.hibernate.type.SqlTypes;
+import org.springframework.data.domain.Persistable;
 
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
@@ -41,10 +45,36 @@ import java.time.LocalDateTime;
  * ({@code NUMERIC(11,2)}); monetary values are never represented with binary floating-point types.
  * The two 26-character timestamp fields ({@code TRAN-ORIG-TS} and {@code TRAN-PROC-TS}, formatted
  * {@code yyyy-MM-dd HH:mm:ss.SSSSSS}) map to {@link java.time.LocalDateTime}.</p>
+ *
+ * <p><strong>Insert semantics (AAP 0.6.5; review finding #32):</strong> the transaction id is an
+ * <em>assigned</em> primary key (no {@code @GeneratedValue}), and transactions are an append-only
+ * ledger &mdash; every write in the migrated system is an insert (online add {@code COTRN02C},
+ * bill-pay {@code COBIL00C}, interest accrual {@code CBACT04C}, daily posting {@code CBTRN02C}); a
+ * transaction row is never loaded and rewritten. Spring Data's {@code save(...)} would, for an
+ * entity with a non-null assigned id and no {@code @Version}, take the {@code EntityManager.merge}
+ * path, which does a {@code SELECT}-then-{@code UPDATE} and would therefore <em>silently overwrite</em>
+ * an existing row on a duplicate id or a job rerun &mdash; masking the legacy {@code WRITE}
+ * {@code DUPREC} (VSAM {@code FILE STATUS "22"} / CICS {@code DFHRESP(DUPKEY)}) that the COBOL relied
+ * on. To reproduce that behaviour this entity implements {@link Persistable}: {@link #isNew()}
+ * reports {@code true} for a freshly constructed instance, so {@code save(...)} issues a true
+ * {@code EntityManager.persist} (an {@code INSERT}); a duplicate key then raises a
+ * {@code DataIntegrityViolationException} that the write paths translate to the typed
+ * {@code DuplicateKeyException} / roll the chunk back (batch abend parity). The flag is cleared by
+ * the {@link PostPersist}/{@link PostLoad} callback so a managed instance behaves normally
+ * thereafter.</p>
  */
 @Entity
 @Table(name = "transaction")
-public class Transaction {
+public class Transaction implements Persistable<String> {
+
+    /**
+     * Transient {@link Persistable#isNew()} flag (review finding #32). Defaults to {@code true} so a
+     * freshly constructed {@link Transaction} forces {@code EntityManager.persist} (a true
+     * {@code INSERT}); it is cleared by {@link #markNotNew()} after the row is persisted or loaded.
+     * Marked {@link Transient} so it is never mapped to a column.
+     */
+    @Transient
+    private boolean isNew = true;
 
     /** Transaction id &mdash; {@code TRAN-ID PIC X(16)}; primary key of the {@code TRANSACT} KSDS. */
     @Id
@@ -272,6 +302,44 @@ public class Transaction {
     @Override
     public int hashCode() {
         return Transaction.class.hashCode();
+    }
+
+    /**
+     * The {@link Persistable} identifier &mdash; the transaction id ({@code TRAN-ID}).
+     *
+     * @return the primary key, or {@code null} before one is assigned
+     */
+    @Override
+    public String getId() {
+        return tranId;
+    }
+
+    /**
+     * Reports whether this instance must be treated as a new row for the purposes of
+     * {@code Spring Data} {@code save(...)} (review finding #32). Returns {@code true} for a freshly
+     * constructed transaction so that {@code save(...)} performs a true {@code INSERT}
+     * ({@code EntityManager.persist}) rather than a {@code merge}; a duplicate key therefore fails
+     * loudly ({@code DataIntegrityViolationException} &rarr; {@code DuplicateKeyException} / batch
+     * abend), reproducing the legacy {@code WRITE} {@code DUPREC} ({@code FILE STATUS "22"}) instead
+     * of silently overwriting the existing ledger row. Cleared by {@link #markNotNew()} once the row
+     * is persisted or loaded.
+     *
+     * @return {@code true} if this instance has not yet been persisted or loaded, otherwise {@code false}
+     */
+    @Override
+    public boolean isNew() {
+        return isNew;
+    }
+
+    /**
+     * Clears the {@link #isNew} flag after the row has been inserted ({@link PostPersist}) or read
+     * back from the database ({@link PostLoad}), so a managed {@link Transaction} is thereafter
+     * treated as existing.
+     */
+    @PostPersist
+    @PostLoad
+    void markNotNew() {
+        this.isNew = false;
     }
 
     /**

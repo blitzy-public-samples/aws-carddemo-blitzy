@@ -20,8 +20,13 @@
 --    PostgreSQL re-pads CHAR(n). A blank field is '' (space-fill parity), NOT NULL.
 --  * ISO dates yyyy-MM-dd -> DATE literals.
 --
--- IDEMPOTENCY: every statement is INSERT ... ON CONFLICT (<pk>) DO NOTHING so the
--- migration is safe to re-run against an already-seeded database during validation.
+-- SEED INTEGRITY (review finding #33): each statement is a PLAIN INSERT with NO
+-- "ON CONFLICT ... DO NOTHING" masking, so a duplicate primary key or any other
+-- seed error fails the migration LOUDLY instead of being silently swallowed. This
+-- is safe because Flyway applies each versioned migration exactly once (tracked in
+-- the flyway_schema_history table); the seed rows below are authored duplicate-free
+-- on their primary keys (verified), and the test harness always migrates against a
+-- freshly cleaned database (flyway.clean + migrate per test).
 --
 -- NOT SEEDED HERE: the 'transaction' table starts EMPTY (populated at runtime by
 -- the posting batch job CBTRN02C -> PostTransactionJobConfig). The DALYTRAN feed
@@ -85,8 +90,7 @@ INSERT INTO account (acct_id, acct_active_status, acct_curr_bal, acct_credit_lim
     (47, 'Y', 32.00, 2338.00, 159.00, DATE '2014-04-03', DATE '2025-08-23', DATE '2025-08-23', 0.00, 0.00, 'A000000000', ''),
     (48, 'Y', 226.00, 2306.00, 612.00, DATE '2017-03-18', DATE '2025-02-06', DATE '2025-02-06', 0.00, 0.00, 'A000000000', ''),
     (49, 'Y', 100.00, 9048.00, 4807.00, DATE '2019-04-06', DATE '2023-09-17', DATE '2023-09-17', 0.00, 0.00, 'A000000000', ''),
-    (50, 'Y', 492.00, 6169.00, 4587.00, DATE '2011-04-22', DATE '2023-03-09', DATE '2023-03-09', 0.00, 0.00, 'A000000000', '')
-ON CONFLICT (acct_id) DO NOTHING;
+    (50, 'Y', 492.00, 6169.00, 4587.00, DATE '2011-04-22', DATE '2023-03-09', DATE '2023-03-09', 0.00, 0.00, 'A000000000', '');
 
 -- ===== card (50 rows) =====
 INSERT INTO card (card_num, card_acct_id, card_cvv_cd, card_embossed_name, card_expiraion_date, card_active_status) VALUES
@@ -139,8 +143,7 @@ INSERT INTO card (card_num, card_acct_id, card_cvv_cd, card_embossed_name, card_
     ('9349107475869214', 17, 218, 'Sigrid Mann', DATE '2025-03-01', 'Y'),
     ('9501733721429893', 9, 725, 'Melvin Ondricka', DATE '2024-12-27', 'Y'),
     ('9680294154603697', 1, 45, 'Immanuel Kessler', DATE '2025-05-20', 'Y'),
-    ('9805583408996588', 40, 908, 'Davon Emmerich', DATE '2023-10-27', 'Y')
-ON CONFLICT (card_num) DO NOTHING;
+    ('9805583408996588', 40, 908, 'Davon Emmerich', DATE '2023-10-27', 'Y');
 
 -- ===== card_xref (50 rows) =====
 INSERT INTO card_xref (xref_card_num, xref_cust_id, xref_acct_id) VALUES
@@ -193,8 +196,7 @@ INSERT INTO card_xref (xref_card_num, xref_cust_id, xref_acct_id) VALUES
     ('9349107475869214', 17, 17),
     ('9501733721429893', 9, 9),
     ('9680294154603697', 1, 1),
-    ('9805583408996588', 40, 40)
-ON CONFLICT (xref_card_num, xref_cust_id, xref_acct_id) DO NOTHING;
+    ('9805583408996588', 40, 40);
 
 -- ===== customer (50 rows) =====
 INSERT INTO customer (cust_id, cust_first_name, cust_middle_name, cust_last_name, cust_addr_line_1, cust_addr_line_2, cust_addr_line_3, cust_addr_state_cd, cust_addr_country_cd, cust_addr_zip, cust_phone_num_1, cust_phone_num_2, cust_ssn, cust_govt_issued_id, cust_dob, cust_eft_account_id, cust_pri_card_holder_ind, cust_fico_credit_score) VALUES
@@ -247,8 +249,7 @@ INSERT INTO customer (cust_id, cust_first_name, cust_middle_name, cust_last_name
     (47, 'Rigoberto', 'Savanna', 'Hoeger', '00097 Gleichner Spur', 'Apt. 932', 'Port Aidanborough', 'GU', 'USA', '31329-6973', '(946)322-6160', '(973)443-8438', 29222192, '00000000000567601472', DATE '1979-02-25', '0022102472', 'Y', 722),
     (48, 'Lyric', 'Mackenzie', 'Pacocha', '453 Rosina Mountain', 'Apt. 011', 'Albertville', 'OR', 'USA', '83985-4937', '(950)497-1005', '(004)244-7955', 635734407, '00000000000265392832', DATE '1986-08-17', '0046317382', 'Y', 746),
     (49, 'Immanuel', 'Ellie', 'Bednar', '5423 Esther Locks', 'Apt. 142', 'Langoshstad', 'GA', 'USA', '12288-3495', '(843)095-2553', '(615)988-9038', 813044111, '00000000000424495981', DATE '2000-01-05', '0058726120', 'Y', 148),
-    (50, 'Aniya', 'Alba', 'Von', '1588 Nienow Cape', 'Suite 187', 'New Aricchester', 'OR', 'USA', '04257', '(325)301-0827', '(493)985-9283', 931248469, '00000000000030387824', DATE '1960-12-01', '0074883577', 'Y', 623)
-ON CONFLICT (cust_id) DO NOTHING;
+    (50, 'Aniya', 'Alba', 'Von', '1588 Nienow Cape', 'Suite 187', 'New Aricchester', 'OR', 'USA', '04257', '(325)301-0827', '(493)985-9283', 931248469, '00000000000030387824', DATE '1960-12-01', '0074883577', 'Y', 623);
 
 -- ===== disclosure_group (51 rows) =====
 INSERT INTO disclosure_group (dis_acct_group_id, dis_tran_type_cd, dis_tran_cat_cd, dis_int_rate) VALUES
@@ -302,8 +303,7 @@ INSERT INTO disclosure_group (dis_acct_group_id, dis_tran_type_cd, dis_tran_cat_
     ('ZEROAPR', '05', 1, 0.00),
     ('ZEROAPR', '06', 1, 0.00),
     ('ZEROAPR', '06', 2, 0.00),
-    ('ZEROAPR', '07', 1, 0.00)
-ON CONFLICT (dis_acct_group_id, dis_tran_type_cd, dis_tran_cat_cd) DO NOTHING;
+    ('ZEROAPR', '07', 1, 0.00);
 
 -- ===== transaction_category_balance (50 rows) =====
 INSERT INTO transaction_category_balance (trancat_acct_id, trancat_type_cd, trancat_cd, tran_cat_bal) VALUES
@@ -356,8 +356,7 @@ INSERT INTO transaction_category_balance (trancat_acct_id, trancat_type_cd, tran
     (47, '01', 1, 0.00),
     (48, '01', 1, 0.00),
     (49, '01', 1, 0.00),
-    (50, '01', 1, 0.00)
-ON CONFLICT (trancat_acct_id, trancat_type_cd, trancat_cd) DO NOTHING;
+    (50, '01', 1, 0.00);
 
 -- ===== transaction_category (18 rows) =====
 INSERT INTO transaction_category (tran_type_cd, tran_cat_cd, tran_cat_type_desc) VALUES
@@ -378,8 +377,7 @@ INSERT INTO transaction_category (tran_type_cd, tran_cat_cd, tran_cat_type_desc)
     ('05', 1, 'Refund credit'),
     ('06', 1, 'Fraud reversal'),
     ('06', 2, 'Non-fraud reversal'),
-    ('07', 1, 'Sales draft credit adjustment')
-ON CONFLICT (tran_type_cd, tran_cat_cd) DO NOTHING;
+    ('07', 1, 'Sales draft credit adjustment');
 
 -- ===== transaction_type (7 rows) =====
 INSERT INTO transaction_type (tran_type, tran_type_desc) VALUES
@@ -389,19 +387,29 @@ INSERT INTO transaction_type (tran_type, tran_type_desc) VALUES
     ('04', 'Authorization'),
     ('05', 'Refund'),
     ('06', 'Reversal'),
-    ('07', 'Adjustment')
-ON CONFLICT (tran_type) DO NOTHING;
+    ('07', 'Adjustment');
 
 -- ===== user_security (10 rows) =====
+-- SECURITY (review finding #5, AAP 0.7.1 "no hardcoded credentials"): the seed
+-- principals' password is NOT a committed literal. It is supplied at migration
+-- time by the Flyway placeholder ${carddemo_seed_password}, which application.yml
+-- binds to the CARDDEMO_SEED_PASSWORD environment variable with NO committed
+-- default (fail-closed, exactly like SPRING_DATASOURCE_PASSWORD). A clean checkout
+-- therefore contains no reusable secret; the value is provisioned on the host
+-- (see docs/onboarding.md). The cleartext COMPARISON behavior of the COBOL signon
+-- (COSGN00C READ-USER-SEC-FILE) is still preserved for parity (AAP 0.6.7) by
+-- CardDemoAuthenticationProvider; only the known, reusable committed credential is
+-- removed. The placeholder must resolve to an all-uppercase value of at most 8
+-- characters (usr_pwd is CHAR(8); the provider uppercases the entered password
+-- before the fixed-width comparison).
 INSERT INTO user_security (usr_id, usr_fname, usr_lname, usr_pwd, usr_type) VALUES
-    ('ADMIN001', 'MARGARET', 'GOLD', 'PASSWORD', 'A'),
-    ('ADMIN002', 'RUSSELL', 'RUSSELL', 'PASSWORD', 'A'),
-    ('ADMIN003', 'RAYMOND', 'WHITMORE', 'PASSWORD', 'A'),
-    ('ADMIN004', 'EMMANUEL', 'CASGRAIN', 'PASSWORD', 'A'),
-    ('ADMIN005', 'GRANVILLE', 'LACHAPELLE', 'PASSWORD', 'A'),
-    ('USER0001', 'LAWRENCE', 'THOMAS', 'PASSWORD', 'U'),
-    ('USER0002', 'AJITH', 'KUMAR', 'PASSWORD', 'U'),
-    ('USER0003', 'LAURITZ', 'ALME', 'PASSWORD', 'U'),
-    ('USER0004', 'AVERARDO', 'MAZZI', 'PASSWORD', 'U'),
-    ('USER0005', 'LEE', 'TING', 'PASSWORD', 'U')
-ON CONFLICT (usr_id) DO NOTHING;
+    ('ADMIN001', 'MARGARET', 'GOLD', '${carddemo_seed_password}', 'A'),
+    ('ADMIN002', 'RUSSELL', 'RUSSELL', '${carddemo_seed_password}', 'A'),
+    ('ADMIN003', 'RAYMOND', 'WHITMORE', '${carddemo_seed_password}', 'A'),
+    ('ADMIN004', 'EMMANUEL', 'CASGRAIN', '${carddemo_seed_password}', 'A'),
+    ('ADMIN005', 'GRANVILLE', 'LACHAPELLE', '${carddemo_seed_password}', 'A'),
+    ('USER0001', 'LAWRENCE', 'THOMAS', '${carddemo_seed_password}', 'U'),
+    ('USER0002', 'AJITH', 'KUMAR', '${carddemo_seed_password}', 'U'),
+    ('USER0003', 'LAURITZ', 'ALME', '${carddemo_seed_password}', 'U'),
+    ('USER0004', 'AVERARDO', 'MAZZI', '${carddemo_seed_password}', 'U'),
+    ('USER0005', 'LEE', 'TING', '${carddemo_seed_password}', 'U');

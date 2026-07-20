@@ -93,7 +93,11 @@ import org.springframework.data.jpa.repository.config.EnableJpaRepositories;
  */
 @SpringBootTest(classes = {CustomerLoadJobConfigIT.BatchSliceConfig.class,
         CustomerLoadJobConfigIT.BatchTestHarnessConfig.class},
-        properties = "spring.jpa.hibernate.ddl-auto=none")
+        webEnvironment = SpringBootTest.WebEnvironment.NONE,
+        properties = {
+            "spring.jpa.hibernate.ddl-auto=none",
+            "management.prometheus.metrics.export.enabled=false"
+        })
 class CustomerLoadJobConfigIT extends AbstractPostgresIntegrationTest {
 
     /**

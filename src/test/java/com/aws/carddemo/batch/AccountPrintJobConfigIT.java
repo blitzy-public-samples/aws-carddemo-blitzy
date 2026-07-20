@@ -89,9 +89,15 @@ import org.springframework.data.jpa.repository.config.EnableJpaRepositories;
  * @see AccountPrintJobConfig
  * @see AbstractPostgresIntegrationTest
  */
+// Non-web batch parity slice: WebEnvironment.NONE suppresses the servlet security auto-config
+// generated dev-password WARN, and disabling Prometheus export lets the slice fall back to a
+// SimpleMeterRegistry so Spring Batch's duplicate spring.batch.job.active meter never trips the
+// Prometheus same-tag-keys collision WARN — keeps start logs warning-free (review finding #35).
 @SpringBootTest(classes = {
         AccountPrintJobConfigIT.BatchSliceConfig.class,
-        AccountPrintJobConfigIT.BatchTestHarnessConfig.class})
+        AccountPrintJobConfigIT.BatchTestHarnessConfig.class},
+        webEnvironment = SpringBootTest.WebEnvironment.NONE,
+        properties = "management.prometheus.metrics.export.enabled=false")
 class AccountPrintJobConfigIT extends AbstractPostgresIntegrationTest {
 
     /**

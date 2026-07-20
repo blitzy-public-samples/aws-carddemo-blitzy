@@ -243,6 +243,18 @@ public class COACTUPForm {
     private String fkey12;
 
     /**
+     * Single-use confirmation token (review finding #10). This is not a BMS map field:
+     * it is a hidden web control that carries the server-issued confirmation nonce
+     * across the ENTER&rarr;PF5 turns so the service can reject a forged or replayed
+     * {@code PF5} before committing the update. The controller sets it from the
+     * session state before rendering; the confirm screen echoes it in a hidden input;
+     * the service validates and consumes it on {@code PF5}. Bounded to guard against
+     * oversized input.
+     */
+    @Size(max = 64)
+    private String confirmToken;
+
+    /**
      * Creates an empty {@code COACTUPForm} with all fields unset.
      */
     public COACTUPForm() {
@@ -1218,6 +1230,24 @@ public class COACTUPForm {
      */
     public void setFkey12(String fkey12) {
         this.fkey12 = fkey12;
+    }
+
+    /**
+     * Returns the single-use confirmation token (review finding #10).
+     *
+     * @return the confirmation token echoed back on {@code PF5}, or {@code null} when none
+     */
+    public String getConfirmToken() {
+        return confirmToken;
+    }
+
+    /**
+     * Sets the single-use confirmation token (review finding #10).
+     *
+     * @param confirmToken the server-issued confirmation nonce to render into the hidden field
+     */
+    public void setConfirmToken(String confirmToken) {
+        this.confirmToken = confirmToken;
     }
 
     /**

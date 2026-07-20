@@ -65,6 +65,17 @@ public class COUSR03Form {
     private String errmsg;
 
     /**
+     * Single-use confirmation nonce (review finding F12). No BMS origin: this hidden field carries
+     * the server-armed token that binds the PF5 delete to the user the server fetched and displayed
+     * (step one of the two-step delete), so a tampered re-post cannot re-aim the delete at a
+     * different {@code usridin} or replay it. Populated by the controller on the confirm-prompt
+     * render and echoed back on the deleting submit; validated and consumed server-side by
+     * {@link com.aws.carddemo.web.support.ConfirmationTokenService}.
+     */
+    @Size(max = 64)
+    private String confirmToken;
+
+    /**
      * Creates an empty user-delete screen form. Required for Spring MVC
      * {@code @ModelAttribute} binding and standard JavaBean instantiation;
      * all properties are populated by request binding.
@@ -269,6 +280,24 @@ public class COUSR03Form {
      */
     public void setErrmsg(String errmsg) {
         this.errmsg = errmsg;
+    }
+
+    /**
+     * Returns the single-use confirmation nonce (review finding F12), or {@code null} if unset.
+     *
+     * @return the confirmation nonce (max 64 characters)
+     */
+    public String getConfirmToken() {
+        return confirmToken;
+    }
+
+    /**
+     * Sets the single-use confirmation nonce (review finding F12).
+     *
+     * @param confirmToken the confirmation nonce (max 64 characters)
+     */
+    public void setConfirmToken(String confirmToken) {
+        this.confirmToken = confirmToken;
     }
 
     /**

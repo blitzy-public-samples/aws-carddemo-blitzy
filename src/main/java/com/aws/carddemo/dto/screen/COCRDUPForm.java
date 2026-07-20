@@ -135,6 +135,16 @@ public class COCRDUPForm {
     private String fkeysc;
 
     /**
+     * Single-use confirmation token (review finding #10). Not a BMS field: this is a
+     * web-only integrity artifact echoed as a hidden field on the confirmation screen
+     * and validated then consumed on the {@code PF5} save so a replayed or forged
+     * confirmation cannot re-drive the update. The 64-character bound accommodates the
+     * 256-bit token's hexadecimal encoding.
+     */
+    @Size(max = 64)
+    private String confirmToken;
+
+    /**
      * Creates an empty {@code COCRDUPForm} with all fields unset.
      */
     public COCRDUPForm() {
@@ -445,6 +455,24 @@ public class COCRDUPForm {
      */
     public void setFkeysc(String fkeysc) {
         this.fkeysc = fkeysc;
+    }
+
+    /**
+     * Returns the single-use confirmation token (review finding #10).
+     *
+     * @return the confirmation token echoed from the confirm screen
+     */
+    public String getConfirmToken() {
+        return confirmToken;
+    }
+
+    /**
+     * Sets the single-use confirmation token (review finding #10).
+     *
+     * @param confirmToken the confirmation token to carry on the hidden field
+     */
+    public void setConfirmToken(String confirmToken) {
+        this.confirmToken = confirmToken;
     }
 
     /**

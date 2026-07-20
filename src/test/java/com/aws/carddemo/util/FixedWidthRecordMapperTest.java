@@ -3,6 +3,7 @@ package com.aws.carddemo.util;
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -17,7 +18,6 @@ import java.nio.file.Paths;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.Test;
 
 /**
@@ -57,9 +57,12 @@ import org.junit.jupiter.api.Test;
  * </ul>
  *
  * <p><b>Scope.</b> This is a pure unit test: it constructs no Spring context, starts no database or
- * Testcontainers, and touches the filesystem only in the single, self-skipping fixture-width sanity
- * check ({@link #legacyDalytranFixtureIsUniform350Wide()}). No {@code float}/{@code double} arithmetic
- * appears anywhere; decimal values use {@link BigDecimal} constructed from {@link String}s.</p>
+ * Testcontainers, and touches the filesystem only in the authoritative-fixture parity check
+ * ({@link #legacyDalytranFixtureIsPresentAndEveryRecordSatisfiesThe350ByteContract()}), which
+ * <em>hard-fails</em> (never skips) when the retained fixture is missing, empty, or malformed, and
+ * validates <em>every</em> record rather than only the first (review finding&#160;#4). No
+ * {@code float}/{@code double} arithmetic appears anywhere; decimal values use {@link BigDecimal}
+ * constructed from {@link String}s.</p>
  */
 class FixedWidthRecordMapperTest {
 
@@ -353,20 +356,109 @@ class FixedWidthRecordMapperTest {
     }
 
     // ------------------------------------------------------------------------------------------
-    // Phase 8 - OPTIONAL, self-skipping fixture-width sanity against the retained legacy file
+    // Phase 8 - MANDATORY parity oracle against the retained authoritative DALYTRAN fixture.
+    // The fixture is the parity source of truth for the 350-byte daily-transaction feed contract; a
+    // missing, empty, or malformed fixture is a hard failure, never a skip (review finding #4).
+    // ------------------------------------------------------------------------------------------
+
+    /** Authoritative record count of the retained DALYTRAN fixture (EBCDIC {@code .PS} = 105000 / 350). */
+    private static final int DALYTRAN_FIXTURE_RECORD_COUNT = 300;
+
+    /** DALYTRAN feed record length ({@code legacy/cpy/CVTRA06Y.cpy} {@code DALYTRAN-RECORD}). */
+    private static final int DALYTRAN_RECORD_LENGTH = 350;
+
+    /**
+     * The authoritative DALYTRAN fixture must be present, non-empty, and <em>every</em> record must
+     * satisfy the full 350-byte {@code CVTRA06Y} contract &#8212; not merely the first row (review
+     * finding&#160;#4). The check is a hard assertion: if the retained fixture is missing, empty, has an
+     * unexpected record count, or any record fails the byte-width or field-decode contract, the test
+     * fails rather than self-skipping, so the parity oracle can never be silently bypassed.
+     *
+     * <p>Verifications, in order:</p>
+     * <ol>
+     *   <li>the fixture file exists (hard-fail, not skip);</li>
+     *   <li>its raw byte image is non-empty and exactly {@code 300 &#215; 350 + 300} bytes &#8212; the
+     *       LF-convenience framing of 300 fixed 350-byte records each followed by a single {@code LF}
+     *       terminator (the retained ASCII form; the EBCDIC {@code .PS} source is undelimited);</li>
+     *   <li>{@link Files#readAllLines} yields exactly {@value #DALYTRAN_FIXTURE_RECORD_COUNT} logical
+     *       records;</li>
+     *   <li><em>every</em> record is exactly {@value #DALYTRAN_RECORD_LENGTH} bytes wide; and</li>
+     *   <li><em>every</em> record parses cleanly through the full 14-field DALYTRAN mapper, exercising
+     *       the numeric ({@code CAT-CD}, {@code MERCHANT-ID}) and signed zoned-decimal ({@code AMT})
+     *       field decodes on real production data, not only the width.</li>
+     * </ol>
+     *
+     * <p>Row&#160;1 is additionally spot-checked: its {@code AMT} slice {@code "0000005047G"} (zoned
+     * overpunch {@code 'G'} = +7) must decode to exactly {@code +504.77}, pinning the documented example.</p>
+     *
+     * @throws IOException if the retained fixture cannot be read
+     */
+    @Test
+    void legacyDalytranFixtureIsPresentAndEveryRecordSatisfiesThe350ByteContract() throws IOException {
+        // Maven Surefire runs with user.dir at the module basedir; the retained fixture lives here.
+        Path fixture = Paths.get("legacy/data/ASCII/dailytran.txt");
+        assertTrue(Files.exists(fixture),
+                "authoritative DALYTRAN parity fixture must be present at legacy/data/ASCII/dailytran.txt "
+                        + "(this parity oracle must never be skipped)");
+
+        byte[] raw = Files.readAllBytes(fixture);
+        assertTrue(raw.length > 0, "authoritative DALYTRAN fixture must not be empty");
+        assertEquals((long) DALYTRAN_FIXTURE_RECORD_COUNT * DALYTRAN_RECORD_LENGTH
+                        + DALYTRAN_FIXTURE_RECORD_COUNT, raw.length,
+                "DALYTRAN fixture raw byte image must be 300 fixed 350-byte records each followed by a "
+                        + "single LF terminator (300 * 350 + 300 = 105300 bytes)");
+
+        List<String> lines = Files.readAllLines(fixture, StandardCharsets.ISO_8859_1);
+        assertFalse(lines.isEmpty(), "authoritative DALYTRAN fixture must contain at least one record");
+        assertEquals(DALYTRAN_FIXTURE_RECORD_COUNT, lines.size(),
+                "DALYTRAN fixture must contain exactly " + DALYTRAN_FIXTURE_RECORD_COUNT + " records");
+
+        FixedWidthRecordMapper mapper = dalytranMapper();
+        for (int i = 0; i < lines.size(); i++) {
+            String line = lines.get(i);
+            assertEquals(DALYTRAN_RECORD_LENGTH, line.length(),
+                    "DALYTRAN fixture record " + (i + 1) + " must be exactly " + DALYTRAN_RECORD_LENGTH
+                            + " bytes wide");
+            final byte[] record = bytes(line);
+            assertDoesNotThrow(() -> mapper.parse(record),
+                    "DALYTRAN fixture record " + (i + 1) + " must parse cleanly through the full "
+                            + "350-byte CVTRA06Y field contract");
+        }
+
+        // Spot-check the documented row-1 AMT example: zoned overpunch 'G' (=+7) -> +504.77.
+        BigDecimal row1Amount = mapper.parse(bytes(lines.get(0))).getSignedDecimal("amount");
+        assertEquals(0, row1Amount.compareTo(new BigDecimal("504.77")),
+                "row 1 AMT slice must decode to +504.77");
+    }
+
+    // ------------------------------------------------------------------------------------------
+    // Phase 9 - Fixed-width byte-length contracts for all four flat-file external interfaces.
+    // This is the single authoritative lock of the record-length contract for every flat file the
+    // migration reads or writes; a deliberate change to any width must update this oracle (finding #4).
     // ------------------------------------------------------------------------------------------
 
     @Test
-    void legacyDalytranFixtureIsUniform350Wide() throws IOException {
-        // Maven Surefire runs with user.dir at the module basedir; the retained fixture lives here.
-        Path fixture = Paths.get("legacy/data/ASCII/dailytran.txt");
-        Assumptions.assumeTrue(Files.exists(fixture),
-                "legacy DALYTRAN fixture not present; skipping fixture-width sanity check");
+    void allFlatFileRecordLengthContractsAreLocked() {
+        // DALYTRAN input feed - CVTRA06Y DALYTRAN-RECORD = 350 bytes (composed field sum, not a literal).
+        assertEquals(350, dalytranMapper().getRecordLength(),
+                "DALYTRAN feed record length contract (CVTRA06Y) must be exactly 350 bytes");
 
-        List<String> lines = Files.readAllLines(fixture);
-        Assumptions.assumeFalse(lines.isEmpty(), "legacy DALYTRAN fixture is empty; skipping");
+        // DALYREJS reject output - CBTRN02C REJECT-RECORD = 350 image + 80 trailer = 430 bytes
+        // (POSTTRAN.jcl LRECL=430); verified by composing the two independent field layouts.
+        assertEquals(430, dalytranMapper().concat(rejectTrailerMapper()).getRecordLength(),
+                "DALYREJS reject record length contract (350 image + 80 trailer) must be exactly 430 bytes");
 
-        assertEquals(350, lines.get(0).length(),
-                "each retained DALYTRAN fixture row must be exactly 350 bytes wide");
+        // Transaction report output - CBTRN03C FD-REPTFILE-REC PIC X(133) = 133 bytes.
+        assertEquals(133, FixedWidthRecordMapper.of(FieldDef.text("reptLine", 133)).getRecordLength(),
+                "transaction report record length contract (CBTRN03C FD-REPTFILE-REC) must be exactly "
+                        + "133 bytes");
+
+        // Statement text output - CBSTM03A FD-STMTFILE-REC PIC X(80) = 80 bytes.
+        assertEquals(80, FixedWidthRecordMapper.of(FieldDef.text("stmtLine", 80)).getRecordLength(),
+                "statement text record length contract (CBSTM03A FD-STMTFILE-REC) must be exactly 80 bytes");
+
+        // Statement HTML output - CBSTM03A FD-HTMLFILE-REC PIC X(100) = 100 bytes.
+        assertEquals(100, FixedWidthRecordMapper.of(FieldDef.text("htmlLine", 100)).getRecordLength(),
+                "statement HTML record length contract (CBSTM03A FD-HTMLFILE-REC) must be exactly 100 bytes");
     }
 }

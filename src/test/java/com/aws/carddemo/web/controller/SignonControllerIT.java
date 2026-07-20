@@ -4,10 +4,15 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
+import org.springframework.mock.web.MockHttpSession;
+import org.springframework.security.web.context.HttpSessionSecurityContextRepository;
 import org.springframework.test.web.servlet.MockMvc;
+import org.springframework.test.web.servlet.MvcResult;
 
 import com.aws.carddemo.AbstractPostgresIntegrationTest;
+import com.aws.carddemo.TestCredentials;
 
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.hamcrest.Matchers.containsString;
 import static org.hamcrest.Matchers.hasProperty;
 import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.csrf;
@@ -104,7 +109,9 @@ class SignonControllerIT extends AbstractPostgresIntegrationTest {
     private static final String STANDARD_USER_ID = "USER0001";
 
     /** The cleartext password shared by every seeded user ({@code SEC-USR-PWD}), for parity. */
-    private static final String SEEDED_PASSWORD = "PASSWORD";
+    // Review finding #5: the seed password is externalized (CARDDEMO_SEED_PASSWORD env var,
+    // no committed default) and read here to authenticate against the real Flyway-seeded rows.
+    private static final String SEEDED_PASSWORD = TestCredentials.seedPassword();
 
     /**
      * MockMvc bound to the full web application context by {@link AutoConfigureMockMvc}, exercising the
@@ -186,6 +193,46 @@ class SignonControllerIT extends AbstractPostgresIntegrationTest {
                         .with(csrf()))
                 .andExpect(status().is3xxRedirection())
                 .andExpect(redirectedUrl("/menu"));
+    }
+
+    /**
+     * Review finding #6 (session fixation, CWE-384): a successful sign-on must rotate the
+     * {@code HttpSession} id so a pre-authentication session id cannot be reused to ride the now
+     * authenticated session, and the authenticated identity must survive the rotation. The request is
+     * made with a pre-existing session; afterwards the session id must differ from the id it had before
+     * sign-on, and the persisted Spring Security context must be present on the (rotated) session so
+     * the identity carries to the post-sign-on redirect. This proves the controller-managed sign-on
+     * invokes the {@code SessionAuthenticationStrategy} (change-session-id + register) that a
+     * filter-managed login would otherwise have applied.
+     *
+     * @throws Exception if the request cannot be performed
+     */
+    @Test
+    @DisplayName("POST /signon rotates the session id (fixation protection) and preserves the identity")
+    void postSignonRotatesSessionIdAndPreservesIdentity() throws Exception {
+        MockHttpSession preAuthSession = new MockHttpSession();
+        String preAuthId = preAuthSession.getId();
+
+        MvcResult result = mockMvc.perform(post("/signon")
+                        .param(PARAM_USERID, STANDARD_USER_ID)
+                        .param(PARAM_PASSWD, SEEDED_PASSWORD)
+                        .session(preAuthSession)
+                        .with(csrf()))
+                .andExpect(status().is3xxRedirection())
+                .andExpect(redirectedUrl("/menu"))
+                .andReturn();
+
+        MockHttpSession postAuthSession = (MockHttpSession) result.getRequest().getSession(false);
+        assertThat(postAuthSession)
+                .as("a session must still exist after sign-on")
+                .isNotNull();
+        assertThat(postAuthSession.getId())
+                .as("session id must rotate on sign-on (fixation protection, finding #6)")
+                .isNotEqualTo(preAuthId);
+        assertThat(postAuthSession.getAttribute(
+                        HttpSessionSecurityContextRepository.SPRING_SECURITY_CONTEXT_KEY))
+                .as("authenticated SecurityContext must be persisted on the rotated session")
+                .isNotNull();
     }
 
     // --- Phase 3: POST validation & error paths -----------------------------

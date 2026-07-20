@@ -14,17 +14,20 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.mockito.ArgumentCaptor;
 
+import org.springframework.batch.core.BatchStatus;
+import org.springframework.batch.core.ExitStatus;
 import org.springframework.batch.core.Job;
 import org.springframework.batch.core.Step;
+import org.springframework.batch.core.StepExecution;
 import org.springframework.batch.core.repository.JobRepository;
 import org.springframework.batch.core.scope.StepScope;
 import org.springframework.batch.item.Chunk;
 import org.springframework.batch.item.ExecutionContext;
 import org.springframework.batch.item.data.RepositoryItemReader;
 import org.springframework.batch.item.file.FlatFileItemWriter;
+import org.springframework.batch.test.MetaDataInstanceFactory;
 import org.springframework.boot.test.context.runner.ApplicationContextRunner;
 import org.springframework.context.annotation.Bean;
-import org.springframework.context.annotation.Configuration;
 import org.springframework.data.domain.PageImpl;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.domain.Sort;
@@ -33,6 +36,8 @@ import org.springframework.transaction.PlatformTransactionManager;
 import com.aws.carddemo.domain.Transaction;
 import com.aws.carddemo.repository.TransactionRepository;
 import com.aws.carddemo.util.FixedWidthRecordMapper;
+import com.aws.carddemo.util.batch.AtomicFileStepPublisher;
+import com.aws.carddemo.util.batch.BatchFilePathResolver;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatNullPointerException;
@@ -195,39 +200,49 @@ class TransactionBackupJobConfigTest {
     // ------------------------------------------------------------------------------------------
 
     @Test
-    @DisplayName("writer emits one 350-byte line per transaction, in order, each terminated by '\\n'")
-    void writerEmits350ByteLinesInOrder(@TempDir Path tempDir) throws Exception {
-        TransactionBackupJobConfig config = newConfig();
+    @DisplayName("writer emits back-to-back 350-byte records (undelimited RECFM=FB), in order, atomically published")
+    void writerEmits350ByteRecordsInOrder(@TempDir Path tempDir) throws Exception {
+        // A resolver rooted at the test's temp directory: the output path (a direct child) passes
+        // safe-root containment (finding #18), and the writer streams into a sibling in-progress temp
+        // file that is atomically renamed onto the final path only on step COMPLETED (finding #19).
+        AtomicFileStepPublisher publisher = new AtomicFileStepPublisher(
+                new BatchFilePathResolver(List.of(tempDir.toString())));
+        TransactionBackupJobConfig config = newConfig(publisher);
         Path out = tempDir.resolve("TRANSACT.BKUP");
 
         Transaction first = fullyPopulated("0000000000000001");
         Transaction second = fullyPopulated("0000000000000002");
         second.setTranAmt(new BigDecimal("-98765.43"));
 
-        FlatFileItemWriter<Transaction> writer = config.transactionBackupWriter(out.toString());
+        StepExecution stepExecution = MetaDataInstanceFactory.createStepExecution();
+        FlatFileItemWriter<Transaction> writer =
+                config.transactionBackupWriter(out.toString(), stepExecution);
         writer.open(new ExecutionContext());
         try {
             writer.write(new Chunk<>(first, second));
         } finally {
             writer.close();
         }
+        // The final path does not exist until the step completes and the listener publishes atomically.
+        assertThat(Files.exists(out)).isFalse();
+        stepExecution.setStatus(BatchStatus.COMPLETED);
+        stepExecution.setExitStatus(ExitStatus.COMPLETED);
+        publisher.afterStep(stepExecution);
 
         byte[] all = Files.readAllBytes(out);
         byte[] expected1 = TransactionBackupJobConfig.encodeRecord(first).getBytes(StandardCharsets.ISO_8859_1);
         byte[] expected2 = TransactionBackupJobConfig.encodeRecord(second).getBytes(StandardCharsets.ISO_8859_1);
 
-        // Two 350-byte records, each followed by a single newline: 2 * (350 + 1) = 702 bytes.
-        assertThat(all).hasSize(702);
+        // Two 350-byte records, back-to-back, NO delimiter: 2 * 350 = 700 bytes (RECFM=FB, finding #17).
+        assertThat(all).hasSize(700);
         assertThat(Arrays.copyOfRange(all, 0, 350)).isEqualTo(expected1);
-        assertThat(all[350]).isEqualTo((byte) '\n');
-        assertThat(Arrays.copyOfRange(all, 351, 701)).isEqualTo(expected2);
-        assertThat(all[701]).isEqualTo((byte) '\n');
+        assertThat(Arrays.copyOfRange(all, 350, 700)).isEqualTo(expected2);
 
         // The records appear in the exact order supplied (the reader guarantees tranId order upstream).
         FixedWidthRecordMapper.ParsedRecord line1 = TransactionBackupJobConfig.TRAN_RECORD_MAPPER
                 .parse(Arrays.copyOfRange(all, 0, 350));
         FixedWidthRecordMapper.ParsedRecord line2 = TransactionBackupJobConfig.TRAN_RECORD_MAPPER
-                .parse(Arrays.copyOfRange(all, 351, 701));
+                .parse(Arrays.copyOfRange(all, 350, 700));
         assertThat(line1.getText(TransactionBackupJobConfig.F_TRAN_ID)).isEqualTo("0000000000000001");
         assertThat(line2.getText(TransactionBackupJobConfig.F_TRAN_ID)).isEqualTo("0000000000000002");
     }
@@ -236,8 +251,9 @@ class TransactionBackupJobConfigTest {
     @DisplayName("writer requires the outputPath job parameter")
     void writerRequiresOutputPath() {
         TransactionBackupJobConfig config = newConfig();
+        StepExecution stepExecution = MetaDataInstanceFactory.createStepExecution();
         assertThatNullPointerException()
-                .isThrownBy(() -> config.transactionBackupWriter(null));
+                .isThrownBy(() -> config.transactionBackupWriter(null, stepExecution));
     }
 
     // ------------------------------------------------------------------------------------------
@@ -255,7 +271,9 @@ class TransactionBackupJobConfigTest {
         when(repository.findAll(any(Pageable.class))).thenReturn(new PageImpl<>(List.of(only)));
 
         TransactionBackupJobConfig config =
-                new TransactionBackupJobConfig(jobRepository, transactionManager, repository);
+                new TransactionBackupJobConfig(jobRepository, transactionManager, repository,
+                        new AtomicFileStepPublisher(new BatchFilePathResolver(
+                                List.of(System.getProperty("java.io.tmpdir")))));
         RepositoryItemReader<Transaction> reader = config.transactionBackupReader();
 
         reader.open(new ExecutionContext());
@@ -299,6 +317,8 @@ class TransactionBackupJobConfigTest {
                 .withBean(JobRepository.class, () -> mock(JobRepository.class))
                 .withBean(PlatformTransactionManager.class, () -> mock(PlatformTransactionManager.class))
                 .withBean(TransactionRepository.class, () -> mock(TransactionRepository.class))
+                .withBean(AtomicFileStepPublisher.class, () -> new AtomicFileStepPublisher(
+                        new BatchFilePathResolver(List.of(System.getProperty("java.io.tmpdir")))))
                 .withUserConfiguration(StepScopeConfiguration.class, TransactionBackupJobConfig.class)
                 .run(context -> {
                     assertThat(context).hasNotFailed();
@@ -318,8 +338,17 @@ class TransactionBackupJobConfigTest {
      * Registers Spring Batch's {@code step} scope so the {@code @StepScope} reader/writer beans resolve
      * to lazy scoped proxies, allowing {@code transactionBackupStep}/{@code transactionBackupJob} to be
      * built inside a database-free application context.
+     *
+     * <p><b>Intentionally not {@code @Configuration}.</b> This helper is consumed only via
+     * {@link ApplicationContextRunner#withUserConfiguration} in {@link #stepAndJobBeansWireTogether()},
+     * where its {@code static @Bean} is still processed in configuration <em>lite</em> mode (a class
+     * with {@code @Bean} methods is a lite candidate). It must <strong>not</strong> carry a
+     * {@code @Component}/{@code @Configuration} stereotype: this class lives in a package that the
+     * full-application {@code @SpringBootTest} integration tests component-scan, and a scannable
+     * {@code stepScope} bean here would collide with Spring Batch's own
+     * {@code ScopeConfiguration.stepScope()} ({@code BeanDefinitionOverrideException}), breaking every
+     * full-context integration test.</p>
      */
-    @Configuration
     static class StepScopeConfiguration {
         @Bean
         public static StepScope stepScope() {
@@ -328,10 +357,16 @@ class TransactionBackupJobConfigTest {
     }
 
     private static TransactionBackupJobConfig newConfig() {
+        return newConfig(new AtomicFileStepPublisher(
+                new BatchFilePathResolver(List.of(System.getProperty("java.io.tmpdir")))));
+    }
+
+    private static TransactionBackupJobConfig newConfig(AtomicFileStepPublisher publisher) {
         return new TransactionBackupJobConfig(
                 mock(JobRepository.class),
                 mock(PlatformTransactionManager.class),
-                mock(TransactionRepository.class));
+                mock(TransactionRepository.class),
+                publisher);
     }
 
     private static Transaction fullyPopulated(String tranId) {

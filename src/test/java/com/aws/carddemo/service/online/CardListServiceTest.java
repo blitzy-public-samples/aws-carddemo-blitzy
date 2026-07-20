@@ -18,7 +18,9 @@ package com.aws.carddemo.service.online;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
@@ -39,13 +41,15 @@ import com.aws.carddemo.service.online.CardListService.CardListState;
 import com.aws.carddemo.service.online.CardListService.Routing;
 import java.time.LocalDate;
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.List;
+import java.util.Optional;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
-import org.springframework.data.domain.Sort;
+import org.springframework.data.domain.Limit;
 
 /**
  * Pure-Mockito unit tests for {@link CardListService}.
@@ -92,8 +96,13 @@ import org.springframework.data.domain.Sort;
  *
  * <p><b>Browse fixtures:</b> the in-memory {@code STARTBR}/{@code READNEXT} browse
  * reads a scoped, ascending-by-card-number {@link Card} list returned by the mocked
- * {@link CardRepository}. The unfiltered browse is stubbed on
- * {@link CardRepository#findAll(Sort)} and the account-filtered
+ * {@link CardRepository}. The unfiltered browse is stubbed on the bounded keyset
+ * window finders
+ * {@link CardRepository#findByCardNumGreaterThanEqualOrderByCardNumAsc(String, Limit)}
+ * (page-down) and
+ * {@link CardRepository#findByCardNumLessThanEqualOrderByCardNumDesc(String, Limit)}
+ * (page-up) &mdash; a shared {@code stubBrowseWindows} answer serves the exact slice the
+ * real derived queries would return from the fixture &mdash; and the account-filtered
  * ({@code CARDAIX} alternate-index) browse on
  * {@link CardRepository#findByCardAcctIdOrderByCardNumAsc(Long)}. Fixtures carry at
  * least eight cards so the seven-row page limit and forward / backward paging are
@@ -223,6 +232,62 @@ class CardListServiceTest {
     }
 
     /**
+     * Stubs the two bounded keyset browse-window finders on the mocked {@link CardRepository} so
+     * they return exactly the slice the real Spring Data derived queries would return from the given
+     * ascending fixture, honoring both the keyset bound and the {@link Limit}. This replaces the
+     * former single {@code findAll(Sort)} stub after the card-list browse was converted to bounded
+     * keyset paging (review finding&nbsp;#21): the service reads one page-window at a time rather
+     * than the whole base cluster, so the unit fixtures must serve windowed slices.
+     *
+     * <p>The forward finder returns the cards whose number is {@code >=} the anchor in ascending
+     * order (the empty-string {@code LOW-VALUES} anchor sorts before every card, selecting the first
+     * page); the backward finder returns the cards whose number is {@code <=} the anchor in
+     * <em>descending</em> order (the service reverses it). Both honor the {@code Limit}. String
+     * comparison reproduces the C/POSIX byte collation the {@code card_num CHAR(16)} column uses,
+     * because the fixtures are sixteen-digit zero-padded card numbers.</p>
+     *
+     * <p>Both stubs are declared {@code lenient()} because a given test exercises only one browse
+     * direction, so Mockito's strict-stub checking must not fail the unexercised direction.</p>
+     *
+     * @param ascendingFixture the full ascending-by-card-number fixture the windows are sliced from
+     */
+    private void stubBrowseWindows(List<Card> ascendingFixture) {
+        lenient().when(cardRepository.findByCardNumGreaterThanEqualOrderByCardNumAsc(
+                        anyString(), any(Limit.class)))
+                .thenAnswer(invocation -> {
+                    String anchor = invocation.getArgument(0);
+                    Limit limit = invocation.getArgument(1);
+                    List<Card> window = new ArrayList<>();
+                    for (Card candidate : ascendingFixture) {
+                        if (candidate.getCardNum().compareTo(anchor) >= 0) {
+                            window.add(candidate);
+                            if (window.size() == limit.max()) {
+                                break;
+                            }
+                        }
+                    }
+                    return window;
+                });
+        lenient().when(cardRepository.findByCardNumLessThanEqualOrderByCardNumDesc(
+                        anyString(), any(Limit.class)))
+                .thenAnswer(invocation -> {
+                    String anchor = invocation.getArgument(0);
+                    Limit limit = invocation.getArgument(1);
+                    List<Card> descending = new ArrayList<>();
+                    for (Card candidate : ascendingFixture) {
+                        if (candidate.getCardNum().compareTo(anchor) <= 0) {
+                            descending.add(candidate);
+                        }
+                    }
+                    descending.sort(Comparator.comparing(Card::getCardNum).reversed());
+                    if (descending.size() > limit.max()) {
+                        return new ArrayList<>(descending.subList(0, limit.max()));
+                    }
+                    return descending;
+                });
+    }
+
+    /**
      * Counts how many of the seven persisted screen rows carry a non-empty card number.
      *
      * @param paging the paging state to inspect
@@ -250,7 +315,7 @@ class CardListServiceTest {
     @Test
     void mainEntryFirstEntry_initializesListingFromTopOfBrowse() {
         when(context.isNew()).thenReturn(true);
-        when(cardRepository.findAll(any(Sort.class))).thenReturn(ascendingCards(8, FILTER_ACCOUNT));
+        stubBrowseWindows(ascendingCards(8, FILTER_ACCOUNT));
         CardListPagingState paging = new CardListPagingState();
 
         CardListResult result =
@@ -270,12 +335,12 @@ class CardListServiceTest {
      * {@code 9000-READ-FORWARD} fills at most {@code WS-MAX-SCREEN-LINES} (seven) rows per page:
      * given eight matching cards, only the first seven populate the screen page, the eighth is held
      * back, and {@code CA-NEXT-PAGE-EXISTS} is set from the one-record look-ahead. The browse reads
-     * the ascending {@code CARDDAT} base cluster via {@link CardRepository#findAll(Sort)} and touches
+     * the ascending {@code CARDDAT} base cluster via {@link CardRepository#findByCardNumGreaterThanEqualOrderByCardNumAsc(String, Limit)} and touches
      * neither the shared context nor the cross-reference (checklist item 1).
      */
     @Test
     void readForward_fillsExactlySevenRowsAndFlagsNextPage() {
-        when(cardRepository.findAll(any(Sort.class))).thenReturn(ascendingCards(8, FILTER_ACCOUNT));
+        stubBrowseWindows(ascendingCards(8, FILTER_ACCOUNT));
         CardListPagingState paging = new CardListPagingState();
         paging.setScreenNum(1);
         CardListState state = new CardListState();
@@ -287,7 +352,7 @@ class CardListServiceTest {
         assertThat(paging.getRow(MAX_SCREEN_LINES).cardNumber()).isEqualTo(cardNumber(7));
         assertThat(paging.getRows()).noneMatch(row -> cardNumber(8).equals(row.cardNumber()));
         assertThat(paging.isNextPageExists()).isTrue();
-        verify(cardRepository).findAll(any(Sort.class));
+        verify(cardRepository).findByCardNumGreaterThanEqualOrderByCardNumAsc(anyString(), any(Limit.class));
         verifyNoInteractions(context, cardXrefRepository);
     }
 
@@ -300,7 +365,7 @@ class CardListServiceTest {
      */
     @Test
     void readForward_advancesWindowFromBrowseKey() {
-        when(cardRepository.findAll(any(Sort.class))).thenReturn(ascendingCards(10, FILTER_ACCOUNT));
+        stubBrowseWindows(ascendingCards(10, FILTER_ACCOUNT));
         CardListPagingState paging = new CardListPagingState();
         paging.setScreenNum(2);
         CardListState state = new CardListState();
@@ -324,7 +389,7 @@ class CardListServiceTest {
     @Test
     void mainEntryPf8_pagesForwardToNextWindow() {
         when(context.getFromProgram()).thenReturn(LIST_PROGRAM);
-        when(cardRepository.findAll(any(Sort.class))).thenReturn(ascendingCards(10, FILTER_ACCOUNT));
+        stubBrowseWindows(ascendingCards(10, FILTER_ACCOUNT));
         CardListPagingState paging = new CardListPagingState();
         paging.setScreenNum(1);
         paging.setNextPageExists(true);
@@ -350,7 +415,7 @@ class CardListServiceTest {
     @Test
     void mainEntryReEntry_preservesPagingCursor() {
         when(context.getFromProgram()).thenReturn(LIST_PROGRAM);
-        when(cardRepository.findAll(any(Sort.class))).thenReturn(ascendingCards(10, FILTER_ACCOUNT));
+        stubBrowseWindows(ascendingCards(10, FILTER_ACCOUNT));
         CardListPagingState paging = new CardListPagingState();
         paging.setScreenNum(1);
         paging.setFirstCardNum(cardNumber(3));
@@ -377,7 +442,7 @@ class CardListServiceTest {
     @Test
     void mainEntryPf7_pagesBackwardToPriorWindow() {
         when(context.getFromProgram()).thenReturn(LIST_PROGRAM);
-        when(cardRepository.findAll(any(Sort.class))).thenReturn(ascendingCards(14, FILTER_ACCOUNT));
+        stubBrowseWindows(ascendingCards(14, FILTER_ACCOUNT));
         CardListPagingState paging = new CardListPagingState();
         paging.setScreenNum(2);
         paging.setFirstCardNum(cardNumber(8));
@@ -400,7 +465,7 @@ class CardListServiceTest {
      */
     @Test
     void readBackwards_fillsPriorWindowEndingAtBrowseKey() {
-        when(cardRepository.findAll(any(Sort.class))).thenReturn(ascendingCards(14, FILTER_ACCOUNT));
+        stubBrowseWindows(ascendingCards(14, FILTER_ACCOUNT));
         CardListPagingState paging = new CardListPagingState();
         paging.setScreenNum(2);
         paging.setFirstCardNum(cardNumber(8));
@@ -484,7 +549,7 @@ class CardListServiceTest {
     @Test
     void mainEntryMultipleSelections_reportsSingleSelectionErrorWithoutRouting() {
         when(context.getFromProgram()).thenReturn(LIST_PROGRAM);
-        when(cardRepository.findAll(any(Sort.class))).thenReturn(ascendingCards(8, FILTER_ACCOUNT));
+        stubBrowseWindows(ascendingCards(8, FILTER_ACCOUNT));
         CardListPagingState paging = new CardListPagingState();
         paging.setScreenNum(1);
         COCRDLIForm form = new COCRDLIForm();
@@ -750,9 +815,9 @@ class CardListServiceTest {
 
     /**
      * A valid account filter narrows the browse through the {@code CARDAIX} alternate-index
-     * replacement: {@code buildScopedOrderedList} takes the
+     * replacement: {@code buildForwardWindow} takes the
      * {@link CardRepository#findByCardAcctIdOrderByCardNumAsc(Long)} path and never scans the full
-     * base cluster via {@link CardRepository#findAll(Sort)} (checklist item 7, valid filter narrows
+     * base cluster via {@link CardRepository#findByCardNumGreaterThanEqualOrderByCardNumAsc(String, Limit)} (checklist item 7, valid filter narrows
      * the browse).
      */
     @Test
@@ -771,7 +836,70 @@ class CardListServiceTest {
         assertThat(result.routing()).isEqualTo(Routing.SHOW_LIST);
         assertThat(populatedRowCount(paging)).isEqualTo(3L);
         verify(cardRepository).findByCardAcctIdOrderByCardNumAsc(FILTER_ACCOUNT);
-        verify(cardRepository, never()).findAll(any(Sort.class));
+        verify(cardRepository, never()).findByCardNumGreaterThanEqualOrderByCardNumAsc(anyString(), any(Limit.class));
+        verify(cardRepository, never()).findByCardNumLessThanEqualOrderByCardNumDesc(anyString(), any(Limit.class));
+        verifyNoInteractions(cardXrefRepository);
+    }
+
+    /**
+     * A valid card-number filter without an account filter resolves to a single primary-key point
+     * lookup rather than a base-cluster window (review finding&nbsp;#21). Because {@code CARD-NUM} is
+     * the unique VSAM key, {@code 9500-FILTER-RECORDS} can retain at most one record from the
+     * full-cluster browse; the migrated browse therefore reads only that one card through
+     * {@link CardRepository#findById(Object)}. The single matching card is shown and neither the
+     * bounded window finders nor the account-index finder are touched (checklist item 7, card filter
+     * narrows the browse to the unique key).
+     */
+    @Test
+    void mainEntryValidCardFilter_usesPrimaryKeyPointLookup() {
+        when(context.getFromProgram()).thenReturn(LIST_PROGRAM);
+        when(cardRepository.findById(cardNumber(5)))
+                .thenReturn(Optional.of(card(cardNumber(5), FILTER_ACCOUNT, "Y")));
+        CardListPagingState paging = new CardListPagingState();
+        paging.setScreenNum(1);
+        CardWorkArea work = new CardWorkArea();
+        work.setCardNum(cardNumber(5));
+
+        CardListResult result =
+                service.mainEntry(new COCRDLIForm(), PfKey.ENTER, work, paging);
+
+        assertThat(result.routing()).isEqualTo(Routing.SHOW_LIST);
+        assertThat(populatedRowCount(paging)).isEqualTo(1L);
+        assertThat(paging.getRow(1).cardNumber()).isEqualTo(cardNumber(5));
+        assertThat(paging.isNextPageExists()).isFalse();
+        verify(cardRepository).findById(cardNumber(5));
+        verify(cardRepository, never()).findByCardNumGreaterThanEqualOrderByCardNumAsc(anyString(), any(Limit.class));
+        verify(cardRepository, never()).findByCardNumLessThanEqualOrderByCardNumDesc(anyString(), any(Limit.class));
+        verify(cardRepository, never()).findByCardAcctIdOrderByCardNumAsc(anyLong());
+        verifyNoInteractions(cardXrefRepository);
+    }
+
+    /**
+     * A valid card-number filter that matches no card yields the "{@value #MSG_NO_RECORDS_FOUND}"
+     * outcome, exactly as the COBOL full-cluster browse would after excluding every record: the
+     * point lookup ({@link CardRepository#findById(Object)}) returns empty, the forward browse reads
+     * end-of-file on an empty first page, and no rows are shown. This proves the point-lookup
+     * substitution preserves the no-match browse outcome (review finding&nbsp;#21).
+     */
+    @Test
+    void mainEntryValidCardFilter_absentCardShowsNoRecords() {
+        when(context.getFromProgram()).thenReturn(LIST_PROGRAM);
+        when(cardRepository.findById(cardNumber(99))).thenReturn(Optional.empty());
+        CardListPagingState paging = new CardListPagingState();
+        paging.setScreenNum(1);
+        CardWorkArea work = new CardWorkArea();
+        work.setCardNum(cardNumber(99));
+
+        CardListResult result =
+                service.mainEntry(new COCRDLIForm(), PfKey.ENTER, work, paging);
+
+        assertThat(result.routing()).isEqualTo(Routing.SHOW_LIST);
+        assertThat(populatedRowCount(paging)).isZero();
+        assertThat(result.errorMessage()).isEqualTo(MSG_NO_RECORDS_FOUND);
+        assertThat(paging.isNextPageExists()).isFalse();
+        verify(cardRepository).findById(cardNumber(99));
+        verify(cardRepository, never()).findByCardNumGreaterThanEqualOrderByCardNumAsc(anyString(), any(Limit.class));
+        verify(cardRepository, never()).findByCardNumLessThanEqualOrderByCardNumDesc(anyString(), any(Limit.class));
         verifyNoInteractions(cardXrefRepository);
     }
 
@@ -783,7 +911,7 @@ class CardListServiceTest {
      */
     @Test
     void readForward_handlesEndOfFileOnEmptyFirstPageWithoutThrowing() {
-        when(cardRepository.findAll(any(Sort.class))).thenReturn(List.of());
+        stubBrowseWindows(List.of());
         CardListPagingState paging = new CardListPagingState();
         paging.setScreenNum(1);
         CardListState state = new CardListState();
@@ -808,7 +936,7 @@ class CardListServiceTest {
     @Test
     void mainEntrySmallList_showsAllRowsAndHandlesEndOfFileInternally() {
         when(context.isNew()).thenReturn(true);
-        when(cardRepository.findAll(any(Sort.class))).thenReturn(ascendingCards(3, FILTER_ACCOUNT));
+        stubBrowseWindows(ascendingCards(3, FILTER_ACCOUNT));
         CardListPagingState paging = new CardListPagingState();
 
         CardListResult result =
@@ -830,7 +958,7 @@ class CardListServiceTest {
     @Test
     void mainEntryEndOfFile_isNeverPropagatedFromMainEntry() {
         when(context.isNew()).thenReturn(true);
-        when(cardRepository.findAll(any(Sort.class))).thenReturn(List.of());
+        stubBrowseWindows(List.of());
         CardListPagingState paging = new CardListPagingState();
 
         assertThatCode(() ->
@@ -847,7 +975,7 @@ class CardListServiceTest {
     @Test
     void mainEntryPf7OnFirstPage_reListsFromTopWithoutError() {
         when(context.getFromProgram()).thenReturn(LIST_PROGRAM);
-        when(cardRepository.findAll(any(Sort.class))).thenReturn(ascendingCards(8, FILTER_ACCOUNT));
+        stubBrowseWindows(ascendingCards(8, FILTER_ACCOUNT));
         CardListPagingState paging = new CardListPagingState();
         paging.setScreenNum(1);
         paging.setFirstCardNum(cardNumber(1));

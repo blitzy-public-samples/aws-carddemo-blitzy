@@ -18,6 +18,7 @@ package com.aws.carddemo.domain;
 import static org.assertj.core.api.Assertions.assertThat;
 
 import com.aws.carddemo.AbstractPostgresIntegrationTest;
+import com.aws.carddemo.TestCredentials;
 import jakarta.persistence.EntityManager;
 import jakarta.persistence.PersistenceContext;
 import org.junit.jupiter.api.Test;
@@ -92,7 +93,8 @@ class UserSecurityPersistenceIT extends AbstractPostgresIntegrationTest {
     private static final String STANDARD_ID = "USER0001";
 
     /** Cleartext password shared by every seeded row (V2). {@code CHAR(8)} column, exactly eight chars. */
-    private static final String SEED_PASSWORD = "PASSWORD";
+    // Review finding #5: seed password externalized via CARDDEMO_SEED_PASSWORD (no committed default).
+    private static final String SEED_PASSWORD = TestCredentials.seedPassword();
 
     /** Non-colliding primary key for the insert round-trip. Exactly eight chars for the {@code CHAR(8)} PK. */
     private static final String NEW_USER_ID = "ITUSER01";

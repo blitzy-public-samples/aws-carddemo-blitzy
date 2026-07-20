@@ -18,9 +18,13 @@ package com.aws.carddemo.domain;
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
 import jakarta.persistence.Id;
+import jakarta.persistence.PostLoad;
+import jakarta.persistence.PostPersist;
 import jakarta.persistence.Table;
+import jakarta.persistence.Transient;
 import org.hibernate.annotations.JdbcTypeCode;
 import org.hibernate.type.SqlTypes;
+import org.springframework.data.domain.Persistable;
 
 /**
  * JPA entity for the CardDemo signon / authorization user store.
@@ -66,10 +70,34 @@ import org.hibernate.type.SqlTypes;
  * The "no hardcoded credentials" rule applies to source and configuration, not to this seeded data
  * column. As a security-hygiene safeguard, the password is never emitted by {@link #toString()} and must
  * never be written to logs.</p>
+ *
+ * <p><strong>Insert semantics (AAP &sect;0.6.5; review finding #32):</strong> the user id is an
+ * <em>assigned</em> primary key (no {@code @GeneratedValue}). For an entity with a non-null assigned
+ * id and no {@code @Version}, Spring Data's {@code save(...)} would take the {@code EntityManager.merge}
+ * path ({@code SELECT}-then-{@code UPDATE}), so the user-add program {@code COUSR01C} would
+ * <em>silently overwrite</em> an existing user rather than reproducing the legacy {@code WRITE}
+ * {@code DUPREC} ({@code FILE STATUS "22"} / CICS {@code DFHRESP(DUPKEY)}). To reproduce that
+ * behaviour this entity implements {@link Persistable}: {@link #isNew()} reports {@code true} for a
+ * freshly constructed instance (the add path), so {@code save(...)} issues a true
+ * {@code EntityManager.persist} (an {@code INSERT}) and a duplicate id raises a
+ * {@code DataIntegrityViolationException}. The update program {@code COUSR02C} first loads the record
+ * ({@code findByUsrIdForUpdate}); the {@link PostLoad} callback clears {@link #isNew}, so the
+ * subsequent {@code save(...)} correctly takes the {@code merge}/{@code UPDATE} path
+ * ({@code REWRITE}).</p>
  */
 @Entity
 @Table(name = "user_security")
-public class UserSecurity {
+public class UserSecurity implements Persistable<String> {
+
+    /**
+     * Transient {@link Persistable#isNew()} flag (review finding #32). Defaults to {@code true} so a
+     * freshly constructed {@link UserSecurity} (the add path) forces {@code EntityManager.persist} (a
+     * true {@code INSERT}); it is cleared by {@link #markNotNew()} after the row is persisted or
+     * loaded (so the update path takes {@code merge}/{@code UPDATE}). Marked {@link Transient} so it
+     * is never mapped to a column.
+     */
+    @Transient
+    private boolean isNew = true;
 
     /**
      * User id and primary key. Origin {@code SEC-USR-ID PIC X(08)} (8 bytes); the VSAM KSDS key.
@@ -240,6 +268,44 @@ public class UserSecurity {
     @Override
     public int hashCode() {
         return UserSecurity.class.hashCode();
+    }
+
+    /**
+     * The {@link Persistable} identifier &mdash; the user id ({@code SEC-USR-ID}).
+     *
+     * @return the primary key, or {@code null} before one is assigned
+     */
+    @Override
+    public String getId() {
+        return usrId;
+    }
+
+    /**
+     * Reports whether this instance must be treated as a new row for {@code Spring Data}
+     * {@code save(...)} (review finding #32). Returns {@code true} for a freshly constructed user (the
+     * add path) so {@code save(...)} performs a true {@code INSERT} ({@code EntityManager.persist})
+     * and a duplicate id fails loudly ({@code DataIntegrityViolationException}), reproducing the
+     * legacy {@code WRITE} {@code DUPREC} ({@code FILE STATUS "22"}) rather than silently overwriting
+     * an existing user. Cleared by {@link #markNotNew()} once the row is persisted or loaded, so the
+     * update path ({@code findByUsrIdForUpdate} then {@code save}) correctly takes the
+     * {@code merge}/{@code UPDATE} path.
+     *
+     * @return {@code true} if this instance has not yet been persisted or loaded, otherwise {@code false}
+     */
+    @Override
+    public boolean isNew() {
+        return isNew;
+    }
+
+    /**
+     * Clears the {@link #isNew} flag after the row has been inserted ({@link PostPersist}) or read
+     * back from the database ({@link PostLoad}), so a managed {@link UserSecurity} is thereafter
+     * treated as existing (the update {@code REWRITE} path).
+     */
+    @PostPersist
+    @PostLoad
+    void markNotNew() {
+        this.isNew = false;
     }
 
     /**

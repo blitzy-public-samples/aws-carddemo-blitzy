@@ -29,30 +29,32 @@
 */-->
 <html lang="en" xmlns:th="http://www.thymeleaf.org">
 <head>
+    <th:block th:replace="~{fragments/bms-palette :: palette}"></th:block>
     <meta charset="UTF-8"/>
     <meta name="viewport" content="width=device-width, initial-scale=1"/>
     <title>View Account</title>
     <style>
         /*
-         * 3270 palette mapped to hex (per legacy/bms/COACTVW.bms COLOR= attributes) on a dark
-         * background. These are the authoritative colors from the BMS source.
+         * 3270 palette mapped from the legacy/bms/COACTVW.bms COLOR= attributes. Colours are
+         * centralized in templates/fragments/bms-palette.html (single source of truth) and
+         * referenced here via var(--bms-*).
          *
-         * BLITZY [A11Y]: The legacy 3270 palette on a black background yields text/background
-         * contrast below the WCAG AA 4.5:1 recommendation for some colors (e.g. BLUE #0000CD on
-         * #000 is ~1.9:1). The design source (BMS) is authoritative for this migration, so the
-         * colors are reproduced exactly and flagged here for designer review rather than being
-         * silently altered. Invisible accessibility (semantic HTML, label association, focus
-         * indicators, ARIA live regions, lang) is applied unconditionally below.
+         * BLITZY [A11Y / review finding #53]: the two BMS foreground colours that failed WCAG 2.1
+         * AA normal-text contrast on the black background (BLUE, RED) are replaced with accessible
+         * equivalents brightened along the same hue axis (>= 4.5:1); the remaining colours keep
+         * their legacy values (all already pass AA). Contrast is asserted by BmsPaletteContrastTest
+         * and the rationale is recorded in docs/decision-log.md. Semantic HTML, label association,
+         * focus indicators and ARIA live regions are applied unconditionally below.
          */
         :root {
             --rh: 1.25rem;          /* height of one terminal row */
-            --blue:    #0000CD;     /* BMS COLOR=BLUE     */
-            --yellow:  #CCCC00;     /* BMS COLOR=YELLOW   */
-            --turq:    #00CDCD;     /* BMS COLOR=TURQUOISE*/
-            --green:   #00CD00;     /* BMS COLOR=GREEN / 3270 default field color */
-            --red:     #CD0000;     /* BMS COLOR=RED      */
-            --neutral: #FFFFFF;     /* BMS COLOR=NEUTRAL  */
-            --bg:      #000000;     /* dark terminal background */
+            --blue:    var(--bms-blue);     /* BMS COLOR=BLUE     */
+            --yellow:  var(--bms-yellow);     /* BMS COLOR=YELLOW   */
+            --turq:    var(--bms-turquoise);     /* BMS COLOR=TURQUOISE*/
+            --green:   var(--bms-green);     /* BMS COLOR=GREEN / 3270 default field color */
+            --red:     var(--bms-red);     /* BMS COLOR=RED      */
+            --neutral: var(--bms-neutral);     /* BMS COLOR=NEUTRAL  */
+            --bg:      var(--bms-bg);     /* dark terminal background */
         }
 
         *, *::before, *::after { box-sizing: border-box; }
@@ -71,7 +73,7 @@
         .screen-wrap {
             width: 100%;
             display: flex;
-            justify-content: center;
+            justify-content: safe center;
             overflow-x: auto;
             padding-block: 1rem;
         }
@@ -152,6 +154,7 @@
             text-align: left;
         }
         .legend:focus-visible { outline: 2px solid var(--yellow); }
+        .legend:active { text-decoration: underline; filter: brightness(1.3); }
         @media (hover: hover) {
             .legend:hover { text-decoration: underline; }
         }

@@ -16,6 +16,7 @@
 -->
 <html lang="en" xmlns:th="http://www.thymeleaf.org">
 <head>
+    <th:block th:replace="~{fragments/bms-palette :: palette}"></th:block>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <meta name="color-scheme" content="dark">
@@ -31,11 +32,22 @@
             font-family: 'Courier New', Courier, monospace;
             display: flex;
             flex-direction: column;
-            align-items: center;
+            /* Finding #54: this is a COLUMN flex, so the horizontal axis is the
+               cross axis governed by `align-items`. `safe center` centers the
+               80ch artboard when it fits and falls back to start-alignment
+               (left edge at scrollLeft 0) when it overflows 375px, keeping the
+               left origin reachable via `overflow-x: auto` below. */
+            align-items: safe center;
             justify-content: flex-start;
             min-height: 100vh;
             padding: 1rem;
             overflow-x: auto;
+        }
+
+        /* Finding #54: the terminal artboard must never shrink, so its origin
+           remains reachable inside the horizontal scroller. */
+        body > * {
+            flex-shrink: 0;
         }
 
         /* ---- 24x80 terminal grid ---------------------------------------- */
@@ -69,19 +81,19 @@
             overflow: hidden;               /* clip to the field's BMS length */
         }
 
-        /* ---- BMS colour palette -> inline hex --------------------------- */
-        /* BLITZY [A11Y]: the 3270/BMS colour palette below is rendered verbatim
-           from the source screen, which is the authoritative design source for
-           this migration. BLUE (#0000CD) and RED (#CD0000) text on the black
-           background fall below the WCAG AA 4.5:1 contrast recommendation.
-           They are preserved intentionally for terminal fidelity and flagged
-           here for designer review rather than being silently auto-corrected. */
-        .blue    { color: #0000CD; }
-        .yellow  { color: #CCCC00; }
-        .turq    { color: #00CDCD; }
-        .green   { color: #00CD00; }
-        .red     { color: #CD0000; }
-        .neutral { color: #FFFFFF; }
+        /* ---- BMS colour palette (centralized) --------------------------- */
+        /* BLITZY [A11Y / review finding #53]: colours are defined once in
+           templates/fragments/bms-palette.html and referenced via var(--bms-*).
+           The two BMS foreground colours that failed WCAG 2.1 AA contrast on the
+           black background (BLUE, RED) are replaced with accessible equivalents
+           brightened along the same hue axis (>= 4.5:1); the rest keep their
+           legacy values. Contrast is asserted by BmsPaletteContrastTest. */
+        .blue    { color: var(--bms-blue); }
+        .yellow  { color: var(--bms-yellow); }
+        .turq    { color: var(--bms-turquoise); }
+        .green   { color: var(--bms-green); }
+        .red     { color: var(--bms-red); }
+        .neutral { color: var(--bms-neutral); }
         .bright  { font-weight: 700; }      /* BMS BRT attribute */
 
         /* ---- Option input (BMS field OPTION) ---------------------------- */
@@ -97,8 +109,8 @@
             border: none;
             border-bottom: 1px solid #00CD00;
             background: transparent;
-            color: #00CD00;
-            caret-color: #00CD00;
+            color: var(--bms-green);
+            caret-color: var(--bms-green);
             font-family: inherit;
             font-size: inherit;
             line-height: var(--rh);
@@ -126,11 +138,12 @@
             font-family: 'Courier New', Courier, monospace;
             font-size: 16px;
             background: #111111;
-            color: #CCCC00;
+            color: var(--bms-yellow);
             border: 1px solid #444444;
             padding: 0.25rem 1ch;
             cursor: pointer;
         }
+        .pfkey-btn:active { text-decoration: underline; filter: brightness(1.3); }
         @media (hover: hover) {
             .pfkey-btn:hover { background: #1c1c00; color: #FFFF33; }
         }
@@ -158,7 +171,7 @@
             height: auto;
             padding: 4px 8px;
             background: #000000;
-            color: #FFFFFF;
+            color: var(--bms-neutral);
             border: 1px solid #00CDCD;
             z-index: 10;
         }
@@ -167,6 +180,8 @@
 <body>
     <a class="skip-link" href="#option">Skip to option entry</a>
 
+    <!-- Primary content landmark for assistive tech (review finding #56); geometry unchanged. -->
+    <main>
     <form id="admin-menu-form"
           th:object="${form}"
           th:action="@{/admin/menu}"
@@ -242,6 +257,7 @@
             <button type="submit" name="pfkey" value="PF3" id="pf-exit" class="pfkey-btn">F3 = Exit</button>
         </div>
     </form>
+    </main>
 
     <script>
         /* Progressive enhancement only. The two submit buttons above are the

@@ -2,6 +2,8 @@ package com.aws.carddemo.security;
 
 import java.util.Collection;
 
+import com.aws.carddemo.TestCredentials;
+
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.security.core.GrantedAuthority;
@@ -58,6 +60,13 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 class CardDemoUserDetailsTest {
 
     /**
+     * Non-secret unit fixture password (review finding #5): a self-describing test value, not a
+     * committed account credential (the real seed password is environment-provided). The exact
+     * string is immaterial here &mdash; it is only carried through the constructor and asserted back.
+     */
+    private static final String PWD = TestCredentials.UNIT_FIXTURE_PASSWORD;
+
+    /**
      * Builds a {@link CardDemoUserDetails} through its production five-argument constructor with
      * fixed placeholder names. The single Spring Security authority is derived inside the
      * constructor from {@code userType} ({@code "A"} maps to {@code ROLE_ADMIN}, {@code "U"} maps
@@ -76,10 +85,10 @@ class CardDemoUserDetailsTest {
     @DisplayName("constructor exposes username, password, userType, firstName and lastName via getters")
     void constructorAndGettersExposeAllFields() {
         CardDemoUserDetails details =
-                new CardDemoUserDetails("ADMIN001", "PASSWORD", "A", "ADMIN", "USER");
+                new CardDemoUserDetails("ADMIN001", PWD, "A", "ADMIN", "USER");
 
         assertThat(details.getUsername()).isEqualTo("ADMIN001");
-        assertThat(details.getPassword()).isEqualTo("PASSWORD");
+        assertThat(details.getPassword()).isEqualTo(PWD);
         assertThat(details.getUserType()).isEqualTo("A");
         assertThat(details.getFirstName()).isEqualTo("ADMIN");
         assertThat(details.getLastName()).isEqualTo("USER");
@@ -88,7 +97,7 @@ class CardDemoUserDetailsTest {
     @Test
     @DisplayName("user type \"A\" derives a single ROLE_ADMIN authority")
     void authoritiesReflectAdminRole() {
-        CardDemoUserDetails details = newDetails("ADMIN001", "PASSWORD", "A");
+        CardDemoUserDetails details = newDetails("ADMIN001", PWD, "A");
 
         assertThat(details.getAuthorities())
                 .extracting(GrantedAuthority::getAuthority)
@@ -98,7 +107,7 @@ class CardDemoUserDetailsTest {
     @Test
     @DisplayName("user type \"U\" derives a single ROLE_USER authority")
     void authoritiesReflectUserRole() {
-        CardDemoUserDetails details = newDetails("USER0001", "PASSWORD", "U");
+        CardDemoUserDetails details = newDetails("USER0001", PWD, "U");
 
         assertThat(details.getAuthorities())
                 .extracting(GrantedAuthority::getAuthority)
@@ -108,7 +117,7 @@ class CardDemoUserDetailsTest {
     @Test
     @DisplayName("all account-status flags return true (USRSEC has no lock, expiry or disable concept)")
     void allAccountStatusFlagsReturnTrue() {
-        CardDemoUserDetails details = newDetails("ADMIN001", "PASSWORD", "A");
+        CardDemoUserDetails details = newDetails("ADMIN001", PWD, "A");
 
         assertThat(details.isAccountNonExpired()).isTrue();
         assertThat(details.isAccountNonLocked()).isTrue();
@@ -119,7 +128,7 @@ class CardDemoUserDetailsTest {
     @Test
     @DisplayName("eraseCredentials() nulls the password but preserves username and userType")
     void eraseCredentialsNullsPasswordButPreservesIdentity() {
-        CardDemoUserDetails details = newDetails("ADMIN001", "PASSWORD", "A");
+        CardDemoUserDetails details = newDetails("ADMIN001", PWD, "A");
 
         details.eraseCredentials();
 
@@ -131,7 +140,7 @@ class CardDemoUserDetailsTest {
     @Test
     @DisplayName("getAuthorities() returns an immutable collection")
     void getAuthoritiesIsImmutable() {
-        CardDemoUserDetails details = newDetails("ADMIN001", "PASSWORD", "A");
+        CardDemoUserDetails details = newDetails("ADMIN001", PWD, "A");
 
         Collection<? extends GrantedAuthority> authorities = details.getAuthorities();
 
@@ -161,9 +170,9 @@ class CardDemoUserDetailsTest {
     @Test
     @DisplayName("equals()/hashCode() are keyed on username only")
     void equalsAndHashCodeKeyedOnUsernameOnly() {
-        CardDemoUserDetails a = newDetails("ADMIN001", "PASSWORD", "A");
+        CardDemoUserDetails a = newDetails("ADMIN001", PWD, "A");
         CardDemoUserDetails b = newDetails("ADMIN001", "DIFFERENT", "U");
-        CardDemoUserDetails c = newDetails("USER0001", "PASSWORD", "U");
+        CardDemoUserDetails c = newDetails("USER0001", PWD, "U");
 
         // Same username, but different password, user type and derived authority => still equal.
         assertThat(a).isEqualTo(b);
@@ -181,7 +190,7 @@ class CardDemoUserDetailsTest {
     @DisplayName("constructor rejects a user type other than \"A\" or \"U\" (fail-closed, F24/CWE-269)")
     void constructorRejectsInvalidUserType() {
         assertThatThrownBy(
-                () -> new CardDemoUserDetails("ADMIN001", "PASSWORD", "Z", "ADMIN", "USER"))
+                () -> new CardDemoUserDetails("ADMIN001", PWD, "Z", "ADMIN", "USER"))
                 .isInstanceOf(IllegalArgumentException.class);
     }
 
@@ -189,7 +198,7 @@ class CardDemoUserDetailsTest {
     @DisplayName("constructor rejects a null username (SEC-USR-ID is the required identity)")
     void constructorRejectsNullUsername() {
         assertThatThrownBy(
-                () -> new CardDemoUserDetails(null, "PASSWORD", "A", "ADMIN", "USER"))
+                () -> new CardDemoUserDetails(null, PWD, "A", "ADMIN", "USER"))
                 .isInstanceOf(NullPointerException.class);
     }
 }

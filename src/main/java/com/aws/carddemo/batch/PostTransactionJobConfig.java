@@ -2,6 +2,7 @@ package com.aws.carddemo.batch;
 
 import java.math.BigDecimal;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Path;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
@@ -24,7 +25,6 @@ import org.springframework.batch.core.step.builder.StepBuilder;
 import org.springframework.batch.item.Chunk;
 import org.springframework.batch.item.ItemProcessor;
 import org.springframework.batch.item.ItemWriter;
-import org.springframework.batch.item.file.FlatFileItemReader;
 import org.springframework.batch.item.file.FlatFileItemWriter;
 import org.springframework.batch.item.file.builder.FlatFileItemWriterBuilder;
 import org.springframework.batch.item.file.transform.PassThroughLineAggregator;
@@ -48,6 +48,10 @@ import com.aws.carddemo.repository.TransactionRepository;
 import com.aws.carddemo.util.CobolDecimal;
 import com.aws.carddemo.util.FixedWidthRecordMapper;
 import com.aws.carddemo.util.FixedWidthRecordMapper.FieldDef;
+import com.aws.carddemo.util.batch.AtomicFileStepPublisher;
+import com.aws.carddemo.util.batch.BatchFilePathResolver;
+import com.aws.carddemo.util.batch.FixedBlockLineAggregator;
+import com.aws.carddemo.util.batch.FixedLengthItemReader;
 
 /**
  * Spring Batch job configuration for daily transaction posting.
@@ -184,6 +188,19 @@ public class PostTransactionJobConfig {
     private final TransactionRepository transactionRepository;
 
     /**
+     * Safe-root resolver validating the {@code inputPath} DALYTRAN feed (containment + symlink
+     * rejection, review finding&nbsp;#18) before the fixed-block reader opens it.
+     */
+    private final BatchFilePathResolver batchFilePathResolver;
+
+    /**
+     * Shared listener that targets the reject writer at a deterministic in-progress temp file and
+     * atomically publishes it to the final {@code DALYREJS} path on {@code COMPLETED}
+     * (findings&nbsp;#18/#19).
+     */
+    private final AtomicFileStepPublisher atomicFileStepPublisher;
+
+    /**
      * Constructs the posting job configuration with the Spring-Boot-auto-configured batch
      * infrastructure and the persistence repositories bound to the POSTTRAN STEP15 DD statements.
      *
@@ -193,44 +210,74 @@ public class PostTransactionJobConfig {
      * @param accountRepository                    ACCTFILE (CVACT01Y) access for {@code 1500-B-LOOKUP-ACCT} / {@code 2800}
      * @param transactionCategoryBalanceRepository TCATBALF (CVTRA01Y) access for {@code 2700-UPDATE-TCATBAL}
      * @param transactionRepository                TRANFILE (CVTRA05Y) master for {@code 2900-WRITE-TRANSACTION-FILE}
+     * @param batchFilePathResolver                shared safe-root resolver for the DALYTRAN input feed
+     * @param atomicFileStepPublisher              shared safe-path atomic-publication step listener for
+     *                                             the DALYREJS reject output
      */
     public PostTransactionJobConfig(JobRepository jobRepository,
             PlatformTransactionManager transactionManager,
             CardXrefRepository cardXrefRepository,
             AccountRepository accountRepository,
             TransactionCategoryBalanceRepository transactionCategoryBalanceRepository,
-            TransactionRepository transactionRepository) {
+            TransactionRepository transactionRepository,
+            BatchFilePathResolver batchFilePathResolver,
+            AtomicFileStepPublisher atomicFileStepPublisher) {
         this.jobRepository = jobRepository;
         this.transactionManager = transactionManager;
         this.cardXrefRepository = cardXrefRepository;
         this.accountRepository = accountRepository;
         this.transactionCategoryBalanceRepository = transactionCategoryBalanceRepository;
         this.transactionRepository = transactionRepository;
+        this.batchFilePathResolver = batchFilePathResolver;
+        this.atomicFileStepPublisher = atomicFileStepPublisher;
     }
 
     /**
-     * Reader for the sequential {@code DALYTRAN} feed (POSTTRAN {@code DALYTRAN=DALYTRAN.PS}). Reads
-     * fixed 350-byte lines using ISO-8859-1 so every byte round-trips exactly, delegating field
-     * extraction to {@link #mapDailyTransaction(String)}. The input resource path is supplied as the
-     * {@code inputPath} job parameter.
+     * Reader for the sequential {@code DALYTRAN} feed (POSTTRAN {@code DALYTRAN=DALYTRAN.PS}) in
+     * <em>undelimited</em> {@code RECFM=FB} framing (review finding&nbsp;#17).
+     *
+     * <p>The native z/OS {@code DALYTRAN} dataset is a stream of fixed 350-byte
+     * {@code DALYTRAN-RECORD}s with <strong>no</strong> line delimiter (the LF-terminated ASCII
+     * fixture is a convenience form only; AAP&nbsp;&sect;0.6.6). This reader therefore uses a
+     * {@link FixedLengthItemReader} that slices the input into exact 350-byte blocks &mdash; it does
+     * not depend on any newline &mdash; and maps each block through the byte-oriented
+     * {@link #mapDailyTransaction(byte[])}. ISO-8859-1 inside the mapper guarantees every byte
+     * round-trips exactly onto the reject path.</p>
+     *
+     * <p>The {@code inputPath} job parameter is validated through the {@link #batchFilePathResolver}
+     * (safe-root containment + symlink rejection, finding&nbsp;#18) before the reader opens it. The
+     * reader is strict, so a missing feed fails the step rather than posting zero transactions
+     * silently, and its inherited item-count restart makes a re-launch resume at the exact record
+     * boundary (finding&nbsp;#19).</p>
+     *
+     * <p><b>Return type (review finding&nbsp;#35).</b> The bean returns the concrete
+     * {@link FixedLengthItemReader}. {@code @StepScope} uses {@code ScopedProxyMode.TARGET_CLASS}, so
+     * Spring builds a CGLIB subclass proxy of the declared bean type; that requires the target class
+     * to be non-{@code final} (it is &mdash; the reader's {@code final} applies only to its fields, and
+     * Spring instantiates the proxy via Objenesis, so no no-arg constructor is needed). Returning the
+     * concrete type also lets Spring Batch inspect the reader for listener annotations, which avoids
+     * the startup warning an interface-typed {@code @StepScope} bean would otherwise emit
+     * (&quot;{@code org.springframework.batch.item.ItemStreamReader is an interface. The implementing
+     * class will not be queried for annotation based listener configurations...}&quot;). The proxy
+     * still implements {@link org.springframework.batch.item.ItemStream}, so the step registers the
+     * reader for open/close/update and item-count restart bookkeeping (finding&nbsp;#19).</p>
      *
      * @param inputPath job-parameter path to the DALYTRAN feed
-     * @return a step-scoped flat-file reader producing {@link DailyTransaction} items
+     * @return a step-scoped fixed-block reader producing {@link DailyTransaction} items
      */
     @Bean
     @StepScope
-    public FlatFileItemReader<DailyTransaction> dailyTransactionReader(
+    public FixedLengthItemReader<DailyTransaction> dailyTransactionReader(
             @Value("#{jobParameters['inputPath']}") String inputPath) {
         if (inputPath == null || inputPath.isBlank()) {
             throw new IllegalStateException(
                     "Required job parameter 'inputPath' (DALYTRAN feed) was not supplied.");
         }
-        FlatFileItemReader<DailyTransaction> reader = new FlatFileItemReader<>();
-        reader.setName("dalyTranItemReader");
-        reader.setResource(new FileSystemResource(inputPath));
-        reader.setEncoding(StandardCharsets.ISO_8859_1.name());
+        Path source = batchFilePathResolver.resolveInputFile(inputPath);
+        FixedLengthItemReader<DailyTransaction> reader = new FixedLengthItemReader<>(
+                "dalyTranItemReader", new FileSystemResource(source.toFile()),
+                DALYTRAN_MAPPER.getRecordLength(), PostTransactionJobConfig::mapDailyTransaction);
         reader.setStrict(true);
-        reader.setLineMapper((line, lineNumber) -> mapDailyTransaction(line));
         return reader;
     }
 
@@ -240,10 +287,23 @@ public class PostTransactionJobConfig {
      * 430-byte line. The GDG {@code (+1)} new-generation semantics are approximated by a per-job-
      * execution output resource path (documented substitution &mdash; not a real GDG): the
      * {@code rejectPath} job parameter when supplied, otherwise a GDG-style name under the temp
-     * directory keyed by the job execution id.
+     * directory keyed by the job <em>instance</em> id (stable across restarts of the same instance, so
+     * a restart resumes the same generation &mdash; a more faithful GDG mapping than an
+     * execution-scoped name, finding&nbsp;#19).
+     *
+     * <p>Each 430-byte record is emitted in <em>undelimited</em> {@code RECFM=FB} framing (empty line
+     * separator, finding&nbsp;#17): the {@link PassThroughLineAggregator} passes the pre-built 430-byte
+     * string through and the {@link FixedBlockLineAggregator} guard fails fast unless it is exactly
+     * {@code REJECT_MAPPER.getRecordLength()} bytes, so record boundaries can never drift. The output
+     * path is validated through the safe-root resolver and the writer streams into a deterministic
+     * in-progress temp file that {@link #atomicFileStepPublisher} atomically renames onto the final
+     * {@code DALYREJS} path on {@code COMPLETED} (findings&nbsp;#18/#19); {@code shouldDeleteIfEmpty}
+     * stays {@code false} so an empty reject file is still published, matching the GDG {@code (+1)}
+     * always-create-a-generation semantics.</p>
      *
      * @param rejectPath    optional job-parameter path for the reject file
-     * @param stepExecution the running step execution, used to derive a unique default path
+     * @param stepExecution the running step execution, used to derive a unique default path and the
+     *                      atomic-publication temp/target
      * @return a step-scoped flat-file writer of 430-byte reject lines
      */
     @Bean
@@ -254,12 +314,15 @@ public class PostTransactionJobConfig {
         String resolvedPath = (rejectPath != null && !rejectPath.isBlank())
                 ? rejectPath
                 : defaultRejectPath(stepExecution);
+        Path temp = atomicFileStepPublisher.prepare(resolvedPath, stepExecution);
         return new FlatFileItemWriterBuilder<String>()
                 .name("dalyRejsItemWriter")
-                .resource(new FileSystemResource(resolvedPath))
+                .resource(new FileSystemResource(temp.toFile()))
                 .encoding(StandardCharsets.ISO_8859_1.name())
-                .lineSeparator("\n")
-                .lineAggregator(new PassThroughLineAggregator<>())
+                .lineSeparator("")
+                .lineAggregator(new FixedBlockLineAggregator<>(
+                        new PassThroughLineAggregator<>(), REJECT_MAPPER.getRecordLength(),
+                        StandardCharsets.ISO_8859_1))
                 .shouldDeleteIfEmpty(false)
                 .build();
     }
@@ -334,6 +397,7 @@ public class PostTransactionJobConfig {
                 .writer(postTransactionWriter(null))
                 .stream(rejectItemWriter(null, null))
                 .listener(rejectExitStatusListener())
+                .listener(atomicFileStepPublisher)
                 .build();
     }
 
@@ -360,7 +424,22 @@ public class PostTransactionJobConfig {
      * @return the mapped daily transaction
      */
     static DailyTransaction mapDailyTransaction(String line) {
-        byte[] raw = line.getBytes(StandardCharsets.ISO_8859_1);
+        return mapDailyTransaction(line.getBytes(StandardCharsets.ISO_8859_1));
+    }
+
+    /**
+     * Parses a raw 350-byte {@code DALYTRAN-RECORD} block into a {@link DailyTransaction} using the
+     * fixed-width {@link #DALYTRAN_MAPPER}. This byte-oriented overload is the {@code recordMapper}
+     * used by the undelimited {@link FixedLengthItemReader} (review finding&nbsp;#17): it receives the
+     * exact 350 bytes sliced from the fixed-block stream, so no charset decode/re-encode round-trip
+     * (and no newline dependency) sits between the file and the record boundary. Text fields retain
+     * their raw fixed-width content (trailing spaces included) so the record can be reproduced
+     * byte-for-byte on the reject path.
+     *
+     * @param raw the exact 350 bytes of one {@code DALYTRAN-RECORD}
+     * @return the mapped daily transaction
+     */
+    static DailyTransaction mapDailyTransaction(byte[] raw) {
         FixedWidthRecordMapper.ParsedRecord record = DALYTRAN_MAPPER.parse(raw);
         DailyTransaction daily = new DailyTransaction();
         daily.setId(record.getText(F_ID));
@@ -459,9 +538,9 @@ public class PostTransactionJobConfig {
 
     /** Builds a unique reject-file path when none is supplied, mirroring a fresh GDG generation. */
     private static String defaultRejectPath(StepExecution stepExecution) {
-        long executionId = stepExecution.getJobExecution().getId();
+        long instanceId = stepExecution.getJobExecution().getJobInstance().getInstanceId();
         String tempDir = System.getProperty("java.io.tmpdir");
-        return tempDir + "/DALYREJS.G" + String.format("%04d", executionId % 10000L) + "V00";
+        return tempDir + "/DALYREJS.G" + String.format("%04d", instanceId % 10000L) + "V00";
     }
 
     /** Null-safe helper: never emit a {@code null} into a fixed-width text field. */

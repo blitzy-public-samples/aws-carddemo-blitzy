@@ -8,6 +8,7 @@ import org.springframework.security.core.userdetails.UserDetails;
 import org.springframework.security.core.userdetails.UsernameNotFoundException;
 
 import com.aws.carddemo.AbstractPostgresIntegrationTest;
+import com.aws.carddemo.TestCredentials;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -86,7 +87,8 @@ class CardDemoUserDetailsServiceIT extends AbstractPostgresIntegrationTest {
     };
 
     /** The cleartext password shared by every seeded user ({@code SEC-USR-PWD}), for parity. */
-    private static final String SEEDED_PASSWORD = "PASSWORD";
+    // Review finding #5: seed password externalized via CARDDEMO_SEED_PASSWORD (no committed default).
+    private static final String SEEDED_PASSWORD = TestCredentials.seedPassword();
 
     /**
      * The real, Spring-managed service under test. Field injection is the standard, warning-free

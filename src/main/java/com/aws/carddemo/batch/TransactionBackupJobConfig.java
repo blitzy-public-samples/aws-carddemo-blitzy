@@ -2,6 +2,7 @@ package com.aws.carddemo.batch;
 
 import java.math.BigDecimal;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Path;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.List;
@@ -10,6 +11,7 @@ import java.util.Objects;
 
 import org.springframework.batch.core.Job;
 import org.springframework.batch.core.Step;
+import org.springframework.batch.core.StepExecution;
 import org.springframework.batch.core.configuration.annotation.StepScope;
 import org.springframework.batch.core.job.builder.JobBuilder;
 import org.springframework.batch.core.repository.JobRepository;
@@ -29,6 +31,8 @@ import com.aws.carddemo.domain.Transaction;
 import com.aws.carddemo.repository.TransactionRepository;
 import com.aws.carddemo.util.FixedWidthRecordMapper;
 import com.aws.carddemo.util.FixedWidthRecordMapper.FieldDef;
+import com.aws.carddemo.util.batch.AtomicFileStepPublisher;
+import com.aws.carddemo.util.batch.FixedBlockLineAggregator;
 
 /**
  * Spring Batch job configuration realizing the transaction-master backup/export performed by the
@@ -177,19 +181,29 @@ public class TransactionBackupJobConfig {
     private final TransactionRepository transactionRepository;
 
     /**
+     * Shared listener that targets the writer at a deterministic in-progress temp file (safe-root
+     * validated) and atomically publishes it to the final path only on {@code COMPLETED} (findings
+     * #18 &amp; #19).
+     */
+    private final AtomicFileStepPublisher atomicFileStepPublisher;
+
+    /**
      * Creates the configuration with the collaborators supplied by Spring Boot's Batch
      * auto-configuration and component scanning.
      *
-     * @param jobRepository         the auto-configured Spring Batch {@link JobRepository}
-     * @param transactionManager    the auto-configured {@link PlatformTransactionManager}
-     * @param transactionRepository the repository streamed as the backup source (read-only)
+     * @param jobRepository           the auto-configured Spring Batch {@link JobRepository}
+     * @param transactionManager      the auto-configured {@link PlatformTransactionManager}
+     * @param transactionRepository   the repository streamed as the backup source (read-only)
+     * @param atomicFileStepPublisher the shared safe-path atomic-publication step listener
      */
     public TransactionBackupJobConfig(JobRepository jobRepository,
             PlatformTransactionManager transactionManager,
-            TransactionRepository transactionRepository) {
+            TransactionRepository transactionRepository,
+            AtomicFileStepPublisher atomicFileStepPublisher) {
         this.jobRepository = jobRepository;
         this.transactionManager = transactionManager;
         this.transactionRepository = transactionRepository;
+        this.atomicFileStepPublisher = atomicFileStepPublisher;
     }
 
     /**
@@ -218,33 +232,51 @@ public class TransactionBackupJobConfig {
     }
 
     /**
-     * Fixed-width writer that emits each transaction as a byte-exact 350-byte {@code CVTRA05Y} record.
+     * Fixed-width writer that emits each transaction as a byte-exact 350-byte {@code CVTRA05Y} record
+     * in <em>undelimited</em> {@code RECFM=FB} framing (review finding&nbsp;#17).
      *
-     * <p>The output resource path is supplied by the required {@code outputPath} job parameter (a GDG
-     * generation on z/OS becomes a job-instance/timestamped path here). Each record is built via
-     * {@link #encodeRecord(Transaction)} and the writer encodes it with the mapper's
-     * {@link StandardCharsets#ISO_8859_1} charset so every emitted line is exactly 350 record bytes,
-     * delimited by a single {@code '\n'}. Any pre-existing output file is replaced, matching the JCL
-     * {@code DISP=(NEW,CATLG,DELETE)} allocation of a fresh backup generation each run.</p>
+     * <p>The final output path is supplied by the required {@code outputPath} job parameter (a GDG
+     * generation on z/OS becomes a job-instance/timestamped path here). The writer does not target that
+     * path directly: {@link AtomicFileStepPublisher#prepare(String, StepExecution)} validates it
+     * through the safe-root resolver (containment + symlink rejection, finding&nbsp;#18) and returns a
+     * deterministic sibling {@code .inprogress} temp file that the writer streams into; the completed
+     * temp file is set to {@code 0600} and atomically renamed onto the final path only when the step
+     * reaches {@code COMPLETED} (findings&nbsp;#18/#19), so a consumer never sees a partial file and a
+     * restart resumes the same temp file.</p>
      *
-     * <p>The bean is {@code @StepScope} so the {@code @Value} job-parameter expression is resolved
-     * lazily per step execution; {@link #transactionBackupStep()} passes a {@code null} placeholder
-     * that the scoped proxy replaces with the real value at run time.</p>
+     * <p>Each record is built via {@link #encodeRecord(Transaction)} and encoded with the mapper's
+     * {@link StandardCharsets#ISO_8859_1} charset. The aggregator is wrapped in a
+     * {@link FixedBlockLineAggregator} that fails fast unless every rendered line is exactly
+     * {@link #RECORD_LENGTH} bytes, and the line separator is empty ({@code lineSeparator("")}) so the
+     * 350-byte records are emitted back-to-back with no delimiter &mdash; matching the native EBCDIC
+     * {@code TRANSACT} image byte-for-byte (the LF-delimited ASCII fixtures are a convenience form
+     * only; AAP&nbsp;&sect;0.6.6).</p>
      *
-     * @param outputPath the backup file path, bound from the required job parameter {@code outputPath}
+     * <p>The bean is {@code @StepScope} so the {@code @Value} job-parameter expression and the
+     * {@code stepExecution} are resolved lazily per step execution; {@link #transactionBackupStep()}
+     * passes {@code null} placeholders that the scoped proxy replaces with the real values at run
+     * time.</p>
+     *
+     * @param outputPath    the backup file path, bound from the required job parameter {@code outputPath}
+     * @param stepExecution the running step execution (source of the job-instance id and execution
+     *                      context used to compute and record the atomic-publication temp/target)
      * @return the {@code transactionBackupWriter} {@link FlatFileItemWriter}
      */
     @Bean
     @StepScope
     public FlatFileItemWriter<Transaction> transactionBackupWriter(
-            @Value("#{jobParameters['outputPath']}") String outputPath) {
+            @Value("#{jobParameters['outputPath']}") String outputPath,
+            @Value("#{stepExecution}") StepExecution stepExecution) {
         Objects.requireNonNull(outputPath, "job parameter 'outputPath' is required");
+        Path temp = atomicFileStepPublisher.prepare(outputPath, stepExecution);
         return new FlatFileItemWriterBuilder<Transaction>()
                 .name(WRITER_NAME)
-                .resource(new FileSystemResource(outputPath))
-                .lineAggregator(TransactionBackupJobConfig::encodeRecord)
+                .resource(new FileSystemResource(temp.toFile()))
+                .lineAggregator(new FixedBlockLineAggregator<>(
+                        TransactionBackupJobConfig::encodeRecord, RECORD_LENGTH,
+                        TRAN_RECORD_MAPPER.getCharset()))
                 .encoding(TRAN_RECORD_MAPPER.getCharset().name())
-                .lineSeparator("\n")
+                .lineSeparator("")
                 .shouldDeleteIfExists(true)
                 .build();
     }
@@ -253,8 +285,10 @@ public class TransactionBackupJobConfig {
      * The single chunk-oriented step of {@link #transactionBackupJob()}: read a page of transactions,
      * write each as a 350-byte record, and commit per chunk within the auto-configured transaction
      * boundary. There is no processor &mdash; this is a straight record-for-record export &mdash; so
-     * the chunk item type is {@code <Transaction, Transaction>}. The {@code null} writer argument is a
-     * placeholder resolved by the {@code @StepScope} proxy at run time.
+     * the chunk item type is {@code <Transaction, Transaction>}. The {@code null} writer arguments are
+     * placeholders resolved by the {@code @StepScope} proxy at run time. The
+     * {@link #atomicFileStepPublisher} is registered as a step listener so the in-progress temp file is
+     * atomically published to the final path on {@code COMPLETED} (findings&nbsp;#18/#19).
      *
      * @return the {@code transactionBackupStep} {@link Step}
      */
@@ -263,7 +297,8 @@ public class TransactionBackupJobConfig {
         return new StepBuilder(STEP_NAME, jobRepository)
                 .<Transaction, Transaction>chunk(CHUNK_SIZE, transactionManager)
                 .reader(transactionBackupReader())
-                .writer(transactionBackupWriter(null))
+                .writer(transactionBackupWriter(null, null))
+                .listener(atomicFileStepPublisher)
                 .build();
     }
 

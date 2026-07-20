@@ -35,6 +35,7 @@ import com.aws.carddemo.dto.CardDemoContext;
 import com.aws.carddemo.dto.screen.COUSR03Form;
 import com.aws.carddemo.exception.RecordNotFoundException;
 import com.aws.carddemo.repository.UserSecurityRepository;
+import com.aws.carddemo.security.SessionRevocationService;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatCode;
@@ -147,13 +148,21 @@ class UserDeleteServiceTest {
 
     /**
      * {@code USRSEC} repository (VSAM KSDS replacement); mocked so the read
-     * ({@link UserSecurityRepository#findByUsrId(String)}) and delete
+     * ({@link UserSecurityRepository#findByUsrIdForUpdate(String)}) and delete
      * ({@link UserSecurityRepository#delete(Object)}) access paths can be stubbed and verified.
      */
     @Mock
     private UserSecurityRepository userSecurityRepository;
 
-    /** Service under test, wired by constructor injection with the two mocks above. */
+    /**
+     * Session-revocation collaborator (findings #8/#43); mocked so the after-commit revocation on a
+     * successful delete can be verified without a live session registry. Because these unit tests run
+     * outside any transaction, {@code scheduleSessionRevocation} calls it directly.
+     */
+    @Mock
+    private SessionRevocationService sessionRevocationService;
+
+    /** Service under test, wired by constructor injection with the three mocks above. */
     @InjectMocks
     private UserDeleteService service;
 
@@ -266,7 +275,7 @@ class UserDeleteServiceTest {
     void mainEntry_firstDisplayWithSelection_autoLooksUpUser() {
         when(context.isNew()).thenReturn(false);
         when(context.isProgramEnter()).thenReturn(true);
-        when(userSecurityRepository.findByUsrId(USER_ID)).thenReturn(Optional.of(userFixture(USER_ID)));
+        when(userSecurityRepository.findByUsrIdForUpdate(USER_ID)).thenReturn(Optional.of(userFixture(USER_ID)));
 
         COUSR03Form form = formWithUserId(USER_ID);
         UserDeleteService.UserDeleteResult result = service.mainEntry(UserDeleteService.AidKey.ENTER, form);
@@ -280,7 +289,7 @@ class UserDeleteServiceTest {
         verify(context).isProgramEnter();
         verify(context).markReenter();
         verifyNoMoreInteractions(context);
-        verify(userSecurityRepository).findByUsrId(USER_ID);
+        verify(userSecurityRepository).findByUsrIdForUpdate(USER_ID);
         verify(userSecurityRepository, never()).delete(any());
         verifyNoMoreInteractions(userSecurityRepository);
     }
@@ -296,7 +305,7 @@ class UserDeleteServiceTest {
     void mainEntry_reentryEnterKey_step1ShowsConfirmPromptAndDoesNotDelete() {
         when(context.isNew()).thenReturn(false);
         when(context.isProgramEnter()).thenReturn(false);
-        when(userSecurityRepository.findByUsrId(USER_ID)).thenReturn(Optional.of(userFixture(USER_ID)));
+        when(userSecurityRepository.findByUsrIdForUpdate(USER_ID)).thenReturn(Optional.of(userFixture(USER_ID)));
 
         COUSR03Form form = formWithUserId(USER_ID);
         UserDeleteService.UserDeleteResult result = service.mainEntry(UserDeleteService.AidKey.ENTER, form);
@@ -306,7 +315,7 @@ class UserDeleteServiceTest {
         assertThat(form.getFname()).isEqualTo("John");
         assertThat(form.getLname()).isEqualTo("Doe");
         assertThat(form.getUsrtype()).isEqualTo("U");
-        verify(userSecurityRepository).findByUsrId(USER_ID);
+        verify(userSecurityRepository).findByUsrIdForUpdate(USER_ID);
         verify(userSecurityRepository, never()).delete(any());
         verify(userSecurityRepository, never()).deleteById(any());
         verifyNoMoreInteractions(userSecurityRepository);
@@ -326,18 +335,53 @@ class UserDeleteServiceTest {
         when(context.isNew()).thenReturn(false);
         when(context.isProgramEnter()).thenReturn(false);
         UserSecurity user = userFixture(USER_ID);
-        when(userSecurityRepository.findByUsrId(USER_ID)).thenReturn(Optional.of(user));
+        when(userSecurityRepository.findByUsrIdForUpdate(USER_ID)).thenReturn(Optional.of(user));
 
         UserDeleteService.UserDeleteResult result = service.mainEntry(UserDeleteService.AidKey.PF5, formWithUserId(USER_ID));
 
         assertThat(result.severity()).isEqualTo(UserDeleteService.MessageSeverity.SUCCESS);
         assertThat(result.message()).isEqualTo(EXPECTED_DELETED_MESSAGE);
-        verify(userSecurityRepository).findByUsrId(USER_ID);
+        verify(userSecurityRepository).findByUsrIdForUpdate(USER_ID);
         verify(userSecurityRepository).delete(user);
         verifyNoMoreInteractions(userSecurityRepository);
         verify(context).isNew();
         verify(context).isProgramEnter();
         verifyNoMoreInteractions(context);
+    }
+
+    /**
+     * Review findings #8/#43: a successful delete revokes the deleted user's live sessions. In this
+     * pure-Mockito unit no transaction is active, so {@code scheduleSessionRevocation} invokes the
+     * collaborator directly and the interaction is asserted here; the after-commit ordering (revoke only
+     * once the delete commits) is proven by the integration tests. The revoked id is the deleted
+     * record's own id, covering the self-delete case (COUSR03C has no self guard, so it is allowed).
+     */
+    @Test
+    void successfulDelete_revokesDeletedUserSessions() {
+        UserSecurity user = userFixture(USER_ID);
+
+        UserDeleteService.UserDeleteResult result = service.deleteUserSecFile(user, formWithUserId(USER_ID));
+
+        assertThat(result.severity()).isEqualTo(UserDeleteService.MessageSeverity.SUCCESS);
+        verify(userSecurityRepository).delete(user);
+        verify(sessionRevocationService).revokeSessions(USER_ID);
+    }
+
+    /**
+     * Review findings #8/#43: a delete that fails at the repository must NOT revoke any session (the
+     * record was not removed). The revocation collaborator is never touched on the {@code WHEN OTHER}
+     * error path.
+     */
+    @Test
+    void failedDelete_doesNotRevokeSessions() {
+        UserSecurity user = userFixture(USER_ID);
+        doThrow(new DataAccessResourceFailureException("io")).when(userSecurityRepository).delete(user);
+
+        UserDeleteService.UserDeleteResult result =
+                service.deleteUserSecFile(user, formWithUserId(USER_ID));
+
+        assertThat(result.severity()).isEqualTo(UserDeleteService.MessageSeverity.ERROR);
+        verify(sessionRevocationService, never()).revokeSessions(any());
     }
 
     /**
@@ -484,7 +528,7 @@ class UserDeleteServiceTest {
      */
     @Test
     void processEnterKey_withValidUser_populatesDisplayFieldsAndReturnsNeutralPrompt() {
-        when(userSecurityRepository.findByUsrId(USER_ID)).thenReturn(Optional.of(userFixture(USER_ID)));
+        when(userSecurityRepository.findByUsrIdForUpdate(USER_ID)).thenReturn(Optional.of(userFixture(USER_ID)));
 
         COUSR03Form form = formWithUserId(USER_ID);
         UserDeleteService.UserDeleteResult result = service.processEnterKey(form, context);
@@ -494,7 +538,7 @@ class UserDeleteServiceTest {
         assertThat(form.getFname()).isEqualTo("John");
         assertThat(form.getLname()).isEqualTo("Doe");
         assertThat(form.getUsrtype()).isEqualTo("U");
-        verify(userSecurityRepository).findByUsrId(USER_ID);
+        verify(userSecurityRepository).findByUsrIdForUpdate(USER_ID);
         verify(userSecurityRepository, never()).delete(any());
         verify(userSecurityRepository, never()).deleteById(any());
         verifyNoMoreInteractions(userSecurityRepository);
@@ -523,14 +567,14 @@ class UserDeleteServiceTest {
      */
     @Test
     void processEnterKey_whenLookupThrowsDataAccess_returnsUnableToLookupError() {
-        when(userSecurityRepository.findByUsrId(USER_ID))
+        when(userSecurityRepository.findByUsrIdForUpdate(USER_ID))
                 .thenThrow(new DataAccessResourceFailureException("simulated I/O failure"));
 
         UserDeleteService.UserDeleteResult result = service.processEnterKey(formWithUserId(USER_ID), context);
 
         assertThat(result.severity()).isEqualTo(UserDeleteService.MessageSeverity.ERROR);
         assertThat(result.message()).isEqualTo(MSG_UNABLE_TO_LOOKUP);
-        verify(userSecurityRepository).findByUsrId(USER_ID);
+        verify(userSecurityRepository).findByUsrIdForUpdate(USER_ID);
         verify(userSecurityRepository, never()).delete(any());
         verifyNoMoreInteractions(userSecurityRepository);
         verifyNoInteractions(context);
@@ -549,7 +593,7 @@ class UserDeleteServiceTest {
         when(user.getUsrFname()).thenReturn("John");
         when(user.getUsrLname()).thenReturn("Doe");
         when(user.getUsrType()).thenReturn("U");
-        when(userSecurityRepository.findByUsrId(USER_ID)).thenReturn(Optional.of(user));
+        when(userSecurityRepository.findByUsrIdForUpdate(USER_ID)).thenReturn(Optional.of(user));
 
         UserDeleteService.UserDeleteResult result = service.processEnterKey(formWithUserId(USER_ID), context);
 
@@ -575,7 +619,7 @@ class UserDeleteServiceTest {
     @Test
     void deleteUserInfo_withValidUser_deletesExactlyOnceAndReturnsSuccess() {
         UserSecurity user = userFixture(USER_ID);
-        when(userSecurityRepository.findByUsrId(USER_ID)).thenReturn(Optional.of(user));
+        when(userSecurityRepository.findByUsrIdForUpdate(USER_ID)).thenReturn(Optional.of(user));
 
         COUSR03Form form = formWithUserId(USER_ID);
         UserDeleteService.UserDeleteResult result = service.deleteUserInfo(form, context);
@@ -586,7 +630,7 @@ class UserDeleteServiceTest {
         assertThat(form.getFname()).isEmpty();
         assertThat(form.getLname()).isEmpty();
         assertThat(form.getUsrtype()).isEmpty();
-        verify(userSecurityRepository).findByUsrId(USER_ID);
+        verify(userSecurityRepository).findByUsrIdForUpdate(USER_ID);
         verify(userSecurityRepository).delete(user);
         verifyNoMoreInteractions(userSecurityRepository);
         verifyNoInteractions(context);
@@ -613,14 +657,14 @@ class UserDeleteServiceTest {
      */
     @Test
     void deleteUserInfo_whenReadThrowsDataAccess_returnsUnableToLookupErrorAndDoesNotDelete() {
-        when(userSecurityRepository.findByUsrId(USER_ID))
+        when(userSecurityRepository.findByUsrIdForUpdate(USER_ID))
                 .thenThrow(new DataAccessResourceFailureException("simulated I/O failure"));
 
         UserDeleteService.UserDeleteResult result = service.deleteUserInfo(formWithUserId(USER_ID), context);
 
         assertThat(result.severity()).isEqualTo(UserDeleteService.MessageSeverity.ERROR);
         assertThat(result.message()).isEqualTo(MSG_UNABLE_TO_LOOKUP);
-        verify(userSecurityRepository).findByUsrId(USER_ID);
+        verify(userSecurityRepository).findByUsrIdForUpdate(USER_ID);
         verify(userSecurityRepository, never()).delete(any());
         verifyNoMoreInteractions(userSecurityRepository);
         verifyNoInteractions(context);
@@ -634,14 +678,14 @@ class UserDeleteServiceTest {
      */
     @Test
     void deleteUserInfo_whenUserNotFound_throwsRecordNotFoundAndDoesNotDelete() {
-        when(userSecurityRepository.findByUsrId(USER_ID)).thenReturn(Optional.empty());
+        when(userSecurityRepository.findByUsrIdForUpdate(USER_ID)).thenReturn(Optional.empty());
 
         COUSR03Form form = formWithUserId(USER_ID);
         assertThatThrownBy(() -> service.deleteUserInfo(form, context))
                 .isInstanceOf(RecordNotFoundException.class)
                 .hasMessage(MSG_USER_ID_NOT_FOUND);
 
-        verify(userSecurityRepository).findByUsrId(USER_ID);
+        verify(userSecurityRepository).findByUsrIdForUpdate(USER_ID);
         verify(userSecurityRepository, never()).delete(any());
         verifyNoMoreInteractions(userSecurityRepository);
         verifyNoInteractions(context);
@@ -658,12 +702,12 @@ class UserDeleteServiceTest {
     @Test
     void readUserSecFile_whenPresent_returnsUser() {
         UserSecurity user = userFixture(USER_ID);
-        when(userSecurityRepository.findByUsrId(USER_ID)).thenReturn(Optional.of(user));
+        when(userSecurityRepository.findByUsrIdForUpdate(USER_ID)).thenReturn(Optional.of(user));
 
         UserSecurity found = service.readUserSecFile(USER_ID);
 
         assertThat(found).isSameAs(user);
-        verify(userSecurityRepository).findByUsrId(USER_ID);
+        verify(userSecurityRepository).findByUsrIdForUpdate(USER_ID);
         verifyNoMoreInteractions(userSecurityRepository);
     }
 
@@ -674,12 +718,12 @@ class UserDeleteServiceTest {
      */
     @Test
     void readUserSecFile_whenAbsent_throwsRecordNotFound() {
-        when(userSecurityRepository.findByUsrId(USER_ID)).thenReturn(Optional.empty());
+        when(userSecurityRepository.findByUsrIdForUpdate(USER_ID)).thenReturn(Optional.empty());
 
         assertThatThrownBy(() -> service.readUserSecFile(USER_ID))
                 .isInstanceOf(RecordNotFoundException.class)
                 .hasMessage(MSG_USER_ID_NOT_FOUND);
-        verify(userSecurityRepository).findByUsrId(USER_ID);
+        verify(userSecurityRepository).findByUsrIdForUpdate(USER_ID);
         verifyNoMoreInteractions(userSecurityRepository);
     }
 
@@ -890,8 +934,17 @@ class UserDeleteServiceTest {
      */
     @Test
     void cousr03Form_hasElevenDisplayFieldsAndNoPasswordField() {
+        // The hidden single-use confirmation nonce (review finding F12) is a deliberate non-BMS
+        // control field (it restores the BMS protected-confirmation-field contract over HTTP);
+        // assert it is present, then exclude it from the BMS display-field count.
+        assertThat(Arrays.stream(COUSR03Form.class.getDeclaredFields())
+                .filter(field -> !field.isSynthetic())
+                .map(Field::getName))
+                .contains("confirmToken");
+
         long declaredFields = Arrays.stream(COUSR03Form.class.getDeclaredFields())
                 .filter(field -> !field.isSynthetic())
+                .filter(field -> !"confirmToken".equals(field.getName()))
                 .count();
         assertThat(declaredFields).isEqualTo(11L);
 

@@ -1,0 +1,174 @@
+<!DOCTYPE html>
+<html lang="en" xmlns:th="http://www.thymeleaf.org">
+<head>
+    <th:block th:replace="~{fragments/bms-palette :: palette}"></th:block>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>CardDemo - Error</title>
+  <!--
+    Shared error screen (review finding #25).
+
+    Origin (read-only): there is no standalone BMS "error map" in the legacy
+    system; instead every 3270 map carries an ERRMSGO field (PIC X(78)) on which
+    the online programs write the error line (for example
+    legacy/cbl/COSGN00C.cbl EVALUATE WS-RESP-CD -> ERRMSGO). This net-new,
+    server-rendered screen is the Java analogue of that shared error line: it is
+    the view returned by com.aws.carddemo.exception.GlobalExceptionHandler
+    (@ControllerAdvice) for every mapped FILE STATUS / CICS RESP condition.
+
+    The logical view name "error" is also Spring Boot's DEFAULT error view name,
+    so this single template serves two producers:
+      1. GlobalExceptionHandler's ModelAndView("error") -> model attributes
+         errorMessage (the ERRMSGO analogue), fileStatus (2-char FILE STATUS),
+         timestamp (java.time.Instant).
+      2. Spring Boot's BasicErrorController fallback (e.g. a 404 for an unknown
+         URL, or an exception raised outside the advice) -> the standard error
+         attributes status (int), error (reason phrase), message, path,
+         timestamp. Rendering both keeps failures inside the CardDemo terminal
+         chrome instead of falling through to the generic Whitelabel page.
+
+    Presentation reuses the exact 24x80 monospace terminal chrome and BMS colour
+    palette of the migrated screens (see templates/COSGN00.html). Because this is
+    a net-new screen with no BMS contract to preserve, it is authored to be
+    accessible: a semantic <main>/<h1>, and role="alert" on the error line so
+    assistive technology announces the failure.
+  -->
+  <style>
+    *, *::before, *::after { box-sizing: border-box; }
+
+    html, body {
+      margin: 0;
+      padding: 0;
+      background-color: var(--bms-bg);
+    }
+
+    body {
+      min-height: 100vh;
+      display: flex;
+      justify-content: center;
+      align-items: flex-start;
+      overflow-x: auto;
+      padding: 0.75rem 0;
+    }
+
+    /* 3270-style fixed 24x80 monospace screen. */
+    .terminal {
+      flex: 0 0 auto;
+      color: var(--bms-neutral);
+      background-color: var(--bms-bg);
+      font-family: "Courier New", "DejaVu Sans Mono", "Liberation Mono", Consolas, monospace;
+      font-size: clamp(0.5rem, 1.9vw, 1rem);
+      line-height: 1.2;
+      letter-spacing: 0;
+      border: 1px solid #1a1a1a;
+    }
+
+    /* Each grid column is exactly one character cell (1ch). */
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(80, 1ch);
+      grid-template-rows: repeat(24, 1.2em);
+      width: 80ch;
+    }
+
+    .cell {
+      white-space: pre;
+      overflow: hidden;
+      align-self: center;
+      min-width: 0;
+    }
+
+    /* BMS COLOR -> CSS hex (identical palette to the migrated screens). */
+    .c-blue   { color: var(--bms-blue); }
+    .c-yellow { color: var(--bms-yellow); }
+    .c-turq   { color: var(--bms-turquoise); }
+    .c-green  { color: var(--bms-green); }
+    .c-white  { color: var(--bms-neutral); }
+    .err      { color: var(--bms-red); font-weight: bold; }
+
+    /* The error line: allow wrapping within the 78-column width instead of
+       clipping, and drop the reset margin so an <h1> element renders inline in
+       the grid exactly like a span. */
+    h1.cell { font-size: inherit; font-weight: bold; margin: 0; }
+    .errline { white-space: pre-wrap; }
+
+    /* Return link rendered as terminal text (BMS PF-key legend style). */
+    .pfkey {
+      font: inherit;
+      color: var(--bms-yellow);
+      background: transparent;
+      border: 0;
+      padding: 0;
+      margin: 0;
+      cursor: pointer;
+      white-space: pre;
+      text-decoration: none;
+    }
+    .pfkey:hover, .pfkey:focus-visible { text-decoration: underline; }
+    .pfkey:focus-visible {
+      outline: 2px solid #CCCC00;
+      outline-offset: 0;
+    }
+  </style>
+</head>
+<body>
+  <main class="terminal">
+    <div class="grid"
+         th:with="displayMsg=${errorMessage != null and !#strings.isEmpty(errorMessage)
+                    ? errorMessage
+                    : (message != null and !#strings.isEmpty(message)
+                        ? message
+                        : (error != null and !#strings.isEmpty(error)
+                            ? error
+                            : 'An unexpected error has occurred.'))}">
+
+      <!-- Row 1: Tran / Title / Date -->
+      <span class="cell c-blue" style="grid-row: 1; grid-column: 1 / span 6;">Tran :</span>
+      <span class="cell c-yellow" style="grid-row: 1; grid-column: 21 / span 40;">AWS CardDemo</span>
+      <span class="cell c-blue" style="grid-row: 1; grid-column: 64 / span 6;">Date :</span>
+
+      <!-- Row 2: Prog / Title 2 / Time -->
+      <span class="cell c-blue" style="grid-row: 2; grid-column: 1 / span 6;">Prog :</span>
+      <span class="cell c-yellow" style="grid-row: 2; grid-column: 21 / span 40;">Application Error</span>
+      <span class="cell c-blue" style="grid-row: 2; grid-column: 64 / span 6;">Time :</span>
+
+      <!-- Row 4: heading -->
+      <h1 class="cell c-turq" style="grid-row: 4; grid-column: 16 / span 49;">The request could not be completed</h1>
+
+      <!-- Row 8: HTTP status (Spring Boot fallback model only; omitted for advice-rendered errors) -->
+      <span class="cell c-white" style="grid-row: 8; grid-column: 6 / span 20;"
+            th:if="${status != null}">HTTP Status :</span>
+      <span class="cell c-white" style="grid-row: 8; grid-column: 20 / span 40;"
+            th:if="${status != null}"
+            th:text="${status} + (error != null ? ' ' + error : '')"></span>
+
+      <!-- Row 9: mapped FILE STATUS / RESP code (GlobalExceptionHandler model only) -->
+      <span class="cell c-white" style="grid-row: 9; grid-column: 6 / span 20;"
+            th:if="${fileStatus != null and !#strings.isEmpty(fileStatus)}">FILE STATUS :</span>
+      <span class="cell c-white" style="grid-row: 9; grid-column: 20 / span 12;"
+            th:if="${fileStatus != null and !#strings.isEmpty(fileStatus)}"
+            th:text="${fileStatus}"></span>
+
+      <!-- Row 11: request path (Spring Boot fallback model only) -->
+      <span class="cell c-blue" style="grid-row: 11; grid-column: 6 / span 20;"
+            th:if="${path != null and !#strings.isEmpty(path)}">Path :</span>
+      <span class="cell c-blue" style="grid-row: 11; grid-column: 20 / span 58;"
+            th:if="${path != null and !#strings.isEmpty(path)}"
+            th:text="${path}"></span>
+
+      <!-- Row 13: timestamp (diagnostics) -->
+      <span class="cell c-blue" style="grid-row: 13; grid-column: 6 / span 72;"
+            th:if="${timestamp != null}"
+            th:text="'At : ' + ${timestamp}"></span>
+
+      <!-- Row 22: recovery link (source-equivalent PF3 exit to the sign-on entry point) -->
+      <a class="cell pfkey" style="grid-row: 22; grid-column: 6 / span 40;"
+         th:href="@{/signon}">PF3=Return to Sign On</a>
+
+      <!-- Row 23: the ERRMSGO error line (PIC X(78)); announced to assistive tech. -->
+      <span class="cell err errline" role="alert" style="grid-row: 23; grid-column: 1 / span 78;"
+            th:text="${displayMsg}"></span>
+    </div>
+  </main>
+</body>
+</html>

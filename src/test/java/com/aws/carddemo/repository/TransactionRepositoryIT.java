@@ -1,6 +1,7 @@
 package com.aws.carddemo.repository;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import com.aws.carddemo.AbstractPostgresIntegrationTest;
 import com.aws.carddemo.domain.Transaction;
@@ -10,6 +11,7 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.dao.DataIntegrityViolationException;
 
 /**
  * Integration tests for {@link TransactionRepository} against the Flyway-seeded Testcontainers
@@ -126,5 +128,45 @@ class TransactionRepositoryIT extends AbstractPostgresIntegrationTest {
         List<Transaction> ordered = transactionRepository.findByCardNumOrderByTranIdAsc(CARD_A);
         assertThat(ordered).extracting(tx -> tx.getTranId().trim())
                 .containsExactly("0000000000000010", "0000000000000020", "0000000000000030");
+    }
+
+    /**
+     * Review finding #32 (insert semantics parity). Proves that a second {@code save} of a
+     * <em>brand-new</em> {@link Transaction} object carrying an <em>already-committed</em>
+     * {@code TRAN-ID} is executed as a true SQL {@code INSERT} that collides with the existing
+     * primary key &mdash; the VSAM {@code FILE STATUS "22"} / CICS {@code WRITE DUPKEY} (DUPREC)
+     * equivalent &mdash; rather than as a silent {@code UPDATE}.
+     *
+     * <p><strong>Why this proves the fix.</strong> {@link Transaction} now implements
+     * {@code org.springframework.data.domain.Persistable} and reports {@code isNew() == true} on
+     * fresh construction, so Spring Data's {@code SimpleJpaRepository.save} routes to
+     * {@code EntityManager.persist} (an unconditional {@code INSERT}). Before the fix, the entity
+     * had an assigned {@code @Id} and no {@code isNew} override, so {@code save} routed to
+     * {@code EntityManager.merge} (a {@code SELECT}-then-{@code UPDATE} upsert): a re-run or a
+     * duplicate feed record silently overwrote the ledger row and the {@code DuplicateKeyException}
+     * catch guarding the insert sites was dead code. This test therefore fails on the pre-fix
+     * merge behaviour (no exception, row overwritten) and passes only with the {@code persist}
+     * (insert) semantics that restore batch/online DUPREC parity.
+     *
+     * <p>The committed row is asserted unchanged after the rejected insert, proving the failed
+     * {@code INSERT} did not mutate the existing ledger entry.
+     */
+    @Test
+    @DisplayName("#32 duplicate TRAN-ID INSERTs (Persistable), not merges: second save raises DUPREC and does not overwrite")
+    void duplicateTranIdInsertsNotMergesReproducingDuprec() {
+        // Commit the first ledger row in its own transaction (the base class declares no ambient
+        // @Transactional boundary), exactly as the posting/interest batch writers commit a chunk.
+        transactionRepository.saveAndFlush(newTransaction("0000000000000001", CARD_A, "100.00"));
+
+        // A NEW object with the SAME primary key but different data. isNew()==true -> persist ->
+        // INSERT -> unique-key violation (DUPREC), never a silent merge/UPDATE.
+        Transaction duplicate = newTransaction("0000000000000001", CARD_B, "999.99");
+        assertThatThrownBy(() -> transactionRepository.saveAndFlush(duplicate))
+                .isInstanceOf(DataIntegrityViolationException.class);
+
+        // Parity: the original committed row survives untouched.
+        Transaction survivor = transactionRepository.findById("0000000000000001").orElseThrow();
+        assertThat(survivor.getCardNum().trim()).isEqualTo(CARD_A);
+        assertThat(survivor.getTranAmt()).isEqualByComparingTo("100.00");
     }
 }

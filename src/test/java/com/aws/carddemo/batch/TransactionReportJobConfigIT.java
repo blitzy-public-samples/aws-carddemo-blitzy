@@ -3,6 +3,7 @@ package com.aws.carddemo.batch;
 import static org.assertj.core.api.Assertions.assertThat;
 
 import com.aws.carddemo.AbstractPostgresIntegrationTest;
+import com.aws.carddemo.config.BatchConfig;
 import com.aws.carddemo.domain.CardXref;
 import com.aws.carddemo.domain.Transaction;
 import com.aws.carddemo.domain.TransactionCategory;
@@ -115,11 +116,17 @@ import org.springframework.data.jpa.repository.config.EnableJpaRepositories;
 @SpringBootTest(
         classes = {
             TransactionReportJobConfig.class,
+            BatchConfig.class,
             TransactionReportJobConfigIT.BatchSliceConfig.class,
             TransactionReportJobConfigIT.BatchTestHarnessConfig.class
         },
         webEnvironment = SpringBootTest.WebEnvironment.NONE,
-        properties = "spring.jpa.hibernate.ddl-auto=none")
+        // Prometheus export disabled (review finding #35): the slice uses a SimpleMeterRegistry so Spring
+        // Batch's duplicate spring.batch.job.active meter never trips the Prometheus collision WARN.
+        properties = {
+            "spring.jpa.hibernate.ddl-auto=none",
+            "management.prometheus.metrics.export.enabled=false"
+        })
 class TransactionReportJobConfigIT extends AbstractPostgresIntegrationTest {
 
     /** Exact byte width of every report record ({@code FD-REPTFILE-REC PIC X(133)}). */
@@ -175,6 +182,16 @@ class TransactionReportJobConfigIT extends AbstractPostgresIntegrationTest {
 
     /** {@code REPT-SHORT-NAME} literal opening every page's name-header line. */
     private static final String NAME_HEADER_PREFIX = "DALYREPT";
+
+    /** Prefix of the column-heading line ({@code TRANSACTION-HEADER-1}), used to classify records. */
+    private static final String COLUMN_HEADING_PREFIX = "Transaction ID";
+
+    /**
+     * The {@code TRANSACTION-HEADER-2} separator record: exactly {@value #REPORT_RECORD_WIDTH} dash
+     * characters ({@code PIC X(133) VALUE ALL '-'}). Emitted in the header block and after every page
+     * and account total.
+     */
+    private static final String DASH_SEPARATOR = "-".repeat(REPORT_RECORD_WIDTH);
 
     @Autowired
     private JobLauncherTestUtils jobLauncherTestUtils;
@@ -366,15 +383,25 @@ class TransactionReportJobConfigIT extends AbstractPostgresIntegrationTest {
     }
 
     /**
-     * A page-total line is emitted every {@code WS-PAGE-SIZE = 20} detail lines. Seeds 21 in-range
-     * details on one card so exactly one page total appears; it equals the sum of the first 20 detail
-     * amounts and is preceded by exactly 20 detail lines within its page.
+     * Pagination follows the source line counter, not a fixed count of detail rows.
+     * {@code CBTRN03C} increments {@code WS-LINE-COUNTER} for <em>every</em> physical record - the
+     * four-line header block, each detail line, and each two-line total block - and breaks a page
+     * before a detail line when {@code FUNCTION MOD(WS-LINE-COUNTER, WS-PAGE-SIZE) = 0}. Because the
+     * opening header pre-charges the counter to 4, the first page carries exactly <strong>16</strong>
+     * detail lines (the 17th detail's pre-write test at counter 20 trips the break), not 20.
+     *
+     * <p>Seeds 21 in-range details on one card. The 17th detail trips the mid-report page break, so a
+     * page total of the first 16 amounts (16.00) is emitted; the remaining 5 details follow, and at
+     * end of file the source stale-adds the last amount (1.00) and writes the final page total
+     * (5.00 + 1.00 = 6.00) and the grand total (16.00 + 6.00 = 22.00). Being a single card, no
+     * account total is ever written - the source writes an account total only at a control break to a
+     * different card, never for the last card (review finding #31).</p>
      *
      * @param tempDir a per-test temporary directory for the report output
      * @throws Exception if the job launch fails
      */
     @Test
-    void pageTotalEmittedEvery20DetailLines(@TempDir Path tempDir) throws Exception {
+    void pageBreakOccursOnLineCounterMultipleOfPageSize(@TempDir Path tempDir) throws Exception {
         List<Transaction> seed = new ArrayList<>();
         for (int i = 1; i <= 21; i++) {
             seed.add(transaction(pageTranId(i), CARD_1, "1.00", at(2022, 6, 15)));
@@ -386,27 +413,31 @@ class TransactionReportJobConfigIT extends AbstractPostgresIntegrationTest {
 
         List<String> lines = readReport(reportOut);
 
+        // Two page totals: the mid-report break after the first 16 details (16.00), and the
+        // end-of-file page total for the remaining 5 details plus the stale-add of the last amount
+        // (5.00 + 1.00 = 6.00).
         List<String> pageTotals = linesStartingWith(lines, ReportPageTotals.LABEL);
-        assertThat(pageTotals).hasSize(1);
+        assertThat(pageTotals).hasSize(2);
         assertThat(amountField(pageTotals.get(0)))
-                .isEqualTo(ReportAmountFormatter.formatForcedSign(new BigDecimal("20.00")));
+                .isEqualTo(ReportAmountFormatter.formatForcedSign(new BigDecimal("16.00")));
+        assertThat(amountField(pageTotals.get(1)))
+                .isEqualTo(ReportAmountFormatter.formatForcedSign(new BigDecimal("6.00")));
 
-        // One card => one account total (all 21 details); the grand total covers all 21 details.
-        List<String> accountTotals = linesStartingWith(lines, ReportAccountTotals.LABEL);
-        assertThat(accountTotals).hasSize(1);
-        assertThat(amountField(accountTotals.get(0)))
-                .isEqualTo(ReportAmountFormatter.formatForcedSign(new BigDecimal("21.00")));
+        // Single card => no account total is ever written (the last card never gets one).
+        assertThat(linesStartingWith(lines, ReportAccountTotals.LABEL)).isEmpty();
 
+        // Grand total = sum of the two page totals = 22.00 (21 details of 1.00 plus the stale-add).
         List<String> grandTotals = linesStartingWith(lines, ReportGrandTotals.LABEL);
         assertThat(grandTotals).hasSize(1);
         assertThat(amountField(grandTotals.get(0)))
-                .isEqualTo(ReportAmountFormatter.formatForcedSign(new BigDecimal("21.00")));
+                .isEqualTo(ReportAmountFormatter.formatForcedSign(new BigDecimal("22.00")));
 
-        int pageTotalIndex = lines.indexOf(pageTotals.get(0));
-        long detailLinesBeforePageTotal = lines.subList(0, pageTotalIndex).stream()
+        // The first page carries exactly 16 detail lines before the first page total.
+        int firstPageTotalIndex = lines.indexOf(pageTotals.get(0));
+        long detailLinesBeforeFirstPageTotal = lines.subList(0, firstPageTotalIndex).stream()
                 .filter(line -> line.startsWith(PAGE_TRAN_PREFIX))
                 .count();
-        assertThat(detailLinesBeforePageTotal).isEqualTo(20L);
+        assertThat(detailLinesBeforeFirstPageTotal).isEqualTo(16L);
     }
 
     /**
@@ -433,28 +464,35 @@ class TransactionReportJobConfigIT extends AbstractPostgresIntegrationTest {
 
         BigDecimal card1Subtotal = a1.add(a2).add(a3);
         BigDecimal card2Subtotal = b1.add(b2);
-        BigDecimal grandTotal = card1Subtotal.add(card2Subtotal);
         assertThat(card1Subtotal).isEqualByComparingTo("320.25");
         assertThat(card2Subtotal).isEqualByComparingTo("1234.56");
-        assertThat(grandTotal).isEqualByComparingTo("1554.81");
+
+        // The source end-of-file branch (CBTRN03C 197-203) adds the retained last-record amount (b2)
+        // once more to the page and grand totals - the "stale-add" quirk, because READ ... INTO leaves
+        // TRAN-RECORD unchanged at AT END - so the grand total is the naive sum plus b2.
+        BigDecimal naiveGrand = card1Subtotal.add(card2Subtotal);
+        BigDecimal grandWithStaleAdd = naiveGrand.add(b2);
+        assertThat(naiveGrand).isEqualByComparingTo("1554.81");
+        assertThat(grandWithStaleAdd).isEqualByComparingTo("1789.37");
 
         Path reportOut = tempDir.resolve("tranrept.txt");
         assertThat(launchReport(reportOut).getStatus()).isEqualTo(BatchStatus.COMPLETED);
 
         List<String> lines = readReport(reportOut);
 
-        // Card 9990000000000001 sorts before 9990000000000002, so its account total prints first.
+        // Exactly one account total: card 9990000000000001, written at the control break to card
+        // 9990000000000002. The last card (card 2) never receives an account total - the source
+        // writes account totals only at a control break to a different card, never at end of file.
         List<String> accountTotals = linesStartingWith(lines, ReportAccountTotals.LABEL);
-        assertThat(accountTotals).hasSize(2);
+        assertThat(accountTotals).hasSize(1);
         assertThat(amountField(accountTotals.get(0)))
                 .isEqualTo(ReportAmountFormatter.formatForcedSign(card1Subtotal));
-        assertThat(amountField(accountTotals.get(1)))
-                .isEqualTo(ReportAmountFormatter.formatForcedSign(card2Subtotal));
 
+        // Grand total = sum of the page totals, including the end-of-file stale-add of b2.
         List<String> grandTotals = linesStartingWith(lines, ReportGrandTotals.LABEL);
         assertThat(grandTotals).hasSize(1);
         assertThat(amountField(grandTotals.get(0)))
-                .isEqualTo(ReportAmountFormatter.formatForcedSign(grandTotal));
+                .isEqualTo(ReportAmountFormatter.formatForcedSign(grandWithStaleAdd));
     }
 
     /**
@@ -496,6 +534,144 @@ class TransactionReportJobConfigIT extends AbstractPostgresIntegrationTest {
     }
 
     /**
+     * Empty/EOF boundary golden ({@code CBTRN03C}, review finding #31). An empty transaction file
+     * produces exactly the source end-of-file output and nothing else: a zero page total, the
+     * 133-dash separator, and a zero grand total - with <strong>no</strong> header block, because
+     * {@code WS-FIRST-TIME} never flips to {@code 'N'} (no detail line is ever written) and no account
+     * total, because there is no control break.
+     *
+     * @param tempDir a per-test temporary directory for the report output
+     * @throws Exception if the job launch fails
+     */
+    @Test
+    void emptyReportEmitsOnlyZeroPageTotalSeparatorAndZeroGrandTotal(@TempDir Path tempDir)
+            throws Exception {
+        // No transactions seeded: resetDatabaseAndSeedReferenceData cleared the transaction table.
+        Path reportOut = tempDir.resolve("tranrept.txt");
+        assertThat(launchReport(reportOut).getStatus()).isEqualTo(BatchStatus.COMPLETED);
+
+        List<String> lines = readReport(reportOut);
+        assertThat(lines).containsExactly(
+                toRecord(new ReportPageTotals(BigDecimal.ZERO).toReportLine()),
+                DASH_SEPARATOR,
+                toRecord(new ReportGrandTotals(BigDecimal.ZERO).toReportLine()));
+    }
+
+    /**
+     * Whole-file 133-byte oracle for a card control break plus end of file with no page break
+     * ({@code CBTRN03C}, review finding #31). Two cards - card 1 with two details (10.00, 20.00) and
+     * card 2 with one detail (5.00) - produce, in exact order:
+     * <ol>
+     *   <li>the four-line header block (name header, blank, column heading, separator);</li>
+     *   <li>card 1's two detail lines;</li>
+     *   <li>card 1's account total (30.00) and a separator, written at the control break to card 2;</li>
+     *   <li>card 2's single detail line;</li>
+     *   <li>the end-of-file page total (40.00) and a separator, then the grand total (40.00).</li>
+     * </ol>
+     * The card 2 detail amount (5.00) is added once more at end of file (the stale-add quirk), so the
+     * final page and grand totals are 35.00 + 5.00 = 40.00, and card 2 (the last card) receives no
+     * account total. This pins the exact record sequence, kinds and amounts across the card and EOF
+     * boundaries - the strongest {@code CBTRN03C} parity oracle.
+     *
+     * @param tempDir a per-test temporary directory for the report output
+     * @throws Exception if the job launch fails
+     */
+    @Test
+    void wholeFileRecordSequenceMatchesOracle_controlBreakAndEndOfFile(@TempDir Path tempDir)
+            throws Exception {
+        transactionRepository.saveAll(List.of(
+                transaction("TXNSEQA000000001", CARD_1, "10.00", at(2022, 5, 1)),
+                transaction("TXNSEQA000000002", CARD_1, "20.00", at(2022, 5, 2)),
+                transaction("TXNSEQB000000001", CARD_2, "5.00", at(2022, 5, 3))));
+
+        Path reportOut = tempDir.resolve("tranrept.txt");
+        assertThat(launchReport(reportOut).getStatus()).isEqualTo(BatchStatus.COMPLETED);
+
+        List<String> lines = readReport(reportOut);
+
+        // Exact record-kind sequence (finding #31: model every source write paragraph in order).
+        List<String> kinds = new ArrayList<>();
+        for (String record : lines) {
+            kinds.add(classify(record));
+        }
+        assertThat(kinds).containsExactly(
+                "HEADER_NAME", "BLANK", "COLUMN_HEADING", "SEPARATOR",   // 1120-WRITE-HEADERS
+                "DETAIL", "DETAIL",                                      // card 1 details
+                "ACCOUNT_TOTAL", "SEPARATOR",                            // 1120-WRITE-ACCOUNT-TOTALS
+                "DETAIL",                                                // card 2 detail
+                "PAGE_TOTAL", "SEPARATOR",                               // 1110-WRITE-PAGE-TOTALS (EOF)
+                "GRAND_TOTAL");                                          // 1110-WRITE-GRAND-TOTALS
+
+        // The single account total is card 1's subtotal (10.00 + 20.00 = 30.00).
+        List<String> accountTotals = linesStartingWith(lines, ReportAccountTotals.LABEL);
+        assertThat(accountTotals).hasSize(1);
+        assertThat(amountField(accountTotals.get(0)))
+                .isEqualTo(ReportAmountFormatter.formatForcedSign(new BigDecimal("30.00")));
+
+        // The end-of-file page total and grand total both carry the stale-add of the last amount:
+        // 35.00 (10 + 20 + 5) + 5.00 = 40.00.
+        List<String> pageTotals = linesStartingWith(lines, ReportPageTotals.LABEL);
+        assertThat(pageTotals).hasSize(1);
+        assertThat(amountField(pageTotals.get(0)))
+                .isEqualTo(ReportAmountFormatter.formatForcedSign(new BigDecimal("40.00")));
+        List<String> grandTotals = linesStartingWith(lines, ReportGrandTotals.LABEL);
+        assertThat(grandTotals).hasSize(1);
+        assertThat(amountField(grandTotals.get(0)))
+                .isEqualTo(ReportAmountFormatter.formatForcedSign(new BigDecimal("40.00")));
+    }
+
+    /**
+     * Classifies a 133-byte report record into a coarse record-kind token, used by the whole-file
+     * oracle to assert the exact emission sequence. The order of checks matters: label- and
+     * header-prefixed records are matched before the {@code DETAIL} fallback (the golden's detail
+     * transaction ids all start with {@code TXNSEQ}, so they never collide with a label or heading).
+     *
+     * @param record a 133-byte report record
+     * @return one of {@code HEADER_NAME}, {@code BLANK}, {@code COLUMN_HEADING}, {@code SEPARATOR},
+     *         {@code PAGE_TOTAL}, {@code ACCOUNT_TOTAL}, {@code GRAND_TOTAL} or {@code DETAIL}
+     */
+    private static String classify(String record) {
+        if (record.startsWith(NAME_HEADER_PREFIX)) {
+            return "HEADER_NAME";
+        }
+        if (record.equals(DASH_SEPARATOR)) {
+            return "SEPARATOR";
+        }
+        if (record.isBlank()) {
+            return "BLANK";
+        }
+        if (record.startsWith(COLUMN_HEADING_PREFIX)) {
+            return "COLUMN_HEADING";
+        }
+        if (record.startsWith(ReportPageTotals.LABEL)) {
+            return "PAGE_TOTAL";
+        }
+        if (record.startsWith(ReportAccountTotals.LABEL)) {
+            return "ACCOUNT_TOTAL";
+        }
+        if (record.startsWith(ReportGrandTotals.LABEL)) {
+            return "GRAND_TOTAL";
+        }
+        return "DETAIL";
+    }
+
+    /**
+     * Normalizes a composed line to exactly {@value #REPORT_RECORD_WIDTH} characters (right-padded
+     * with spaces or truncated), mirroring the production {@code toRecord} normalization so the
+     * empty-report golden can assert exact records built from the same DTO {@code toReportLine()}
+     * output.
+     *
+     * @param line the composed report line
+     * @return the line as exactly {@value #REPORT_RECORD_WIDTH} characters
+     */
+    private static String toRecord(String line) {
+        if (line.length() >= REPORT_RECORD_WIDTH) {
+            return line.substring(0, REPORT_RECORD_WIDTH);
+        }
+        return line + " ".repeat(REPORT_RECORD_WIDTH - line.length());
+    }
+
+    /**
      * Launches {@code transactionReportJob} for the class reporting window, writing to the supplied
      * output path with a unique {@code run.id} so each launch is a fresh job instance.
      *
@@ -514,15 +690,31 @@ class TransactionReportJobConfigIT extends AbstractPostgresIntegrationTest {
     }
 
     /**
-     * Reads the report as fixed single-byte {@code ISO-8859-1} lines. The report content is pure
-     * ASCII, so the character length of each line equals its byte width.
+     * Reads the report as fixed-length {@value #REPORT_RECORD_WIDTH}-byte records.
+     *
+     * <p>The report file is an undelimited fixed-block ({@code LRECL 133 RECFM FB}) dataset with
+     * <strong>no</strong> line separator between records (review finding #17), so it must be split on
+     * the fixed record boundary rather than read as newline-delimited text. The whole file is read as
+     * {@code ISO-8859-1} bytes (one byte per character for the report's pure-ASCII content) and sliced
+     * into consecutive {@value #REPORT_RECORD_WIDTH}-character records. The total file length must be
+     * an exact multiple of the record width, which this method asserts.</p>
      *
      * @param outputPath the report output file
-     * @return the report lines, without line terminators
+     * @return the report records, each exactly {@value #REPORT_RECORD_WIDTH} characters, in file order
      * @throws Exception if the file cannot be read
      */
     private List<String> readReport(Path outputPath) throws Exception {
-        return Files.readAllLines(outputPath, StandardCharsets.ISO_8859_1);
+        byte[] bytes = Files.readAllBytes(outputPath);
+        assertThat(bytes.length % REPORT_RECORD_WIDTH)
+                .as("report file length must be a whole number of %d-byte records "
+                        + "(undelimited RECFM FB)", REPORT_RECORD_WIDTH)
+                .isZero();
+        String content = new String(bytes, StandardCharsets.ISO_8859_1);
+        List<String> records = new ArrayList<>(content.length() / REPORT_RECORD_WIDTH);
+        for (int offset = 0; offset < content.length(); offset += REPORT_RECORD_WIDTH) {
+            records.add(content.substring(offset, offset + REPORT_RECORD_WIDTH));
+        }
+        return records;
     }
 
     /**

@@ -15,10 +15,12 @@ import org.springframework.security.test.context.support.WithMockUser;
 import org.springframework.test.web.servlet.MockMvc;
 
 import com.aws.carddemo.AbstractPostgresIntegrationTest;
+import com.aws.carddemo.TestCredentials;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.csrf;
+import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.user;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.redirectedUrlPattern;
@@ -69,10 +71,14 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
  *       {@link #lowercaseCredentialsAreUppercasedForParity()}.</li>
  *   <li>Origin: {@code legacy/csd/CARDDEMO.CSD} &mdash; the 18 CICS transaction/program definitions.
  *       The admin transactions {@code CA00} (&rarr; {@code COADM01C}) and {@code CU00}-{@code CU03}
- *       (&rarr; {@code COUSR0[0-3]C}) map to {@code /admin/**} = {@code ROLE_ADMIN}; the
- *       {@code CDV1} &rarr; {@code COCRDSEC} card-detail security variant (which has no {@code .cbl}
- *       program) is realized purely as {@code /card/detail} URL authorization, verified by
- *       {@link #standardRoutesAllowedForUser()}.</li>
+ *       (&rarr; {@code COUSR0[0-3]C}) map to {@code /admin/**} = {@code ROLE_ADMIN}. The
+ *       {@code CDV1} &rarr; {@code COCRDSEC} developer/card-search transaction (which has no
+ *       {@code .cbl} program and no menu entry) has <em>no</em> migrated route: its source-authoritative
+ *       policy is "no exposed route", verified by {@link #authenticatedUsersDeniedOnUnmappedPaths()}
+ *       (fail-closed {@code anyRequest().denyAll()}). It must not be confused with {@code /card/detail},
+ *       which is the ordinary user transaction {@code CCDL} &rarr; {@code COCRDSLC} ("Credit Card View",
+ *       user-menu option 4) reachable by both roles, verified by
+ *       {@link #standardRoutesAllowedForUser()} (review finding #1).</li>
  * </ul>
  *
  * <p><strong>Password parity (AAP &sect;0.6.7).</strong> The cleartext password comparison of the
@@ -96,7 +102,8 @@ class SecurityConfigIT extends AbstractPostgresIntegrationTest {
     private static final String SEED_USER_ID = "USER0001";
 
     /** Cleartext password shared by every seeded {@code user_security} row ({@code SEC-USR-PWD}). */
-    private static final String SEED_PASSWORD = "PASSWORD";
+    // Review finding #5: seed password externalized via CARDDEMO_SEED_PASSWORD (no committed default).
+    private static final String SEED_PASSWORD = TestCredentials.seedPassword();
 
     /** Granted authority for the admin user type (COBOL {@code SEC-USR-TYPE = 'A'}). */
     private static final String ROLE_ADMIN = "ROLE_ADMIN";
@@ -108,11 +115,26 @@ class SecurityConfigIT extends AbstractPostgresIntegrationTest {
     private static final List<String> ADMIN_ROUTES = List.of("/admin/menu", "/admin/users");
 
     /**
-     * Authenticated-but-non-admin routes gated by the terminal {@code anyRequest().authenticated()}
-     * rule. {@code /card/detail} realizes the legacy {@code CDV1}/{@code COCRDSEC} security variant.
+     * Business routes reachable by any authenticated principal (both roles), each carrying its own
+     * explicit {@code .authenticated()} rule (review finding #1: no route rides a catch-all).
+     * {@code /card/detail} is the ordinary transaction {@code CCDL} &rarr; {@code COCRDSLC} ("Credit
+     * Card View", user-menu option 4) &mdash; NOT the {@code CDV1}/{@code COCRDSEC} developer
+     * transaction, which has no migrated route and is denied by {@code anyRequest().denyAll()}.
      */
     private static final List<String> STANDARD_ROUTES =
-            List.of("/account/view", "/card/detail", "/transaction/list", "/billpay", "/report");
+            List.of("/menu", "/account/view", "/account/update", "/card/list", "/card/detail",
+                    "/card/update", "/transaction/list", "/transaction/view", "/transaction/add",
+                    "/billpay", "/report");
+
+    /**
+     * Paths that are NOT migrated CICS transactions: some are plausible "developer"/alternate spellings
+     * (including anything a {@code CDV1}/{@code COCRDSEC} developer path might use), others are
+     * unmapped siblings of real routes. Under the fail-closed {@code anyRequest().denyAll()} rule
+     * (finding #1) every one of these must be denied even for an authenticated principal, proving there
+     * is no catch-all authorization bypass.
+     */
+    private static final List<String> UNMAPPED_PATHS =
+            List.of("/developer", "/card/secure", "/card/search", "/account", "/nope");
 
     /** HTTP status for an unauthenticated request blocked by the entry point. */
     private static final int SC_UNAUTHORIZED = 401;
@@ -212,10 +234,12 @@ class SecurityConfigIT extends AbstractPostgresIntegrationTest {
 
     /**
      * A {@code ROLE_USER} principal is authorized for every non-admin business route (status &notin;
-     * {401, 403}), as dictated by the terminal {@code anyRequest().authenticated()} rule. This
-     * critically includes {@code /card/detail}, which realizes the legacy {@code CDV1}/{@code COCRDSEC}
-     * card-detail security variant (no standalone {@code .cbl} program) purely through Spring Security
-     * URL authorization.
+     * {401, 403}), because each such route now carries its own explicit {@code .authenticated()} rule
+     * (review finding #1: no route relies on a catch-all). This critically includes {@code /card/detail}
+     * &mdash; the ordinary transaction {@code CCDL} &rarr; {@code COCRDSLC} ("Credit Card View",
+     * user-menu option 4), reachable by a standard user &mdash; which must not be confused with the
+     * {@code CDV1}/{@code COCRDSEC} developer transaction (no migrated route; see
+     * {@link #authenticatedUsersDeniedOnUnmappedPaths()}).
      *
      * @throws Exception if a MockMvc request cannot be performed
      */
@@ -227,6 +251,52 @@ class SecurityConfigIT extends AbstractPostgresIntegrationTest {
             assertThat(sc)
                     .as("USER should reach %s", url)
                     .isNotIn(SC_UNAUTHORIZED, SC_FORBIDDEN);
+        }
+    }
+
+    /**
+     * The same business routes are also reachable by a {@code ROLE_ADMIN} principal (both roles share
+     * the non-admin functions, exactly as the COBOL main/admin menus both expose them). Asserts status
+     * &notin; {401, 403} for every {@link #STANDARD_ROUTES} entry.
+     *
+     * @throws Exception if a MockMvc request cannot be performed
+     */
+    @Test
+    @WithMockUser(roles = "ADMIN")
+    void standardRoutesAllowedForAdmin() throws Exception {
+        for (String url : STANDARD_ROUTES) {
+            int sc = mockMvc.perform(get(url)).andReturn().getResponse().getStatus();
+            assertThat(sc)
+                    .as("ADMIN should reach %s", url)
+                    .isNotIn(SC_UNAUTHORIZED, SC_FORBIDDEN);
+        }
+    }
+
+    /**
+     * Fail-closed proof for review finding #1: an <em>authenticated</em> principal is still denied
+     * ({@code 403}) on any path that is not an enumerated migrated transaction, because the chain
+     * terminates in {@code anyRequest().denyAll()} rather than {@code anyRequest().authenticated()}.
+     * Under the previous catch-all an authenticated user would have passed authorization for these
+     * paths (reaching a {@code 404}/handler), which is precisely the bypass this asserts is gone. This
+     * also encodes the source-authoritative {@code CDV1}/{@code COCRDSEC} policy of "no exposed route".
+     * Checked for both roles so neither can reach an un-enumerated path.
+     *
+     * @throws Exception if a MockMvc request cannot be performed
+     */
+    @Test
+    void authenticatedUsersDeniedOnUnmappedPaths() throws Exception {
+        for (String url : UNMAPPED_PATHS) {
+            int userStatus = mockMvc.perform(get(url).with(user("u").roles("USER")))
+                    .andReturn().getResponse().getStatus();
+            assertThat(userStatus)
+                    .as("ROLE_USER must be denied (403) on un-enumerated path %s (no catch-all)", url)
+                    .isEqualTo(SC_FORBIDDEN);
+
+            int adminStatus = mockMvc.perform(get(url).with(user("a").roles("ADMIN")))
+                    .andReturn().getResponse().getStatus();
+            assertThat(adminStatus)
+                    .as("ROLE_ADMIN must be denied (403) on un-enumerated path %s (no catch-all)", url)
+                    .isEqualTo(SC_FORBIDDEN);
         }
     }
 
@@ -249,9 +319,10 @@ class SecurityConfigIT extends AbstractPostgresIntegrationTest {
 
     /**
      * A non-permitted actuator endpoint is protected. {@code /actuator/env} is not in the
-     * {@code permitAll} set, so {@code anyRequest().authenticated()} blocks anonymous access through
-     * the login-url entry point: the response is a 3xx redirect to {@code /signon} (a {@code 401} is
-     * also tolerated), and never {@code 200}.
+     * {@code permitAll} set and is not one of the admin-gated endpoints, so the fail-closed
+     * {@code anyRequest().denyAll()} rule blocks anonymous access through the login-url entry point:
+     * the response is a 3xx redirect to {@code /signon} (a {@code 401} is also tolerated), and never
+     * {@code 200}.
      *
      * @throws Exception if the MockMvc request cannot be performed
      */
@@ -264,6 +335,64 @@ class SecurityConfigIT extends AbstractPostgresIntegrationTest {
         assertThat(sc)
                 .as("anonymous /actuator/env must not be 200 OK")
                 .isNotEqualTo(SC_OK);
+    }
+
+    /**
+     * Review finding #7: {@code /actuator/info} and {@code /actuator/prometheus} must NOT be readable
+     * anonymously. Previously both were {@code permitAll} and returned {@code 200} to any caller; they
+     * now require {@code ROLE_ADMIN}, so an anonymous request is blocked (3xx redirect to signon or
+     * {@code 401}) and never {@code 200}.
+     *
+     * @throws Exception if a MockMvc request cannot be performed
+     */
+    @Test
+    void actuatorInfoAndPrometheusBlockedForAnonymous() throws Exception {
+        for (String url : List.of("/actuator/info", "/actuator/prometheus")) {
+            int sc = mockMvc.perform(get(url)).andReturn().getResponse().getStatus();
+            assertThat(sc)
+                    .as("anonymous %s must not be 200 OK (finding #7)", url)
+                    .isNotEqualTo(SC_OK);
+            assertThat(sc == SC_UNAUTHORIZED || (sc >= 300 && sc < 400))
+                    .as("anonymous %s must be blocked (401 or 3xx redirect), was %s", url, sc)
+                    .isTrue();
+        }
+    }
+
+    /**
+     * Review finding #7: a {@code ROLE_USER} principal is authenticated but not authorized for the
+     * operational actuator endpoints, which are admin-only. Both {@code /actuator/info} and
+     * {@code /actuator/prometheus} return {@code 403}.
+     *
+     * @throws Exception if a MockMvc request cannot be performed
+     */
+    @Test
+    @WithMockUser(roles = "USER")
+    void actuatorInfoAndPrometheusForbiddenForUser() throws Exception {
+        for (String url : List.of("/actuator/info", "/actuator/prometheus")) {
+            int sc = mockMvc.perform(get(url)).andReturn().getResponse().getStatus();
+            assertThat(sc)
+                    .as("ROLE_USER must be forbidden from operational endpoint %s (finding #7)", url)
+                    .isEqualTo(SC_FORBIDDEN);
+        }
+    }
+
+    /**
+     * Review finding #7: a {@code ROLE_ADMIN} principal (the operations role) IS authorized for the
+     * operational actuator endpoints. Both {@code /actuator/info} and {@code /actuator/prometheus} are
+     * reachable (status &notin; {401, 403}); the admin restriction narrows access without removing the
+     * endpoints the local Prometheus scrape and operators rely on.
+     *
+     * @throws Exception if a MockMvc request cannot be performed
+     */
+    @Test
+    @WithMockUser(roles = "ADMIN")
+    void actuatorInfoAndPrometheusAllowedForAdmin() throws Exception {
+        for (String url : List.of("/actuator/info", "/actuator/prometheus")) {
+            int sc = mockMvc.perform(get(url)).andReturn().getResponse().getStatus();
+            assertThat(sc)
+                    .as("ROLE_ADMIN should reach operational endpoint %s (finding #7)", url)
+                    .isNotIn(SC_UNAUTHORIZED, SC_FORBIDDEN);
+        }
     }
 
     // ---------------------------------------------------------------------------------------------
@@ -367,8 +496,13 @@ class SecurityConfigIT extends AbstractPostgresIntegrationTest {
      */
     @Test
     void lowercaseCredentialsAreUppercasedForParity() {
+        // Review finding #5: derive the lowercase input from the externalized seed constants
+        // (no committed credential literal). SEED_ADMIN_ID/SEED_PASSWORD are the uppercase-stored
+        // values; lowering them here exercises the COBOL FUNCTION UPPER-CASE parity path.
         Authentication result = authenticationManager.authenticate(
-                new UsernamePasswordAuthenticationToken("admin001", "password"));
+                new UsernamePasswordAuthenticationToken(
+                        SEED_ADMIN_ID.toLowerCase(java.util.Locale.ROOT),
+                        SEED_PASSWORD.toLowerCase(java.util.Locale.ROOT)));
 
         assertThat(result.isAuthenticated()).isTrue();
         assertThat(result.getAuthorities().stream().map(GrantedAuthority::getAuthority))

@@ -33,11 +33,16 @@ import com.aws.carddemo.service.online.CardUpdateService.CardUpdateState;
 import com.aws.carddemo.util.PfKeyHandler;
 import com.aws.carddemo.util.constants.ScreenTitles;
 import jakarta.servlet.http.HttpSession;
+import jakarta.validation.Valid;
 import java.time.LocalDateTime;
 import java.util.Locale;
 import java.util.Map;
 import org.springframework.stereotype.Controller;
+import org.springframework.ui.Model;
+import org.springframework.validation.BindingResult;
+import org.springframework.web.bind.WebDataBinder;
 import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.InitBinder;
 import org.springframework.web.bind.annotation.ModelAttribute;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestParam;
@@ -128,6 +133,23 @@ public class CardController {
 
     /** Logical view for the card-update screen ({@code CCUP} / {@code COCRDUPC}). */
     private static final String VIEW_UPDATE = "COCRDUP";
+
+    /**
+     * Model attribute driving the review-finding-#10 confirmation window: {@code true}
+     * only while the update state is {@code CCUP-CHANGES-OK-NOT-CONFIRMED}, which makes
+     * the editable fields read-only and echoes the single-use token to the confirm
+     * screen (COCRDUP.html {@code th:readonly="${confirmMode}"}).
+     */
+    private static final String MODEL_ATTR_CONFIRM_MODE = "confirmMode";
+
+    /**
+     * Neutral banner shown when data binding rejects a field for exceeding its declared
+     * {@code @Size} width (review finding #11). Only reachable by a crafted client (the template
+     * {@code maxlength} / 3270 field width makes it impossible otherwise), so it carries no COBOL
+     * business message and simply re-displays the screen without performing any card work.
+     */
+    private static final String MSG_FIELD_LENGTH =
+            "Input exceeds the maximum length for a field.";
 
     // ------------------------------------------------------------------------
     // Transaction ids and program names (COBOL LIT-THIS* literals; header text).
@@ -338,10 +360,19 @@ public class CardController {
      * @return {@link #VIEW_LIST}, or a {@code redirect:} to the detail/update/menu route
      */
     @PostMapping(ROUTE_LIST)
-    public String submitList(@ModelAttribute("form") COCRDLIForm form,
+    public String submitList(@Valid @ModelAttribute("form") COCRDLIForm form,
+                             BindingResult bindingResult,
                              @RequestParam(name = PARAM_PFKEY, required = false,
                                      defaultValue = ENTER_TOKEN) String pfkey,
                              HttpSession session) {
+        // Review finding #11: an over-width field (only reachable by a crafted client bypassing the
+        // template maxlength / 3270 field width) re-displays the list header with a neutral banner
+        // and performs no lookup, so the COBOL card-list edit ordering is untouched.
+        if (bindingResult.hasErrors()) {
+            populateHeaderList(form);
+            form.setErrmsg(MSG_FIELD_LENGTH);
+            return VIEW_LIST;
+        }
         return processList(form, resolvePfKey(pfkey), session);
     }
 
@@ -472,9 +503,18 @@ public class CardController {
      * @return {@link #VIEW_DETAIL}, or a {@code redirect:} to the from-program/menu route
      */
     @PostMapping(ROUTE_DETAIL)
-    public String submitDetail(@ModelAttribute("form") COCRDSLForm form,
+    public String submitDetail(@Valid @ModelAttribute("form") COCRDSLForm form,
+                               BindingResult bindingResult,
                                @RequestParam(name = PARAM_PFKEY, required = false,
                                        defaultValue = ENTER_TOKEN) String pfkey) {
+        // Review finding #11: an over-width field (only reachable by a crafted client bypassing the
+        // template maxlength / 3270 field width) re-displays the detail header with a neutral banner
+        // and performs no lookup, so the COBOL card-detail edit ordering is untouched.
+        if (bindingResult.hasErrors()) {
+            populateHeaderDetail(form);
+            form.setErrmsg(MSG_FIELD_LENGTH);
+            return VIEW_DETAIL;
+        }
         return processDetail(form, resolvePfKey(pfkey));
     }
 
@@ -514,11 +554,13 @@ public class CardController {
      *
      * @param form    the card-update form, bound as the {@code form} model attribute
      * @param session the HTTP session carrying the update snapshot (COMMAREA carrier)
+     * @param model   the view model (carries the review-finding-#10 {@code confirmMode} flag)
      * @return the logical view name {@link #VIEW_UPDATE}
      */
     @GetMapping(ROUTE_UPDATE)
-    public String displayUpdate(@ModelAttribute("form") COCRDUPForm form, HttpSession session) {
-        return processUpdate(form, PfKey.ENTER, session);
+    public String displayUpdate(@ModelAttribute("form") COCRDUPForm form, HttpSession session,
+                                Model model) {
+        return processUpdate(form, PfKey.ENTER, session, model);
     }
 
     /**
@@ -537,14 +579,27 @@ public class CardController {
      * @param form    the submitted card-update form, bound as the {@code form} model attribute
      * @param pfkey   the PF-key token submitted by the screen (defaults to ENTER)
      * @param session the HTTP session carrying the update snapshot (COMMAREA carrier)
+     * @param model   the view model (carries the review-finding-#10 {@code confirmMode} flag)
      * @return {@link #VIEW_UPDATE}, or a {@code redirect:} to the from-program/menu route
      */
     @PostMapping(ROUTE_UPDATE)
-    public String submitUpdate(@ModelAttribute("form") COCRDUPForm form,
+    public String submitUpdate(@Valid @ModelAttribute("form") COCRDUPForm form,
+                               BindingResult bindingResult,
                                @RequestParam(name = PARAM_PFKEY, required = false,
                                        defaultValue = ENTER_TOKEN) String pfkey,
-                               HttpSession session) {
-        return processUpdate(form, resolvePfKey(pfkey), session);
+                               HttpSession session, Model model) {
+        // Review finding #11: an over-width field (only reachable by a crafted client bypassing the
+        // template maxlength / 3270 field width) re-displays the screen (not confirm mode, no armed
+        // token) with a neutral banner and performs no update, so the COBOL card-update edit
+        // ordering owned by CardUpdateService is untouched.
+        if (bindingResult.hasErrors()) {
+            populateHeaderUpdate(form);
+            form.setErrmsg(MSG_FIELD_LENGTH);
+            model.addAttribute(MODEL_ATTR_CONFIRM_MODE, false);
+            form.setConfirmToken(null);
+            return VIEW_UPDATE;
+        }
+        return processUpdate(form, resolvePfKey(pfkey), session, model);
     }
 
     /**
@@ -561,9 +616,10 @@ public class CardController {
      * @param form    the card-update form to edit and populate
      * @param key     the resolved attention-id
      * @param session the HTTP session carrying the update snapshot
+     * @param model   the view model (carries the review-finding-#10 {@code confirmMode} flag)
      * @return {@link #VIEW_UPDATE}, or a {@code redirect:} route
      */
-    private String processUpdate(COCRDUPForm form, PfKey key, HttpSession session) {
+    private String processUpdate(COCRDUPForm form, PfKey key, HttpSession session, Model model) {
         CardUpdateState state = getOrCreateUpdateState(session);
         CardWorkArea work = new CardWorkArea();
         // CardWorkArea.getPfKey() = PfKey.fromAid(aid), whose lookup keys are the enum names;
@@ -573,7 +629,7 @@ public class CardController {
         if (result.getAction() == CardUpdateService.RoutingAction.REDIRECT) {
             return redirectFor(context.getToProgram());
         }
-        return renderUpdate(form, work, state, result);
+        return renderUpdate(form, work, state, result, model);
     }
 
     /**
@@ -594,10 +650,11 @@ public class CardController {
      * @param work   the work area supplying the echoed account/card search keys
      * @param state  the update state supplying the change-action and old/new snapshots
      * @param result the service result supplying the program-enter flag and the return message
+     * @param model  the view model (carries the review-finding-#10 {@code confirmMode} flag)
      * @return the logical view name {@link #VIEW_UPDATE}
      */
     private String renderUpdate(COCRDUPForm form, CardWorkArea work, CardUpdateState state,
-                                CardUpdateResult result) {
+                                CardUpdateResult result, Model model) {
         populateHeaderUpdate(form);
 
         // ---- 3200-SETUP-SCREEN-VARS ----
@@ -651,6 +708,13 @@ public class CardController {
         // ---- 3250-SETUP-INFOMSG ----
         form.setInfomsg(resolveUpdateInfoMsg(result, state));   // MOVE WS-INFO-MSG TO INFOMSGO.
         form.setErrmsg(result.getEditState().getReturnMessage()); // MOVE WS-RETURN-MSG TO ERRMSGO.
+
+        // Review finding #10: the confirmation window (read-only fields + single-use
+        // token echoed to the hidden field) is open only while the state is
+        // CCUP-CHANGES-OK-NOT-CONFIRMED; every other state clears the token. The token
+        // is read from the session state that mainEntry() mutated in place.
+        model.addAttribute(MODEL_ATTR_CONFIRM_MODE, state.isChangesOkNotConfirmed());
+        form.setConfirmToken(state.getConfirmToken());
         return VIEW_UPDATE;
     }
 
@@ -781,6 +845,37 @@ public class CardController {
         DateStruct now = DateStruct.from(LocalDateTime.now());
         form.setCurdate(now.getFormattedDateMmDdYy());
         form.setCurtime(now.getFormattedTimeHhMmSs());
+    }
+
+    /**
+     * Restricts request-parameter binding to the fields each card screen actually submits (review
+     * finding #11), switching on the bound form type since all three screens share the {@code form}
+     * model attribute. The list screen submits the two search keys plus the per-row selectors; the
+     * detail screen submits only its two search keys; the update screen submits its editable card
+     * fields plus the single-use confirmation token ({@code confirmToken}, finding #10). Display-only
+     * header/title/date/message fields are excluded so they can no longer be over-posted;
+     * {@code pfkey} arrives as a {@code @RequestParam} and is not bound through the form.
+     *
+     * @param binder the per-request data binder for the bound form
+     */
+    @InitBinder
+    protected void restrictBinding(WebDataBinder binder) {
+        // Spring MVC instantiates the @ModelAttribute command lazily, so binder.getTarget() is null
+        // when @InitBinder runs; the resolved binder.getTargetType() is the reliable discriminator
+        // (it is null for simple @RequestParam binders such as pfkey).
+        Class<?> targetType = binder.getTargetType() != null ? binder.getTargetType().resolve() : null;
+        if (COCRDLIForm.class.equals(targetType)) {
+            binder.setAllowedFields(
+                    "acctsid", "cardsid",
+                    "crdsel1", "crdsel2", "crdsel3", "crdsel4", "crdsel5", "crdsel6", "crdsel7",
+                    "crdstp2", "crdstp3", "crdstp4", "crdstp5", "crdstp6", "crdstp7");
+        } else if (COCRDSLForm.class.equals(targetType)) {
+            binder.setAllowedFields("acctsid", "cardsid");
+        } else if (COCRDUPForm.class.equals(targetType)) {
+            binder.setAllowedFields(
+                    "acctsid", "cardsid", "crdname", "crdstcd",
+                    "expmon", "expday", "expyear", "confirmToken");
+        }
     }
 
     /**

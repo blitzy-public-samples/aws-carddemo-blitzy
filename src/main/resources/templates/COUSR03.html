@@ -1,6 +1,7 @@
 <!DOCTYPE html>
 <html lang="en" xmlns:th="http://www.thymeleaf.org">
 <head>
+    <th:block th:replace="~{fragments/bms-palette :: palette}"></th:block>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>CardDemo - Delete User (CU03)</title>
@@ -24,21 +25,21 @@
          * Design source of truth: legacy/bms/COUSR03.bms. Colour names below map
          * to the BMS COLOR= attributes, rendered as their conventional 3270 hues.
          *
-         * BLITZY [A11Y]: The 3270/BMS palette is rendered verbatim on a dark
-         * background (e.g. BLUE #0000CD, GREEN #00CD00, RED #CD0000). Some pairings
-         * compute below the WCAG AA 4.5:1 text-contrast recommendation. Per the
-         * design-source-authoritative directive the BMS values are implemented
-         * exactly as specified and flagged here for designer review rather than
-         * silently darkened/lightened.
+         * BLITZY [A11Y / review finding #53]: the 3270/BMS palette is centralized in
+         * templates/fragments/bms-palette.html and referenced via var(--bms-*). The two
+         * foreground colours that failed WCAG 2.1 AA contrast on the black background (BLUE,
+         * RED) are replaced with accessible equivalents brightened along the same hue axis
+         * (>= 4.5:1); the rest keep their legacy values. Contrast is asserted by
+         * BmsPaletteContrastTest.
          */
         :root {
-            --scr-blue: #0000CD;
-            --scr-yellow: #CCCC00;
-            --scr-turquoise: #00CDCD;
-            --scr-green: #00CD00;
-            --scr-red: #CD0000;
-            --scr-neutral: #FFFFFF;
-            --scr-bg: #000000;
+            --scr-blue: var(--bms-blue);
+            --scr-yellow: var(--bms-yellow);
+            --scr-turquoise: var(--bms-turquoise);
+            --scr-green: var(--bms-green);
+            --scr-red: var(--bms-red);
+            --scr-neutral: var(--bms-neutral);
+            --scr-bg: var(--bms-bg);
             --scr-page-bg: #101418;
             /* one character cell height (row pitch of the 24-line grid) */
             --rh: 1.25rem;
@@ -63,7 +64,7 @@
                viewports rather than reflowing the terminal grid (UI4). */
             display: flex;
             align-items: flex-start;
-            justify-content: center;
+            justify-content: safe center;
             overflow-x: auto;
             font-family: "Courier New", "Liberation Mono", "DejaVu Sans Mono", monospace;
         }
@@ -178,6 +179,7 @@
             outline-offset: 1px;
         }
 
+        .pfk:active { text-decoration: underline; filter: brightness(1.3); }
         @media (hover: hover) {
             .pfk:hover {
                 text-decoration: underline;
@@ -190,8 +192,8 @@
             left: -9999px;
             top: 0;
             z-index: 10;
-            background-color: #000000;
-            color: #FFFFFF;
+            background-color: var(--bms-bg);
+            color: var(--bms-neutral);
             padding: 0.25rem 0.5rem;
         }
 
@@ -209,32 +211,35 @@
     <a class="skip-link" href="#main">Skip to Delete User form</a>
 
     <main id="main" class="screen" tabindex="-1" aria-label="Delete User screen, transaction CU03">
+        <!-- Off-grid semantic heading for assistive tech (review finding #56); the visible
+             title cell is unchanged. -->
+        <h1 class="visually-hidden">Delete User</h1>
         <form class="map" th:object="${form}" th:action="@{/admin/users/delete}" method="post">
 
             <!--/* ===================== Header line 1 (BMS row 1) ===================== */-->
-            <span class="cell c-blue" style="top: 0; left: 1ch;">Tran:</span>
-            <span class="cell c-blue clip" style="top: 0; left: 7ch; width: 4ch;" th:text="*{trnname}"></span>
-            <span class="cell c-yellow clip" style="top: 0; left: 21ch; width: 40ch;" th:text="*{title01}"></span>
-            <span class="cell c-blue" style="top: 0; left: 65ch;">Date:</span>
-            <span class="cell c-blue clip" style="top: 0; left: 71ch; width: 8ch;" th:text="*{curdate}"></span>
+            <span class="cell c-blue" style="top: 0; left: 0ch;">Tran:</span>
+            <span class="cell c-blue clip" style="top: 0; left: 6ch; width: 4ch;" th:text="*{trnname}"></span>
+            <span class="cell c-yellow clip" style="top: 0; left: 20ch; width: 40ch;" th:text="*{title01}"></span>
+            <span class="cell c-blue" style="top: 0; left: 64ch;">Date:</span>
+            <span class="cell c-blue clip" style="top: 0; left: 70ch; width: 8ch;" th:text="*{curdate}"></span>
 
             <!--/* ===================== Header line 2 (BMS row 2) ===================== */-->
-            <span class="cell c-blue" style="top: calc(1 * var(--rh)); left: 1ch;">Prog:</span>
-            <span class="cell c-blue clip" style="top: calc(1 * var(--rh)); left: 7ch; width: 8ch;" th:text="*{pgmname}"></span>
-            <span class="cell c-yellow clip" style="top: calc(1 * var(--rh)); left: 21ch; width: 40ch;" th:text="*{title02}"></span>
-            <span class="cell c-blue" style="top: calc(1 * var(--rh)); left: 65ch;">Time:</span>
-            <span class="cell c-blue clip" style="top: calc(1 * var(--rh)); left: 71ch; width: 8ch;" th:text="*{curtime}"></span>
+            <span class="cell c-blue" style="top: calc(1 * var(--rh)); left: 0ch;">Prog:</span>
+            <span class="cell c-blue clip" style="top: calc(1 * var(--rh)); left: 6ch; width: 8ch;" th:text="*{pgmname}"></span>
+            <span class="cell c-yellow clip" style="top: calc(1 * var(--rh)); left: 20ch; width: 40ch;" th:text="*{title02}"></span>
+            <span class="cell c-blue" style="top: calc(1 * var(--rh)); left: 64ch;">Time:</span>
+            <span class="cell c-blue clip" style="top: calc(1 * var(--rh)); left: 70ch; width: 8ch;" th:text="*{curtime}"></span>
 
             <!--/* ===================== Screen title (BMS row 4) ====================== */-->
-            <span class="cell c-neutral brt" style="top: calc(3 * var(--rh)); left: 35ch;">Delete User</span>
+            <span class="cell c-neutral brt" style="top: calc(3 * var(--rh)); left: 34ch;">Delete User</span>
 
             <!--/* ============== User-id entry field (BMS row 6) ====================== */-->
-            <label class="cell c-green" style="top: calc(5 * var(--rh)); left: 6ch;" for="usridin">Enter User ID:</label>
+            <label class="cell c-green" style="top: calc(5 * var(--rh)); left: 5ch;" for="usridin">Enter User ID:</label>
             <!--/* th:field generates id="usridin" + name="usridin"; the visible
                  <label for="usridin"> above supplies the accessible name. */-->
             <input type="text"
                    class="field-in"
-                   style="top: calc(5 * var(--rh)); left: 21ch; width: 8ch;"
+                   style="top: calc(5 * var(--rh)); left: 20ch; width: 8ch;"
                    th:field="*{usridin}"
                    maxlength="8"
                    size="8"
@@ -243,22 +248,22 @@
                    spellcheck="false">
 
             <!--/* ============== Separator (BMS row 8) - 70 asterisks ================= */-->
-            <span class="cell c-yellow" style="top: calc(7 * var(--rh)); left: 6ch;">**********************************************************************</span>
+            <span class="cell c-yellow" style="top: calc(7 * var(--rh)); left: 5ch;">**********************************************************************</span>
 
             <!--/* ============== Fetched user details, read-only (BMS rows 11/13/15) == */-->
-            <span class="cell c-turquoise" style="top: calc(10 * var(--rh)); left: 6ch;">First Name:</span>
-            <span class="field-out" style="top: calc(10 * var(--rh)); left: 18ch; width: 20ch;" th:text="*{fname}"></span>
+            <span class="cell c-turquoise" style="top: calc(10 * var(--rh)); left: 5ch;">First Name:</span>
+            <span class="field-out" style="top: calc(10 * var(--rh)); left: 17ch; width: 20ch;" th:text="*{fname}"></span>
 
-            <span class="cell c-turquoise" style="top: calc(12 * var(--rh)); left: 6ch;">Last Name:</span>
-            <span class="field-out" style="top: calc(12 * var(--rh)); left: 18ch; width: 20ch;" th:text="*{lname}"></span>
+            <span class="cell c-turquoise" style="top: calc(12 * var(--rh)); left: 5ch;">Last Name:</span>
+            <span class="field-out" style="top: calc(12 * var(--rh)); left: 17ch; width: 20ch;" th:text="*{lname}"></span>
 
-            <span class="cell c-turquoise" style="top: calc(14 * var(--rh)); left: 6ch;">User Type: </span>
-            <span class="field-out" style="top: calc(14 * var(--rh)); left: 17ch; width: 1ch;" th:text="*{usrtype}"></span>
-            <span class="cell c-blue" style="top: calc(14 * var(--rh)); left: 19ch;">(A=Admin, U=User)</span>
+            <span class="cell c-turquoise" style="top: calc(14 * var(--rh)); left: 5ch;">User Type: </span>
+            <span class="field-out" style="top: calc(14 * var(--rh)); left: 16ch; width: 1ch;" th:text="*{usrtype}"></span>
+            <span class="cell c-blue" style="top: calc(14 * var(--rh)); left: 18ch;">(A=Admin, U=User)</span>
 
             <!--/* ============== Error message line (BMS row 23), conditional ========= */-->
             <span class="cell c-red brt clip"
-                  style="top: calc(22 * var(--rh)); left: 1ch; width: 78ch;"
+                  style="top: calc(22 * var(--rh)); left: 0ch; width: 78ch;"
                   th:if="${!#strings.isEmpty(form.errmsg)}"
                   th:text="*{errmsg}"
                   role="alert"></span>
@@ -268,7 +273,12 @@
                  two-space gaps render exactly as 'ENTER=Fetch  F3=Back  F4=Clear  F5=Delete'.
                  ENTER is the first submit button so pressing Enter in the user-id field
                  performs the Fetch action (pfkey=ENTER). */-->
-            <div class="legend c-yellow" style="top: calc(23 * var(--rh)); left: 1ch;" role="group" aria-label="Function keys"><button type="submit" class="pfk" name="pfkey" value="ENTER">ENTER=Fetch</button>  <button type="submit" class="pfk" name="pfkey" value="PF3">F3=Back</button>  <button type="submit" class="pfk" name="pfkey" value="PF4">F4=Clear</button>  <button type="submit" class="pfk" name="pfkey" value="PF5">F5=Delete</button></div>
+            <!--/* Single-use confirmation nonce (review finding F12). Binds the PF5 delete to the
+                   user the server fetched and displayed (step one of the two-step delete), so a
+                   tampered re-post cannot re-aim or replay the delete. */-->
+            <input type="hidden" th:field="*{confirmToken}">
+
+            <div class="legend c-yellow" style="top: calc(23 * var(--rh)); left: 0ch;" role="group" aria-label="Function keys"><button type="submit" class="pfk" name="pfkey" value="ENTER">ENTER=Fetch</button>  <button type="submit" class="pfk" name="pfkey" value="PF3">F3=Back</button>  <button type="submit" class="pfk" name="pfkey" value="PF4">F4=Clear</button>  <button type="submit" class="pfk" name="pfkey" value="PF5">F5=Delete</button></div>
 
         </form>
     </main>

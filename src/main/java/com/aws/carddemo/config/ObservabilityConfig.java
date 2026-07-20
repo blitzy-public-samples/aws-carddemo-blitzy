@@ -4,8 +4,11 @@ import io.micrometer.core.instrument.Meter;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.config.MeterFilter;
 import io.micrometer.core.instrument.config.MeterFilterReply;
+import io.micrometer.observation.ObservationRegistry;
+import io.micrometer.observation.aop.ObservedAspect;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.actuate.autoconfigure.metrics.MeterRegistryCustomizer;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 
@@ -43,21 +46,25 @@ import org.springframework.context.annotation.Configuration;
  * tag (see {@link #commonTagsCustomizer()}) that stamps every emitted metric with the application
  * identity, enabling the bundled Grafana dashboard to filter and group panels by application.</p>
  *
- * <p><strong>No custom AspectJ aspect beans are declared here (review finding F15).</strong> An
- * earlier revision claimed AspectJ was absent from the build; that rationale was incorrect.
- * {@code org.aspectj:aspectjweaver} <em>is</em> on the classpath &mdash; it is pulled in transitively
- * through {@code org.springframework:spring-aspects} (a dependency of Spring Data JPA) &mdash; so
- * Boot's AOP classpath condition is satisfied. This class nevertheless does not register Micrometer's
- * {@code TimedAspect} (backing {@code @Timed}) or {@code ObservedAspect} (backing {@code @Observed})
- * beans, for a deliberate <em>design</em> reason rather than a classpath one: this migration does not
- * annotate any business method with {@code @Timed} or {@code @Observed}, so those aspects would have
- * nothing to advise. Observability parity is achieved entirely through the auto-configured HTTP
- * ({@code http.server.requests}), JVM, HikariCP and Spring Batch meters (plus the common
- * {@code application} tag added below), which keeps observability a purely non-functional concern
- * with no feature expansion. Because the weaver is present, Boot's own auto-configuration may itself
- * contribute these aspect beans; this class simply neither requires nor re-declares them, avoiding a
- * duplicate-bean conflict. This decision and its rationale are recorded in
- * {@code docs/decision-log.md}.</p>
+ * <p><strong>Cross-layer observations (review finding #51, superseding the earlier F15
+ * decision).</strong> {@code org.aspectj:aspectjweaver} is on the classpath &mdash; pulled in
+ * transitively through {@code org.springframework:spring-aspects} (a dependency of Spring Data JPA)
+ * &mdash; so Spring AOP can advise beans annotated with Micrometer's
+ * {@link io.micrometer.observation.annotation.Observed @Observed}. An earlier revision (F15)
+ * deliberately declared no aspect and annotated no business method; that left the trace tree with
+ * only the auto-configured HTTP ({@code http.server.requests}) and Spring Batch spans, so a
+ * representative trace never evidenced the web&rarr;service and service&rarr;repository boundaries
+ * the Observability rule requires. That gap is now closed: this class registers a single
+ * {@link ObservedAspect} (see {@link #observedAspect(ObservationRegistry)}) and a <em>bounded,
+ * low-cardinality</em> set of {@code @Observed} entry points is annotated on representative service
+ * methods (sign-on {@code CC00}, account view {@code CAVW}, account update {@code CAUP}) and one
+ * representative repository finder ({@code CardXrefRepository#findByXrefAcctId}, the {@code CXACAIX}
+ * alternate-index read on the account-view path). The default {@code ObservedAspect} convention
+ * contributes only the low-cardinality {@code class} and {@code method} key values &mdash; no account
+ * id, card number, customer id, user id or transaction id is ever attached as a tag or span attribute
+ * &mdash; so the instrumentation stays low-cardinality and free of sensitive data, adding no business
+ * behavior (observability remains a purely non-functional concern). This decision, and the
+ * supersession of F15, are recorded in {@code docs/decision-log.md}.</p>
  *
  * <p><strong>Required declarative configuration</strong> (owned by the resources agent in
  * {@code src/main/resources/application.yml}; deliberately not created by this class):</p>
@@ -115,6 +122,39 @@ public class ObservabilityConfig {
     public ObservabilityConfig(
             @Value("${spring.application.name:carddemo}") String applicationName) {
         this.applicationName = applicationName;
+    }
+
+    /**
+     * Registers the Micrometer {@link ObservedAspect} that turns
+     * {@link io.micrometer.observation.annotation.Observed @Observed} annotations on Spring-managed
+     * service and repository beans into {@link io.micrometer.observation.Observation Observations}
+     * (spans plus timer metrics), closing the cross-layer tracing gap in review finding #51.
+     *
+     * <p>Without this aspect the {@code @Observed} annotations added to the representative sign-on,
+     * account-view, account-update and {@code CardXrefRepository#findByXrefAcctId} entry points would
+     * advise nothing, and a representative trace would show only the auto-configured
+     * {@code http.server.requests} (web) and Spring Batch spans &mdash; never the intervening service
+     * and repository boundaries. With the aspect present, each {@code @Observed} method executes
+     * inside a child {@link io.micrometer.observation.Observation} of the currently open observation,
+     * so one request yields the full {@code http.server.requests → service → repository} span tree
+     * the Observability rule requires.</p>
+     *
+     * <p>The bean is {@link ConditionalOnMissingBean @ConditionalOnMissingBean} so it defers to any
+     * {@link ObservedAspect} that Spring Boot's {@code ObservationAutoConfiguration} may already
+     * contribute (that auto-configuration is itself {@code @ConditionalOnMissingBean}), guaranteeing
+     * exactly one aspect and no duplicate-bean conflict. Declaring it explicitly here keeps the
+     * observability wiring visible in one place rather than relying on an implicit auto-configuration.
+     * The aspect adds only the default low-cardinality {@code class}/{@code method} key values; no
+     * identifier is ever tagged, keeping the observations low-cardinality and free of sensitive
+     * attributes.</p>
+     *
+     * @param observationRegistry the auto-configured registry the aspect starts observations on
+     * @return the {@link ObservedAspect} backing {@code @Observed} on service and repository beans
+     */
+    @Bean
+    @ConditionalOnMissingBean(ObservedAspect.class)
+    public ObservedAspect observedAspect(ObservationRegistry observationRegistry) {
+        return new ObservedAspect(observationRegistry);
     }
 
     /**

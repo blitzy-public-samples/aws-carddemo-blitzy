@@ -12,6 +12,7 @@ import org.springframework.security.core.GrantedAuthority;
 import org.springframework.security.core.userdetails.UserDetails;
 import org.springframework.security.core.userdetails.UsernameNotFoundException;
 
+import com.aws.carddemo.TestCredentials;
 import com.aws.carddemo.domain.UserSecurity;
 import com.aws.carddemo.repository.UserSecurityRepository;
 
@@ -71,6 +72,13 @@ import static org.mockito.Mockito.when;
 class CardDemoUserDetailsServiceTest {
 
     /**
+     * Non-secret unit fixture password (review finding #5): a self-describing test value, not a
+     * committed account credential (the real seed password is environment-provided). These tests
+     * exercise id/type mapping, so the password is only carried through and asserted back.
+     */
+    private static final String PWD = TestCredentials.UNIT_FIXTURE_PASSWORD;
+
+    /**
      * Mock of the signon lookup repository. Its single relevant method,
      * {@link UserSecurityRepository#findByUsrId(String)}, stands in for the legacy
      * {@code EXEC CICS READ} of the {@code USRSEC} KSDS.
@@ -114,12 +122,12 @@ class CardDemoUserDetailsServiceTest {
     @DisplayName("user type \"A\" loads a principal with a single ROLE_ADMIN authority")
     void adminUserMapsToRoleAdmin() {
         when(repository.findByUsrId("ADMIN001"))
-                .thenReturn(Optional.of(user("ADMIN001", "PASSWORD", "A")));
+                .thenReturn(Optional.of(user("ADMIN001", PWD, "A")));
 
         UserDetails result = service.loadUserByUsername("ADMIN001");
 
         assertThat(result.getUsername()).isEqualTo("ADMIN001");
-        assertThat(result.getPassword()).isEqualTo("PASSWORD");
+        assertThat(result.getPassword()).isEqualTo(PWD);
         assertThat(result.getAuthorities())
                 .extracting(GrantedAuthority::getAuthority)
                 .containsExactly("ROLE_ADMIN");
@@ -129,7 +137,7 @@ class CardDemoUserDetailsServiceTest {
     @DisplayName("user type \"U\" loads a principal with a single ROLE_USER authority")
     void standardUserMapsToRoleUser() {
         when(repository.findByUsrId("USER0001"))
-                .thenReturn(Optional.of(user("USER0001", "PASSWORD", "U")));
+                .thenReturn(Optional.of(user("USER0001", PWD, "U")));
 
         UserDetails result = service.loadUserByUsername("USER0001");
 
@@ -142,7 +150,7 @@ class CardDemoUserDetailsServiceTest {
     @DisplayName("username is uppercased with Locale.ROOT before the repository lookup")
     void usernameIsUppercasedBeforeLookup() {
         when(repository.findByUsrId("ADMIN001"))
-                .thenReturn(Optional.of(user("ADMIN001", "PASSWORD", "A")));
+                .thenReturn(Optional.of(user("ADMIN001", PWD, "A")));
 
         UserDetails result = service.loadUserByUsername("admin001");
 
@@ -171,7 +179,7 @@ class CardDemoUserDetailsServiceTest {
     @DisplayName("null user type maps to ROLE_USER (\"A\".equals(null) is false)")
     void nullUserTypeMapsToRoleUser() {
         when(repository.findByUsrId("USER0002"))
-                .thenReturn(Optional.of(user("USER0002", "PASSWORD", null)));
+                .thenReturn(Optional.of(user("USER0002", PWD, null)));
 
         UserDetails result = service.loadUserByUsername("USER0002");
 
@@ -184,7 +192,7 @@ class CardDemoUserDetailsServiceTest {
     @DisplayName("unexpected user type \"X\" maps to ROLE_USER (COBOL ELSE branch)")
     void unexpectedUserTypeMapsToRoleUser() {
         when(repository.findByUsrId("USER0003"))
-                .thenReturn(Optional.of(user("USER0003", "PASSWORD", "X")));
+                .thenReturn(Optional.of(user("USER0003", PWD, "X")));
 
         UserDetails result = service.loadUserByUsername("USER0003");
 
@@ -197,7 +205,7 @@ class CardDemoUserDetailsServiceTest {
     @DisplayName("user type \" A \" (padded) still maps to ROLE_ADMIN (resolveUserType trims)")
     void userTypeWithSurroundingWhitespaceStillAdmin() {
         when(repository.findByUsrId("ADMIN002"))
-                .thenReturn(Optional.of(user("ADMIN002", "PASSWORD", " A ")));
+                .thenReturn(Optional.of(user("ADMIN002", PWD, " A ")));
 
         UserDetails result = service.loadUserByUsername("ADMIN002");
 
@@ -210,7 +218,7 @@ class CardDemoUserDetailsServiceTest {
     @DisplayName("lowercase user type \"a\" maps to ROLE_USER (case-sensitive \"A\".equals check)")
     void lowercaseUserTypeMapsToRoleUser() {
         when(repository.findByUsrId("USER0004"))
-                .thenReturn(Optional.of(user("USER0004", "PASSWORD", "a")));
+                .thenReturn(Optional.of(user("USER0004", PWD, "a")));
 
         UserDetails result = service.loadUserByUsername("USER0004");
 

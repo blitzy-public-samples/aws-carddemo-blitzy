@@ -15,6 +15,7 @@
 -->
 <html lang="en" xmlns:th="http://www.thymeleaf.org">
 <head>
+    <th:block th:replace="~{fragments/bms-palette :: palette}"></th:block>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>CardDemo - Add Transaction (CT02)</title>
@@ -22,15 +23,15 @@
     /* ===== Design tokens: BMS 3270 COLOR attributes -> hex (AAP 0.3.4) ===== */
     :root {
       --rh: 1.25rem;               /* fixed row height for the 24-line grid   */
-      --blue: #0000CD;             /* BMS COLOR=BLUE      (labels, header)     */
-      --yellow: #CCCC00;           /* BMS COLOR=YELLOW    (titles, legend)     */
-      --turquoise: #00CDCD;        /* BMS COLOR=TURQUOISE (field prompts)      */
-      --green: #00CD00;            /* BMS COLOR=GREEN     (UNPROT entry)       */
-      --red: #CD0000;              /* BMS COLOR=RED       (error line)         */
-      --neutral: #FFFFFF;          /* BMS COLOR=NEUTRAL   (title, hints)       */
-      --screen-bg: #000000;        /* 3270 dark background                     */
+      --blue: var(--bms-blue);             /* BMS COLOR=BLUE      (labels, header)     */
+      --yellow: var(--bms-yellow);           /* BMS COLOR=YELLOW    (titles, legend)     */
+      --turquoise: var(--bms-turquoise);        /* BMS COLOR=TURQUOISE (field prompts)      */
+      --green: var(--bms-green);            /* BMS COLOR=GREEN     (UNPROT entry)       */
+      --red: var(--bms-red);              /* BMS COLOR=RED       (error line)         */
+      --neutral: var(--bms-neutral);          /* BMS COLOR=NEUTRAL   (title, hints)       */
+      --screen-bg: var(--bms-bg);        /* 3270 dark background                     */
       --screen-border: #2A2A2A;    /* subtle bezel to frame the 80x24 area     */
-      --focus-ring: #FFFFFF;       /* keyboard focus indicator                 */
+      --focus-ring: var(--bms-neutral);       /* keyboard focus indicator                 */
     }
 
     *,
@@ -48,8 +49,18 @@
       font-size: 16px;
       line-height: var(--rh);
       display: flex;
-      justify-content: center;
+      justify-content: safe center;
       align-items: flex-start;
+      /* Finding #54: horizontal scroll keeps the 80ch artboard's left origin
+         reachable at 375x667; `safe center` falls back to start-alignment
+         (left edge at scrollLeft 0) when the artboard overflows. */
+      overflow-x: auto;
+    }
+
+    /* Finding #54: the terminal artboard must never shrink below 80ch, so its
+       left origin remains reachable inside the horizontal scroller. */
+    body > * {
+      flex-shrink: 0;
     }
 
     /* The terminal screen: exactly 80 character columns wide, 24 rows tall. */
@@ -141,6 +152,7 @@
       outline: 2px solid var(--focus-ring);
       outline-offset: 1px;
     }
+      .pf:active { text-decoration: underline; filter: brightness(1.3); }
     @media (hover: hover) {
       .pf:hover { text-decoration: underline; }
     }

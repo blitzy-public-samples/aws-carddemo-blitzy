@@ -30,6 +30,7 @@ import com.aws.carddemo.dto.CardDemoContext;
 import com.aws.carddemo.dto.screen.COUSR02Form;
 import com.aws.carddemo.exception.RecordNotFoundException;
 import com.aws.carddemo.repository.UserSecurityRepository;
+import com.aws.carddemo.security.SessionRevocationService;
 import com.aws.carddemo.service.online.UserUpdateService.AidKey;
 import com.aws.carddemo.service.online.UserUpdateService.MessageSeverity;
 import com.aws.carddemo.service.online.UserUpdateService.RoutingAction;
@@ -160,7 +161,15 @@ class UserUpdateServiceTest {
     @Mock
     private UserSecurityRepository userSecurityRepository;
 
-    /** Service under test; Mockito constructor-injects the two mocked collaborators. */
+    /**
+     * Session-revocation collaborator (findings #8/#43); mocked so the after-commit revocation on a
+     * committed password/user-type change can be verified. These unit tests run outside a transaction,
+     * so {@code scheduleSessionRevocation} calls it directly.
+     */
+    @Mock
+    private SessionRevocationService sessionRevocationService;
+
+    /** Service under test; Mockito constructor-injects the three mocked collaborators. */
     @InjectMocks
     private UserUpdateService service;
 
@@ -250,7 +259,7 @@ class UserUpdateServiceTest {
         when(context.isNew()).thenReturn(false);
         when(context.isProgramEnter()).thenReturn(true);
         UserSecurity stored = userRecord(USER_ID, "John", "Smith", "PASS0001", "U");
-        when(userSecurityRepository.findByUsrId(USER_ID)).thenReturn(Optional.of(stored));
+        when(userSecurityRepository.findByUsrIdForUpdate(USER_ID)).thenReturn(Optional.of(stored));
         COUSR02Form form = new COUSR02Form();
 
         UserUpdateResult result = service.mainEntry(form, AidKey.ENTER, USER_ID);
@@ -264,7 +273,7 @@ class UserUpdateServiceTest {
         assertThat(form.getLname()).isEqualTo("Smith");
         assertThat(form.getPasswd()).isEqualTo("PASS0001");
         assertThat(form.getUsrtype()).isEqualTo("U");
-        verify(userSecurityRepository).findByUsrId(USER_ID);
+        verify(userSecurityRepository).findByUsrIdForUpdate(USER_ID);
     }
 
     /**
@@ -299,7 +308,7 @@ class UserUpdateServiceTest {
         when(context.isNew()).thenReturn(false);
         when(context.isProgramEnter()).thenReturn(false);
         UserSecurity stored = userRecord(USER_ID, "John", "Smith", "PASS0001", "U");
-        when(userSecurityRepository.findByUsrId(USER_ID)).thenReturn(Optional.of(stored));
+        when(userSecurityRepository.findByUsrIdForUpdate(USER_ID)).thenReturn(Optional.of(stored));
         COUSR02Form form = formOf(USER_ID, null, null, null, null);
 
         UserUpdateResult result = service.mainEntry(form, AidKey.ENTER, null);
@@ -322,7 +331,7 @@ class UserUpdateServiceTest {
         when(context.isNew()).thenReturn(false);
         when(context.isProgramEnter()).thenReturn(false);
         UserSecurity stored = userRecord(USER_ID, "John", "Smith", "PASS0001", "U");
-        when(userSecurityRepository.findByUsrId(USER_ID)).thenReturn(Optional.of(stored));
+        when(userSecurityRepository.findByUsrIdForUpdate(USER_ID)).thenReturn(Optional.of(stored));
         COUSR02Form form = formOf(USER_ID, "Jane", "Smith", "PASS0001", "U");
 
         UserUpdateResult result = service.mainEntry(form, AidKey.PF3, null);
@@ -367,7 +376,7 @@ class UserUpdateServiceTest {
         when(context.isNew()).thenReturn(false);
         when(context.isProgramEnter()).thenReturn(false);
         UserSecurity stored = userRecord(USER_ID, "John", "Smith", "PASS0001", "U");
-        when(userSecurityRepository.findByUsrId(USER_ID)).thenReturn(Optional.of(stored));
+        when(userSecurityRepository.findByUsrIdForUpdate(USER_ID)).thenReturn(Optional.of(stored));
         COUSR02Form form = formOf(USER_ID, "Jane", "Smith", "PASS0001", "U");
 
         UserUpdateResult result = service.mainEntry(form, AidKey.PF5, null);
@@ -376,6 +385,59 @@ class UserUpdateServiceTest {
         assertThat(result.action()).isEqualTo(RoutingAction.SHOW_SCREEN);
         assertThat(result.severity()).isEqualTo(MessageSeverity.SUCCESS);
         assertThat(result.message()).isEqualTo("User " + USER_ID + " has been updated ...");
+    }
+
+    /**
+     * Review findings #8/#43: a committed <b>password</b> change revokes the target user's live
+     * sessions, so a stale credential cannot continue an already-authenticated session. In this
+     * pure-Mockito unit no transaction is active, so {@code scheduleSessionRevocation} invokes the
+     * collaborator directly; the after-commit ordering is proven by the integration tests.
+     */
+    @Test
+    void passwordChangeOnSuccessRevokesSessions() {
+        UserSecurity stored = userRecord(USER_ID, "John", "Smith", "PASS0001", "U");
+        when(userSecurityRepository.findByUsrIdForUpdate(USER_ID)).thenReturn(Optional.of(stored));
+        COUSR02Form form = formOf(USER_ID, "John", "Smith", "NEWPASS1", "U"); // password only
+
+        UserUpdateResult result = service.updateUserInfo(form, context);
+
+        assertThat(result.severity()).isEqualTo(MessageSeverity.SUCCESS);
+        verify(userSecurityRepository).save(stored);
+        verify(sessionRevocationService).revokeSessions(USER_ID);
+    }
+
+    /**
+     * Review findings #8/#43: a committed <b>user-type</b> change (here a {@code U -> A} promotion; a
+     * demotion is symmetric) revokes the target user's live sessions, so an obsolete role cannot be
+     * exercised by a session that authenticated under the previous type.
+     */
+    @Test
+    void userTypeChangeOnSuccessRevokesSessions() {
+        UserSecurity stored = userRecord(USER_ID, "John", "Smith", "PASS0001", "U");
+        when(userSecurityRepository.findByUsrIdForUpdate(USER_ID)).thenReturn(Optional.of(stored));
+        COUSR02Form form = formOf(USER_ID, "John", "Smith", "PASS0001", "A"); // user type only
+
+        UserUpdateResult result = service.updateUserInfo(form, context);
+
+        assertThat(result.severity()).isEqualTo(MessageSeverity.SUCCESS);
+        verify(sessionRevocationService).revokeSessions(USER_ID);
+    }
+
+    /**
+     * Review findings #8/#43 (negative): a committed <b>name-only</b> change is not
+     * security-relevant and must NOT revoke any session, because it affects neither authentication nor
+     * authorization.
+     */
+    @Test
+    void nameOnlyChangeOnSuccessDoesNotRevokeSessions() {
+        UserSecurity stored = userRecord(USER_ID, "John", "Smith", "PASS0001", "U");
+        when(userSecurityRepository.findByUsrIdForUpdate(USER_ID)).thenReturn(Optional.of(stored));
+        COUSR02Form form = formOf(USER_ID, "Jane", "Smith", "PASS0001", "U"); // first name only
+
+        UserUpdateResult result = service.updateUserInfo(form, context);
+
+        assertThat(result.severity()).isEqualTo(MessageSeverity.SUCCESS);
+        verify(sessionRevocationService, never()).revokeSessions(any());
     }
 
     /**
@@ -449,7 +511,7 @@ class UserUpdateServiceTest {
     @Test
     void processEnterKey_userFoundLoadsFieldsAndPromptsToSave() {
         UserSecurity stored = userRecord(USER_ID, "John", "Smith", "PASS0001", "U");
-        when(userSecurityRepository.findByUsrId(USER_ID)).thenReturn(Optional.of(stored));
+        when(userSecurityRepository.findByUsrIdForUpdate(USER_ID)).thenReturn(Optional.of(stored));
         COUSR02Form form = formOf(USER_ID, null, null, null, null);
 
         UserUpdateResult result = service.processEnterKey(form, context);
@@ -470,7 +532,7 @@ class UserUpdateServiceTest {
      */
     @Test
     void processEnterKey_userNotFoundReturnsError() {
-        when(userSecurityRepository.findByUsrId("MISSING")).thenReturn(Optional.empty());
+        when(userSecurityRepository.findByUsrIdForUpdate("MISSING")).thenReturn(Optional.empty());
         COUSR02Form form = formOf("MISSING", "STALE", "STALE", "STALE", "U");
 
         UserUpdateResult result = service.processEnterKey(form, context);
@@ -491,7 +553,7 @@ class UserUpdateServiceTest {
      */
     @Test
     void processEnterKey_lookupFailureReturnsUnableToLookup() {
-        when(userSecurityRepository.findByUsrId(USER_ID))
+        when(userSecurityRepository.findByUsrIdForUpdate(USER_ID))
                 .thenThrow(new StubDataAccessException("read failed"));
         COUSR02Form form = formOf(USER_ID, null, null, null, null);
 
@@ -590,7 +652,7 @@ class UserUpdateServiceTest {
     @Test
     void updateUserInfo_noChangeReturnsPleaseModifyAndDoesNotSave() {
         UserSecurity stored = userRecord(USER_ID, "John", "Smith", "PASS0001", "U");
-        when(userSecurityRepository.findByUsrId(USER_ID)).thenReturn(Optional.of(stored));
+        when(userSecurityRepository.findByUsrIdForUpdate(USER_ID)).thenReturn(Optional.of(stored));
         COUSR02Form form = formOf(USER_ID, "John", "Smith", "PASS0001", "U");
 
         UserUpdateResult result = service.updateUserInfo(form, context);
@@ -612,7 +674,7 @@ class UserUpdateServiceTest {
     @Test
     void updateUserInfo_changedFieldsPersistAndReturnSuccess() {
         UserSecurity stored = userRecord(USER_ID, "John", "Smith", "PASS0001", "U");
-        when(userSecurityRepository.findByUsrId(USER_ID)).thenReturn(Optional.of(stored));
+        when(userSecurityRepository.findByUsrIdForUpdate(USER_ID)).thenReturn(Optional.of(stored));
         COUSR02Form form = formOf(USER_ID, "Jane", "Doe", "NEWPASS", "A");
 
         UserUpdateResult result = service.updateUserInfo(form, context);
@@ -639,7 +701,7 @@ class UserUpdateServiceTest {
     @Test
     void updateUserInfo_onlyPasswordChangedPersistsCleartext() {
         UserSecurity stored = userRecord(USER_ID, "John", "Smith", "OLDPASS", "U");
-        when(userSecurityRepository.findByUsrId(USER_ID)).thenReturn(Optional.of(stored));
+        when(userSecurityRepository.findByUsrIdForUpdate(USER_ID)).thenReturn(Optional.of(stored));
         COUSR02Form form = formOf(USER_ID, "John", "Smith", "S3cret!", "U");
 
         UserUpdateResult result = service.updateUserInfo(form, context);
@@ -658,7 +720,7 @@ class UserUpdateServiceTest {
      */
     @Test
     void updateUserInfo_userNotFoundReturnsError() {
-        when(userSecurityRepository.findByUsrId(USER_ID)).thenReturn(Optional.empty());
+        when(userSecurityRepository.findByUsrIdForUpdate(USER_ID)).thenReturn(Optional.empty());
         COUSR02Form form = formOf(USER_ID, "John", "Smith", "PASS0001", "U");
 
         UserUpdateResult result = service.updateUserInfo(form, context);
@@ -675,7 +737,7 @@ class UserUpdateServiceTest {
      */
     @Test
     void updateUserInfo_lookupFailureReturnsUnableToLookup() {
-        when(userSecurityRepository.findByUsrId(USER_ID))
+        when(userSecurityRepository.findByUsrIdForUpdate(USER_ID))
                 .thenThrow(new StubDataAccessException("read failed"));
         COUSR02Form form = formOf(USER_ID, "John", "Smith", "PASS0001", "U");
 
@@ -699,12 +761,12 @@ class UserUpdateServiceTest {
     @Test
     void readUserSecFile_returnsRecordWhenPresent() {
         UserSecurity stored = userRecord(USER_ID, "John", "Smith", "PASS0001", "U");
-        when(userSecurityRepository.findByUsrId(USER_ID)).thenReturn(Optional.of(stored));
+        when(userSecurityRepository.findByUsrIdForUpdate(USER_ID)).thenReturn(Optional.of(stored));
 
         UserSecurity result = service.readUserSecFile(USER_ID);
 
         assertThat(result).isSameAs(stored);
-        verify(userSecurityRepository).findByUsrId(USER_ID);
+        verify(userSecurityRepository).findByUsrIdForUpdate(USER_ID);
     }
 
     /**
@@ -715,7 +777,7 @@ class UserUpdateServiceTest {
      */
     @Test
     void readUserSecFile_throwsRecordNotFoundWhenAbsent() {
-        when(userSecurityRepository.findByUsrId("MISSING")).thenReturn(Optional.empty());
+        when(userSecurityRepository.findByUsrIdForUpdate("MISSING")).thenReturn(Optional.empty());
 
         assertThatThrownBy(() -> service.readUserSecFile("MISSING"))
                 .isInstanceOf(RecordNotFoundException.class)

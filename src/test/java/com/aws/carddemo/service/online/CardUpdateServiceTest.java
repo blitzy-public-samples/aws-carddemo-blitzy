@@ -126,6 +126,16 @@ class CardUpdateServiceTest {
     /** A valid 11-digit account filter ({@code CC-ACCT-ID PIC X(11)}). */
     private static final String ACCT_11 = "00000000001";
 
+    /**
+     * Fixed single-use confirmation token (review finding #10) used to arm the PF5
+     * confirm-turn tests. A real turn issues a random 256-bit token via
+     * {@link java.security.SecureRandom}; a fixed 64-hex value is sufficient here (it
+     * matches itself under the constant-time comparison) and keeps the write-path
+     * assertions deterministic.
+     */
+    private static final String CONFIRM_TOKEN =
+            "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+
     // ------------------------------------------------------------------
     // Error-message literals (COBOL WS-RETURN-MSG 88-levels + inline MOVEs).
     // Verified verbatim against legacy/cbl/COCRDUPC.cbl and the service.
@@ -159,6 +169,9 @@ class CardUpdateServiceTest {
             "Record changed by some one else. Please review";
     /** {@code LOCKED-BUT-UPDATE-FAILED} (COCRDUPC.cbl L210). */
     private static final String MSG_UPDATE_FAILED = "Update of record failed";
+    /** Review finding #10 confirmation-integrity banner (web-only; no COBOL analogue). */
+    private static final String MSG_CONFIRM_INTEGRITY =
+            "Confirmation could not be validated. Please review and press F5 again.";
 
     // ------------------------------------------------------------------
     // Routing / naming literals (COBOL LIT-* constants of COCRDUPC).
@@ -296,6 +309,33 @@ class CardUpdateServiceTest {
         state.setOldExpMon(month);
         state.setOldExpDay(day);
         state.setOldCrdStcd(status);
+    }
+
+    /**
+     * Arms the review-finding-#10 confirmation on a manually-built
+     * {@code CHANGES-OK-NOT-CONFIRMED} state so a PF5 turn is honored, exactly as a
+     * real validated ENTER edit turn would. It populates {@code CCUP-NEW-*} from the
+     * form the operator is about to confirm, snapshots that validated tuple into the
+     * server-side {@code pendingDetails}, and issues a single-use token echoed back on
+     * the form's hidden field. The subsequent PF5 turn commits the server-carried
+     * snapshot (never the re-post) after the constant-time token check, so the
+     * write-path assertions remain valid.
+     *
+     * @param state the CONFIRM-state to arm (its {@code CCUP-NEW-*} and pending
+     *              snapshot are set)
+     * @param form  the form to confirm (also receives the echoed token)
+     */
+    private static void armConfirmation(CardUpdateState state, COCRDUPForm form) {
+        state.setNewAcctId(form.getAcctsid());
+        state.setNewCardId(form.getCardsid());
+        state.setNewCrdName(form.getCrdname());
+        state.setNewCrdStcd(form.getCrdstcd());
+        state.setNewExpMon(form.getExpmon());
+        state.setNewExpYear(form.getExpyear());
+        state.setNewExpDay(form.getExpday());
+        state.setPendingDetails(CardUpdateState.PendingCardDetails.capture(state));
+        state.setConfirmToken(CONFIRM_TOKEN);
+        form.setConfirmToken(CONFIRM_TOKEN);
     }
 
     /**
@@ -643,7 +683,7 @@ class CardUpdateServiceTest {
         // Re-read record carries a LOWER-CASE embossed name to prove 9300 upper-cases
         // before comparing (otherwise it would look changed and no save would occur).
         Card stored = newCard(CARD_NUM, 1L, 123, "john smith", LocalDate.of(2025, 1, 1), "Y");
-        when(cardRepository.findById(CARD_NUM)).thenReturn(Optional.of(stored));
+        when(cardRepository.findByIdForUpdate(CARD_NUM)).thenReturn(Optional.of(stored));
 
         COCRDUPForm form = new COCRDUPForm();
         form.setAcctsid("00000000002"); // different account -> reassign quirk visible
@@ -654,10 +694,14 @@ class CardUpdateServiceTest {
         form.setExpyear("2027");
         form.setExpday("15");
 
+        // Review finding #10: arm the confirmation (server snapshot + token) as a real
+        // ENTER edit turn would, so the PF5 save is honored and commits the snapshot.
+        armConfirmation(state, form);
+
         CardUpdateResult result = service.mainEntry(form, workArea("PFK05"), state);
 
         ArgumentCaptor<Card> captor = ArgumentCaptor.forClass(Card.class);
-        verify(cardRepository).findById(CARD_NUM);
+        verify(cardRepository).findByIdForUpdate(CARD_NUM);
         verify(cardRepository).saveAndFlush(captor.capture());
         Card saved = captor.getValue();
         assertThat(saved.getCardNum()).isEqualTo(CARD_NUM);
@@ -671,6 +715,109 @@ class CardUpdateServiceTest {
 
         assertThat(state.isChangesOkayedAndDone()).isTrue();
         assertThat(result.getAction()).isEqualTo(RoutingAction.SHOW_SCREEN);
+    }
+
+    // ==================================================================
+    // Group C2 - confirmation integrity (review finding #10, CWE-20/CWE-639).
+    //
+    // On the mainframe the confirmation-screen fields are protected, so a PF5
+    // turn can only re-present the validated CCUP-NEW-DETAILS. Over HTTP a
+    // crafted PF5 can re-post arbitrary values, and 1200-EDIT-MAP-INPUTS
+    // deliberately skips re-validation in the confirm state. These tests assert
+    // that the server (a) commits the server-carried validated snapshot, never
+    // the re-post, and (b) rejects a missing / forged / replayed single-use
+    // token with no write.
+    // ==================================================================
+
+    /**
+     * Overposting defence: a PF5 re-post carrying a legitimate (visible) token but
+     * tampered detail fields and a swapped account filter commits the server-carried
+     * validated snapshot - the values the operator actually confirmed - and re-affirms
+     * the write identity from that snapshot, never the re-post. The single-use token is
+     * consumed on success.
+     */
+    @Test
+    void pf5_overpost_commitsServerCarriedSnapshotNotRepost() {
+        CardUpdateState state = new CardUpdateState();
+        state.setChangeAction(ChangeAction.CHANGES_OK_NOT_CONFIRMED);
+        seedOldSnapshot(state, ACCT_11, CARD_NUM, "123", "JOHN SMITH", "2025", "01", "01", "Y");
+
+        // The validated ENTER turn the operator actually performed and confirmed.
+        COCRDUPForm confirmed = detailForm("JANE DOE", "N", "06", "2030", "15");
+        armConfirmation(state, confirmed);
+
+        Card stored = newCard(CARD_NUM, 1L, 123, "JOHN SMITH", LocalDate.of(2025, 1, 1), "Y");
+        when(cardRepository.findByIdForUpdate(CARD_NUM)).thenReturn(Optional.of(stored));
+
+        // Attacker's PF5 re-post: the legitimate (visible) token but tampered fields
+        // and a swapped target account.
+        COCRDUPForm tampered = detailForm("HACKER", "Z", "99", "1900", "31");
+        tampered.setAcctsid("00000000009");
+        tampered.setConfirmToken(CONFIRM_TOKEN);
+
+        CardUpdateResult result = service.mainEntry(tampered, workArea("PFK05"), state);
+
+        ArgumentCaptor<Card> captor = ArgumentCaptor.forClass(Card.class);
+        verify(cardRepository).saveAndFlush(captor.capture());
+        Card saved = captor.getValue();
+        // Server-carried validated snapshot committed, NOT the re-post.
+        assertThat(saved.getCardEmbossedName()).isEqualTo("JANE DOE");
+        assertThat(saved.getCardActiveStatus()).isEqualTo("N");
+        assertThat(saved.getCardExpiraionDate()).isEqualTo(LocalDate.of(2030, 6, 15));
+        // Identity re-affirmed from the snapshot (entered filter == fetched), not the swap.
+        assertThat(saved.getCardAcctId()).isEqualTo(1L);
+        assertThat(state.isChangesOkayedAndDone()).isTrue();
+        // Single-use: the token and snapshot are consumed after the write.
+        assertThat(state.getConfirmToken()).isNull();
+        assertThat(state.getPendingDetails()).isNull();
+        assertThat(result.getAction()).isEqualTo(RoutingAction.SHOW_SCREEN);
+    }
+
+    /**
+     * A PF5 that omits the confirmation token is rejected with the integrity banner and
+     * performs no write; the confirmation window stays open (the validated snapshot is
+     * retained with a freshly re-issued token) so a legitimate operator can retry.
+     */
+    @Test
+    void pf5_missingToken_rejectedWithIntegrityBannerNoWrite() {
+        CardUpdateState state = new CardUpdateState();
+        state.setChangeAction(ChangeAction.CHANGES_OK_NOT_CONFIRMED);
+        seedOldSnapshot(state, ACCT_11, CARD_NUM, "123", "JOHN SMITH", "2025", "01", "01", "Y");
+        COCRDUPForm confirmed = detailForm("JANE DOE", "N", "06", "2030", "15");
+        armConfirmation(state, confirmed);
+
+        // PF5 re-post that omits the token (confirmToken == null).
+        COCRDUPForm noToken = detailForm("JANE DOE", "N", "06", "2030", "15");
+
+        CardUpdateResult result = service.mainEntry(noToken, workArea("PFK05"), state);
+
+        assertThat(result.getEditState().getReturnMessage()).isEqualTo(MSG_CONFIRM_INTEGRITY);
+        assertThat(state.isChangesOkNotConfirmed()).isTrue();  // window stays open
+        assertThat(state.getPendingDetails()).isNotNull();     // snapshot retained
+        verify(cardRepository, never()).saveAndFlush(any(Card.class));
+        verify(cardRepository, never()).findById(any());
+    }
+
+    /**
+     * A PF5 carrying a forged (non-matching) token is rejected with the integrity
+     * banner and performs no write; the constant-time comparison never admits it.
+     */
+    @Test
+    void pf5_forgedToken_rejectedWithIntegrityBannerNoWrite() {
+        CardUpdateState state = new CardUpdateState();
+        state.setChangeAction(ChangeAction.CHANGES_OK_NOT_CONFIRMED);
+        seedOldSnapshot(state, ACCT_11, CARD_NUM, "123", "JOHN SMITH", "2025", "01", "01", "Y");
+        COCRDUPForm confirmed = detailForm("JANE DOE", "N", "06", "2030", "15");
+        armConfirmation(state, confirmed);
+
+        COCRDUPForm forged = detailForm("JANE DOE", "N", "06", "2030", "15");
+        forged.setConfirmToken("deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef");
+
+        CardUpdateResult result = service.mainEntry(forged, workArea("PFK05"), state);
+
+        assertThat(result.getEditState().getReturnMessage()).isEqualTo(MSG_CONFIRM_INTEGRITY);
+        assertThat(state.isChangesOkNotConfirmed()).isTrue();
+        verify(cardRepository, never()).saveAndFlush(any(Card.class));
     }
 
     // ==================================================================
@@ -722,7 +869,7 @@ class CardUpdateServiceTest {
         seedOldSnapshot(state, ACCT_11, CARD_NUM, "123", "JOHN SMITH", "2025", "01", "01", "Y");
 
         // Re-read card's status differs from the snapshot -> concurrent change.
-        when(cardRepository.findById(CARD_NUM))
+        when(cardRepository.findByIdForUpdate(CARD_NUM))
                 .thenReturn(Optional.of(newCard(CARD_NUM, 1L, 123, "JOHN SMITH",
                         LocalDate.of(2025, 1, 1), "N")));
 
@@ -735,13 +882,16 @@ class CardUpdateServiceTest {
         form.setExpyear("2027");
         form.setExpday("15");
 
+        // Review finding #10: arm the confirmation before the honored PF5 save.
+        armConfirmation(state, form);
+
         CardUpdateResult result = service.mainEntry(form, workArea("PFK05"), state);
 
         EditWorkState edit = result.getEditState();
         assertThat(edit.isDataWasChangedBeforeUpdate()).isTrue();
         assertThat(edit.getReturnMessage()).isEqualTo(MSG_DATA_WAS_CHANGED);
         assertThat(state.isShowDetails()).isTrue();
-        verify(cardRepository).findById(CARD_NUM);
+        verify(cardRepository).findByIdForUpdate(CARD_NUM);
         verify(cardRepository, never()).saveAndFlush(any(Card.class));
     }
 
@@ -758,7 +908,7 @@ class CardUpdateServiceTest {
         state.setChangeAction(ChangeAction.CHANGES_OK_NOT_CONFIRMED);
         seedOldSnapshot(state, ACCT_11, CARD_NUM, "123", "JOHN SMITH", "2025", "01", "01", "Y");
 
-        when(cardRepository.findById(CARD_NUM))
+        when(cardRepository.findByIdForUpdate(CARD_NUM))
                 .thenReturn(Optional.of(newCard(CARD_NUM, 1L, 123, "JOHN SMITH",
                         LocalDate.of(2025, 1, 1), "Y")));
         when(cardRepository.saveAndFlush(any(Card.class)))
@@ -773,6 +923,9 @@ class CardUpdateServiceTest {
         form.setExpyear("2027");
         form.setExpday("15");
 
+        // Review finding #10: arm the confirmation before the honored PF5 save.
+        armConfirmation(state, form);
+
         CardUpdateResult result = service.mainEntry(form, workArea("PFK05"), state);
 
         EditWorkState edit = result.getEditState();
@@ -780,7 +933,7 @@ class CardUpdateServiceTest {
         assertThat(edit.getReturnMessage()).isEqualTo(MSG_UPDATE_FAILED);
         assertThat(state.getChangeAction()).isEqualTo(ChangeAction.CHANGES_OKAYED_BUT_FAILED);
         assertThat(state.isChangesFailed()).isTrue();
-        verify(cardRepository).findById(CARD_NUM);
+        verify(cardRepository).findByIdForUpdate(CARD_NUM);
         verify(cardRepository).saveAndFlush(any(Card.class));
     }
 
@@ -796,7 +949,7 @@ class CardUpdateServiceTest {
         state.setChangeAction(ChangeAction.CHANGES_OK_NOT_CONFIRMED);
         seedOldSnapshot(state, ACCT_11, CARD_NUM, "123", "JOHN SMITH", "2025", "01", "01", "Y");
 
-        when(cardRepository.findById(CARD_NUM)).thenReturn(Optional.empty());
+        when(cardRepository.findByIdForUpdate(CARD_NUM)).thenReturn(Optional.empty());
 
         COCRDUPForm form = new COCRDUPForm();
         form.setAcctsid(ACCT_11);
@@ -807,13 +960,16 @@ class CardUpdateServiceTest {
         form.setExpyear("2027");
         form.setExpday("15");
 
+        // Review finding #10: arm the confirmation before the honored PF5 save.
+        armConfirmation(state, form);
+
         CardUpdateResult result = service.mainEntry(form, workArea("PFK05"), state);
 
         EditWorkState edit = result.getEditState();
         assertThat(edit.isCouldNotLockForUpdate()).isTrue();
         assertThat(edit.getReturnMessage()).isEqualTo(MSG_COULD_NOT_LOCK);
         assertThat(state.getChangeAction()).isEqualTo(ChangeAction.CHANGES_OKAYED_LOCK_ERROR);
-        verify(cardRepository).findById(CARD_NUM);
+        verify(cardRepository).findByIdForUpdate(CARD_NUM);
         verify(cardRepository, never()).saveAndFlush(any(Card.class));
     }
 

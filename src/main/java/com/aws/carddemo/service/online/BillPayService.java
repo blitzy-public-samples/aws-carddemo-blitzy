@@ -723,21 +723,26 @@ public class BillPayService {
      * Reads the account for update, the Java migration of paragraph {@code READ-ACCTDAT-FILE} in
      * {@code legacy/cbl/COBIL00C.cbl}.
      *
-     * <p>The COBOL {@code EXEC CICS READ ... UPDATE RIDFLD(ACCT-ID)} becomes a repository lookup
-     * within the surrounding transaction (the read-for-update lock is provided by the
-     * {@link Transactional} unit of work per AAP &sect;0.3.3). The COBOL {@code RESP} handling is
-     * preserved: {@code NORMAL} returns the account; {@code NOTFND} becomes a
-     * {@link RecordNotFoundException} carrying {@code "Account ID NOT found..."}; any other
-     * response (the COBOL {@code WHEN OTHER} branch, message {@code "Unable to lookup
-     * Account..."}) surfaces as the underlying Spring {@code DataAccessException}, which
-     * propagates to the global exception handler.</p>
+     * <p>The COBOL {@code EXEC CICS READ ... UPDATE RIDFLD(ACCT-ID)} becomes a
+     * <strong>pessimistic-write-lock</strong> lookup ({@link AccountRepository#findByIdForUpdate(Long)};
+     * PostgreSQL {@code SELECT ... FOR UPDATE}) within the surrounding {@link Transactional} unit of
+     * work. A plain {@code findById} would <em>not</em> lock the row under {@code READ COMMITTED}, so
+     * the read-modify-{@code REWRITE} of the balance would leave a lost-update window (CWE-362) the
+     * COBOL record lock never had; acquiring the lock here, held until commit, serializes concurrent
+     * payers of the same account and reproduces the legacy semantics (review finding #14, AAP
+     * &sect;0.6.5). The COBOL {@code RESP} handling is preserved: {@code NORMAL} returns the account;
+     * {@code NOTFND} becomes a {@link RecordNotFoundException} carrying {@code "Account ID NOT
+     * found..."}; any other response (the COBOL {@code WHEN OTHER} branch, message {@code "Unable to
+     * lookup Account..."}) surfaces as the underlying Spring {@code DataAccessException}, which
+     * propagates to the global exception handler. Bill-pay locks a single record (the account) only,
+     * so no lock-order/deadlock concern arises.</p>
      *
      * @param acctId the account id (COBOL {@code ACCT-ID}); must not be {@code null}
-     * @return the account record
+     * @return the locked account record
      * @throws RecordNotFoundException if no account exists for {@code acctId}
      */
     private Account readAcctdatFile(Long acctId) {
-        return accountRepository.findById(acctId)
+        return accountRepository.findByIdForUpdate(acctId)
                 .orElseThrow(() -> new RecordNotFoundException(MSG_ACCT_NOT_FOUND));
     }
 

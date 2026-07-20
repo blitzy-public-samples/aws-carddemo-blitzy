@@ -211,13 +211,6 @@ class AccountUpdateServiceTest {
         return state;
     }
 
-    /** A state that has passed the edits and is awaiting the PF5 confirmation (drives the write path). */
-    private static AccountUpdateState awaitingConfirmState() {
-        AccountUpdateState state = new AccountUpdateState();
-        state.setChangeAction(ChangeAction.CHANGES_OK_NOT_CONFIRMED);
-        return state;
-    }
-
     /** Valid {@link DateEditResult} used to stub the delegated {@link DateConversionSupport}. */
     private static DateEditResult validDate() {
         return new DateEditResult(true, false, FieldFlag.VALID, FieldFlag.VALID, FieldFlag.VALID, "");
@@ -740,9 +733,26 @@ class AccountUpdateServiceTest {
     //     coerced to ENTER (re-edit).
     // ==============================================================================================
 
-    /** A state that has passed the edits and is awaiting PF5 confirmation, with no matching snapshot. */
-    private static AccountUpdateState writeReadyState() {
-        return awaitingConfirmState(); // CHANGES_OK_NOT_CONFIRMED, oldSnapshot null
+    /**
+     * Builds a legitimately armed confirmation state by driving a real ENTER edit turn from the
+     * fetched (SHOW_DETAILS) state, exactly as the operator's first PF-key press does. The edit pass
+     * advances the state to {@link ChangeAction#CHANGES_OK_NOT_CONFIRMED} and, per review finding #10,
+     * arms the server-side validated pending snapshot together with a fresh single-use confirmation
+     * token; the issued token is copied onto {@link #form} so the following PF5 turn passes the
+     * confirmation-integrity gate. The ENTER turn is a pure edit pass that touches no repository, so it
+     * does not perturb the write-path stubs asserted by the (D16)/(E) tests.
+     *
+     * @return the armed session state, left with a {@code null} oldSnapshot (no concurrent-change drift)
+     */
+    private AccountUpdateState writeReadyState() {
+        stubAllDatesValid();
+        AccountUpdateState state = fetchedState(); // SHOW_DETAILS -> full edit pass on ENTER
+        AccountUpdateResult enter = service.process(form, PfKey.ENTER, state);
+        assertThat(enter.changeAction())
+                .as("the ENTER edit turn should advance to the armed confirm state")
+                .isEqualTo(ChangeAction.CHANGES_OK_NOT_CONFIRMED);
+        form.setConfirmToken(state.getConfirmToken()); // operator resubmits the issued token on PF5
+        return state;
     }
 
     @Test
@@ -750,8 +760,8 @@ class AccountUpdateServiceTest {
     void decideAction_pf5_confirmsAndWrites() {
         when(context.getAcctId()).thenReturn(ACCT_ID);
         when(context.getCustId()).thenReturn(CUST_ID);
-        when(accountRepository.findById(ACCT_ID)).thenReturn(Optional.of(freshAccount()));
-        when(customerRepository.findById(CUST_ID)).thenReturn(Optional.of(freshCustomer()));
+        when(accountRepository.findByIdForUpdate(ACCT_ID)).thenReturn(Optional.of(freshAccount()));
+        when(customerRepository.findByIdForUpdate(CUST_ID)).thenReturn(Optional.of(freshCustomer()));
 
         AccountUpdateResult result = service.process(form, PfKey.PFK05, writeReadyState());
 
@@ -833,8 +843,8 @@ class AccountUpdateServiceTest {
 
         when(context.getAcctId()).thenReturn(ACCT_ID);
         when(context.getCustId()).thenReturn(CUST_ID);
-        when(accountRepository.findById(ACCT_ID)).thenReturn(Optional.of(freshAccount()));
-        when(customerRepository.findById(CUST_ID)).thenReturn(Optional.of(freshCustomer()));
+        when(accountRepository.findByIdForUpdate(ACCT_ID)).thenReturn(Optional.of(freshAccount()));
+        when(customerRepository.findByIdForUpdate(CUST_ID)).thenReturn(Optional.of(freshCustomer()));
 
         AccountUpdateResult result = service.process(form, PfKey.PFK05, writeReadyState());
 
@@ -867,7 +877,7 @@ class AccountUpdateServiceTest {
     @DisplayName("(E20a) Account cannot be locked (not found) -> LOCK_ERROR, no save")
     void writeProcessing_accountLockFails_reportsLockError() {
         when(context.getAcctId()).thenReturn(ACCT_ID);
-        when(accountRepository.findById(ACCT_ID)).thenReturn(Optional.empty());
+        when(accountRepository.findByIdForUpdate(ACCT_ID)).thenReturn(Optional.empty());
 
         AccountUpdateResult result = service.process(form, PfKey.PFK05, writeReadyState());
 
@@ -883,8 +893,8 @@ class AccountUpdateServiceTest {
     void writeProcessing_customerLockFails_preservedQuirk() {
         when(context.getAcctId()).thenReturn(ACCT_ID);
         when(context.getCustId()).thenReturn(CUST_ID);
-        when(accountRepository.findById(ACCT_ID)).thenReturn(Optional.of(freshAccount()));
-        when(customerRepository.findById(CUST_ID)).thenReturn(Optional.empty());
+        when(accountRepository.findByIdForUpdate(ACCT_ID)).thenReturn(Optional.of(freshAccount()));
+        when(customerRepository.findByIdForUpdate(CUST_ID)).thenReturn(Optional.empty());
 
         AccountUpdateResult result = service.process(form, PfKey.PFK05, writeReadyState());
 
@@ -901,15 +911,18 @@ class AccountUpdateServiceTest {
     @DisplayName("(E20c) Concurrent change (9700) -> DATA_CHANGED re-displays SHOW_DETAILS, no committed save")
     void writeProcessing_concurrentChange_reDisplaysNoSave() {
         // The re-read DB record differs from the pre-update snapshot (active status Z vs fresh null).
-        AccountUpdateState state = awaitingConfirmState();
+        // Arm a legitimate confirmation first (server-side pending snapshot + single-use token,
+        // review finding #10), then override the carried baseline snapshot so the 9700 re-read
+        // detects a concurrent change (drift) and re-displays without saving.
+        AccountUpdateState state = writeReadyState();
         AccountSnapshot snapshot = new AccountSnapshot();
         snapshot.setActiveStatus("Z");
         state.setOldSnapshot(snapshot);
 
         when(context.getAcctId()).thenReturn(ACCT_ID);
         when(context.getCustId()).thenReturn(CUST_ID);
-        when(accountRepository.findById(ACCT_ID)).thenReturn(Optional.of(freshAccount()));
-        when(customerRepository.findById(CUST_ID)).thenReturn(Optional.of(freshCustomer()));
+        when(accountRepository.findByIdForUpdate(ACCT_ID)).thenReturn(Optional.of(freshAccount()));
+        when(customerRepository.findByIdForUpdate(CUST_ID)).thenReturn(Optional.of(freshCustomer()));
 
         AccountUpdateResult result = service.process(form, PfKey.PFK05, state);
 
@@ -925,8 +938,8 @@ class AccountUpdateServiceTest {
     void writeProcessing_rewriteFails_reportsUpdateFailed() {
         when(context.getAcctId()).thenReturn(ACCT_ID);
         when(context.getCustId()).thenReturn(CUST_ID);
-        when(accountRepository.findById(ACCT_ID)).thenReturn(Optional.of(freshAccount()));
-        when(customerRepository.findById(CUST_ID)).thenReturn(Optional.of(freshCustomer()));
+        when(accountRepository.findByIdForUpdate(ACCT_ID)).thenReturn(Optional.of(freshAccount()));
+        when(customerRepository.findByIdForUpdate(CUST_ID)).thenReturn(Optional.of(freshCustomer()));
         when(accountRepository.saveAndFlush(any(Account.class)))
                 .thenThrow(new DataIntegrityViolationException("rewrite failed"));
 

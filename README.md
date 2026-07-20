@@ -1,6 +1,6 @@
 ## CardDemo -- Mainframe CardDemo Application
 
-- [CardDemo -- Mainframe CardDemo Application](#carddemo----mainframe-card-demo-application)
+- [CardDemo -- Mainframe CardDemo Application](#carddemo----mainframe-carddemo-application)
 - [Description](#description)
 - [Technologies used](#technologies-used)
   - [Legacy (mainframe) stack](#legacy-mainframe-stack)
@@ -133,7 +133,7 @@ Configuration is environment-driven and contains **no hardcoded secrets**. The b
 
 **Flyway** manages the database schema as versioned migrations, applied automatically on startup so that a freshly created database is initialized with no manual steps. The full set is present: `V0__spring_batch_metadata.sql` (the Spring Batch metadata tables), `V1__schema.sql` (application schema), `V2__reference_data.sql` (reference and sample seed data), `V3__indexes.sql` (alternate-index equivalents), and `V4__card_xref_unique_card_num.sql` (the `uk_card_xref_card_num` single-key unique constraint on `card_xref`).
 
-> **Benign Flyway startup warning on PostgreSQL 18.** On the target PostgreSQL 18.4 server, Flyway logs one informational `WARN` at startup &mdash; *"Flyway upgrade recommended: PostgreSQL 18.4 is newer than this version of Flyway and support has not been tested. The latest supported version of PostgreSQL is 17."* This is expected and harmless: the BOM-managed Flyway (11.7.2) has been validation-tested only up to PostgreSQL 17, but all `V0`&ndash;`V4` migrations apply cleanly and idempotently on 18.4. The warning does not appear on the supported floor (PostgreSQL 16/17) and is retired by the Spring Boot 4.x upgrade (which advances Flyway); see the rationale and risk/mitigation in [`docs/decision-log.md`](./docs/decision-log.md).
+> **Flyway is pinned to a PostgreSQL&nbsp;18&ndash;tested release.** The project overrides the Spring Boot 3.5.16 parent BOM's Flyway version (`11.7.2`, whose highest *tested* PostgreSQL is 17) to `11.20.3` via the `flyway.version` property in [`pom.xml`](./pom.xml). Flyway&nbsp;11.20.3 marks PostgreSQL&nbsp;18 as tested, so startup against the target PostgreSQL&nbsp;18.4 server produces **no** compatibility warning and the build/start logs stay warning-free. All `V0`&ndash;`V4` migrations apply cleanly and idempotently on 16/17/18. The override stays within the Flyway&nbsp;11.x major line the BOM already uses (API-stable); see the rationale and risk/mitigation in [`docs/decision-log.md`](./docs/decision-log.md).
 
 ### Build
 
@@ -252,8 +252,10 @@ Companion documentation for the migration lives under [`docs/`](./docs) and is p
 * [`docs/traceability-matrix.md`](./docs/traceability-matrix.md) &mdash; the bidirectional COBOL-construct &rarr; Java-artifact mapping (programs, copybooks, BMS maps, and JCL jobs).
 * [`docs/onboarding.md`](./docs/onboarding.md) &mdash; a clean-machine-to-running-application onboarding guide (setup, domain context, common pitfalls, how to extend the project, and suggested next tasks).
 * [`docs/architecture/architecture.md`](./docs/architecture/architecture.md) &mdash; Mermaid before / after architecture diagrams (the current z/OS state and the target Spring Boot state).
+* [`docs/operation-inventory.md`](./docs/operation-inventory.md) &mdash; the authoritative, regenerable **0&ndash;433 operation inventory** (434 total operations: 432 create-equivalent + 1 README update + 1 `app/` deletion; 24 static/reference assets; 409 non-asset changed paths), reconstructed from `git diff --name-status`. It is the single source of truth for migration scope and operation counts.
+* [`docs/validation-gate-manifest.md`](./docs/validation-gate-manifest.md) &mdash; the ordered **eight-gate validation manifest** (compile, zero-warning, unit tests, integration tests, coverage, OWASP, traceability, BUILD SUCCESS) with observed evidence, the complete **49-finding resolution matrix**, and the in-remediation correction/retest record.
 
-A self-contained reveal.js executive-summary presentation is present at [`blitzy-deck/index.html`](./blitzy-deck/index.html); the canonical Blitzy reveal.js theme it depends on is at [`blitzy-deck/references/blitzy-reveal-theme.css`](./blitzy-deck/references/blitzy-reveal-theme.css).
+A reveal.js executive-summary presentation is present at [`blitzy-deck/index.html`](./blitzy-deck/index.html); the canonical Blitzy reveal.js theme it depends on is at [`blitzy-deck/references/blitzy-reveal-theme.css`](./blitzy-deck/references/blitzy-reveal-theme.css). The deck loads its three presentation libraries &mdash; reveal.js 5.1.0, Mermaid 11.16.0, and Lucide 0.460.0 &mdash; from the jsDelivr CDN (each pinned by a Subresource-Integrity hash and served under a restrictive Content-Security-Policy), so it **requires network access when opened** and is not a fully offline, self-contained bundle. Open it over a local web server (for example `python3 -m http.server` from the `blitzy-deck/` directory) so the Content-Security-Policy resolves correctly.
 
 <br/>
 
@@ -524,7 +526,7 @@ The following features are **not implemented**; they remain on the future roadma
 
 In addition, the following migration follow-ups are recommended but are **not delivered in this migration** (recorded under "Suggested next tasks" in [`docs/decision-log.md`](./docs/decision-log.md)):
 
-* Upgrade to **Spring Boot 4.x** &mdash; the Spring Boot 3.5 line reached open-source end-of-life on 2026-06-30, so future CVE patches require an upgrade.
+* Upgrade to **Spring Boot 4.x** &mdash; or procure commercial/extended 3.5 support (a pre-production prerequisite). The Spring Boot 3.5 line reached open-source end-of-life on 2026-06-30, so no future *upstream* CVE patches will be published for 3.5.16. The framework version is fixed at 3.5.16 by the frozen migration plan (AAP&nbsp;§0.7.3), so the upgrade is out of scope for this migration; documenting the EOL is **not** a substitute for vendor support, so before any production deployment either obtain supported commercial/extended maintenance for 3.5.16 or complete the 4.x upgrade and re-run every parity/security gate. Shipped-artifact CVEs are already patched at source via `pom.xml` overrides.
 * Introduce **password hashing (BCrypt)** &mdash; replace the preserved cleartext password comparison (kept for behavioral parity) with a modern password-hashing scheme.
 * Add a **CI/CD pipeline** under `.github/workflows/**` &mdash; the repository currently has no CI pipeline.
 

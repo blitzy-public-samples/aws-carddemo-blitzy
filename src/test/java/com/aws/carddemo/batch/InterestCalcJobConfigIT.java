@@ -150,7 +150,12 @@ import com.aws.carddemo.AbstractPostgresIntegrationTest;
 @SpringBootTest(
         classes = {InterestCalcJobConfigIT.BatchSliceConfig.class, InterestCalcJobConfigIT.HarnessConfig.class},
         webEnvironment = SpringBootTest.WebEnvironment.NONE,
-        properties = "spring.jpa.hibernate.ddl-auto=none")
+        // Prometheus export disabled (review finding #35): the slice uses a SimpleMeterRegistry so Spring
+        // Batch's duplicate spring.batch.job.active meter never trips the Prometheus collision WARN.
+        properties = {
+            "spring.jpa.hibernate.ddl-auto=none",
+            "management.prometheus.metrics.export.enabled=false"
+        })
 class InterestCalcJobConfigIT extends AbstractPostgresIntegrationTest {
 
     /** COBOL {@code PARM-DATE} job-parameter name consumed by {@code InterestCalcJobConfig}. */

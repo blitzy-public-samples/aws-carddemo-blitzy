@@ -25,6 +25,7 @@ import java.math.BigDecimal;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
+import java.util.stream.Stream;
 
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -35,7 +36,6 @@ import org.springframework.batch.core.Step;
 import org.springframework.batch.core.repository.JobRepository;
 import org.springframework.batch.core.step.tasklet.Tasklet;
 import org.springframework.batch.repeat.RepeatStatus;
-import org.springframework.data.domain.Sort;
 import org.springframework.transaction.PlatformTransactionManager;
 
 /**
@@ -149,8 +149,8 @@ class InterestCalcJobConfigTest {
     @DisplayName("1300-COMPUTE-INTEREST truncates (1000.00 * 19.99)/1200 DOWN to 16.65, not 16.66")
     void truncationCanonicalCaseRoundsDownNotHalfUp() {
         // (1000.00 * 19.99) / 1200 = 16.6583... -> DOWN 16.65 (NOT HALF_UP 16.66)
-        when(catBalRepo.findAll(any(Sort.class)))
-                .thenReturn(List.of(tcb(11L, "01", 5, "1000.00")));
+        when(catBalRepo.streamAllByAccountKeyOrder())
+                .thenAnswer(inv -> Stream.of(tcb(11L, "01", 5, "1000.00")));
         when(accountRepo.findById(11L)).thenReturn(Optional.of(account(11L, "GRP", "0.00")));
         stubXref(11L, "1234567890123456");
         stubDisc("GRP", "01", 5, "19.99");
@@ -168,8 +168,8 @@ class InterestCalcJobConfigTest {
     @DisplayName("Interest is truncated even when HALF_UP would round up: 1.6666 -> 1.66, not 1.67")
     void truncationWhenHalfUpWouldRoundUpStillRoundsDown() {
         // (100.00 * 20.00) / 1200 = 1.6666... -> DOWN 1.66 (HALF_UP would give 1.67)
-        when(catBalRepo.findAll(any(Sort.class)))
-                .thenReturn(List.of(tcb(11L, "01", 5, "100.00")));
+        when(catBalRepo.streamAllByAccountKeyOrder())
+                .thenAnswer(inv -> Stream.of(tcb(11L, "01", 5, "100.00")));
         when(accountRepo.findById(11L)).thenReturn(Optional.of(account(11L, "GRP", "0.00")));
         stubXref(11L, "1234567890123456");
         stubDisc("GRP", "01", 5, "20.00");
@@ -183,7 +183,7 @@ class InterestCalcJobConfigTest {
     @Test
     @DisplayName("TRAN-ID = 10-char PARM-DATE + 6-digit suffix; suffix is monotonic across accounts")
     void tranIdIsProcessingDatePlusSixDigitSuffixMonotonicAcrossAccounts() {
-        when(catBalRepo.findAll(any(Sort.class))).thenReturn(List.of(
+        when(catBalRepo.streamAllByAccountKeyOrder()).thenAnswer(inv -> Stream.of(
                 tcb(11L, "01", 5, "1000.00"),
                 tcb(22L, "01", 5, "1000.00")));
         when(accountRepo.findById(11L)).thenReturn(Optional.of(account(11L, "GRP", "0.00")));
@@ -205,8 +205,8 @@ class InterestCalcJobConfigTest {
     @Test
     @DisplayName("1300-B-WRITE-TX tags interest txn: type 01, cat 5, source System, desc, merchant 0, card from xref")
     void interestTransactionTaggingMatchesCobol() {
-        when(catBalRepo.findAll(any(Sort.class)))
-                .thenReturn(List.of(tcb(11L, "07", 9, "1000.00")));
+        when(catBalRepo.streamAllByAccountKeyOrder())
+                .thenAnswer(inv -> Stream.of(tcb(11L, "07", 9, "1000.00")));
         when(accountRepo.findById(11L)).thenReturn(Optional.of(account(11L, "GRP", "0.00")));
         stubXref(11L, "4444333322221111");
         stubDisc("GRP", "07", 9, "19.99");
@@ -227,8 +227,8 @@ class InterestCalcJobConfigTest {
     @Test
     @DisplayName("1200-A-GET-DEFAULT-INT-RATE: DEFAULT group used when specific (group,type,cat) missing")
     void defaultDisclosureGroupUsedWhenSpecificMissing() {
-        when(catBalRepo.findAll(any(Sort.class)))
-                .thenReturn(List.of(tcb(11L, "01", 5, "1200.00")));
+        when(catBalRepo.streamAllByAccountKeyOrder())
+                .thenAnswer(inv -> Stream.of(tcb(11L, "01", 5, "1200.00")));
         when(accountRepo.findById(11L)).thenReturn(Optional.of(account(11L, "MISSING", "0.00")));
         stubXref(11L, "1234567890123456");
         // specific (MISSING,01,5) not found -> Optional.empty(); DEFAULT stubbed:
@@ -245,8 +245,8 @@ class InterestCalcJobConfigTest {
     @Test
     @DisplayName("Missing specific AND DEFAULT disclosure group -> abend (IllegalStateException)")
     void defaultDisclosureGroupBothMissingThrows() {
-        when(catBalRepo.findAll(any(Sort.class)))
-                .thenReturn(List.of(tcb(11L, "01", 5, "1000.00")));
+        when(catBalRepo.streamAllByAccountKeyOrder())
+                .thenAnswer(inv -> Stream.of(tcb(11L, "01", 5, "1000.00")));
         when(accountRepo.findById(11L)).thenReturn(Optional.of(account(11L, "MISSING", "0.00")));
         stubXref(11L, "1234567890123456");
         when(discRepo.findById(any())).thenReturn(Optional.empty());
@@ -260,7 +260,7 @@ class InterestCalcJobConfigTest {
         // Account 11 has a zero-rate row then a non-zero-rate row; account 22 forces the control
         // break so account 11 is written back. Its accumulated interest must reflect ONLY the
         // non-zero row (the zero-rate row contributes nothing).
-        when(catBalRepo.findAll(any(Sort.class))).thenReturn(List.of(
+        when(catBalRepo.streamAllByAccountKeyOrder()).thenAnswer(inv -> Stream.of(
                 tcb(11L, "01", 5, "1000.00"),   // rate 0 -> skipped
                 tcb(11L, "02", 5, "1200.00"),   // rate 12.00 -> 12.00 interest
                 tcb(22L, "01", 5, "1000.00")));  // rate 0 -> skipped (also the final account)
@@ -292,7 +292,7 @@ class InterestCalcJobConfigTest {
         // is still written. This is the parity-critical CBACT04C quirk (test-before PERFORM UNTIL).
         Account a = account(11L, "GRP", "500.00");
         Account b = account(22L, "GRP", "700.00");
-        when(catBalRepo.findAll(any(Sort.class))).thenReturn(List.of(
+        when(catBalRepo.streamAllByAccountKeyOrder()).thenAnswer(inv -> Stream.of(
                 tcb(11L, "01", 5, "1000.00"),   // A: (1000*12)/1200 = 10.00
                 tcb(22L, "01", 5, "2000.00")));  // B: (2000*12)/1200 = 20.00
         when(accountRepo.findById(11L)).thenReturn(Optional.of(a));
@@ -331,8 +331,8 @@ class InterestCalcJobConfigTest {
     @Test
     @DisplayName("1100-GET-ACCT-DATA: missing account -> abend (IllegalStateException)")
     void missingAccountThrows() {
-        when(catBalRepo.findAll(any(Sort.class)))
-                .thenReturn(List.of(tcb(11L, "01", 5, "1000.00")));
+        when(catBalRepo.streamAllByAccountKeyOrder())
+                .thenAnswer(inv -> Stream.of(tcb(11L, "01", 5, "1000.00")));
         when(accountRepo.findById(11L)).thenReturn(Optional.empty());
 
         assertThrows(IllegalStateException.class, () -> config.calculateInterest(PROC_DATE));
@@ -341,8 +341,8 @@ class InterestCalcJobConfigTest {
     @Test
     @DisplayName("1110-GET-XREF-DATA: missing cross-reference -> abend (IllegalStateException)")
     void missingXrefThrows() {
-        when(catBalRepo.findAll(any(Sort.class)))
-                .thenReturn(List.of(tcb(11L, "01", 5, "1000.00")));
+        when(catBalRepo.streamAllByAccountKeyOrder())
+                .thenAnswer(inv -> Stream.of(tcb(11L, "01", 5, "1000.00")));
         when(accountRepo.findById(11L)).thenReturn(Optional.of(account(11L, "GRP", "0.00")));
         when(xrefRepo.findByXrefAcctId(11L)).thenReturn(new ArrayList<>());
 
@@ -361,7 +361,7 @@ class InterestCalcJobConfigTest {
     void beanWiringAndTaskletExecution() throws Exception {
         // Empty category-balance scan: the tasklet delegates to calculateInterest (which processes
         // zero rows) and reports completion, exercising the @Bean factories and the tasklet lambda.
-        when(catBalRepo.findAll(any(Sort.class))).thenReturn(List.of());
+        when(catBalRepo.streamAllByAccountKeyOrder()).thenAnswer(inv -> Stream.of());
 
         Job job = config.interestCalcJob();
         assertEquals("interestCalcJob", job.getName(), "job name mirrors CBACT04C job");

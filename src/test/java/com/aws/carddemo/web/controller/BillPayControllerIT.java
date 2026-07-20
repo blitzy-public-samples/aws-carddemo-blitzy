@@ -1,5 +1,6 @@
 package com.aws.carddemo.web.controller;
 
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.hamcrest.Matchers.containsString;
 import static org.hamcrest.Matchers.hasProperty;
 import static org.hamcrest.Matchers.matchesPattern;
@@ -13,13 +14,18 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.view;
 
 import com.aws.carddemo.AbstractPostgresIntegrationTest;
+import com.aws.carddemo.domain.Account;
 import com.aws.carddemo.dto.CardDemoContext;
+import com.aws.carddemo.dto.screen.COBIL00Form;
+import com.aws.carddemo.repository.AccountRepository;
+import java.math.BigDecimal;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
 import org.springframework.mock.web.MockHttpSession;
 import org.springframework.security.test.context.support.WithMockUser;
 import org.springframework.test.web.servlet.MockMvc;
+import org.springframework.test.web.servlet.MvcResult;
 import org.springframework.transaction.annotation.Transactional;
 
 /**
@@ -93,6 +99,9 @@ class BillPayControllerIT extends AbstractPostgresIntegrationTest {
     /** Request-parameter name for the payment-confirmation field (COBOL {@code CONFIRM}, {@code Y}/{@code N}). */
     private static final String PARAM_CONFIRM = "confirm";
 
+    /** Request-parameter name for the hidden single-use confirmation nonce (review finding F12). */
+    private static final String PARAM_CONFIRM_TOKEN = "confirmToken";
+
     /** Request-parameter name carrying the activated PF-key token ({@code ENTER}/{@code PF3}/{@code PF4}). */
     private static final String PARAM_PFKEY = "pfkey";
 
@@ -142,6 +151,42 @@ class BillPayControllerIT extends AbstractPostgresIntegrationTest {
     /** MockMvc entry point, auto-configured with the Spring Security filter chain. */
     @Autowired
     private MockMvc mockMvc;
+
+    /**
+     * Real {@link AccountRepository} used by the finding-F12 adversarial tests to assert the
+     * <em>committed</em> account balance after a rejected confirmation (those tests are not
+     * {@code @Transactional}; the per-test Flyway clean+migrate resets the seed).
+     */
+    @Autowired
+    private AccountRepository accountRepository;
+
+    /**
+     * A second seeded account id (account {@code 2}, balance {@code 158.00}) used by the account-swap
+     * adversarial test as the re-aimed (attacker) target that must not be paid.
+     */
+    private static final String SECOND_ACCT_ID = "00000000002";
+
+    /** Numeric key of {@link #SEEDED_ACCT_ID} for repository lookups. */
+    private static final long SEEDED_ACCT_KEY = 1L;
+
+    /** Numeric key of {@link #SECOND_ACCT_ID} for repository lookups. */
+    private static final long SECOND_ACCT_KEY = 2L;
+
+    /** Seeded committed balance of account {@code 1} (must be intact after a rejected confirmation). */
+    private static final BigDecimal BALANCE_ACCT_1 = new BigDecimal("194.00");
+
+    /** Seeded committed balance of account {@code 2} (must be intact after a rejected swap). */
+    private static final BigDecimal BALANCE_ACCT_2 = new BigDecimal("158.00");
+
+    /**
+     * A forged confirmation nonce (64 hex zeros) that matches the token width but no armed value;
+     * used by the finding-F12 forged-token test.
+     */
+    private static final String FORGED_TOKEN =
+            "0000000000000000000000000000000000000000000000000000000000000000";
+
+    /** Fragment of the web-tier confirmation-integrity banner (review finding F12). */
+    private static final String CONFIRM_INTEGRITY_FRAGMENT = "Confirmation could not be validated";
 
     /**
      * Builds an HTTP session pre-seeded with an <em>initialized</em> {@link CardDemoContext} so the
@@ -279,10 +324,29 @@ class BillPayControllerIT extends AbstractPostgresIntegrationTest {
     @WithMockUser(roles = "USER")
     @Transactional
     void billPayConfirmYesPaysFullBalance() throws Exception {
+        // Two-turn confirm (finding F12): turn one enters the account and displays the balance with
+        // the neutral confirm-payment prompt, arming a single-use nonce; capture it off the form (a
+        // browser round-trips it via the hidden field). Turn two presents Y + the armed nonce and
+        // commits the full-balance payment. A Y without the server-armed nonce is rejected with no
+        // payment, so the honest arm->confirm flow is exercised here.
+        MockHttpSession session = initializedSession(true);
+        MvcResult prompt = mockMvc.perform(post(PATH_BILLPAY)
+                        .session(session)
+                        .param(PARAM_ACCT, SEEDED_ACCT_ID)
+                        .param(PARAM_PFKEY, KEY_ENTER)
+                        .with(csrf()))
+                .andExpect(status().isOk())
+                .andExpect(view().name(VIEW_BILLPAY))
+                .andReturn();
+        String token = ((COBIL00Form) prompt.getModelAndView().getModel().get(MODEL_FORM))
+                .getConfirmToken();
+        assertThat(token).as("the balance-display turn must arm a confirmation token").isNotBlank();
+
         mockMvc.perform(post(PATH_BILLPAY)
-                        .session(initializedSession(true))
+                        .session(session)
                         .param(PARAM_ACCT, SEEDED_ACCT_ID)
                         .param(PARAM_CONFIRM, "Y")
+                        .param(PARAM_CONFIRM_TOKEN, token)
                         .param(PARAM_PFKEY, KEY_ENTER)
                         .with(csrf()))
                 .andExpect(status().isOk())
@@ -373,5 +437,116 @@ class BillPayControllerIT extends AbstractPostgresIntegrationTest {
                         .param(PARAM_ACCT, SEEDED_ACCT_ID)
                         .param(PARAM_PFKEY, KEY_ENTER))
                 .andExpect(status().isForbidden());
+    }
+
+    // =============================================================================================
+    // Finding F12 — confirmation-integrity (server-owned target + single-use nonce). These tests
+    // are deliberately NOT @Transactional: they assert the COMMITTED account balance (or the absence
+    // of any payment) through the repository, relying on the per-test Flyway clean+migrate to reset
+    // the seed. They reproduce the attacker moves the finding calls out: account-swap, forged nonce,
+    // and one-shot confirm with no prior balance-display arm.
+    // =============================================================================================
+
+    /**
+     * CB00 account-swap: the payment nonce armed for one account cannot pay a different account. Turn
+     * one displays account {@code 1}'s balance and arms the nonce bound to it; turn two presents
+     * {@code Y} plus that nonce but re-aims {@code actidin} at account {@code 2}. The payment is
+     * rejected (target mismatch), no payment occurs, and both accounts keep their seeded balances.
+     *
+     * @throws Exception if a request cannot be performed
+     */
+    @Test
+    @WithMockUser(roles = "USER")
+    void billPaySwappedAccountRejectedNoPayment() throws Exception {
+        MockHttpSession session = initializedSession(true);
+        MvcResult prompt = mockMvc.perform(post(PATH_BILLPAY).session(session)
+                        .param(PARAM_ACCT, SEEDED_ACCT_ID)
+                        .param(PARAM_PFKEY, KEY_ENTER)
+                        .with(csrf()))
+                .andExpect(status().isOk())
+                .andExpect(view().name(VIEW_BILLPAY))
+                .andReturn();
+        String token = ((COBIL00Form) prompt.getModelAndView().getModel().get(MODEL_FORM))
+                .getConfirmToken();
+        assertThat(token).isNotBlank();
+
+        // Confirm Y but re-aim the payment at account 2 while presenting account 1's nonce.
+        mockMvc.perform(post(PATH_BILLPAY).session(session)
+                        .param(PARAM_ACCT, SECOND_ACCT_ID)
+                        .param(PARAM_CONFIRM, "Y")
+                        .param(PARAM_CONFIRM_TOKEN, token)
+                        .param(PARAM_PFKEY, KEY_ENTER)
+                        .with(csrf()))
+                .andExpect(status().isOk())
+                .andExpect(view().name(VIEW_BILLPAY))
+                .andExpect(model().attribute(MODEL_FORM,
+                        hasProperty(PROP_ERRMSG, containsString(CONFIRM_INTEGRITY_FRAGMENT))));
+
+        Account swapped = accountRepository.findById(SECOND_ACCT_KEY).orElseThrow();
+        assertThat(swapped.getCurrBal())
+                .as("the swapped account must not be paid").isEqualByComparingTo(BALANCE_ACCT_2);
+        Account confirmed = accountRepository.findById(SEEDED_ACCT_KEY).orElseThrow();
+        assertThat(confirmed.getCurrBal())
+                .as("the confirmed account must not be paid on a rejected swap")
+                .isEqualByComparingTo(BALANCE_ACCT_1);
+    }
+
+    /**
+     * CB00 forged nonce: a {@code confirm=Y} presenting a never-armed nonce is rejected with the
+     * integrity banner and makes no payment.
+     *
+     * @throws Exception if a request cannot be performed
+     */
+    @Test
+    @WithMockUser(roles = "USER")
+    void billPayForgedTokenRejectedNoPayment() throws Exception {
+        MockHttpSession session = initializedSession(true);
+        mockMvc.perform(post(PATH_BILLPAY).session(session)
+                        .param(PARAM_ACCT, SEEDED_ACCT_ID)
+                        .param(PARAM_PFKEY, KEY_ENTER)
+                        .with(csrf()))
+                .andExpect(status().isOk()).andReturn();
+
+        mockMvc.perform(post(PATH_BILLPAY).session(session)
+                        .param(PARAM_ACCT, SEEDED_ACCT_ID)
+                        .param(PARAM_CONFIRM, "Y")
+                        .param(PARAM_CONFIRM_TOKEN, FORGED_TOKEN)
+                        .param(PARAM_PFKEY, KEY_ENTER)
+                        .with(csrf()))
+                .andExpect(status().isOk())
+                .andExpect(view().name(VIEW_BILLPAY))
+                .andExpect(model().attribute(MODEL_FORM,
+                        hasProperty(PROP_ERRMSG, containsString(CONFIRM_INTEGRITY_FRAGMENT))));
+
+        Account account = accountRepository.findById(SEEDED_ACCT_KEY).orElseThrow();
+        assertThat(account.getCurrBal())
+                .as("a forged confirmation must not pay").isEqualByComparingTo(BALANCE_ACCT_1);
+    }
+
+    /**
+     * CB00 one-shot without arm: a {@code confirm=Y} submitted with no prior balance-display turn
+     * (no server-armed nonce) is rejected. The finding's core hole was a client committing the full
+     * balance in a single unprompted post; here that post makes no payment and re-prompts instead.
+     *
+     * @throws Exception if a request cannot be performed
+     */
+    @Test
+    @WithMockUser(roles = "USER")
+    void billPayOneShotConfirmWithoutArmRejectedNoPayment() throws Exception {
+        mockMvc.perform(post(PATH_BILLPAY).session(initializedSession(true))
+                        .param(PARAM_ACCT, SEEDED_ACCT_ID)
+                        .param(PARAM_CONFIRM, "Y")
+                        .param(PARAM_CONFIRM_TOKEN, FORGED_TOKEN)
+                        .param(PARAM_PFKEY, KEY_ENTER)
+                        .with(csrf()))
+                .andExpect(status().isOk())
+                .andExpect(view().name(VIEW_BILLPAY))
+                .andExpect(model().attribute(MODEL_FORM,
+                        hasProperty(PROP_ERRMSG, containsString(CONFIRM_INTEGRITY_FRAGMENT))));
+
+        Account account = accountRepository.findById(SEEDED_ACCT_KEY).orElseThrow();
+        assertThat(account.getCurrBal())
+                .as("a one-shot confirm with no prior arm must not pay")
+                .isEqualByComparingTo(BALANCE_ACCT_1);
     }
 }

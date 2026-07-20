@@ -22,7 +22,10 @@ import java.util.Locale;
 
 import org.springframework.stereotype.Controller;
 import org.springframework.ui.Model;
+import org.springframework.validation.BindingResult;
+import org.springframework.web.bind.WebDataBinder;
 import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.InitBinder;
 import org.springframework.web.bind.annotation.ModelAttribute;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestParam;
@@ -43,8 +46,10 @@ import com.aws.carddemo.service.online.UserListService.UserRow;
 import com.aws.carddemo.service.online.UserUpdateService;
 import com.aws.carddemo.util.PfKeyHandler;
 import com.aws.carddemo.util.constants.ScreenTitles;
+import com.aws.carddemo.web.support.ConfirmationTokenService;
 
 import jakarta.servlet.http.HttpSession;
+import jakarta.validation.Valid;
 
 /**
  * Spring MVC {@link Controller} for the AWS CardDemo user-administration screens, the web-tier
@@ -146,8 +151,40 @@ public class UserAdminController {
     /** Model attribute (and Thymeleaf {@code th:object}) name for the bound screen form. */
     private static final String MODEL_ATTR_FORM = "form";
 
+    /**
+     * Neutral banner shown when a submitted field exceeds its physical BMS width (review finding
+     * #11). Every {@code COUSRxx} input carries a {@code maxlength} matching its {@code @Size}
+     * constraint, so a well-behaved 3270/Thymeleaf client can never trigger this; it is reachable
+     * only by a crafted request that bypasses the screen. It therefore never displaces a COBOL
+     * business-edit message, preserving the {@code COUSR00C}/{@code COUSR01C}/{@code COUSR02C}/
+     * {@code COUSR03C} message ordering.
+     */
+    private static final String MSG_FIELD_LENGTH =
+            "Input exceeds the maximum length for a field.";
+
     /** Request-parameter name carrying the activated PF-key token (for example {@code "PF3"}). */
     private static final String PF_KEY_PARAM = "pfkey";
+
+    /**
+     * Confirmation-integrity operation label for the CU02 user-update save (review finding F12).
+     * Binds a save nonce to this gesture so a nonce armed for one screen cannot be spent on another.
+     */
+    private static final String OP_USER_UPDATE = "USER_UPDATE";
+
+    /**
+     * Confirmation-integrity operation label for the CU03 user-delete confirm (review finding F12).
+     */
+    private static final String OP_USER_DELETE = "USER_DELETE";
+
+    /**
+     * Web-tier confirmation-integrity banner (review finding F12). Shown when a save/delete confirm
+     * cannot be validated against the server-owned pending confirmation (missing/forged nonce,
+     * replay, or a swapped target); no write is performed and the screen is re-armed for a retry.
+     * This has no COBOL origin - it restores, over HTTP, the BMS protected-confirmation-field
+     * contract the 3270 terminal enforced implicitly.
+     */
+    private static final String MSG_CONFIRM_INTEGRITY =
+            "Confirmation could not be validated. Please review and press F5 again.";
 
     /** Session attribute holding the {@link UserListState} paging cursor between requests. */
     private static final String SESSION_LIST_STATE = "userAdminListState";
@@ -251,6 +288,14 @@ public class UserAdminController {
     private final CardDemoContext context;
 
     /**
+     * Session-scoped confirmation-integrity store (review finding F12). Arms a single-use nonce
+     * bound to the server-confirmed target when a save/delete confirm prompt is rendered, and
+     * validates + consumes it on the committing turn so a tampered re-post cannot re-aim or replay
+     * the write. This is the web-tier equivalent of the BMS protected confirmation field.
+     */
+    private final ConfirmationTokenService confirmationTokenService;
+
+    /**
      * Creates the user-administration controller via Spring constructor injection.
      *
      * <p>A single constructor needs no {@code @Autowired}. No argument is dereferenced here, so the
@@ -266,17 +311,22 @@ public class UserAdminController {
      *                          {@code null}
      * @param context           the session-scoped CardDemo context (COMMAREA replacement); must not
      *                          be {@code null}
+     * @param confirmationTokenService the session-scoped confirmation-integrity store (review
+     *                          finding F12) used to arm/validate the save/delete confirmation nonce;
+     *                          must not be {@code null}
      */
     public UserAdminController(UserListService userListService,
                                UserAddService userAddService,
                                UserUpdateService userUpdateService,
                                UserDeleteService userDeleteService,
-                               CardDemoContext context) {
+                               CardDemoContext context,
+                               ConfirmationTokenService confirmationTokenService) {
         this.userListService = userListService;
         this.userAddService = userAddService;
         this.userUpdateService = userUpdateService;
         this.userDeleteService = userDeleteService;
         this.context = context;
+        this.confirmationTokenService = confirmationTokenService;
     }
 
     // ================================================================================
@@ -343,10 +393,23 @@ public class UserAdminController {
      */
     @PostMapping(PATH_USERS)
     public String handleUserList(
-            @ModelAttribute(MODEL_ATTR_FORM) COUSR00Form form,
+            @Valid @ModelAttribute(MODEL_ATTR_FORM) COUSR00Form form,
+            BindingResult bindingResult,
             @RequestParam(name = PF_KEY_PARAM, required = false) String pfkey,
             Model model,
             HttpSession session) {
+
+        // Finding #11: an over-width selection/id can only arrive from a crafted request; restore
+        // the display rows, clear the offending selections and re-render the list with a neutral
+        // banner and no service call, so COUSR00C's own edit messages keep their COBOL ordering.
+        if (bindingResult.hasErrors()) {
+            applyRowsToForm(form, readListRows(session));
+            clearSelections(form);
+            populateHeader(form);
+            form.setErrmsg(MSG_FIELD_LENGTH);
+            model.addAttribute(MODEL_ATTR_FORM, form);
+            return VIEW_USER_LIST;
+        }
 
         // Restore the displayed rows (read-only cells not re-submitted) so a selection resolves to
         // the correct user id, then restore the paging cursor.
@@ -419,9 +482,19 @@ public class UserAdminController {
      */
     @PostMapping(PATH_USERS_ADD)
     public String handleUserAdd(
-            @ModelAttribute(MODEL_ATTR_FORM) COUSR01Form form,
+            @Valid @ModelAttribute(MODEL_ATTR_FORM) COUSR01Form form,
+            BindingResult bindingResult,
             @RequestParam(name = PF_KEY_PARAM, required = false) String pfkey,
             Model model) {
+
+        // Finding #11: reject an over-width field (only reachable by a crafted request) with a
+        // neutral banner and no service call, preserving COUSR01C's own edit-message ordering.
+        if (bindingResult.hasErrors()) {
+            populateHeader(form);
+            form.setErrmsg(MSG_FIELD_LENGTH);
+            model.addAttribute(MODEL_ATTR_FORM, form);
+            return VIEW_USER_ADD;
+        }
 
         UserAddService.AidKey aid = toAddAid(resolvePfKey(pfkey));
         UserAddService.UserAddResult result = userAddService.mainEntry(aid, form);
@@ -464,6 +537,9 @@ public class UserAdminController {
         form.setUsridin(selectedUserId);
         UserUpdateService.UserUpdateResult result =
                 userUpdateService.mainEntry(form, UserUpdateService.AidKey.ENTER, selectedUserId);
+        // Finding F12: when the fetch renders the "Press PF5 to save" prompt, arm a single-use nonce
+        // bound to the loaded user and echo it onto the form's hidden field for the saving submit.
+        armUpdateConfirmation(result, form, session);
         return renderOrRedirectUpdate(result, form, model);
     }
 
@@ -499,15 +575,43 @@ public class UserAdminController {
      */
     @PostMapping(PATH_USERS_UPDATE)
     public String handleUserUpdate(
-            @ModelAttribute(MODEL_ATTR_FORM) COUSR02Form form,
+            @Valid @ModelAttribute(MODEL_ATTR_FORM) COUSR02Form form,
+            BindingResult bindingResult,
             @RequestParam(name = PF_KEY_PARAM, required = false) String pfkey,
             Model model,
             HttpSession session) {
 
+        // Finding #11: an over-width field is only reachable by a crafted request. Bounce it with a
+        // neutral banner and no service call before the confirmation-integrity gate runs, so the
+        // armed nonce is neither consumed nor re-armed and COUSR02C's edit ordering is preserved.
+        if (bindingResult.hasErrors()) {
+            populateHeader(form);
+            form.setErrmsg(MSG_FIELD_LENGTH);
+            model.addAttribute(MODEL_ATTR_FORM, form);
+            return VIEW_USER_UPDATE;
+        }
+
         String selectedUserId = readSelectedUserId(session);
         UserUpdateService.AidKey aid = toUpdateAid(resolvePfKey(pfkey));
+        // Confirmation-integrity gate (finding F12): PF5 (save) and PF3 (save & exit) both rewrite
+        // the USRSEC record using the round-tripped usridin, so both are bound to the server-
+        // confirmed target by the single-use nonce armed on the fetch/prompt turn. A missing,
+        // forged, replayed, or target-swapped confirmation is rejected with no write.
+        if (aid == UserUpdateService.AidKey.PF5 || aid == UserUpdateService.AidKey.PF3) {
+            String armedTarget = confirmationTokenService.armedTarget(session, OP_USER_UPDATE);
+            boolean confirmed = armedTarget != null
+                    && confirmationTokenService.validate(session, OP_USER_UPDATE,
+                            form.getUsridin(), form.getConfirmToken());
+            confirmationTokenService.consume(session);
+            if (!confirmed) {
+                return rejectUpdateConfirmation(form, model, session, armedTarget, selectedUserId);
+            }
+            // Force the server-confirmed identity onto the save; the re-post cannot re-aim it.
+            form.setUsridin(armedTarget);
+        }
         UserUpdateService.UserUpdateResult result =
                 userUpdateService.mainEntry(form, aid, selectedUserId);
+        armUpdateConfirmation(result, form, session);
         return renderOrRedirectUpdate(result, form, model);
     }
 
@@ -540,6 +644,9 @@ public class UserAdminController {
         form.setUsridin(selectedUserId);
         UserDeleteService.UserDeleteResult result =
                 userDeleteService.mainEntry(UserDeleteService.AidKey.ENTER, form);
+        // Finding F12: when the lookup renders the "Press PF5 to delete" prompt (step one of the
+        // two-step delete), arm a single-use nonce bound to the looked-up user for the PF5 confirm.
+        armDeleteConfirmation(result, form, session);
         return renderOrRedirectDelete(result, form, model);
     }
 
@@ -574,13 +681,40 @@ public class UserAdminController {
      */
     @PostMapping(PATH_USERS_DELETE)
     public String handleUserDelete(
-            @ModelAttribute(MODEL_ATTR_FORM) COUSR03Form form,
+            @Valid @ModelAttribute(MODEL_ATTR_FORM) COUSR03Form form,
+            BindingResult bindingResult,
             @RequestParam(name = PF_KEY_PARAM, required = false) String pfkey,
             Model model,
             HttpSession session) {
 
+        // Finding #11: an over-width field is only reachable by a crafted request. Bounce it with a
+        // neutral banner and no service call before the confirmation-integrity gate runs, so the
+        // armed nonce is neither consumed nor re-armed and COUSR03C's edit ordering is preserved.
+        if (bindingResult.hasErrors()) {
+            populateHeader(form);
+            form.setErrmsg(MSG_FIELD_LENGTH);
+            model.addAttribute(MODEL_ATTR_FORM, form);
+            return VIEW_USER_DELETE;
+        }
+
         UserDeleteService.AidKey aid = toDeleteAid(resolvePfKey(pfkey));
+        // Confirmation-integrity gate (finding F12): PF5 performs the destructive delete using the
+        // round-tripped usridin. Bind it to the server-confirmed target (armed on the ENTER lookup)
+        // via the single-use nonce; reject a missing/forged/replayed/target-swapped confirmation
+        // with no delete.
+        if (aid == UserDeleteService.AidKey.PF5) {
+            String armedTarget = confirmationTokenService.armedTarget(session, OP_USER_DELETE);
+            boolean confirmed = armedTarget != null
+                    && confirmationTokenService.validate(session, OP_USER_DELETE,
+                            form.getUsridin(), form.getConfirmToken());
+            confirmationTokenService.consume(session);
+            if (!confirmed) {
+                return rejectDeleteConfirmation(form, model, session, armedTarget);
+            }
+            form.setUsridin(armedTarget);
+        }
         UserDeleteService.UserDeleteResult result = userDeleteService.mainEntry(aid, form);
+        armDeleteConfirmation(result, form, session);
         return renderOrRedirectDelete(result, form, model);
     }
 
@@ -675,6 +809,135 @@ public class UserAdminController {
         populateHeader(form);
         model.addAttribute(MODEL_ATTR_FORM, form);
         return VIEW_USER_DELETE;
+    }
+
+    // ================================================================================
+    // Confirmation-integrity helpers (review finding F12)
+    //
+    // The 3270/CICS presentation implicitly protected the confirmation gesture: the operator could
+    // only confirm the record the terminal had just displayed. Over stateless HTTP that becomes a
+    // re-postable form, so the CU02 save (PF5/PF3) and the CU03 delete (PF5) are bound to a server-
+    // owned single-use nonce armed when the confirm prompt is rendered. See ConfirmationTokenService.
+    // ================================================================================
+
+    /**
+     * Arms or clears the CU02 save confirmation nonce after a {@code mainEntry} outcome (finding F12).
+     *
+     * <p>A re-displayed screen that is not a completed save - the neutral &quot;Press PF5 to save&quot;
+     * prompt, or an error re-prompt such as &quot;Please modify to update ...&quot; - arms a fresh
+     * single-use nonce bound to the loaded {@code usridin} and echoes it onto the form so the next
+     * PF5/PF3 can be validated. A redirect (PF3/PF12 hand-off) or a completed save
+     * ({@link UserUpdateService.MessageSeverity#SUCCESS}) clears the nonce so it cannot be replayed.
+     * Arming is skipped when no user is loaded (a blank {@code usridin}), since there is nothing to
+     * confirm.</p>
+     *
+     * @param result  the outcome of the {@code mainEntry} call being rendered
+     * @param form    the update form being redisplayed (receives the echoed nonce)
+     * @param session the HTTP session holding the pending confirmation
+     */
+    private void armUpdateConfirmation(UserUpdateService.UserUpdateResult result,
+                                       COUSR02Form form, HttpSession session) {
+        boolean savedOrLeaving = result.isRedirect()
+                || result.severity() == UserUpdateService.MessageSeverity.SUCCESS;
+        if (!savedOrLeaving && form.getUsridin() != null && !form.getUsridin().isBlank()) {
+            form.setConfirmToken(
+                    confirmationTokenService.arm(session, OP_USER_UPDATE, form.getUsridin()));
+        } else {
+            confirmationTokenService.consume(session);
+            form.setConfirmToken(null);
+        }
+    }
+
+    /**
+     * Rejects an unvalidated CU02 save confirmation (finding F12): performs no write, re-fetches and
+     * re-displays the server-confirmed user for a fresh confirmation, and overlays the integrity
+     * banner.
+     *
+     * <p>The re-fetch (ENTER) uses the server-owned {@code armedTarget} (falling back to the posted
+     * id only when nothing was armed - e.g. a client that tried to one-shot the save) and thereby
+     * discards any edits carried on the tampered re-post; the true record is shown so the operator
+     * confirms deliberately. A fresh nonce is armed and echoed. When the re-fetch itself routes away
+     * (a redirect), that redirect is honored and the pending confirmation is cleared.</p>
+     *
+     * @param form           the submitted update form
+     * @param model          the Spring MVC model receiving the redisplayed form
+     * @param session        the HTTP session holding the pending confirmation
+     * @param armedTarget    the server-owned target that was armed, or {@code null} if none
+     * @param selectedUserId the selected user id passed to {@code mainEntry} for symmetry
+     * @return the {@code COUSR02} view with the integrity banner, or a {@code redirect:} view name
+     */
+    private String rejectUpdateConfirmation(COUSR02Form form, Model model, HttpSession session,
+                                            String armedTarget, String selectedUserId) {
+        String target = (armedTarget != null && !armedTarget.isBlank())
+                ? armedTarget : form.getUsridin();
+        form.setUsridin(target);
+        UserUpdateService.UserUpdateResult display =
+                userUpdateService.mainEntry(form, UserUpdateService.AidKey.ENTER, selectedUserId);
+        String view = renderOrRedirectUpdate(display, form, model);
+        if (view.startsWith(REDIRECT_PREFIX)) {
+            confirmationTokenService.consume(session);
+            return view;
+        }
+        // The model holds this same form reference: re-arm a fresh nonce and overlay the banner.
+        form.setConfirmToken(confirmationTokenService.arm(session, OP_USER_UPDATE, form.getUsridin()));
+        form.setErrmsg(MSG_CONFIRM_INTEGRITY);
+        return view;
+    }
+
+    /**
+     * Arms or clears the CU03 delete confirmation nonce after a {@code mainEntry} outcome
+     * (finding F12).
+     *
+     * <p>A re-displayed screen that is not a completed delete - the neutral &quot;Press PF5 to
+     * delete&quot; prompt, or an error re-prompt - arms a fresh single-use nonce bound to the
+     * looked-up {@code usridin} and echoes it onto the form for the PF5 confirm. A redirect
+     * (PF3/PF12 hand-off) or a completed delete
+     * ({@link UserDeleteService.MessageSeverity#SUCCESS}) clears the nonce. Arming is skipped when
+     * no user is loaded (a blank {@code usridin}).</p>
+     *
+     * @param result  the outcome of the {@code mainEntry} call being rendered
+     * @param form    the delete form being redisplayed (receives the echoed nonce)
+     * @param session the HTTP session holding the pending confirmation
+     */
+    private void armDeleteConfirmation(UserDeleteService.UserDeleteResult result,
+                                       COUSR03Form form, HttpSession session) {
+        boolean deletedOrLeaving = result.isRedirect()
+                || result.severity() == UserDeleteService.MessageSeverity.SUCCESS;
+        if (!deletedOrLeaving && form.getUsridin() != null && !form.getUsridin().isBlank()) {
+            form.setConfirmToken(
+                    confirmationTokenService.arm(session, OP_USER_DELETE, form.getUsridin()));
+        } else {
+            confirmationTokenService.consume(session);
+            form.setConfirmToken(null);
+        }
+    }
+
+    /**
+     * Rejects an unvalidated CU03 delete confirmation (finding F12): performs no delete, re-looks-up
+     * and re-displays the server-confirmed user with a fresh nonce, and overlays the integrity
+     * banner.
+     *
+     * @param form        the submitted delete form
+     * @param model       the Spring MVC model receiving the redisplayed form
+     * @param session     the HTTP session holding the pending confirmation
+     * @param armedTarget the server-owned target that was armed, or {@code null} if none
+     * @return the {@code COUSR03} view with the integrity banner, or a {@code redirect:} view name
+     */
+    private String rejectDeleteConfirmation(COUSR03Form form, Model model, HttpSession session,
+                                            String armedTarget) {
+        String target = (armedTarget != null && !armedTarget.isBlank())
+                ? armedTarget : form.getUsridin();
+        form.setUsridin(target);
+        UserDeleteService.UserDeleteResult display =
+                userDeleteService.mainEntry(UserDeleteService.AidKey.ENTER, form);
+        String view = renderOrRedirectDelete(display, form, model);
+        if (view.startsWith(REDIRECT_PREFIX)) {
+            confirmationTokenService.consume(session);
+            return view;
+        }
+        form.setConfirmToken(confirmationTokenService.arm(session, OP_USER_DELETE, form.getUsridin()));
+        form.setErrmsg(MSG_CONFIRM_INTEGRITY);
+        return view;
     }
 
     // ================================================================================
@@ -880,6 +1143,37 @@ public class UserAdminController {
      */
     private static DateStruct now() {
         return DateStruct.from(LocalDateTime.now());
+    }
+
+    /**
+     * Restricts request-parameter binding on every user-admin screen to the fields that screen
+     * actually submits (review finding #11), switching on the bound form type. Display-only
+     * columns (the ten list rows, page number, header/title/date and the {@code errmsg} line) are
+     * excluded so they can no longer be over-posted; {@code pfkey} arrives as a
+     * {@code @RequestParam} and is not bound through the form. The single-use confirmation token
+     * ({@code confirmToken}, finding #12) is explicitly allowed on the update and delete screens so
+     * the arm&rarr;confirm flow keeps working.
+     *
+     * @param binder the per-request data binder for the bound form
+     */
+    @InitBinder
+    protected void restrictBinding(WebDataBinder binder) {
+        // Spring MVC instantiates the @ModelAttribute command lazily, so binder.getTarget() is null
+        // when @InitBinder runs; the resolved binder.getTargetType() is the reliable discriminator
+        // (it is null for simple @RequestParam binders such as pfkey).
+        Class<?> targetType = binder.getTargetType() != null ? binder.getTargetType().resolve() : null;
+        if (COUSR00Form.class.equals(targetType)) {
+            binder.setAllowedFields("usridin",
+                    "sel0001", "sel0002", "sel0003", "sel0004", "sel0005",
+                    "sel0006", "sel0007", "sel0008", "sel0009", "sel0010");
+        } else if (COUSR01Form.class.equals(targetType)) {
+            binder.setAllowedFields("fname", "lname", "userid", "passwd", "usrtype");
+        } else if (COUSR02Form.class.equals(targetType)) {
+            binder.setAllowedFields("usridin", "fname", "lname", "passwd", "usrtype",
+                    "confirmToken");
+        } else if (COUSR03Form.class.equals(targetType)) {
+            binder.setAllowedFields("usridin", "confirmToken");
+        }
     }
 
     // ================================================================================

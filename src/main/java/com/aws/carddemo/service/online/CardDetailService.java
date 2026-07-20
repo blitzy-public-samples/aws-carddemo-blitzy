@@ -352,21 +352,33 @@ public class CardDetailService {
             return handleExit(work);
         }
 
-        if (context.isProgramEnter() && LIT_CCLISTPGM.equals(context.getFromProgram())) {
+        // Resolve the card number carried on the context by the card-list hand-off
+        // (COBOL CDEMO-CARD-NUM). On the mainframe the 3270 card list guarantees this
+        // selection before the XCTL, so the WHEN CDEMO-FROM-PROGRAM = LIT-CCLISTPGM arm
+        // always had a valid PAN. In the web tier the session context is client-influenced
+        // (a cold/bookmarked GET, a replayed or forged request, or a stale session can present
+        // CDEMO-FROM-PROGRAM = COCRDLIC with no actual selection), so guard it: an absent
+        // selection must NOT reach the keyed read (a null key would make
+        // CardRepository.findById raise IllegalArgumentException -> HTTP 500, which no COBOL
+        // path produces). See review finding #47.
+        final String selectedCardNum = toFixedDigits(context.getCardNum(), CARD_NUM_WIDTH);
+        if (context.isProgramEnter() && LIT_CCLISTPGM.equals(context.getFromProgram())
+                && selectedCardNum != null) {
             // WHEN CDEMO-PGM-ENTER AND CDEMO-FROM-PROGRAM = LIT-CCLISTPGM (lines 337-347):
             // arriving from the card-list screen with an already-validated selection.
             state.setInputError(false);                             // SET INPUT-OK TO TRUE
             work.setAcctId(formatFixedDigits(                       // MOVE CDEMO-ACCT-ID TO CC-ACCT-ID-N
                     context.getAcctId(), ACCT_ID_WIDTH));
-            work.setCardNum(toFixedDigits(                          // MOVE CDEMO-CARD-NUM TO CC-CARD-NUM-N
-                    context.getCardNum(), CARD_NUM_WIDTH));
+            work.setCardNum(selectedCardNum);                       // MOVE CDEMO-CARD-NUM TO CC-CARD-NUM-N
             readData(work, state, form);                            // PERFORM 9000-READ-DATA
             return buildShowResult(form, state);                    // PERFORM 1000-SEND-MAP
         }
 
         if (context.isProgramEnter()) {
-            // WHEN CDEMO-PGM-ENTER (any other origin, lines 349-353): show the search screen
-            // so the operator can supply criteria.
+            // WHEN CDEMO-PGM-ENTER (any other origin, lines 349-353), and the review-finding-#47
+            // guard above (a from-list hop with no resolvable selection): show the search screen
+            // so the operator can supply criteria - the source-equivalent prompt for "no
+            // selection", never a keyed read on an absent key.
             return buildShowResult(form, state);                    // PERFORM 1000-SEND-MAP
         }
 

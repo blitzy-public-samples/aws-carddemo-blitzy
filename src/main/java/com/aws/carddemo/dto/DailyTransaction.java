@@ -13,7 +13,7 @@ import java.math.BigDecimal;
  * <p><strong>Role:</strong> this is the daily-transaction input feed consumed by
  * the batch posting and backup programs (legacy {@code CBTRN02C} and
  * {@code CBTRN01C}). In the target architecture it is read from the sequential
- * {@code DALYTRAN} file by a Spring Batch {@code FlatFileItemReader<DailyTransaction>}.</p>
+ * {@code DALYTRAN} file by a Spring Batch {@code FixedLengthItemReader<DailyTransaction>}.</p>
  *
  * <p><strong>Non-persistent:</strong> this is a plain data-transfer object. It is
  * intentionally <em>not</em> a JPA entity and carries no persistence annotations;

@@ -18,6 +18,7 @@
 -->
 <html lang="en" xmlns:th="http://www.thymeleaf.org">
 <head>
+    <th:block th:replace="~{fragments/bms-palette :: palette}"></th:block>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Bill Payment</title>
@@ -38,7 +39,7 @@
         body {
             margin: 0;
             background: #000000;        /* 3270 dark background */
-            color: #FFFFFF;
+            color: var(--bms-neutral);
             font-family: "Courier New", Courier, monospace;
             font-size: 1rem;
         }
@@ -88,18 +89,17 @@
         .c65 { left: 64ch; }
         .c71 { left: 70ch; }
 
-        /* BMS COLOR attribute -> hex (per AAP color map).
-           BLITZY [A11Y]: BLUE #0000CD and RED #CD0000 on the #000000 terminal
-           background compute below the WCAG AA 4.5:1 text-contrast recommendation.
-           They are implemented EXACTLY per the BMS/AAP color specification because
-           the design source (the legacy BMS map) is authoritative; flagged here for
-           designer review rather than silently altered. */
-        .blue    { color: #0000CD; }
-        .yellow  { color: #CCCC00; }
-        .turq    { color: #00CDCD; }
-        .green   { color: #00CD00; }
-        .red     { color: #CD0000; }
-        .neutral { color: #FFFFFF; }
+        /* BMS COLOR attribute -> centralized palette var (templates/fragments/bms-palette.html).
+           BLITZY [A11Y / review finding #53]: the two BMS foreground colours that failed WCAG 2.1
+           AA contrast on the black background (BLUE, RED) are replaced with accessible equivalents
+           brightened along the same hue axis (>= 4.5:1); the rest keep their legacy values.
+           Contrast is asserted by BmsPaletteContrastTest; rationale in docs/decision-log.md. */
+        .blue    { color: var(--bms-blue); }
+        .yellow  { color: var(--bms-yellow); }
+        .turq    { color: var(--bms-turquoise); }
+        .green   { color: var(--bms-green); }
+        .red     { color: var(--bms-red); }
+        .neutral { color: var(--bms-neutral); }
         .brt     { font-weight: bold; }     /* BMS ATTRB=BRT (bright) */
 
         /* Unprotected input fields (BMS ATTRB=UNPROT). HILIGHT=UNDERLINE is
@@ -136,6 +136,10 @@
             vertical-align: baseline;
         }
         .pf:focus-visible { outline: 1px solid #FFFFFF; }
+        .pf:active { text-decoration: underline; filter: brightness(1.3); }
+        @media (hover: hover) {
+            .pf:hover { text-decoration: underline; }
+        }
 
         /* Visually hidden yet available to assistive tech (invisible a11y). */
         .sr-only {
@@ -154,6 +158,9 @@
 <body>
 <a class="sr-only" href="#actidin">Skip to account ID entry</a>
 <main>
+    <!-- Off-grid semantic heading for assistive tech (review finding #56); the visible
+         title cell is unchanged. -->
+    <h1 class="visually-hidden">Bill Payment</h1>
     <!-- The 24x80 screen. The form is the positioning context; Spring Security's
          RequestDataValueProcessor auto-injects the hidden _csrf field into any
          form rendered with th:action. -->
@@ -203,9 +210,14 @@
 
         <!-- ============================= Messages / legend =========================== -->
         <!-- Row 23: error / status message (BMS ERRMSG, RED BRT); shown only when set. -->
-        <span class="cell r23 c1 red brt"
+        <span role="alert" aria-live="assertive" class="cell r23 c1 red brt"
               th:if="${!#strings.isEmpty(form.errmsg)}"
               th:text="*{errmsg}">Error message</span>
+
+        <!-- Single-use confirmation nonce (review finding F12). Binds a confirm=Y payment to the
+             account whose balance the server displayed, so a tampered re-post cannot re-aim or
+             replay the payment. The RequestDataValueProcessor injects the hidden _csrf field. -->
+        <input type="hidden" th:field="*{confirmToken}">
 
         <!-- Row 24: PF-key legend. Buttons carry the BMS legend text verbatim
              ("ENTER=Continue  F3=Back  F4=Clear" - two spaces between segments).

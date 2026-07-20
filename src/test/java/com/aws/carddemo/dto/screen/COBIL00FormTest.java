@@ -205,8 +205,15 @@ class COBIL00FormTest {
             fieldNames.add(field.getName());
         }
 
+        // The hidden single-use confirmation nonce (review finding F12) is a deliberate non-BMS
+        // control field (it restores the BMS protected-confirmation-field contract over HTTP), not
+        // part of the COBIL0A map. Assert it is present, then exclude it from the BMS-field check.
+        assertThat(fieldNames).contains("confirmToken");
+        List<String> bmsFieldNames = new ArrayList<>(fieldNames);
+        bmsFieldNames.remove("confirmToken");
+
         // Field presence: exactly the 10 BMS value fields of map COBIL0A, no more, no fewer.
-        assertThat(fieldNames).containsExactlyInAnyOrder(
+        assertThat(bmsFieldNames).containsExactlyInAnyOrder(
                 "trnname", "title01", "curdate", "pgmname", "title02",
                 "curtime", "actidin", "curbal", "confirm", "errmsg");
 

@@ -9,6 +9,7 @@
 -->
 <html lang="en" xmlns:th="http://www.thymeleaf.org">
 <head>
+    <th:block th:replace="~{fragments/bms-palette :: palette}"></th:block>
     <meta charset="UTF-8"/>
     <meta name="viewport" content="width=device-width, initial-scale=1"/>
     <title>List Transactions</title>
@@ -17,13 +18,13 @@
 
         /* CardDemo 3270 palette (BMS COLOR -> hex) and grid row height. */
         :root {
-            --c-blue: #0000CD;
-            --c-yellow: #CCCC00;
-            --c-turquoise: #00CDCD;
-            --c-green: #00CD00;
-            --c-red: #CD0000;
-            --c-neutral: #FFFFFF;
-            --c-bg: #000000;
+            --c-blue: var(--bms-blue);
+            --c-yellow: var(--bms-yellow);
+            --c-turquoise: var(--bms-turquoise);
+            --c-green: var(--bms-green);
+            --c-red: var(--bms-red);
+            --c-neutral: var(--bms-neutral);
+            --c-bg: var(--bms-bg);
             --rh: 1.25rem;
         }
 
@@ -133,6 +134,7 @@
             cursor: pointer;
         }
         .btn:focus-visible { outline: 1px solid var(--c-neutral); outline-offset: -1px; }
+        .btn:active { text-decoration: underline; filter: brightness(1.3); }
         @media (hover: hover) {
             .btn:hover { text-decoration: underline; }
         }
@@ -281,11 +283,32 @@
                 <span class="f c-blue" style="--r:19;--c:38;--w:26" th:text="*{tdesc10}"></span>
                 <span class="f c-blue" style="--r:19;--c:67;--w:12" th:text="*{tamt010}"></span>
 
+                <!--
+                  Per-row transaction ids round-trip to the server (hidden inputs), preserving the
+                  legacy 3270 contract: the BMS map defines each TRNIDnn with ATTRB=(ASKIP,FSET,...),
+                  so the pre-set modified-data tag re-transmits the id on ENTER, and COTRN00C
+                  PROCESS-ENTER-KEY resolves the selected row by reading TRNIDnnI from the received
+                  map. The visible value is shown by the c-blue spans above; these hidden fields carry
+                  the same value back so the 'S' selection can be resolved. Only the ids are echoed
+                  (the COBOL never reads date/description/amount back), so the display-only cells stay
+                  server-derived and cannot be over-posted.
+                -->
+                <input type="hidden" th:field="*{trnid01}"/>
+                <input type="hidden" th:field="*{trnid02}"/>
+                <input type="hidden" th:field="*{trnid03}"/>
+                <input type="hidden" th:field="*{trnid04}"/>
+                <input type="hidden" th:field="*{trnid05}"/>
+                <input type="hidden" th:field="*{trnid06}"/>
+                <input type="hidden" th:field="*{trnid07}"/>
+                <input type="hidden" th:field="*{trnid08}"/>
+                <input type="hidden" th:field="*{trnid09}"/>
+                <input type="hidden" th:field="*{trnid10}"/>
+
                 <!-- Informational instruction line (BMS row 21) -->
                 <span class="f c-neutral brt" style="--r:21;--c:12;--w:50">Type 'S' to View Transaction details from the list</span>
 
                 <!-- Error message line (BMS row 23); shown only when populated -->
-                <span class="f c-red brt" style="--r:23;--c:1;--w:78"
+                <span role="alert" aria-live="assertive" class="f c-red brt" style="--r:23;--c:1;--w:78"
                       th:if="${form.errmsg != null and !#strings.isEmpty(#strings.trim(form.errmsg))}"
                       th:text="*{errmsg}"></span>
 

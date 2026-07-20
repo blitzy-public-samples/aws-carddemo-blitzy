@@ -2,6 +2,7 @@ package com.aws.carddemo.repository;
 
 import com.aws.carddemo.domain.CardXref;
 
+import io.micrometer.observation.annotation.Observed;
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.stereotype.Repository;
 
@@ -70,5 +71,7 @@ public interface CardXrefRepository extends JpaRepository<CardXref, CardXref.Car
      * @param xrefAcctId the 11-digit account id ({@code XREF-ACCT-ID})
      * @return the (possibly empty) list of cross-reference rows for the account
      */
+    @Observed(name = "carddemo.repository.cardxref.by-account",
+            contextualName = "cardxref-by-account")
     List<CardXref> findByXrefAcctId(Long xrefAcctId);
 }

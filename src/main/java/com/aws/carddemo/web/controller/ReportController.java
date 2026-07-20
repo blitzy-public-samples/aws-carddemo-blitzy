@@ -24,11 +24,15 @@ import com.aws.carddemo.service.online.ReportSubmitService.AidKey;
 import com.aws.carddemo.service.online.ReportSubmitService.ReportSubmitResult;
 import com.aws.carddemo.util.PfKeyHandler;
 import com.aws.carddemo.util.constants.ScreenTitles;
+import jakarta.validation.Valid;
 import java.time.LocalDateTime;
 import java.util.Locale;
 import java.util.Map;
 import org.springframework.stereotype.Controller;
+import org.springframework.validation.BindingResult;
+import org.springframework.web.bind.WebDataBinder;
 import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.InitBinder;
 import org.springframework.web.bind.annotation.ModelAttribute;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestParam;
@@ -139,6 +143,16 @@ public class ReportController {
 
     /** Logical Thymeleaf view name; resolves to {@code templates/CORPT00.html}. */
     private static final String VIEW_REPORT = "CORPT00";
+
+    /**
+     * Neutral banner shown when a submitted field exceeds its physical BMS width (review finding
+     * #11). A well-behaved 3270/Thymeleaf client can never trigger this - every input carries a
+     * {@code maxlength} matching its {@code @Size} constraint - so it is reachable only by a crafted
+     * request that bypasses the screen. It therefore never displaces a COBOL business-edit message,
+     * preserving {@code CORPT00C}'s message ordering.
+     */
+    private static final String MSG_FIELD_LENGTH =
+            "Input exceeds the maximum length for a field.";
 
     /** Web route for this screen (COBOL tran {@code CR00}); GET displays, POST submits. */
     private static final String PATH_REPORT = "/report";
@@ -285,8 +299,17 @@ public class ReportController {
      *         {@link #VIEW_REPORT} when the screen is re-displayed
      */
     @PostMapping(PATH_REPORT)
-    public String submitReport(@ModelAttribute(MODEL_ATTR_FORM) CORPT00Form form,
+    public String submitReport(@Valid @ModelAttribute(MODEL_ATTR_FORM) CORPT00Form form,
+            BindingResult bindingResult,
             @RequestParam(name = PARAM_PFKEY, required = false) String pfkey) {
+        // Finding #11: a field over its physical BMS width can only arrive from a crafted request;
+        // reject it up front with a neutral banner and no service call, so CORPT00C's own edit
+        // messages (which run for every in-width input) keep their exact COBOL ordering.
+        if (bindingResult.hasErrors()) {
+            populateHeader(form);
+            form.setErrmsg(MSG_FIELD_LENGTH);
+            return VIEW_REPORT;
+        }
         AidKey aid = toAidKey(resolvePfKey(pfkey));
         return handleInteraction(aid, form);
     }
@@ -345,6 +368,30 @@ public class ReportController {
         DateStruct now = DateStruct.from(LocalDateTime.now());
         form.setCurdate(now.getFormattedDateMmDdYy());
         form.setCurtime(now.getFormattedTimeHhMmSs());
+    }
+
+    /**
+     * Restricts request-parameter binding to the fields the {@code CORPT00} screen actually submits
+     * (review finding #11): the report-type radios/flags ({@code monthly}, {@code yearly},
+     * {@code custom}), the custom start/end date components
+     * ({@code sdtdd}/{@code sdtmm}/{@code sdtyyyy}, {@code edtdd}/{@code edtmm}/{@code edtyyyy}) and
+     * the confirmation flag ({@code confirm}). Display-only header/title/date/message fields are
+     * excluded so they can no longer be over-posted; {@code pfkey} arrives as a
+     * {@code @RequestParam} and is not bound through the form.
+     *
+     * @param binder the per-request data binder for the bound form
+     */
+    @InitBinder
+    protected void restrictBinding(WebDataBinder binder) {
+        // Spring MVC instantiates the @ModelAttribute command lazily, so binder.getTarget() is null
+        // when @InitBinder runs; the resolved binder.getTargetType() is the reliable discriminator.
+        Class<?> targetType = binder.getTargetType() != null ? binder.getTargetType().resolve() : null;
+        if (CORPT00Form.class.equals(targetType)) {
+            binder.setAllowedFields("monthly", "yearly", "custom",
+                    "sdtdd", "sdtmm", "sdtyyyy",
+                    "edtdd", "edtmm", "edtyyyy",
+                    "confirm");
+        }
     }
 
     /**

@@ -15,13 +15,17 @@
  */
 package com.aws.carddemo.web.controller;
 
+import jakarta.validation.Valid;
 import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Locale;
 
 import org.springframework.stereotype.Controller;
 import org.springframework.ui.Model;
+import org.springframework.validation.BindingResult;
+import org.springframework.web.bind.WebDataBinder;
 import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.InitBinder;
 import org.springframework.web.bind.annotation.ModelAttribute;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestParam;
@@ -103,6 +107,15 @@ public class AdminMenuController {
 
     /** Logical Thymeleaf view name for the admin-menu screen ({@code templates/COADM01.html}). */
     private static final String VIEW_NAME = "COADM01";
+
+    /**
+     * Neutral banner shown when data binding rejects a field for exceeding its declared
+     * {@code @Size} width (review finding #11). Only reachable by a crafted client (the template
+     * {@code maxlength} / 3270 field width makes it impossible otherwise); it carries no COBOL
+     * business message and simply re-displays the admin menu without routing.
+     */
+    private static final String MSG_FIELD_LENGTH =
+            "Input exceeds the maximum length for a field.";
 
     /** Model attribute name the {@code COADM01} template binds via {@code th:object="${form}"}. */
     private static final String MODEL_ATTR_FORM = "form";
@@ -243,8 +256,16 @@ public class AdminMenuController {
      */
     @PostMapping(PATH_ADMIN_MENU)
     public String handleMenuSelection(
-            @ModelAttribute(MODEL_ATTR_FORM) COADM01Form form,
+            @Valid @ModelAttribute(MODEL_ATTR_FORM) COADM01Form form,
+            BindingResult bindingResult,
             @RequestParam(name = PF_KEY_PARAM, required = false) String pfkey) {
+
+        // Review finding #11: an over-width field (only reachable by a crafted client bypassing the
+        // template maxlength / 3270 field width) re-displays the menu with a neutral banner and does
+        // no option routing, so the COBOL admin-menu edit ordering is untouched.
+        if (bindingResult.hasErrors()) {
+            return renderMenu(form, MSG_FIELD_LENGTH);
+        }
 
         PfKey key = resolvePfKey(pfkey);
 
@@ -287,6 +308,24 @@ public class AdminMenuController {
         populateMenuOptions(form);
         form.setErrmsg(errmsg);
         return VIEW_NAME;
+    }
+
+    /**
+     * Restricts request-parameter binding to the single field the {@code COADM01} admin menu
+     * submits - the option selector {@code option} (review finding #11). Header, title, date and
+     * message fields are display-only and can no longer be over-posted; {@code pfkey} arrives as a
+     * {@code @RequestParam} and is not bound through the form.
+     *
+     * @param binder the per-request data binder for the bound form
+     */
+    @InitBinder
+    protected void restrictBinding(WebDataBinder binder) {
+        // Spring MVC instantiates the @ModelAttribute command lazily, so binder.getTarget() is null
+        // when @InitBinder runs; the resolved binder.getTargetType() is the reliable discriminator.
+        Class<?> targetType = binder.getTargetType() != null ? binder.getTargetType().resolve() : null;
+        if (COADM01Form.class.equals(targetType)) {
+            binder.setAllowedFields("option");
+        }
     }
 
     /**

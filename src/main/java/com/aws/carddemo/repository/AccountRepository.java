@@ -23,12 +23,18 @@ import org.springframework.stereotype.Repository;
  * account-print scan ({@code findAll(org.springframework.data.domain.Sort)} ordered by
  * {@code acctId}). The only additional finder is {@link #findByIdForUpdate(Long)} &mdash; the
  * <em>same</em> primary-key access path as {@link JpaRepository#findById(Object) findById}, but
- * acquiring a pessimistic write lock (SQL {@code SELECT ... FOR UPDATE}); it is used exclusively by
- * the daily transaction-posting batch step to reproduce the legacy batch dataset-level
- * serialization (see that method's Javadoc and {@code docs/decision-log.md}). No <em>new</em>
- * access path (no query by a different key) is introduced &mdash; a lock is not a new finder &mdash;
- * so this is not feature expansion: the online read-update-rewrite path continues to use the
- * lock-free {@code findById} + application-level compare-before-rewrite model unchanged.</p>
+ * acquiring a pessimistic write lock (SQL {@code SELECT ... FOR UPDATE}). It is the migration of the
+ * CICS {@code READ ... UPDATE} record lock and is used by <strong>every</strong> read-update-rewrite
+ * path that the COBOL guarded that way: the daily transaction-posting batch step
+ * ({@code CBTRN02C 2800-UPDATE-ACCOUNT-REC}), the online account-update write turn
+ * ({@code COACTUPC 9600-WRITE-PROCESSING}, which locks the account then the customer), and the
+ * bill-payment write turn ({@code COBIL00C UPDATE-ACCTDAT-FILE}). Acquiring the lock inside the
+ * caller's transaction, held until commit, closes the lost-update window (CWE-362, review finding
+ * #14) that a lock-free {@code findById} + application-level compare-before-rewrite would leave under
+ * {@code READ COMMITTED}. No <em>new</em> access path (no query by a different key) is introduced
+ * &mdash; a lock is not a new finder &mdash; so this is not feature expansion. The account-view read
+ * path ({@code AccountViewService}) keeps the plain lock-free {@code findById}, matching the COBOL
+ * {@code READ} (without {@code UPDATE}) it migrates.</p>
  *
  * <p>Consumed by the online account view and update services
  * ({@code AccountViewService}, {@code AccountUpdateService}) and by the account-print,
@@ -59,12 +65,15 @@ public interface AccountRepository extends JpaRepository<Account, Long> {
      * account lock also serializes the dependent {@code 2700-UPDATE-TCATBAL} update, so no second
      * lock &mdash; and therefore no lock-ordering / deadlock concern &mdash; arises.</p>
      *
-     * <p><strong>Scope:</strong> used only by {@code PostTransactionJobConfig}'s posting processor
-     * (batch tier). The online tier ({@code AccountViewService}, {@code AccountUpdateService})
-     * deliberately does <em>not</em> use it &mdash; it keeps the lock-free {@code findById} +
-     * application-level compare-before-rewrite model that mirrors {@code COACTUPC} (see
-     * {@code docs/decision-log.md}). Must be invoked within an active transaction (the Spring Batch
-     * chunk transaction); calling it outside a transaction has no lock effect.</p>
+     * <p><strong>Scope:</strong> used by every read-update-rewrite path that the COBOL guarded with a
+     * {@code READ ... UPDATE} record lock &mdash; {@code PostTransactionJobConfig}'s posting processor
+     * (batch tier), {@code AccountUpdateService}'s write turn ({@code COACTUPC 9600-WRITE-PROCESSING};
+     * account locked first, then customer), and {@code BillPayService}'s write turn
+     * ({@code COBIL00C UPDATE-ACCTDAT-FILE}). Only the read-only account-view path
+     * ({@code AccountViewService}) keeps the plain {@code findById}, matching the COBOL {@code READ}
+     * (without {@code UPDATE}) it migrates. Must be invoked within an active transaction (the online
+     * {@code @Transactional} unit-of-work or the Spring Batch chunk transaction); calling it outside a
+     * transaction has no lasting lock effect.</p>
      *
      * @param acctId the account primary key ({@code ACCT-ID PIC 9(11)})
      * @return the locked account if present, otherwise empty

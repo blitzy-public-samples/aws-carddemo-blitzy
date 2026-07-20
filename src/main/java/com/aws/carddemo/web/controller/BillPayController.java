@@ -24,11 +24,17 @@ import com.aws.carddemo.service.online.BillPayService.AidKey;
 import com.aws.carddemo.service.online.BillPayService.BillPayResult;
 import com.aws.carddemo.util.PfKeyHandler;
 import com.aws.carddemo.util.constants.ScreenTitles;
+import com.aws.carddemo.web.support.ConfirmationTokenService;
+import jakarta.servlet.http.HttpSession;
+import jakarta.validation.Valid;
 import java.time.LocalDateTime;
 import java.util.Locale;
 import java.util.Map;
 import org.springframework.stereotype.Controller;
+import org.springframework.validation.BindingResult;
+import org.springframework.web.bind.WebDataBinder;
 import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.InitBinder;
 import org.springframework.web.bind.annotation.ModelAttribute;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestParam;
@@ -127,6 +133,15 @@ public class BillPayController {
     /** Logical Thymeleaf view name; resolves to {@code templates/COBIL00.html}. */
     private static final String VIEW_BILLPAY = "COBIL00";
 
+    /**
+     * Neutral banner shown when data binding rejects a field for exceeding its declared
+     * {@code @Size} width (review finding #11). Only reachable by a crafted client (the template
+     * {@code maxlength} / 3270 field width makes it impossible otherwise), so it carries no COBOL
+     * business message and simply re-displays the screen without performing any payment.
+     */
+    private static final String MSG_FIELD_LENGTH =
+            "Input exceeds the maximum length for a field.";
+
     /** Web route for this screen (COBOL tran {@code CB00}); GET displays, POST submits. */
     private static final String PATH_BILLPAY = "/billpay";
 
@@ -144,6 +159,22 @@ public class BillPayController {
 
     /** Request-parameter name carrying the activated PF-key from the {@code COBIL00} form. */
     private static final String PARAM_PFKEY = "pfkey";
+
+    /**
+     * Confirmation-integrity operation label for the CB00 bill payment (review finding F12). Binds
+     * the confirm nonce to this gesture so a nonce armed for another screen cannot be spent here.
+     */
+    private static final String OP_BILLPAY = "BILLPAY";
+
+    /**
+     * Web-tier confirmation-integrity banner (review finding F12). Shown when a {@code confirm=Y}
+     * payment cannot be validated against the server-owned pending confirmation (missing/forged
+     * nonce, replay, or a swapped account); no payment is made and the confirm prompt is re-armed.
+     * This has no COBOL origin - it restores, over HTTP, the BMS protected-confirmation-field
+     * contract the 3270 terminal enforced implicitly.
+     */
+    private static final String MSG_CONFIRM_INTEGRITY =
+            "Confirmation could not be validated. Please review and confirm again.";
 
     /** Web PF-key token for the ENTER action (see {@code COBIL00.html} submit button). */
     private static final String WEB_KEY_ENTER = "ENTER";
@@ -210,19 +241,32 @@ public class BillPayController {
     private final CardDemoContext context;
 
     /**
+     * Session-scoped confirmation-integrity store (review finding F12). Arms a single-use nonce
+     * bound to the account whose balance was displayed when the confirm-payment prompt is rendered,
+     * and validates + consumes it on the {@code confirm=Y} turn so a tampered re-post cannot re-aim
+     * the payment at a different account or replay it. Web-tier equivalent of the BMS protected
+     * confirmation field.
+     */
+    private final ConfirmationTokenService confirmationTokenService;
+
+    /**
      * Creates the bill-payment controller with its injected collaborators.
      *
-     * <p>The constructor only stores the two references and invokes no overridable method,
+     * <p>The constructor only stores the references and invokes no overridable method,
      * so it is free of the {@code this-escape} lint category under the zero-warning
      * build.</p>
      *
      * @param billPayService the bill-payment business service; must not be {@code null}
      * @param context        the session-scoped {@link CardDemoContext} (COMMAREA
      *                       replacement); must not be {@code null}
+     * @param confirmationTokenService the session-scoped confirmation-integrity store (review
+     *                       finding F12); must not be {@code null}
      */
-    public BillPayController(BillPayService billPayService, CardDemoContext context) {
+    public BillPayController(BillPayService billPayService, CardDemoContext context,
+                             ConfirmationTokenService confirmationTokenService) {
         this.billPayService = billPayService;
         this.context = context;
+        this.confirmationTokenService = confirmationTokenService;
     }
 
     /**
@@ -246,10 +290,11 @@ public class BillPayController {
      *         sign-on on a cold first entry
      */
     @GetMapping(PATH_BILLPAY)
-    public String showBillPay(@ModelAttribute(MODEL_ATTR_FORM) COBIL00Form form) {
+    public String showBillPay(@ModelAttribute(MODEL_ATTR_FORM) COBIL00Form form,
+            HttpSession session) {
         // COBOL MAIN-PARA first display: no AID pressed; the service entry point handles
         // first-entry detection, first-display init, and any pre-selected account.
-        return handleInteraction(null, form);
+        return handleInteraction(null, form, session);
     }
 
     /**
@@ -276,10 +321,21 @@ public class BillPayController {
      *         view name {@link #VIEW_BILLPAY} when the screen is re-displayed
      */
     @PostMapping(PATH_BILLPAY)
-    public String submitBillPay(@ModelAttribute(MODEL_ATTR_FORM) COBIL00Form form,
-            @RequestParam(name = PARAM_PFKEY, required = false) String pfkey) {
+    public String submitBillPay(@Valid @ModelAttribute(MODEL_ATTR_FORM) COBIL00Form form,
+            BindingResult bindingResult,
+            @RequestParam(name = PARAM_PFKEY, required = false) String pfkey,
+            HttpSession session) {
+        // Review finding #11: an over-width field (only reachable by a crafted client bypassing the
+        // template maxlength / 3270 field width) re-displays the screen with a neutral banner and no
+        // armed token, performing no payment, so the COBOL bill-pay edit ordering is untouched.
+        if (bindingResult.hasErrors()) {
+            populateHeader(form);
+            form.setErrmsg(MSG_FIELD_LENGTH);
+            form.setConfirmToken(null);
+            return VIEW_BILLPAY;
+        }
         AidKey aid = toAidKey(resolvePfKey(pfkey));
-        return handleInteraction(aid, form);
+        return handleInteraction(aid, form, session);
     }
 
     /**
@@ -304,18 +360,112 @@ public class BillPayController {
      * @return a {@code redirect:} view name for a hand-off, or {@link #VIEW_BILLPAY} for a
      *         redisplay
      */
-    private String handleInteraction(AidKey aid, COBIL00Form form) {
+    private String handleInteraction(AidKey aid, COBIL00Form form, HttpSession session) {
+        // Confirmation-integrity gate (finding F12): a Y confirmation commits a full-balance
+        // payment, so the committing account must be the server-confirmed target from the prompt
+        // turn, bound by a single-use nonce - not a re-posted/forged actidin. A missing arm (a
+        // client trying to one-shot the payment without the server having displayed the balance),
+        // a swapped account, or a replayed/forged nonce is rejected with no payment.
+        if (isConfirmYes(form.getConfirm())) {
+            String armedTarget = confirmationTokenService.armedTarget(session, OP_BILLPAY);
+            boolean confirmed = armedTarget != null
+                    && confirmationTokenService.validate(session, OP_BILLPAY,
+                            form.getActidin(), form.getConfirmToken());
+            confirmationTokenService.consume(session);
+            if (!confirmed) {
+                return rejectBillPayConfirmation(aid, form, session, armedTarget);
+            }
+            // Force the server-confirmed account onto the payment; the re-post cannot re-aim it.
+            form.setActidin(armedTarget);
+        }
         BillPayResult result = billPayService.mainEntry(aid, form);
         if (result.isRedirect()) {
             // COBOL RETURN-TO-PREV-SCREEN: XCTL to the target program -> redirect to its route.
             Target target = PROGRAM_ROUTES.getOrDefault(result.targetProgram(), DEFAULT_TARGET);
             context.setToTranid(target.transactionId());
+            confirmationTokenService.consume(session);
             return REDIRECT_PREFIX + target.route();
         }
         // COBOL SEND-BILLPAY-SCREEN: populate the header and the ERRMSG line, then render.
         populateHeader(form);
         form.setErrmsg(result.message());
+        // Finding F12: when the neutral confirm-payment prompt is (re)displayed, arm a single-use
+        // nonce bound to the account whose balance is shown; otherwise clear any pending nonce.
+        armBillPayConfirmation(result, form, session);
         return VIEW_BILLPAY;
+    }
+
+    /**
+     * Arms or clears the CB00 payment confirmation nonce after a {@code mainEntry} redisplay
+     * (finding F12).
+     *
+     * <p>The neutral confirm-payment prompt ({@link BillPayService.MessageSeverity#NEUTRAL}) arms a
+     * fresh single-use nonce bound to the account whose balance was just displayed
+     * ({@code actidin}) and echoes it onto the form's hidden field; any other outcome (a completed
+     * payment, an error, or a plain display) clears the pending nonce so it cannot be replayed.</p>
+     *
+     * @param result  the outcome of the {@code mainEntry} call being rendered
+     * @param form    the bill-payment form being redisplayed (receives the echoed nonce)
+     * @param session the HTTP session holding the pending confirmation
+     */
+    private void armBillPayConfirmation(BillPayResult result, COBIL00Form form, HttpSession session) {
+        if (result.severity() == BillPayService.MessageSeverity.NEUTRAL
+                && form.getActidin() != null && !form.getActidin().isBlank()) {
+            form.setConfirmToken(
+                    confirmationTokenService.arm(session, OP_BILLPAY, form.getActidin()));
+        } else {
+            confirmationTokenService.consume(session);
+            form.setConfirmToken(null);
+        }
+    }
+
+    /**
+     * Rejects an unvalidated CB00 payment confirmation (finding F12): makes no payment, blanks the
+     * confirmation so the service re-reads the account and re-prompts, re-arms a fresh nonce bound
+     * to the server-confirmed account, and overlays the integrity banner.
+     *
+     * <p>When nothing was armed (a one-shot attempt with no prior balance display), the server-
+     * confirmed account is unknown, so the posted account is re-prompted - still with no payment -
+     * and a nonce is armed so the operator can review the displayed balance and confirm
+     * deliberately. When the re-prompt itself routes away (a redirect), that redirect is honored and
+     * the pending confirmation is cleared.</p>
+     *
+     * @param aid         the resolved attention key of the rejected submit
+     * @param form        the submitted bill-payment form
+     * @param session     the HTTP session holding the pending confirmation
+     * @param armedTarget the server-owned account that was armed, or {@code null} if none
+     * @return the {@code COBIL00} view with the integrity banner, or a {@code redirect:} view name
+     */
+    private String rejectBillPayConfirmation(AidKey aid, COBIL00Form form, HttpSession session,
+                                             String armedTarget) {
+        String target = (armedTarget != null && !armedTarget.isBlank())
+                ? armedTarget : form.getActidin();
+        form.setActidin(target);
+        form.setConfirm(null); // blank confirmation -> service re-reads the account and re-prompts
+        BillPayResult result = billPayService.mainEntry(aid, form);
+        if (result.isRedirect()) {
+            Target redirectTarget = PROGRAM_ROUTES.getOrDefault(result.targetProgram(), DEFAULT_TARGET);
+            context.setToTranid(redirectTarget.transactionId());
+            confirmationTokenService.consume(session);
+            return REDIRECT_PREFIX + redirectTarget.route();
+        }
+        populateHeader(form);
+        // Arm a fresh nonce for the re-prompt, then overlay the integrity banner over the neutral
+        // confirm-payment message the service produced (the model holds this same form reference).
+        armBillPayConfirmation(result, form, session);
+        form.setErrmsg(MSG_CONFIRM_INTEGRITY);
+        return VIEW_BILLPAY;
+    }
+
+    /**
+     * Tests whether the confirmation field carries {@code Y}/{@code y} (COBOL
+     * {@code CONFIRM = 'Y' OR 'y'}) - the committing gesture. Surrounding whitespace is ignored.
+     *
+     * @param confirm the raw confirmation field value (may be {@code null})
+     * @return {@code true} when the trimmed value equals {@code Y} ignoring case
+     */
+    private static boolean isConfirmYes(String confirm) {
+        return confirm != null && "Y".equalsIgnoreCase(confirm.trim());
     }
 
     /**
@@ -338,6 +488,26 @@ public class BillPayController {
         DateStruct now = DateStruct.from(LocalDateTime.now());
         form.setCurdate(now.getFormattedDateMmDdYy());
         form.setCurtime(now.getFormattedTimeHhMmSs());
+    }
+
+    /**
+     * Restricts request-parameter binding to the fields the {@code COBIL00} screen actually submits
+     * (review finding #11) - the account id ({@code actidin}), the confirmation flag
+     * ({@code confirm}) and the single-use confirmation token ({@code confirmToken}, finding #12).
+     * Display-only header/title/date/balance/message fields are excluded so they can no longer be
+     * over-posted; {@code pfkey} arrives as a {@code @RequestParam} and is not bound through the
+     * form.
+     *
+     * @param binder the per-request data binder for the bound form
+     */
+    @InitBinder
+    protected void restrictBinding(WebDataBinder binder) {
+        // Spring MVC instantiates the @ModelAttribute command lazily, so binder.getTarget() is null
+        // when @InitBinder runs; the resolved binder.getTargetType() is the reliable discriminator.
+        Class<?> targetType = binder.getTargetType() != null ? binder.getTargetType().resolve() : null;
+        if (COBIL00Form.class.equals(targetType)) {
+            binder.setAllowedFields("actidin", "confirm", "confirmToken");
+        }
     }
 
     /**

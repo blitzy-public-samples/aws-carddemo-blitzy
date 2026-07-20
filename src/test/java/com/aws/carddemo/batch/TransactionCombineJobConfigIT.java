@@ -3,6 +3,7 @@ package com.aws.carddemo.batch;
 import static org.assertj.core.api.Assertions.assertThat;
 
 import com.aws.carddemo.AbstractPostgresIntegrationTest;
+import com.aws.carddemo.config.BatchConfig;
 import com.aws.carddemo.util.FixedWidthRecordMapper;
 import com.aws.carddemo.util.FixedWidthRecordMapper.FieldDef;
 import java.io.ByteArrayOutputStream;
@@ -109,7 +110,13 @@ import org.springframework.context.annotation.Import;
  * @see TransactionCombineJobConfig
  * @see TransactionCombineJobConfigTest
  */
-@SpringBootTest(classes = TransactionCombineJobConfigIT.TransactionCombineJobTestConfig.class)
+// Non-web batch parity slice: WebEnvironment.NONE suppresses the servlet security auto-config
+// generated dev-password WARN, and disabling Prometheus export lets the slice fall back to a
+// SimpleMeterRegistry so Spring Batch's duplicate spring.batch.job.active meter never trips the
+// Prometheus same-tag-keys collision WARN — keeps start logs warning-free (review finding #35).
+@SpringBootTest(classes = TransactionCombineJobConfigIT.TransactionCombineJobTestConfig.class,
+        webEnvironment = SpringBootTest.WebEnvironment.NONE,
+        properties = "management.prometheus.metrics.export.enabled=false")
 class TransactionCombineJobConfigIT extends AbstractPostgresIntegrationTest {
 
     /** Fixed {@code CVTRA05Y} record length in bytes (mirrors {@link TransactionCombineJobConfig#RECORD_LENGTH}). */
@@ -199,8 +206,10 @@ class TransactionCombineJobConfigIT extends AbstractPostgresIntegrationTest {
      * The pinned context configuration for this test: a minimal, JPA-free Spring Batch slice.
      *
      * <p>{@link Import}s the production {@link TransactionCombineJobConfig} so the real
-     * {@code transactionCombineJob} bean is present, and enables Spring Boot auto-configuration with the
-     * ORM layer excluded ({@link HibernateJpaAutoConfiguration}, {@link JpaRepositoriesAutoConfiguration}).
+     * {@code transactionCombineJob} bean is present, together with {@link BatchConfig} which supplies the
+     * shared {@code batchFilePathResolver} the combine tasklet now depends on for safe-root input
+     * resolution and atomic output publication (finding #18), and enables Spring Boot auto-configuration
+     * with the ORM layer excluded ({@link HibernateJpaAutoConfiguration}, {@link JpaRepositoriesAutoConfiguration}).
      * What remains &mdash; {@code DataSource}, Flyway and Spring Batch auto-configuration &mdash; is
      * exactly what a file-based batch job needs: Flyway's {@code V0} migration creates the {@code BATCH_*}
      * metadata tables in the container and Spring Batch builds a JDBC-backed {@link JobRepository},
@@ -214,7 +223,7 @@ class TransactionCombineJobConfigIT extends AbstractPostgresIntegrationTest {
             HibernateJpaAutoConfiguration.class,
             JpaRepositoriesAutoConfiguration.class
     })
-    @Import(TransactionCombineJobConfig.class)
+    @Import({TransactionCombineJobConfig.class, BatchConfig.class})
     static class TransactionCombineJobTestConfig {
 
         /**
@@ -415,8 +424,9 @@ class TransactionCombineJobConfigIT extends AbstractPostgresIntegrationTest {
     }
 
     /**
-     * Writes the given records to a line-feed-framed 350-byte fixed-width file in the temp directory
-     * (one 350-byte record per line), matching the ASCII dataset convention the job reads.
+     * Writes the given records to a strict undelimited {@code RECFM=FB} 350-byte fixed-width file in the
+     * temp directory (contiguous 350-byte records, no record delimiter), matching the framing the combine
+     * job reads and writes (finding #17).
      *
      * @param fileName the file name within {@link #tempDir}
      * @param records  the ordered {@code TRAN-ID -> TRAN-AMT} records to write
@@ -427,7 +437,6 @@ class TransactionCombineJobConfigIT extends AbstractPostgresIntegrationTest {
         ByteArrayOutputStream buffer = new ByteArrayOutputStream();
         for (Map.Entry<String, BigDecimal> entry : records.entrySet()) {
             buffer.writeBytes(buildRecord(entry.getKey(), entry.getValue()));
-            buffer.write('\n');
         }
         Path file = tempDir.resolve(fileName);
         Files.write(file, buffer.toByteArray());
@@ -451,14 +460,28 @@ class TransactionCombineJobConfigIT extends AbstractPostgresIntegrationTest {
     }
 
     /**
-     * Reads the combined output as fixed-width lines using the single-byte record charset.
+     * Reads the combined output as fixed-width records by slicing the undelimited {@code RECFM=FB} image
+     * into contiguous 350-byte blocks (finding #17): the output carries no record delimiter, so it is
+     * read by length rather than by line. The file length must be an exact multiple of the record length
+     * (which also proves no stray delimiter byte was written), and each slice is decoded with the
+     * single-byte record charset so every byte round-trips losslessly.
      *
      * @param output the combined-output path
-     * @return the output lines (each a 350-character record; trailing line feed excluded)
-     * @throws IOException if the file cannot be read
+     * @return the output records (each a 350-character record)
+     * @throws IOException if the file cannot be read or its length is not a multiple of the record length
      */
     private static List<String> outputLines(Path output) throws IOException {
-        return Files.readAllLines(output, RECORD_CHARSET);
+        byte[] all = Files.readAllBytes(output);
+        if (all.length % RECORD_LENGTH != 0) {
+            throw new IOException("combined output length " + all.length
+                    + " is not a multiple of the " + RECORD_LENGTH + "-byte record length "
+                    + "(expected an undelimited RECFM=FB image with no record delimiter)");
+        }
+        List<String> records = new ArrayList<>(all.length / RECORD_LENGTH);
+        for (int offset = 0; offset < all.length; offset += RECORD_LENGTH) {
+            records.add(new String(all, offset, RECORD_LENGTH, RECORD_CHARSET));
+        }
+        return records;
     }
 
     /**

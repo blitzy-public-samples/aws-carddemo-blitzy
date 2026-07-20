@@ -24,8 +24,12 @@ import com.aws.carddemo.exception.LogicError;
 import com.aws.carddemo.exception.RecordNotFoundException;
 import com.aws.carddemo.repository.CardRepository;
 import java.io.Serializable;
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.security.SecureRandom;
 import java.time.DateTimeException;
 import java.time.LocalDate;
+import java.util.HexFormat;
 import java.util.Locale;
 import java.util.Optional;
 import org.springframework.dao.DataAccessException;
@@ -195,6 +199,27 @@ public class CardUpdateService {
             "CARD ID FILTER,IF SUPPLIED MUST BE A 16 DIGIT NUMBER";
 
     /**
+     * Confirmation-integrity banner shown when a {@code PF5} save is rejected because
+     * its single-use token is missing, forged, or replayed (review finding #10). The
+     * validated snapshot is retained so a legitimate operator can simply press F5
+     * again; the wording matches the account-update variant for a consistent operator
+     * experience.
+     */
+    private static final String MSG_CONFIRM_INTEGRITY =
+            "Confirmation could not be validated. Please review and press F5 again.";
+
+    /**
+     * Cryptographically strong source for the single-use confirmation tokens issued
+     * by {@link #newConfirmToken()} (review finding #10). One shared
+     * {@link SecureRandom} instance is thread-safe and is the standard idiom for
+     * anti-replay / anti-double-submit nonces.
+     */
+    private static final SecureRandom CONFIRM_TOKEN_RNG = new SecureRandom();
+
+    /** Byte length of a raw confirmation token (256 bits) before hex encoding. */
+    private static final int CONFIRM_TOKEN_BYTES = 32;
+
+    /**
      * Session-scoped navigation context ({@code COCOM01Y} / {@code COMMAREA}).
      * Injected as a proxy so each HTTP session sees its own instance.
      */
@@ -310,7 +335,9 @@ public class CardUpdateService {
      */
     public static final class CardUpdateState implements Serializable {
 
-        private static final long serialVersionUID = 1L;
+        // Bumped 1L -> 2L for the review-finding-#10 confirmation-integrity fields
+        // (pendingDetails + confirmToken) added below.
+        private static final long serialVersionUID = 2L;
 
         private ChangeAction changeAction = ChangeAction.DETAILS_NOT_FETCHED;
 
@@ -332,6 +359,23 @@ public class CardUpdateService {
         private String newExpDay;
         private String newCrdStcd;
 
+        /**
+         * Server-carried validated {@code CCUP-NEW-DETAILS} snapshot (review finding
+         * #10). Captured when the state advances to
+         * {@link ChangeAction#CHANGES_OK_NOT_CONFIRMED} and committed on the {@code PF5}
+         * turn in place of the re-posted client values; {@code null} outside the
+         * confirmation window.
+         */
+        private PendingCardDetails pendingDetails;
+
+        /**
+         * Single-use confirmation token bound to {@link #pendingDetails} (review finding
+         * #10). Issued with the snapshot, echoed to the confirm screen as a hidden
+         * field, and consumed on {@code PF5} so a replayed or forged confirmation cannot
+         * re-drive the write; {@code null} outside the confirmation window.
+         */
+        private String confirmToken;
+
         /** Creates a fresh state in the {@code CCUP-DETAILS-NOT-FETCHED} phase. */
         public CardUpdateState() {
             // Defaults mirror INITIALIZE WS-THIS-PROGCOMMAREA.
@@ -349,6 +393,19 @@ public class CardUpdateService {
             this.oldExpDay = null;
             this.oldCrdStcd = null;
             initializeNewDetails();
+            // Review finding #10: a first-entry reset also discards any pending
+            // confirmation so a stale token can never survive a new search cycle.
+            clearConfirmation();
+        }
+
+        /**
+         * Clears the review-finding-#10 confirmation window - drops the server-carried
+         * validated snapshot and its single-use token. Called on first-entry reset and
+         * once the {@code PF5} commit has consumed the confirmation.
+         */
+        public void clearConfirmation() {
+            this.pendingDetails = null;
+            this.confirmToken = null;
         }
 
         /** COBOL {@code INITIALIZE CCUP-NEW-DETAILS} (performed in {@code 1100}). */
@@ -545,6 +602,117 @@ public class CardUpdateService {
         public void setNewCrdStcd(String newCrdStcd) {
             this.newCrdStcd = newCrdStcd;
         }
+
+        /**
+         * @return the server-carried validated {@code CCUP-NEW-DETAILS} snapshot
+         *         (review finding #10), or {@code null} outside the confirmation window
+         */
+        public PendingCardDetails getPendingDetails() {
+            return pendingDetails;
+        }
+
+        /**
+         * @param pendingDetails the validated {@code CCUP-NEW-DETAILS} snapshot to carry
+         *                       (review finding #10; may be {@code null} to clear)
+         */
+        public void setPendingDetails(PendingCardDetails pendingDetails) {
+            this.pendingDetails = pendingDetails;
+        }
+
+        /**
+         * @return the single-use confirmation token bound to {@link #pendingDetails}
+         *         (review finding #10), or {@code null} outside the confirmation window
+         */
+        public String getConfirmToken() {
+            return confirmToken;
+        }
+
+        /**
+         * @param confirmToken the freshly issued token (review finding #10; may be
+         *                     {@code null} to clear)
+         */
+        public void setConfirmToken(String confirmToken) {
+            this.confirmToken = confirmToken;
+        }
+
+        /**
+         * Immutable snapshot of the validated {@code CCUP-NEW-DETAILS} carried across the
+         * confirmation window (review finding #10). Holds the exact tuple shown to the
+         * operator for confirmation; the {@code PF5} turn commits these values rather than
+         * the re-posted client fields, reproducing the mainframe protected-field
+         * behaviour. All fields are {@link String} to preserve the COBOL {@code PIC X(n)}
+         * layout, with {@code null} representing {@code LOW-VALUES}.
+         */
+        public static final class PendingCardDetails implements Serializable {
+
+            private static final long serialVersionUID = 1L;
+
+            private final String acctId;
+            private final String cardId;
+            private final String cvvCd;
+            private final String crdName;
+            private final String expYear;
+            private final String expMon;
+            private final String expDay;
+            private final String crdStcd;
+
+            private PendingCardDetails(String acctId, String cardId, String cvvCd,
+                    String crdName, String expYear, String expMon, String expDay,
+                    String crdStcd) {
+                this.acctId = acctId;
+                this.cardId = cardId;
+                this.cvvCd = cvvCd;
+                this.crdName = crdName;
+                this.expYear = expYear;
+                this.expMon = expMon;
+                this.expDay = expDay;
+                this.crdStcd = crdStcd;
+            }
+
+            /**
+             * Captures the current {@code CCUP-NEW-*} values from the given state.
+             *
+             * @param state the state whose validated new-detail fields are snapshotted
+             * @return an immutable snapshot of the eight new-detail fields
+             */
+            static PendingCardDetails capture(CardUpdateState state) {
+                return new PendingCardDetails(state.getNewAcctId(), state.getNewCardId(),
+                        state.getNewCvvCd(), state.getNewCrdName(), state.getNewExpYear(),
+                        state.getNewExpMon(), state.getNewExpDay(), state.getNewCrdStcd());
+            }
+
+            public String getAcctId() {
+                return acctId;
+            }
+
+            public String getCardId() {
+                return cardId;
+            }
+
+            public String getCvvCd() {
+                return cvvCd;
+            }
+
+            public String getCrdName() {
+                return crdName;
+            }
+
+            public String getExpYear() {
+                return expYear;
+            }
+
+            public String getExpMon() {
+                return expMon;
+            }
+
+            public String getExpDay() {
+                return expDay;
+            }
+
+            public String getCrdStcd() {
+                return crdStcd;
+            }
+        }
     }
 
     /**
@@ -582,6 +750,15 @@ public class CardUpdateService {
 
         /** COBOL {@code WS-RETURN-MSG} (the on-screen error line, {@code null} = off). */
         private String returnMessage;
+
+        /**
+         * Confirmation token echoed back by the client on the current turn (review
+         * finding #10). This is a web-only integrity artifact with no COBOL analogue:
+         * {@link #decideAction} receives no {@code form}, so {@link #processInputs}
+         * stashes the presented token here (per-request working storage) for the
+         * {@code PF5} confirm check.
+         */
+        private String presentedConfirmToken;
 
         public boolean isInputError() {
             return inputError;
@@ -638,6 +815,14 @@ public class CardUpdateService {
         /** @return COBOL {@code WS-RETURN-MSG-OFF}: no error message is set yet. */
         public boolean isReturnMsgOff() {
             return returnMessage == null || returnMessage.isBlank();
+        }
+
+        /**
+         * @return the confirmation token presented by the client on the current turn
+         *         (review finding #10), or {@code null} when none was submitted
+         */
+        public String getPresentedConfirmToken() {
+            return presentedConfirmToken;
         }
     }
 
@@ -777,14 +962,28 @@ public class CardUpdateService {
 
         // Branch 2: arrived from the card-list program (COCRDLIC) with the filter
         // keys already selected -> fetch and display for update (lines 482-497).
-        if ((context.isProgramEnter() && CCLIST_PGM.equals(context.getFromProgram()))
-                || (aid == PfKey.PFK12 && CCLIST_PGM.equals(context.getFromProgram()))) {
+        //
+        // The card number is carried on the session context by the card-list hand-off
+        // (COBOL CDEMO-CARD-NUM). On the mainframe the 3270 card list guarantees this
+        // selection before the XCTL, so this arm always had a valid PAN. In the web tier the
+        // session context is client-influenced (a cold/bookmarked GET, a replayed or forged
+        // request, or a stale session can present CDEMO-FROM-PROGRAM = COCRDLIC with no actual
+        // selection), so guard it: an absent selection must NOT reach the keyed read (a null
+        // key would make CardRepository.findById raise IllegalArgumentException -> HTTP 500,
+        // which no COBOL path produces). When the selection is absent the flow falls through to
+        // Branch 3 (fresh entry -> prompt for the search keys), the source-equivalent response.
+        // See review finding #47.
+        final String selectedCardNum = context.getCardNum();
+        final boolean haveListSelection = !isBlankOrLowValues(selectedCardNum);
+        if (((context.isProgramEnter() && CCLIST_PGM.equals(context.getFromProgram()))
+                || (aid == PfKey.PFK12 && CCLIST_PGM.equals(context.getFromProgram())))
+                && haveListSelection) {
             context.markReenter();
             edit.inputError = false;
             edit.acctFilter = EditFlag.ISVALID;
             edit.cardFilter = EditFlag.ISVALID;
             workArea.setAcctId(formatAccount(context.getAcctId()));
-            workArea.setCardNum(context.getCardNum());
+            workArea.setCardNum(selectedCardNum);
             readData(workArea, state, edit);
             state.setChangeAction(ChangeAction.SHOW_DETAILS);
             return new CardUpdateResult(RoutingAction.SHOW_SCREEN, context.isProgramEnter(), edit);
@@ -857,6 +1056,11 @@ public class CardUpdateService {
 
         state.setNewExpMon(normalizeStar(form.getExpmon()));
         state.setNewExpYear(normalizeStar(form.getExpyear()));
+
+        // Review finding #10: stash the client-presented confirmation token on the
+        // per-request working storage so decideAction (which has no form parameter)
+        // can validate it on the PF5 confirm turn.
+        edit.presentedConfirmToken = form.getConfirmToken();
 
         editMapInputs(workArea, state, edit);
 
@@ -934,6 +1138,10 @@ public class CardUpdateService {
         editExpiryYear(state, edit);
         if (!edit.inputError) {
             state.setChangeAction(ChangeAction.CHANGES_OK_NOT_CONFIRMED);
+            // Review finding #10: capture the just-validated CCUP-NEW-* snapshot
+            // server-side and issue a fresh single-use token. The PF5 turn commits
+            // exactly this snapshot, never the re-post.
+            armConfirmation(state);
         }
     }
 
@@ -1186,12 +1394,29 @@ public class CardUpdateService {
                 return;
             }
             state.setChangeAction(ChangeAction.CHANGES_OK_NOT_CONFIRMED);
+            // Review finding #10: arm the confirmation window (snapshot + token).
+            armConfirmation(state);
         } else if (state.isChangesNotOk()) {
             // Lines 982-983: edit errors present; CONTINUE (re-display with errors).
             return;
         } else if (state.isChangesOkNotConfirmed() && aid == PfKey.PFK05) {
             // Lines 988-1001: confirmation given (PF5) -> attempt the rewrite, then
             // translate the post-write signals into the next action state.
+            //
+            // Review finding #10 (confirmation integrity, CWE-20/CWE-639). On the
+            // mainframe the confirmation-screen fields are protected, so the PF5 turn
+            // can only re-present the validated CCUP-NEW-DETAILS. Over HTTP a crafted
+            // PF5 can re-post arbitrary values and editMapInputs deliberately skips
+            // re-validation in the confirm state (COBOL 1200 lines 685-693), so the
+            // server must (a) reject a missing / forged / replayed single-use token
+            // and (b) commit the server-carried validated snapshot and identity -
+            // never the re-post.
+            if (!confirmTokensMatch(state.getConfirmToken(), edit.getPresentedConfirmToken())
+                    || state.getPendingDetails() == null) {
+                rejectConfirmation(state, edit);
+                return;
+            }
+            restoreServerCarriedConfirmation(state, workArea);  // validated snapshot + identity
             writeProcessing(workArea, state, edit);
             if (edit.couldNotLockForUpdate) {
                 state.setChangeAction(ChangeAction.CHANGES_OKAYED_LOCK_ERROR);
@@ -1202,6 +1427,10 @@ public class CardUpdateService {
             } else {
                 state.setChangeAction(ChangeAction.CHANGES_OKAYED_AND_DONE);
             }
+            // Consume the single-use confirmation regardless of the write result so a
+            // replay cannot re-drive the write; a fresh cycle re-arms via 1200 / 2000.
+            state.clearConfirmation();
+            return;
         } else if (state.isChangesOkNotConfirmed()) {
             // Lines 1006-1007: confirmation pending but not given; CONTINUE.
             return;
@@ -1219,6 +1448,120 @@ public class CardUpdateService {
             // Lines 1019-1026: WHEN OTHER -> unexpected state, abend '0001'.
             abendRoutine("0001", "UNEXPECTED DATA SCENARIO");
         }
+    }
+
+    // =====================================================================
+    // Confirmation integrity (review finding #10, CWE-20 / CWE-639)
+    // =====================================================================
+
+    /**
+     * Generates a fresh single-use confirmation token (review finding #10).
+     *
+     * <p>256 bits of {@link SecureRandom} entropy, hex-encoded. The token is issued
+     * when the state advances to {@link ChangeAction#CHANGES_OK_NOT_CONFIRMED}, echoed
+     * to the confirm screen as a hidden field, and validated then consumed on the
+     * {@code PF5} commit so a replayed or forged confirmation cannot re-drive the
+     * write.</p>
+     *
+     * @return a new random hexadecimal confirmation token
+     */
+    private static String newConfirmToken() {
+        byte[] raw = new byte[CONFIRM_TOKEN_BYTES];
+        CONFIRM_TOKEN_RNG.nextBytes(raw);
+        return HexFormat.of().formatHex(raw);
+    }
+
+    /**
+     * Constant-time comparison of the presented and expected confirmation tokens
+     * (review finding #10). Uses {@link MessageDigest#isEqual(byte[], byte[])} so the
+     * check does not leak token contents through timing, and treats a {@code null}
+     * expected or presented token as a non-match.
+     *
+     * @param expected  the server-side token bound to the pending snapshot (may be {@code null})
+     * @param presented the token echoed back by the client on {@code PF5} (may be {@code null})
+     * @return {@code true} only when both are non-{@code null} and byte-equal
+     */
+    private static boolean confirmTokensMatch(String expected, String presented) {
+        if (expected == null || presented == null) {
+            return false;
+        }
+        return MessageDigest.isEqual(
+                expected.getBytes(StandardCharsets.UTF_8),
+                presented.getBytes(StandardCharsets.UTF_8));
+    }
+
+    /**
+     * Arms the confirmation window - captures the validated {@code CCUP-NEW-DETAILS}
+     * snapshot server-side and issues a fresh single-use token (review finding #10).
+     *
+     * <p>Called at each point where the state advances to
+     * {@link ChangeAction#CHANGES_OK_NOT_CONFIRMED} ({@code 1200-EDIT-MAP-INPUTS} and
+     * {@code 2000-DECIDE-ACTION}). The captured {@link CardUpdateState.PendingCardDetails}
+     * is the exact tuple the operator is shown for confirmation; on the {@code PF5} turn
+     * {@link #decideAction} commits this snapshot - never the re-posted client values -
+     * reproducing the mainframe behaviour where the confirmation-screen fields are
+     * protected and therefore unchangeable. {@link #processInputs} rebuilds
+     * {@code CCUP-NEW-*} from the form each turn but never touches the pending snapshot,
+     * so the arm-time values survive the {@code PF5} turn intact.</p>
+     *
+     * @param state the session-scoped state that carries the snapshot and token
+     */
+    private static void armConfirmation(CardUpdateState state) {
+        state.setPendingDetails(CardUpdateState.PendingCardDetails.capture(state));
+        state.setConfirmToken(newConfirmToken());
+    }
+
+    /**
+     * Rejects a {@code PF5} confirmation whose single-use token is missing, forged, or
+     * replayed (review finding #10) - no write is performed and the re-posted client
+     * values are discarded. When a validated pending snapshot is still held the
+     * confirmation window stays open with a freshly re-issued token and the
+     * {@link #MSG_CONFIRM_INTEGRITY} banner, so a legitimate operator can simply confirm
+     * again; when no snapshot is held (a {@code PF5} that could not have legitimately
+     * reached the confirm state) the action falls back to
+     * {@link ChangeAction#SHOW_DETAILS}.
+     *
+     * @param state the session-scoped state
+     * @param edit  the per-request edit working storage whose red banner is set
+     */
+    private void rejectConfirmation(CardUpdateState state, EditWorkState edit) {
+        if (state.getPendingDetails() != null) {
+            // Re-issue the token: the stale or forged value is now worthless and the
+            // caller cannot learn the replacement, but the operator can retry.
+            state.setConfirmToken(newConfirmToken());
+        } else {
+            state.clearConfirmation();
+            state.setChangeAction(ChangeAction.SHOW_DETAILS);
+        }
+        edit.inputError = true;
+        edit.returnMessage = MSG_CONFIRM_INTEGRITY;
+    }
+
+    /**
+     * Restores the server-carried validated confirmation before the write (review
+     * finding #10). The pending {@code CCUP-NEW-DETAILS} snapshot replaces whatever the
+     * {@code PF5} turn re-posted into {@code CCUP-NEW-*}, and the write identity on the
+     * {@link CardWorkArea} (which {@link #writeProcessing} reads to select and reassign
+     * the card) is re-affirmed from the same validated snapshot so the rewrite targets
+     * exactly the record shown for confirmation - never a swapped account/card filter.
+     *
+     * @param state    the session-scoped state holding the pending snapshot
+     * @param workArea the per-request work area whose identity keys are re-affirmed
+     */
+    private void restoreServerCarriedConfirmation(CardUpdateState state, CardWorkArea workArea) {
+        CardUpdateState.PendingCardDetails pending = state.getPendingDetails();
+        state.setNewAcctId(pending.getAcctId());
+        state.setNewCardId(pending.getCardId());
+        state.setNewCvvCd(pending.getCvvCd());
+        state.setNewCrdName(pending.getCrdName());
+        state.setNewExpYear(pending.getExpYear());
+        state.setNewExpMon(pending.getExpMon());
+        state.setNewExpDay(pending.getExpDay());
+        state.setNewCrdStcd(pending.getCrdStcd());
+        // writeProcessing selects the card via workArea.getCardNum() and reassigns it
+        // to workArea.getAcctIdNumeric(); re-affirm both from the validated snapshot.
+        workArea.setAcctId(pending.getAcctId());
+        workArea.setCardNum(pending.getCardId());
     }
 
     /**
@@ -1306,8 +1649,13 @@ public class CardUpdateService {
      *
      * <p>Steps, one-for-one with the source:</p>
      * <ol>
-     *   <li>Re-read the card for update (lines 1427-1436). An empty result models a
-     *       non-{@code NORMAL} lock response: {@code INPUT-ERROR} plus
+     *   <li>Re-read the card <em>for update</em> under a pessimistic write lock
+     *       ({@link CardRepository#findByIdForUpdate(String)}; PostgreSQL {@code SELECT
+     *       ... FOR UPDATE}), the migration of the CICS {@code READ ... UPDATE} (lines
+     *       1427-1436). The lock is held until {@link #mainEntry}'s transaction commits,
+     *       so the change-check and the {@code REWRITE} form one atomic critical section
+     *       with no lost-update window (review finding #14, CWE-362). An empty result
+     *       models a non-{@code NORMAL} lock response: {@code INPUT-ERROR} plus
      *       {@code COULD-NOT-LOCK-FOR-UPDATE}, then exit (lines 1441-1449).</li>
      *   <li>Run {@link #checkChangeInRec} (line 1453); if the record changed since
      *       the fetch, exit without writing so the screen re-displays (lines
@@ -1331,8 +1679,10 @@ public class CardUpdateService {
      * @param edit      the per-request edit working storage (receives write signals)
      */
     private void writeProcessing(CardWorkArea workArea, CardUpdateState state, EditWorkState edit) {
-        // Re-read for update (lines 1425-1436). Empty == non-NORMAL lock response.
-        final Optional<Card> locked = cardRepository.findById(workArea.getCardNum());
+        // Re-read for update under a pessimistic write lock (EXEC CICS READ ... UPDATE ->
+        // SELECT ... FOR UPDATE), held until mainEntry's @Transactional commits (#14, lines
+        // 1425-1436). Empty == non-NORMAL lock response.
+        final Optional<Card> locked = cardRepository.findByIdForUpdate(workArea.getCardNum());
         if (locked.isEmpty()) {
             // Lines 1441-1449: could not lock -> input error, exit.
             edit.inputError = true;

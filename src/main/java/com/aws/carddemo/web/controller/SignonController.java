@@ -26,6 +26,7 @@ import com.aws.carddemo.util.constants.Messages;
 import com.aws.carddemo.util.constants.ScreenTitles;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
+import jakarta.validation.Valid;
 import java.time.LocalDateTime;
 import java.util.Locale;
 import org.springframework.security.authentication.AuthenticationManager;
@@ -34,10 +35,14 @@ import org.springframework.security.core.Authentication;
 import org.springframework.security.core.AuthenticationException;
 import org.springframework.security.core.context.SecurityContext;
 import org.springframework.security.core.context.SecurityContextHolder;
+import org.springframework.security.web.authentication.session.SessionAuthenticationStrategy;
 import org.springframework.security.web.context.HttpSessionSecurityContextRepository;
 import org.springframework.security.web.context.SecurityContextRepository;
 import org.springframework.stereotype.Controller;
+import org.springframework.validation.BindingResult;
+import org.springframework.web.bind.WebDataBinder;
 import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.InitBinder;
 import org.springframework.web.bind.annotation.ModelAttribute;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestParam;
@@ -160,6 +165,16 @@ public class SignonController {
     /** Model attribute name bound by the {@code COSGN00} template ({@code th:object}). */
     private static final String MODEL_ATTR_FORM = "form";
 
+    /**
+     * Neutral banner shown when data binding rejects a field for exceeding its declared
+     * {@code @Size} width (review finding #11). On a real 3270 (and via the template's
+     * {@code maxlength}) a field physically cannot exceed its width, so this state is only
+     * reachable by a crafted client and has no COBOL business message to preserve; the screen
+     * is simply re-displayed without performing any sign-on work.
+     */
+    private static final String MSG_FIELD_LENGTH =
+            "Input exceeds the maximum length for a field.";
+
     /** Redirect to the sign-on route (used for the application root). */
     private static final String SIGNON_REDIRECT = "redirect:/signon";
 
@@ -217,6 +232,16 @@ public class SignonController {
             new HttpSessionSecurityContextRepository();
 
     /**
+     * Session-authentication strategy invoked on a successful controller-managed sign-on to rotate the
+     * {@code HttpSession} id (session-fixation protection, CWE-384; review finding #6) and register the
+     * rotated session in the shared {@code SessionRegistry} so it can later be revoked (findings #8,
+     * #43). It is the {@code CompositeSessionAuthenticationStrategy} bean declared in
+     * {@code SecurityConfig}; the filter chain does not apply it automatically because signon here is
+     * controller-managed rather than filter-managed.
+     */
+    private final SessionAuthenticationStrategy sessionAuthenticationStrategy;
+
+    /**
      * Creates the sign-on controller with its injected collaborators.
      *
      * <p>The constructor only stores the references and invokes no overridable
@@ -224,17 +249,21 @@ public class SignonController {
      * zero-warning build. Because there is a single constructor, Spring performs
      * constructor injection without an explicit {@code @Autowired} annotation.</p>
      *
-     * @param signonService         the sign-on business service; must not be {@code null}
-     * @param context               the session-scoped {@link CardDemoContext}
-     *                              (COMMAREA replacement); must not be {@code null}
-     * @param authenticationManager the Spring Security {@link AuthenticationManager};
-     *                              must not be {@code null}
+     * @param signonService               the sign-on business service; must not be {@code null}
+     * @param context                     the session-scoped {@link CardDemoContext}
+     *                                    (COMMAREA replacement); must not be {@code null}
+     * @param authenticationManager       the Spring Security {@link AuthenticationManager};
+     *                                    must not be {@code null}
+     * @param sessionAuthenticationStrategy the fixation-then-register strategy applied on a
+     *                                    successful sign-on; must not be {@code null}
      */
     public SignonController(SignonService signonService, CardDemoContext context,
-            AuthenticationManager authenticationManager) {
+            AuthenticationManager authenticationManager,
+            SessionAuthenticationStrategy sessionAuthenticationStrategy) {
         this.signonService = signonService;
         this.context = context;
         this.authenticationManager = authenticationManager;
+        this.sessionAuthenticationStrategy = sessionAuthenticationStrategy;
     }
 
     /**
@@ -303,9 +332,16 @@ public class SignonController {
      *         name {@link #VIEW_SIGNON} when the screen is re-displayed
      */
     @PostMapping(PATH_SIGNON)
-    public String submitSignon(@ModelAttribute(MODEL_ATTR_FORM) COSGN00Form form,
+    public String submitSignon(@Valid @ModelAttribute(MODEL_ATTR_FORM) COSGN00Form form,
+            BindingResult bindingResult,
             @RequestParam(name = PARAM_PFKEY, required = false, defaultValue = ENTER_TOKEN) String pfkey,
             HttpServletRequest request, HttpServletResponse response) {
+        // Review finding #11: an over-width field (only reachable by a crafted client bypassing the
+        // template maxlength / 3270 field width) is rejected here before any sign-on work, so no
+        // COBOL business-edit ordering is disturbed (the service still owns all real edits).
+        if (bindingResult.hasErrors()) {
+            return renderLengthGuard(form);
+        }
         PfKey key = resolvePfKey(pfkey);
         return switch (key) {
             // COBOL WHEN DFHENTER -> PERFORM PROCESS-ENTER-KEY.
@@ -429,6 +465,17 @@ public class SignonController {
      * {@link SecurityContextRepository} so the identity is available on the
      * post-sign-on redirect and subsequent requests.</p>
      *
+     * <p><strong>Session fixation + registration (review findings #6, #8, #43).</strong>
+     * Immediately after the authentication succeeds and before the context is persisted,
+     * the injected {@link SessionAuthenticationStrategy} is invoked. It (1) rotates the
+     * {@code HttpSession} id so any pre-authentication session id (which an attacker may
+     * have fixed) can no longer be used to ride the now-authenticated session
+     * (CWE-384), and (2) registers the rotated session in the shared
+     * {@code SessionRegistry} so a later delete / demotion / password change can revoke
+     * it. The context is saved <em>after</em> rotation so it is written to the new
+     * session id. Because signon is controller-managed rather than filter-managed, this
+     * strategy would otherwise never run, which is why it is applied explicitly here.</p>
+     *
      * @param authentication the authenticated token returned by the
      *                       {@link AuthenticationManager}
      * @param request        the current request
@@ -439,7 +486,46 @@ public class SignonController {
         SecurityContext securityContext = SecurityContextHolder.createEmptyContext();
         securityContext.setAuthentication(authentication);
         SecurityContextHolder.setContext(securityContext);
+        // Rotate the session id (fixation protection) and register the rotated session before the
+        // context is written, so the identity is persisted against the new session id and the session
+        // becomes eligible for lifecycle-driven revocation.
+        sessionAuthenticationStrategy.onAuthentication(authentication, request, response);
         securityContextRepository.saveContext(securityContext, request, response);
+    }
+
+    /**
+     * Restricts request-parameter data binding to the fields the {@code COSGN00} screen actually
+     * submits (review finding #11). Registering an explicit allow-list turns off Spring's default
+     * "bind any matching property" behaviour, so a crafted request cannot populate server-owned or
+     * display-only form properties (header/title/date/message fields) - closing the mass-assignment
+     * / over-posting vector at the binding layer. The allow-list is exactly the sign-on inputs
+     * ({@code userid}, {@code passwd}); {@code pfkey} arrives as a {@code @RequestParam} and is not
+     * bound through the form.
+     *
+     * @param binder the per-request data binder for the bound form
+     */
+    @InitBinder
+    protected void restrictBinding(WebDataBinder binder) {
+        // Spring MVC instantiates the @ModelAttribute command lazily, so binder.getTarget() is null
+        // when @InitBinder runs; the resolved binder.getTargetType() is the reliable discriminator.
+        Class<?> targetType = binder.getTargetType() != null ? binder.getTargetType().resolve() : null;
+        if (COSGN00Form.class.equals(targetType)) {
+            binder.setAllowedFields("userid", "passwd");
+        }
+    }
+
+    /**
+     * Re-displays the sign-on screen with the neutral field-length banner when data binding rejected
+     * an over-width field (review finding #11). No authentication or routing work is performed, so
+     * the COBOL sign-on edit ordering (owned by {@link SignonService}) is untouched.
+     *
+     * @param form the bound form (receives the header and the length banner)
+     * @return the {@link #VIEW_SIGNON} logical view name
+     */
+    private String renderLengthGuard(COSGN00Form form) {
+        populateHeader(form);
+        form.setErrmsg(MSG_FIELD_LENGTH);
+        return VIEW_SIGNON;
     }
 
     /**

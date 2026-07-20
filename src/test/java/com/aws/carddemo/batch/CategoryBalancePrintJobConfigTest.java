@@ -6,16 +6,24 @@ import static org.mockito.Mockito.mock;
 
 import com.aws.carddemo.domain.TransactionCategoryBalance;
 import com.aws.carddemo.repository.TransactionCategoryBalanceRepository;
+import com.aws.carddemo.util.batch.AtomicFileStepPublisher;
+import com.aws.carddemo.util.batch.BatchFilePathResolver;
 import java.math.BigDecimal;
+import java.util.List;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.springframework.batch.core.Job;
 import org.springframework.batch.core.Step;
+import org.springframework.batch.core.StepExecution;
 import org.springframework.batch.core.repository.JobRepository;
+import org.springframework.batch.core.scope.StepScope;
 import org.springframework.batch.item.ItemProcessor;
 import org.springframework.batch.item.data.RepositoryItemReader;
 import org.springframework.batch.item.file.FlatFileItemWriter;
+import org.springframework.batch.test.MetaDataInstanceFactory;
+import org.springframework.boot.test.context.runner.ApplicationContextRunner;
+import org.springframework.context.annotation.Bean;
 import org.springframework.transaction.PlatformTransactionManager;
 
 /**
@@ -236,7 +244,13 @@ class CategoryBalancePrintJobConfigTest {
             PlatformTransactionManager transactionManager = mock(PlatformTransactionManager.class);
             TransactionCategoryBalanceRepository repository =
                     mock(TransactionCategoryBalanceRepository.class);
-            return new CategoryBalancePrintJobConfig(jobRepository, transactionManager, repository);
+            // A real atomic-publication listener rooted at the JVM temp directory: the writer bean
+            // resolves its (temp-dir) output path through this resolver's safe-root containment
+            // (findings #18/#19), so the bean-construction assertions below exercise the production path.
+            AtomicFileStepPublisher publisher = new AtomicFileStepPublisher(
+                    new BatchFilePathResolver(List.of(System.getProperty("java.io.tmpdir"))));
+            return new CategoryBalancePrintJobConfig(
+                    jobRepository, transactionManager, repository, publisher);
         }
 
         @Test
@@ -258,7 +272,11 @@ class CategoryBalancePrintJobConfigTest {
         void writerBean() {
             String outputPath = System.getProperty("java.io.tmpdir")
                     + "/blitzy_adhoc_test_categorybalance_writer.rept";
-            FlatFileItemWriter<String> writer = newConfig().categoryBalanceReportWriter(outputPath);
+            // The @StepScope writer resolves its target through the atomic-publication listener, which
+            // requires the running step execution; supply a synthetic one (no database, no launch).
+            StepExecution stepExecution = MetaDataInstanceFactory.createStepExecution();
+            FlatFileItemWriter<String> writer =
+                    newConfig().categoryBalanceReportWriter(outputPath, stepExecution);
             assertThat(writer).isNotNull();
         }
 
@@ -272,20 +290,58 @@ class CategoryBalancePrintJobConfigTest {
             assertThat(line).isEqualTo("00000000099 01 0005 000000504.77        ");
         }
 
+        /**
+         * The declarative {@code categoryBalancePrintStep}/{@code categoryBalancePrintJob} beans compose
+         * the {@code @StepScope} reader and writer through Spring's {@code @Configuration} CGLIB proxying
+         * (the step method deliberately passes {@code null} placeholders for the job-parameter-bound and
+         * {@code stepExecution}-bound writer, which the scoped proxy replaces at step-execution time).
+         * A direct method call cannot reproduce that proxying &mdash; it would eagerly invoke the writer
+         * with a {@code null} {@code StepExecution} and fail in the atomic-publication resolver &mdash; so
+         * the wiring is exercised in a real but database-free application context (no {@code DataSource},
+         * no Flyway, no Testcontainers), mirroring the sibling {@code TransactionBackupJobConfigTest}.
+         */
         @Test
-        @DisplayName("step bean is named categoryBalancePrintStep")
-        void stepBean() {
-            Step step = newConfig().categoryBalancePrintStep();
-            assertThat(step).isNotNull();
-            assertThat(step.getName()).isEqualTo("categoryBalancePrintStep");
+        @DisplayName("step and job beans wire together under @StepScope proxying, without a database")
+        void stepAndJobBeansWireTogether() {
+            new ApplicationContextRunner()
+                    .withBean(JobRepository.class, () -> mock(JobRepository.class))
+                    .withBean(PlatformTransactionManager.class, () -> mock(PlatformTransactionManager.class))
+                    .withBean(TransactionCategoryBalanceRepository.class,
+                            () -> mock(TransactionCategoryBalanceRepository.class))
+                    .withBean(AtomicFileStepPublisher.class, () -> new AtomicFileStepPublisher(
+                            new BatchFilePathResolver(List.of(System.getProperty("java.io.tmpdir")))))
+                    .withUserConfiguration(StepScopeConfiguration.class, CategoryBalancePrintJobConfig.class)
+                    .run(context -> {
+                        assertThat(context).hasNotFailed();
+                        assertThat(context).hasSingleBean(Job.class);
+                        assertThat(context.getBean(CategoryBalancePrintJobConfig.JOB_NAME, Job.class).getName())
+                                .isEqualTo("categoryBalancePrintJob");
+                        assertThat(context.getBean(CategoryBalancePrintJobConfig.STEP_NAME, Step.class).getName())
+                                .isEqualTo("categoryBalancePrintStep");
+                    });
         }
+    }
 
-        @Test
-        @DisplayName("job bean is named categoryBalancePrintJob")
-        void jobBean() {
-            Job job = newConfig().categoryBalancePrintJob();
-            assertThat(job).isNotNull();
-            assertThat(job.getName()).isEqualTo("categoryBalancePrintJob");
+    /**
+     * Registers Spring Batch's {@code step} scope so the {@code @StepScope} reader/writer beans resolve
+     * to lazy scoped proxies, allowing {@code categoryBalancePrintStep}/{@code categoryBalancePrintJob}
+     * to be built inside a database-free application context without eagerly invoking the writer with a
+     * {@code null} {@code StepExecution}.
+     *
+     * <p><b>Intentionally not {@code @Configuration}.</b> This helper is consumed only via
+     * {@link ApplicationContextRunner#withUserConfiguration} in {@link #stepAndJobBeansWireTogether()},
+     * where its {@code static @Bean} is still processed in configuration <em>lite</em> mode (a class
+     * with {@code @Bean} methods is a lite candidate). It must <strong>not</strong> carry a
+     * {@code @Component}/{@code @Configuration} stereotype: this class lives in a package that the
+     * full-application {@code @SpringBootTest} integration tests component-scan, and a scannable
+     * {@code stepScope} bean here would collide with Spring Batch's own
+     * {@code ScopeConfiguration.stepScope()} ({@code BeanDefinitionOverrideException}), breaking every
+     * full-context integration test.</p>
+     */
+    static class StepScopeConfiguration {
+        @Bean
+        public static StepScope stepScope() {
+            return new StepScope();
         }
     }
 }

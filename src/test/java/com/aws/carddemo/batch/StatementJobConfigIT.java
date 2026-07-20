@@ -306,8 +306,8 @@ class StatementJobConfigIT extends AbstractPostgresIntegrationTest {
         JobExecution execution = launchStatementJob(textOut, htmlOut);
         assertThat(execution.getStatus()).isEqualTo(BatchStatus.COMPLETED);
 
-        List<String> textLines = Files.readAllLines(textOut, RECORD_CHARSET);
-        List<String> htmlLines = Files.readAllLines(htmlOut, RECORD_CHARSET);
+        List<String> textLines = readFixedRecords(textOut, TEXT_RECORD_WIDTH);
+        List<String> htmlLines = readFixedRecords(htmlOut, HTML_RECORD_WIDTH);
 
         assertThat(textLines).as("plain-text statement records").isNotEmpty();
         assertThat(htmlLines).as("HTML statement records").isNotEmpty();
@@ -347,7 +347,7 @@ class StatementJobConfigIT extends AbstractPostgresIntegrationTest {
         assertThat(execution.getStatus()).isEqualTo(BatchStatus.COMPLETED);
 
         List<String> statementBlock =
-                statementBlockContaining(Files.readAllLines(textOut, RECORD_CHARSET), ascendingTranIds.get(0));
+                statementBlockContaining(readFixedRecords(textOut, TEXT_RECORD_WIDTH), ascendingTranIds.get(0));
 
         List<String> appearanceOrder = new ArrayList<>();
         for (String line : statementBlock) {
@@ -380,7 +380,7 @@ class StatementJobConfigIT extends AbstractPostgresIntegrationTest {
         assertThat(execution.getStatus()).isEqualTo(BatchStatus.COMPLETED);
 
         List<String> statementBlock =
-                statementBlockContaining(Files.readAllLines(textOut, RECORD_CHARSET), ascendingTranIds.get(0));
+                statementBlockContaining(readFixedRecords(textOut, TEXT_RECORD_WIDTH), ascendingTranIds.get(0));
         String blockText = String.join("\n", statementBlock);
 
         Customer customer = customerRepository.findById(reusedCustId)
@@ -429,7 +429,7 @@ class StatementJobConfigIT extends AbstractPostgresIntegrationTest {
         JobExecution execution = launchStatementJob(textOut, htmlOut);
         assertThat(execution.getStatus()).isEqualTo(BatchStatus.COMPLETED);
 
-        List<String> textLines = Files.readAllLines(textOut, RECORD_CHARSET);
+        List<String> textLines = readFixedRecords(textOut, TEXT_RECORD_WIDTH);
         long startBanners = textLines.stream().filter(line -> line.contains(START_BANNER)).count();
         long endBanners = textLines.stream().filter(line -> line.contains(END_BANNER)).count();
 
@@ -439,6 +439,83 @@ class StatementJobConfigIT extends AbstractPostgresIntegrationTest {
         assertThat(endBanners)
                 .as("one closing banner per seeded card")
                 .isEqualTo(expectedStatements);
+    }
+
+    /**
+     * Review finding #42: a transaction description carrying an HTML/JavaScript payload must be
+     * emitted into the HTML statement <em>escaped</em>, never as an executable tag. The raw
+     * {@code <script>...} would otherwise run as stored cross-site scripting when the statement is
+     * opened in a browser. The escaped entity is present, the raw tags are absent, and every HTML
+     * record is still exactly {@value #HTML_RECORD_WIDTH} bytes (the framing contract is enforced by
+     * {@link #readFixedRecords}, which requires the file length to be an exact multiple of the width).
+     *
+     * @throws Exception if the job launch fails
+     */
+    @Test
+    void htmlStatementEscapesMaliciousTransactionDescription() throws Exception {
+        // Persist a transaction for the controlled card whose description carries an XSS payload.
+        saveTransaction("STMTITXSS0000001", "<script>alert(1)</script>", new BigDecimal("1.00"));
+
+        Path textOut = tempDir.resolve("stmt.txt");
+        Path htmlOut = tempDir.resolve("stmt.html");
+        JobExecution execution = launchStatementJob(textOut, htmlOut);
+        assertThat(execution.getStatus()).isEqualTo(BatchStatus.COMPLETED);
+
+        // readFixedRecords also asserts the file is an exact multiple of the 100-byte record width.
+        List<String> htmlLines = readFixedRecords(htmlOut, HTML_RECORD_WIDTH);
+        String htmlAll = String.join("", htmlLines);
+
+        assertThat(htmlAll)
+                .as("malicious transaction description must be HTML-escaped, not emitted raw (finding #42)")
+                .doesNotContain("<script>")
+                .doesNotContain("</script>")
+                .contains("&lt;script&gt;");
+        for (String line : htmlLines) {
+            assertThat(line.length())
+                    .as("HTML record width unchanged by escaping (finding #42 preserves the contract)")
+                    .isEqualTo(HTML_RECORD_WIDTH);
+        }
+    }
+
+    /**
+     * Review finding #42: a customer name carrying an HTML/JavaScript payload must be emitted into
+     * the HTML statement <em>escaped</em>. The seed customer's first name is temporarily mutated to a
+     * payload and restored afterwards. The escaped entity is present, the raw tags are absent, and the
+     * {@value #HTML_RECORD_WIDTH}-byte record framing is preserved.
+     *
+     * @throws Exception if the job launch fails
+     */
+    @Test
+    void htmlStatementEscapesMaliciousCustomerName() throws Exception {
+        Customer customer = customerRepository.findById(reusedCustId)
+                .orElseThrow(() -> new AssertionError("seed customer " + reusedCustId + " must exist"));
+        String originalFirstName = customer.getFirstName();
+        try {
+            customer.setFirstName("<script>x</script>");
+            customerRepository.save(customer);
+
+            Path textOut = tempDir.resolve("stmt.txt");
+            Path htmlOut = tempDir.resolve("stmt.html");
+            JobExecution execution = launchStatementJob(textOut, htmlOut);
+            assertThat(execution.getStatus()).isEqualTo(BatchStatus.COMPLETED);
+
+            List<String> htmlLines = readFixedRecords(htmlOut, HTML_RECORD_WIDTH);
+            String htmlAll = String.join("", htmlLines);
+
+            assertThat(htmlAll)
+                    .as("malicious customer name must be HTML-escaped, not emitted raw (finding #42)")
+                    .doesNotContain("<script>")
+                    .doesNotContain("</script>")
+                    .contains("&lt;script&gt;");
+            for (String line : htmlLines) {
+                assertThat(line.length())
+                        .as("HTML record width unchanged by escaping (finding #42 preserves the contract)")
+                        .isEqualTo(HTML_RECORD_WIDTH);
+            }
+        } finally {
+            customer.setFirstName(originalFirstName);
+            customerRepository.save(customer);
+        }
     }
 
     /**
@@ -476,6 +553,34 @@ class StatementJobConfigIT extends AbstractPostgresIntegrationTest {
                 .addLong("run.id", System.nanoTime())
                 .toJobParameters();
         return jobLauncherTestUtils.launchJob(parameters);
+    }
+
+    /**
+     * Reads a produced statement file as an <em>undelimited</em> {@code RECFM=FB} image (review
+     * finding&nbsp;#17). Both statement writers emit their fixed-width records
+     * ({@value #TEXT_RECORD_WIDTH}-byte text, {@value #HTML_RECORD_WIDTH}-byte HTML) back-to-back with
+     * <strong>no</strong> delimiter ({@code lineSeparator("")}), matching the {@code CREASTMT}
+     * {@code RECFM=FB} datasets, so the file is sliced on fixed {@code recordWidth}-byte boundaries
+     * rather than on newlines. The total byte length is asserted to be an exact multiple of the record
+     * width, which simultaneously proves that no stray delimiter byte leaked into the output.
+     *
+     * @param file        the statement file to read
+     * @param recordWidth the fixed record width in bytes ({@value #TEXT_RECORD_WIDTH} for the text file
+     *                    or {@value #HTML_RECORD_WIDTH} for the HTML file)
+     * @return the fixed-width records in file order
+     * @throws Exception if the file cannot be read
+     */
+    private static List<String> readFixedRecords(Path file, int recordWidth) throws Exception {
+        byte[] all = Files.readAllBytes(file);
+        assertThat(all.length % recordWidth)
+                .as("statement file length %d must be an exact multiple of the %d-byte record width "
+                        + "(undelimited RECFM=FB, finding #17)", all.length, recordWidth)
+                .isZero();
+        List<String> records = new ArrayList<>(all.length / recordWidth);
+        for (int off = 0; off < all.length; off += recordWidth) {
+            records.add(new String(all, off, recordWidth, RECORD_CHARSET));
+        }
+        return records;
     }
 
     /**

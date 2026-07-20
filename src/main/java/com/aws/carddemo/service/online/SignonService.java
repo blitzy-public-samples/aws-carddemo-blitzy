@@ -18,6 +18,7 @@ package com.aws.carddemo.service.online;
 import java.util.Locale;
 import java.util.Objects;
 
+import io.micrometer.observation.annotation.Observed;
 import org.springframework.security.authentication.BadCredentialsException;
 import org.springframework.security.core.AuthenticationException;
 import org.springframework.security.core.userdetails.UserDetails;
@@ -498,6 +499,7 @@ public class SignonService {
      *             be {@code null}
      * @return the {@link SignonResult} describing the controller's next action
      */
+    @Observed(name = "carddemo.signon", contextualName = "signon")
     public SignonResult mainEntry(AidKey aid, COSGN00Form form) {
         Objects.requireNonNull(form, "form");
 

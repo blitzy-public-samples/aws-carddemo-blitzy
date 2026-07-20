@@ -130,43 +130,89 @@ public class AccountPrintJobConfig {
     }
 
     /**
-     * Writer that reproduces the COBOL {@code 1100-DISPLAY-ACCT-RECORD} field print by emitting one
-     * structured SLF4J {@code INFO} line per account.
+     * Writer that reproduces the COBOL {@code 1100-DISPLAY-ACCT-RECORD} field print.
      *
-     * <p>The rendered fields, in the exact order and with the exact labels of the COBOL paragraph,
-     * are {@code ACCT-ID}, {@code ACCT-ACTIVE-STATUS}, {@code ACCT-CURR-BAL}, {@code ACCT-CREDIT-LIMIT},
-     * {@code ACCT-CASH-CREDIT-LIMIT}, {@code ACCT-OPEN-DATE}, {@code ACCT-EXPIRAION-DATE} (the COBOL
-     * source misspelling is preserved verbatim for traceability), {@code ACCT-REISSUE-DATE},
-     * {@code ACCT-CURR-CYC-CREDIT}, {@code ACCT-CURR-CYC-DEBIT} and {@code ACCT-GROUP-ID}. Fields are
-     * rendered explicitly through the entity's accessors (not {@code Account.toString()}, which is
-     * intentionally non-sensitive) so that this diagnostic print job carries the same field content
-     * to its output as the mainframe program did to {@code SYSOUT}. No data set is written, matching
-     * {@code READACCT.jcl}, which has no output DD.</p>
+     * <p><strong>PII / financial-data protection (review finding #24).</strong> The mainframe program
+     * {@code DISPLAY}ed the full account record to {@code SYSOUT}, a RACF-protected spool data set. An
+     * application {@code INFO} log has a broader, less-restricted audience (it may be shipped to
+     * centralized log aggregation), so emitting full account identifiers, balances, credit limits, cycle
+     * values, dates and pricing-group ids at {@code INFO} would be a data-exposure regression relative to
+     * the protected mainframe spool. Therefore this writer:</p>
+     * <ul>
+     *   <li>at {@code INFO} (the production default) emits only a <em>masked</em> summary &mdash; the
+     *       account id reduced to its last four digits plus the active-status flag; every financial,
+     *       date and pricing-group field is redacted from the default log stream;</li>
+     *   <li>emits the full {@code 1100-DISPLAY-ACCT-RECORD} field dump only at {@code DEBUG}, which is off
+     *       by default and is a deliberate, authorized opt-in that reproduces the mainframe {@code SYSOUT}
+     *       diagnostic print for troubleshooting.</li>
+     * </ul>
+     * <p>The rendered fields at {@code DEBUG}, in the exact order and with the exact labels of the COBOL
+     * paragraph, are {@code ACCT-ID}, {@code ACCT-ACTIVE-STATUS}, {@code ACCT-CURR-BAL},
+     * {@code ACCT-CREDIT-LIMIT}, {@code ACCT-CASH-CREDIT-LIMIT}, {@code ACCT-OPEN-DATE},
+     * {@code ACCT-EXPIRAION-DATE} (the COBOL source misspelling is preserved verbatim for traceability),
+     * {@code ACCT-REISSUE-DATE}, {@code ACCT-CURR-CYC-CREDIT}, {@code ACCT-CURR-CYC-DEBIT} and
+     * {@code ACCT-GROUP-ID}, rendered explicitly through the entity's accessors. No data set is written,
+     * matching {@code READACCT.jcl}, which has no output DD.</p>
      *
-     * @return an {@link ItemWriter} that logs one line per {@link Account}
+     * @return an {@link ItemWriter} that logs one masked summary per {@link Account} at {@code INFO} and
+     *         the full field detail at {@code DEBUG}
      */
     @Bean
     public ItemWriter<Account> accountPrintWriter() {
         return chunk -> {
             for (Account account : chunk) {
-                LOGGER.info(
-                        "ACCT-ID={} ACCT-ACTIVE-STATUS={} ACCT-CURR-BAL={} ACCT-CREDIT-LIMIT={} "
-                                + "ACCT-CASH-CREDIT-LIMIT={} ACCT-OPEN-DATE={} ACCT-EXPIRAION-DATE={} "
-                                + "ACCT-REISSUE-DATE={} ACCT-CURR-CYC-CREDIT={} ACCT-CURR-CYC-DEBIT={} "
-                                + "ACCT-GROUP-ID={}",
-                        account.getAcctId(),
-                        account.getActiveStatus(),
-                        account.getCurrBal(),
-                        account.getCreditLimit(),
-                        account.getCashCreditLimit(),
-                        account.getOpenDate(),
-                        account.getExpiraionDate(),
-                        account.getReissueDate(),
-                        account.getCurrCycCredit(),
-                        account.getCurrCycDebit(),
-                        account.getGroupId());
+                // INFO (production default): masked, non-sensitive summary only (finding #24). The
+                // account id is reduced to its last four digits and all financial, date and pricing-group
+                // fields are withheld from the default log stream.
+                LOGGER.info("ACCT-ID={} ACCT-ACTIVE-STATUS={} (financial/date/group fields redacted at "
+                                + "INFO; enable DEBUG for the full diagnostic dump)",
+                        maskAcctId(account.getAcctId()),
+                        account.getActiveStatus());
+                // DEBUG (deliberate opt-in): the full CBACT01C 1100-DISPLAY-ACCT-RECORD field print,
+                // reproducing the RACF-protected mainframe SYSOUT diagnostic dump for authorized
+                // troubleshooting. Off by default in production.
+                if (LOGGER.isDebugEnabled()) {
+                    LOGGER.debug(
+                            "ACCT-ID={} ACCT-ACTIVE-STATUS={} ACCT-CURR-BAL={} ACCT-CREDIT-LIMIT={} "
+                                    + "ACCT-CASH-CREDIT-LIMIT={} ACCT-OPEN-DATE={} ACCT-EXPIRAION-DATE={} "
+                                    + "ACCT-REISSUE-DATE={} ACCT-CURR-CYC-CREDIT={} ACCT-CURR-CYC-DEBIT={} "
+                                    + "ACCT-GROUP-ID={}",
+                            account.getAcctId(),
+                            account.getActiveStatus(),
+                            account.getCurrBal(),
+                            account.getCreditLimit(),
+                            account.getCashCreditLimit(),
+                            account.getOpenDate(),
+                            account.getExpiraionDate(),
+                            account.getReissueDate(),
+                            account.getCurrCycCredit(),
+                            account.getCurrCycDebit(),
+                            account.getGroupId());
+                }
             }
         };
+    }
+
+    /**
+     * Masks an account id for the default {@code INFO} log so the operational log never carries a full
+     * account identifier (review finding #24). Only the last four digits are revealed; the remaining
+     * leading digits are replaced with asterisks. A {@code null} id renders as {@code "null"}, and an id
+     * of four or fewer digits is fully masked.
+     *
+     * @param acctId the account id (may be {@code null})
+     * @return the masked account id, e.g. {@code "*******8901"}
+     */
+    private static String maskAcctId(Long acctId) {
+        if (acctId == null) {
+            return "null";
+        }
+        String digits = Long.toString(acctId);
+        int visible = 4;
+        if (digits.length() <= visible) {
+            return "*".repeat(digits.length());
+        }
+        int maskedLen = digits.length() - visible;
+        return "*".repeat(maskedLen) + digits.substring(maskedLen);
     }
 
     /**

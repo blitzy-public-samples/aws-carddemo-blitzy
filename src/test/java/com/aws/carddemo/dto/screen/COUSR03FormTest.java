@@ -147,7 +147,13 @@ class COUSR03FormTest {
         // $jacocoData / $jacocoInit added during coverage runs) are filtered out so the
         // field set reflects only the declared JavaBean properties.
         Set<String> fieldNames = declaredFieldNames();
-        assertThat(fieldNames)
+        // The hidden single-use confirmation nonce (review finding F12) is a deliberate non-BMS
+        // control field (it restores the BMS protected-confirmation-field contract over HTTP), not
+        // part of the COUSR3A map. Assert it is present, then exclude it from the BMS-property check.
+        assertThat(fieldNames).contains("confirmToken");
+        Set<String> bmsFieldNames = new java.util.HashSet<>(fieldNames);
+        bmsFieldNames.remove("confirmToken");
+        assertThat(bmsFieldNames)
             .hasSize(EXPECTED_PROPERTIES.length)
             .containsExactlyInAnyOrder(EXPECTED_PROPERTIES)
             .noneMatch(COUSR03FormTest::mentionsPassword);

@@ -24,11 +24,16 @@ import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMock
 import org.springframework.mock.web.MockHttpSession;
 import org.springframework.security.test.context.support.WithMockUser;
 import org.springframework.test.web.servlet.MockMvc;
+import org.springframework.test.web.servlet.MvcResult;
 import org.springframework.transaction.annotation.Transactional;
 
 import com.aws.carddemo.AbstractPostgresIntegrationTest;
+import com.aws.carddemo.TestCredentials;
+import com.aws.carddemo.domain.UserSecurity;
 import com.aws.carddemo.dto.CardDemoContext;
+import com.aws.carddemo.dto.screen.COUSR02Form;
 import com.aws.carddemo.dto.screen.COUSR03Form;
+import com.aws.carddemo.repository.UserSecurityRepository;
 
 /**
  * Full Failsafe ({@code *IT}, Maven {@code verify} phase) integration test for
@@ -78,12 +83,34 @@ class UserAdminControllerIT extends AbstractPostgresIntegrationTest {
     private MockMvc mockMvc;
 
     /**
+     * Real {@link UserSecurityRepository} used by the finding-F12 adversarial tests to assert the
+     * <em>committed</em> USRSEC state after a rejected/replayed confirmation (those tests are not
+     * {@code @Transactional}; the per-test Flyway clean+migrate resets the seed).
+     */
+    @Autowired
+    private UserSecurityRepository userSecurityRepository;
+
+    /**
+     * A forged confirmation nonce (64 hex zeros) that matches the token width but no armed value;
+     * used by the finding-F12 forged-token tests.
+     */
+    private static final String FORGED_TOKEN =
+            "0000000000000000000000000000000000000000000000000000000000000000";
+
+    /** Fragment of the web-tier confirmation-integrity banner (review finding F12). */
+    private static final String CONFIRM_INTEGRITY_FRAGMENT = "Confirmation could not be validated";
+
+    /**
      * Session attribute under which the session-scoped {@link CardDemoContext} proxy stores its
      * real target. Seeding this attribute reproduces a live pseudo-conversational session so the
      * controller reaches its screen logic instead of bouncing an uninitialized context to
      * {@code /signon}. (The unqualified {@code "cardDemoContext"} name does NOT work.)
      */
     private static final String CONTEXT_SESSION_ATTRIBUTE = "scopedTarget.cardDemoContext";
+
+    // Review finding #5: the seed password is externalized (CARDDEMO_SEED_PASSWORD env var, no
+    // committed default) and read here for the real signon POSTs that reach the admin screens.
+    private static final String SEEDED_PASSWORD = TestCredentials.seedPassword();
 
     /** BMS map names preserved one-for-one as Thymeleaf view names. */
     private static final String VIEW_LIST = "COUSR00";
@@ -324,7 +351,7 @@ class UserAdminControllerIT extends AbstractPostgresIntegrationTest {
                         .param("fname", "New")
                         .param("lname", "User")
                         .param("userid", "NEWUSR01")
-                        .param("passwd", "PASSWORD")
+                        .param("passwd", SEEDED_PASSWORD)
                         .param("usrtype", "U")
                         .with(csrf()))
                 .andExpect(status().isOk())
@@ -345,7 +372,7 @@ class UserAdminControllerIT extends AbstractPostgresIntegrationTest {
                         .param("fname", "Dup")
                         .param("lname", "User")
                         .param("userid", "USER0001")
-                        .param("passwd", "PASSWORD")
+                        .param("passwd", SEEDED_PASSWORD)
                         .param("usrtype", "U")
                         .with(csrf()))
                 .andExpect(status().isConflict())
@@ -364,12 +391,40 @@ class UserAdminControllerIT extends AbstractPostgresIntegrationTest {
                         .param("fname", "")
                         .param("lname", "User")
                         .param("userid", "NEWUSR02")
-                        .param("passwd", "PASSWORD")
+                        .param("passwd", SEEDED_PASSWORD)
                         .param("usrtype", "U")
                         .with(csrf()))
                 .andExpect(status().isOk())
                 .andExpect(view().name(VIEW_ADD))
                 .andExpect(model().attribute("form", hasProperty("errmsg", containsString("First Name can NOT be empty"))));
+    }
+
+    @Test
+    @WithMockUser(username = "ADMIN001", roles = "ADMIN")
+    @DisplayName("CU01 (finding #11): an over-width field is rejected with the neutral length banner, no user created")
+    void userAddOverWidthFieldRejectedNoCreate() throws Exception {
+        // userid is PIC X(8) / @Size(max = 8); a 9-char value is only reachable by a crafted request
+        // (COUSR01 pins maxlength="8"). @Valid + BindingResult must bounce it with the neutral length
+        // banner BEFORE COUSR01C's own field edits run - so their message ordering is preserved - and
+        // no USRSEC row is written. This also exercises the multi-form @InitBinder switch resolving the
+        // bound target to COUSR01Form (the blank-field test above proves in-width edits still reach the
+        // service, so validation restricts rather than replaces the COBOL edits).
+        mockMvc.perform(post(ROUTE_ADD).session(adminReenterSession())
+                        .param("pfkey", "ENTER")
+                        .param("fname", "New")
+                        .param("lname", "User")
+                        .param("userid", "NINECHAR9")
+                        .param("passwd", SEEDED_PASSWORD)
+                        .param("usrtype", "U")
+                        .with(csrf()))
+                .andExpect(status().isOk())
+                .andExpect(view().name(VIEW_ADD))
+                .andExpect(model().attribute("form",
+                        hasProperty("errmsg", containsString("exceeds the maximum length"))));
+
+        assertThat(userSecurityRepository.findByUsrId("NINECHAR9"))
+                .as("an over-width add must not create any USRSEC row")
+                .isEmpty();
     }
 
     @Test
@@ -436,18 +491,26 @@ class UserAdminControllerIT extends AbstractPostgresIntegrationTest {
         // The fetch (ENTER) and the save (PF5) must share one session so the update targets the
         // record loaded in step one (COBOL USR-MODIFIED flag). The write rolls back via @Transactional.
         MockHttpSession session = adminReenterSession();
-        mockMvc.perform(post(ROUTE_UPDATE).session(session)
+        // Step one (ENTER) fetches USER0002 and arms the confirmation nonce (finding F12); capture
+        // the armed token off the redisplayed form so step two can present it, mirroring the hidden
+        // field a browser round-trips. Without a valid token the PF5 save is rejected with no write.
+        MvcResult fetch = mockMvc.perform(post(ROUTE_UPDATE).session(session)
                         .param("pfkey", "ENTER")
                         .param("usridin", "USER0002")
                         .with(csrf()))
+                .andExpect(status().isOk())
+                .andExpect(model().attribute("form", hasProperty("errmsg", containsString("PF5"))))
                 .andReturn();
+        String token = ((COUSR02Form) fetch.getModelAndView().getModel().get("form")).getConfirmToken();
+        assertThat(token).as("the fetch turn must arm a confirmation token").isNotBlank();
 
         mockMvc.perform(post(ROUTE_UPDATE).session(session)
                         .param("pfkey", "PF5")
                         .param("usridin", "USER0002")
+                        .param("confirmToken", token)
                         .param("fname", "Changed")
                         .param("lname", "Name")
-                        .param("passwd", "PASSWORD")
+                        .param("passwd", SEEDED_PASSWORD)
                         .param("usrtype", "U")
                         .with(csrf()))
                 .andExpect(status().isOk())
@@ -477,17 +540,24 @@ class UserAdminControllerIT extends AbstractPostgresIntegrationTest {
         // and the delete rolls back via @Transactional.
         MockHttpSession session = adminReenterSession();
 
-        mockMvc.perform(post(ROUTE_DELETE).session(session)
+        // Step one (ENTER) looks USER0003 up, prompts for PF5, and arms the confirmation nonce
+        // (finding F12); capture the armed token so step two can present it (the browser round-trips
+        // it via the hidden field). Without a valid token the PF5 delete is rejected with no delete.
+        MvcResult lookup = mockMvc.perform(post(ROUTE_DELETE).session(session)
                         .param("pfkey", "ENTER")
                         .param("usridin", "USER0003")
                         .with(csrf()))
                 .andExpect(status().isOk())
                 .andExpect(view().name(VIEW_DELETE))
-                .andExpect(model().attribute("form", hasProperty("errmsg", containsString("PF5"))));
+                .andExpect(model().attribute("form", hasProperty("errmsg", containsString("PF5"))))
+                .andReturn();
+        String token = ((COUSR03Form) lookup.getModelAndView().getModel().get("form")).getConfirmToken();
+        assertThat(token).as("the lookup turn must arm a confirmation token").isNotBlank();
 
         mockMvc.perform(post(ROUTE_DELETE).session(session)
                         .param("pfkey", "PF5")
                         .param("usridin", "USER0003")
+                        .param("confirmToken", token)
                         .with(csrf()))
                 .andExpect(status().isOk())
                 .andExpect(view().name(VIEW_DELETE))
@@ -539,9 +609,201 @@ class UserAdminControllerIT extends AbstractPostgresIntegrationTest {
                         .param("fname", "New")
                         .param("lname", "User")
                         .param("userid", "NEWUSR03")
-                        .param("passwd", "PASSWORD")
+                        .param("passwd", SEEDED_PASSWORD)
                         .param("usrtype", "U"))
                 .andExpect(status().isForbidden());
     }
-}
 
+    // =============================================================================================
+    // Finding F12 — confirmation-integrity (server-owned target + single-use nonce). These tests
+    // are deliberately NOT @Transactional: they assert COMMITTED state (or the absence of a write)
+    // through the repository, relying on the per-test Flyway clean+migrate to reset the seed. They
+    // reproduce the attacker moves the finding calls out: target-swap, forged nonce, and replay.
+    // =============================================================================================
+
+    /**
+     * CU02 target-swap: the confirmation nonce armed for one user cannot save a re-post aimed at a
+     * different user. The fetch arms the nonce bound to USER0002; the PF5 then re-posts USER0004
+     * with that nonce and edited fields. The save is rejected (target mismatch), no write occurs,
+     * and the swapped victim (USER0004) is untouched.
+     *
+     * @throws Exception if a request cannot be performed
+     */
+    @Test
+    @WithMockUser(username = "ADMIN001", roles = "ADMIN")
+    void userUpdatePf5SwappedTargetRejectedVictimUnchanged() throws Exception {
+        MockHttpSession session = adminReenterSession();
+        MvcResult fetch = mockMvc.perform(post(ROUTE_UPDATE).session(session)
+                        .param("pfkey", "ENTER").param("usridin", "USER0002").with(csrf()))
+                .andExpect(status().isOk())
+                .andReturn();
+        String token = ((COUSR02Form) fetch.getModelAndView().getModel().get("form")).getConfirmToken();
+        assertThat(token).isNotBlank();
+
+        // Re-aim the save at USER0004 while presenting USER0002's nonce.
+        mockMvc.perform(post(ROUTE_UPDATE).session(session)
+                        .param("pfkey", "PF5")
+                        .param("usridin", "USER0004")
+                        .param("confirmToken", token)
+                        .param("fname", "HACKED")
+                        .param("lname", "SWAPPED")
+                        .param("passwd", SEEDED_PASSWORD)
+                        .param("usrtype", "U")
+                        .with(csrf()))
+                .andExpect(status().isOk())
+                .andExpect(view().name(VIEW_UPDATE))
+                .andExpect(model().attribute("form",
+                        hasProperty("errmsg", containsString(CONFIRM_INTEGRITY_FRAGMENT))));
+
+        UserSecurity victim = userSecurityRepository.findByUsrId("USER0004").orElseThrow();
+        assertThat(victim.getUsrFname().trim())
+                .as("the swapped victim must not be overwritten").isEqualTo("AVERARDO");
+        assertThat(victim.getUsrLname().trim()).isEqualTo("MAZZI");
+    }
+
+    /**
+     * CU02 forged nonce: a PF5 presenting a syntactically valid but never-armed nonce is rejected
+     * with the integrity banner and performs no write.
+     *
+     * @throws Exception if a request cannot be performed
+     */
+    @Test
+    @WithMockUser(username = "ADMIN001", roles = "ADMIN")
+    void userUpdatePf5ForgedTokenRejectedNoWrite() throws Exception {
+        MockHttpSession session = adminReenterSession();
+        mockMvc.perform(post(ROUTE_UPDATE).session(session)
+                        .param("pfkey", "ENTER").param("usridin", "USER0002").with(csrf()))
+                .andExpect(status().isOk()).andReturn();
+
+        mockMvc.perform(post(ROUTE_UPDATE).session(session)
+                        .param("pfkey", "PF5")
+                        .param("usridin", "USER0002")
+                        .param("confirmToken", FORGED_TOKEN)
+                        .param("fname", "HACKED")
+                        .param("lname", "FORGED")
+                        .param("passwd", SEEDED_PASSWORD)
+                        .param("usrtype", "U")
+                        .with(csrf()))
+                .andExpect(status().isOk())
+                .andExpect(view().name(VIEW_UPDATE))
+                .andExpect(model().attribute("form",
+                        hasProperty("errmsg", containsString(CONFIRM_INTEGRITY_FRAGMENT))));
+
+        UserSecurity user = userSecurityRepository.findByUsrId("USER0002").orElseThrow();
+        assertThat(user.getUsrFname().trim())
+                .as("a forged confirmation must not write").isEqualTo("AJITH");
+    }
+
+    /**
+     * CU02 replay: a nonce is single-use. The first PF5 (valid nonce) commits the change; replaying
+     * the same nonce on a second PF5 with different edits is rejected and performs no further write,
+     * so the committed record stays at the first save's value.
+     *
+     * @throws Exception if a request cannot be performed
+     */
+    @Test
+    @WithMockUser(username = "ADMIN001", roles = "ADMIN")
+    void userUpdatePf5ReplayedTokenNoSecondWrite() throws Exception {
+        MockHttpSession session = adminReenterSession();
+        MvcResult fetch = mockMvc.perform(post(ROUTE_UPDATE).session(session)
+                        .param("pfkey", "ENTER").param("usridin", "USER0002").with(csrf()))
+                .andExpect(status().isOk()).andReturn();
+        String token = ((COUSR02Form) fetch.getModelAndView().getModel().get("form")).getConfirmToken();
+        assertThat(token).isNotBlank();
+
+        // First PF5 with the valid nonce commits the change.
+        mockMvc.perform(post(ROUTE_UPDATE).session(session)
+                        .param("pfkey", "PF5")
+                        .param("usridin", "USER0002")
+                        .param("confirmToken", token)
+                        .param("fname", "ZORRO")
+                        .param("lname", "MASK")
+                        .param("passwd", SEEDED_PASSWORD)
+                        .param("usrtype", "U")
+                        .with(csrf()))
+                .andExpect(status().isOk())
+                .andExpect(model().attribute("form", hasProperty("errmsg", containsString("has been updated"))));
+        String committedFname = userSecurityRepository.findByUsrId("USER0002").orElseThrow()
+                .getUsrFname().trim();
+
+        // Replaying the now-consumed nonce with different edits is rejected: no second write.
+        mockMvc.perform(post(ROUTE_UPDATE).session(session)
+                        .param("pfkey", "PF5")
+                        .param("usridin", "USER0002")
+                        .param("confirmToken", token)
+                        .param("fname", "REPLAYED")
+                        .param("lname", "AGAIN")
+                        .param("passwd", SEEDED_PASSWORD)
+                        .param("usrtype", "U")
+                        .with(csrf()))
+                .andExpect(status().isOk())
+                .andExpect(model().attribute("form",
+                        hasProperty("errmsg", containsString(CONFIRM_INTEGRITY_FRAGMENT))));
+
+        UserSecurity user = userSecurityRepository.findByUsrId("USER0002").orElseThrow();
+        assertThat(user.getUsrFname().trim())
+                .as("a replayed nonce must not overwrite the committed value")
+                .isEqualTo(committedFname);
+        assertThat(user.getUsrFname().trim()).isNotEqualTo("REPLAYED");
+    }
+
+    /**
+     * CU03 target-swap: the delete nonce armed for one user cannot delete a different user. The
+     * lookup arms the nonce for USER0002; the PF5 then re-posts USER0004 with that nonce. The delete
+     * is rejected and neither user is removed.
+     *
+     * @throws Exception if a request cannot be performed
+     */
+    @Test
+    @WithMockUser(username = "ADMIN001", roles = "ADMIN")
+    void userDeletePf5SwappedTargetRejectedVictimNotDeleted() throws Exception {
+        MockHttpSession session = adminReenterSession();
+        MvcResult lookup = mockMvc.perform(post(ROUTE_DELETE).session(session)
+                        .param("pfkey", "ENTER").param("usridin", "USER0002").with(csrf()))
+                .andExpect(status().isOk()).andReturn();
+        String token = ((COUSR03Form) lookup.getModelAndView().getModel().get("form")).getConfirmToken();
+        assertThat(token).isNotBlank();
+
+        mockMvc.perform(post(ROUTE_DELETE).session(session)
+                        .param("pfkey", "PF5")
+                        .param("usridin", "USER0004")
+                        .param("confirmToken", token)
+                        .with(csrf()))
+                .andExpect(status().isOk())
+                .andExpect(view().name(VIEW_DELETE))
+                .andExpect(model().attribute("form",
+                        hasProperty("errmsg", containsString(CONFIRM_INTEGRITY_FRAGMENT))));
+
+        assertThat(userSecurityRepository.findByUsrId("USER0004"))
+                .as("the swapped victim must not be deleted").isPresent();
+        assertThat(userSecurityRepository.findByUsrId("USER0002"))
+                .as("the confirmed user must not be deleted on a rejected swap").isPresent();
+    }
+
+    /**
+     * CU03 forged nonce: a PF5 delete presenting a never-armed nonce is rejected and deletes nobody.
+     *
+     * @throws Exception if a request cannot be performed
+     */
+    @Test
+    @WithMockUser(username = "ADMIN001", roles = "ADMIN")
+    void userDeletePf5ForgedTokenRejectedUserNotDeleted() throws Exception {
+        MockHttpSession session = adminReenterSession();
+        mockMvc.perform(post(ROUTE_DELETE).session(session)
+                        .param("pfkey", "ENTER").param("usridin", "USER0003").with(csrf()))
+                .andExpect(status().isOk()).andReturn();
+
+        mockMvc.perform(post(ROUTE_DELETE).session(session)
+                        .param("pfkey", "PF5")
+                        .param("usridin", "USER0003")
+                        .param("confirmToken", FORGED_TOKEN)
+                        .with(csrf()))
+                .andExpect(status().isOk())
+                .andExpect(view().name(VIEW_DELETE))
+                .andExpect(model().attribute("form",
+                        hasProperty("errmsg", containsString(CONFIRM_INTEGRITY_FRAGMENT))));
+
+        assertThat(userSecurityRepository.findByUsrId("USER0003"))
+                .as("a forged confirmation must not delete the user").isPresent();
+    }
+}

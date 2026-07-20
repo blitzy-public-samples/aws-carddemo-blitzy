@@ -7,6 +7,7 @@ import java.nio.charset.Charset;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.List;
 
 import org.junit.jupiter.api.Test;
@@ -400,16 +401,30 @@ class CategoryBalancePrintJobConfigIT extends AbstractPostgresIntegrationTest {
     }
 
     /**
-     * Reads the produced report using the production single-byte charset. The writer terminates every
-     * record (including the last) with a Unix newline, so {@link Files#readAllLines} yields exactly one
-     * entry per report record with no trailing empty line.
+     * Reads the produced report as an <em>undelimited</em> {@code RECFM=FB} image (review
+     * finding&nbsp;#17). The production writer emits every
+     * {@value CategoryBalancePrintJobConfig#REPORT_RECORD_LENGTH}-byte record back-to-back with
+     * <strong>no</strong> delimiter ({@code lineSeparator("")}), exactly as the mainframe
+     * {@code SORTOUT LRECL=40} dataset is stored, so the file is sliced on fixed
+     * {@value CategoryBalancePrintJobConfig#REPORT_RECORD_LENGTH}-byte boundaries rather than on
+     * newlines. The total byte length is asserted to be an exact multiple of the record width, which
+     * simultaneously proves that no stray delimiter byte leaked into the output.
      *
      * @param reportFile the report file to read
-     * @return the report lines in file order
+     * @return the report records in file order
      * @throws Exception if the file cannot be read
      */
     private static List<String> readReport(Path reportFile) throws Exception {
-        return Files.readAllLines(reportFile, REPORT_CHARSET);
+        byte[] all = Files.readAllBytes(reportFile);
+        assertThat(all.length % RECORD_LENGTH)
+                .as("report file length %d must be an exact multiple of the %d-byte record width "
+                        + "(undelimited RECFM=FB, finding #17)", all.length, RECORD_LENGTH)
+                .isZero();
+        List<String> records = new ArrayList<>(all.length / RECORD_LENGTH);
+        for (int off = 0; off < all.length; off += RECORD_LENGTH) {
+            records.add(new String(all, off, RECORD_LENGTH, REPORT_CHARSET));
+        }
+        return records;
     }
 
     /**

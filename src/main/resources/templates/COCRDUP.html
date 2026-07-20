@@ -28,6 +28,7 @@
 -->
 <html lang="en" xmlns:th="http://www.thymeleaf.org">
 <head>
+    <th:block th:replace="~{fragments/bms-palette :: palette}"></th:block>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Update Credit Card Details</title>
@@ -42,13 +43,13 @@
             --rh: 1.25rem;
             --screen-cols: 80;
             /* 3270 palette mapped to the CardDemo hex contract. */
-            --col-blue:    #0000CD;
-            --col-yellow:  #CCCC00;
-            --col-turq:    #00CDCD;
-            --col-green:   #00CD00;
-            --col-red:     #CD0000;
-            --col-neutral: #FFFFFF;
-            --col-bg:      #000000;
+            --col-blue:    var(--bms-blue);
+            --col-yellow:  var(--bms-yellow);
+            --col-turq:    var(--bms-turquoise);
+            --col-green:   var(--bms-green);
+            --col-red:     var(--bms-red);
+            --col-neutral: var(--bms-neutral);
+            --col-bg:      var(--bms-bg);
         }
 
         html { background: var(--col-bg); }
@@ -63,7 +64,17 @@
             font-size: 16px;
             line-height: var(--rh);
             display: flex;
-            justify-content: center;
+            justify-content: safe center;
+            /* Finding #54: horizontal scroll keeps the 80ch artboard's left
+               origin reachable at 375x667; `safe center` falls back to
+               start-alignment (left edge at scrollLeft 0) when it overflows. */
+            overflow-x: auto;
+        }
+
+        /* Finding #54: the terminal artboard must never shrink below 80ch, so
+           its left origin remains reachable inside the horizontal scroller. */
+        body > * {
+            flex-shrink: 0;
         }
 
         /* Skip link - invisible accessibility, no visual footprint until
@@ -174,6 +185,7 @@
             outline: 2px solid var(--col-neutral);
             outline-offset: 1px;
         }
+        .controls button:active { text-decoration: underline; filter: brightness(1.3); }
         @media (hover: hover) {
             .controls button:hover { background: #222; }
         }
@@ -199,6 +211,9 @@
     <a class="skip-link" href="#screen">Skip to screen</a>
 
     <main>
+        <!-- Off-grid semantic heading for assistive tech (review finding #56); the visible
+             title cell is unchanged. -->
+        <h1 class="visually-hidden">Update Credit Card Details</h1>
         <!-- CSRF is emitted automatically: with spring-boot-starter-security on
              the classpath, th:action triggers Spring Security's
              CsrfRequestDataValueProcessor to inject the hidden _csrf field. -->
@@ -227,39 +242,50 @@
                 <label class="f w c-turq" style="--r:7; --c:23; --w:19;" for="acctsid">Account Number    :</label>
                 <input id="acctsid" class="f w fld" style="--r:7; --c:45; --w:11;"
                        type="text" th:field="*{acctsid}" maxlength="11"
+                       th:readonly="${confirmMode}"
                        autocomplete="off" autofocus>
 
                 <!-- ===================== Card number (row 8) ============== -->
                 <label class="f w c-turq" style="--r:8; --c:23; --w:19;" for="cardsid">Card Number       :</label>
                 <input id="cardsid" class="f w fld" style="--r:8; --c:45; --w:16;"
                        type="text" th:field="*{cardsid}" maxlength="16"
+                       th:readonly="${confirmMode}"
                        autocomplete="off">
 
                 <!-- ===================== Name on card (row 11) ============ -->
                 <label class="f w c-turq" style="--r:11; --c:4; --w:19;" for="crdname">Name on card      :</label>
                 <input id="crdname" class="f w fld" style="--r:11; --c:25; --w:50;"
                        type="text" th:field="*{crdname}" maxlength="50"
+                       th:readonly="${confirmMode}"
                        autocomplete="off">
 
                 <!-- ===================== Card active Y/N (row 13) ========= -->
                 <label class="f w c-turq" style="--r:13; --c:4; --w:20;" for="crdstcd">Card Active Y/N   : </label>
                 <input id="crdstcd" class="f w fld" style="--r:13; --c:25; --w:1;"
                        type="text" th:field="*{crdstcd}" maxlength="1"
+                       th:readonly="${confirmMode}"
                        autocomplete="off">
 
                 <!-- ===================== Expiry date (row 15) ============= -->
                 <label class="f w c-turq" style="--r:15; --c:4; --w:20;" for="expmon">Expiry Date       : </label>
                 <input id="expmon" class="f w fld right" style="--r:15; --c:25; --w:2;"
                        type="text" th:field="*{expmon}" maxlength="2"
+                       th:readonly="${confirmMode}"
                        aria-label="Card expiry month" autocomplete="off">
                 <span class="f w c-neutral" style="--r:15; --c:28; --w:1;" aria-hidden="true">/</span>
                 <input id="expyear" class="f w fld right" style="--r:15; --c:30; --w:4;"
                        type="text" th:field="*{expyear}" maxlength="4"
+                       th:readonly="${confirmMode}"
                        aria-label="Card expiry year" autocomplete="off">
 
                 <!-- Expiry day: BMS EXPDAY is DRK (non-display) / PROT at
                      (15,36); carried through the round-trip as a hidden field. -->
                 <input type="hidden" th:field="*{expday}">
+
+                <!-- Review finding #10: single-use confirmation token. Echoed as a
+                     hidden field and validated then consumed on the PF5 save so a
+                     replayed or forged confirmation cannot re-drive the update. -->
+                <input type="hidden" th:field="*{confirmToken}">
 
                 <!-- ===================== Info message (row 20) ============ -->
                 <span class="f w c-neutral" style="--r:20; --c:25; --w:40;"

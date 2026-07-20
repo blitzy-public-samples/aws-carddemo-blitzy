@@ -30,6 +30,8 @@ import org.springframework.batch.core.step.tasklet.Tasklet;
 import org.springframework.batch.repeat.RepeatStatus;
 import org.springframework.transaction.PlatformTransactionManager;
 
+import com.aws.carddemo.util.batch.BatchFilePathResolver;
+
 /**
  * Pure JUnit&#160;5 unit test for {@link TransactionCombineJobConfig}, the Spring Batch translation of
  * the mainframe transaction-combine job {@code COMBTRAN} ({@code legacy/jcl/COMBTRAN.jcl} +
@@ -49,9 +51,11 @@ import org.springframework.transaction.PlatformTransactionManager;
  *   <li>every combined record is exactly 350 bytes, both inputs are fully represented, and the written
  *       count equals the sum of the input counts;</li>
  *   <li>each record's 350 bytes are preserved verbatim (byte-exact), including trailing content;</li>
- *   <li>the concatenation order (backup before system) is preserved for equal keys (stable sort);</li>
- *   <li>the record framing (LF-delimited, undelimited {@code RECFM=FB}, and CR/LF tolerance) behaves as
- *       documented and wrong-length records are rejected.</li>
+ *   <li>the concatenation order (backup before system) is preserved for equal keys (stable sort),
+ *       including across multiple spilled runs of the external merge sort;</li>
+ *   <li>the record framing is strictly undelimited {@code RECFM=FB} (contiguous 350-byte blocks, no
+ *       delimiter assumed or written), a line-feed byte inside a record is treated as ordinary content
+ *       rather than a delimiter, and truncated/wrong-length inputs are rejected.</li>
  * </ul>
  *
  * <p>No {@code float}/{@code double} arithmetic appears anywhere; records are handled as raw bytes.</p>
@@ -162,14 +166,15 @@ class TransactionCombineJobConfigTest {
     }
 
     /**
-     * Verifies the combined output framing: one 350-byte record per line, each terminated by a single
-     * line feed (including a trailing line feed after the final record), so the total output size is
-     * {@code recordCount * (350 + 1)} bytes and every 351st byte is a line feed.
+     * Verifies the combined output is an undelimited {@code RECFM=FB} image (finding #17): contiguous
+     * 350-byte records with no record delimiter, so the total output size is exactly
+     * {@code recordCount * 350} bytes, no line-feed byte is appended after any record, and slicing the
+     * output into 350-byte blocks recovers the records in {@code TRAN-ID} order.
      *
      * @throws IOException if the fixture files cannot be written or the output read
      */
     @Test
-    void combineAndSortWritesLineFeedFramedRecordsWithTrailingNewline() throws IOException {
+    void combineAndSortWritesUndelimitedFixedBlockRecordsWithNoDelimiter() throws IOException {
         Path backup = writeInput("b.dat", List.of(record("TXN2", 'x'), record("TXN4", 'x')));
         Path system = writeInput("s.dat", List.of(record("TXN1", 'y'), record("TXN3", 'y')));
         Path out = tempDir.resolve("out.dat");
@@ -178,11 +183,57 @@ class TransactionCombineJobConfigTest {
         assertEquals(4, written);
 
         byte[] raw = Files.readAllBytes(out);
-        assertEquals(4 * (LEN + 1), raw.length, "each record occupies 350 content bytes plus one LF");
-        for (int i = 0; i < 4; i++) {
-            assertEquals((byte) '\n', raw[i * (LEN + 1) + LEN],
-                    "each 350-byte record must be followed by a line feed");
-        }
+        assertEquals(4 * LEN, raw.length,
+                "output must be contiguous 350-byte records with no delimiter (RECFM=FB)");
+        assertEquals(0, raw.length % LEN, "output length must be an exact multiple of the record length");
+        assertEquals(List.of("TXN1", "TXN2", "TXN3", "TXN4"), tranIdsInOrder(out),
+                "sliced 350-byte blocks must recover the records in ascending TRAN-ID order");
+    }
+
+    /**
+     * Exercises the external, bounded-memory merge sort across <em>many</em> spilled runs (finding #22):
+     * driving {@link TransactionCombineJobConfig#combineAndSort(Path, Path, Path, int)} with a per-run
+     * bound of one record forces one run per input record, so the k-way merge &mdash; not an in-memory
+     * {@code List.sort} &mdash; produces the global ordering. Proves the merge yields a fully sorted
+     * output and preserves stability (backup before system for equal keys) across run boundaries.
+     *
+     * @throws IOException if the fixture files cannot be written or the output read
+     */
+    @Test
+    void combineAndSortAcrossManySpilledRunsIsGloballySortedAndStable() throws IOException {
+        // Equal-keyed duplicates in each input plus interleaved distinct keys, all out of order.
+        byte[] dupBackupFirst = record("DUP0000000000001", 'B');
+        byte[] dupBackupSecond = record("DUP0000000000001", 'C');
+        byte[] dupSystem = record("DUP0000000000001", 'S');
+        Path backup = writeInput("multi-b.dat", List.of(
+                record("TXN0000000000030", 'x'),
+                dupBackupFirst,
+                record("TXN0000000000010", 'x'),
+                dupBackupSecond));
+        Path system = writeInput("multi-s.dat", List.of(
+                record("TXN0000000000020", 'y'),
+                dupSystem,
+                record("TXN0000000000005", 'y')));
+        Path out = tempDir.resolve("multi-out.dat");
+
+        long written = TransactionCombineJobConfig.combineAndSort(backup, system, out, 1);
+        assertEquals(7, written, "every input record must appear exactly once");
+
+        // Global ascending TRAN-ID order (three equal DUP keys collapse to one id in the list).
+        assertEquals(
+                List.of("DUP0000000000001", "DUP0000000000001", "DUP0000000000001",
+                        "TXN0000000000005", "TXN0000000000010", "TXN0000000000020", "TXN0000000000030"),
+                tranIdsInOrder(out),
+                "multi-run merge must yield a globally ascending TRAN-ID ordering");
+
+        // Stability across runs: the two backup DUP records (in read order) precede the system DUP.
+        List<byte[]> outRecords = TransactionCombineJobConfig.splitRecords(Files.readAllBytes(out));
+        assertArrayEquals(dupBackupFirst, outRecords.get(0),
+                "first backup duplicate (earliest read) must sort first among equal keys");
+        assertArrayEquals(dupBackupSecond, outRecords.get(1),
+                "second backup duplicate must sort second, preserving backup read order");
+        assertArrayEquals(dupSystem, outRecords.get(2),
+                "system duplicate must sort last among equal keys (backup read before system)");
     }
 
     /**
@@ -231,25 +282,27 @@ class TransactionCombineJobConfigTest {
     }
 
     /**
-     * Verifies CR/LF terminators are tolerated on read: a trailing carriage return before each line
-     * feed is stripped so each record is still exactly 350 bytes.
+     * Verifies strict undelimited {@code RECFM=FB} framing (finding #17): a line-feed byte occurring
+     * <em>inside</em> a 350-byte record is treated as ordinary record content, never as a delimiter.
+     * Two records each carrying an embedded line feed are concatenated with no delimiter and must split
+     * purely by length into exactly two byte-exact records.
      */
     @Test
-    void splitRecordsToleratesCrLfTerminators() {
-        byte[] r1 = record("CRLF000000000001", 'a');
-        byte[] r2 = record("CRLF000000000002", 'b');
-        byte[] framed = new byte[(LEN + 2) * 2];
-        int pos = 0;
-        for (byte[] rec : List.of(r1, r2)) {
-            System.arraycopy(rec, 0, framed, pos, LEN);
-            pos += LEN;
-            framed[pos++] = (byte) '\r';
-            framed[pos++] = (byte) '\n';
-        }
+    void splitRecordsTreatsLineFeedAsOrdinaryContentNotDelimiter() {
+        byte[] r1 = record("LF00000000000001", 'a');
+        byte[] r2 = record("LF00000000000002", 'b');
+        // Embed a line feed well inside each record's content region (byte 20).
+        r1[20] = (byte) '\n';
+        r2[20] = (byte) '\n';
+        byte[] concatenated = new byte[LEN * 2];
+        System.arraycopy(r1, 0, concatenated, 0, LEN);
+        System.arraycopy(r2, 0, concatenated, LEN, LEN);
 
-        List<byte[]> records = TransactionCombineJobConfig.splitRecords(framed);
-        assertEquals(2, records.size());
-        assertArrayEquals(r1, records.get(0), "CR must be stripped, leaving a 350-byte record");
+        List<byte[]> records = TransactionCombineJobConfig.splitRecords(concatenated);
+        assertEquals(2, records.size(),
+                "an undelimited 700-byte image must split into exactly two 350-byte records");
+        assertArrayEquals(r1, records.get(0),
+                "embedded line feed must be preserved as content, not treated as a record boundary");
         assertArrayEquals(r2, records.get(1));
     }
 
@@ -276,21 +329,25 @@ class TransactionCombineJobConfigTest {
     }
 
     /**
-     * Verifies that a line-framed record whose content length is not 350 bytes is rejected during the
-     * combine (the layout mapper enforces the exact record length).
+     * Verifies that a truncated input &mdash; one whose byte length is not an exact multiple of the
+     * 350-byte record length &mdash; is rejected during the combine. Under the strict undelimited
+     * {@code RECFM=FB} reader (finding #17) a partial final block raises an {@link IOException} rather
+     * than being silently split on a delimiter or padded.
      *
-     * @throws IOException if the fixture files cannot be written
+     * @throws IOException if the valid fixture file cannot be written
      */
     @Test
-    void combineAndSortRejectsRecordOfWrongLength() throws IOException {
+    void combineAndSortRejectsTruncatedFinalBlock() throws IOException {
         byte[] tooShort = new byte[LEN - 1];
         Arrays.fill(tooShort, (byte) '0');
         Path backup = writeInput("short.dat", List.of(tooShort));
         Path system = writeInput("ok.dat", List.of(record("TXN0000000000001", 'a')));
         Path out = tempDir.resolve("bad.dat");
 
-        assertThrows(IllegalArgumentException.class,
+        IOException ex = assertThrows(IOException.class,
                 () -> TransactionCombineJobConfig.combineAndSort(backup, system, out));
+        assertTrue(ex.getMessage().contains("truncated") || ex.getMessage().contains("partial"),
+                "the diagnostic should identify the truncated/partial final record");
     }
 
     // ------------------------------------------------------------------------------------------
@@ -322,8 +379,7 @@ class TransactionCombineJobConfigTest {
      */
     @Test
     void beanMethodsBuildNamedJobStepAndTasklet() {
-        TransactionCombineJobConfig config = new TransactionCombineJobConfig(
-                mock(JobRepository.class), mock(PlatformTransactionManager.class));
+        TransactionCombineJobConfig config = newConfig();
 
         Tasklet tasklet = config.transactionCombineTasklet("b", "s", "o");
         assertNotNull(tasklet, "the tasklet bean must be created");
@@ -349,8 +405,7 @@ class TransactionCombineJobConfigTest {
         Path backup = writeInput("tk-b.dat", List.of(record("TXN2", 'x'), record("TXN0", 'x')));
         Path system = writeInput("tk-s.dat", List.of(record("TXN1", 'y')));
         Path out = tempDir.resolve("tk-out.dat");
-        TransactionCombineJobConfig config = new TransactionCombineJobConfig(
-                mock(JobRepository.class), mock(PlatformTransactionManager.class));
+        TransactionCombineJobConfig config = newConfig();
 
         Tasklet tasklet = config.transactionCombineTasklet(
                 backup.toString(), system.toString(), out.toString());
@@ -367,8 +422,7 @@ class TransactionCombineJobConfigTest {
      */
     @Test
     void taskletRejectsBlankParameter() {
-        TransactionCombineJobConfig config = new TransactionCombineJobConfig(
-                mock(JobRepository.class), mock(PlatformTransactionManager.class));
+        TransactionCombineJobConfig config = newConfig();
         Tasklet tasklet = config.transactionCombineTasklet("   ", "system", "out");
 
         IllegalArgumentException ex = assertThrows(IllegalArgumentException.class,
@@ -382,14 +436,26 @@ class TransactionCombineJobConfigTest {
     // ------------------------------------------------------------------------------------------
 
     /**
+     * Builds a {@link TransactionCombineJobConfig} with mock batch collaborators and a real
+     * {@link BatchFilePathResolver} rooted at {@link #tempDir}, so tasklet executions resolve inputs and
+     * atomically publish the output within the per-test temporary directory (finding #18).
+     *
+     * @return a config instance for the bean-wiring and tasklet tests
+     */
+    private TransactionCombineJobConfig newConfig() {
+        return new TransactionCombineJobConfig(
+                mock(JobRepository.class), mock(PlatformTransactionManager.class),
+                new BatchFilePathResolver(List.of(tempDir.toString())));
+    }
+
+    /**
      * Builds a 350-byte {@code CVTRA05Y} record whose {@code TRAN-ID} (bytes 1-16) is the given id
      * (left-justified, space-padded) and whose remaining 334 bytes are filled with {@code fill} so each
-     * record has distinct, verifiable trailing content. The fill character must not be a line feed or
-     * carriage return, so the record survives the LF-framed round trip unchanged (as real transaction
-     * records, which contain no control bytes, do).
+     * record has distinct, verifiable trailing content. Under the undelimited {@code RECFM=FB} framing
+     * any fill byte is preserved verbatim; a printable fill is used purely for readable diagnostics.
      *
      * @param tranId the transaction id (up to 16 characters)
-     * @param fill   the printable fill byte for the remaining 334 bytes
+     * @param fill   the fill byte for the remaining 334 bytes
      * @return a 350-byte record image
      */
     private static byte[] record(String tranId, char fill) {
@@ -403,7 +469,9 @@ class TransactionCombineJobConfigTest {
     }
 
     /**
-     * Writes records to a temporary input file, one 350-byte record per line terminated by a line feed.
+     * Writes records to a temporary input file as a strict undelimited {@code RECFM=FB} image
+     * (contiguous 350-byte records, no delimiter), matching the framing the combine job reads and writes
+     * (finding #17).
      *
      * @param name    the file name within the temporary directory
      * @param records the records to write
@@ -415,7 +483,6 @@ class TransactionCombineJobConfigTest {
         try (OutputStream out = Files.newOutputStream(file)) {
             for (byte[] rec : records) {
                 out.write(rec);
-                out.write('\n');
             }
         }
         return file;

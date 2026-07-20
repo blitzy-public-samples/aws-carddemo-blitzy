@@ -23,6 +23,7 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
+import com.aws.carddemo.TestCredentials;
 import com.aws.carddemo.dto.CardDemoContext;
 import com.aws.carddemo.dto.screen.COSGN00Form;
 import com.aws.carddemo.security.CardDemoUserDetails;
@@ -130,7 +131,9 @@ class SignonServiceTest {
      * Seed cleartext password shared by the reference users ({@code V2__reference_data.sql}); a
      * demo value, never a real credential.
      */
-    private static final String SEED_PASSWORD = "PASSWORD";
+    // Review finding #5: non-secret unit fixture (SignonService does no password compare; value only
+    // carried through to the mocked user store / form input, never asserted as the real seed).
+    private static final String SEED_PASSWORD = TestCredentials.UNIT_FIXTURE_PASSWORD;
 
     /** Session-scoped {@code COMMAREA} replacement, mocked so routing writes are observable. */
     @Mock

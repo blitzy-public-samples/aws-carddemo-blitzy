@@ -100,7 +100,14 @@ import org.springframework.test.context.TestPropertySource;
             XrefPrintJobConfigIT.JobLauncherTestUtilsConfig.class
         },
         webEnvironment = SpringBootTest.WebEnvironment.NONE)
-@TestPropertySource(properties = "spring.jpa.hibernate.ddl-auto=none")
+// Batch parity slice, zero-warning start (review finding #35): Prometheus export is disabled so the
+// slice falls back to a SimpleMeterRegistry and Spring Batch's duplicate spring.batch.job.active
+// meter never trips the Prometheus same-tag-keys collision WARN. (WebEnvironment.NONE above already
+// keeps the servlet security auto-config dev-password WARN out of this non-web context.)
+@TestPropertySource(properties = {
+        "spring.jpa.hibernate.ddl-auto=none",
+        "management.prometheus.metrics.export.enabled=false"
+})
 class XrefPrintJobConfigIT extends AbstractPostgresIntegrationTest {
 
     /**

@@ -18,12 +18,15 @@ package com.aws.carddemo.service.online;
 import org.springframework.dao.DataAccessException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionSynchronization;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 
 import com.aws.carddemo.domain.UserSecurity;
 import com.aws.carddemo.dto.CardDemoContext;
 import com.aws.carddemo.dto.screen.COUSR02Form;
 import com.aws.carddemo.exception.RecordNotFoundException;
 import com.aws.carddemo.repository.UserSecurityRepository;
+import com.aws.carddemo.security.SessionRevocationService;
 
 /**
  * User-update (admin) online service, the Java migration of the CICS COBOL program
@@ -98,6 +101,17 @@ import com.aws.carddemo.repository.UserSecurityRepository;
  * dispatched read-update-rewrite path; read-only paths simply commit an empty transaction. The CICS
  * {@code READ ... UPDATE} record lock is approximated by this transactional unit of work, as the
  * declared {@link UserSecurityRepository} contract does not expose a pessimistic-lock finder.</p>
+ *
+ * <h2>Session revocation on security-relevant change (review findings #8, #43)</h2>
+ * <p>When an update commits a change to the password or the user type, the target user's live HTTP
+ * sessions are expired via {@link SessionRevocationService}, so a changed credential or a changed role
+ * (for example an admin&nbsp;&rarr;&nbsp;user demotion) cannot continue to be exercised by a session
+ * that authenticated under the old value. This restores the legacy property that each
+ * pseudo-conversational turn re-checked {@code USRSEC}. A name-only edit is not security-relevant and
+ * does not revoke. Revocation is registered as an {@link TransactionSynchronization#afterCommit()
+ * afterCommit} callback so a rolled-back update revokes nothing, and self-update is allowed for parity
+ * ({@code COUSR02C} has no self guard): the acting admin is simply signed out and re-authenticates
+ * under the new credentials or role.</p>
  *
  * <h2>Access and design constraints</h2>
  * <ul>
@@ -231,19 +245,30 @@ public class UserUpdateService {
     private final UserSecurityRepository userSecurityRepository;
 
     /**
+     * Revokes the updated user's live HTTP sessions after a committed security-relevant change
+     * (password or user type), so a stale password or an obsolete role cannot keep an existing session
+     * authorized (review findings #8, #43).
+     */
+    private final SessionRevocationService sessionRevocationService;
+
+    /**
      * Creates the user-update service via Spring constructor injection.
      *
-     * <p>A single constructor means no {@code @Autowired} annotation is required. Neither argument is
+     * <p>A single constructor means no {@code @Autowired} annotation is required. No argument is
      * dereferenced here, so the constructor introduces no {@code this}-escape.</p>
      *
-     * @param context                the session-scoped CardDemo context (COMMAREA replacement); must
-     *                               not be {@code null}
-     * @param userSecurityRepository the user-security repository ({@code USRSEC} replacement); must
-     *                               not be {@code null}
+     * @param context                  the session-scoped CardDemo context (COMMAREA replacement); must
+     *                                 not be {@code null}
+     * @param userSecurityRepository   the user-security repository ({@code USRSEC} replacement); must
+     *                                 not be {@code null}
+     * @param sessionRevocationService the session-revocation collaborator invoked after a committed
+     *                                 security-relevant change; must not be {@code null}
      */
-    public UserUpdateService(CardDemoContext context, UserSecurityRepository userSecurityRepository) {
+    public UserUpdateService(CardDemoContext context, UserSecurityRepository userSecurityRepository,
+            SessionRevocationService sessionRevocationService) {
         this.context = context;
         this.userSecurityRepository = userSecurityRepository;
+        this.sessionRevocationService = sessionRevocationService;
     }
 
     /**
@@ -633,6 +658,9 @@ public class UserUpdateService {
 
         // Compare each field; on a difference apply the edit and flag the record modified.
         boolean modified = false;
+        // Track whether an authentication/authorization-relevant field changed (password or user type),
+        // which is what must trigger session revocation (findings #8/#43). A name-only edit does not.
+        boolean securityRelevantChange = false;
         // IF FNAMEI NOT = SEC-USR-FNAME.
         if (!fieldsEqual(form.getFname(), user.getUsrFname())) {
             user.setUsrFname(form.getFname());
@@ -647,18 +675,55 @@ public class UserUpdateService {
         if (!fieldsEqual(form.getPasswd(), user.getUsrPwd())) {
             user.setUsrPwd(form.getPasswd());
             modified = true;
+            securityRelevantChange = true;
         }
         // IF USRTYPEI NOT = SEC-USR-TYPE.
         if (!fieldsEqual(form.getUsrtype(), user.getUsrType())) {
             user.setUsrType(form.getUsrtype());
             modified = true;
+            securityRelevantChange = true;
         }
 
         // IF USR-MODIFIED-YES PERFORM UPDATE-USER-SEC-FILE ELSE 'Please modify to update ...'.
         if (modified) {
-            return updateUserSecFile(user);
+            UserUpdateResult result = updateUserSecFile(user);
+            // Revoke the target user's live sessions only when a security-relevant change actually
+            // committed, so a changed password or a changed role (e.g. admin->user demotion) cannot
+            // continue to be exercised by an already-authenticated session. Registered after commit so a
+            // rolled-back save revokes nothing. Self-update is allowed (COBOL COUSR02C has no self guard):
+            // an admin who changes their own password or demotes themselves is simply signed out and must
+            // sign on again under the new credentials/role.
+            if (securityRelevantChange && result.severity() == MessageSeverity.SUCCESS) {
+                scheduleSessionRevocation(user.getUsrId());
+            }
+            return result;
         }
         return UserUpdateResult.error(MSG_PLEASE_MODIFY);
+    }
+
+    /**
+     * Schedules revocation of a user's live sessions so it runs only once the surrounding update has
+     * committed (review findings #8, #43).
+     *
+     * <p>When a transaction synchronization is active (the normal path, since {@code updateUserInfo} is
+     * {@code @Transactional}), an {@link TransactionSynchronization#afterCommit() afterCommit} callback
+     * is registered so a rolled-back update never revokes any session. When no synchronization is active
+     * (e.g. a direct unit-test call outside a transaction) the revocation runs immediately, which is
+     * safe because there is no pending rollback to race.</p>
+     *
+     * @param userId the id of the user whose sessions must be revoked after commit
+     */
+    private void scheduleSessionRevocation(String userId) {
+        if (TransactionSynchronizationManager.isSynchronizationActive()) {
+            TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+                @Override
+                public void afterCommit() {
+                    sessionRevocationService.revokeSessions(userId);
+                }
+            });
+        } else {
+            sessionRevocationService.revokeSessions(userId);
+        }
     }
 
     /**
@@ -680,8 +745,11 @@ public class UserUpdateService {
      * @throws RecordNotFoundException when no user with the given id exists (CICS {@code NOTFND})
      */
     UserSecurity readUserSecFile(String userId) {
-        // EXEC CICS READ DATASET(USRSEC) RIDFLD(SEC-USR-ID) UPDATE; NOTFND -> RecordNotFoundException.
-        return userSecurityRepository.findByUsrId(userId)
+        // EXEC CICS READ DATASET(USRSEC) RIDFLD(SEC-USR-ID) UPDATE -> pessimistic write lock
+        // (SELECT ... FOR UPDATE), held until this @Transactional unit-of-work commits so the
+        // read-modify-REWRITE is atomic and cannot lose a concurrent update (#14, CWE-362).
+        // NOTFND -> RecordNotFoundException.
+        return userSecurityRepository.findByUsrIdForUpdate(userId)
                 .orElseThrow(() -> new RecordNotFoundException(MSG_USER_NOT_FOUND));
     }
 

@@ -17,6 +17,8 @@ package com.aws.carddemo.service.online;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
@@ -38,7 +40,7 @@ import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
-import org.springframework.data.domain.Sort;
+import org.springframework.data.domain.Limit;
 
 /**
  * Pure-Mockito unit tests for {@link TransactionListService}.
@@ -78,12 +80,15 @@ import org.springframework.data.domain.Sort;
  * {@code XCTL}/redirect and screen rendering to the paired controller.</p>
  *
  * <p><b>Browse fixture:</b> the VSAM {@code STARTBR}/{@code READNEXT}/{@code READPREV} browse is
- * reproduced by the service reading the whole set once via the repository's inherited
- * {@code findAll(Sort)} and navigating it in memory. The mocked repository therefore returns a
- * controlled, already-ascending list of {@link Transaction} rows (transaction ids are
- * 16-character zero-padded numerics, so {@code String} order matches the legacy key order). A
- * fixture of at least eleven rows proves the exact ten-row page limit and the forward/backward
- * paging.</p>
+ * reproduced by the service reading each page as a bounded, key-ordered window (review finding
+ * #21): a forward page via {@code findByTranIdGreaterThanEqualOrderByTranIdAsc}, a backward page
+ * via {@code findByTranIdLessThanEqualOrderByTranIdDesc}, and the next-page indicator via
+ * {@code existsByTranIdGreaterThan}. The mocked repository's window finders are stubbed with a
+ * controlled, already-ascending list of {@link Transaction} rows (transaction ids are 16-character
+ * zero-padded numerics, so {@code String} order matches the legacy key order); each stub computes
+ * the exact slice a real {@code C}-collated, key-ordered query would return for the requested start
+ * key and limit. A fixture of at least eleven rows proves the exact ten-row page limit and the
+ * forward/backward paging while the query stays bounded.</p>
  *
  * <p><b>Money fidelity:</b> transaction amounts are {@link BigDecimal} (never {@code float} or
  * {@code double}); the amount assertions confirm the COBOL {@code +99999999.99} edit mask,
@@ -202,6 +207,100 @@ class TransactionListServiceTest {
     }
 
     /**
+     * Stubs the three bounded browse-window repository methods to behave like the real
+     * {@code C}-collated, key-ordered queries over the {@code ascending} fixture: the forward window
+     * ({@code findByTranIdGreaterThanEqualOrderByTranIdAsc}), the backward window
+     * ({@code findByTranIdLessThanEqualOrderByTranIdDesc}, returned descending for the service to
+     * reverse), and the next-page existence check ({@code existsByTranIdGreaterThan}). The stubs are
+     * {@code lenient} because a given test exercises only the subset of these paths its scenario
+     * reaches (a forward page, a backward page, and/or the PF8 next-page probe), so the unused stubs
+     * must not trip strict-stub checking.
+     *
+     * @param ascending the fixture, already sorted ascending by transaction id
+     */
+    private void stubBrowseWindows(List<Transaction> ascending) {
+        lenient().when(transactionRepository.findByTranIdGreaterThanEqualOrderByTranIdAsc(
+                anyString(), any(Limit.class)))
+                .thenAnswer(invocation -> forwardWindow(ascending, invocation.getArgument(0),
+                        invocation.getArgument(1)));
+        lenient().when(transactionRepository.findByTranIdLessThanEqualOrderByTranIdDesc(
+                anyString(), any(Limit.class)))
+                .thenAnswer(invocation -> backwardWindow(ascending, invocation.getArgument(0),
+                        invocation.getArgument(1)));
+        lenient().when(transactionRepository.existsByTranIdGreaterThan(anyString()))
+                .thenAnswer(invocation -> existsAfter(ascending, invocation.getArgument(0)));
+    }
+
+    /**
+     * Computes the forward (ascending, greater-than-or-equal) window a real key-ordered query would
+     * return, using the same {@code String} comparison the service and the {@code C}-collated column
+     * use on the 16-character zero-padded transaction ids.
+     *
+     * @param ascending the fixture sorted ascending by transaction id
+     * @param startKey  the inclusive lower-bound start key
+     * @param limit     the row cap
+     * @return the ascending window, at most {@code limit} records
+     */
+    private static List<Transaction> forwardWindow(List<Transaction> ascending, String startKey,
+                                                   Limit limit) {
+        List<Transaction> window = new ArrayList<>();
+        for (Transaction candidate : ascending) {
+            String id = (candidate.getTranId() == null) ? "" : candidate.getTranId();
+            if (id.compareTo(startKey) >= 0) {
+                window.add(candidate);
+                if (window.size() == limit.max()) {
+                    break;
+                }
+            }
+        }
+        return window;
+    }
+
+    /**
+     * Computes the backward (descending, less-than-or-equal) window a real key-ordered query would
+     * return, matching the repository contract that hands back rows in descending key order for the
+     * service to reverse.
+     *
+     * @param ascending the fixture sorted ascending by transaction id
+     * @param startKey  the inclusive upper-bound start key
+     * @param limit     the row cap
+     * @return the descending window, at most {@code limit} records
+     */
+    private static List<Transaction> backwardWindow(List<Transaction> ascending, String startKey,
+                                                    Limit limit) {
+        List<Transaction> window = new ArrayList<>();
+        for (int i = ascending.size() - 1; i >= 0; i--) {
+            Transaction candidate = ascending.get(i);
+            String id = (candidate.getTranId() == null) ? "" : candidate.getTranId();
+            if (id.compareTo(startKey) <= 0) {
+                window.add(candidate);
+                if (window.size() == limit.max()) {
+                    break;
+                }
+            }
+        }
+        return window;
+    }
+
+    /**
+     * Reports whether any fixture transaction sorts strictly after {@code key}, reproducing the
+     * bounded existence query behind the next-page indicator.
+     *
+     * @param ascending the fixture sorted ascending by transaction id
+     * @param key       the exclusive lower-bound key (the current page's last id)
+     * @return {@code true} when at least one transaction id is strictly greater than {@code key}
+     */
+    private static boolean existsAfter(List<Transaction> ascending, String key) {
+        for (Transaction candidate : ascending) {
+            String id = (candidate.getTranId() == null) ? "" : candidate.getTranId();
+            if (id.compareTo(key) > 0) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
      * Simulates the pseudo-conversational round-trip by writing a currently-displayed page onto the
      * form: the page number field and the ten row transaction ids (the paging cursor the service
      * reconstructs from the screen). Rows beyond the supplied list are left unset.
@@ -316,7 +415,7 @@ class TransactionListServiceTest {
     void mainEntry_firstDisplay_marksReenterAndLoadsFirstPage() {
         when(context.isNew()).thenReturn(false);
         when(context.isProgramEnter()).thenReturn(true);
-        when(transactionRepository.findAll(any(Sort.class))).thenReturn(sequentialTransactions(25));
+        stubBrowseWindows(sequentialTransactions(25));
 
         COTRN00Form form = new COTRN00Form();
         TransactionListResult result = service.mainEntry(AidKey.ENTER, form);
@@ -389,7 +488,7 @@ class TransactionListServiceTest {
         when(context.isNew()).thenReturn(false);
         when(context.isProgramEnter()).thenReturn(false);
         List<Transaction> all = sequentialTransactions(25);
-        when(transactionRepository.findAll(any(Sort.class))).thenReturn(all);
+        stubBrowseWindows(all);
 
         COTRN00Form form = new COTRN00Form();
         displayPage(form, pageRows(all, 1), 1);
@@ -410,7 +509,7 @@ class TransactionListServiceTest {
         when(context.isNew()).thenReturn(false);
         when(context.isProgramEnter()).thenReturn(false);
         List<Transaction> all = sequentialTransactions(25);
-        when(transactionRepository.findAll(any(Sort.class))).thenReturn(all);
+        stubBrowseWindows(all);
 
         COTRN00Form form = new COTRN00Form();
         displayPage(form, pageRows(all, 2), 2);
@@ -433,7 +532,7 @@ class TransactionListServiceTest {
      */
     @Test
     void processEnterKey_moreThanTenMatches_populatesExactlyTenRows() {
-        when(transactionRepository.findAll(any(Sort.class))).thenReturn(sequentialTransactions(11));
+        stubBrowseWindows(sequentialTransactions(11));
 
         COTRN00Form form = new COTRN00Form();
         TransactionListResult result = service.processEnterKey(form, context);
@@ -497,7 +596,7 @@ class TransactionListServiceTest {
      */
     @Test
     void processEnterKey_invalidSelectionFlag_showsMessageAndStillLoadsPage() {
-        when(transactionRepository.findAll(any(Sort.class))).thenReturn(sequentialTransactions(11));
+        stubBrowseWindows(sequentialTransactions(11));
 
         COTRN00Form form = new COTRN00Form();
         form.setSel0002("X");
@@ -519,7 +618,7 @@ class TransactionListServiceTest {
      */
     @Test
     void processEnterKey_numericFilter_positionsBrowseAtFilterId() {
-        when(transactionRepository.findAll(any(Sort.class))).thenReturn(sequentialTransactions(25));
+        stubBrowseWindows(sequentialTransactions(25));
 
         COTRN00Form form = new COTRN00Form();
         form.setTrnidin(tranId(5));
@@ -560,7 +659,7 @@ class TransactionListServiceTest {
      */
     @Test
     void processEnterKey_emptyFile_showsTopOfPageMessage() {
-        when(transactionRepository.findAll(any(Sort.class))).thenReturn(new ArrayList<>());
+        stubBrowseWindows(new ArrayList<>());
 
         COTRN00Form form = new COTRN00Form();
         TransactionListResult result = service.processEnterKey(form, context);
@@ -583,7 +682,7 @@ class TransactionListServiceTest {
     @Test
     void processPf8Key_notAtBottom_advancesToNextPage() {
         List<Transaction> all = sequentialTransactions(25);
-        when(transactionRepository.findAll(any(Sort.class))).thenReturn(all);
+        stubBrowseWindows(all);
 
         COTRN00Form form = new COTRN00Form();
         displayPage(form, pageRows(all, 1), 1);
@@ -604,7 +703,7 @@ class TransactionListServiceTest {
     @Test
     void processPf8Key_atBottom_showsAlreadyAtBottomAndLeavesPageUnchanged() {
         List<Transaction> all = sequentialTransactions(10);
-        when(transactionRepository.findAll(any(Sort.class))).thenReturn(all);
+        stubBrowseWindows(all);
 
         COTRN00Form form = new COTRN00Form();
         displayPage(form, pageRows(all, 1), 1);
@@ -630,7 +729,7 @@ class TransactionListServiceTest {
     @Test
     void processPf7Key_notAtTop_pagesBackToPriorPage() {
         List<Transaction> all = sequentialTransactions(25);
-        when(transactionRepository.findAll(any(Sort.class))).thenReturn(all);
+        stubBrowseWindows(all);
 
         COTRN00Form form = new COTRN00Form();
         displayPage(form, pageRows(all, 3), 3);
@@ -675,7 +774,7 @@ class TransactionListServiceTest {
      */
     @Test
     void processPageForward_fromStart_loadsFirstPage() {
-        when(transactionRepository.findAll(any(Sort.class))).thenReturn(sequentialTransactions(25));
+        stubBrowseWindows(sequentialTransactions(25));
 
         COTRN00Form form = new COTRN00Form();
         form.setPagenum("00000000");
@@ -695,7 +794,7 @@ class TransactionListServiceTest {
      */
     @Test
     void processPageBackward_fromPageThree_decrementsPageNumberNotReset() {
-        when(transactionRepository.findAll(any(Sort.class))).thenReturn(sequentialTransactions(25));
+        stubBrowseWindows(sequentialTransactions(25));
 
         COTRN00Form form = new COTRN00Form();
         form.setPagenum("00000003");
@@ -725,7 +824,7 @@ class TransactionListServiceTest {
         fixture.add(transaction(tranId(2), new BigDecimal("12.999")));
         fixture.add(transaction(tranId(3), new BigDecimal("-50.00")));
         fixture.add(transaction(tranId(4), new BigDecimal("123456789.99")));
-        when(transactionRepository.findAll(any(Sort.class))).thenReturn(fixture);
+        stubBrowseWindows(fixture);
 
         COTRN00Form form = new COTRN00Form();
         service.processEnterKey(form, context);
@@ -749,7 +848,7 @@ class TransactionListServiceTest {
         tran.setTranDesc("ABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890");
         List<Transaction> fixture = new ArrayList<>();
         fixture.add(tran);
-        when(transactionRepository.findAll(any(Sort.class))).thenReturn(fixture);
+        stubBrowseWindows(fixture);
 
         COTRN00Form form = new COTRN00Form();
         service.processEnterKey(form, context);
