@@ -708,6 +708,11 @@ These are out of scope for the current read-only increment but worthwhile:
   production-scale transaction history.
 - Add write/update endpoints only after authorization, audit, validation,
   recovery, and concurrency requirements are designed.
+- Harden the executive-summary deck's CDN supply chain before any
+  untrusted-hosting or user-supplied-diagram use: add Subresource Integrity
+  (`integrity`/`crossorigin`) hashes to the pinned `cdn.jsdelivr.net` tags,
+  add a Content-Security-Policy, and adopt Mermaid `>= 11.15.0` to clear the
+  Mermaid advisories recorded in decision-log entry D33.
 
 This API is the first read-only increment advancing the README roadmap item
 “Exposure of transactions for distributed application integration.”
