@@ -59,7 +59,8 @@
       *   ENDA  end array    - emit ']'.
       *   STR   string member  - emit "name":"escaped-value".
       *   NUM   number member  - emit "name":digits (caller formats).
-      *   MON2  money member   - emit "name":signed-decimal, 2dp.
+      *   MON2  money member   - emit "name":"signed-decimal" (2dp,
+      *                          quoted MonetaryAmount string).
       *   BOOL  boolean member - emit "name":true|false.
       *   NULL  null member    - emit "name":null.
       *   RAW   splice value verbatim (pre-built fragment/element).
@@ -73,14 +74,17 @@
       * nothing extra when JP-IS-FIRST. This lets the caller build
       * comma-separated members and array elements deterministically.
       *----------------------------------------------------------------*
-      * MON2 - SIGNED IMPLIED-DECIMAL TO JSON NUMBER
+      * MON2 - SIGNED IMPLIED-DECIMAL TO QUOTED JSON MONETARY STRING
       *----------------------------------------------------------------*
       * JP-NUM-VALUE is PIC S9(13)V99 (signed, 2 implied fraction
       * digits) and holds S9(10)V99 and S9(09)V99 monetary values
-      * without truncation. MON2 renders a compact JSON number token
-      * matching ^-?\d+\.\d{2}$ : an optional leading '-' for
-      * negatives (never '+'), integer digits with no leading zeros
-      * beyond a single '0', a '.', then exactly two fraction digits.
+      * without truncation. MON2 builds the compact token
+      * -?\d+\.\d{2} (an optional leading '-' for negatives, never
+      * '+'; integer digits with no leading zeros beyond a single
+      * '0'; a '.'; then exactly two fraction digits) and emits it as
+      * a QUOTED JSON string, so it matches the OpenAPI MonetaryAmount
+      * (string) contract and the router 7150-EMIT-MONEY. Every
+      * monetary field therefore serializes identically.
       *----------------------------------------------------------------*
        IDENTIFICATION DIVISION.
        PROGRAM-ID. COJSONUC.
@@ -290,9 +294,9 @@
            PERFORM 9000-APPEND-STR.
 
       *----------------------------------------------------------------*
-      * 1700-MON2 - render JP-NUM-VALUE as a compact signed JSON
-      * number with exactly two fraction digits, matching the
-      * OpenAPI MonetaryAmount pattern ^-?\d+\.\d{2}$.
+      * 1700-MON2 - render JP-NUM-VALUE as a QUOTED JSON string with
+      * exactly two fraction digits, matching the OpenAPI
+      * MonetaryAmount (string) pattern "^-?\d+\.\d{2}$".
       *----------------------------------------------------------------*
        1700-MON2.
            PERFORM 9100-COMMA-IF-NEEDED
@@ -333,8 +337,18 @@
            COMPUTE WS-DEST-POS = WS-MON-TOKEN-LEN + 1
            MOVE WS-MON-ABS(14:2) TO WS-MON-TOKEN(WS-DEST-POS:2)
            ADD 2 TO WS-MON-TOKEN-LEN
+      *    Emit the token as a QUOTED JSON string: a leading '"', the
+      *    numeric token, then a trailing '"'. This makes MON2 match
+      *    the OpenAPI MonetaryAmount (string) contract and the router
+      *    7150-EMIT-MONEY so every monetary path is identical.
+           MOVE '"' TO WS-APP-STR(1:1)
+           MOVE 1 TO WS-APP-LEN
+           PERFORM 9000-APPEND-STR
            MOVE WS-MON-TOKEN TO WS-APP-STR
            MOVE WS-MON-TOKEN-LEN TO WS-APP-LEN
+           PERFORM 9000-APPEND-STR
+           MOVE '"' TO WS-APP-STR(1:1)
+           MOVE 1 TO WS-APP-LEN
            PERFORM 9000-APPEND-STR.
 
       *----------------------------------------------------------------*
