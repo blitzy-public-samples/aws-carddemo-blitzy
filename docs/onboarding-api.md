@@ -12,20 +12,97 @@ The API adds new members only. Its service programs use `READ`, `STARTBR`,
 
 ## Prerequisites
 
-- Access to the z/OS system and CICS TS 5.6 region `CICSAWSA`.
+Two environments are involved, and a clean checkout must satisfy both:
+
+- The **mainframe** hosts and runs the API. You stage source there, compile
+  it, and install the CICS resources.
+- A **workstation** (or CI runner) with a clean repository checkout runs the
+  OpenAPI contract test and the HTTP smoke-test harness against the deployed
+  region.
+
+Neither the API layer nor the mainframe runtime has any third-party
+dependency (see [`docs/decision-log.md`](decision-log.md), D1); the
+workstation tools listed below exist only to drive and validate the API and
+never run on z/OS.
+
+### Mainframe prerequisites
+
+- Access to the z/OS system and a CICS TS 5.6 region (this guide uses the
+  sample APPLID `CICSAWSA`).
 - The base CardDemo application installed and its VSAM datasets loaded by
-  following the README.
-- The `AWS.M2` high-level qualifier and authority to submit compile JCL.
-- Authority to run `DFHCSDUP`, use `CEDA`, and inquire on CICS resources.
-- TCP/IP enabled for the region and an approved listener port. The supplied
-  CSD uses port `3001`; confirm that it is free before installation.
-- API COBOL sources staged in `AWS.M2.CARDDEMO.CBL` and the seven API
-  copybooks staged in `AWS.M2.CARDDEMO.CPY`.
+  following the [README](../README.md).
+- Enterprise COBOL 6.3 and the CICS TS 5.6 translator/binder reachable from
+  the `BUILDONL` procedure, plus authority to submit compile JCL under the
+  `AWS.M2` high-level qualifier.
+- Authority to run `DFHCSDUP`, use `CEDA`/`CEMT`, and inquire on CICS
+  resources.
+- TCP/IP enabled for the region (`TCPIP=YES`) and an approved listener port.
+  The supplied CSD uses port `3001`; confirm it is free before installation.
+
+### Site substitutions
+
+Every command and JCL member in this guide uses the sample values below.
+Substitute your site's values consistently before submitting anything. The
+build JCL exposes `HLQ` as a `SET` symbol; the install/rollback JCL expose
+`GRPLIST`, `SDFHLOAD`, and `DFHCSD` as `SET` symbols you edit in place.
+
+| Placeholder | Sample value | Meaning |
+|---|---|---|
+| `CICSAWSA` | `CICSAWSA` | Target CICS region APPLID |
+| `HLQ` / `AWS.M2` | `AWS.M2` | Source and load-library high-level qualifier |
+| `GRPLIST` | `DFHLIST` | Region startup group list |
+| `SDFHLOAD` | `OEM.CICSTS.V05R06M0.CICS.SDFHLOAD` | CICS load library for `DFHCSDUP` |
+| `DFHCSD` | `OEM.CICSTS.DFHCSD` | Region CSD dataset to update |
+| listener port | `3001` | `TCPIPSERVICE(CDAPISVC)` port |
+
+### Stage the API source members
+
+Transfer the new members into the same PDS/PDSE libraries the base install
+uses, with `$INDFILE` or your preferred upload tool, in **text mode** so the
+workstation's ASCII is converted to the region's EBCDIC code page (the Unix
+line feed is a transfer delimiter, not part of a record). All API source is
+fixed-format COBOL/JCL in columns 1-72, so every target library is
+`RECFM=FB,LRECL=80` — identical to the base CardDemo `CBL`/`CPY`/`JCL`
+libraries described in the README.
+
+| Repository path | Target dataset | Members | Format |
+|---|---|---|---|
+| `app/cbl/*.cbl` | `AWS.M2.CARDDEMO.CBL` | 8 runtime programs (and the 6 `TST*` drivers) | `FB/80` |
+| `app/cpy/COAP*.cpy` | `AWS.M2.CARDDEMO.CPY` | the 7 API copybooks | `FB/80` |
+| `app/jcl/*.jcl` | `AWS.M2.CARDDEMO.JCL` | the API build/install/rollback JCL | `FB/80` |
 
 The eight runtime programs are `COJSONUC`, `COAPISEC`, `COACSVCC`,
 `COCUSVCC`, `COCRSVCC`, `COXRSVCC`, `COTRSVCC`, and `COAPIRTR`. The seven
 copybooks are `COAPICOM`, `COAPSGNY`, `COAPACTY`, `COAPCUSY`, `COAPCRDY`,
-`COAPXRFY`, and `COAPTRNY`.
+`COAPXRFY`, and `COAPTRNY`. Staging the source is only the first step; you
+must still compile it (Section 1) and install the CICS resources (Section 2)
+before any endpoint responds.
+
+### Workstation tooling for the tests
+
+Run the contract test and HTTP harness from a clean checkout on a workstation
+or CI runner that can reach the region. Required tools, with pinned versions:
+
+- `bash` and `curl` — required by `run-api-tests.sh`; the script exits `2`
+  when `curl` is absent.
+- `jq` — optional by default, but **required** when `RELEASE_MODE=1` (strict
+  JSON field extraction). Install it from your OS package manager.
+- Python 3.9 or later for `openapi-contract-test.py`, with the pinned
+  packages in
+  [`app/test/api/requirements-test.txt`](../app/test/api/requirements-test.txt)
+  (`PyYAML==6.0.3`, `jsonschema==4.26.0`, and their pinned transitives):
+
+  ```bash
+  python3 -m pip install -r app/test/api/requirements-test.txt
+  ```
+
+- Optionally `openapi-spec-validator==0.9.0` and `yamllint==1.38.0` to lint
+  `app/api/openapi.yaml` directly.
+
+For a strict, reproducible gate always run the contract test with
+`RELEASE_MODE=1` (see [Section 4](#4-smoke-test-the-installed-api)). Without
+it the test SKIPs and exits `0` when a pinned dependency or the spec file is
+missing, which does not prove the contract.
 
 ## 1. Build the API programs
 
@@ -67,15 +144,41 @@ Submit [`app/jcl/APICSDIN.jcl`](../app/jcl/APICSDIN.jcl). It runs a single
 `DFHCSDUP` step whose inline definitions are kept byte-consistent with
 [`app/csd/CARDDEMOAPI.CSD`](../app/csd/CARDDEMOAPI.CSD) (the drift guard
 [`app/test/api/check-csd-drift.sh`](../app/test/api/check-csd-drift.sh) fails
-the build on any mismatch). The step `DELETE`s any prior `CDEMOAPI` group so
-reruns are idempotent — a "group not found" `RC=4` on the first run is
-expected and harmless — then `DEFINE`s the group's resources, `ADD`s
-`CDEMOAPI` to the startup group list `&GRPLIST` (default `DFHLIST`), and
-`LIST`s the group. The job is modeled on `app/jcl/CBADMCDJ.jcl`.
+the build on any mismatch). In order the job `DELETE`s any prior `CDEMOAPI`
+group, `DEFINE`s the group's resources, `ADD`s `CDEMOAPI` to the startup
+group list `&GRPLIST` (default `DFHLIST`), and `LIST`s the group. On a clean
+first run the `DELETE` reports "group not found" (`RC=4`), which is expected
+and harmless. The job is modeled on `app/jcl/CBADMCDJ.jcl`.
 
 ```text
 SUBMIT 'AWS.M2.CARDDEMO.JCL(APICSDIN)'
 ```
+
+The job is **not** blindly idempotent, so a rerun needs care. `DFHCSDUP
+DELETE GROUP` drops the group's resource definitions but does **not** remove
+the group name from `&GRPLIST`; the later `ADD GROUP(CDEMOAPI)
+LIST(&GRPLIST)` then appends the name again, so re-running `APICSDIN` against
+a region where the group is already listed can leave a **duplicate**
+`CDEMOAPI` entry in the startup list. Reinstall with the ownership-safe
+sequence instead:
+
+1. **Verify ownership first.** Confirm the target `CDEMOAPI` group belongs to
+   this feature and not to an unrelated pre-existing group of the same name —
+   inspect it with `DFHCSDUP LIST GROUP(CDEMOAPI)` (or `EXTRACT`) and back up
+   its definitions before deleting if there is any doubt.
+2. **Remove the list link before re-adding.** Run
+   [`app/jcl/APICSDRB.jcl`](../app/jcl/APICSDRB.jcl) first; its `REMOVE
+   GROUP(CDEMOAPI) LIST(&GRPLIST)` followed by `DELETE GROUP(CDEMOAPI)`
+   cleanly unlinks and drops the group. Then submit `APICSDIN` so the `ADD`
+   leaves exactly one list entry. (Equivalently, issue a manual `REMOVE
+   GROUP(CDEMOAPI) LIST(&GRPLIST)` before rerunning `APICSDIN`.)
+3. **Check every return code and stop on the unexpected.** `RC=4` "not found"
+   is expected only for a `DELETE`/`REMOVE` against an already-absent group or
+   link; any `RC` above 4 on a `DEFINE` or `ADD` must halt the procedure so a
+   partial install is never left behind.
+4. **Confirm single membership.** Read the job's `LIST GROUP(CDEMOAPI)` plus a
+   `LIST LIST(&GRPLIST)`, and verify `CDEMOAPI` appears exactly once before
+   bringing the group online.
 
 `DFHCSDUP` has no `INSTALL` verb and `CEDA` is a terminal transaction, so this
 job intentionally does **not** install the group online; bringing the
@@ -92,10 +195,17 @@ The new group contains:
   `IPADDRESS(127.0.0.1)` (loopback bind), `SSL(NO)`, and `AUTHENTICATE(NO)`.
 - `URIMAP(CDAPIURI)` for `/carddemo/api/v1/*`.
 - Alias `TRANSACTION(CAPI)`, driven by the CICS Web Support web-attach
-  program `DFHWBA`, which links router `PROGRAM(COAPIRTR)`. The alias and
-  every program carry the confidentiality attributes `CONFDATA(YES)`,
-  `DUMP(NO)`, `TRACE(NO)`, `STORAGECLEAR(YES)`, and `CEDF(NO)` so tokens,
-  credentials, and PAN data are not captured in dumps, traces, or EDF.
+  program `DFHWBA`, which links router `PROGRAM(COAPIRTR)`. The alias carries
+  `STORAGECLEAR(YES)`, `DUMP(NO)`, `TRACE(NO)`, `CONFDATA(YES)`, `RESSEC(NO)`,
+  and `CMDSEC(NO)`; the six driver transactions carry the same first four
+  attributes; and every API and driver `PROGRAM` carries `CEDF(NO)`.
+  `CONFDATA(YES)` with `DUMP(NO)`/`TRACE(NO)` plus `CEDF(NO)` keep tokens,
+  credentials, and PAN data out of dumps, traces, and the EDF debugger, and
+  `STORAGECLEAR(YES)` clears freed task storage (see
+  [`docs/decision-log.md`](decision-log.md), D16). `RESSEC(NO)`/`CMDSEC(NO)`
+  mean CICS resource- and command-level (RACF) security is deliberately not
+  applied in this increment (see [`docs/decision-log.md`](decision-log.md),
+  D24).
 - Eight API `PROGRAM` definitions (`COAPIRTR`, `COAPISEC`, `COACSVCC`,
   `COCUSVCC`, `COCRSVCC`, `COXRSVCC`, `COTRSVCC`, `COJSONUC`).
 - `TSMODEL(CDAPITSM)` bounding the `AT`-prefixed token-registry TSQs
@@ -105,11 +215,16 @@ The new group contains:
   `TSTTRAN`/`TTRN`) for the region-only boundary tests.
 
 The group defines **no FILE resources**. The existing CARDDEMO VSAM files are
-shared exactly as the base region installs them and are never redefined here;
-read-only access is enforced in the service programs (which issue only
-`READ`/`STARTBR`/`READNEXT`) and by region security — not by a duplicate FILE
-definition that could override the base region's write-capable files. See
-[`docs/decision-log.md`](decision-log.md) (D14).
+shared exactly as the base region installs them and are never redefined here,
+so this group cannot override the base region's write-capable file
+definitions (see [`docs/decision-log.md`](decision-log.md), D14). Read-only
+access is enforced **only at the application level**: the service programs
+issue exclusively `READ`/`STARTBR`/`READNEXT`/`ENDBR` and never a write verb.
+Because the alias runs with `RESSEC(NO)`/`CMDSEC(NO)`, CICS/RACF resource
+security does **not** independently block a write, so the read-only guarantee
+rests on the program logic (and the contract tests that verify it); enabling
+`RESSEC`/`CMDSEC` with RACF profiles is a documented hardening follow-up (see
+[`docs/decision-log.md`](decision-log.md), D24).
 
 Verify the `DFHCSDUP` `DEFINE`/`ADD` results and the `LIST GROUP(CDEMOAPI)`
 output in the job's `SYSPRINT`/`OUTDD`. Then bring the group online by one of:
@@ -135,16 +250,29 @@ installing it and pass the same value as `API_PORT` to the test harness.
 ### Network exposure and transport (loopback-only)
 
 The listener binds to `IPADDRESS(127.0.0.1)`, so it accepts connections only
-from the same z/OS image; it is **not** reachable from distributed clients as
-installed. This is deliberate: transport is cleartext HTTP with
-`AUTHENTICATE(NO)`, and the card/account endpoints carry a full PAN in the
-request URI path (see [`docs/decision-log.md`](decision-log.md), D14).
+from the same z/OS image and is **not** reachable from an off-mainframe
+distributed client as installed (see
+[`docs/decision-log.md`](decision-log.md), D17). This increment therefore
+delivers a **same-host** inquiry API only. The off-mainframe distributed
+access in the README roadmap is **not delivered here** — it is future work
+that requires the fronting component below, and it is not exercised or claimed
+by this increment. Do not describe the API as distributed-ready until that
+component is in place and tested.
 
-Do **not** widen `IPADDRESS`, enable a routable interface, or forward the port
-to distributed clients until a TLS-terminating, PAN-redacting reverse proxy or
-API gateway (plus RACF and an OAuth/OIDC or equivalent authorization layer) is
-placed in front of the region. For same-host testing, reach the API over the
-loopback address only. These items are tracked under *Suggested next tasks*.
+The loopback bind is deliberate. Transport is cleartext HTTP with
+`AUTHENTICATE(NO)`, and the card/xref endpoints carry a full PAN in the
+request URI path (see [`docs/decision-log.md`](decision-log.md), D21). Do
+**not** widen `IPADDRESS`, enable a routable interface, or forward the port to
+distributed clients until a TLS-terminating, PAN-redacting reverse proxy or
+API gateway — plus RACF and an OAuth/OIDC or equivalent authorization layer —
+is placed in front of the region. These items are tracked under *Suggested
+next tasks*.
+
+For same-host testing, reach the API only over the loopback address from the
+region's own z/OS image (for example an on-host session or a co-located
+client), using the sign-on and inquiry sequence in
+[Section 4](#4-smoke-test-the-installed-api). A workstation harness must run
+on, or tunnel to, that same host.
 
 ### Token registry limitations
 
@@ -183,13 +311,26 @@ API_PASS='<password>' \
 The script signs on, exercises all seven endpoints, checks documented
 `200`/`400`/`401`/`404` behavior, verifies the valid empty-list case, and
 runs response-body security checks. An operator-provided `FAULT_PATH` can
-enable the controlled `500` check.
+enable the controlled `500` check. For a strict run set `RELEASE_MODE=1`,
+which makes `jq` a required dependency and enforces precise JSON-field
+assertions; the script exits `0` when every check passes, `1` on any failure,
+and `2` when a required dependency is missing (`curl`, or `jq` under
+`RELEASE_MODE`).
 
-Run the local contract validator whenever the OpenAPI file or examples change:
+Run the local contract validator whenever the OpenAPI file or examples
+change. Install the pinned dependencies once (see
+[Prerequisites](#prerequisites)), then run the strict release gate:
 
 ```bash
-python3 app/test/api/openapi-contract-test.py
+python3 -m pip install -r app/test/api/requirements-test.txt
+RELEASE_MODE=1 python3 app/test/api/openapi-contract-test.py
 ```
+
+`RELEASE_MODE=1` is required for a trustworthy result. In the default mode the
+test prints `SKIP` and exits `0` when `PyYAML`, `jsonschema`, or the spec file
+is absent, which does not prove the contract; under `RELEASE_MODE=1` a missing
+dependency or spec is a hard `FAIL` (exit `1`). A complete pass ends with
+`SUMMARY: checks=101 passed=101 failed=0`.
 
 A minimal manual sign-on and authenticated inquiry flow is:
 
@@ -227,17 +368,22 @@ is required. To run the drivers:
    `TSTAUTH` through `TSTTRAN` respectively.
 4. Prepare the valid-but-cardless account fixture as described below.
 5. Enter `TTRN` on a CICS terminal (the transaction for driver `TSTTRAN`).
-6. Read the CICS region message output. A successful run reports seven PASS
+6. Read the CICS region message output. A successful run reports eleven PASS
    cases and ends with:
 
    ```text
-   TSTTRAN RESULTS RUN=007 PASS=007 FAIL=000
+   TSTTRAN RESULTS RUN=011 PASS=011 FAIL=000 SKIP=000
    TSTTRAN RESULT: PASS
    ```
 
-The seven cases are detail `200`, detail `404`, detail `400`, non-empty list
-`200`, valid empty list `200`, missing-account list `404`, and malformed list
-`400`.
+   The driver raises a non-zero CICS return code so an automated run can gate
+   on it: `8` if any case fails; otherwise `4` if a release-blocking fixture
+   is absent (reported as `TSTTRAN RESULT: PASS (WITH SKIPS)`); otherwise `0`.
+
+The eleven cases are detail `200`, detail `404`, detail `400`, non-empty list
+`200`, valid empty list `200`, missing-account list `404`, malformed list
+`400`, missing request container, bad container length, truncated list
+(`truncated=true`, HTTP `200`), and list internal error (HTTP `500`).
 
 ### Load and restore the account-99 empty-list fixture
 
@@ -271,9 +417,9 @@ Use cloned VSAM datasets in a disposable region for these volume cases:
 |---|---|---|
 | Card-resolution boundary | 50 cards for one account | List processing remains within the card table limit |
 | Card-resolution overflow | 51 cards for one account | HTTP `500`, canonical internal error |
-| Transaction-list boundary | 500 matching transactions | Response remains within the list-entry limit |
-| Transaction-list overflow | 501 matching transactions | HTTP `500`, no partial success |
-| Large response | Enough matches to exceed 32 KB | CHANNEL/CONTAINER succeeds; COMMAREA is not used |
+| Transaction-list boundary | 50 matching transactions | HTTP `200`, `truncated=false`, complete 50-entry list |
+| Transaction-list overflow | 51 matching transactions | HTTP `200`, `truncated=true`, 50 entries returned |
+| Large response | Full 50-entry list (~16.5 KB) | CHANNEL/CONTAINER carries it; exceeds the 1024-byte COMMAREA convention |
 | Money extrema | Valid maximum positive and negative amounts | Signed JSON strings retain exactly two decimal places |
 
 Restore the cloned datasets after every boundary test.
@@ -283,12 +429,19 @@ Restore the cloned datasets after every boundary test.
 After running the HTTP, token, and driver tests, remove the sensitive
 artifacts they leave behind:
 
-- **Purge the token registry.** Sign-on writes bearer tokens into the
-  `AT`-prefixed `MAIN` TSQs. Inspect and purge any that remain so live tokens
-  do not linger in a shared test region — for example inquire with
-  `CEMT INQUIRE TSQUEUE(AT*)` and purge each queue from `CEBR`. A region
-  restart also clears them (the queues are non-recoverable), and
-  `EXPIRYINT(20)` reaps idle queues automatically.
+- **Purge the token registry.** Sign-on writes bearer tokens into `MAIN`
+  TSQs whose name is `AT` followed by a 14-digit hash of the token — 16
+  characters in all (see [`docs/decision-log.md`](decision-log.md), D20).
+  The safest purge is a region restart: `MAIN` TSQs are non-recoverable, so a
+  restart clears every token queue and nothing else, while
+  `TSMODEL(CDAPITSM) EXPIRYINT(20)` reaps idle queues automatically. If you
+  must purge in a running region, be selective: `CEMT INQUIRE TSQUEUE(AT*)`
+  is a broad prefix match that can also list unrelated queues another
+  application happened to name with a leading `AT`. Before purging one from
+  `CEBR`, confirm it is an owned token queue — the name must be exactly 16
+  characters, `AT` plus 14 numeric digits, with nothing else. Never purge an
+  `AT*` queue that does not match that exact format; it belongs to something
+  else.
 - **Scrub captured output.** If a test wrote request/response bodies, tokens,
   or credentials to a terminal capture, spool file, or workstation log, delete
   those captures. The programs themselves log only a `requestId` correlation
@@ -308,10 +461,23 @@ and touches only the `CDEMOAPI` group — never the base `CARDDEMO` group.
 2. Complete the rollback in the running region by one of:
    - **Restart pickup (recommended)** — because step 1 removed `CDEMOAPI` from
      `GRPLIST`, a normal region restart comes up without the group.
-   - **Immediate discard** — from an authorized CICS terminal, close the
-     listener with `CEMT SET TCPIPSERVICE(CDAPISVC) CLOSED`, then `CEMT
-     DISCARD` the `TCPIPSERVICE`, `URIMAP`, `TRANSACTION`, `PROGRAM`, and
-     `TSMODEL` resources (including the `TST*` drivers if installed).
+   - **Immediate discard (advanced; a restart is safer).** From an
+     authorized CICS terminal, work from the inbound edge inward so no
+     request is mid-flight when its resource disappears. First disable the
+     URIMAP so new requests stop routing:
+     `CEMT SET URIMAP(CDAPIURI) DISABLED`. Then close the listener so new
+     connections stop: `CEMT SET TCPIPSERVICE(CDAPISVC) CLOSED`. Then let
+     in-flight work drain — run `CEMT INQUIRE TASK` and wait for `CAPI` and
+     any `TAUT`/`TACC`/`TCUS`/`TCRD`/`TXRF`/`TTRN` tasks to end (or purge a
+     stuck task) before discarding its program. Then purge the token TSQs as
+     in [Post-test cleanup](#post-test-cleanup), verifying each `AT`+14-digit
+     name first. Finally `CEMT DISCARD` in dependency order:
+     `URIMAP(CDAPIURI)`, `TCPIPSERVICE(CDAPISVC)`, `TRANSACTION(CAPI)` (and
+     the `TST*` driver transactions if installed), the `PROGRAM`s
+     (`COAPIRTR` and the service/driver programs), then `TSMODEL(CDAPITSM)`.
+     `CEMT DISCARD` removes only the in-memory copies from the running
+     region; the CSD definitions were already deleted by the DFHCSDUP step
+     in step 1.
 3. **FILE restoration is not required.** Because `CDEMOAPI` defines no FILE
    resources, the rollback cannot have altered any CARDDEMO file. Only if a
    legacy pre-remediation install had redefined those files would you restore
@@ -352,9 +518,21 @@ The programmatic equivalent of the `CCDL` to `CT00` drill-down first calls
 
 CardDemo commonly uses a 1024-byte COMMAREA, and CICS COMMAREAs have a 32 KB
 ceiling. Single-record operations fit `COAPICOM` and its
-`API-PAYLOAD X(1000)`. A transaction list can reach roughly 165 KB, so
-`COTRSVCC` uses channel `CDEMOAPILISTCH` with containers `TRANLISTREQ`,
-`TRANLISTRSP`, and `TRANLISTSTA`. Do not move the list back to COMMAREA.
+`API-PAYLOAD X(1000)`. The per-account transaction list is bounded at 50
+entries (`API-TRAN-LIST OCCURS 0 TO 50`) of about 330 bytes each plus a
+16-byte header — roughly 16.5 KB. That stays under the 32 KB COMMAREA ceiling
+but far exceeds both the 1024-byte convention and the `API-PAYLOAD X(1000)`
+single-record buffer, so `COTRSVCC` carries it over channel `CDEMOAPILISTCH`
+with containers `TRANLISTREQ`, `TRANLISTRSP`, and `TRANLISTSTA` (see
+[`docs/decision-log.md`](decision-log.md), D5). Do not move the list back to
+COMMAREA.
+
+That ~16.5 KB is the raw COBOL list structure carried over the channel, not
+the serialized JSON. The router builds each JSON response in the `COJSONUC`
+output buffer `JB-DATA PIC X(96000)` — a 96 KB cap — and every append is
+bounds-checked against that length. On overflow the serializer sets its error
+flag and the request returns HTTP `500` rather than emitting truncated JSON,
+so the JSON body a client receives is bounded by that 96 KB buffer.
 
 ### Signed implied-decimal money
 
