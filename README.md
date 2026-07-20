@@ -1,6 +1,6 @@
 ## CardDemo -- Mainframe CardDemo Application
 
-- [CardDemo -- Mainframe CardDemo Application](#carddemo----mainframe-card-demo-application)
+- [CardDemo -- Mainframe CardDemo Application](#carddemo----mainframe-carddemo-application)
 - [Description](#description)
 - [Technologies used](#technologies-used)
 - [Installation on the mainframe](#installation-on-the-mainframe)
@@ -276,7 +276,7 @@ The Regular user can perform the user functions and the Admin users can only per
 
 ## REST/JSON API layer
 
-CardDemo now exposes a net-new, **read-only** REST/JSON API that makes its core inquiry functions available to distributed (off-mainframe) callers such as `curl`, Postman, or a partner application. The API is delivered entirely through **base CICS Web Support** -- no additional licensed products and no external API gateway -- and is served under the versioned base path `/carddemo/api/v1`. This layer is **purely additive**: it introduces new members only and makes **no changes** to the existing COBOL, BMS, CSD, or JCL source. All access to the existing VSAM datasets is strictly read-only (`READ`/`STARTBR`/`READNEXT`/`ENDBR` only -- there is no create, update, or delete path).
+CardDemo now exposes a net-new, **read-only** REST/JSON API that makes its core inquiry functions available programmatically to HTTP/JSON clients such as `curl`, Postman, or a partner application. The API is delivered entirely through **base CICS Web Support** -- no additional licensed products and no external API gateway -- and is served under the versioned base path `/carddemo/api/v1`. In this increment the listener binds the **loopback address (`127.0.0.1`), so access is same-host only**; reaching off-mainframe (distributed) callers is a documented follow-up that requires a TLS-terminating reverse proxy or gateway plus RACF/authorization hardening (see [`docs/onboarding-api.md`](./docs/onboarding-api.md) and the [decision log](./docs/decision-log.md), D51). This first read-only increment advances the roadmap item *Exposure of transactions for distributed application integration* without yet exposing the port beyond the host. This layer is **purely additive**: it introduces new members only and makes **no changes** to the existing COBOL, BMS, CSD, or JCL source. All access to the existing VSAM datasets is strictly read-only (`READ`/`STARTBR`/`READNEXT`/`ENDBR` only -- there is no create, update, or delete path).
 
 ### Endpoints
 

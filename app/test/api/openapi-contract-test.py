@@ -119,6 +119,17 @@ MASKED_PAN_FIELD = "cardNumberMasked"
 # must be rejected.
 ALLOWED_MASKED_PII = frozenset({"ssnMasked", "govtIdMasked"})
 
+# The hard maximum number of transactions the account-transaction-list endpoint
+# returns in a single response. This cap is enforced in COBOL - COTRSVCC
+# WS-MAX-TRANS (PIC 9(04) VALUE 50) and the COAPTRNY TRAN-LIST-ENTRY OCCURS
+# 0 TO 50 table - and MUST equal the spec's
+# components.schemas.TransactionList.properties.transactions.maxItems. The
+# contract test couples the two so that any drift (for example the spec being
+# silently widened to 51, or the COBOL cap changing on only one side) is a hard
+# FAIL rather than a silent divergence that would let a truncated list overrun
+# the receiver's fixed-size buffer.
+MAX_ACCOUNT_TRANSACTIONS = 50
+
 
 # --- Result recording -------------------------------------------------------
 # Real pass/fail checks are counted toward the SUMMARY. Warnings capture soft
@@ -244,7 +255,11 @@ def iter_kv(obj):
 # password, or an unmasked PAN.
 SIGNON_EXAMPLE = {
     "data": {
-        "token": "abc.def.ghi",
+        # Exactly 64 characters from the [0-9A-Z] alphabet: an opaque registry
+        # token as minted by COAPISEC (PIC X(64)), matching the spec's tightened
+        # SignonData.token pattern '^[0-9A-Z]{64}$'. Kept identical to the
+        # example in app/api/openapi.yaml so the two never drift.
+        "token": "FGFOUCBUXUDL919QK393NUHDXEZEDPVQNW4DEFTDMWG7YUUN1CX1ZRNBECAFHZVL",
         "userId": "USER0001",
         "userType": "U",
         "expiresAt": "2026-07-19 08:15:00.000000",
@@ -523,7 +538,7 @@ def run_schema_validation(spec):
 
 # --- jsonschema-independent structural checks (always run) -----------------
 def run_structural_checks(spec):
-    """Run the nine structural checks that do not depend on jsonschema."""
+    """Run the ten structural checks that do not depend on jsonschema."""
     schemas = spec.get("components", {}).get("schemas", {})
 
     # 1. Success envelope: every success example's top-level keys == {"data"}.
@@ -648,6 +663,28 @@ def run_structural_checks(spec):
         record_fail("spec does not reference error codes: %s" % missing_codes)
     else:
         record_pass("all four error codes referenced in spec")
+
+    # 10. TransactionList.transactions.maxItems must EXACTLY equal the service
+    #     cap MAX_ACCOUNT_TRANSACTIONS (50), which mirrors the COBOL constants
+    #     COTRSVCC WS-MAX-TRANS and the COAPTRNY TRAN-LIST-ENTRY OCCURS 0 TO 50
+    #     table. A missing maxItems, or any value other than the coupled
+    #     constant (for example a silent drift to 51), is a hard FAIL so the
+    #     published contract and the COBOL cap can never diverge unnoticed.
+    tx_props = schemas.get("TransactionList", {}).get("properties", {})
+    tx_array = tx_props.get("transactions", {})
+    tx_max = tx_array.get("maxItems")
+    if tx_max is None:
+        record_fail("TransactionList.transactions.maxItems is absent; it must "
+                    "equal the service cap %d (COTRSVCC WS-MAX-TRANS)"
+                    % MAX_ACCOUNT_TRANSACTIONS)
+    elif tx_max == MAX_ACCOUNT_TRANSACTIONS:
+        record_pass("TransactionList.transactions.maxItems == %d (coupled to "
+                    "COTRSVCC WS-MAX-TRANS / COAPTRNY OCCURS 0 TO 50)"
+                    % MAX_ACCOUNT_TRANSACTIONS)
+    else:
+        record_fail("TransactionList.transactions.maxItems %r != service cap "
+                    "%d (COTRSVCC WS-MAX-TRANS); spec and COBOL cap have "
+                    "drifted apart" % (tx_max, MAX_ACCOUNT_TRANSACTIONS))
 
 
 # --- Operation / method enforcement (read-only contract) -------------------

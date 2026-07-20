@@ -7,6 +7,10 @@
 * front it with a TLS-terminating proxy - never expose it directly.
 * Port 3001/MAXDATALEN, transport posture, and capacity/BACKLOG
 * rationale: see docs/decision-log.md (D7, D17).
+* Server-header suppression is REGION-scope, not a TCPIPSERVICE
+* attribute: set the SIT parameter HTTPSERVERHDR=NO so CICS stops
+* emitting its 'Server:' product/version banner on API responses.
+* Rationale/operator step: docs/onboarding-api.md + decision-log (D34).
 *----------------------------------------------------------------------
  DEFINE TCPIPSERVICE(CDAPISVC) GROUP(CDEMOAPI)
  DESCRIPTION(CARDDEMO REST/JSON API HTTP LISTENER - CWS)
@@ -94,10 +98,13 @@
         EXECKEY(USER) CONCURRENCY(QUASIRENT) API(CICSAPI) DYNAMIC(NO)
         EXECUTIONSET(FULLAPI) JVM(NO)
 *----------------------------------------------------------------------
-* Token TSQ model: COAPISEC uses the 'AT' prefix; EXPIRYINT(20)
-* reclaims idle token queues (15-min token life); MAIN + RECOVERY(NO)
-* are prerequisites for EXPIRYINT.  Rationale: docs/decision-log.md
-* (D2).
+* Token TSQ model: COAPISEC uses the 'AT' prefix.  EXPIRYINT(20) is
+* 20 MINUTES (the EXPIRYINT unit is minutes - not hours, not seconds);
+* CICS rounds the interval UP to the next 10-minute multiple, so 20 is
+* the smallest 10-min multiple that safely outlives the 15-minute
+* functional token life while still reclaiming idle token queues.
+* MAIN + RECOVERY(NO) are prerequisites for EXPIRYINT.  Rationale:
+* docs/decision-log.md (D2, D35).
 *----------------------------------------------------------------------
  DEFINE TSMODEL(CDAPITSM) GROUP(CDEMOAPI)
  DESCRIPTION(API TOKEN REGISTRY - BOUNDED MAIN TSQ LIFECYCLE)

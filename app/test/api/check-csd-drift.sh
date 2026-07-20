@@ -60,15 +60,17 @@ grep -vE '^\*' "$csd_member" \
   > "$member_defs"
 
 # --- Extract the DEFINE statements from the JCL inline SYSIN stream ---------
-# 1. awk isolates the payload between the '//SYSIN DD *' card and its closing
-#    '/*' delimiter.
+# 1. awk isolates the payload between EACH '//SYSIN DD *' card and its closing
+#    '/*' delimiter (the job may carry more than one SYSIN stream - e.g. the
+#    primary DEFINE step plus a conditional cleanup step - and every payload
+#    is captured; only DEFINE lines survive the filters below).
 # 2. Drop DFHCSDUP comment lines (leading '*') and blank lines.
-# 3. Drop the group-control envelope (DELETE/ADD/LIST GROUP) which is
+# 3. Drop the group-control envelope (DELETE/REMOVE/ADD/LIST GROUP) which is
 #    intentionally job-specific and has no counterpart in the member.
 awk '/^\/\/SYSIN /{f=1;next} f&&/^\/\*/{f=0} f' "$jcl_job" \
   | grep -vE '^\*' \
   | grep -vE '^[[:space:]]*$' \
-  | grep -vE '^[[:space:]]*(DELETE|ADD|LIST)[[:space:]]+GROUP' \
+  | grep -vE '^[[:space:]]*(DELETE|REMOVE|ADD|LIST)[[:space:]]+GROUP' \
   > "$jcl_defs"
 
 # --- Compare ----------------------------------------------------------------

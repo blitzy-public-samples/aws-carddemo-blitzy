@@ -91,6 +91,17 @@
        01  WS-NEG-ACCT               PIC 9(11)  VALUE 888.
        01  WS-EXP-NEG-BAL            PIC S9(10)V99 VALUE -250.75.
        01  WS-EXP-NEG-CYC-CR         PIC S9(10)V99 VALUE -75.50.
+      *----------------------------------------------------------------*
+      *                     LINKAGE SECTION
+      *----------------------------------------------------------------*
+      * Optional result COMMAREA for the RC-gated runner (MAJ-07). When
+      * a caller LINKs with it (EIBCALEN > 0) 9000-REPORT publishes the
+      * verdict here; with no COMMAREA (started-task mode) the driver is
+      * unchanged. Layout: app/cpy/COAPDRVY.cpy. See decision-log D37.
+      *----------------------------------------------------------------*
+       LINKAGE SECTION.
+       COPY COAPDRVY.
+
        PROCEDURE DIVISION.
       ******************************************************************
       * 0000-MAIN : entry point.  Run each test case, print the summary
@@ -233,6 +244,24 @@
                  MOVE ZERO TO WS-TEST-RC
                  DISPLAY 'TSTACCT RESULT: PASS'
               END-IF
+           END-IF
+      *    Publish the verdict to the caller COMMAREA when invoked via
+      *    LINK/EXCI (EIBCALEN > 0). MAJ-07 / decision-log D37.
+           IF EIBCALEN > 0
+               MOVE WS-TESTS-RUN   TO DRV-TESTS-RUN
+               MOVE WS-TESTS-PASS  TO DRV-TESTS-PASS
+               MOVE WS-TESTS-FAIL  TO DRV-TESTS-FAIL
+               MOVE 'TSTACCT'      TO DRV-DRIVER-ID
+               EVALUATE WS-TEST-RC
+                   WHEN 8
+                       SET DRV-FAIL TO TRUE
+                   WHEN 4
+                       SET DRV-SKIP TO TRUE
+                   WHEN 0
+                       SET DRV-PASS TO TRUE
+                   WHEN OTHER
+                       SET DRV-SKIP TO TRUE
+               END-EVALUATE
            END-IF
            MOVE WS-TEST-RC TO RETURN-CODE
            .

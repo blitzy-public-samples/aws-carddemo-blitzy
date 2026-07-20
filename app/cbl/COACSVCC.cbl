@@ -94,6 +94,20 @@
                  THRU 1000-READ-ACCT-EXIT
            END-IF
 
+      *****************************************************************
+      * MAJ-02 remediation: scrub sensitive financial work areas on
+      * EVERY exit path (raw VSAM record, mapped response work area,
+      * and account key), mirroring the scrub the sibling inquiry
+      * services already perform (e.g. COCUSVCC 9000-SCRUB-SENSITIVE).
+      * The response the router consumes has already been copied into
+      * API-PAYLOAD in the caller's COMMAREA (2000-MAP-RESPONSE), so
+      * the WORKING-STORAGE plaintext can be erased safely here.  The
+      * PERFORM is unconditional so the scrub also runs when no
+      * COMMAREA was supplied.
+      *****************************************************************
+           PERFORM 9000-SCRUB-SENSITIVE
+              THRU 9000-SCRUB-SENSITIVE-EXIT
+
            EXEC CICS RETURN
            END-EXEC
            .
@@ -179,6 +193,26 @@
            MOVE API-ACCT-RESPONSE   TO API-PAYLOAD
            .
        2000-MAP-RESPONSE-EXIT.
+           EXIT
+           .
+      *****************************************************************
+      * 9000-SCRUB-SENSITIVE : erase the sensitive account plaintext
+      * held in WORKING-STORAGE before returning to the router.  The
+      * raw VSAM record (ACCOUNT-RECORD - current balance, credit and
+      * cash limits, cycle credit/debit), the mapped response work
+      * area (API-ACCT-RESPONSE), and the account key (WS-ACCT-KEY)
+      * are all cleared.  The API-PAYLOAD / API-* status fields live
+      * in the caller's (COAPIRTR) COMMAREA and are intentionally NOT
+      * cleared here so the router can serialize the response.  This
+      * paragraph is PERFORMed on every 0000-MAIN exit path.
+      *****************************************************************
+       9000-SCRUB-SENSITIVE.
+
+           MOVE SPACES TO ACCOUNT-RECORD
+           MOVE SPACES TO API-ACCT-RESPONSE
+           MOVE ZEROS  TO WS-ACCT-KEY
+           .
+       9000-SCRUB-SENSITIVE-EXIT.
            EXIT
            .
       *

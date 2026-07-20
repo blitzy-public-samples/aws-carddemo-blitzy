@@ -156,11 +156,20 @@
       *  the response body, route, credentials, or token.
       *----------------------------------------------------------------*
        01 WS-TELEMETRY.
-         05 WS-TEL-MSG             PIC X(100) VALUE SPACES.
+      *  MAJ-11/MIN-02 - WS-TEL-MSG widened to X(120) to hold the
+      *  structured per-outcome record. WS-OUTCOME-KIND marks a normal
+      *  HTTP response ('HTTP ') versus a trapped task abend ('ABEND');
+      *  WS-TEL-STAT-X is the display HTTP status; WS-TEL-HDR names the
+      *  security header for a MIN-02 header-write-failure record.
+         05 WS-TEL-MSG             PIC X(120) VALUE SPACES.
          05 WS-TEL-LEN             PIC S9(08) COMP VALUE 0.
          05 WS-TEL-PTR             PIC S9(08) COMP VALUE 1.
          05 WS-TEL-RESP-X          PIC -(9).
          05 WS-TEL-REAS-X          PIC -(9).
+         05 WS-OUTCOME-KIND        PIC X(05) VALUE 'HTTP '.
+           88 OUTCOME-ABEND                  VALUE 'ABEND'.
+         05 WS-TEL-STAT-X          PIC 9(03) VALUE ZEROS.
+         05 WS-TEL-HDR             PIC X(13) VALUE SPACES.
 
       *----------------------------------------------------------------*
       *  M6 - Content-Type request-header validation work area. A POST
@@ -238,6 +247,8 @@
            88 SB-COMMACL                        VALUE 'COMMACL'.
            88 SB-KEY                            VALUE 'KEY'.
            88 SB-TRAIL                          VALUE 'TRAIL'.
+           88 SB-STRESC                         VALUE 'STRESC'.
+           88 SB-STRU                           VALUE 'STRU'.
          05 WS-SB-CURKEY            PIC X(32)  VALUE SPACES.
          05 WS-SB-CURKEY-LEN        PIC S9(04) COMP VALUE 0.
          05 WS-SB-VAL               PIC X(08)  VALUE SPACES.
@@ -260,6 +271,50 @@
          05 WS-SB-LF                PIC X(01)  VALUE X'25'.
          05 WS-SB-CR                PIC X(01)  VALUE X'0D'.
          05 WS-SB-ESC               PIC X(01)  VALUE X'E0'.
+      *  MAJ-03 escape-decode work fields. Backspace/form-feed complete
+      *  the five short-escape control code points (TAB/LF/CR already
+      *  defined above) in host code page 037.
+         05 WS-SB-BS                PIC X(01)  VALUE X'16'.
+         05 WS-SB-FF                PIC X(01)  VALUE X'0C'.
+         05 WS-SB-CTX               PIC X(01)  VALUE SPACE.
+         05 WS-SB-DEC               PIC X(01)  VALUE SPACE.
+         05 WS-SB-UCNT              PIC S9(04) COMP VALUE 0.
+         05 WS-SB-UACC              PIC S9(08) COMP VALUE 0.
+         05 WS-SB-UIDX              PIC S9(04) COMP VALUE 0.
+         05 WS-SB-HEXVAL            PIC S9(04) COMP VALUE 0.
+         05 WS-SB-C0-IDX            PIC S9(04) COMP VALUE 0.
+      *----------------------------------------------------------------*
+      *  MAJ-03: complete set of the 32 EBCDIC (cp037) C0 control code
+      *  points (U+0000..U+001F). A RAW (unescaped) occurrence of any
+      *  of these inside a JSON string is rejected. The first 27 bytes
+      *  are the exact set COJSONUC escapes; the final five are the
+      *  short-escape controls BS/TAB/LF/FF/CR (X'16 05 25 0C 0D').
+      *  SPACE (X'40') is deliberately absent, so spaces are permitted.
+      *----------------------------------------------------------------*
+       01 WS-SB-C0-VALUES.
+         05 FILLER PIC X(16) VALUE
+             X'00010203372D2E2F0B0E0F101112133C'.
+         05 FILLER PIC X(16) VALUE
+             X'3D322618193F271C1D1E1F050C0D1625'.
+       01 WS-SB-C0-TAB REDEFINES WS-SB-C0-VALUES.
+         05 WS-SB-C0               PIC X(01) OCCURS 32 TIMES.
+      *----------------------------------------------------------------*
+      *  MAJ-03: printable-ASCII (U+0020..U+007E) to host-code-page
+      *  translation table for \uXXXX decoding. Authored as ASCII
+      *  printable characters in code-point order; the compiler emits
+      *  each as its cp037 byte, so WS-U-TABLE(cp - 31) is the cp037
+      *  byte for Unicode code point 'cp'. Code points outside this
+      *  printable range are not representable in a single-byte cp037
+      *  credential and are rejected by 4182-ST-STRU.
+      *----------------------------------------------------------------*
+       01 WS-U-PRINT.
+         05 FILLER  PIC X(16) VALUE ' !"#$%&''()*+,-./'.
+         05 FILLER  PIC X(16) VALUE '0123456789:;<=>?'.
+         05 FILLER  PIC X(16) VALUE '@ABCDEFGHIJKLMNO'.
+         05 FILLER  PIC X(16) VALUE 'PQRSTUVWXYZ[\]^_'.
+         05 FILLER  PIC X(16) VALUE '`abcdefghijklmno'.
+         05 FILLER  PIC X(15) VALUE 'pqrstuvwxyz{|}~'.
+       01 WS-U-TABLE REDEFINES WS-U-PRINT PIC X(95).
 
       *----------------------------------------------------------------*
       *  Processing state - short-circuits later phases when an early
@@ -318,6 +373,22 @@
          05 WS-DIGIT-FLAG           PIC X(01) VALUE 'Y'.
            88 ALL-DIGITS                       VALUE 'Y'.
            88 NOT-DIGITS                       VALUE 'N'.
+      *  MAJ-10 - path-consumption guards. WS-SEG-CT receives the
+      *  UNSTRING field tally; together with WS-ROUTE-OVFL (set by the
+      *  UNSTRING ON OVERFLOW) it detects a path with MORE than the five
+      *  expected '/'-delimited segments. WS-DBL-CT counts interior
+      *  empty segments ('//') and the trailing-slash reverse scan
+      *  (WS-RP-LEN) detects an empty FINAL segment (a trailing '/') -
+      *  either of which would otherwise satisfy a route's trailing
+      *  SPACES pin and let a malformed suffix resolve to a valid route.
+         05 WS-SEG-CT               PIC S9(04) COMP VALUE 0.
+         05 WS-DBL-CT               PIC S9(04) COMP VALUE 0.
+         05 WS-RP-LEN               PIC S9(04) COMP VALUE 0.
+         05 WS-ROUTE-OVFL           PIC X(01) VALUE 'N'.
+           88 ROUTE-HAS-OVFL                   VALUE 'Y'.
+         05 WS-PATH-BAD             PIC X(01) VALUE 'N'.
+           88 PATH-MALFORMED                   VALUE 'Y'.
+           88 PATH-CLEAN                       VALUE 'N'.
 
       *----------------------------------------------------------------*
       *  Numeric-to-string key holders (REDEFINES preserve leading
@@ -426,14 +497,16 @@
          05 JP-PARSE-RESULT-LEN     PIC S9(04) COMP.
 
       *----------------------------------------------------------------*
-      *  C1 - Shared JSON assembly buffer. Sized X(96000) to match the
-      *  COJSONUC LINKAGE JSON-BUFFER exactly; a mismatch would let the
-      *  subprogram append past this program's storage. 96000 bytes
-      *  safely holds a capped 50-entry transaction list at worst-case
-      *  JSON expansion (see docs/decision-log.md).
+      *  C1 - Shared JSON assembly buffer. Sized X(131072) (128 KB) to
+      *  match the COJSONUC LINKAGE JSON-BUFFER byte-for-byte; a
+      *  mismatch would let the subprogram append past this program's
+      *  storage. MAJ-12: 96000 bytes could NOT hold a contract-legal
+      *  50-entry transaction list whose worst-case escaped size is
+      *  ~96,582+ bytes; 131072 bytes safely holds the proven worst
+      *  case (sizing proof in docs/decision-log.md).
       *----------------------------------------------------------------*
        01 JSON-BUFFER.
-         05 JB-DATA                 PIC X(96000).
+         05 JB-DATA                 PIC X(131072).
          05 JB-LEN                  PIC S9(08) COMP.
 
       *----------------------------------------------------------------*
@@ -492,6 +565,10 @@
            MOVE 200    TO WS-HTTP-STATUS
            MOVE SPACES TO WS-ERR-MSG
            MOVE 'NONE' TO WS-ROUTE-CODE
+      *    MAJ-11 - default the outcome kind to a normal HTTP response;
+      *    9999-ABEND-HANDLER overrides it to 'ABEND' for a trapped
+      *    task abend so the per-outcome telemetry distinguishes them.
+           MOVE 'HTTP ' TO WS-OUTCOME-KIND
            INITIALIZE API-COMMAREA
            MOVE EIBDATE  TO WS-EIB-DATE-9
            MOVE EIBTIME  TO WS-EIB-TIME-9
@@ -626,10 +703,63 @@
                MOVE WS-PATH(1:240) TO WS-ROUTE-PATH
            END-IF
            MOVE SPACES TO WS-SEG0 WS-SEG1 WS-SEG2 WS-SEG3 WS-SEG4
+           MOVE 0   TO WS-SEG-CT
+           MOVE 'N' TO WS-ROUTE-OVFL
+      *    MAJ-10 - tokenize with a field tally and an overflow trap so
+      *    a path carrying MORE than five '/'-delimited segments is
+      *    detected here rather than being silently truncated to the
+      *    five receiving fields; 2060-VALIDATE-PATH then rejects the
+      *    overflow and any empty (interior '//' or trailing '/')
+      *    segment -> 400 BEFORE authentication or VSAM access.
            UNSTRING WS-ROUTE-PATH DELIMITED BY '/'
                INTO WS-SEG0 WS-SEG1 WS-SEG2 WS-SEG3 WS-SEG4
+               TALLYING IN WS-SEG-CT
+               ON OVERFLOW
+                   SET ROUTE-HAS-OVFL TO TRUE
            END-UNSTRING
-           PERFORM 2050-RESOLVE-ROUTE.
+           PERFORM 2060-VALIDATE-PATH
+           IF PATH-MALFORMED
+               PERFORM 2900-SET-BAD-ROUTE
+           ELSE
+               PERFORM 2050-RESOLVE-ROUTE
+           END-IF.
+
+      *----------------------------------------------------------------*
+      *                     2060-VALIDATE-PATH
+      *  MAJ-10 - reject a route path that carries surplus or empty
+      *  segments so a malformed suffix cannot resolve to a valid route.
+      *  Three independent defects are caught, all answered 400 by the
+      *  caller BEFORE authentication or any VSAM access:
+      *    1. OVERFLOW  - more than five '/'-delimited segments.
+      *    2. '//'      - an empty INTERIOR segment (consecutive '/').
+      *    3. trailing  - an empty FINAL segment (a trailing '/'), which
+      *                   would otherwise satisfy a route's SPACES pin.
+      *  A legitimate CardDemo route never contains '//' and never ends
+      *  with '/', so these rejections cannot affect a valid request.
+      *----------------------------------------------------------------*
+       2060-VALIDATE-PATH.
+           SET PATH-CLEAN TO TRUE
+           IF ROUTE-HAS-OVFL
+               SET PATH-MALFORMED TO TRUE
+           END-IF
+           MOVE 0 TO WS-DBL-CT
+           INSPECT WS-ROUTE-PATH
+               TALLYING WS-DBL-CT FOR ALL '//'
+           IF WS-DBL-CT > 0
+               SET PATH-MALFORMED TO TRUE
+           END-IF
+           MOVE 0 TO WS-RP-LEN
+           PERFORM VARYING WS-I FROM 240 BY -1
+                   UNTIL WS-I < 1 OR WS-RP-LEN > 0
+               IF WS-ROUTE-PATH(WS-I:1) NOT = SPACE
+                   MOVE WS-I TO WS-RP-LEN
+               END-IF
+           END-PERFORM
+           IF WS-RP-LEN > 0
+               IF WS-ROUTE-PATH(WS-RP-LEN:1) = '/'
+                   SET PATH-MALFORMED TO TRUE
+               END-IF
+           END-IF.
 
       *----------------------------------------------------------------*
       *                     2050-RESOLVE-ROUTE
@@ -1239,6 +1369,10 @@
                    PERFORM 4177-ST-KEY
                WHEN SB-TRAIL
                    PERFORM 4178-ST-TRAIL
+               WHEN SB-STRESC
+                   PERFORM 4181-ST-STRESC
+               WHEN SB-STRU
+                   PERFORM 4182-ST-STRU
                WHEN OTHER
                    SET SB-BODY-BAD TO TRUE
            END-EVALUATE.
@@ -1303,14 +1437,21 @@
                MOVE 'COLON' TO WS-SB-STATE
            ELSE
                IF WS-SB-CH = WS-SB-ESC
-                   SET SB-BODY-BAD TO TRUE
+      *  MAJ-03: backslash begins an escape sequence; decode it in the
+      *  STRESC sub-state (context 'K' = key) instead of rejecting it.
+                   MOVE 'K'      TO WS-SB-CTX
+                   MOVE 'STRESC' TO WS-SB-STATE
                ELSE
-                   IF WS-SB-CURKEY-LEN >= 32
-                       SET SB-BODY-BAD TO TRUE
-                   ELSE
-                       ADD 1 TO WS-SB-CURKEY-LEN
-                       MOVE WS-SB-CH
-                            TO WS-SB-CURKEY(WS-SB-CURKEY-LEN:1)
+      *  MAJ-03: a RAW (unescaped) C0 control byte is invalid JSON.
+                   PERFORM 4185-REJECT-IF-CTL
+                   IF SB-BODY-OK
+                       IF WS-SB-CURKEY-LEN >= 32
+                           SET SB-BODY-BAD TO TRUE
+                       ELSE
+                           ADD 1 TO WS-SB-CURKEY-LEN
+                           MOVE WS-SB-CH
+                                TO WS-SB-CURKEY(WS-SB-CURKEY-LEN:1)
+                       END-IF
                    END-IF
                END-IF
            END-IF.
@@ -1344,13 +1485,20 @@
                PERFORM 4179-COMMIT-PAIR
            ELSE
                IF WS-SB-CH = WS-SB-ESC
-                   SET SB-BODY-BAD TO TRUE
+      *  MAJ-03: backslash begins an escape sequence; decode it in the
+      *  STRESC sub-state (context 'V' = value) instead of rejecting it.
+                   MOVE 'V'      TO WS-SB-CTX
+                   MOVE 'STRESC' TO WS-SB-STATE
                ELSE
-                   IF WS-SB-VAL-LEN >= 8
-                       SET SB-BODY-BAD TO TRUE
-                   ELSE
-                       ADD 1 TO WS-SB-VAL-LEN
-                       MOVE WS-SB-CH TO WS-SB-VAL(WS-SB-VAL-LEN:1)
+      *  MAJ-03: a RAW (unescaped) C0 control byte is invalid JSON.
+                   PERFORM 4185-REJECT-IF-CTL
+                   IF SB-BODY-OK
+                       IF WS-SB-VAL-LEN >= 8
+                           SET SB-BODY-BAD TO TRUE
+                       ELSE
+                           ADD 1 TO WS-SB-VAL-LEN
+                           MOVE WS-SB-CH TO WS-SB-VAL(WS-SB-VAL-LEN:1)
+                       END-IF
                    END-IF
                END-IF
            END-IF.
@@ -1422,6 +1570,144 @@
            IF SB-BODY-OK
                MOVE 'COMMACL' TO WS-SB-STATE
            END-IF.
+
+      *----------------------------------------------------------------*
+      *                     4181-ST-STRESC
+      *  MAJ-03: decode the character that FOLLOWS a backslash. The
+      *  eight RFC 8259 short escapes are decoded to their host-code-
+      *  page byte and appended; 'u' opens the four-hex-digit sub-state
+      *  (STRU); any other character is an invalid escape and fails the
+      *  body. The active string (key or value) is selected by
+      *  WS-SB-CTX and the caller resumes INKEY/INVAL via 4183.
+      *----------------------------------------------------------------*
+       4181-ST-STRESC.
+           EVALUATE WS-SB-CH
+               WHEN '"'
+                   MOVE '"'       TO WS-SB-DEC
+                   PERFORM 4183-APPEND-DEC
+               WHEN WS-SB-ESC
+                   MOVE WS-SB-ESC TO WS-SB-DEC
+                   PERFORM 4183-APPEND-DEC
+               WHEN '/'
+                   MOVE '/'       TO WS-SB-DEC
+                   PERFORM 4183-APPEND-DEC
+               WHEN 'b'
+                   MOVE WS-SB-BS  TO WS-SB-DEC
+                   PERFORM 4183-APPEND-DEC
+               WHEN 'f'
+                   MOVE WS-SB-FF  TO WS-SB-DEC
+                   PERFORM 4183-APPEND-DEC
+               WHEN 'n'
+                   MOVE WS-SB-LF  TO WS-SB-DEC
+                   PERFORM 4183-APPEND-DEC
+               WHEN 'r'
+                   MOVE WS-SB-CR  TO WS-SB-DEC
+                   PERFORM 4183-APPEND-DEC
+               WHEN 't'
+                   MOVE WS-SB-TAB TO WS-SB-DEC
+                   PERFORM 4183-APPEND-DEC
+               WHEN 'u'
+                   MOVE 0      TO WS-SB-UCNT
+                   MOVE 0      TO WS-SB-UACC
+                   MOVE 'STRU' TO WS-SB-STATE
+               WHEN OTHER
+                   SET SB-BODY-BAD TO TRUE
+           END-EVALUATE.
+
+      *----------------------------------------------------------------*
+      *                     4182-ST-STRU
+      *  MAJ-03: accumulate exactly four hexadecimal digits of a \uXXXX
+      *  escape. After the fourth digit the code point is decoded. Only
+      *  printable ASCII (U+0020..U+007E) is representable in a single-
+      *  byte cp037 credential and is translated via WS-U-TABLE; any
+      *  other code point (C0/DEL controls, non-ASCII, multi-byte) is
+      *  rejected. An incomplete run of digits leaves the machine in
+      *  STRU (not TRAIL) so 4166-FINALIZE-BODY fails a truncated body.
+      *----------------------------------------------------------------*
+       4182-ST-STRU.
+           PERFORM 4184-HEX-VALUE
+           IF SB-BODY-OK
+               COMPUTE WS-SB-UACC = WS-SB-UACC * 16 + WS-SB-HEXVAL
+               ADD 1 TO WS-SB-UCNT
+               IF WS-SB-UCNT = 4
+                   IF WS-SB-UACC >= 32 AND WS-SB-UACC <= 126
+                       COMPUTE WS-SB-UIDX = WS-SB-UACC - 31
+                       MOVE WS-U-TABLE(WS-SB-UIDX:1) TO WS-SB-DEC
+                       PERFORM 4183-APPEND-DEC
+                   ELSE
+                       SET SB-BODY-BAD TO TRUE
+                   END-IF
+               END-IF
+           END-IF.
+
+      *----------------------------------------------------------------*
+      *                     4183-APPEND-DEC
+      *  MAJ-03: append the decoded byte WS-SB-DEC to the active string
+      *  buffer selected by WS-SB-CTX, enforcing the same length caps as
+      *  the raw-character paths (32 for a key, 8 for a value), then
+      *  resume the in-string state (INKEY or INVAL).
+      *----------------------------------------------------------------*
+       4183-APPEND-DEC.
+           IF WS-SB-CTX = 'K'
+               IF WS-SB-CURKEY-LEN >= 32
+                   SET SB-BODY-BAD TO TRUE
+               ELSE
+                   ADD 1 TO WS-SB-CURKEY-LEN
+                   MOVE WS-SB-DEC
+                        TO WS-SB-CURKEY(WS-SB-CURKEY-LEN:1)
+                   MOVE 'INKEY' TO WS-SB-STATE
+               END-IF
+           ELSE
+               IF WS-SB-VAL-LEN >= 8
+                   SET SB-BODY-BAD TO TRUE
+               ELSE
+                   ADD 1 TO WS-SB-VAL-LEN
+                   MOVE WS-SB-DEC TO WS-SB-VAL(WS-SB-VAL-LEN:1)
+                   MOVE 'INVAL' TO WS-SB-STATE
+               END-IF
+           END-IF.
+
+      *----------------------------------------------------------------*
+      *                     4184-HEX-VALUE
+      *  MAJ-03: convert the current byte WS-SB-CH (a hexadecimal digit,
+      *  upper or lower case) to its 0..15 value in WS-SB-HEXVAL. A
+      *  non-hex byte fails the body.
+      *----------------------------------------------------------------*
+       4184-HEX-VALUE.
+           EVALUATE WS-SB-CH
+               WHEN '0'  MOVE 0  TO WS-SB-HEXVAL
+               WHEN '1'  MOVE 1  TO WS-SB-HEXVAL
+               WHEN '2'  MOVE 2  TO WS-SB-HEXVAL
+               WHEN '3'  MOVE 3  TO WS-SB-HEXVAL
+               WHEN '4'  MOVE 4  TO WS-SB-HEXVAL
+               WHEN '5'  MOVE 5  TO WS-SB-HEXVAL
+               WHEN '6'  MOVE 6  TO WS-SB-HEXVAL
+               WHEN '7'  MOVE 7  TO WS-SB-HEXVAL
+               WHEN '8'  MOVE 8  TO WS-SB-HEXVAL
+               WHEN '9'  MOVE 9  TO WS-SB-HEXVAL
+               WHEN 'A'  WHEN 'a'  MOVE 10 TO WS-SB-HEXVAL
+               WHEN 'B'  WHEN 'b'  MOVE 11 TO WS-SB-HEXVAL
+               WHEN 'C'  WHEN 'c'  MOVE 12 TO WS-SB-HEXVAL
+               WHEN 'D'  WHEN 'd'  MOVE 13 TO WS-SB-HEXVAL
+               WHEN 'E'  WHEN 'e'  MOVE 14 TO WS-SB-HEXVAL
+               WHEN 'F'  WHEN 'f'  MOVE 15 TO WS-SB-HEXVAL
+               WHEN OTHER
+                   SET SB-BODY-BAD TO TRUE
+           END-EVALUATE.
+
+      *----------------------------------------------------------------*
+      *                     4185-REJECT-IF-CTL
+      *  MAJ-03: reject a RAW (unescaped) C0 control byte appearing
+      *  inside a JSON string. The 32 cp037 C0 code points are tested;
+      *  SPACE and every printable byte pass (they are not in the set).
+      *----------------------------------------------------------------*
+       4185-REJECT-IF-CTL.
+           PERFORM VARYING WS-SB-C0-IDX FROM 1 BY 1
+                   UNTIL WS-SB-C0-IDX > 32 OR SB-BODY-BAD
+               IF WS-SB-CH = WS-SB-C0(WS-SB-C0-IDX)
+                   SET SB-BODY-BAD TO TRUE
+               END-IF
+           END-PERFORM.
 
       *----------------------------------------------------------------*
       *                       4180-LINK-SIGNON
@@ -1513,7 +1799,7 @@
       *                     4320-GET-LIST-RESULT
       *  C1 - The response container buffer is sized for the capped
       *  maximum of 50 entries (matching TRAN-LIST-ENTRY OCCURS 0 TO 50
-      *  and JB-DATA X(96000)); a larger preset would over-size the ODO
+      *  and JB-DATA X(131072)); a larger preset would over-size the ODO
       *  group and mis-drive JSON assembly.
       *  M8 - Receiving areas are initialized first, and the status
       *  container length, the response container length, and the
@@ -2205,14 +2491,20 @@
            END-EXEC
            IF WS-RESP-CD NOT = DFHRESP(NORMAL)
                PERFORM 6060-LOG-SEND-FAILURE
-           END-IF.
+           END-IF
+      *    MAJ-11 - record exactly one redacted per-outcome telemetry
+      *    line for EVERY response (200/400/401/404/500 and abends),
+      *    not only for a WEB SEND failure.
+           PERFORM 6070-LOG-OUTCOME.
 
       *----------------------------------------------------------------*
       *                    6050-WRITE-SEC-HEADERS
       *  N2 - Write the no-store cache-policy headers and the
       *  X-Content-Type-Options: nosniff header before the body is
-      *  sent. A header-write failure is non-fatal to the response and
-      *  is intentionally not escalated.
+      *  sent. MIN-02 - each header write's RESP/RESP2 is now captured
+      *  and evaluated; a failure remains non-fatal to the response
+      *  (the body is still sent) but is recorded as redacted operator
+      *  telemetry by 6055-LOG-HDR-FAILURE so a dropped header is seen.
       *----------------------------------------------------------------*
        6050-WRITE-SEC-HEADERS.
            EXEC CICS WEB WRITE
@@ -2223,6 +2515,10 @@
                 RESP        (WS-RESP-CD)
                 RESP2       (WS-REAS-CD)
            END-EXEC
+           IF WS-RESP-CD NOT = DFHRESP(NORMAL)
+               MOVE 'CACHE-CONTROL' TO WS-TEL-HDR
+               PERFORM 6055-LOG-HDR-FAILURE
+           END-IF
            EXEC CICS WEB WRITE
                 HTTPHEADER  (WS-PRG-NAME)
                 NAMELENGTH  (WS-PRG-NAME-LEN)
@@ -2231,6 +2527,10 @@
                 RESP        (WS-RESP-CD)
                 RESP2       (WS-REAS-CD)
            END-EXEC
+           IF WS-RESP-CD NOT = DFHRESP(NORMAL)
+               MOVE 'PRAGMA' TO WS-TEL-HDR
+               PERFORM 6055-LOG-HDR-FAILURE
+           END-IF
            EXEC CICS WEB WRITE
                 HTTPHEADER  (WS-XCTO-NAME)
                 NAMELENGTH  (WS-XCTO-NAME-LEN)
@@ -2238,7 +2538,11 @@
                 VALUELENGTH (WS-XCTO-VAL-LEN)
                 RESP        (WS-RESP-CD)
                 RESP2       (WS-REAS-CD)
-           END-EXEC.
+           END-EXEC
+           IF WS-RESP-CD NOT = DFHRESP(NORMAL)
+               MOVE 'XCTO' TO WS-TEL-HDR
+               PERFORM 6055-LOG-HDR-FAILURE
+           END-IF.
 
       *----------------------------------------------------------------*
       *                    6060-LOG-SEND-FAILURE
@@ -2257,6 +2561,76 @@
                   WS-TEL-RESP-X                    DELIMITED BY SIZE
                   ' resp2='                        DELIMITED BY SIZE
                   WS-TEL-REAS-X                    DELIMITED BY SIZE
+               INTO WS-TEL-MSG
+               WITH POINTER WS-TEL-PTR
+           END-STRING
+           SUBTRACT 1 FROM WS-TEL-PTR GIVING WS-TEL-LEN
+           EXEC CICS WRITE OPERATOR
+                TEXT       (WS-TEL-MSG)
+                TEXTLENGTH (WS-TEL-LEN)
+           END-EXEC.
+
+      *----------------------------------------------------------------*
+      *                    6055-LOG-HDR-FAILURE
+      *  MIN-02 - Record a non-fatal security-header WEB WRITE failure
+      *  as redacted operator telemetry: the requestId, the header name
+      *  and the CICS RESP/RESP2 only. No response body, route path,
+      *  credential, token, or PII value is included. WS-RESP-CD is not
+      *  disturbed (WRITE OPERATOR omits RESP) so the following header
+      *  write / WEB SEND still sees its own result.
+      *----------------------------------------------------------------*
+       6055-LOG-HDR-FAILURE.
+           MOVE SPACES     TO WS-TEL-MSG
+           MOVE WS-RESP-CD TO WS-TEL-RESP-X
+           MOVE WS-REAS-CD TO WS-TEL-REAS-X
+           MOVE 1 TO WS-TEL-PTR
+           STRING 'COAPIRTR hdr write failed req=' DELIMITED BY SIZE
+                  WS-REQ-ID     DELIMITED BY SIZE
+                  ' hdr='       DELIMITED BY SIZE
+                  WS-TEL-HDR    DELIMITED BY SIZE
+                  ' rc='        DELIMITED BY SIZE
+                  WS-TEL-RESP-X DELIMITED BY SIZE
+                  '/'           DELIMITED BY SIZE
+                  WS-TEL-REAS-X DELIMITED BY SIZE
+               INTO WS-TEL-MSG
+               WITH POINTER WS-TEL-PTR
+           END-STRING
+           SUBTRACT 1 FROM WS-TEL-PTR GIVING WS-TEL-LEN
+           EXEC CICS WRITE OPERATOR
+                TEXT       (WS-TEL-MSG)
+                TEXTLENGTH (WS-TEL-LEN)
+           END-EXEC.
+
+      *----------------------------------------------------------------*
+      *                    6070-LOG-OUTCOME
+      *  MAJ-11 - Emit exactly one structured, redacted operator
+      *  telemetry record for EVERY response outcome (2xx/4xx/5xx) and
+      *  trapped abends, so operations can observe API activity and
+      *  failures - not only the rare WEB SEND failure. Only non-
+      *  sensitive correlation data is logged: requestId, outcome kind,
+      *  the resolved route CODE (a fixed enum - never the raw path,
+      *  which may carry an account/card id), the HTTP status, and the
+      *  CICS RESP/RESP2 of the send. No body, PAN, credential, token,
+      *  or PII value is ever included.
+      *----------------------------------------------------------------*
+       6070-LOG-OUTCOME.
+           MOVE SPACES         TO WS-TEL-MSG
+           MOVE WS-HTTP-STATUS TO WS-TEL-STAT-X
+           MOVE WS-RESP-CD     TO WS-TEL-RESP-X
+           MOVE WS-REAS-CD     TO WS-TEL-REAS-X
+           MOVE 1 TO WS-TEL-PTR
+           STRING 'COAPIRTR ' DELIMITED BY SIZE
+                  WS-OUTCOME-KIND DELIMITED BY SIZE
+                  ' req='       DELIMITED BY SIZE
+                  WS-REQ-ID     DELIMITED BY SIZE
+                  ' rte='       DELIMITED BY SIZE
+                  WS-ROUTE-CODE DELIMITED BY SIZE
+                  ' st='        DELIMITED BY SIZE
+                  WS-TEL-STAT-X DELIMITED BY SIZE
+                  ' rc='        DELIMITED BY SIZE
+                  WS-TEL-RESP-X DELIMITED BY SIZE
+                  '/'           DELIMITED BY SIZE
+                  WS-TEL-REAS-X DELIMITED BY SIZE
                INTO WS-TEL-MSG
                WITH POINTER WS-TEL-PTR
            END-STRING
@@ -2524,6 +2898,10 @@
            MOVE 500    TO WS-HTTP-STATUS
            MOVE SPACES TO WS-ERR-MSG
            SET STATE-ERROR TO TRUE
+      *    MAJ-11 - mark the outcome as a trapped abend so the
+      *    per-outcome telemetry line emitted by 6000 -> 6070 is
+      *    distinguishable from an ordinary HTTP 500.
+           SET OUTCOME-ABEND TO TRUE
            PERFORM 5900-SERIALIZE-ERROR
            PERFORM 6000-SEND-RESPONSE
            PERFORM 6900-SCRUB-SENSITIVE

@@ -52,9 +52,16 @@
 */* + token TSMODEL + test-driver resources. NO FILE definitions:   */
 */* the CARDDEMO FILE resources are shared, never redefined here.    */
 */********************************************************************/
-* Rerun is idempotent: the DELETE below drops any prior CDEMOAPI group
-* first. On the very first run "group not found" (RC=4) is expected
-* and harmless; subsequent DEFINEs still process.
+* Rerun is idempotent and deterministic. First REMOVE CDEMOAPI from
+* the startup list, then DELETE the group, THEN (re)DEFINE and re-ADD
+* below. REMOVE-before-DELETE guarantees a prior half-wired group is
+* unlinked from &GRPLIST before its defs are dropped, so every rerun
+* converges to a single clean copy (mirrors app/jcl/APICSDRB.jcl). On
+* the very first run "group/list entry not found" (RC=4) on REMOVE and
+* DELETE is expected and harmless; the DEFINEs still process. A genuine
+* failure (RC>4) is undone by the conditional cleanup step (CLNGRP)
+* below. Rationale: docs/decision-log.md (D36).
+ REMOVE GROUP(CDEMOAPI) LIST(&GRPLIST)
  DELETE GROUP(CDEMOAPI)
  DEFINE TCPIPSERVICE(CDAPISVC) GROUP(CDEMOAPI)
  DESCRIPTION(CARDDEMO REST/JSON API HTTP LISTENER - CWS)
@@ -126,6 +133,10 @@
         USELPACOPY(NO) STATUS(ENABLED) CEDF(NO) DATALOCATION(ANY)
         EXECKEY(USER) CONCURRENCY(QUASIRENT) API(CICSAPI) DYNAMIC(NO)
         EXECUTIONSET(FULLAPI) JVM(NO)
+* Token TSQ model (mirror of CARDDEMOAPI.CSD): EXPIRYINT(20) = 20
+* MINUTES; CICS rounds up to the next 10-minute multiple; 20 is the
+* smallest such multiple that outlives the 15-min token life. Unit
+* and rationale: docs/decision-log.md (D2, D35).
  DEFINE TSMODEL(CDAPITSM) GROUP(CDEMOAPI)
  DESCRIPTION(API TOKEN REGISTRY - BOUNDED MAIN TSQ LIFECYCLE)
         PREFIX(AT) LOCATION(MAIN) RECOVERY(NO) EXPIRYINT(20)
@@ -200,6 +211,30 @@
  ADD GROUP(CDEMOAPI) LIST(&GRPLIST)
  LIST GROUP(CDEMOAPI)
 /*
+//*********************************************************************
+//*  STEP 2 (CONDITIONAL CLEANUP): runs ONLY if STEP 1 failed with a
+//*  real error (RC > 4 - i.e. a DEFINE/ADD failure, NOT the harmless
+//*  RC=4 that a first-run "not found" REMOVE/DELETE produces). It
+//*  unlinks CDEMOAPI from &GRPLIST and drops the partially-defined
+//*  group so a broken group is never left installed at next startup.
+//*  Rationale: docs/decision-log.md (D36).
+//*********************************************************************
+// IF (DEFGRP.RC GT 4) THEN
+//CLNGRP  EXEC PGM=DFHCSDUP,REGION=0M,
+//         PARM='CSD(READWRITE),PAGESIZE(60),NOCOMPAT'
+//STEPLIB  DD DSN=&SDFHLOAD,DISP=SHR
+//DFHCSD   DD UNIT=SYSDA,DISP=SHR,DSN=&DFHCSD
+//OUTDD    DD SYSOUT=*
+//SYSPRINT DD SYSOUT=*
+//SYSIN    DD *,SYMBOLS=JCLONLY
+* Undo a failed STEP 1: unlink CDEMOAPI from the startup list and drop
+* the partial group. Both statements tolerate a first-run "not found"
+* (RC=4) if STEP 1 failed before wiring or defining anything.
+ REMOVE GROUP(CDEMOAPI) LIST(&GRPLIST)
+ DELETE GROUP(CDEMOAPI)
+ LIST GROUP(CDEMOAPI)
+/*
+// ENDIF
 //*********************************************************************
 //*  ONLINE ACTIVATION (operator action - no reliable batch path).
 //*  DFHCSDUP has no INSTALL verb and CEDA is a terminal transaction,

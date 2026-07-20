@@ -82,14 +82,45 @@ or CI runner that can reach the region. Required tools, with pinned versions:
 - Python 3.9 or later for `openapi-contract-test.py`, with the pinned
   packages in
   [`app/test/api/requirements-test.txt`](../app/test/api/requirements-test.txt)
-  (`PyYAML==6.0.3`, `jsonschema==4.26.0`, and their pinned transitives):
+  (`PyYAML==6.0.3`, `jsonschema==4.26.0`, and their pinned transitives).
+
+  On a modern Debian/Ubuntu host (Python 3.11+, e.g. Ubuntu 25.10 / Python
+  3.13) the system interpreter is **PEP 668 externally-managed**, so a
+  system-wide `python3 -m pip install` fails with
+  `error: externally-managed-environment`. Create a project virtual
+  environment instead — the supported, non-destructive path (decision-log
+  **D50**) — and install the pinned tools into it:
 
   ```bash
-  python3 -m pip install -r app/test/api/requirements-test.txt
+  # Run from the repository root. Creates ./.venv once; reuse it thereafter.
+  python3 -m venv .venv
+  . .venv/bin/activate
+  python -m pip install --upgrade pip
+  python -m pip install -r app/test/api/requirements-test.txt
+  # Optional spec linters used later in this guide (Section 4):
+  python -m pip install openapi-spec-validator==0.9.0 yamllint==1.38.0
   ```
 
-- Optionally `openapi-spec-validator==0.9.0` and `yamllint==1.38.0` to lint
-  `app/api/openapi.yaml` directly.
+  If `python3 -m venv` reports that `ensurepip` is unavailable (some minimal
+  base images ship a broken `ensurepip`), create the venv without pip and
+  bootstrap it explicitly:
+
+  ```bash
+  python3 -m venv --without-pip .venv
+  . .venv/bin/activate
+  curl -sS https://bootstrap.pypa.io/get-pip.py | python
+  python -m pip install -r app/test/api/requirements-test.txt
+  ```
+
+  Activate the venv (`. .venv/bin/activate`) in **every** shell that runs the
+  contract test or the HTTP harness; the commands in
+  [Section 4](#4-smoke-test-the-installed-api) assume it is active. On a host
+  you fully control you may instead install globally with
+  `python3 -m pip install --break-system-packages -r app/test/api/requirements-test.txt`,
+  but the venv keeps the pinned versions reproducible and leaves the
+  system Python untouched. `openapi-spec-validator==0.9.0` and
+  `yamllint==1.38.0` (installed above) optionally lint `app/api/openapi.yaml`
+  directly.
 
 For a strict, reproducible gate always run the contract test with
 `RELEASE_MODE=1` (see [Section 4](#4-smoke-test-the-installed-api)). Without
@@ -118,9 +149,9 @@ applies only to the pre-encoded EBCDIC VSAM *data* files, not to source.
 | Target PDS (HLQ `AWS.M2`) | DCB | Repository folder | Members (upload with the file extension dropped) |
 |---|---|---|---|
 | `AWS.M2.CARDDEMO.CBL` | `RECFM=FB,LRECL=80` | `app/cbl/` | `COJSONUC`, `COAPISEC`, `COACSVCC`, `COCUSVCC`, `COCRSVCC`, `COXRSVCC`, `COTRSVCC`, `COAPIRTR` (the eight runtime programs) |
-| `AWS.M2.CARDDEMO.CPY` | `RECFM=FB,LRECL=80` | `app/cpy/` | `COAPICOM`, `COAPSGNY`, `COAPACTY`, `COAPCUSY`, `COAPCRDY`, `COAPXRFY`, `COAPTRNY` (the seven API copybooks) |
-| `AWS.M2.CARDDEMO.JCL` | `RECFM=FB,LRECL=80` | `app/jcl/` | `APIBUILD`, `APICSDIN`, `APICSDRB`, `APITSTB` (the four API jobs) |
-| `AWS.M2.CARDDEMO.CBL` | `RECFM=FB,LRECL=80` | `app/test/api/` | `TSTAUTH`, `TSTACCT`, `TSTCUST`, `TSTCARD`, `TSTXREF`, `TSTTRAN` (the six QA drivers — needed only for Section 4) |
+| `AWS.M2.CARDDEMO.CPY` | `RECFM=FB,LRECL=80` | `app/cpy/` | `COAPICOM`, `COAPSGNY`, `COAPACTY`, `COAPCUSY`, `COAPCRDY`, `COAPXRFY`, `COAPTRNY` (the seven API copybooks), plus `COAPDRVY` (the shared 64-byte driver-result copybook — needed only for Section 4; decision-log D37) |
+| `AWS.M2.CARDDEMO.JCL` | `RECFM=FB,LRECL=80` | `app/jcl/` | `APIBUILD`, `APICSDIN`, `APICSDRB`, `APITSTB` (the four core API jobs), plus `APITSTR` (the RC-gated all-driver runner job — needed only for Section 4; decision-log D37) |
+| `AWS.M2.CARDDEMO.CBL` | `RECFM=FB,LRECL=80` | `app/test/api/` | `TSTAUTH`, `TSTACCT`, `TSTCUST`, `TSTCARD`, `TSTXREF`, `TSTTRAN` (the six QA drivers), plus `TSTRUNR` (the EXCI runner that invokes and gates all six — needed only for Section 4; decision-log D37) |
 
 A repository file uploads to the like-named member with its extension removed:
 `app/cbl/COAPIRTR.cbl` becomes member `COAPIRTR` in `AWS.M2.CARDDEMO.CBL`, and
@@ -130,8 +161,10 @@ Staging order matters: the eight runtime programs and seven copybooks must be
 present before Section 1 (the copybooks so `BUILDONL` can resolve them from
 `AWS.M2.CARDDEMO.CPY`), and the four JCL members must be present so the
 `SUBMIT 'AWS.M2.CARDDEMO.JCL(...)'` commands in Sections 1, 2, and 5 can find
-them. The six `TST*` drivers are required only for the region-only QA runs in
-Section 4 and may be deferred until then.
+them. The seven `TST*` members (the six drivers plus the `TSTRUNR` runner),
+the `COAPDRVY` driver-result copybook, and the `APITSTR` runner job are
+required only for the region-only QA runs in Section 4 and may be deferred
+until then.
 
 ## 1. Build the API programs
 
@@ -299,6 +332,15 @@ This is a region/operator action, not a source-code change.
 4. Inquire on `URIMAP(CDAPIURI)` and verify `STATUS(ENABLED)`.
 5. Verify `TRANSACTION(CAPI)`, the eight API `PROGRAM` resources, and
    `TSMODEL(CDAPITSM)` are enabled.
+6. Suppress the CICS product/version `Server:` response header by setting the
+   region SIT parameter `HTTPSERVERHDR=NO`, so API responses do not advertise
+   the CICS product level to callers (a fingerprinting aid). This is a
+   **region-scope** switch — it affects every CICS Web Support response in the
+   region, not only the API — so enable it as a deliberate operator decision.
+   It is not a `TCPIPSERVICE` or `URIMAP` attribute and cannot be stripped
+   per-response from `COAPIRTR`, because CICS appends the `Server:` header
+   during `WEB SEND` after program control returns (see
+   [`docs/decision-log.md`](decision-log.md), D34).
 
 Port `3001` is an install-time default, not an assumption baked into the
 programs; do not assume it is free. If the operator changes the listener port,
@@ -318,7 +360,9 @@ The listener binds to `IPADDRESS(127.0.0.1)`, so it accepts connections only
 from the same z/OS image and is **not** reachable from an off-mainframe
 distributed client as installed (see
 [`docs/decision-log.md`](decision-log.md), D17). This increment therefore
-delivers a **same-host** inquiry API only. The off-mainframe distributed
+delivers a **same-host** inquiry API only, and the README, this guide, and the
+executive deck all describe it as same-host rather than distributed-ready
+(decision-log D51). The off-mainframe distributed
 access in the README roadmap is **not delivered here** — it is future work
 that requires the fronting component below, and it is not exercised or claimed
 by this increment. Do not describe the API as distributed-ready until that
@@ -353,7 +397,12 @@ Bearer tokens are short-lived and region-local by design:
   discarded on a region restart or `CICS` cold/warm start; clients must
   re-authenticate afterwards.
 - **Bounded lifecycle.** `EXPIRYINT(20)` reaps never-re-presented queues, so
-  abandoned tokens do not accumulate.
+  abandoned tokens do not accumulate. The `EXPIRYINT` unit is **minutes**, so
+  `20` is 20 minutes (not hours, not seconds); CICS rounds it up to the next
+  10-minute multiple, and 20 is the smallest such multiple that outlives the
+  15-minute functional token life (see decision-log D35). Functional expiry is
+  enforced in `COAPISEC`, so a token is rejected well before its queue is
+  reaped.
 
 ## 4. Smoke-test the installed API
 
@@ -375,7 +424,11 @@ API_PASS='<password>' \
 
 The script signs on, exercises all seven endpoints, checks documented
 `200`/`400`/`401`/`404` behavior, verifies the valid empty-list case, and
-runs response-body security checks. An operator-provided `FAULT_PATH` can
+runs response-body security checks. In addition, every asserted response body
+is validated against its OpenAPI schema for the returned status code by the
+`validate-response.py` helper (24 call sites via `check_schema`), so a `200`
+with a contract-violating body fails the run rather than passing on the status
+code alone (decision-log D42). An operator-provided `FAULT_PATH` can
 enable the controlled `500` check. For a strict run set `RELEASE_MODE=1`,
 which makes `jq` a required dependency and enforces precise JSON-field
 assertions; the script exits `0` when every check passes, `1` on any failure,
@@ -394,7 +447,9 @@ python3 app/test/api/openapi-contract-test.py
 
 # Release gate — SKIP is promoted to FAIL (exit 1) on any missing dependency
 # or spec, so a clean exit 0 here means the contract genuinely passed.
-python3 -m pip install -r app/test/api/requirements-test.txt
+# Activate the venv from Prerequisites (it holds the pinned deps); do NOT use a
+# bare system `pip install`, which fails under PEP 668 (decision-log D50).
+. .venv/bin/activate
 RELEASE_MODE=1 python3 app/test/api/openapi-contract-test.py
 ```
 
@@ -402,7 +457,8 @@ RELEASE_MODE=1 python3 app/test/api/openapi-contract-test.py
 test prints `SKIP` and exits `0` when `PyYAML`, `jsonschema`, or the spec file
 is absent, which does not prove the contract; under `RELEASE_MODE=1` a missing
 dependency or spec is a hard `FAIL` (exit `1`). A complete pass ends with
-`SUMMARY: checks=101 passed=101 failed=0`.
+`SUMMARY: checks=102 passed=102 failed=0` (the count includes the exact
+`maxItems: 50` list-cap drift check added for MIN-01; see decision-log D53).
 
 A minimal manual sign-on and authenticated inquiry flow is:
 
@@ -477,6 +533,38 @@ drivers:
 A `4` therefore means the run was *incomplete*, not that it passed; treat it
 exactly like a failure for release purposes.
 
+### Run and gate all six drivers together (`APITSTR`)
+
+Entering each driver transaction by hand does not produce a single release
+verdict, so the QA layer ships a runner that invokes and gates **all six**
+drivers in one job (decision-log D37):
+
+- [`app/test/api/TSTRUNR.cbl`](../app/test/api/TSTRUNR.cbl) is a batch EXCI
+  client that `LINK`s to each driver in turn, collects each driver's one-byte
+  verdict through the shared 64-byte `COAPDRVY` result copybook (copied under
+  a working-storage name via `COPY ... REPLACING`, so caller and callee never
+  disagree on the wire format), and aggregates them into one overall verdict.
+- [`app/jcl/APITSTR.jcl`](../app/jcl/APITSTR.jcl) builds `TSTRUNR` and then
+  runs it against the target region selected by the EXCI connection /
+  `DFHXCURM` — not by the runner source.
+
+To use it:
+
+1. Stage `TSTRUNR` (into `AWS.M2.CARDDEMO.CBL`), the `COAPDRVY` copybook
+   (into `AWS.M2.CARDDEMO.CPY`), and `APITSTR` (into `AWS.M2.CARDDEMO.JCL`),
+   in addition to the six drivers already built by `APITSTB`.
+2. Ensure the six driver transactions are installed (`APICSDIN.jcl`) and the
+   region has EXCI enabled with the batch `DFHXCOPT` options module available.
+3. Submit [`app/jcl/APITSTR.jcl`](../app/jcl/APITSTR.jcl). Its return code is
+   the aggregate gate: non-zero if **any** driver returned `8` (assertion
+   failure) or `4` (release-blocking missing fixture), and `0` only when every
+   driver returned `0`. Read the aggregated per-driver lines in the job output
+   to see which driver failed.
+
+Because it requires a live CICS region with EXCI, `APITSTR` cannot run in a
+Linux CI sandbox — it is a region-only gate (decision-log D37, and the
+CRIT-01 environment limitation).
+
 ### Load and restore the account-99 empty-list fixture
 
 [`app/test/api/acctdata-empty.txt`](../app/test/api/acctdata-empty.txt)
@@ -503,7 +591,29 @@ empty-list test.
 
 ### Region-only boundary matrix
 
-Use cloned VSAM datasets in a disposable region for these volume cases:
+The boundary/fault volume data is generated deterministically rather than
+hand-edited (decision-log D43). From a workstation:
+
+```bash
+# Generate the 10 canonical fixtures and verify them against the sha256 manifest.
+app/test/api/prepare-boundary-fixtures.sh            # generate + verify
+app/test/api/prepare-boundary-fixtures.sh --verify   # verify only (10/10 sha256 match)
+```
+
+This produces four scenarios under `app/test/api/fixtures/` — `card-boundary-50`
+(50 cards for one account), `card-overflow-51` (51 cards), `tran-boundary-50`
+(50 matching transactions), and `tran-truncate-51` (51 matching transactions)
+— plus a `MANIFEST.txt` recording each file's record count, byte size,
+`sha256`, and expected API outcome. Note the deliberate width gotcha: the
+`CCXREF` fixture rows are authored 36 bytes wide (the `CVACT03Y` data columns)
+and are padded to the file's 50-byte `RECORDSIZE` on load; do not "correct"
+the 36-byte width. Load a chosen scenario into **clone** VSAM datasets with
+[`app/test/api/load-boundary-fixtures.jcl`](../app/test/api/load-boundary-fixtures.jcl)
+(`SET SCN=` selects the scenario), and drop the clones afterwards with
+[`app/test/api/clean-boundary-fixtures.jcl`](../app/test/api/clean-boundary-fixtures.jcl).
+The fixtures never touch the base VSAM datasets.
+
+Use those cloned VSAM datasets in a disposable region for these volume cases:
 
 | Scenario | Test data | Expected result |
 |---|---|---|
@@ -649,6 +759,21 @@ account exists, resolves account-to-card relationships through `CXACAIX` /
 application logic. A valid account with no cards or matches returns HTTP
 `200` and an empty array, not `404`.
 
+Because the browse is a filtered scan rather than a keyed range read, its cost
+grows with the size of `TRANSACT`, so `COTRSVCC` bounds the work explicitly
+(decision-log D52): it scans at most `WS-MAX-SCAN` records (1,000,000),
+resolves at most `WS-MAX-CARDS` cards per account (50), and returns at most
+`WS-MAX-TRANS` entries (50, with `truncated=true` when more match). These are
+correctness/DoS guards, not a performance SLO: at high concurrency a
+worst-case near-`WS-MAX-SCAN` scan is still expensive (roughly 334 MiB logical
+per request at the file's 350-byte record length), and no live SLO has been
+measured because acceptance requires a CICS/VSAM region (CRIT-01). A
+card/account-keyed read-only transaction index and explicit pagination are the
+recommended remediations but are **out of scope for this increment** — the AAP
+(§0.5.2) forbids adding a new alternate index here — so they are tracked under
+*Suggested next tasks*. If you promote this endpoint to high-volume use, add
+that index or pagination and measure the SLO before relying on it.
+
 ### Copybook name collisions
 
 Service programs often copy both a VSAM record layout and an API response
@@ -708,11 +833,14 @@ These are out of scope for the current read-only increment but worthwhile:
   production-scale transaction history.
 - Add write/update endpoints only after authorization, audit, validation,
   recovery, and concurrency requirements are designed.
-- Harden the executive-summary deck's CDN supply chain before any
-  untrusted-hosting or user-supplied-diagram use: add Subresource Integrity
-  (`integrity`/`crossorigin`) hashes to the pinned `cdn.jsdelivr.net` tags,
-  add a Content-Security-Policy, and adopt Mermaid `>= 11.15.0` to clear the
-  Mermaid advisories recorded in decision-log entry D33.
+- Harden the executive-summary deck further before any untrusted-hosting or
+  user-supplied-diagram use. Subresource Integrity (`integrity`/`crossorigin`)
+  on the pinned `cdn.jsdelivr.net` tags and a Content-Security-Policy have
+  **already been applied** (decision-log D40); the remaining backlog item is to
+  adopt Mermaid `>= 11.15.0` to clear the six Mermaid 11.4.0 advisories that are
+  currently accepted as unreachable (decision-log D33), and — if the deck is
+  ever promoted to user-supplied diagrams — to add per-chunk integrity for the
+  Mermaid ESM dynamic imports and consider `securityLevel:"sandbox"`.
 
 This API is the first read-only increment advancing the README roadmap item
 “Exposure of transactions for distributed application integration.”

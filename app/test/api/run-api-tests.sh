@@ -105,6 +105,18 @@ BASE_URL="${API_SCHEME}://${API_HOST}:${API_PORT}${API_BASE}"
 API_USER="${API_USER:-USER0001}"
 API_PASS="${API_PASS:-PASSWORD}"
 
+# ---- OpenAPI per-response schema validation ---------------------------------
+# Every response body is validated against the EXACT schema app/api/openapi.yaml
+# declares for its (path, method, status) by the helper validate-response.py, so
+# a response that violates the published contract (an extra field, a missing
+# required field, a wrong type, a bad pattern, an out-of-enum error code) can no
+# longer pass silently. All three values are env-overridable and default
+# relative to this script's own location so the harness is directory-agnostic.
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+OPENAPI_SPEC="${OPENAPI_SPEC:-${SCRIPT_DIR}/../../api/openapi.yaml}"
+SCHEMA_VALIDATOR="${SCHEMA_VALIDATOR:-${SCRIPT_DIR}/validate-response.py}"
+PYTHON_BIN="${PYTHON_BIN:-python3}"
+
 # ---- Fixture-derived valid identifiers --------------------------------------
 ACCT_OK="${ACCT_OK:-00000000001}"
 CUST_OK="${CUST_OK:-000000001}"
@@ -232,6 +244,27 @@ else
         exit 2
     fi
     printf 'NOTE: jq not found; using grep/sed fallback for JSON parsing.\n' >&2
+fi
+
+# OpenAPI per-response schema validation needs python3, the validate-response.py
+# helper, its PyYAML/jsonschema dependencies, and the spec file. It is OPTIONAL
+# in default mode (a NOTE is printed and the schema checks are skipped so a
+# minimal developer run is never blocked) but REQUIRED in RELEASE_MODE, where
+# letting a schema-violating response pass unchecked is precisely the gap this
+# harness must close. HAVE_SCHEMA is 1 or 0.
+HAVE_SCHEMA=0
+if [ -f "$SCHEMA_VALIDATOR" ] && [ -f "$OPENAPI_SPEC" ] \
+   && command -v "$PYTHON_BIN" >/dev/null 2>&1 \
+   && "$PYTHON_BIN" -c 'import yaml, jsonschema' >/dev/null 2>&1; then
+    HAVE_SCHEMA=1
+else
+    if [ "$RELEASE_MODE" -eq 1 ]; then
+        printf 'ERROR: OpenAPI response-schema validation is required in RELEASE_MODE but is unavailable (need %s, spec %s, and %s with PyYAML+jsonschema).\n' \
+            "$SCHEMA_VALIDATOR" "$OPENAPI_SPEC" "$PYTHON_BIN" >&2
+        exit 2
+    fi
+    printf 'NOTE: response-schema validation unavailable; per-response schema checks skipped (install PyYAML+jsonschema and keep %s to enable).\n' \
+        "$SCHEMA_VALIDATOR" >&2
 fi
 
 # -----------------------------------------------------------------------------
@@ -380,6 +413,43 @@ record_fail() {
     TESTS=$((TESTS + 1))
     FAILED=$((FAILED + 1))
     printf 'FAIL: %s\n' "$1"
+}
+
+# check_schema SPEC_PATH METHOD STATUS LABEL
+# Validate the CURRENT $BODY against the schema app/api/openapi.yaml declares
+# for (SPEC_PATH, METHOD, STATUS) using validate-response.py, closing the gap
+# where a response that violated the published OpenAPI contract could pass. This
+# is FULL Draft-07 validation ($ref chains, additionalProperties, required,
+# types, patterns, enums) -- stricter and more complete than the field-presence
+# jq_assert spot checks. SPEC_PATH is the OpenAPI path TEMPLATE (for example
+# /accounts/{acctId}), not the concrete request URL; for routes that are not
+# themselves declared (an unknown route, or a surplus-segment route that the
+# router rejects with the standard error envelope) pass a representative
+# declared path that carries the same error response so the shared ErrorResponse
+# envelope is still validated. MUST be called immediately after the request
+# under test, before the next http_call overwrites $BODY. Records exactly one
+# PASS/FAIL assertion. When schema validation is unavailable (default mode only;
+# it is REQUIRED in RELEASE_MODE) the check is silently skipped so it never
+# blocks a minimal developer run.
+check_schema() {
+    local spec_path="$1" method="$2" status="$3" label="$4"
+    if [ "$HAVE_SCHEMA" -ne 1 ]; then
+        return 0
+    fi
+    local release_flag=""
+    if [ "$RELEASE_MODE" -eq 1 ]; then
+        release_flag="--release"
+    fi
+    local out rc
+    out="$("$PYTHON_BIN" "$SCHEMA_VALIDATOR" --spec "$OPENAPI_SPEC" \
+        --path "$spec_path" --method "$method" --status "$status" \
+        --body "$BODY" $release_flag 2>&1)"
+    rc=$?
+    if [ "$rc" -eq 0 ]; then
+        record_pass "schema: ${label} (${method} ${spec_path} ${status})"
+    else
+        record_fail "schema: ${label} (${method} ${spec_path} ${status}): ${out}"
+    fi
 }
 
 # extract_token
@@ -536,6 +606,7 @@ printf '%s\n' '-- 1. Authentication --'
 SIGNON_BODY="$(printf '{"userId":"%s","password":"%s"}' "$API_USER" "$API_PASS")"
 status="$(http_call POST "${BASE_URL}/signon" "$SIGNON_BODY")"
 check_status 200 "$status" "POST /signon"
+check_schema "/signon" POST 200 "POST /signon"
 check_data_envelope "POST /signon" "token"
 TOKEN="$(extract_token)"
 if [ -z "$TOKEN" ]; then
@@ -548,6 +619,7 @@ fi
 printf '\n-- 2. Positive inquiries (expect 200) --\n'
 status="$(http_call GET "${BASE_URL}/accounts/${ACCT_OK}" "" auth)"
 check_status 200 "$status" "GET /accounts/{acctId}"
+check_schema "/accounts/{acctId}" GET 200 "GET /accounts/{acctId}"
 check_data_envelope "GET /accounts/{acctId}" "accountId"
 # Exact schema: every documented Account field present, and each of the five
 # monetary fields is a signed decimal with exactly two fraction digits (the
@@ -559,6 +631,7 @@ jq_assert "schema: account monetary fields are signed 2dp decimals" \
 
 status="$(http_call GET "${BASE_URL}/customers/${CUST_OK}" "" auth)"
 check_status 200 "$status" "GET /customers/{custId}"
+check_schema "/customers/{custId}" GET 200 "GET /customers/{custId}"
 check_data_envelope "GET /customers/{custId}" "customerId"
 # Exact schema: SSN / government id appear only in masked form and never raw.
 jq_assert "schema: customer has customerId and no raw ssn/govtId key" \
@@ -566,6 +639,7 @@ jq_assert "schema: customer has customerId and no raw ssn/govtId key" \
 
 status="$(http_call GET "${BASE_URL}/cards/${CARD_OK}" "" auth)"
 check_status 200 "$status" "GET /cards/{cardNum}"
+check_schema "/cards/{cardNum}" GET 200 "GET /cards/{cardNum}"
 check_data_envelope "GET /cards/{cardNum}" "cardNumberMasked"
 # Exact schema: PAN masked (12 '*' + 4 digits), all Card fields present, no CVV.
 jq_assert "schema: card masked PAN well-formed, 5 fields, no CVV" \
@@ -574,6 +648,7 @@ jq_assert "schema: card masked PAN well-formed, 5 fields, no CVV" \
 # Card -> account/customer resolution (User Example Flow 2, step 1).
 status="$(http_call GET "${BASE_URL}/xref/${CARD_OK}" "" auth)"
 check_status 200 "$status" "GET /xref/{cardNum}"
+check_schema "/xref/{cardNum}" GET 200 "GET /xref/{cardNum}"
 check_data_envelope "GET /xref/{cardNum}" "accountId"
 jq_assert "schema: xref has masked PAN + accountId + customerId only" \
     '(.data.cardNumberMasked|type=="string" and test("^[*]{12}[0-9]{4}$")) and (.data|has("accountId") and has("customerId"))'
@@ -583,6 +658,7 @@ jq_assert "schema: xref has masked PAN + accountId + customerId only" \
 # the list envelope shape plus the 50-entry cap and truncated flag (C1).
 status="$(http_call GET "${BASE_URL}/accounts/${LIST_ACCT}/transactions" "" auth)"
 check_status 200 "$status" "GET /accounts/{acctId}/transactions"
+check_schema "/accounts/{acctId}/transactions" GET 200 "GET /accounts/{acctId}/transactions"
 check_data_envelope "GET /accounts/{acctId}/transactions" "transactions"
 jq_assert "channel: list envelope shape (accountId,transactions[],count:int,truncated:bool)" \
     '(.data.accountId|type=="string") and (.data.transactions|type=="array") and (.data.count|type=="number") and (.data.truncated|type=="boolean")'
@@ -593,6 +669,7 @@ jq_assert "schema: every listed transaction has masked PAN + signed 2dp amount" 
 
 status="$(http_call GET "${BASE_URL}/transactions/${TRAN_OK}" "" auth)"
 check_status 200 "$status" "GET /transactions/{tranId}"
+check_schema "/transactions/{tranId}" GET 200 "GET /transactions/{tranId}"
 check_data_envelope "GET /transactions/{tranId}" "transactionId"
 jq_assert "schema: transaction detail has masked PAN + signed 2dp amount" \
     '(.data.cardNumberMasked|type=="string" and test("^[*]{12}[0-9]{4}$")) and (.data.amount|type=="string" and test("^-?[0-9]+[.][0-9]{2}$")) and (.data|has("transactionId") and has("typeCode") and has("categoryCode"))'
@@ -601,18 +678,22 @@ jq_assert "schema: transaction detail has masked PAN + signed 2dp amount" \
 printf '\n-- 3. Not found (expect 404) --\n'
 status="$(http_call GET "${BASE_URL}/accounts/${ACCT_BAD}" "" auth)"
 check_status 404 "$status" "GET /accounts/{acctId} (unknown id)"
+check_schema "/accounts/{acctId}" GET 404 "GET /accounts/{acctId} (unknown id)"
 check_error_envelope NOT_FOUND "GET /accounts/{acctId} (unknown id)"
 
 status="$(http_call GET "${BASE_URL}/customers/${CUST_BAD}" "" auth)"
 check_status 404 "$status" "GET /customers/{custId} (unknown id)"
+check_schema "/customers/{custId}" GET 404 "GET /customers/{custId} (unknown id)"
 check_error_envelope NOT_FOUND "GET /customers/{custId} (unknown id)"
 
 status="$(http_call GET "${BASE_URL}/cards/${CARD_BAD}" "" auth)"
 check_status 404 "$status" "GET /cards/{cardNum} (unknown id)"
+check_schema "/cards/{cardNum}" GET 404 "GET /cards/{cardNum} (unknown id)"
 check_error_envelope NOT_FOUND "GET /cards/{cardNum} (unknown id)"
 
 status="$(http_call GET "${BASE_URL}/transactions/${TRAN_BAD}" "" auth)"
 check_status 404 "$status" "GET /transactions/{tranId} (unknown id)"
+check_schema "/transactions/{tranId}" GET 404 "GET /transactions/{tranId} (unknown id)"
 check_error_envelope NOT_FOUND "GET /transactions/{tranId} (unknown id)"
 
 # ---- 4. Bad request (expect 400) --------------------------------------------
@@ -620,20 +701,24 @@ printf '\n-- 4. Bad request (expect 400) --\n'
 # (a) Malformed JSON on sign-on.
 status="$(http_call POST "${BASE_URL}/signon" '{ this is : not json')"
 check_status 400 "$status" "POST /signon (malformed JSON)"
+check_schema "/signon" POST 400 "POST /signon (malformed JSON)"
 check_error_envelope BAD_REQUEST "POST /signon (malformed JSON)"
 
 # (b) Unknown route under the API base.
 status="$(http_call GET "${BASE_URL}/bogusroute" "" auth)"
 check_status 400 "$status" "GET /bogusroute (unknown route)"
+check_schema "/accounts/{acctId}" GET 400 "GET /bogusroute (unknown route) error envelope"
 check_error_envelope BAD_REQUEST "GET /bogusroute (unknown route)"
 
 # (c) Non-numeric path parameter.
 status="$(http_call GET "${BASE_URL}/accounts/XYZ" "" auth)"
 check_status 400 "$status" "GET /accounts/XYZ (non-numeric acct)"
+check_schema "/accounts/{acctId}" GET 400 "GET /accounts/XYZ (non-numeric acct)"
 check_error_envelope BAD_REQUEST "GET /accounts/XYZ (non-numeric acct)"
 
 status="$(http_call GET "${BASE_URL}/accounts/ABC/transactions" "" auth)"
 check_status 400 "$status" "GET /accounts/ABC/transactions (non-numeric acct)"
+check_schema "/accounts/{acctId}/transactions" GET 400 "GET /accounts/ABC/transactions (non-numeric acct)"
 check_error_envelope BAD_REQUEST "GET /accounts/ABC/transactions (non-numeric acct)"
 
 # ---- 5. Unauthorized (expect 401) -------------------------------------------
@@ -641,17 +726,20 @@ printf '\n-- 5. Unauthorized (expect 401) --\n'
 # (a) No Authorization header on a protected resource.
 status="$(http_call GET "${BASE_URL}/accounts/${ACCT_OK}")"
 check_status 401 "$status" "GET /accounts/{acctId} (no token)"
+check_schema "/accounts/{acctId}" GET 401 "GET /accounts/{acctId} (no token)"
 check_error_envelope UNAUTHORIZED "GET /accounts/{acctId} (no token)"
 
 # (b) Forged/invalid bearer token.
 status="$(http_call GET "${BASE_URL}/accounts/${ACCT_OK}" "" "forged-invalid-token")"
 check_status 401 "$status" "GET /accounts/{acctId} (forged token)"
+check_schema "/accounts/{acctId}" GET 401 "GET /accounts/{acctId} (forged token)"
 check_error_envelope UNAUTHORIZED "GET /accounts/{acctId} (forged token)"
 
 # ---- 6. Empty transaction list (expect 200, NOT 404) ------------------------
 printf '\n-- 6. Empty transaction list (expect 200 + empty array) --\n'
 status="$(http_call GET "${BASE_URL}/accounts/${EMPTY_ACCT}/transactions" "" auth)"
 check_status 200 "$status" "GET /accounts/{acctId}/transactions (cardless -> empty)"
+check_schema "/accounts/{acctId}/transactions" GET 200 "GET /accounts/{acctId}/transactions (cardless -> empty)"
 # Exact empty-list contract: the array MUST be empty AND count MUST be 0 AND
 # truncated MUST be false. The previous OR let a body satisfy the check with
 # only one of the two -- e.g. count 0 while the array was non-empty -- so the
@@ -713,6 +801,7 @@ if [ -n "$FAULT_PATH" ]; then
     if [ -n "$fault_url" ]; then
         status="$(http_call GET "$fault_url" "" auth)"
         check_status 500 "$status" "GET fault route (forced 500)"
+        check_schema "/accounts/{acctId}" GET 500 "GET fault route (forced 500) error envelope"
         check_error_envelope INTERNAL_ERROR "GET fault route (forced 500)"
         # The 500 envelope must not leak internal CICS RESP2 detail.
         if grep -Eiq 'resp2' "$BODY"; then
@@ -747,6 +836,7 @@ printf '\n-- 8. Extended scenarios (token lifecycle + strict routing) --\n'
 #     single sign-on the base flow performs.
 status="$(http_call POST "${BASE_URL}/signon" "$SIGNON_BODY")"
 check_status 200 "$status" "POST /signon (second sign-on)"
+check_schema "/signon" POST 200 "POST /signon (second sign-on)"
 check_data_envelope "POST /signon (second sign-on)" "token"
 TOKEN2="$(extract_token)"
 if [ -n "$TOKEN" ] && [ -n "$TOKEN2" ]; then
@@ -757,6 +847,7 @@ if [ -n "$TOKEN" ] && [ -n "$TOKEN2" ]; then
     fi
     status="$(http_call GET "${BASE_URL}/accounts/${ACCT_OK}" "" "$TOKEN2")"
     check_status 200 "$status" "GET /accounts/{acctId} (second token authenticates)"
+    check_schema "/accounts/{acctId}" GET 200 "GET /accounts/{acctId} (second token authenticates)"
 else
     record_fail "duplicate-auth: could not obtain two tokens to compare"
 fi
@@ -768,17 +859,20 @@ fi
 UNKNOWN_TOKEN="ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ012"
 status="$(http_call GET "${BASE_URL}/accounts/${ACCT_OK}" "" "$UNKNOWN_TOKEN")"
 check_status 401 "$status" "GET /accounts/{acctId} (well-formed unknown/expired token)"
+check_schema "/accounts/{acctId}" GET 401 "GET /accounts/{acctId} (well-formed unknown/expired token)"
 check_error_envelope UNAUTHORIZED "GET /accounts/{acctId} (well-formed unknown/expired token)"
 
 # (c) Strict routing: an extra path segment beyond a valid route must be a 400
 #     (unknown route), not a spurious 200 (AAP M7 exact-segment enforcement).
 status="$(http_call GET "${BASE_URL}/accounts/${ACCT_OK}/transactions/extra" "" auth)"
 check_status 400 "$status" "GET /accounts/{acctId}/transactions/extra (extra segment)"
+check_schema "/accounts/{acctId}/transactions" GET 400 "GET /accounts/{acctId}/transactions/extra (extra segment) error envelope"
 check_error_envelope BAD_REQUEST "GET /accounts/{acctId}/transactions/extra (extra segment)"
 
 # (d) Strict routing: a trailing segment on a single-key resource is a 400.
 status="$(http_call GET "${BASE_URL}/accounts/${ACCT_OK}/extra" "" auth)"
 check_status 400 "$status" "GET /accounts/{acctId}/extra (extra segment)"
+check_schema "/accounts/{acctId}" GET 400 "GET /accounts/{acctId}/extra (extra segment) error envelope"
 check_error_envelope BAD_REQUEST "GET /accounts/{acctId}/extra (extra segment)"
 
 

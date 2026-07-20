@@ -535,12 +535,18 @@ components:
       properties:
         token:
           type: string
-          minLength: 1
+          minLength: 64
+          maxLength: 64
+          pattern: '^[0-9A-Z]{64}$'
           description: >-
             Short-lived opaque bearer token to send on subsequent calls in the
-            Authorization header. The token lifetime is fixed at 900 seconds
-            (15 minutes) from issue.
-          example: "eyJ0a2VuIjoiQ0FSRERFTU8ifQ"
+            Authorization header. It is exactly 64 characters drawn from the
+            [0-9A-Z] alphabet: COAPISEC mints it from a cryptographically
+            secure RNG (PIC X(64)) as an opaque registry key, not a signed
+            JWT. The token lifetime is fixed at 900 seconds (15 minutes) from
+            issue.
+          # yamllint disable-line rule:line-length
+          example: "FGFOUCBUXUDL919QK393NUHDXEZEDPVQNW4DEFTDMWG7YUUN1CX1ZRNBECAFHZVL"
         userId:
           type: string
           maxLength: 8

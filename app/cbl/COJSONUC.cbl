@@ -182,7 +182,10 @@
            05  JP-PARSE-RESULT     PIC X(256).
            05  JP-PARSE-RESULT-LEN PIC S9(04) COMP.
        01  JSON-BUFFER.
-           05  JB-DATA             PIC X(96000).
+      *  MAJ-12: sized X(131072) (128 KB) - MUST equal the caller's
+      *  WORKING-STORAGE JB-DATA in COAPIRTR byte-for-byte. Worst-case
+      *  escaped 50-entry list proof + sizing rationale: decision log.
+           05  JB-DATA             PIC X(131072).
            05  JB-LEN              PIC S9(08) COMP.
 
       *----------------------------------------------------------------*

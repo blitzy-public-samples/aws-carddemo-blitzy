@@ -71,6 +71,17 @@
        01  WS-GOVT-COUNT        PIC 9(04) VALUE 0.
        01  WS-EFT-COUNT         PIC 9(04) VALUE 0.
 
+      *----------------------------------------------------------------*
+      *                     LINKAGE SECTION
+      *----------------------------------------------------------------*
+      * Optional result COMMAREA for the RC-gated runner (MAJ-07). When
+      * a caller LINKs with it (EIBCALEN > 0) 9000-REPORT publishes the
+      * verdict here; with no COMMAREA (started-task mode) the driver is
+      * unchanged. Layout: app/cpy/COAPDRVY.cpy. See decision-log D37.
+      *----------------------------------------------------------------*
+       LINKAGE SECTION.
+       COPY COAPDRVY.
+
        PROCEDURE DIVISION.
       *----------------------------------------------------------------*
       * 0000-MAIN : run each test, emit the summary, then RETURN.      *
@@ -210,6 +221,24 @@
                MOVE 8 TO WS-TEST-RC
            ELSE
                MOVE ZERO TO WS-TEST-RC
+           END-IF
+      *    Publish the verdict to the caller COMMAREA when invoked via
+      *    LINK/EXCI (EIBCALEN > 0). MAJ-07 / decision-log D37.
+           IF EIBCALEN > 0
+               MOVE WS-TESTS-RUN   TO DRV-TESTS-RUN
+               MOVE WS-TESTS-PASS  TO DRV-TESTS-PASS
+               MOVE WS-TESTS-FAIL  TO DRV-TESTS-FAIL
+               MOVE 'TSTCUST'      TO DRV-DRIVER-ID
+               EVALUATE WS-TEST-RC
+                   WHEN 8
+                       SET DRV-FAIL TO TRUE
+                   WHEN 4
+                       SET DRV-SKIP TO TRUE
+                   WHEN 0
+                       SET DRV-PASS TO TRUE
+                   WHEN OTHER
+                       SET DRV-SKIP TO TRUE
+               END-EVALUATE
            END-IF
            MOVE WS-TEST-RC TO RETURN-CODE
            .
