@@ -10,7 +10,7 @@
 
 ### 1.1 Project Overview
 
-This project re-platforms **AWS CardDemo** — a credit-card account-management system originally implemented in COBOL, CICS, VSAM, and JCL — into a functionally equivalent **Java 25 LTS + Spring Boot 3.5.16** modular monolith. It targets developers and operators of the CardDemo estate and serves as a reference migration proving behavioral parity at zero feature expansion. The technical scope covers 28 COBOL programs (17 online, 11 batch), 10 VSAM datasets, 17 BMS screen contracts, and 29 JCL jobs, reconstructed as REST controllers, Spring Batch jobs, JPA entities over PostgreSQL 16, and hand-written DTO mappers. Monetary arithmetic is preserved exactly with `BigDecimal`. The legacy COBOL source is retained read-only under `/legacy`.
+This project re-platforms **AWS CardDemo** — a credit-card account-management system originally implemented in COBOL, CICS, VSAM, and JCL — into a functionally equivalent **Java 25 LTS + Spring Boot 3.5.16** modular monolith. It targets developers and operators of the CardDemo estate and serves as a reference migration proving behavioral parity at **no business-feature expansion** (no new endpoints or business rules). Parity is asserted with **two intentional, documented behavioral deviations** from the legacy — interest rounding standardized to `HALF_UP` (decision-log D31) and JPA optimistic locking on updates (decision-log D18) — recorded as deviations rather than presented as bit-for-bit equivalence. The technical scope covers 28 COBOL programs (17 online, 10 batch, and 1 date-validation utility — `CSUTLDTC`, which maps to a service, not a batch job), 10 VSAM datasets, 17 BMS screen contracts, and 29 JCL jobs, reconstructed as REST controllers, Spring Batch jobs, JPA entities over PostgreSQL 16, and hand-written DTO mappers. Monetary values use `BigDecimal` (scale-2, no floating point), subject to the one documented rounding-mode deviation noted above (D31). The legacy COBOL source is retained read-only under `/legacy`.
 
 ### 1.2 Completion Status
 
@@ -41,11 +41,11 @@ pie showData title Completion Status — 92.8% Complete (Hours)
 - ✅ **Coverage:** **89.90% line / 90.96% instruction** (JaCoCo gate ≥80% met).
 - ✅ **Security:** OWASP dependency-check 12.2.2 — **zero CVEs ≥ CVSS 7** (max 6.1); no hardcoded secrets; BCrypt passwords; PAN/CVV never logged.
 - ✅ **Online layer:** 17 REST controllers reproduce all 17 CICS online programs and BMS field/PF-key contracts via 34 DTOs.
-- ✅ **Batch layer:** 12 Spring Batch jobs reproduce the 11 batch programs; reject codes 100/101/102/103 preserved; golden-file parity harness in place.
-- ✅ **Data tier:** 10 VSAM KSDS → PostgreSQL 16 (11 entities, 11 repositories, Flyway V1–V5: 12 tables, 11 FKs, 7 indexes, 11 seed CSVs).
+- ✅ **Batch layer:** 12 Spring Batch jobs = **9 derived from the 10 batch COBOL programs** (`CBSTM03A`+`CBSTM03B` collapse to one `statementGenerationJob`) **+ 2 from JCL utility jobs** (`COMBTRAN` SORT, `TRANBKP` IDCAMS `REPRO`) **+ 1 source-less `dailyTransactionLoadJob`** (D30); reject codes 100/101/102/103 preserved; golden-file parity harness in place. Full job-count reconciliation: decision-log D68 / traceability-matrix Section 1.
+- ✅ **Data tier:** 10 VSAM KSDS → PostgreSQL 16 (11 entities, 11 repositories, Flyway V1–V6: 12 tables, 11 FKs, 7 indexes, 11 seed CSVs; V6 formalizes the CVV-at-rest redaction, D22-revised).
 - ✅ **Decimal fidelity:** all money as `BigDecimal` scale-2 with `HALF_UP`; no float/double.
 - ✅ **Legacy retention (G8):** entire COBOL corpus relocated to `/legacy` with 100% content preservation (148 rename-only operations).
-- ✅ **Runtime verified:** online app boots against real PostgreSQL 16 (Flyway 5 migrations, 860 rows seeded); actuator + OpenAPI healthy; a standalone batch job runs to COMPLETED (exit 0) with correlation-ID/trace propagation.
+- ✅ **Runtime verified:** online app boots against real PostgreSQL 16 (Flyway V1–V6 migrations, 860 rows seeded); actuator + OpenAPI healthy; **all 12 Spring Batch jobs run standalone to COMPLETED (exit 0)** with correlation-ID/trace propagation (per-job evidence in Section 4).
 - ✅ **Rule-mandated docs:** decision-log (2906 lines), traceability-matrix (1748 lines, 100% paragraph coverage), 5 onboarding docs, Grafana dashboard, self-contained reveal.js executive deck, updated README, CI workflow.
 
 ### 1.4 Critical Unresolved Issues
@@ -65,7 +65,7 @@ No access issues prevented autonomous build, test, or local runtime validation (
 
 | System/Resource | Type of Access | Issue Description | Resolution Status | Owner |
 |-----------------|----------------|-------------------|-------------------|-------|
-| NVD (National Vulnerability Database) | Network / API key | OWASP dependency-check needs online NVD access (or a mirrored cache + API key) in CI; offline Maven `-o` silently skips the goal | Open — deferred to CI hardening (M-3) | DevOps |
+| NVD (National Vulnerability Database) | Network / API key | The dependency-check **feed update** needs online NVD access (or a mirrored cache + API key) in CI; the **scan itself runs offline** against a populated cache (`-DautoUpdate=false`, verified 2026-07-20 — see decision-log D49 addendum). Only Maven's `-o` offline flag blocks the goal outright. Enabling the periodic online refresh in CI is M-3 | Open — deferred to CI hardening (M-3) | DevOps |
 | Production PostgreSQL 16 | DB credentials | Prod database instance + credentials not yet provisioned (local validation used a container) | Open — deferred to provisioning (H-1) | Platform / DBA |
 | Secrets manager / vault | Secret store access | Production secret backend not yet available for DB/OTLP credential injection | Open — deferred (H-2) | Security / Platform |
 
@@ -114,7 +114,7 @@ All rows are path-to-production tasks (each traces to a risk in §6). **Total = 
 | H-2 Wire production secrets manager/vault for DB + OTLP credentials (no fallback) | 6 | High |
 | H-3 Author deployment/orchestration manifests (k8s/cloud), registry, ingress, TLS/DNS | 12 | High |
 | H-4 Security review & sign-off (deviations D18/D22/D31/D39/D40, CVV-at-rest/PCI, pen-test) | 8 | High |
-| H-5 Legacy data migration (VSAM/EBCDIC → PostgreSQL) + credential re-hash + parity UAT | 10 | High |
+| H-5 Legacy data migration (VSAM/EBCDIC → PostgreSQL) — includes **two distinct, separately-signed-off validation steps**: (a) `COMP-3` packed-decimal decode fidelity (row-for-row `BigDecimal` scale-2 checksum, D9) and (b) EBCDIC **code-page** reconciliation (IBM-037/1047 → UTF-8), which must be verified **before** the credential re-hash — then credential re-hash + parallel-run parity UAT (D69) | 10 | High |
 | M-1 Wire production observability backend (OTLP collector, Prometheus/Tempo/Grafana, import dashboard) | 8 | Medium |
 | M-2 Load & performance validation at production data scale + tuning | 8 | Medium |
 | M-3 Enable OWASP dependency-check online (NVD API key + cache) in CI + add deploy stage | 3 | Medium |
@@ -149,16 +149,39 @@ All figures below originate from Blitzy's autonomous validation logs (`mvn -B -o
 Runtime validation was performed against a real PostgreSQL 16 container using the bootable fat jar. CardDemo is a REST/OpenAPI service (BMS 3270 screens were re-expressed as REST DTOs per the AAP — no rendered HTML UI is in scope); "UI verification" therefore covers the OpenAPI surface and REST flows.
 
 **Online application (profile `local`)**
-- ✅ **Startup** — boots in ~7.0s; Flyway applies all 5 migrations (V1–V5); Hibernate `ddl-auto=validate` passes; seed loader inserts 860 rows across 8 tables.
+- ✅ **Startup** — boots in ~7.0s; Flyway applies all 6 migrations (V1–V6, including the V6 CVV-at-rest redaction, D22-revised); Hibernate `ddl-auto=validate` passes; seed loader inserts 860 rows across 8 tables.
 - ✅ **Health** — `/actuator/health`, `/actuator/health/readiness`, `/actuator/health/liveness` all **UP** (PostgreSQL connected).
 - ✅ **Metrics** — `/actuator/prometheus` returns 237 metric lines tagged `application="carddemo"`.
 - ✅ **OpenAPI / Swagger UI** — `/v3/api-docs` exposes **18 paths** covering all 17 online screens.
 - ✅ **Auth flow** — `POST /api/v1/auth/signon {ADMIN001/PASSWORD}` → 200 with correct admin routing headers (`X-CardDemo-Next-Program=COADM01C`, `Next-Transaction=CA00`) and `X-Correlation-Id`; proves controller→service→repository→PostgreSQL→BCrypt→role routing.
 - ✅ **Authenticated read** — `GET /api/v1/accounts/view` (HTTP Basic `USER0001`) → 200 with CAVW DTO; security headers present (`X-Content-Type-Options: nosniff`, `X-Frame-Options: DENY`, `Cache-Control: no-store`).
 
-**Batch application (profile `batch`, JCL-equivalent standalone)**
-- ✅ **Job execution** — `accountMasterPrintJob` runs to **COMPLETED**, process **exit code 0**; correlation-ID + traceId/spanId propagate into structured JSON (ECS) logs.
-- ⚠ **OTLP push at shutdown** — a single non-fatal WARN when pushing metrics to a deliberately-dead local endpoint; does not affect COMPLETED/exit 0. Resolved by wiring a real collector (task M-1).
+**Batch application (standalone, JCL-equivalent) — ALL 12 jobs runtime-verified**
+
+Every one of the 12 Spring Batch jobs was launched standalone via
+`java -jar target/carddemo-1.0.0.jar --spring.main.web-application-type=none --spring.batch.job.enabled=true --spring.batch.job.name=<job> [params]`
+against the live PostgreSQL 16 stack under the **default profile** (so `LocalSeedDataLoader` does not re-seed and the posting clean-post prep is preserved). Correlation-ID + traceId/spanId propagate into structured JSON (ECS) logs for every job. Authoritative status is taken from Spring Batch's own `batch_job_execution` / `batch_job_instance` metadata tables: **12 distinct jobs, 12 executions, 12 COMPLETED, 0 FAILED.**
+
+| # | Job | Params used | BatchStatus | Exit | Evidence |
+|---|-----|-------------|-------------|------|----------|
+| 1 | `accountMasterPrintJob` | (none) | COMPLETED | 0 | read-only master print |
+| 2 | `cardMasterPrintJob` | (none) | COMPLETED | 0 | read-only master print |
+| 3 | `xrefPrintJob` | (none) | COMPLETED | 0 | read-only master print |
+| 4 | `customerMasterPrintJob` | (none) | COMPLETED | 0 | read-only master print |
+| 5 | `transactionBackupJob` | (none) | COMPLETED | 0 | TRANBKP IDCAMS REPRO |
+| 6 | `interestCalculationJob` | `parmDate=2022071800` | COMPLETED | 0 | wrote `SYSTRAN.dat` (50 recs × 351B); account balances updated idempotently |
+| 7 | `transactionReportJob` | `startDate=2022-07-01 endDate=2022-07-31` | COMPLETED | 0 | wrote `DALYREPT.txt` (402B) |
+| 8 | `statementGenerationJob` | (none) | COMPLETED | 0 | wrote `statements.txt` (100 000B) + `statements.html` (650 000B) |
+| 9 | `transactionCombineJob` | `systemResource=file:./target/batch/SYSTRAN.dat` | COMPLETED | 0 | REPRO-load: **50 inserted, 0 rejected**; `transaction` 300→350 |
+| 10 | `dailyTransactionLoadJob` | `inputResource=file:./src/test/resources/seed/dailytran-fixedwidth-sample.txt` | COMPLETED | 0 | staged 10 rows into `daily_transaction` |
+| 11 | `dailyTransactionValidateJob` | (none) | COMPLETED | 0 | CBTRN01C read-only validation of 10 staged rows |
+| 12 | `dailyTransactionPostingJob` | (none, after clean-post prep) | COMPLETED | 0 | **rejected 0**; posted 10; `transaction` 340→350; `DALYREJS.dat` = 0 bytes |
+
+**Clean-post procedure for the posting job (D45):** on a seeded database the posting job faithfully abends (exit 8) because `local` pre-loads the same 300 IDs into both `transaction` and `daily_transaction`, so re-posting collides on `pk_transaction` (CBTRN02C treats FILE STATUS '22' as `9999-ABEND-PROGRAM`). To validate the happy path, staging was truncated, the 10-record fixed-width sample was loaded, and the matching 10 IDs were freed from the `transaction` table before validate + post — yielding COMPLETED / exit 0 with zero rejects. This is documented in `docs/onboarding/getting-started.md` §8.
+
+**Combine input strategy:** `interestCalculationJob` writes new interest transactions (TRAN-IDs `2022071800000001…050`) only to `SYSTRAN.dat` and never to the `transaction` table (`InterestTransactionWriter`, to avoid double-loading — the combine job is what loads SYSTRAN into the master). Feeding that file as the combine `systemResource` therefore produces a clean 50-row insert (0 duplicate-key rejects, RC 0).
+
+- ℹ️ **OTLP metrics push** — under the default profile no batch metrics are pushed (headless JVM has no `/actuator/prometheus`), so no OTLP shutdown WARN is emitted. The optional `batch` profile (`SPRING_PROFILES_ACTIVE=local,batch`) pushes `spring_batch_job_seconds` / `spring_batch_step_seconds` over OTLP just before exit (decision-log D65); against a dead collector that emits a single non-fatal WARN which does not affect COMPLETED/exit 0.
 
 **Observability (verified locally)**
 - ✅ Structured logs with correlation IDs (online + batch); ✅ distributed tracing; ✅ metrics endpoint; ✅ health/readiness/liveness probes.
@@ -178,12 +201,12 @@ Cross-map of AAP §0.9 validation criteria to autonomous results.
 | Interest fidelity | Exact `BigDecimal` match | ✅ Pass (improved) | `HALF_UP` scale-2; COBOL truncation defect corrected — documented deviation D31 (risk T1) |
 | Reject codes | 100/101/102/103, identical order | ✅ Pass | `RejectCode` enum + PostingService; each path unit-tested |
 | External file contracts | Fixed-width layouts preserved | ✅ Pass | `FixedWidthCodec` + FlatFile reader/writer (partner validation deferred — risk I2) |
-| Security scan | Zero critical/high CVEs; no hardcoded secrets | ✅ Pass | OWASP 12.2.2, max CVSS 6.1; env-only creds, no fallback |
+| Security scan | Zero critical/high CVEs; no hardcoded secrets | ✅ Pass (gate); count pending online CI (M-3) | OWASP 12.2.2. **Gate metric verified locally 2026-07-20** against the setup NVD cache: 136 deps, **0 findings ≥ CVSS 7, max active CVSS 6.1** (`prometheus-metrics-core` CVE-2019-3826, a client-lib CPE false positive) → BUILD SUCCESS. 7 `flyway-database-postgresql` server-CPE false positives suppressed (dated, decision-log D49). Reproducible command + full provenance in **decision-log D49 addendum**. The `27-findings` inventory is the **online, all-analyzer** count (not reproducible offline; source of record is the online CI run, M-3). Env-only creds, no fallback. |
 | Traceability | 100% paragraph coverage, bidirectional | ✅ Pass | `docs/traceability-matrix.md` (1748 lines) |
 | Decision log | Entry per non-trivial decision/deviation | ✅ Pass | `docs/decision-log.md` (2906 lines) |
 | Observability | Logs/traces/metrics/health verified locally | ✅ Pass | Actuator + Micrometer/OTLP + Logback; prod backend wiring pending (risk O2) |
 | Executive deck | 12–18 self-contained slides, brand-themed | ✅ Pass | `blitzy-deck/executive-summary.html`, theme inlined |
-| No feature expansion (G7) | No capability beyond COBOL scope | ✅ Pass | Only preserved logic + mandated non-functional concerns |
+| No feature expansion (G7) | No capability beyond COBOL scope | ✅ Pass | No new **business** capability, endpoints, or rules; only preserved logic + mandated non-functional concerns. Two behavioral deviations are **intentional and documented, not silent**: interest `HALF_UP` rounding (D31) and JPA optimistic locking on updates (D18); both are recorded in the decision log with rationale and risk. |
 
 **Fixes applied during autonomous validation:** none required for source/tests (codebase arrived complete and passing). Housekeeping only: removed one stray untracked build artifact (`META-INF/spring-configuration-metadata.json` at repo root); working tree left clean.
 
@@ -191,7 +214,7 @@ Cross-map of AAP §0.9 validation criteria to autonomous results.
 
 ## 6. Risk Assessment
 
-14 risks across four categories. None indicates incomplete AAP work; all are deployment/cutover/sign-off concerns mapped to §2.2 tasks.
+15 risks across four categories. None indicates incomplete AAP work; all are deployment/cutover/sign-off concerns mapped to §2.2 tasks.
 
 | Risk | Category | Severity | Probability | Mitigation | Status |
 |------|----------|----------|-------------|-----------|--------|
@@ -199,15 +222,16 @@ Cross-map of AAP §0.9 validation criteria to autonomous results.
 | T2 Golden-file parity from fixtures, not a live mainframe | Technical | Medium | Low-Med | Cutover parallel-run UAT (H-5) | Open — deferred |
 | T3 JPA `@Version` optimistic locking adds behavior COBOL lacked (D18) | Technical | Low | Low | Documented as intentional integrity improvement | Mitigated — documented |
 | T4 Read-order / defensive-branch deviations (D39/D40) | Technical | Low | Low | Documented in decision log; unit-tested | Mitigated — documented |
-| S1 27 OWASP findings (max CVSS 6.1, all med/low) | Security | Medium | Low | Below CVSS≥7 gate; springdoc disabled in prod; upgrade swagger-ui when patched | Mitigated — monitored |
+| S1 OWASP findings all sub-threshold (max CVSS 6.1) — local gate verified 2026-07-20 (0 findings ≥7); the "~27" total is the online all-analyzer inventory count (M-3), not reproducible offline | Security | Medium | Low | Below CVSS≥7 gate (verified offline: 2 active med findings, max 6.1; 7 flyway server-CPE false positives suppressed, D49 addendum); springdoc disabled in prod; upgrade swagger-ui when patched | Mitigated — monitored |
 | S2 Legacy anti-patterns (plaintext pwd/CVV) hardened (D22) | Security | Medium | Low | BCrypt via UpperCasePasswordEncoder; CVV modeled for parity, masked by PanMasker, never logged; needs PCI/CVV-at-rest sign-off (H-4) | Partially mitigated |
-| S3 OWASP skipped under offline CI (`-o`) | Security | Medium | Medium | Wire online NVD (API key + cache) in CI (M-3) | Open — deferred |
+| S3 Authoritative full OWASP inventory needs online NVD in CI | Security | Medium | Medium | Wire online NVD (API key + cache) in CI (M-3). NOTE: the gate is **not** skip-only — dependency-check runs to completion **offline** against a populated NVD cache with `-DautoUpdate=false` (verified 2026-07-20, D49 addendum); only Maven's `-o` flag blocks the goal, and only the periodic feed *update* (not the scan) needs network | Open — deferred |
 | S4 Production secrets/vault not provisioned | Security | Medium | Medium | Env-only, no fallback; wire vault (H-2) | Open — deferred |
 | O1 No production deploy target (docker-compose local-only) | Operational | High | High | Author deployment manifests + provisioning (H-1, H-3) | Open — deferred |
 | O2 Observability backend local-only (benign OTLP shutdown WARN) | Operational | Medium | Medium | Provision prod collector/dashboards (M-1) | Open — deferred |
 | O3 Load/perf validated only at 860-row seed scale | Operational | Medium | Medium | Load/perf test at prod scale + tune (M-2) | Open — deferred |
 | O4 Batch scheduling via CI/CD, not an enterprise scheduler | Operational | Low | Low | Integrate scheduler if ops mandates (watch item) | Open — contingent |
-| I1 Legacy data migration not performed | Integration | High | High | Migrate real VSAM/EBCDIC → PostgreSQL + re-hash creds (H-5) | Open — deferred |
+| O5 No production rollback / restore (DR) procedure for the cutover — if the migration or first release fails, there is no rehearsed path back to a known-good state | Operational | High | Medium | Define & **rehearse** a cutover rollback/restore runbook on the H-1 backup/HA foundation: PostgreSQL **PITR** (WAL archiving) + verified base backups, documented **RPO/RTO** targets, a **restore-drill** (backup → fresh instance → parity re-check) run before go-live, and a decision-gated "abort & restore" branch in the cutover plan tied to the H-5 parity-UAT result (D70) | Open — deferred |
+| I1 Legacy data migration not performed — real VSAM data is still **EBCDIC + binary `COMP-3`** (the demo uses decoded ASCII fixtures) | Integration | High | High | Migrate real VSAM/EBCDIC → PostgreSQL under H-5 as **two distinct, separately-validated steps**: (a) **`COMP-3` decode fidelity** — row-for-row `BigDecimal` scale-2 checksum (a nibble/sign/implied-point error is silent, D9); (b) **EBCDIC code-page reconciliation** — IBM-037/1047 → UTF-8, verified **before** credential re-hash (wrong code page corrupts `USRSEC` credentials). Only then re-hash creds + parity UAT. Reconciliation is **not** folded into "re-hash" (D69) | Open — deferred |
 | I2 Fixed-width file contracts validated vs fixtures, not live partners | Integration | Medium | Low | Partner integration test at cutover (H-5) | Open — deferred |
 | I3 No live COBOL to cross-validate; parallel-run deferred | Integration | Medium | Medium | Parallel-run UAT during cutover (H-5) | Open — deferred |
 
@@ -250,7 +274,7 @@ pie showData title Remaining Hours by Priority
 
 ## 8. Summary & Recommendations
 
-**Achievements.** The AWS CardDemo mainframe application has been fully re-platformed to Java 25 + Spring Boot 3.5.16 with **100% of AAP-scoped autonomous work delivered** — 28 COBOL programs reconstructed as 17 REST controllers and 12 Spring Batch jobs over a PostgreSQL 16 data tier, with exact `BigDecimal` monetary fidelity, preserved reject-code and fixed-width contracts, 1,578 passing tests at 89.90% line coverage, zero-warning compilation, zero high/critical CVEs, and complete rule-mandated documentation (100% paragraph traceability, decision log, onboarding, observability, executive deck).
+**Achievements.** The AWS CardDemo mainframe application has been fully re-platformed to Java 25 + Spring Boot 3.5.16 with **100% of AAP-scoped autonomous work delivered** — 28 COBOL programs reconstructed as 17 REST controllers and 12 Spring Batch jobs over a PostgreSQL 16 data tier, with `BigDecimal` scale-2 monetary arithmetic (no floating point), preserved reject-code and fixed-width contracts, 1,578 passing tests at 89.90% line coverage, zero-warning compilation, zero high/critical CVEs, and complete rule-mandated documentation (100% paragraph traceability, decision log, onboarding, observability, executive deck). Behavioral parity is delivered with **two intentional, documented deviations — not flat equivalence**: interest rounding standardized to `HALF_UP` (D31, correcting the legacy truncation defect in the exact-half boundary case) and JPA optimistic locking on updates (D18); both are recorded in the decision log with rationale, alternatives, and risk.
 
 **Remaining gaps.** The outstanding **67 hours (7.2%)** is entirely **path-to-production** work — production database provisioning, secrets/vault wiring, deployment manifests, security sign-off, legacy data migration/UAT, production observability, load/perf validation, CI hardening, and stakeholder acceptance. No AAP deliverable is incomplete.
 

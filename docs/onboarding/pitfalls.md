@@ -304,6 +304,35 @@ originate from the **EBCDIC** `USRSEC.PS` dataset (copybook `CSUSR01Y`).
 encoding**. The migrated system reproduces field positions, lengths, types, and
 edit rules; it does not reproduce EBCDIC bytes or packed-decimal nibbles on disk.
 
+**Production cutover runbook — COMP-3 / EBCDIC reconciliation is its own
+validation step (do not fold it into "credential re-hash").** The demo runs on the
+**ASCII** fixtures above, which are already decoded; the *production* cutover
+(path-to-production task **H-5**, risk **I1**) ingests the **real VSAM datasets**,
+which are still **EBCDIC** with binary **`COMP-3`** packed-decimal fields. That
+migration therefore has **two distinct validation activities that must each be
+signed off separately** within the H-5 task, not treated as one "load the data"
+step:
+
+1. **`COMP-3` packed-decimal decode fidelity.** Every packed field
+   (`PIC S9(n)V99 COMP-3` — balances, limits, interest rate, transaction amounts)
+   must be decoded to the exact signed, scaled value and asserted against
+   `BigDecimal` at scale 2 (see [decision D9](../decision-log.md#d9--bigdecimal-scale-2-money-value-object)).
+   A nibble/sign-nibble (`C`/`D`/`F`) or implied-decimal-point error is **silent**:
+   the row loads and "looks" numeric but is off by a factor of 100 or has an
+   inverted sign. Validate with a **row-for-row checksum** of decoded amounts, not a
+   spot check.
+2. **EBCDIC code-page reconciliation.** Alphanumeric fields must be transcoded from
+   the correct **EBCDIC code page** (e.g. IBM-037 vs IBM-1047, which differ on
+   characters such as `[`, `]`, `¢`, and the cent/logical-NOT positions) to UTF-8.
+   Picking the wrong code page corrupts names, addresses, and — critically — the
+   **`USRSEC` credentials** (`CSUSR01Y`) that the re-hash then bakes into BCrypt
+   hashes, so **code-page reconciliation must run and be verified *before* the
+   credential re-hash**, never after or as part of it.
+
+Only once (1) and (2) pass does the H-5 task proceed to credential re-hash and the
+parallel-run parity UAT. Treat (1) and (2) as gated, independently-evidenced steps
+(see [decision D69](../decision-log.md#d69--comp-3-decode-and-ebcdic-code-page-reconciliation-are-distinct-h-5-validation-steps)).
+
 ---
 
 ## 7. Local seed: the posting job re-posts already-posted rows (MEDIUM risk)

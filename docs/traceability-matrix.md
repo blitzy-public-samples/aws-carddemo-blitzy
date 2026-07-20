@@ -6,7 +6,7 @@ This document satisfies the **Explainability** rule (AAP Section 0.8.2) and the 
 
 The matrix additionally provides coverage at two further granularities, each **complete at its own level of detail** (and labelled as such where it appears, rather than under a single blanket "100%"): **screen field-level** traceability for all 17 BMS maps and their 441 fields plus per-program action-key (AID) handling (Section 3), and **data-artifact-level** traceability for the seed/reference data files — 9 ASCII, 12 EBCDIC, and the VSAM catalog listing (Section 8). Where a source construct is intentionally **not** mapped one-to-one (for example a source-only CSD entry with no program, a reference-only JCL member, or an application-enforced relationship that cannot become a database constraint), it is **explicitly classified** rather than silently omitted, so "no gaps" means *nothing is undocumented*, not that every construct becomes a like-for-like target.
 
-- **Scope:** 28 COBOL programs, **527 unique PROCEDURE DIVISION paragraphs**, 11 data entities/tables, 17 online screens, **12 Spring Batch jobs** (11 COBOL-derived plus the `dailyTransactionLoadJob` raw-`DALYTRAN` loader, which has **no COBOL source** — see decision [D30](./decision-log.md#d30--dalytran-raw-fixed-width-loader-executable-external-file-ingestion) and the job-count note in Section 1), plus JCL/PROC/CTL/CSD orchestration.
+- **Scope:** 28 COBOL programs (**17 online + 10 batch + 1 date-utility** `CSUTLDTC`, which maps to `service/DateValidationService`, not a batch job), **527 unique PROCEDURE DIVISION paragraphs**, 11 data entities/tables, 17 online screens, **12 Spring Batch jobs** (**9** derived from the 10 batch COBOL programs — `CBSTM03A.CBL`+`CBSTM03B.CBL` collapse to one `statementGenerationJob`; **2** from JCL utility jobs — `COMBTRAN.jcl` SORT and `TRANBKP.jcl` IDCAMS `REPRO`; and the source-less `dailyTransactionLoadJob` raw-`DALYTRAN` loader, which has **no COBOL source** — see decisions [D30](./decision-log.md#d30--dalytran-raw-fixed-width-loader-executable-external-file-ingestion)/[D68](./decision-log.md#d68--spring-batch-job-count-reconciliation-12-job-beans-vs-the-legacy-batch-program-count) and the job-count note in Section 1), plus JCL/PROC/CTL/CSD orchestration.
 - **Legacy source location:** the original COBOL is retained read-only under `legacy/**` (relocated from `app/**`); all source references below point at `legacy/**`.
 - **Related documents:** [Architecture](./architecture.md) &middot; [Decision Log](./decision-log.md).
 - **Identifier fidelity:** COBOL paragraph names are preserved verbatim (uppercase, hyphenated); Java targets use the package-by-layer names defined in the architecture.
@@ -51,18 +51,40 @@ One row per COBOL program: its type, unique PROCEDURE DIVISION paragraph count, 
 
 **Assertion:** 28 programs, **527 unique paragraphs**, **100%** mapped to Java targets with no gaps (verified against `legacy/cbl/**`; see Appendix A and the reconciliation footnote in Section 4.12).
 
-**Spring Batch job count — 11 COBOL-derived + 1 loader = 12 registered `Job` beans.** The per-program
-table above maps the **11 COBOL-derived** Spring Batch jobs (the ten batch programs
-`CBACT01C`–`CBTRN03C`, where `CBSTM03A.CBL` and its `CBSTM03B.CBL` subprogram both map to the single
-`statementGenerationJob`). A **12th** registered `Job` bean — **`dailyTransactionLoadJob`**
-(`batch/DailyTransactionLoadJob`) — has **no COBOL source**: it is the executable raw-`DALYTRAN`
-fixed-width loader added for external-file ingestion (decision
-[D30](./decision-log.md#d30--dalytran-raw-fixed-width-loader-executable-external-file-ingestion)).
-It is therefore **classified here rather than mapped from a PROCEDURE DIVISION paragraph** (consistent
-with this matrix's "explicitly classified, never silently omitted" standard), so the total registered
-in `src/main/**` is **12** Spring Batch `Job` beans. The `11`-job tables in
+**Spring Batch job count — 9 COBOL-program-derived + 2 JCL-utility-derived + 1 source-less loader = 12
+registered `Job` beans.** This is the authoritative reconciliation of the **12** `Job` beans defined in
+`src/main/java/com/aws/carddemo/batch/**` against the legacy batch corpus; it corrects the imprecise
+"11 COBOL-derived" phrasing used in earlier drafts of this matrix and in the Project Guide's "11 batch"
+program split (see decision
+[D68](./decision-log.md#d68--spring-batch-job-count-reconciliation-12-job-beans-vs-the-legacy-batch-program-count)).
+
+The exact accounting is:
+
+- **9 jobs derived from the 10 batch COBOL programs.** The per-program table in Section 1 lists the ten
+  batch programs `CBACT01C`, `CBACT02C`, `CBACT03C`, `CBACT04C`, `CBCUS01C`, `CBSTM03A.CBL`,
+  `CBSTM03B.CBL`, `CBTRN01C`, `CBTRN02C`, `CBTRN03C`. These collapse to **9** jobs because
+  `CBSTM03A.CBL` and its `CBSTM03B.CBL` subprogram **both** map to the single `statementGenerationJob`
+  (two programs → one job, not one program → two jobs). The nine are `accountMasterPrintJob`,
+  `cardMasterPrintJob`, `xrefPrintJob`, `interestCalculationJob`, `customerMasterPrintJob`,
+  `statementGenerationJob`, `dailyTransactionValidateJob`, `dailyTransactionPostingJob`, and
+  `transactionReportJob`.
+- **2 jobs derived from JCL utility jobs (no COBOL PROCEDURE DIVISION).** `transactionCombineJob` migrates
+  `COMBTRAN.jcl` (inline `PGM=SORT` cards → Java `Comparator`/`ORDER BY`) and `transactionBackupJob`
+  migrates `TRANBKP.jcl` + `REPROC.prc` + `REPROCT.ctl` (IDCAMS `REPRO` → scheduled DB-backup step). Both
+  are mapped at the artifact level in **Section 7.1** (rows `COMBTRAN.jcl`/`TRANBKP.jcl`) and expanded to
+  step level in **Section 7.1.1**; they have no per-program row in Section 1 because they descend from
+  DFSORT/IDCAMS utility steps, not from a COBOL program.
+- **1 source-less loader.** `dailyTransactionLoadJob` (`batch/DailyTransactionLoadJob`) has **no COBOL
+  source**: it is the executable raw-`DALYTRAN` fixed-width loader added for external-file ingestion
+  (decision [D30](./decision-log.md#d30--dalytran-raw-fixed-width-loader-executable-external-file-ingestion)).
+  It is **classified here rather than mapped from a PROCEDURE DIVISION paragraph** (consistent with this
+  matrix's "explicitly classified, never silently omitted" standard).
+
+9 + 2 + 1 = **12** Spring Batch `Job` beans registered in `src/main/**`. The `11`-job tables in
 [Architecture](./architecture.md) and the onboarding `domain-context.md` are legitimate
-COBOL-program → job views and intentionally exclude this source-less loader.
+COBOL-program → job views (the nine COBOL-program-derived jobs plus the two JCL-utility jobs) and
+intentionally exclude the source-less `dailyTransactionLoadJob`; they are consistent with this
+reconciliation once that loader is added back.
 
 ## Cross-Reference / Clarification Notes (CF)
 

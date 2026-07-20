@@ -17,7 +17,7 @@
     * has a matching rationale, owner, and review date in docs/decision-log.md
       (decision D49).
 
-  Reviewed: 2026-07-19. Next review: 2026-10-19 (see `until` below).
+  Reviewed: 2026-07-20. Next review: 2026-10-19 (see `until` below).
 -->
 <suppressions xmlns="https://jeremylong.github.io/DependencyCheck/dependency-suppression.1.3.xsd">
 
@@ -68,6 +68,46 @@
         <packageUrl regex="true">^pkg:maven/org\.apache\.httpcomponents\.core5/httpcore5(-h2)?@5\.0\.2$</packageUrl>
         <cve>CVE-2026-54399</cve>
         <cve>CVE-2026-54428</cve>
+    </suppress>
+
+    <!--
+      flyway-database-postgresql : CPE FALSE POSITIVE (org.flywaydb:flyway-database-postgresql
+      matched to cpe:2.3:a:postgresql:postgresql, the PostgreSQL DATABASE SERVER product).
+      This artifact is the Flyway PostgreSQL dialect adapter (a small Java library that teaches
+      Flyway how to emit PostgreSQL-flavoured migration SQL). It is NOT the PostgreSQL server, the
+      psql client, or the Windows installer, so none of the server/distribution advisories that
+      dependency-check's NVD CPE matcher attaches to it are reachable here:
+        * CVE-2020-25695 (8.8), CVE-2020-25694 (8.1), CVE-2020-25696 (7.5), CVE-2020-14350 (7.3),
+          CVE-2020-10733 (7.3), CVE-2020-14349 (7.1) are all "PostgreSQL versions before 13.1/12.5"
+          server flaws (SQL injection via extensions, the psql interactive terminal, the Windows
+          installer's uncontrolled search path). The application connects to a separately provisioned
+          PostgreSQL 16 server (well above every fixed line); the running server's version, not this
+          build-time Java adapter, is what those CVEs are scored against.
+        * CVE-2021-3393 (4.3) is a server-side information leak in "postgresql before 13.2/12.6"; same
+          server versus adapter mismatch (sub-threshold, listed here so the whole false-positive CPE is
+          cleared in one place rather than leaving a stray informational hit).
+      This is a classic vendor:product CPE collision driven by the "postgresql" token in the Maven
+      coordinate; it is data-dependent (it fires against some NVD CPE-dictionary snapshots and not
+      others), so it is suppressed by CPE, scoped to the exact flyway-database-postgresql packageUrl,
+      to make the CVSS>=7 gate deterministic across NVD snapshots (see docs/decision-log.md D49).
+      Server-patch currency for the deployed PostgreSQL instance is owned by the H-1 provisioning task.
+    -->
+    <suppress until="2026-10-19Z">
+        <notes><![CDATA[
+            CPE false positive: org.flywaydb:flyway-database-postgresql (Flyway PostgreSQL dialect
+            adapter, a build-time Java library) matched to cpe:2.3:a:postgresql:postgresql (the
+            PostgreSQL database SERVER). The advisories are server/psql/installer flaws, not reachable
+            from this adapter; the deployed PostgreSQL server's patch level is governed by H-1. Suppressed
+            by CPE, scoped to the exact packageUrl, dated for re-review. Tracked in docs/decision-log.md D49.
+        ]]></notes>
+        <packageUrl regex="true">^pkg:maven/org\.flywaydb/flyway-database-postgresql@.*$</packageUrl>
+        <cve>CVE-2020-25695</cve>
+        <cve>CVE-2020-25694</cve>
+        <cve>CVE-2020-25696</cve>
+        <cve>CVE-2020-14350</cve>
+        <cve>CVE-2020-10733</cve>
+        <cve>CVE-2020-14349</cve>
+        <cve>CVE-2021-3393</cve>
     </suppress>
 
 </suppressions>

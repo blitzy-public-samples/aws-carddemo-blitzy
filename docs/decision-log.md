@@ -56,6 +56,7 @@ its Java target, while this log explains the reasoning behind the design those m
 | [D20](#d20--code-style-constraints-constructor-injection-jakarta-no-wildcards-zero-warning) | E. Mapping & Code Style | Code-style constraints (Jakarta, constructor injection, zero-warning) | Quality constraint |
 | [D21](#d21--testing-strategy-testcontainers-jacoco-80-golden-file-parity) | E. Mapping & Code Style | Testing strategy (Testcontainers, JaCoCo 80%, golden-file parity) | Quality strategy |
 | [D22](#d22--password-hashing-and-cvv-hardening) | F. Security | Password hashing and CVV hardening | **Intentional improvement** |
+| [D22-revised](#d22-revised--cvv-is-never-stored-at-rest-pci-dss-req-32) | F. Security | CVV is never stored at rest — masked placeholder only (PCI-DSS Req 3.2) | **Intentional improvement (corrects D22)** |
 | [D23](#d23--observability-stack-logs-traces-metrics-dashboard) | G. Observability & Ops | Observability stack (logs, traces, metrics, dashboard) | Non-functional addition |
 | [D24](#d24--mq--racf--3270-emulation-and-aws-m2-runtime-out-of-scope) | G. Observability & Ops | MQ / RACF / 3270 emulation / AWS M2 runtime out of scope | Scope boundary |
 | [D25](#d25--full-pan-and-account-number-in-master-print-output) | G. Observability & Ops | Full PAN / account number in master-print output (SYSOUT parity; PCI hardening deferred) | Behavior preservation (parity) + documented improvement |
@@ -101,6 +102,9 @@ its Java target, while this log explains the reasoning behind the design those m
 | [D65](#d65--standalone-batch-jvms-push-metrics-via-otlp-to-prometheus-online-scrape-path-preserved) | G. Observability & Ops | Standalone batch JVMs push metrics via OTLP to Prometheus; online path stays scrape-only (F-P6-D) | Non-functional addition (extends D23) |
 | [D66](#d66--account-view-ssn-is-rendered-nnn-nn-nnnn-to-match-the-legacy-coactvwc-display-contract) | J. Online Parity Corrections | Account-view SSN rendered `NNN-NN-NNNN` to match the legacy COACTVWC display contract (F-P7-SSNFMT) | Behavior preservation (parity fix) |
 | [D67](#d67--inbound-http-request-bodies-are-size-bounded-413-payload-too-large) | F. Security | Inbound HTTP request bodies are size-bounded, returning 413 (F-P7-JSON) | **Intentional improvement** |
+| [D68](#d68--spring-batch-job-count-reconciliation-12-job-beans-vs-the-legacy-batch-program-count) | I. Batch Parity & Robustness | Spring Batch job count reconciliation (12 `Job` beans vs the legacy batch-program count) | Documentation (clarification) |
+| [D69](#d69--comp-3-decode-and-ebcdic-code-page-reconciliation-are-distinct-h-5-validation-steps) | B. Data Tier | `COMP-3` decode and EBCDIC code-page reconciliation are distinct H-5 validation steps | Risk sizing (documentation) |
+| [D70](#d70--production-cutover-requires-a-rehearsed-rollbackrestore-dr-procedure-on-the-h-1-backup-foundation) | G. Observability & Ops | Production cutover requires a rehearsed rollback/restore (DR) procedure on the H-1 backup foundation | Risk (documentation) |
 
 ---
 
@@ -883,6 +887,64 @@ legacy truncation — D31).
   covered by tests; and all credentials are externalized with **no hardcoded secrets** (see
   [D6](#d6--externalized-credentials-no-hardcoded-secrets)).
 
+### D22-revised — CVV is never stored at rest (PCI-DSS Req 3.2)
+
+- **Status:** Accepted
+- **Type:** **Intentional improvement (deviation from literal COBOL)** — a **correction to the existing
+  scoped work of [D22](#d22--password-hashing-and-cvv-hardening)**, not a new feature.
+- **AAP references:** §0.7.3 (L1 — intentional legacy anti-patterns are hardened as documented
+  improvements), §0.8.3 (document all deviations), §0.9.3 (the card CVV is never logged or returned in
+  full), §0.3.1 (`app/cpy/CVACT02Y.cpy` → `domain/Card.java`), §0.5.2 (Card entity, CVV flagged sensitive)
+- **Supersedes/refines:** the *at-rest* portion of D22. D22 hardened CVV handling **in transit and in logs**
+  (never logged, never returned) but still modeled the **real** `CARD-CVV-CD` value in the `card.cvv`
+  column. D22-revised closes the remaining gap: the real value is **not persisted at all**.
+- **Decision:** The card verification value is **never stored at rest as a real value**. The `card.cvv`
+  column is **retained** (so the 150-byte `CARD-RECORD` layout shape of `legacy/cpy/CVACT02Y.cpy`
+  `CARD-CVV-CD PIC 9(03)` and its copybook→column traceability are preserved), but it holds **only a fixed
+  non-reversible masked placeholder** (`"***"`). Redaction is enforced with **defense in depth** on every
+  layer that can write the value:
+  1. **Repository hygiene** — `src/main/resources/db/seed/card.csv` ships `"***"` in the CVV column for all
+     50 rows; no synthetic CVVs live in the repository.
+  2. **Ingestion boundary** — `LocalSeedDataLoader.redactAtRest(table, column, value)` forces `card.cvv` to
+     the `"***"` placeholder on **every** insert regardless of CSV content, so the seed path can never
+     persist a real CVV even if the CSV regresses.
+  3. **Schema level** — `V6__redact_cvv_at_rest.sql` (a new Flyway migration) scrubs any pre-existing
+     non-placeholder value (`UPDATE card SET cvv = '***' WHERE cvv IS NOT NULL AND cvv <> '***'`, idempotent)
+     and re-documents the column via `COMMENT ON COLUMN` so the authoritative PCI posture lives with the
+     schema.
+- **Why persistence is unnecessary for parity:** the CVV participates in **no** behavioral path. It is
+  never mapped to any request/response DTO (`CardMapper` does not map it), never read by any service,
+  controller, or batch job, is excluded from `Card.toString()`, and **no test asserts a CVV persistence
+  round-trip** (`CardRepositoryTest`'s `findById` round-trip asserts `acctId`, `cardActiveStatus`, and
+  `cardEmbossedName` only; the other CVV tests assert the field is **absent** from responses/`toString()` or
+  build in-memory fixtures). Behavioral parity therefore requires nothing of the stored value, so modeling
+  it as a placeholder changes no observable outcome.
+- **Alternatives considered:**
+  1. *Persist the real (synthetic) CVV as in the original D22.* **Rejected:** PCI-DSS Requirement 3.2
+     prohibits retaining the card-verification value after authorization; storing it — even synthetic — is
+     the precise anti-pattern §0.7.3/L1 says to harden rather than silently preserve.
+  2. *Drop the `card.cvv` column entirely.* **Rejected:** it would erase the `CARD-RECORD` layout-shape
+     traceability from the copybook to the schema that the traceability matrix depends on; retaining a
+     masked column preserves the mapping while eliminating the sensitive data.
+  3. *Add a `CHECK (cvv IS NULL OR cvv = '***')` constraint to hard-enforce the invariant.* **Rejected:**
+     it would reject the literal synthetic CVV that `CardRepositoryTest` inserts directly through the JPA
+     entity to exercise unrelated browse/round-trip paths (the ephemeral Testcontainers database is not a
+     data-at-rest surface). The invariant is instead enforced on the only production ingestion path (the
+     seed loader) and documented on the column and here.
+- **Rationale:** the legacy unencrypted-CVV storage is an **intentional demonstration anti-pattern** in the
+  mainframe sample, not a business requirement (§0.7.3/L1). Not persisting it is responsible,
+  industry-standard PCI hardening that **does not change the authentication or card-management *behavior***
+  — the same cards resolve to the same accounts, the same screens render the same (already CVV-free) fields,
+  and the same batch outputs are produced. This mirrors the treatment of the plaintext-password
+  anti-pattern in [D22](#d22--password-hashing-and-cvv-hardening).
+- **Risk & mitigation:** because the *stored* value changes, this could be misread as scope creep or a
+  behavior change. *Mitigation:* it is flagged **here** as an intentional security correction, cross-linked
+  from the sensitive-field masking discussion (S2 / [D25](#d25--full-pan-and-account-number-in-master-print-output))
+  and the security-hardening class (H-4 / [D22](#d22--password-hashing-and-cvv-hardening)); the observable
+  behavior is unchanged and covered by the existing CVV-absence tests; and, like other security deviations,
+  it carries the **same business sign-off requirement** as H-4 before a production cutover that would load
+  real card data.
+
 ### D26 — Consistent credential case-normalization across authentication surfaces
 
 - **Status:** Accepted
@@ -915,14 +977,36 @@ legacy truncation — D31).
   the BCrypt seed hashes in `db/seed/user_security.csv` (derived from the upper-cased demo password) remain
   valid. `Locale.ROOT` makes the fold locale-independent (avoiding surprises such as the Turkish dotless-i).
 - **Risk & mitigation:** Folding to upper case makes the password **case-insensitive**, a narrower secret
-  space than a case-sensitive password. *Mitigation:* this is a **faithful reproduction of the documented
-  legacy contract**, not a new design choice; it is recorded here explicitly (not a silent change);
+  space than a case-sensitive password. **Effective-keyspace reduction (explicit).** Because the fold is
+  applied to the raw password **before** it reaches `BCryptPasswordEncoder`, it **collapses the input
+  alphabet prior to hashing**: every alphabetic position that could have been one of 52 values (`a–z` plus
+  `A–Z`) becomes one of only 26, so an all-letters password of length *n* loses up to *n* bits of entropy
+  (its distinct-value count drops from `52ⁿ` to `26ⁿ`, a factor of `2ⁿ`). This entropy is lost **at the
+  input**, and **BCrypt cannot recover it**: BCrypt's per-hash random salt and tunable work factor defeat
+  precomputation and slow each guess, but they operate on the already-folded string and therefore **do not
+  restore** the pre-hash keyspace — the reduced-entropy input is what gets hashed. The reduction is a
+  property of the *inherited mainframe behavior*, independent of the hashing scheme. *Mitigation:* this is a
+  **faithful reproduction of the documented legacy contract** (COSGN00C folds both id and password with
+  `FUNCTION UPPER-CASE`), not a new design choice; it is recorded here explicitly (not a silent change);
   passwords remain **BCrypt-hashed at rest** (see [D22](#d22--password-hashing-and-cvv-hardening)), are
   **never logged**, and are externalized with **no hardcoded secrets** (see
   [D6](#d6--externalized-credentials-no-hardcoded-secrets)). The normalization is covered by unit tests
   (`UpperCasePasswordEncoderTest`, `SignonServiceTest`, `CardDemoUserDetailsServiceTest`) and re-verified at
   runtime — a lower-case password now authenticates identically on the sign-on screen and the HTTP&nbsp;Basic
   gate.
+- **Business sign-off (parity deviation — same gate as H-4).** Because case-folding measurably weakens
+  password strength, retaining it is an **intentional parity decision** that carries the **same business
+  sign-off requirement as the other security deviations** tracked under path-to-production task **H-4**
+  (security sign-off), alongside the plaintext-legacy-password hardening ([D22](#d22--password-hashing-and-cvv-hardening))
+  and the CVV-at-rest decision ([D22-revised](#d22-revised--cvv-is-never-stored-at-rest-pci-dss-req-32)).
+  The default disposition is **preserve** (parity is the governing constraint); should the business
+  sign-off **reject** the weakened keyspace, the remediation is bounded and localized — **remove the fold
+  from the password path only** (retain the id fold, which is a lookup-normalization not a secret): delete
+  the `toUpperCase` call in `security/UpperCasePasswordEncoder` (reverting it to a plain
+  `BCryptPasswordEncoder`) and drop the self-documenting password fold in `service/SignonService`, then
+  re-seed `db/seed/user_security.csv` with case-exact BCrypt hashes. No schema change is required. Until
+  such a rejection, **no code change is made** and the case-insensitive contract stands as the parity
+  default.
 
 ### D27 — CSRF protection disabled (stateless HTTP Basic API)
 
@@ -1868,6 +1952,41 @@ reviewable rationale (Explainability rule, §0.8.2).
   emitting a novel `ExitStatus` code maps to `8` — the safe "error" default. `BatchExitCodeGeneratorTest`
   asserts every mapping including the max-across-jobs cases, and runtime re-verification confirms a clean
   job exits `0`, a with-rejects job exits `4`, a `FAILED` job exits `8`, and web mode still serves.
+- **Runtime verification — all 12 jobs (Refine PR #2):** every one of the 12 Spring Batch jobs was
+  launched standalone (`--spring.main.web-application-type=none --spring.batch.job.enabled=true
+  --spring.batch.job.name=<job>`) against the live PostgreSQL 16 stack under the **default profile** (so
+  `LocalSeedDataLoader` does not re-seed and the posting clean-post prep survives). Authoritative status
+  from Spring Batch's own `batch_job_execution` / `batch_job_instance` metadata tables: **12 distinct jobs,
+  12 executions, 12 COMPLETED, 0 FAILED** — replacing the prior guide claim that only `accountMasterPrintJob`
+  had been runtime-verified. Per-job result:
+
+  | Job | Params | BatchStatus / Exit |
+  |-----|--------|--------------------|
+  | `accountMasterPrintJob` | (none) | COMPLETED / 0 |
+  | `cardMasterPrintJob` | (none) | COMPLETED / 0 |
+  | `xrefPrintJob` | (none) | COMPLETED / 0 |
+  | `customerMasterPrintJob` | (none) | COMPLETED / 0 |
+  | `transactionBackupJob` | (none) | COMPLETED / 0 |
+  | `interestCalculationJob` | `parmDate=2022071800` | COMPLETED / 0 (wrote `SYSTRAN.dat`, 50 recs) |
+  | `transactionReportJob` | `startDate=2022-07-01 endDate=2022-07-31` | COMPLETED / 0 (wrote `DALYREPT.txt`) |
+  | `statementGenerationJob` | (none) | COMPLETED / 0 (wrote `statements.txt`/`.html`) |
+  | `transactionCombineJob` | `systemResource=file:./target/batch/SYSTRAN.dat` | COMPLETED / 0 (50 inserted, 0 rejected) |
+  | `dailyTransactionLoadJob` | `inputResource=file:.../dailytran-fixedwidth-sample.txt` | COMPLETED / 0 (staged 10) |
+  | `dailyTransactionValidateJob` | (none) | COMPLETED / 0 |
+  | `dailyTransactionPostingJob` | (none, after clean-post prep) | COMPLETED / 0 (0 rejects, posted 10) |
+
+  Notes on the two jobs that cannot run parameter-free against a freshly seeded DB: (a) the **posting**
+  job faithfully abends (exit 8) on the seeded DB because `local` loads the same 300 IDs into both
+  `transaction` and `daily_transaction`, so re-posting collides on `pk_transaction` (CBTRN02C treats FILE
+  STATUS '22' as `9999-ABEND-PROGRAM`); the clean-post procedure (truncate staging → load the 10-record
+  fixture → free the 10 matching IDs from `transaction`) yields COMPLETED / exit 0 with zero rejects. (b)
+  The **combine** job requires at least one existing SORTIN; it is fed the interest job's `SYSTRAN.dat`,
+  whose new interest TRAN-IDs (`2022071800000001…050`) are written by `InterestTransactionWriter` **only to
+  the file, never to the `transaction` table**, so the REPRO-without-REPLACE load inserts all 50 cleanly
+  (RC 0). Both procedures are documented in [`docs/onboarding/getting-started.md`](onboarding/getting-started.md) §8.
+  The `interestCalculationJob` and `dailyTransactionLoadJob` remain excluded from the CI nightly
+  parameter-free smoke list (D14) because they fail-fast on required parameters (D33 / D30); they are
+  exercised here (with parameters) and by the Testcontainers integration suite.
 
 ---
 
@@ -2087,6 +2206,64 @@ reviewable rationale (Explainability rule, §0.8.2).
   Micrometer bridge's expectation; *mitigation:* the full test suite (including tracing) runs in
   `verify`, and the pin is source-compatible in practice — if a future bridge upgrade conflicts, the two
   semconv CVEs would instead be suppressed like the others.
+
+#### D49 addendum (2026-07-20) — third suppression: `flyway-database-postgresql` CPE false positive, plus a reproducible local run
+
+- **Additional suppression (no-fix / not-applicable, CPE false positive).** `owasp-suppressions.xml` now
+  carries a **third** narrowly-scoped, dated entry: `org.flywaydb:flyway-database-postgresql` matched to
+  `cpe:2.3:a:postgresql:postgresql` (the PostgreSQL **database server** product), pulling in the
+  server/distribution advisories **CVE-2020-25695 (8.8), CVE-2020-25694 (8.1), CVE-2020-25696 (7.5),
+  CVE-2020-14350 (7.3), CVE-2020-10733 (7.3), CVE-2020-14349 (7.1)** and the sub-threshold
+  **CVE-2021-3393 (4.3)**. This artifact is the Flyway **PostgreSQL dialect adapter** (a build-time Java
+  library), **not** the PostgreSQL server, `psql`, or the Windows installer that those advisories are
+  scored against; the deployed server's patch currency is owned by the **H-1** provisioning task. It is a
+  classic vendor:product CPE token collision (the `postgresql` token in the Maven coordinate) and is
+  **NVD-snapshot-dependent** — it fires against some CPE-dictionary snapshots and not others — so it is
+  suppressed by exact `packageUrl` + CVE (the same proven form as the kotlin-stdlib / httpcore5 entries),
+  dated to the shared **2026-10-19** re-review. Suppressing it makes the `failBuildOnCVSS=7` gate
+  **deterministic across NVD snapshots** rather than passing only on the particular snapshot D49 was
+  first validated against.
+- **Reproducibility & provenance of the reported SCA numbers (OWASP-transparency correction, Refine-PR&nbsp;#1).**
+  Earlier project-guide wording presented `zero CVEs ≥ CVSS 7 (max 6.1)` and `27 findings` as flat results
+  without stating which command/environment produced them. Provenance is now recorded explicitly:
+  - **Authoritative gate (online).** The `failBuildOnCVSS=7` gate is designed to run in CI with **live NVD
+    data** (`./mvnw -B clean verify`, `.github/workflows/ci.yml`). The D49 forward-pins and the two
+    original suppressions were validated there against the then-current NVD snapshot; **enabling that
+    online CI scan is tracked as `M-3`** and remains the source of record for the full multi-analyzer
+    finding inventory (the `27 findings` figure — which counts sub-threshold NVD hits **plus** the RetireJS
+    / OSS-Index / hosted-suppression analyzers and current 2026 advisories such as the Swagger-UI DOMPurify
+    and `jackson-databind` items — is a product of that online, all-analyzer run and is **not** reproducible
+    offline; it is an inventory count, never a gate metric).
+  - **Reproducible local run (offline, this environment).** dependency-check **does** execute to completion
+    locally against the setup-populated NVD cache — it does **not** require live NVD access at run time, only
+    for the periodic feed update. Exact command (run **2026-07-20**, engine **12.2.2**), which disables only
+    the network-dependent analyzers unavailable in the offline container and keeps `autoUpdate=false` so the
+    cached feed is used as-is:
+
+    ```shell
+    # NVD feed cached at ~/.m2/repository/org/owasp/dependency-check-data/11.0/odc.mv.db (populated by setup)
+    ./mvnw -B org.owasp:dependency-check-maven:12.2.2:check \
+      -DautoUpdate=false \
+      -DcentralAnalyzerEnabled=false -DossindexAnalyzerEnabled=false \
+      -DnodeAuditAnalyzerEnabled=false -DretireJsAnalyzerEnabled=false \
+      -DknownExploitedEnabled=false -DhostedSuppressionsEnabled=false
+    ```
+
+    **Result (report `target/dependency-check-report.json`, 2026-07-20):** 136 dependencies scanned;
+    **7 findings suppressed** (the flyway CPE false positive above); **2 active findings, both MEDIUM** —
+    `prometheus-metrics-core` **CVE-2019-3826 (6.1)** (itself a client-library-vs-Prometheus-server CPE
+    false positive, left un-suppressed because it is sub-threshold and is the source of the documented
+    **max 6.1**) and `kotlin-stdlib` **CVE-2020-29582 (5.3)** (the residual low advisory already noted in
+    this entry). **Maximum active CVSS = 6.1; findings ≥ 7.0 = 0 → `BUILD SUCCESS`.** This offline run
+    therefore **corroborates the `zero CVSS ≥ 7 / max 6.1` gate outcome**; only the total *inventory* count
+    differs from the online run because fewer analyzers and an older NVD snapshot are in play offline.
+  - **What was corrected.** Before this addendum the flyway CPE false positive was **absent** from
+    `owasp-suppressions.xml`, so a local offline `verify` actually **failed** the gate on those six ≥7
+    server CVEs — i.e. the `zero ≥7` claim was not reproducible in this environment. Adding the dated
+    suppression restores reproducibility; the project guide (§5, §1.4/§1.5, risk S1/S3) was updated to state
+    the command/date/environment above and to stop presenting the online-only `27` inventory count as a
+    verified local result.
+
 ## J. Online Parity Corrections (QA-checkpoint remediation)
 
 These entries record the root-cause fixes applied at the final Online / API / Data parity checkpoint.
@@ -2894,6 +3071,142 @@ decision-log entry" requirement is met for every checkpoint finding, and each is
   (logged by `GlobalExceptionHandler` as "Rejected oversized request body while reading"); a normal small
   body → 200 (no regression); no 5xx/stack traces emitted. `RequestBodySizeLimitFilterTest` (4 tests) and
   `GlobalExceptionHandlerTest#mapsOversizedBodyNotReadableTo413` are green under the zero-warning build.
+
+### D68 — Spring Batch job count reconciliation (12 `Job` beans vs the legacy batch-program count)
+
+- **Status:** Accepted
+- **Type:** Documentation (clarification) — no code change; reconciles a counting discrepancy across the
+  project artifacts.
+- **AAP references:** §0.4.4 (JCL → Spring Batch job mapping table), §0.5.4 (batch layer), §0.8.2
+  (Explainability — nothing undocumented)
+- **Context / the discrepancy:** `src/main/java/com/aws/carddemo/batch/**` defines **12** Spring Batch
+  `Job` beans, yet the legacy corpus has only **10** batch COBOL programs, and the Project Guide's §1.1
+  characterized the program split as "17 online, 11 batch". Three different numbers (12 jobs, 10 batch
+  programs, "11 batch") appeared without a single authoritative reconciliation, and an earlier draft of the
+  traceability matrix imprecisely described the 12 as "11 COBOL-derived + 1 loader". This entry establishes
+  the correct accounting.
+- **Decision — the authoritative accounting is 9 + 2 + 1 = 12:**
+  1. **9 jobs are derived from the 10 batch COBOL programs.** `CBACT01C`, `CBACT02C`, `CBACT03C`,
+     `CBACT04C`, `CBCUS01C`, `CBSTM03A.CBL`, `CBSTM03B.CBL`, `CBTRN01C`, `CBTRN02C`, `CBTRN03C` collapse to
+     nine jobs because **`CBSTM03A.CBL` and its `CBSTM03B.CBL` subprogram both map to the single
+     `statementGenerationJob`** (two programs → one job). The nine: `accountMasterPrintJob`,
+     `cardMasterPrintJob`, `xrefPrintJob`, `interestCalculationJob`, `customerMasterPrintJob`,
+     `statementGenerationJob`, `dailyTransactionValidateJob`, `dailyTransactionPostingJob`,
+     `transactionReportJob`.
+  2. **2 jobs are derived from JCL utility jobs that have no COBOL PROCEDURE DIVISION.**
+     `transactionCombineJob` migrates `COMBTRAN.jcl` (inline `PGM=SORT` cards → Java
+     `Comparator`/`ORDER BY`) and `transactionBackupJob` migrates `TRANBKP.jcl` + `REPROC.prc` +
+     `REPROCT.ctl` (IDCAMS `REPRO` → scheduled DB-backup step). These are mapped at the artifact level in
+     traceability-matrix Section 7.1 and expanded to step level in Section 7.1.1.
+  3. **1 job is a source-less loader.** `dailyTransactionLoadJob` has no COBOL source; it is the
+     executable raw-`DALYTRAN` fixed-width loader added for external-file ingestion
+     ([D30](#d30--dalytran-raw-fixed-width-loader-executable-external-file-ingestion)).
+- **Corrections applied:**
+  - **Project Guide §1.1** program split corrected from "17 online, 11 batch" to **"17 online, 10 batch,
+    1 date-utility (`CSUTLDTC`)"** — the 28th program, `CSUTLDTC`, is a date-validation utility that maps
+    to `service/DateValidationService`, **not** a batch job, and had been miscounted into "batch" to force
+    the 17 + 11 = 28 total.
+  - **Project Guide §1.3** "12 Spring Batch jobs reproduce the 11 batch programs" corrected to the
+    9 + 2 + 1 reconciliation above.
+  - **traceability-matrix** Section 1 job-count note and Scope line rewritten to the precise 9 + 2 + 1
+    breakdown (superseding "11 COBOL-derived + 1 loader").
+- **Alternatives considered:**
+  1. *Leave the "11 COBOL-derived + 1 loader" phrasing.* **Rejected:** it mis-attributes the two
+     JCL-utility jobs as COBOL-derived and is internally inconsistent (ten programs with one merge yield
+     nine, not eleven, program-derived jobs).
+  2. *Rename `CSUTLDTC` as a batch program to make "11 batch" true.* **Rejected:** `CSUTLDTC` is a called
+     date-validation utility (invoked by online and batch alike), not a JCL-triggered batch job; forcing
+     it into the batch count would misrepresent its role.
+- **Rationale:** the counts are all individually correct once the categories are named precisely
+  (COBOL-program-derived vs JCL-utility-derived vs source-less). Recording the reconciliation in one place
+  satisfies the Explainability rule ("nothing undocumented") and removes the apparent contradiction.
+- **Risk & mitigation:** none functional — documentation only. *Mitigation against drift:* the number
+  `12` is anchored to a single, testable fact (the count of `@Bean Job` definitions under `batch/**`), and
+  this entry is the cross-referenced source of truth for the breakdown.
+
+### D69 — `COMP-3` decode and EBCDIC code-page reconciliation are distinct H-5 validation steps
+
+- **Status:** Accepted
+- **Type:** Risk sizing (documentation) — refines the definition of the existing path-to-production task
+  **H-5**; no code change and no change to the H-5 hour estimate or the project total.
+- **AAP references:** §0.2.3 (data-tier interpretation — VSAM `COMP-3`/EBCDIC → relational native types),
+  §0.7.1 hotspot H3 (`COMP-3` monetary fidelity), §0.7.2 hotspot M2 (external fixed-width contracts;
+  EBCDIC vs native storage), §0.9.2 (golden-file parity)
+- **Context:** the demonstration system runs entirely on the **decoded ASCII** fixtures under
+  `legacy/data/ASCII/**`, so no EBCDIC/`COMP-3` decoding happens at demo time. The **production cutover**
+  (task **H-5**, risk **I1**) is different: it ingests the **real VSAM datasets**, which are still
+  **EBCDIC** with binary **`COMP-3`** packed-decimal fields. Earlier drafts of the risk register folded
+  this reconciliation implicitly into the H-5 line item "…+ credential re-hash", which under-sized a
+  high-risk activity and obscured its ordering dependency on the credential re-hash.
+- **Decision:** H-5 explicitly contains **two distinct, independently-evidenced validation steps**, each
+  gated and signed off separately, executed **before** the credential re-hash and the parallel-run parity
+  UAT:
+  1. **`COMP-3` packed-decimal decode fidelity.** Each packed field (`PIC S9(n)V99 COMP-3` — balances,
+     credit/cash limits, `DIS-INT-RATE`, transaction/category amounts) is decoded to the exact signed,
+     scaled value and asserted against `BigDecimal` at scale 2 (see
+     [D9](#d9--bigdecimal-scale-2-money-value-object)). Failure modes are **silent** — a wrong sign nibble
+     (`C`/`D`/`F`) or a misplaced implied decimal point yields a value that still "looks numeric" but is
+     sign-inverted or off by a factor of 100 — so validation is a **row-for-row checksum of decoded
+     amounts**, not a spot check.
+  2. **EBCDIC code-page reconciliation.** Alphanumeric fields are transcoded from the **correct EBCDIC code
+     page** (e.g. IBM-037 vs IBM-1047, which disagree on `[`, `]`, `¢`, and the cent/logical-NOT
+     positions) to UTF-8. This step must be **verified before the credential re-hash**, because the
+     `USRSEC` credentials (`CSUSR01Y`) feed the re-hash: a wrong code page corrupts the cleartext that
+     BCrypt then permanently bakes in, producing hashes no operator can authenticate against.
+- **Alternatives considered:**
+  1. *Leave the reconciliation implicit inside "credential re-hash".* **Rejected:** it under-sizes a
+     high/high risk (I1), hides the **decode-before-re-hash** ordering dependency, and violates the
+     Explainability rule's "nothing undocumented" standard for a step whose failures are silent and
+     financially material.
+  2. *Add hours / a separate task.* **Rejected:** the reconciliation is intrinsic to H-5's "migrate real
+     VSAM/EBCDIC → PostgreSQL" scope; naming its sub-steps refines the definition without re-estimating.
+- **Rationale:** `COMP-3` decode errors are financial-data-integrity defects and EBCDIC code-page errors
+  are credential-and-text-integrity defects — different failure classes with different evidence and a hard
+  ordering constraint between them. Sizing them as distinct, gated steps makes the cutover plan honest and
+  testable.
+- **Risk & mitigation:** none functional — documentation/risk-sizing only. The refinement is reflected in
+  the Project Guide risk register (I1) and the H-5 task row, and in the onboarding cutover runbook
+  (`docs/onboarding/pitfalls.md` §6.2). *Mitigation against silent data errors at cutover:* both steps are
+  specified as row-for-row / verified-before-dependent-step checks rather than sampling.
+
+### D70 — Production cutover requires a rehearsed rollback/restore (DR) procedure on the H-1 backup foundation
+
+- **Status:** Accepted
+- **Type:** Risk (documentation) — records a cutover-risk mitigation within the existing risk-assessment
+  scope; no code change, and no new hours (the work rides on the backup/HA foundation already scoped under
+  task **H-1**).
+- **AAP references:** §0.9 (validation performed locally; production cutover is out of the build scope but
+  in the operational-readiness rules), §0.8.2 (Observability & operational readiness by construction),
+  §0.3.3 (cloud/K8s infrastructure provisioning is otherwise out of scope — this entry documents a
+  *procedure*, not new infrastructure)
+- **Context / gap:** the risk register enumerated backups and HA (task **H-1**) and a parity UAT
+  (task **H-5**) but had **no explicit entry for the rollback/restore path** if the migration or the first
+  production release fails. Without a rehearsed procedure, a failed cutover has no defined route back to a
+  known-good state — a high-impact operational gap even though every AAP deliverable is complete.
+- **Decision:** add risk **O5** (Operational, High impact / Medium probability) and require, as part of the
+  H-1 backup/HA work, a **defined and rehearsed cutover rollback/restore runbook** built on the database
+  backup foundation:
+  - **PostgreSQL point-in-time recovery (PITR)** via continuous WAL archiving plus **verified** base
+    backups (a backup is not "done" until a test restore has succeeded).
+  - Documented **RPO/RTO** targets so the acceptable data-loss window and recovery time are explicit and
+    signed off, not assumed.
+  - A **restore drill executed before go-live** — restore a backup into a fresh instance and re-run the
+    H-5 parity checks against it — so the rollback path is proven, not theoretical.
+  - A **decision-gated "abort & restore" branch** in the cutover plan, triggered by a failed H-5
+    parallel-run parity result, that returns the estate to the pre-cutover state (legacy remains
+    authoritative until sign-off).
+- **Alternatives considered:**
+  1. *Rely on backups alone without a rehearsed procedure.* **Rejected:** an untested backup is an
+     unknown; DR that is first exercised during a real incident routinely fails to meet RTO.
+  2. *Treat rollback as implicit in H-1.* **Rejected:** the Explainability rule requires the cutover
+     failure path to be explicit and owned; folding it into "backups/HA" is exactly the kind of silent
+     under-scoping this log exists to prevent (cf. [D69](#d69--comp-3-decode-and-ebcdic-code-page-reconciliation-are-distinct-h-5-validation-steps)).
+- **Rationale:** rollback capability is the safety net that makes an aggressive cutover acceptable; pairing
+  it with the H-5 parity gate (D69 / risk I1) gives a clear, evidence-based abort criterion and a proven
+  path back, which is the responsible operational posture for replacing a system of record.
+- **Risk & mitigation:** none functional — documentation only. The mitigation is captured as risk **O5**
+  in the Project Guide risk register (mapped to task **H-1**), with the restore-drill and RPO/RTO sign-off
+  as its acceptance evidence.
 
 ---
 

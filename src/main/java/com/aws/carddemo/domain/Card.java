@@ -59,10 +59,16 @@ import java.util.Objects;
  * association ({@code @ManyToOne}/{@code @JoinColumn}) and no
  * {@code @Table(indexes = ...)} declaration is present.</p>
  *
- * <p><strong>Sensitive data.</strong> The {@link #cvv} field holds the card
- * verification value. It is a demonstration-only legacy anti-pattern that the
- * value is stored at all; the migrated application treats it as sensitive and
- * <em>never logs or returns it in full</em>. Accordingly the CVV is
+ * <p><strong>Sensitive data (PCI-DSS; decision-log D22-revised).</strong> The
+ * {@link #cvv} field maps the legacy card verification value, but the real value
+ * is <em>never stored at rest</em>: persisting the CVV/CVV2 after authorization is
+ * prohibited by PCI-DSS Requirement 3.2, and behavioral parity requires nothing of
+ * it (it is never mapped to a DTO, read by any service or batch job, logged, or
+ * returned). The column is retained only to preserve the 150-byte
+ * {@code CARD-RECORD} layout shape and its copybook-to-column traceability, and it
+ * holds a fixed non-reversible masked placeholder ({@code "***"}). Redaction is
+ * applied at the ingestion boundary ({@code LocalSeedDataLoader.redactAtRest}) and
+ * at the schema level ({@code V6__redact_cvv_at_rest.sql}). The field is also
  * deliberately excluded from {@link #toString()}.</p>
  *
  * <p><strong>Optimistic locking.</strong> The card record is updated by the
@@ -96,9 +102,15 @@ public class Card {
 
     /**
      * Card verification value (CVV) &mdash; maps {@code CARD-CVV-CD PIC 9(03)}.
-     * <strong>SENSITIVE:</strong> never logged or returned in full and excluded
-     * from {@link #toString()}. Kept as a {@code String} to preserve any leading
-     * zeros that the numeric COBOL picture allowed.
+     * <strong>SENSITIVE (PCI-DSS; decision-log D22-revised):</strong> the real
+     * value is never stored at rest. This column persists only a fixed
+     * non-reversible masked placeholder ({@code "***"}); it is never logged,
+     * mapped to a DTO, or returned, and is excluded from {@link #toString()}.
+     * Redaction is enforced on the ingestion path
+     * ({@code LocalSeedDataLoader.redactAtRest}) and documented/scrubbed by the
+     * {@code V6__redact_cvv_at_rest.sql} migration. Kept as a {@code String} to
+     * preserve the copybook layout shape (and any leading zeros the numeric COBOL
+     * picture allowed) without converting to a numeric type.
      */
     @Column(name = "cvv", length = 3)
     private String cvv;

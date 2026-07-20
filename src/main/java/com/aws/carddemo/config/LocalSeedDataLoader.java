@@ -254,7 +254,7 @@ public class LocalSeedDataLoader implements ApplicationRunner {
                             spec.csv(), r + 1, fields.size(), spec.table(), columns.size()));
                 }
                 for (int c = 0; c < columns.size(); c++) {
-                    bind(statement, c + 1, jdbcTypes[c], fields.get(c));
+                    bind(statement, c + 1, jdbcTypes[c], redactAtRest(spec.table(), columns.get(c), fields.get(c)));
                 }
                 statement.addBatch();
                 rows++;
@@ -287,6 +287,39 @@ public class LocalSeedDataLoader implements ApplicationRunner {
             }
         }
         return types;
+    }
+
+    /**
+     * Fixed, non-reversible masked placeholder stored in {@code card.cvv} in place of any real card
+     * verification value (PCI-DSS at-rest posture, decision-log <strong>D22-revised</strong>).
+     *
+     * <p>Under PCI-DSS Requirement&nbsp;3.2 the sensitive card-verification value (CVV/CVV2/CVC2/CID)
+     * must never be retained after authorization, and this migration reads/returns/uses the CVV on
+     * <em>no</em> behavioral-parity path (it is never mapped to a DTO, never logged, and excluded from
+     * {@code Card#toString()}). The real {@code CARD-CVV-CD} is therefore unnecessary at rest, and this
+     * loader forces every {@code card.cvv} insert to the placeholder below regardless of what the seed
+     * CSV carries &mdash; a code-enforced invariant at the ingestion boundary, not merely a data-hygiene
+     * convention. Width is &le; the {@code VARCHAR(3)} column so the {@code CARD-RECORD} layout shape is
+     * preserved (see {@code V6__redact_cvv_at_rest.sql}).</p>
+     */
+    private static final String CVV_AT_REST_PLACEHOLDER = "***";
+
+    /**
+     * Ingestion-boundary redaction for sensitive-at-rest fields. Returns {@link #CVV_AT_REST_PLACEHOLDER}
+     * for the {@code card.cvv} column so a real card verification value can never be persisted through
+     * the seed path (decision-log <strong>D22-revised</strong>); every other column passes through
+     * unchanged.
+     *
+     * @param table    the destination table name
+     * @param column   the destination column name
+     * @param rawValue the raw CSV field value
+     * @return the value to bind: the CVV placeholder for {@code card.cvv}, otherwise {@code rawValue}
+     */
+    private static String redactAtRest(String table, String column, String rawValue) {
+        if ("card".equals(table) && "cvv".equals(column)) {
+            return CVV_AT_REST_PLACEHOLDER;
+        }
+        return rawValue;
     }
 
     /**
