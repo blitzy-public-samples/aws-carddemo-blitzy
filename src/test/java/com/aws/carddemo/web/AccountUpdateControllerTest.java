@@ -346,6 +346,34 @@ class AccountUpdateControllerTest {
         assertThat(command.expectedVersion()).isEqualTo(ACCOUNT_VERSION);
     }
 
+    @Test
+    @DisplayName("F-P4-A: an oversized (out-of-long-range) account-version header is parsed defensively to null (HTTP 200, not 500) and the cross-request check is skipped")
+    @WithMockUser
+    void oversizedVersionHeaderIsParsedDefensivelyNotA500() throws Exception {
+        when(accountService.updateAccount(any(AccountUpdateCommand.class), anyBoolean()))
+                .thenReturn(new AccountUpdateResult(Status.DONE, detail(), MSG_SUCCESS));
+
+        // 20 nines: all-digit (so it passes the header's digit scan) but far larger than
+        // Long.MAX_VALUE. Before the fix Long.valueOf overflowed with an unhandled
+        // NumberFormatException that the global handler mapped to HTTP 500; it must now degrade to
+        // null exactly like any other unparseable version header.
+        String oversizedVersion = "99999999999999999999";
+
+        mockMvc.perform(post(ENDPOINT)
+                        .header(H_PRIOR_STATUS, "CHANGES_OK_NOT_CONFIRMED")
+                        .header(H_ACCOUNT_VERSION, oversizedVersion)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(body(Map.of("accountId", ACCT_ID_DISPLAY, "action", "PF5"))))
+                // Bounded outcome: a same-screen 200, never an HTTP 500.
+                .andExpect(status().isOk());
+
+        ArgumentCaptor<AccountUpdateCommand> captor = ArgumentCaptor.forClass(AccountUpdateCommand.class);
+        verify(accountService).updateAccount(captor.capture(), eq(true));
+        // The oversized header is treated exactly like any other invalid value: expectedVersion is
+        // null, so the controller skips the cross-request concurrency check (F-P4-A).
+        assertThat(captor.getValue().expectedVersion()).isNull();
+    }
+
     // ====================================================================================
     // G. POST PF5 -> optimistic-lock conflict -> 409 with a fixed, safe message (both providers).
     // ====================================================================================

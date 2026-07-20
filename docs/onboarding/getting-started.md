@@ -514,6 +514,35 @@ $J --spring.batch.job.name=transactionReportJob startDate=2022-07-01 endDate=202
 $J --spring.batch.job.name=statementGenerationJob          # no parameters; writes statements.txt + statements.html
 ```
 
+> **Re-running the whole recipe? Give each job a fresh parameter first.** A Spring Batch
+> *job instance* is identified by its job name plus its **identifying** job parameters (by
+> default every parameter is identifying), and a **completed** instance cannot be launched
+> again. On a second pass of the block above — reusing the same parameter values, including
+> the empty parameter set of the no-parameter jobs (`validate`, `post`, `statement`) — each
+> job that **COMPLETED** on the first pass is relaunched as the *same* instance and fails
+> fast with `JobInstanceAlreadyCompleteException`. That launch failure is caught in
+> `CardDemoApplication.main` and surfaced to the OS as the abend return code **exit 8**
+> (the same `0`/`4`/`8` contract as a runtime abend — [§8 intro](#8-run-the-batch-jobs),
+> decision-log
+> [**D45**](../decision-log.md#d45--batch-process-exit-code-equals-the-spring-batch-return-code-jcl-condition-code-parity)),
+> so a repeat run is unmistakable rather than silent. To repeat the pipeline cleanly, append a
+> **unique identifying parameter** to every job you re-launch, for example `runId=$(date +%s)`
+> — this is the same mechanism the `statementGenerationJob` note above uses (`stamp=$(date +%s)`)
+> and it forces a brand-new job instance each time:
+>
+> ```shell
+> R="runId=$(date +%s)"   # one fresh value per pipeline pass
+> $J --spring.batch.job.name=dailyTransactionValidateJob $R
+> $J --spring.batch.job.name=dailyTransactionPostingJob $R
+> $J --spring.batch.job.name=interestCalculationJob parmDate=2022071800 $R
+> $J --spring.batch.job.name=transactionReportJob startDate=2022-07-01 endDate=2022-07-31 $R
+> $J --spring.batch.job.name=statementGenerationJob $R
+> ```
+>
+> The posting step is the one exception that does **not** need this on the seeded database: it
+> **abends** (exit 8) on the first pass instead of completing (see the next note), and a
+> *failed* instance is restartable with the same parameters.
+
 > **The posting step abends on the freshly-seeded database — and that is correct.** The `local`
 > profile seeds **two** tables from the same demonstration data: `transaction` (300 rows of
 > *already-posted* history, so the online screens and the report/statement jobs have data) and
@@ -560,6 +589,95 @@ $J --spring.batch.job.name=dailyTransactionPostingJob
 ```
 
 See [Common pitfalls](pitfalls.md) for more on the seed's posted/staging overlap.
+
+### Recovering an interrupted job (`STARTED` / `UNKNOWN`)
+
+A **graceful** batch failure (a runtime abend, an invalid parameter, or the already-complete
+case above) ends with a clean `FAILED` execution and process **exit 8**, and Spring Batch will
+happily **restart** that same instance once the underlying cause is fixed. A **hard** interruption
+is different: if the JVM is killed mid-step (`kill -9`, an OOM kill, a container/node eviction, a
+power loss), the graceful `FAILED` transition never runs, so the metadata row is left in
+`STARTED` — and if the step's commit outcome could not be recorded, in `UNKNOWN`. Spring Batch's
+automatic restart **treats `STARTED` as "still running" and outright refuses to restart an
+`UNKNOWN` execution** (it cannot know whether the interrupted chunk committed), so a naive relaunch
+of the same instance fails fast with **exit 8** and no progress. Use this runbook to reconcile the
+**metadata**, the **data**, and the **file** side-effects and get the pipeline moving again.
+
+Recovery is bounded by design — the atomicity and idempotency fixes elsewhere in this codebase
+guarantee a killed run leaves **no partial published output and no double-applied data**:
+
+1. **Confirm nothing is still running (do this first).** A `STARTED` row can also mean the job
+   *really is* live in another process; restarting concurrently would double-run it. Verify no JVM
+   is still executing the job before touching any metadata:
+
+   ```shell
+   # No CardDemo batch JVM should be alive. (Look for the jar + --spring.batch.job.name=...)
+   ps -ef | grep '[c]arddemo-1.0.0.jar' || echo "no live batch process"
+   ```
+
+   In a container/orchestrator, confirm the pod/task that launched the job is gone. Only proceed
+   once you are certain the process is dead.
+
+2. **Find the stale execution.** Query the standard Spring Batch metadata tables (prefix `BATCH_`,
+   auto-created by Spring Boot). Anything `STARTED`/`UNKNOWN` with no live process is a stale row:
+
+   ```shell
+   docker compose exec -T postgres psql -U "$DB_USERNAME" -d carddemo -c "
+     SELECT je.job_execution_id, ji.job_name, je.status, je.exit_code, je.start_time, je.end_time
+     FROM batch_job_execution je
+     JOIN batch_job_instance ji ON ji.job_instance_id = je.job_instance_id
+     WHERE je.status IN ('STARTED','UNKNOWN') ORDER BY je.job_execution_id;"
+   ```
+
+3. **Reconcile file side-effects (usually nothing to do).** Every batch writer publishes its output
+   with a **temp-write-then-atomic-rename** (F-P5-C/D/E): work goes to a run-scoped temp sibling
+   (`*.part`, `*.tmp`, or `*.inprogress`) in the output directory and is `ATOMIC_MOVE`d onto the
+   final name **only on success**. A hard kill therefore leaves **at most a leftover temp file and
+   never a half-written published output**. Delete any stray temp files before re-running:
+
+   ```shell
+   ls -l ./target/batch                    # inspect first
+   rm -f ./target/batch/*.part ./target/batch/*.tmp ./target/batch/*.inprogress
+   ```
+
+4. **Reconcile data side-effects.** The committed data is a **consistent prefix** of the work, and a
+   re-run is safe to complete it:
+   - **Posting** is chunk-transactional — committed chunks persist and the interrupted chunk was
+     rolled back; a restart resumes cleanly from the last commit point.
+   - **Interest** is **cycle-idempotent** (F-P6-A / F-P5-D): each account carries a
+     `last_interest_cycle` marker and the balance update is a guarded conditional bulk `UPDATE`, so
+     accounts already finalized in the interrupted cycle are **not** applied a second time on re-run.
+   No manual data surgery is required; if you want to inspect what committed, query the affected
+   table (e.g. `SELECT count(*) FROM transaction WHERE ...`).
+
+5. **Remediate the metadata, then re-launch.** Choose one:
+
+   - **Restartable failure (`STARTED`)** — mark the stale execution `FAILED` so Spring Batch will
+     restart the *same* instance and resume from the last good step/commit:
+
+     ```shell
+     docker compose exec -T postgres psql -U "$DB_USERNAME" -d carddemo -c "
+       UPDATE batch_step_execution SET status='FAILED', exit_code='FAILED'
+         WHERE job_execution_id=<ID> AND status IN ('STARTED','UNKNOWN');
+       UPDATE batch_job_execution  SET status='FAILED', exit_code='FAILED', end_time=now()
+         WHERE job_execution_id=<ID>;"
+     # then re-launch the SAME job + parameters; Spring Batch resumes the instance
+     ```
+
+   - **Un-restartable execution (`UNKNOWN`)** — Spring Batch refuses to restart an `UNKNOWN`
+     execution, so mark it **`ABANDONED`** (the status Spring Batch skips on restart) and then start a
+     **fresh instance** with a unique identifying parameter (the same `runId=$(date +%s)` mechanism
+     shown above):
+
+     ```shell
+     docker compose exec -T postgres psql -U "$DB_USERNAME" -d carddemo -c "
+       UPDATE batch_job_execution SET status='ABANDONED', end_time=now()
+         WHERE job_execution_id=<ID> AND status='UNKNOWN';"
+     $J --spring.batch.job.name=<jobName> <original params> runId=$(date +%s)
+     ```
+
+   Because of steps 3–4, the fresh run re-does only the un-committed remainder of the work and
+   re-publishes the output file atomically — no orphaned finals, no double-applied interest.
 
 ### Inspect the outputs
 

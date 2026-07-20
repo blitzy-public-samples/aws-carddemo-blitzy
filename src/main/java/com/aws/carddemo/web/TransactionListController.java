@@ -125,6 +125,18 @@ public class TransactionListController {
     private static final int PAGE_SIZE = 10;
 
     /**
+     * Largest zero-based page index that keeps the repository offset
+     * ({@code index * PAGE_SIZE}) within {@code int} range, guarding against the
+     * {@code InvalidDataAccessApiUsageException} a pathologically large page value
+     * would otherwise trigger (QA finding F-P4-C). A requested page beyond this
+     * bound is clamped so it degrades to an out-of-range browse that returns an
+     * empty page &mdash; a bounded, same-screen outcome &mdash; rather than an
+     * HTTP 500. Every page reachable by ordinary PF7/PF8 navigation is far below
+     * this ceiling, so legitimate paging is unaffected.
+     */
+    private static final int MAX_PAGE_INDEX = Integer.MAX_VALUE / PAGE_SIZE;
+
+    /**
      * Sort property for the browse: the {@link Transaction} primary key, reproducing the
      * {@code COTRN00C} {@code TRAN-ID}-ordered VSAM browse.
      */
@@ -368,7 +380,10 @@ public class TransactionListController {
      * @return the requested page of transactions in ascending {@code tranId} order; never {@code null}
      */
     private Page<Transaction> query(int oneBasedPage, String startKey) {
-        int zeroBasedPage = Math.max(0, oneBasedPage - 1);
+        // Floor at the first page and ceiling at MAX_PAGE_INDEX so an oversized page value cannot
+        // overflow the repository offset (F-P4-C); a clamped page browses past the end and yields
+        // an empty page (a bounded same-screen result) rather than an HTTP 500.
+        int zeroBasedPage = Math.min(Math.max(0, oneBasedPage - 1), MAX_PAGE_INDEX);
         return transactionService.listTransactionsFrom(startKey,
                 PageRequest.of(zeroBasedPage, PAGE_SIZE, Sort.by(SORT_PROPERTY)));
     }

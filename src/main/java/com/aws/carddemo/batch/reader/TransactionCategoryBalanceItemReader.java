@@ -132,9 +132,10 @@ public class TransactionCategoryBalanceItemReader extends RepositoryItemReader<T
     /**
      * Reader name and Spring bean name. It is intentionally identical to the decapitalized
      * class name so that {@code InterestCalculationJob} (CBACT04C) can wire this reader by
-     * its conventional bean name. It is also used by {@link RepositoryItemReader} as the
-     * {@code ExecutionContext} key prefix under which paging save-state is persisted, so it
-     * must be stable across restarts.
+     * its conventional bean name. {@link RepositoryItemReader} would normally use it as the
+     * {@code ExecutionContext} key prefix for paging save-state; this reader disables save-state
+     * (see the constructor) so a restart replays the full input, but the name is still set for
+     * stable step identification and logging.
      */
     private static final String READER_NAME = "transactionCategoryBalanceItemReader";
 
@@ -182,6 +183,15 @@ public class TransactionCategoryBalanceItemReader extends RepositoryItemReader<T
 
         setPageSize(PAGE_SIZE);
         setName(READER_NAME);
-        setSaveState(true);
+        // Do NOT persist paging save-state. On a restart the reader must replay the FULL ordered
+        // result set from the first page rather than resuming at the last-committed page, because the
+        // interest writer rebuilds the entire SYSTRAN file from scratch into a staging file and only
+        // atomically publishes it on a clean run (InterestTransactionWriter). Resuming mid-stream would
+        // regenerate only the tail of the SYSTRAN file and lose the interest transactions already
+        // emitted before the failure (QA finding F-P5-D). A full replay is safe because the balance
+        // posting is idempotent per cycle (AccountRepository.applyInterestForCycle keyed on
+        // last_interest_cycle, F-P6-A): accounts already finalized in the failed run are skipped, so
+        // the DB balances stay exactly-once while the SYSTRAN file is fully rebuilt.
+        setSaveState(false);
     }
 }

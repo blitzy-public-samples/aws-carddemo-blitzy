@@ -59,6 +59,7 @@ import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
 import org.testcontainers.utility.DockerImageName;
 
+import com.aws.carddemo.common.util.PanMasker;
 import com.aws.carddemo.domain.CardXref;
 import com.aws.carddemo.repository.CardXrefRepository;
 
@@ -289,16 +290,18 @@ class XrefPrintJobTest {
         List<String> printedCardNumbers = capturedCardNumbers();
         assertThat(printedCardNumbers).hasSize((int) rowCount);
 
-        // Ascending card-number order: identical to a natural sort of the printed keys.
-        List<String> ascending = printedCardNumbers.stream().sorted().toList();
-        assertThat(printedCardNumbers).containsExactlyElementsOf(ascending);
-
-        // Cross-check the printed order against the repository's ascending browse query.
-        List<String> repositoryOrder = cardXrefRepository.findAllByOrderByXrefCardNumAsc()
+        // XREF-CARD-NUM is a PAN and is masked (first six / last four) before logging (F-P6-B), so
+        // the captured values are the masked forms of the cross-reference card numbers. Comparing
+        // them against the repository's ascending browse query mapped through the same mask proves
+        // BOTH content and ascending emission order (VSAM alternate-index parity) via the
+        // order-sensitive containsExactlyElementsOf. A self-referential natural-sort check is
+        // intentionally omitted because masked values are not guaranteed to sort like the raw PANs.
+        List<String> expectedMaskedOrder = cardXrefRepository.findAllByOrderByXrefCardNumAsc()
                 .stream()
                 .map(CardXref::getXrefCardNum)
+                .map(PanMasker::mask)
                 .toList();
-        assertThat(printedCardNumbers).containsExactlyElementsOf(repositoryOrder);
+        assertThat(printedCardNumbers).containsExactlyElementsOf(expectedMaskedOrder);
 
         assertGoldenIfPresent();
     }

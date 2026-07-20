@@ -24,6 +24,8 @@ import com.aws.carddemo.service.SignonService;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
 
+import jakarta.validation.Valid;
+
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -266,8 +268,9 @@ public class SignonController {
     @Operation(summary = "Submit the sign-on screen",
             description = "Reproduces the COSGN00C re-entry EVALUATE EIBAID: ENTER validates "
                     + "credentials, PF3 exits, any other key is rejected. Blank user id/password are "
-                    + "returned as HTTP 200 same-screen messages, not validation errors.")
-    public ResponseEntity<SignonResponse> signon(@RequestBody SignonRequest request) {
+                    + "returned as HTTP 200 same-screen messages, not validation errors; a user id or "
+                    + "password longer than the BMS X(8) field length is rejected with HTTP 400.")
+    public ResponseEntity<SignonResponse> signon(@Valid @RequestBody SignonRequest request) {
         final LocalDateTime now = LocalDateTime.now();
         // A null action defaults to ENTER: the primary submit path (COBOL WHEN DFHENTER).
         final PfKeyAction action = (request.action() == null) ? PfKeyAction.ENTER : request.action();

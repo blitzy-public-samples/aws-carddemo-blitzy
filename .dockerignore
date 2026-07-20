@@ -1,0 +1,40 @@
+# =============================================================================
+# .dockerignore - restrictive Docker build-context filter (QA finding F-P6-H)
+# -----------------------------------------------------------------------------
+# Deny-by-default posture: EVERYTHING is excluded from the build context first,
+# then ONLY the paths the multi-stage Dockerfile actually COPYs are re-included
+# (.mvn, mvnw, pom.xml, src). Anything new added to the repository is therefore
+# excluded from the image build unless it is explicitly re-included below.
+#
+# WHY (what this keeps OUT of the build context and image layers):
+#   * secrets / local config  - .env, *.env, docker-compose.yml (never in a layer)
+#   * the large legacy/ COBOL reference tree (hundreds of files; not built)
+#   * target/ host build output, .git/ history, docs/, diagrams/, blitzy-deck/,
+#     blitzy/ scratch, and .github/ CI config - none are needed to build the jar
+# This shrinks and speeds the build context, removes an accidental-secret-leak
+# vector, and keeps image layers minimal. The Dockerfile builds the jar purely
+# from .mvn + mvnw + pom.xml + src, so nothing else belongs in the context.
+# =============================================================================
+
+# --- Exclude everything by default (most restrictive) ------------------------
+*
+
+# --- Re-include EXACTLY what the Dockerfile needs ----------------------------
+!.mvn
+!mvnw
+!pom.xml
+!src
+
+# --- Defense in depth: drop noise even inside the re-included trees ----------
+# Host build output must never leak in (target/ is top-level and already excluded
+# by `*`, but guard against any nested occurrence under a re-included path).
+**/target
+# Compiled artifacts.
+**/*.class
+# Any environment/secret file accidentally placed under a re-included path.
+**/*.env
+# Editor/OS cruft.
+**/.DS_Store
+**/*.iml
+# Ad-hoc validation scratch files must never enter an image.
+**/blitzy_adhoc_test_*

@@ -20,6 +20,7 @@ import ch.qos.logback.classic.Logger;
 import ch.qos.logback.classic.spi.ILoggingEvent;
 import ch.qos.logback.core.read.ListAppender;
 
+import com.aws.carddemo.common.util.PanMasker;
 import com.aws.carddemo.domain.Card;
 import com.aws.carddemo.repository.CardRepository;
 
@@ -376,10 +377,12 @@ class CardMasterPrintJobTest {
 
     /**
      * Extracts the {@code cardNum} field value from a formatted card line of the
-     * form {@code "... | cardNum=<16 digits> | acctId=..."}.
+     * form {@code "... | cardNum=<masked PAN> | acctId=..."}. The rendered value is
+     * the PCI-DSS-masked card number (first six / last four), not the raw PAN
+     * (F-P6-B); the parser is unaffected because the masked value contains no space.
      *
      * @param line a formatted card line
-     * @return the card number rendered on the line
+     * @return the (masked) card number rendered on the line
      */
     private static String extractCardNum(String line) {
         final String marker = "cardNum=";
@@ -463,11 +466,17 @@ class CardMasterPrintJobTest {
         final List<String> emittedCardNums = lines.stream()
                 .map(CardMasterPrintJobTest::extractCardNum)
                 .toList();
+        // CARD-NUM is a PAN and is masked (first six / last four) before logging (F-P6-B), so the
+        // emitted values are the masked forms of the repository's ascending card numbers. The
+        // order-sensitive containsExactlyElementsOf therefore proves BOTH the content and the
+        // ascending emission order (VSAM primary-key parity) against the masked expected list. A
+        // separate isSorted() check is intentionally omitted: masked values are not guaranteed to
+        // sort lexicographically like the raw PANs, and emission order is already fully asserted here.
         final List<String> expectedCardNums = cardRepository.findAllByOrderByCardNumAsc().stream()
                 .map(Card::getCardNum)
+                .map(PanMasker::mask)
                 .toList();
         assertThat(emittedCardNums).containsExactlyElementsOf(expectedCardNums);
-        assertThat(emittedCardNums).isSorted();
 
         final Path produced = tempDir.resolve("card-master-print.txt");
         Files.write(produced, lines);

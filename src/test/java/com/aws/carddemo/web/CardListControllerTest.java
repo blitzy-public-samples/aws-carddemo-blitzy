@@ -433,6 +433,40 @@ class CardListControllerTest {
     }
 
     /**
+     * Test D2b (F-P4-C) &mdash; an extreme {@code page} query parameter cannot
+     * overflow the JPA offset ({@code index * PAGE_SIZE}). The controller clamps
+     * the derived zero-based page index to {@code Integer.MAX_VALUE / PAGE_SIZE}
+     * so the browse degrades to an empty final page (HTTP 200) instead of
+     * propagating an arithmetic overflow into a repository {@code OFFSET} and
+     * surfacing as an HTTP 500. Because the {@code CardService} is mocked in this
+     * web slice the guard is asserted directly on the {@link Pageable} handed to
+     * the service: its page number is the clamp ceiling, never the raw request
+     * value.
+     */
+    @Test
+    void extremePageParameterIsClampedToAvoidOffsetOverflow() throws Exception {
+        int maxPageIndex = Integer.MAX_VALUE / PAGE_SIZE;
+        when(cardService.listCards(any(), any(), any()))
+                .thenReturn(pageOf(new ArrayList<>(), maxPageIndex, 0));
+
+        CardListRequest request = new CardListRequest(null, null, null, PfKeyAction.ENTER);
+
+        mockMvc.perform(post(BASE_PATH)
+                        .param("page", String.valueOf(Integer.MAX_VALUE))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(json(request)))
+                // Bounded outcome: a same-screen 200, never an HTTP 500.
+                .andExpect(status().isOk());
+
+        ArgumentCaptor<Pageable> pageable = ArgumentCaptor.forClass(Pageable.class);
+        verify(cardService).listCards(isNull(), isNull(), pageable.capture());
+        // The raw page (Integer.MAX_VALUE) would map to zero-based 2147483646; the
+        // clamp caps it at Integer.MAX_VALUE / PAGE_SIZE so index * PAGE_SIZE stays
+        // within int range (F-P4-C).
+        assertThat(pageable.getValue().getPageNumber()).isEqualTo(maxPageIndex);
+    }
+
+    /**
      * Test D3 &mdash; {@code PF7} on the first page is clamped: the browse cannot
      * move earlier, so the current (first) page is redisplayed with the verbatim
      * boundary message {@value #MSG_NO_PREVIOUS_PAGES} and the page indicator

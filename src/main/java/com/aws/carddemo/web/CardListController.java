@@ -123,6 +123,19 @@ public class CardListController {
     private static final int PAGE_SIZE = 7;
 
     /**
+     * Largest zero-based page index that keeps the repository offset
+     * ({@code index * PAGE_SIZE}) within {@code int} range, guarding against the
+     * {@code InvalidDataAccessApiUsageException} a pathologically large page value
+     * would otherwise trigger (QA finding F-P4-C). A requested page beyond this
+     * bound is clamped here so it degrades to an out-of-range browse that returns
+     * an empty page &mdash; a bounded, same-screen "no records" outcome &mdash;
+     * rather than surfacing as an HTTP 500. Every page reachable by ordinary
+     * PF7/PF8 navigation is far below this ceiling, so legitimate paging is
+     * unaffected.
+     */
+    private static final int MAX_PAGE_INDEX = Integer.MAX_VALUE / PAGE_SIZE;
+
+    /**
      * JPA property used to order the browse by primary key (card number
      * ascending), preserving the {@code CARDDATA.VSAM.KSDS} key order the legacy
      * {@code STARTBR}/{@code READNEXT} browse produced. Matches the
@@ -560,10 +573,14 @@ public class CardListController {
 
     /**
      * Converts a 1-based page indicator to a 0-based page index, flooring at the
-     * first page so a missing or non-positive value yields page zero.
+     * first page so a missing or non-positive value yields page zero and ceiling
+     * at {@link #MAX_PAGE_INDEX} so an oversized value cannot overflow the
+     * repository offset (QA finding F-P4-C). A clamped page simply browses past
+     * the end of the data and yields an empty page, which the message policy
+     * renders as the same-screen "no records" line &mdash; never an HTTP 500.
      */
     private static int toPageIndex(int oneBasedPage) {
-        return Math.max(0, oneBasedPage - 1);
+        return Math.min(Math.max(0, oneBasedPage - 1), MAX_PAGE_INDEX);
     }
 
     /**

@@ -16,11 +16,13 @@
 package com.aws.carddemo.config;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import com.fasterxml.jackson.core.JsonGenerator;
 import com.fasterxml.jackson.databind.DeserializationFeature;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.SerializationFeature;
+import com.fasterxml.jackson.databind.exc.MismatchedInputException;
 import java.math.BigDecimal;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
@@ -38,7 +40,8 @@ import org.springframework.http.converter.json.Jackson2ObjectMapperBuilder;
  * <p>The class is verified two complementary ways:
  * <ul>
  *   <li><b>Direct</b> — the customizer is applied to a bare {@link Jackson2ObjectMapperBuilder},
- *       isolating the four feature adjustments this bean is responsible for.</li>
+ *       isolating the feature adjustments this bean is responsible for, including the
+ *       scalar-to-String coercion clamp (F-P4-K).</li>
  *   <li><b>Boot integration</b> — an {@link ApplicationContextRunner} loads the real
  *       {@link JacksonAutoConfiguration} together with {@link JacksonConfig}, proving the customizer
  *       <em>augments</em> rather than <em>replaces</em> Boot's {@code ObjectMapper} (exactly one
@@ -117,6 +120,53 @@ class JacksonConfigTest {
         assertThat(sample.amount).isEqualByComparingTo(new BigDecimal("123.45"));
     }
 
+    // -------------------------------------------------------------------------
+    // F-P4-K: scalar-to-String coercion is disabled on textual targets
+    // -------------------------------------------------------------------------
+
+    @Test
+    @DisplayName("F-P4-K: a JSON integer targeting a String field is rejected, not coerced to text")
+    void integerOntoStringField_isRejected() {
+        ObjectMapper mapper = mapperFromCustomizer();
+        // Without the coercion clamp Jackson would bind "note" to the string "123"; the clamp makes
+        // this a MismatchedInputException, which Spring surfaces as HttpMessageNotReadable -> 400.
+        assertThatThrownBy(() -> mapper.readValue("{\"note\":123}", Sample.class))
+                .isInstanceOf(MismatchedInputException.class);
+    }
+
+    @Test
+    @DisplayName("F-P4-K: a JSON floating-point number targeting a String field is rejected, not coerced to text")
+    void floatOntoStringField_isRejected() {
+        ObjectMapper mapper = mapperFromCustomizer();
+        assertThatThrownBy(() -> mapper.readValue("{\"note\":1.5}", Sample.class))
+                .isInstanceOf(MismatchedInputException.class);
+    }
+
+    @Test
+    @DisplayName("F-P4-K: a JSON boolean targeting a String field is rejected, not coerced to text")
+    void booleanOntoStringField_isRejected() {
+        ObjectMapper mapper = mapperFromCustomizer();
+        // A boolean coerced to "true"/"false" is exactly how a wrong-typed password slipped through
+        // before the clamp; it must now be rejected.
+        assertThatThrownBy(() -> mapper.readValue("{\"note\":true}", Sample.class))
+                .isInstanceOf(MismatchedInputException.class);
+    }
+
+    @Test
+    @DisplayName("F-P4-K: a genuine JSON string still binds to a String field and a JSON number still binds to a BigDecimal field")
+    void textualClampLeavesLegitimateBindingIntact() throws Exception {
+        ObjectMapper mapper = mapperFromCustomizer();
+
+        // A real string still binds: the clamp only rejects non-text input shapes on text targets.
+        Sample stringTarget = mapper.readValue("{\"note\":\"hello\"}", Sample.class);
+        assertThat(stringTarget.note).isEqualTo("hello");
+
+        // A JSON number still binds to a BigDecimal (numeric, LogicalType.Float) target: the textual
+        // clamp does not touch numeric targets, so monetary fidelity is fully preserved.
+        Sample numericTarget = mapper.readValue("{\"amount\":123.45}", Sample.class);
+        assertThat(numericTarget.amount).isEqualByComparingTo(new BigDecimal("123.45"));
+    }
+
     @Test
     @DisplayName("java.time values serialize as ISO-8601 strings and null properties are omitted")
     void dates_areIso8601_andNullsOmitted() throws Exception {
@@ -155,6 +205,13 @@ class JacksonConfigTest {
 
             assertThat(mapper.writeValueAsString(new BigDecimal("1E+2"))).isEqualTo("100");
             assertThat(mapper.readValue("123.45", Object.class)).isInstanceOf(BigDecimal.class);
+
+            // F-P4-K: the scalar-to-String coercion clamp applied via postConfigurer survives Boot's
+            // own build, so the real application ObjectMapper rejects a number/boolean on a text field.
+            assertThatThrownBy(() -> mapper.readValue("{\"note\":123}", Sample.class))
+                    .isInstanceOf(MismatchedInputException.class);
+            assertThatThrownBy(() -> mapper.readValue("{\"note\":true}", Sample.class))
+                    .isInstanceOf(MismatchedInputException.class);
         });
     }
 

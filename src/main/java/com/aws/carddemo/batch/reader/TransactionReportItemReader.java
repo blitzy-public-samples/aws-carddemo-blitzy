@@ -101,11 +101,20 @@ import org.springframework.stereotype.Component;
  * {@code YYYY-MM-DD}) are supplied as <em>job parameters</em> and injected with SpEL late binding
  * via {@link Value}. Because {@code #{jobParameters[...]}} resolves only within a running step, this
  * bean is {@link StepScope step-scoped}: a singleton could not late-bind the parameters, and a fresh
- * reader instance per step execution is also the correct pattern for the stateful, restartable
- * paging that {@link JpaPagingItemReader} implements. The bean is registered as a Spring
+ * reader instance per step execution is also the correct pattern for the paging that
+ * {@link JpaPagingItemReader} implements. The bean is registered as a Spring
  * {@link Component}; its default bean name is the decapitalized class name,
- * {@code transactionReportItemReader}, which is also set as the reader name (the
- * {@code ExecutionContext} key prefix used for save-state) via {@link #setName(String)}.
+ * {@code transactionReportItemReader}, which is also set as the reader name via
+ * {@link #setName(String)}.
+ *
+ * <h2>Restart semantics &mdash; full replay (F-P5-C)</h2>
+ * Paging save-state is <strong>disabled</strong> ({@code setSaveState(false)} in the constructor). On
+ * a restart the reader replays the entire filtered result set from the first page rather than
+ * resuming at the last-committed page. This is deliberate and pairs with the report writer, which
+ * rebuilds the whole report into a staging file and atomically publishes it only on a clean run:
+ * resuming mid-stream would regenerate only the tail of the report and silently drop the rows already
+ * emitted before the failure. A full replay is safe because the read is an idempotent,
+ * side-effect-free {@code SELECT} ordered by {@code (cardNum, tranId)}.
  *
  * <h2>Why not a repository method</h2>
  * The {@code TransactionRepository} exposes no processing-date-range query
@@ -124,9 +133,10 @@ public class TransactionReportItemReader extends JpaPagingItemReader<Transaction
     /**
      * Reader name and Spring bean name. It is intentionally identical to the decapitalized class
      * name so that the parent {@code TransactionReportJob} (CBTRN03C) can wire this reader by its
-     * conventional bean name. It is also used by {@link JpaPagingItemReader} as the
-     * {@code ExecutionContext} key prefix under which paging save-state is persisted, so it must be
-     * stable across restarts.
+     * conventional bean name. {@link JpaPagingItemReader} would normally use it as the
+     * {@code ExecutionContext} key prefix for paging save-state; this reader disables save-state (see
+     * the constructor) so a restart replays the full input, but the name is still set for stable
+     * step identification and logging.
      */
     private static final String READER_NAME = "transactionReportItemReader";
 
@@ -190,6 +200,13 @@ public class TransactionReportItemReader extends JpaPagingItemReader<Transaction
 
         setPageSize(PAGE_SIZE);
         setName(READER_NAME);
-        setSaveState(true);
+        // Do NOT persist paging save-state. On a restart the reader must replay the FULL filtered
+        // result set from the first page rather than resuming at the last-committed page, because the
+        // report writer rebuilds the entire report from scratch into a staging file and only
+        // atomically publishes it on a clean run (TransactionReportWriter). Resuming mid-stream would
+        // regenerate only the tail of the report and, paired with the writer, silently drop the
+        // rows already emitted before the failure (QA finding F-P5-C). A full replay is safe here
+        // because the read is an idempotent, side-effect-free SELECT ordered by (cardNum, tranId).
+        setSaveState(false);
     }
 }

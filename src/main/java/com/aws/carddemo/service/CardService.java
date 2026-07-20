@@ -17,6 +17,7 @@ package com.aws.carddemo.service;
 
 import java.util.List;
 
+import org.springframework.dao.OptimisticLockingFailureException;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageImpl;
 import org.springframework.data.domain.PageRequest;
@@ -197,6 +198,19 @@ public class CardService {
      */
     public static final String MSG_NO_CHANGE_DETECTED =
             "No change detected with respect to values fetched.";
+
+    /**
+     * Concurrency-conflict message for the CCUP update flow (F-P4-D). The {@code card} row carries a
+     * JPA {@code @Version} column; the online update carries the version observed when the change was
+     * previewed and rejects a confirm whose observed version is absent or no longer matches the
+     * persisted row (another request committed a change to the same card after the preview). This
+     * reproduces, for the card aggregate, the intent of the COACTUPC
+     * {@code DATA-WAS-CHANGED-BEFORE-UPDATE} guard and matches the wording used by
+     * {@code AccountService}; the web layer maps the resulting
+     * {@link org.springframework.dao.OptimisticLockingFailureException} to HTTP {@code 409}.
+     */
+    public static final String MSG_DATA_CHANGED =
+            "Record changed by some one else. Please review";
 
     // ------------------------------------------------------------------
     // Field-format constants (COBOL picture / value ranges)
@@ -480,20 +494,46 @@ public class CardService {
      * @param activeStatus the new active status (edited: {@code Y} or {@code N})
      * @param expiryMonth  the new expiry month (edited: 1..12)
      * @param expiryYear   the new expiry year (edited: 1950..2099)
+     * @param expectedVersion the caller's observed {@code @Version} value for the
+     *                        row, carried through the preview/confirm flow. A valid
+     *                        observed version is <em>mandatory</em> on the
+     *                        state-changing confirm: a {@code null} or non-matching
+     *                        value causes an immediate
+     *                        {@link org.springframework.dao.OptimisticLockingFailureException}
+     *                        with {@link #MSG_DATA_CHANGED} before any edit or write
+     *                        (F-P4-D &mdash; reproduces the COBOL
+     *                        {@code 9300-CHECK-CHANGE-IN-REC} re-read-and-compare so a
+     *                        stale form cannot silently overwrite a concurrent update).
      * @return the update outcome; never {@code null}
      * @throws RecordNotFoundException if no card exists for {@code cardNumber}
-     * @throws org.springframework.dao.OptimisticLockingFailureException if the row
-     *                                 was modified concurrently
+     * @throws org.springframework.dao.OptimisticLockingFailureException if the
+     *                                 observed version is {@code null} or does not
+     *                                 match the stored row, or the row was modified
+     *                                 concurrently at save time
      */
     @Transactional
     public CardUpdateResult updateCard(String cardNumber,
                                        String embossedName,
                                        String activeStatus,
                                        String expiryMonth,
-                                       String expiryYear) {
+                                       String expiryYear,
+                                       Long expectedVersion) {
         String key = trimToNull(cardNumber);
         Card card = cardRepository.findById(key == null ? "" : key)
                 .orElseThrow(() -> new RecordNotFoundException(MSG_DID_NOT_FIND_ACCTCARD_COMBO));
+
+        // Stale-preview guard (F-P4-D): the CCUP change is previewed against a card the operator read
+        // earlier; the observed @Version is carried from the preview to this confirm. A valid observed
+        // version is MANDATORY -- an absent (null) version means the client never carried the
+        // X-CardDemo-Card-Version header (or carried an unparseable value) and cannot prove the
+        // confirm matches the previewed card, while a mismatch means another request committed a change
+        // to the same card after the preview. In either case the write is rejected as a 409 conflict
+        // rather than silently overwriting the newer row. This runs before the field edits so a stale
+        // confirm is rejected regardless of the values it carries, reproducing at the card-aggregate
+        // level the intent of COACTUPC's DATA-WAS-CHANGED-BEFORE-UPDATE guard.
+        if (expectedVersion == null || !expectedVersion.equals(card.getVersion())) {
+            throw new OptimisticLockingFailureException(MSG_DATA_CHANGED);
+        }
 
         // Field edits in COBOL order, keeping the first failing message.
         String message = validateEditableFields(embossedName, activeStatus, expiryMonth, expiryYear);

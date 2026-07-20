@@ -19,10 +19,12 @@ import java.time.LocalDateTime;
 
 import jakarta.validation.Valid;
 
+import org.springframework.http.HttpHeaders;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
+import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
@@ -88,13 +90,19 @@ import com.aws.carddemo.service.CardService;
  * happens only on the PF5 path through {@link CardService#updateCard}.
  *
  * <h2>Exceptions</h2>
- * This controller contains <em>no</em> {@code try}/{@code catch}. Typed
- * exceptions propagate to {@code GlobalExceptionHandler}, which maps
- * {@code RecordNotFoundException} to HTTP&nbsp;404, and
- * {@code OptimisticLockingFailureException} / {@code OptimisticLockException} (the
- * concurrent-change guard reproducing {@code 9300-CHECK-CHANGE-IN-REC}) to
- * HTTP&nbsp;409. Bean Validation failures on the request body surface as
- * HTTP&nbsp;400.
+ * The only exception caught locally is the {@link IllegalArgumentException} that
+ * {@link CardService#viewCard} raises when the submitted account/card <em>search
+ * key</em> fails the {@code 2210}/{@code 2220} input edits (for example a
+ * non-numeric or otherwise malformed card number): reproducing the legacy
+ * same-screen edit &mdash; and matching the sibling {@code CardViewController}
+ * &mdash; it is re-presented on the key-entry screen with the service's exact
+ * message, so a malformed key is a bounded same-screen outcome rather than an
+ * HTTP&nbsp;500 (QA finding F-P7-CARDUPD). Every other typed exception propagates
+ * to {@code GlobalExceptionHandler}, which maps {@code RecordNotFoundException} to
+ * HTTP&nbsp;404, and {@code OptimisticLockingFailureException} /
+ * {@code OptimisticLockException} (the concurrent-change guard reproducing
+ * {@code 9300-CHECK-CHANGE-IN-REC}) to HTTP&nbsp;409. Bean Validation failures on
+ * the request body surface as HTTP&nbsp;400.
  *
  * <h2>Sensitive data</h2>
  * The card verification value (CVV) is never read, never returned and never
@@ -133,6 +141,17 @@ public class CardUpdateController {
 
     /** Response header naming the transaction to navigate to. */
     private static final String HEADER_NEXT_TRANSACTION = "X-CardDemo-Next-Transaction";
+
+    /**
+     * Optimistic-concurrency header carrying the card's observed {@code @Version}
+     * (F-P4-D). The fetch/preview turns emit the version of the card just read; the
+     * client carries it back on the PF5 confirm so {@link CardService#updateCard}
+     * can reject a stale confirm (absent or non-matching version &rarr; HTTP&nbsp;409),
+     * reproducing at the card aggregate the {@code 9300-CHECK-CHANGE-IN-REC}
+     * re-read-and-compare guard so a confirm built against an out-of-date preview
+     * cannot silently overwrite a concurrent update.
+     */
+    private static final String HEADER_CARD_VERSION = "X-CardDemo-Card-Version";
 
     /** First header title line ({@code CCDA-TITLE01} of {@code COTTL01Y}). */
     private static final String TITLE_01 = "AWS Mainframe Modernization";
@@ -233,6 +252,12 @@ public class CardUpdateController {
      *
      * @param request the submitted card key, edited fields and attention key;
      *                 validated and never {@code null}
+     * @param cardVersionHeader the card version observed at preview time
+     *                 ({@value #HEADER_CARD_VERSION}), carried back on the PF5
+     *                 confirm; parsed defensively and forwarded to
+     *                 {@link CardService#updateCard} so a stale confirm (absent or
+     *                 non-matching version) is rejected as HTTP&nbsp;409 (F-P4-D).
+     *                 Optional and ignored on the non-writing ENTER/PF3/PF12 turns.
      * @return the next screen state as a {@link CardUpdateResponse}; always
      *         HTTP&nbsp;200 for the modelled keys (not-found and concurrent-change
      *         outcomes propagate as 404 / 409 from the service)
@@ -240,11 +265,18 @@ public class CardUpdateController {
     @PostMapping
     @Operation(summary = "Submit the Card Update screen",
             description = "Reproduces the COCRDUPC flow: fetch, validate, and rewrite the card detail.")
-    public ResponseEntity<CardUpdateResponse> update(@Valid @RequestBody CardUpdateRequest request) {
+    public ResponseEntity<CardUpdateResponse> update(
+            @Valid @RequestBody CardUpdateRequest request,
+            @RequestHeader(name = HEADER_CARD_VERSION, required = false) String cardVersionHeader) {
         PfKeyAction action = (request.action() == null) ? PfKeyAction.ENTER : request.action();
+        // Carry the card version observed at preview time through to the confirm (F-P4-D). It is
+        // parsed defensively: an absent or unparseable header yields null, which the state-changing
+        // PF5 path treats as an unproven (stale) confirm and rejects as a 409 conflict. The ENTER
+        // preview and PF12 cancel turns do not write, so they ignore the value.
+        Long expectedVersion = parseVersion(cardVersionHeader);
         return switch (action) {
             case ENTER -> handleValidate(request);
-            case PF5 -> handleConfirm(request);
+            case PF5 -> handleConfirm(request, expectedVersion);
             case PF3 -> handleExit();
             case PF12 -> handleCancel(request);
             default -> handleInvalidKey();
@@ -284,7 +316,17 @@ public class CardUpdateController {
         if (isBlank(request.cardId()) && isBlank(request.accountId())) {
             return ResponseEntity.ok(blankScreen(MSG_PROMPT_SEARCH_KEYS, ""));
         }
-        Card card = cardService.viewCard(parseAccountId(request.accountId()), request.cardId());
+        final Card card;
+        try {
+            card = cardService.viewCard(parseAccountId(request.accountId()), request.cardId());
+        } catch (IllegalArgumentException ex) {
+            // 2210-EDIT-ACCOUNT / 2220-EDIT-CARD rejected the submitted search key (for example a
+            // malformed / non-numeric card number). The legacy program re-showed the screen with the
+            // edit message rather than abending; matching the sibling CardViewController, re-present
+            // the key-entry screen with the exact message so this is a bounded same-screen outcome,
+            // not an HTTP 500 (F-P7-CARDUPD).
+            return ResponseEntity.ok(blankScreen("", ex.getMessage()));
+        }
         // Echo the operator's entered values on the detached entity; this performs
         // no write (no save is called and open-in-view is disabled). The CVV is not
         // touched, and updateEntity only reshapes the expiry text, so it cannot fail
@@ -304,9 +346,11 @@ public class CardUpdateController {
                 request.expiryYear());
         String infoMessage = (editMessage == null) ? MSG_PROMPT_CONFIRMATION : "";
         String errorMessage = (editMessage == null) ? "" : editMessage;
-        return ResponseEntity.ok(cardMapper.toUpdateResponse(
+        // Emit the observed card version (F-P4-D): the client carries it back on the PF5 confirm so a
+        // stale confirm cannot silently overwrite a concurrent update.
+        return okWithCardVersion(cardMapper.toUpdateResponse(
                 card, infoMessage, errorMessage, now,
-                TRANSACTION_ID, TITLE_01, TITLE_02, PROGRAM_ID, FKEYS, FKEYS_CONT));
+                TRANSACTION_ID, TITLE_01, TITLE_02, PROGRAM_ID, FKEYS, FKEYS_CONT), card);
     }
 
     /**
@@ -323,24 +367,36 @@ public class CardUpdateController {
      * card throws {@code RecordNotFoundException} (&rarr; HTTP&nbsp;404); both
      * propagate untouched to {@code GlobalExceptionHandler}.
      *
+     * <p>The card version observed at preview time is threaded through as
+     * {@code expectedVersion}; {@link CardService#updateCard} rejects a confirm whose
+     * observed version is absent or no longer matches the stored row with
+     * {@code OptimisticLockingFailureException} (&rarr; HTTP&nbsp;409) before any
+     * edit or write, so a stale form cannot overwrite a concurrent update (F-P4-D).
+     *
      * @param request the submitted key and edited fields
+     * @param expectedVersion the card version observed at preview time (may be
+     *                 {@code null} if the client carried no valid version header, in
+     *                 which case the confirm is rejected as a 409 conflict)
      * @return {@code 200 OK} with the success, edit-failure or no-change message
      */
-    private ResponseEntity<CardUpdateResponse> handleConfirm(CardUpdateRequest request) {
+    private ResponseEntity<CardUpdateResponse> handleConfirm(CardUpdateRequest request, Long expectedVersion) {
         CardService.CardUpdateResult result = cardService.updateCard(
                 request.cardId(),
                 request.cardName(),
                 request.cardStatus(),
                 request.expiryMonth(),
-                request.expiryYear());
+                request.expiryYear(),
+                expectedVersion);
         LocalDateTime now = LocalDateTime.now();
+        // Emit the (post-write on success, unchanged on a same-screen re-prompt) card version so a
+        // subsequent confirm carries an up-to-date version (F-P4-D).
         return switch (result.status()) {
-            case CHANGES_OK -> ResponseEntity.ok(cardMapper.toUpdateResponse(
+            case CHANGES_OK -> okWithCardVersion(cardMapper.toUpdateResponse(
                     result.card(), MSG_CONFIRM_SUCCESS, "", now,
-                    TRANSACTION_ID, TITLE_01, TITLE_02, PROGRAM_ID, FKEYS, FKEYS_CONT));
-            case CHANGES_NOT_OK, NO_CHANGES_DETECTED -> ResponseEntity.ok(cardMapper.toUpdateResponse(
+                    TRANSACTION_ID, TITLE_01, TITLE_02, PROGRAM_ID, FKEYS, FKEYS_CONT), result.card());
+            case CHANGES_NOT_OK, NO_CHANGES_DETECTED -> okWithCardVersion(cardMapper.toUpdateResponse(
                     result.card(), "", result.message(), now,
-                    TRANSACTION_ID, TITLE_01, TITLE_02, PROGRAM_ID, FKEYS, FKEYS_CONT));
+                    TRANSACTION_ID, TITLE_01, TITLE_02, PROGRAM_ID, FKEYS, FKEYS_CONT), result.card());
         };
     }
 
@@ -380,10 +436,18 @@ public class CardUpdateController {
         if (isBlank(request.cardId()) && isBlank(request.accountId())) {
             return ResponseEntity.ok(blankScreen(MSG_PROMPT_SEARCH_KEYS, ""));
         }
-        Card card = cardService.viewCard(parseAccountId(request.accountId()), request.cardId());
-        return ResponseEntity.ok(cardMapper.toUpdateResponse(
+        final Card card;
+        try {
+            card = cardService.viewCard(parseAccountId(request.accountId()), request.cardId());
+        } catch (IllegalArgumentException ex) {
+            // As on the ENTER turn, a malformed search key is re-presented same-screen with the
+            // service's edit message rather than surfacing as an HTTP 500 (F-P7-CARDUPD).
+            return ResponseEntity.ok(blankScreen("", ex.getMessage()));
+        }
+        // Emit the freshly re-read card version (F-P4-D) so a subsequent confirm carries it.
+        return okWithCardVersion(cardMapper.toUpdateResponse(
                 card, MSG_PROMPT_CHANGES, "", LocalDateTime.now(),
-                TRANSACTION_ID, TITLE_01, TITLE_02, PROGRAM_ID, FKEYS, FKEYS_CONT));
+                TRANSACTION_ID, TITLE_01, TITLE_02, PROGRAM_ID, FKEYS, FKEYS_CONT), card);
     }
 
     /**
@@ -462,6 +526,63 @@ public class CardUpdateController {
      */
     private static boolean isBlank(String value) {
         return value == null || value.isBlank();
+    }
+
+    /**
+     * Wraps a card-detail response in a {@code 200 OK} that also carries the card's
+     * observed {@code @Version} as the {@value #HEADER_CARD_VERSION} header (F-P4-D),
+     * so the client can carry it back on the PF5 confirm for the stale-preview guard.
+     *
+     * <p>The header is emitted only when a card with a non-{@code null} version is
+     * present; the card-less transient screens (key entry, exit, invalid key) never
+     * reach this helper. Mirrors the version-emission contract of the sibling
+     * {@code AccountUpdateController} and {@code UserUpdateController}.
+     *
+     * @param body the fully built card-detail response body; never {@code null}
+     * @param card the card whose version is emitted; may be {@code null}
+     * @return a {@code 200 OK} response, with the version header when available
+     */
+    private static ResponseEntity<CardUpdateResponse> okWithCardVersion(CardUpdateResponse body, Card card) {
+        HttpHeaders headers = new HttpHeaders();
+        if (card != null && card.getVersion() != null) {
+            headers.set(HEADER_CARD_VERSION, card.getVersion().toString());
+        }
+        return ResponseEntity.ok().headers(headers).body(body);
+    }
+
+    /**
+     * Parses the optional {@value #HEADER_CARD_VERSION} header into the {@link Long}
+     * observed version, returning {@code null} for any value that cannot be a valid
+     * version (F-P4-D). This is intentionally total: a blank, non-numeric or
+     * overflowing header yields {@code null} rather than raising, and a {@code null}
+     * observed version is treated by {@link CardService#updateCard} as an unproven
+     * (stale) confirm &mdash; a 409 conflict &mdash; never as an HTTP&nbsp;500.
+     *
+     * <p>Mirrors the defensive {@code parseVersion} of the sibling
+     * {@code AccountUpdateController} so the version-header contract is identical
+     * across the update screens.
+     *
+     * @param header the raw header value; may be {@code null} or blank
+     * @return the parsed version, or {@code null} when absent or unparseable
+     */
+    private static Long parseVersion(String header) {
+        if (isBlank(header)) {
+            return null;
+        }
+        String value = header.strip();
+        for (int i = 0; i < value.length(); i++) {
+            char c = value.charAt(i);
+            if (c < '0' || c > '9') {
+                return null;
+            }
+        }
+        try {
+            return Long.valueOf(value);
+        } catch (NumberFormatException overflow) {
+            // An all-digit value larger than Long.MAX_VALUE: treat as invalid (null), matching the
+            // contract for every other unparseable version header across the update controllers.
+            return null;
+        }
     }
 }
 

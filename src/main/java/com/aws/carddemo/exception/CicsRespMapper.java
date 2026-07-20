@@ -265,13 +265,17 @@ public final class CicsRespMapper {
             throw new DuplicateKeyException(recordType + " already exists: " + String.valueOf(key) + reason);
         }
 
-        // Any other non-normal RESP is a generic I/O error. The raw code becomes
-        // the file-status string so downstream handlers can inspect it, mirroring
-        // how the COBOL programs escalated an unexpected RESP to an abend.
+        // Any other non-normal RESP is a generic I/O error. It maps to the canonical
+        // implementor FILE STATUS '99' (a valid two-character COBOL status), while the
+        // raw numeric CICS RESP (and RESP2, when present) is preserved verbatim in the
+        // message for diagnostics, mirroring how the COBOL programs escalated an
+        // unexpected RESP to an abend. A raw RESP is a numeric code of arbitrary width
+        // (for example 5 or 250), so it is never placed directly into the two-character
+        // FILE STATUS field.
         String detail = (resp2 == null)
                 ? "CICS error on " + recordType + " (RESP=" + respCode + ")"
                 : "CICS error on " + recordType + " (RESP=" + respCode + ", RESP2=" + resp2 + ")";
-        throw new FileStatusException(String.valueOf(respCode), detail);
+        throw new FileStatusException(FileStatusException.STATUS_GENERAL_ERROR, detail);
     }
 
     /**

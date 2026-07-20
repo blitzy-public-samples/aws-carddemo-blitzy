@@ -75,6 +75,21 @@
         <project.reporting.outputEncoding>UTF-8</project.reporting.outputEncoding>
 
         <!--
+          Reproducible-build timestamp (QA finding F-P3-01). Pinning a fixed,
+          non-"now" value makes every entry in the produced artifacts carry a
+          CONSTANT last-modified time, so repeated `./mvnw clean package` runs
+          yield a BYTE-FOR-BYTE identical jar (both the plain jar and the Spring
+          Boot repackaged fat jar). Maven's built-in reproducible-build support
+          consumes this single property - maven-jar-plugin, maven-resources-plugin
+          and the spring-boot-maven-plugin repackage all honor
+          project.build.outputTimestamp - so no per-plugin configuration is needed.
+          Without it, archive entries default to the wall-clock build time and the
+          artifact hash changes on every build. The value is the HEAD source
+          snapshot timestamp (ISO-8601, UTC); bump it INTENTIONALLY at each release.
+        -->
+        <project.build.outputTimestamp>2026-07-19T12:17:57Z</project.build.outputTimestamp>
+
+        <!--
           Explicitly pinned versions. Everything else is managed transitively by the
           Spring Boot parent BOM (3.5.16) to avoid version drift.
             * springdoc        - NOT managed by the Spring Boot BOM; must be pinned.

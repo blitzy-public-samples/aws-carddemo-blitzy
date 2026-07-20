@@ -22,6 +22,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.dao.DataAccessException;
 import org.springframework.dao.DataIntegrityViolationException;
+import org.springframework.dao.OptimisticLockingFailureException;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Pageable;
@@ -151,6 +152,19 @@ public class UserService {
      * {@code UPDATE-USER-INFO}, when no field differs from the stored record).
      */
     private static final String MSG_PLEASE_MODIFY = "Please modify to update ...";
+
+    /**
+     * Concurrency-conflict message for the CU02 update flow (F-P7-STALE). The
+     * {@code user_security} row carries a JPA {@code @Version} column; the online
+     * update carries the version observed when the edit screen was rendered and
+     * rejects a submission whose observed version is absent or no longer matches the
+     * persisted row (someone else changed the record first). This reproduces, at the
+     * aggregate level, the intent of the COACTUPC {@code DATA-WAS-CHANGED-BEFORE-UPDATE}
+     * guard and matches the wording used by {@code AccountService}; the web layer maps
+     * the resulting {@link OptimisticLockingFailureException} to HTTP {@code 409}.
+     */
+    private static final String MSG_DATA_CHANGED =
+            "Record changed by some one else. Please review";
 
     /** Common prefix of the add/update/delete success messages ({@code STRING 'User '}). */
     private static final String USER_MSG_PREFIX = "User ";
@@ -302,17 +316,26 @@ public class UserService {
      * @param rawPassword the desired raw (unhashed) password; hashed before
      *                    persistence when changed and never logged
      * @param userType    the desired role indicator ({@code 'A'} or {@code 'U'})
+     * @param expectedVersion the {@code user_security} {@code @Version} the edit screen
+     *                    observed when it was rendered, carried back on save; a
+     *                    {@code null} (absent/unparseable) value or a value that no
+     *                    longer matches the persisted row is rejected as a conflict
+     *                    (F-P7-STALE) before any change is applied
      * @return a {@link UserResult}: successful with the saved user and the
      *         {@code "User <id> has been updated ..."} message, or unsuccessful with
      *         the first validation message or the "nothing changed" message
      * @throws RecordNotFoundException if no user with the given id exists
+     * @throws OptimisticLockingFailureException if the observed version is absent or
+     *         does not match the persisted row (stale edit form); mapped to HTTP
+     *         {@code 409} by {@code GlobalExceptionHandler}
      */
     @Transactional
     public UserResult updateUser(String userId,
                                  String firstName,
                                  String lastName,
                                  String rawPassword,
-                                 char userType) {
+                                 char userType,
+                                 Long expectedVersion) {
         // Mandatory-field edits (COUSR02C UPDATE-USER-INFO order): user id, first
         // name, last name, password, user type. Short-circuit on first empty.
         if (isBlank(userId)) {
@@ -335,6 +358,20 @@ public class UserService {
 
         UserSecurity existing = userSecurityRepository.findById(normalizedId)
                 .orElseThrow(() -> new RecordNotFoundException(MSG_USER_ID_NOT_FOUND));
+
+        // Stale-form guard (F-P7-STALE): the CU02 edit screen echoes the user_security @Version it
+        // observed at fetch time; that observed version is carried back on save. A valid observed
+        // version is MANDATORY here -- an absent (null) version means the client either never carried
+        // the X-CardDemo-User-Version header or carried an unparseable value, and cannot prove the
+        // operator edited the row they are about to overwrite. A mismatch means another
+        // administrator committed a change after this form was rendered. In either case the write is
+        // rejected as a 409 conflict rather than allowed to silently overwrite fresh state; the rare,
+        // legitimate flow always echoes and returns the numeric version, so only stale or
+        // contract-violating submissions are rejected. This runs before change detection so a stale
+        // form is rejected regardless of which fields it carries.
+        if (expectedVersion == null || !expectedVersion.equals(existing.getVersion())) {
+            throw new OptimisticLockingFailureException(MSG_DATA_CHANGED);
+        }
 
         // Change detection (COUSR02C UPDATE-USER-INFO: IF <field> NOT = stored).
         boolean modified = false;

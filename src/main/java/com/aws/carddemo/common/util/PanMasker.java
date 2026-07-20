@@ -21,12 +21,19 @@ package com.aws.carddemo.common.util;
  * first six and the last four digits and masking everything in between.
  *
  * <h2>Scope of use</h2>
- * <p>This helper is intended for <em>diagnostic/anomaly log statements only</em>. It must
- * <strong>not</strong> be applied to values written into external file contracts (the DALYREJS reject
- * image, the SYSTRAN interest transactions, the transaction backup) or to the account/card master-print
- * outputs, all of which reproduce the legacy record layouts verbatim for behavioral parity. Masking PAN
- * in those byte-for-byte contracts would be a parity regression; the scope boundary is recorded in the
- * decision log (D25 sanctioned PAN log-masking as an additive improvement, and D34 records this helper).</p>
+ * <p>This helper is for <em>operational/diagnostic log output only</em> &mdash; including the
+ * card, cross-reference, and customer master-print jobs, whose writers emit human-readable
+ * {@code LOGGER} lines (a SYSOUT diagnostic, not a machine-parsed record). It must
+ * <strong>not</strong> be applied to values written into the fixed-width <em>external file
+ * contracts</em> (the DALYREJS reject image, the SYSTRAN interest transactions, the transaction
+ * backup), which reproduce the legacy record layouts byte-for-byte for behavioral parity; masking a
+ * PAN in those file contracts would be a parity regression. The distinction is deliberate: a
+ * diagnostic log line has no downstream fixed-width consumer, so masking the PAN there is an
+ * additive security improvement (consistent with the CVV and SSN/GOVT-ID/DOB masking those same
+ * master-print jobs already apply), whereas the fixed-width files are consumed positionally and must
+ * stay verbatim. The scope boundary is recorded in the decision log (D25 sanctioned PAN log-masking
+ * as an additive improvement, D34 records this helper, and QA finding F-P6-B extended the masking to
+ * the master-print SYSOUT logs).</p>
  *
  * <h2>Masking rule</h2>
  * <ul>

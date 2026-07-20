@@ -21,9 +21,14 @@ import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.nio.charset.Charset;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.AtomicMoveNotSupportedException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
 import java.nio.file.StandardOpenOption;
+import java.nio.file.attribute.PosixFilePermission;
+import java.nio.file.attribute.PosixFilePermissions;
+import java.util.EnumSet;
 
 import com.aws.carddemo.batch.processor.TransactionReportProcessor;
 import com.aws.carddemo.common.util.FixedWidthCodec;
@@ -133,6 +138,18 @@ public class TransactionReportWriter
     private static final Charset OUTPUT_CHARSET = StandardCharsets.ISO_8859_1;
 
     /**
+     * Suffix of the owner-only staging file that the step writes to before the completed report is
+     * atomically published to its final name. Writing to a distinct hidden staging file (rather than
+     * the final path) means a restart or failure can never destroy a previously-published report and
+     * a consumer never observes a partial final-named file (QA finding F-P5-C).
+     */
+    private static final String PART_SUFFIX = ".part";
+
+    /** Owner read/write only ({@code 0600}) staging-file permissions on POSIX filesystems. */
+    private static final EnumSet<PosixFilePermission> OWNER_ONLY_PERMISSIONS =
+            EnumSet.of(PosixFilePermission.OWNER_READ, PosixFilePermission.OWNER_WRITE);
+
+    /**
      * COBOL {@code FILE STATUS} used for a report-file I/O failure (open/write/close). '30' is the
      * QSAM "permanent error, no further information" code; the legacy program moves the real
      * {@code TRANREPT-STATUS} to {@code IO-STATUS} and abends via {@code 9999-ABEND-PROGRAM}
@@ -170,8 +187,14 @@ public class TransactionReportWriter
     /** Open output stream for the report file; {@code null} until {@link #beforeStep(StepExecution)} runs. */
     private BufferedWriter reportWriter;
 
-    /** Resolved output path, retained for the (PII-free) completion log message. */
+    /** Resolved final output path, retained for the (PII-free) completion log message and atomic publish. */
     private Path reportPath;
+
+    /**
+     * Owner-only staging file the step writes to during the run; atomically renamed to
+     * {@link #reportPath} on success or deleted on failure. {@code null} outside an active step.
+     */
+    private Path reportTempPath;
 
     /** {@code WS-FIRST-TIME} ('Y' -&gt; {@code true}): guards header emission and the first control break. */
     private boolean firstTime;
@@ -263,20 +286,46 @@ public class TransactionReportWriter
 
         final Path directory = Path.of(outputDirectory);
         this.reportPath = directory.resolve(reportFileName);
+        // Write to a hidden, owner-only staging file in the same directory; the completed report is
+        // atomically published to reportPath in afterStep. Using a staging file rather than the final
+        // path means a restart (which re-reads the full input, see TransactionReportItemReader) or a
+        // failure can never truncate or destroy a previously-published report (F-P5-C).
+        this.reportTempPath = directory.resolve("." + reportFileName + PART_SUFFIX);
         try {
             Files.createDirectories(directory);
-            this.reportWriter = Files.newBufferedWriter(reportPath, OUTPUT_CHARSET,
-                    StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING,
-                    StandardOpenOption.WRITE);
+            this.reportWriter = openOwnerOnlyStagingWriter(reportTempPath);
         } catch (IOException ex) {
             this.ioError = true;
-            LOGGER.error("Unable to open transaction report file in directory '{}': {}",
+            deleteQuietly(reportTempPath);
+            this.reportTempPath = null;
+            LOGGER.error("Unable to open transaction report staging file in directory '{}': {}",
                     outputDirectory, ex.getMessage());
             throw new FileStatusException(FILE_STATUS_PERMANENT_ERROR,
                     "Unable to open transaction report output file", ex);
         }
-        LOGGER.info("Transaction report opened: {} (133-byte fixed-width records, ISO-8859-1).",
-                reportPath);
+        LOGGER.info("Transaction report staging opened: {} (133-byte fixed-width records, ISO-8859-1); "
+                + "will be atomically published to {} on success.", reportTempPath, reportPath);
+    }
+
+    /**
+     * Creates the owner-only staging file and returns a buffered writer over it. On a POSIX
+     * filesystem the file is created with {@code 0600} permissions; on a non-POSIX filesystem it is
+     * created without them. Any pre-existing staging file (from an aborted prior attempt) is removed
+     * first so the fresh run always starts from an empty file.
+     *
+     * @param temp the staging file path to create and open; never {@code null}
+     * @return a buffered {@link BufferedWriter} over the freshly created staging file
+     * @throws IOException if the staging file cannot be created or opened
+     */
+    private static BufferedWriter openOwnerOnlyStagingWriter(final Path temp) throws IOException {
+        Files.deleteIfExists(temp);
+        try {
+            Files.createFile(temp, PosixFilePermissions.asFileAttribute(OWNER_ONLY_PERMISSIONS));
+        } catch (UnsupportedOperationException nonPosixFileSystem) {
+            Files.createFile(temp);
+        }
+        return Files.newBufferedWriter(temp, OUTPUT_CHARSET,
+                StandardOpenOption.WRITE, StandardOpenOption.TRUNCATE_EXISTING);
     }
 
     /**
@@ -448,9 +497,17 @@ public class TransactionReportWriter
      * adds nothing, yet &mdash; matching COBOL &mdash; a page total and grand total are still emitted
      * even though no headers or details were written.</p>
      *
+     * <p>After the staging stream is closed the completed report is either <strong>atomically
+     * published</strong> to its final name (on a clean run) or <strong>deleted</strong> (on any
+     * failure). Because the reader re-reads the full input on restart
+     * ({@code TransactionReportItemReader.setSaveState(false)}), the staging file always holds the
+     * complete report, so a restart or failure can never truncate or destroy a previously-published
+     * report and a consumer never observes a partial or stale final-named file (QA finding F-P5-C).</p>
+     *
      * @param stepExecution the completing step execution; never {@code null}
      * @return {@link ExitStatus#COMPLETED} (RC0) on a clean run, or {@link ExitStatus#FAILED} (RC8)
-     *         if any open/write/close I/O error occurred or the step was already failing
+     *         if any open/write/close I/O error occurred, the step was already failing, or the
+     *         completed report could not be published
      */
     @Override
     public ExitStatus afterStep(StepExecution stepExecution) {
@@ -472,6 +529,8 @@ public class TransactionReportWriter
             }
         }
 
+        // Flush and close the staging stream before deciding whether to publish it. A close failure
+        // sets ioError, so the final failed-state decision must be taken after this call.
         closeReportWriter();
 
         final ExecutionContext executionContext = stepExecution.getExecutionContext();
@@ -479,13 +538,36 @@ public class TransactionReportWriter
         executionContext.putLong("report.detailCount", detailCount);
         executionContext.putString("report.grandTotal", grandTotal.toPlainString());
 
-        LOGGER.info("Transaction report finalized: {} records, {} detail lines, output {}.",
-                recordCount, detailCount, reportPath);
-
-        if (ioError || stepExecution.getStatus() == BatchStatus.FAILED) {
-            return ExitStatus.FAILED;
+        // Publish the completed staging file atomically on success or discard it on failure, so a
+        // consumer never observes a partial or stale final-named report (F-P5-C). All per-step file
+        // state is cleared in the finally block so the singleton bean carries no state between runs.
+        final Path temp = this.reportTempPath;
+        final Path published = this.reportPath;
+        final boolean failed = ioError || stepExecution.getStatus() == BatchStatus.FAILED;
+        try {
+            if (temp == null) {
+                // beforeStep never opened a staging file; nothing to publish or discard.
+                return failed ? ExitStatus.FAILED : ExitStatus.COMPLETED;
+            }
+            if (failed) {
+                deleteQuietly(temp);
+                LOGGER.error("Transaction report failed; staging file {} discarded and no report was "
+                        + "published (no partial final-named file left behind).", temp);
+                return ExitStatus.FAILED;
+            }
+            try {
+                publishAtomically(temp, published);
+            } catch (IOException ex) {
+                LOGGER.error("Failed to publish transaction report {} -> {}", temp, published, ex);
+                deleteQuietly(temp);
+                return ExitStatus.FAILED;
+            }
+            LOGGER.info("Transaction report published: {} ({} records, {} detail lines).",
+                    published, recordCount, detailCount);
+            return ExitStatus.COMPLETED;
+        } finally {
+            this.reportTempPath = null;
         }
-        return ExitStatus.COMPLETED;
     }
 
     // ------------------------------------------------------------------------
@@ -509,6 +591,44 @@ public class TransactionReportWriter
             LOGGER.error("Error closing the transaction report file: {}", ex.getMessage());
         } finally {
             reportWriter = null;
+        }
+    }
+
+    /**
+     * Publishes the completed staging file to its final path with an atomic move. On POSIX this is a
+     * single {@code rename(2)}, so a consumer sees either the previously-published report or the
+     * fully-written new report, never a partial file. If the filesystem cannot perform an atomic move
+     * a plain same-directory rename is used as the closest available fallback (which still replaces
+     * any previous report in a single directory operation).
+     *
+     * @param temp      the completed staging file; never {@code null}
+     * @param published the final destination path; never {@code null}
+     * @throws IOException if the move fails
+     */
+    private static void publishAtomically(final Path temp, final Path published) throws IOException {
+        try {
+            Files.move(temp, published,
+                    StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
+        } catch (AtomicMoveNotSupportedException atomicUnsupported) {
+            Files.move(temp, published, StandardCopyOption.REPLACE_EXISTING);
+        }
+    }
+
+    /**
+     * Deletes the given path if it exists, swallowing any {@link IOException} (logged at {@code WARN})
+     * so cleanup on a failure path never masks the original failure.
+     *
+     * @param path the path to delete; may be {@code null}
+     */
+    private static void deleteQuietly(final Path path) {
+        if (path == null) {
+            return;
+        }
+        try {
+            Files.deleteIfExists(path);
+        } catch (IOException ex) {
+            LOGGER.warn("Unable to delete transaction report staging file {}: {}",
+                    path, ex.getMessage());
         }
     }
 

@@ -16,7 +16,6 @@
 package com.aws.carddemo.dto;
 
 import com.fasterxml.jackson.annotation.JsonProperty;
-import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.Size;
 
 /**
@@ -60,10 +59,16 @@ import jakarta.validation.constraints.Size;
  * @param userId   the user identifier entered on the screen; maps to
  *                 {@code USERIDI} ({@code PIC X(8)}), the cursor-insert
  *                 ({@code IC}), unprotected field labeled {@code '(8 Char)'}.
- *                 Required and limited to a maximum of 8 characters.
+ *                 Limited to a maximum of 8 characters (BMS {@code X(8)}); a
+ *                 blank value is accepted here and reported downstream by
+ *                 {@code SignonService} as a same-screen "please enter" message
+ *                 rather than a hard validation error.
  * @param password the password entered on the screen; maps to {@code PASSWDI}
  *                 ({@code PIC X(8)}), the masked ({@code DRK}), unprotected
- *                 field. Required and limited to a maximum of 8 characters.
+ *                 field. Limited to a maximum of 8 characters (BMS {@code X(8)});
+ *                 a blank value is accepted here and reported downstream by
+ *                 {@code SignonService} as a same-screen "please enter" message
+ *                 rather than a hard validation error.
  *                 <strong>Sensitive:</strong> write-only on the wire and masked
  *                 in {@link #toString()}.
  * @param action   the Attention Identifier the operator transmitted; maps to
@@ -75,12 +80,10 @@ import jakarta.validation.constraints.Size;
  */
 public record SignonRequest(
 
-        @NotBlank
         @Size(max = 8)
         String userId,
 
         @JsonProperty(access = JsonProperty.Access.WRITE_ONLY)
-        @NotBlank
         @Size(max = 8)
         String password,
 

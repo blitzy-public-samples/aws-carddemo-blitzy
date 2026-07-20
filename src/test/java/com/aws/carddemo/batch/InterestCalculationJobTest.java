@@ -434,6 +434,66 @@ class InterestCalculationJobTest {
         assertThat(account.getCurrCycDebit()).isEqualByComparingTo(zero());
     }
 
+    @Test
+    @DisplayName("F-P5-A: an account whose only balance has a zero rate is still finalized (cycle zeroed, no SYSTRAN line)")
+    void zeroRateOnlyAccountIsStillFinalized() throws Exception {
+        // The DEFAULT disclosure group's (02,1) rate is 0.00, so this account's single category
+        // balance yields zero interest. Before the fix the processor filtered the zero-interest row
+        // out entirely, so the account never reached the writer's control-break finalization and its
+        // cycle credit/debit were left un-zeroed despite a clean (RC0) run.
+        final long acct = 90500000001L;
+        seedAccountGraph(acct, "DEFAULT", zero(),
+                new BigDecimal("111.11"), new BigDecimal("222.22"));
+        seedCatBalance(acct, "02", 1, new BigDecimal("500.00"));
+
+        JobExecution execution = jobLauncherTestUtils.launchJob(uniqueParameters(PARM_DATE));
+        assertThat(execution.getStatus()).isEqualTo(BatchStatus.COMPLETED);
+
+        Account account = accountRepository.findById(acct)
+                .orElseThrow(() -> new AssertionError("account missing after the run"));
+        // Zero interest was applied, yet the account was STILL finalized by 1050-UPDATE-ACCOUNT:
+        // the balance is unchanged, the cycle credit/debit are zeroed, and the version was bumped ...
+        assertThat(account.getCurrBal()).isEqualByComparingTo(zero());
+        assertThat(account.getCurrCycCredit()).isEqualByComparingTo(zero());
+        assertThat(account.getCurrCycDebit()).isEqualByComparingTo(zero());
+        assertThat(account.getVersion()).isEqualTo(1L);
+        assertThat(account.getLastInterestCycle()).isEqualTo(PARM_DATE);
+        // ... and no interest transaction line was written for a zero-interest account.
+        assertThat(readSystranRecords()).isEmpty();
+    }
+
+    @Test
+    @DisplayName("F-P6-A/F-P5-D: re-running the same cycle applies interest exactly once (idempotent, no double-apply)")
+    void rerunningTheSameCycleIsIdempotent() throws Exception {
+        seedGoldenScenario();
+
+        // First run applies interest for the cycle and stamps last_interest_cycle = parmDate.
+        JobExecution first = jobLauncherTestUtils.launchJob(uniqueParameters(PARM_DATE));
+        assertThat(first.getStatus()).isEqualTo(BatchStatus.COMPLETED);
+
+        Account afterFirst = accountRepository.findById(GOLDEN_ACCT)
+                .orElseThrow(() -> new AssertionError("golden account missing after the first run"));
+        assertThat(afterFirst.getCurrBal()).isEqualByComparingTo(new BigDecimal("37.51"));
+        assertThat(afterFirst.getVersion()).isEqualTo(1L);
+        assertThat(afterFirst.getLastInterestCycle()).isEqualTo(PARM_DATE);
+
+        // A second launch for the SAME parmDate (the deterministic proxy for a restart or a
+        // concurrent duplicate run) must NOT re-apply interest: the conditional cycle update matches
+        // zero rows because last_interest_cycle already equals parmDate.
+        JobExecution second = jobLauncherTestUtils.launchJob(uniqueParameters(PARM_DATE));
+        assertThat(second.getStatus()).isEqualTo(BatchStatus.COMPLETED);
+
+        Account afterSecond = accountRepository.findById(GOLDEN_ACCT)
+                .orElseThrow(() -> new AssertionError("golden account missing after the second run"));
+        // Balance and version are unchanged: interest was applied exactly once, not doubled to
+        // 75.02 / version 2 (the pre-fix behavior).
+        assertThat(afterSecond.getCurrBal()).isEqualByComparingTo(new BigDecimal("37.51"));
+        assertThat(afterSecond.getVersion()).isEqualTo(1L);
+        assertThat(afterSecond.getCurrCycCredit()).isEqualByComparingTo(zero());
+        assertThat(afterSecond.getCurrCycDebit()).isEqualByComparingTo(zero());
+        assertThat(afterSecond.getLastInterestCycle()).isEqualTo(PARM_DATE);
+    }
+
     // ------------------------------------------------------------------------------------------
     // Fixtures and helpers
     // ------------------------------------------------------------------------------------------

@@ -29,6 +29,8 @@ import java.util.stream.Stream;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.springframework.batch.core.BatchStatus;
+import org.springframework.batch.core.ExitStatus;
 import org.springframework.batch.core.JobExecution;
 import org.springframework.batch.core.StepExecution;
 import org.springframework.batch.item.Chunk;
@@ -171,6 +173,68 @@ class TransactionBackupItemWriterTest {
         assertThat(record).startsWith("0000000000000001");
     }
 
+    /**
+     * F-P5-E: when the step fails (e.g. the reader threw because the database connection dropped
+     * mid-backup), the in-progress staging file is discarded and no final generation-style file is
+     * published. Before the fix the writer wrote directly to the final name, so a failure left a
+     * truncated final-named backup that a downstream restore could silently pick up.
+     */
+    @Test
+    @DisplayName("F-P5-E: a failing step publishes no backup file and leaves no partial or staging file")
+    void failingStepLeavesNoBackupFileAndNoStagingFile() throws Exception {
+        TransactionBackupItemWriter writer =
+                new TransactionBackupItemWriter(backupDir.toString(), FILE_PREFIX);
+        StepExecution stepExecution = jobStep(11L, 22L);
+
+        writer.beforeStep(stepExecution);
+        writer.write(Chunk.of(sampleTransaction()));
+        // Simulate an upstream failure surfacing as a FAILED step status before afterStep runs.
+        stepExecution.setStatus(BatchStatus.FAILED);
+        ExitStatus exit = writer.afterStep(stepExecution);
+
+        assertThat(exit).isEqualTo(ExitStatus.FAILED);
+        // Neither the final generation-style file nor the hidden .part staging file remains -> a
+        // restore process can never observe a partial backup (listBackupFiles lists dotfiles too).
+        assertThat(listBackupFiles()).isEmpty();
+    }
+
+    /**
+     * F-P12: a transaction whose text field carries characters outside the single-byte output charset
+     * (an omega and a supplementary emoji) must not abort the ISO-8859-1 backup writer. The codec
+     * replaces each offending code unit with {@code '?'} before the record is written, so the step
+     * completes cleanly and the published record is a well-formed 350 single bytes.
+     */
+    @Test
+    @DisplayName("F-P12: non-Latin-1 characters in a backup record become '?' and the backup publishes cleanly")
+    void nonLatin1CharactersInBackupRecordAreReplacedAndBackupPublishes() throws Exception {
+        TransactionBackupItemWriter writer =
+                new TransactionBackupItemWriter(backupDir.toString(), FILE_PREFIX);
+        StepExecution stepExecution = jobStep(33L, 44L);
+
+        // TRAN-DESC is X(100) at offset 32. "A" + omega (U+03A9) + emoji (U+1F600 surrogate pair) +
+        // "B" -> every non-Latin-1 code unit becomes '?' -> "A???B".
+        Transaction unicodeTxn = transactionWithDescription("A\u03A9\uD83D\uDE00B");
+
+        writer.beforeStep(stepExecution);
+        writer.write(Chunk.of(unicodeTxn));
+        ExitStatus exit = writer.afterStep(stepExecution);
+
+        // The writer never aborted on an unmappable character.
+        assertThat(exit).isNotEqualTo(ExitStatus.FAILED);
+
+        List<Path> files = listBackupFiles();
+        assertThat(files).hasSize(1);
+        byte[] bytes = Files.readAllBytes(files.get(0));
+        // One 350-byte record plus a single line-feed delimiter (width contract preserved).
+        assertThat(bytes).hasSize(351);
+        assertThat(bytes[350]).isEqualTo((byte) '\n');
+
+        String record = new String(bytes, 0, 350, StandardCharsets.ISO_8859_1);
+        assertThat(record.substring(32, 37)).isEqualTo("A???B");
+        // Every byte is a single ISO-8859-1 byte (proves no encoding exception was possible).
+        assertThat(StandardCharsets.ISO_8859_1.newEncoder().canEncode(record)).isTrue();
+    }
+
     // -------------------------------------------------------------------------
     // Helpers
     // -------------------------------------------------------------------------
@@ -226,6 +290,31 @@ class TransactionBackupItemWriterTest {
                 5,
                 "POS",
                 "UNIT TEST BACKUP RECORD",
+                new BigDecimal("100.00"),
+                123456789L,
+                "TEST MERCHANT",
+                "TEST CITY",
+                "12345",
+                "0000000000000002",
+                "2026-01-19-15.30.12.000000",
+                "2026-01-19-15.30.12.000000");
+    }
+
+    /**
+     * Builds a transaction fixture identical to {@link #sampleTransaction()} but with the supplied
+     * {@code TRAN-DESC} text, so the encoding test can drive a non-Latin-1 value through the X(100)
+     * description field at offset 32.
+     *
+     * @param description the transaction description to embed
+     * @return a new transaction fixture carrying {@code description}
+     */
+    private static Transaction transactionWithDescription(String description) {
+        return new Transaction(
+                "0000000000000001",
+                "01",
+                5,
+                "POS",
+                description,
                 new BigDecimal("100.00"),
                 123456789L,
                 "TEST MERCHANT",

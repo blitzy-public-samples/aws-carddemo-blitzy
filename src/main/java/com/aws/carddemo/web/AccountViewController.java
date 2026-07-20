@@ -308,8 +308,13 @@ public class AccountViewController {
                 // COBOL "account not found" caller-visible parity (AAP 0.7.2 M1).
                 return ResponseEntity.ok(blankScreen(null, ex.getMessage(), LocalDateTime.now()));
             }
+            // COBOL COACTVWC 1200-SETUP-SCREEN-VARS runs on every send and, when no other
+            // info message is set, defaults INFOMSGO to WS-PROMPT-FOR-INPUT ("Enter or update
+            // id of account to display"); the WS-INFORM-OUTPUT 88-level is never SET, so the
+            // populated detail screen carries the same persistent input prompt. Emit it here so
+            // the success response's INFOMSGO matches the legacy screen exactly (F-P9-F).
             AccountViewResponse response = accountMapper.toViewResponse(
-                    detail.account(), detail.customer(), null, null, LocalDateTime.now());
+                    detail.account(), detail.customer(), PROMPT_FOR_INPUT, null, LocalDateTime.now());
             return ResponseEntity.ok(response);
         }
 

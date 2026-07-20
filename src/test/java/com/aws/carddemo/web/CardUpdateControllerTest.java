@@ -18,6 +18,7 @@ package com.aws.carddemo.web;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.ArgumentMatchers.isNull;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
@@ -123,6 +124,14 @@ class CardUpdateControllerTest {
     private static final String ACCT_ID_RENDERED = "10000000001";
 
     /**
+     * Verbatim COBOL edit message ({@code 2220-EDIT-CARD} / COCRDUPC) raised by
+     * {@link CardService#viewCard} when the submitted card-number search key is
+     * non-numeric. Asserted by the F-P7-CARDUPD same-screen-recovery tests.
+     */
+    private static final String MSG_CARD_FILTER_NOT_NUMERIC =
+            "CARD ID FILTER,IF SUPPLIED MUST BE A 16 DIGIT NUMBER";
+
+    /**
      * Stub card verification value (sensitive). Deliberately distinct from every
      * other fixture value so it can never be a coincidental substring of a
      * response; the tests assert it is absent from all bodies.
@@ -149,6 +158,12 @@ class CardUpdateControllerTest {
 
     /** Stub optimistic-lock version; a value the CVV cannot collide with. */
     private static final long VERSION = 3L;
+
+    /**
+     * Optimistic-concurrency header the fetch/preview turns emit and the PF5 confirm
+     * carries back (F-P4-D); mirrors {@code CardUpdateController.HEADER_CARD_VERSION}.
+     */
+    private static final String HEADER_CARD_VERSION = "X-CardDemo-Card-Version";
 
     /**
      * A distinctive raw provider message. The 409 handler must return a fixed,
@@ -312,7 +327,131 @@ class CardUpdateControllerTest {
                 .andExpect(jsonPath("$.cvv").doesNotExist());
 
         verify(cardService).viewCard(any(), any());
-        verify(cardService, never()).updateCard(any(), any(), any(), any(), any());
+        verify(cardService, never()).updateCard(any(), any(), any(), any(), any(), any());
+    }
+
+    /**
+     * C1b (F-P4-D) &mdash; the ENTER preview turn must emit the observed card's
+     * optimistic-lock version on the {@value #HEADER_CARD_VERSION} response header.
+     * The client carries that value back on the PF5 confirm so the service's
+     * stale-preview guard can reject a confirm built against an out-of-date preview.
+     * Without this header the confirm could never prove it matched the previewed
+     * card, so emitting it on every card-detail turn is part of the F-P4-D contract.
+     *
+     * @throws Exception if the request cannot be performed
+     */
+    @Test
+    @WithMockUser
+    @DisplayName("C1b (F-P4-D). ENTER preview emits the observed card version header")
+    void enterPreviewEmitsObservedCardVersionHeader() throws Exception {
+        // stubCard() carries version VERSION (3); the preview echoes it on the version header.
+        when(cardService.viewCard(any(), any())).thenReturn(stubCard());
+
+        mockMvc.perform(post(ENDPOINT)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(json(request(CARD_NAME, CARD_STATUS, EXP_MONTH, EXP_YEAR, PfKeyAction.ENTER))))
+                .andExpect(status().isOk())
+                .andExpect(header().string(HEADER_CARD_VERSION, String.valueOf(VERSION)))
+                .andExpect(jsonPath("$.infoMessage").value("Changes validated.Press F5 to save"))
+                .andExpect(jsonPath("$.cvv").doesNotExist());
+
+        verify(cardService).viewCard(any(), any());
+        verify(cardService, never()).updateCard(any(), any(), any(), any(), any(), any());
+    }
+
+    /**
+     * D1b (F-P4-D) &mdash; a PF5 confirm that carries <em>no</em>
+     * {@value #HEADER_CARD_VERSION} header must still reach the service, with the
+     * observed version threaded through as {@code null}. The controller does not
+     * itself reject the missing header; it forwards {@code null} and the service's
+     * mandatory-version guard (exercised in {@code CardServiceTest}) turns that into
+     * the 409 conflict. This test pins the controller-layer contract that an absent
+     * header becomes a {@code null} argument (never a fabricated value, never a 500).
+     *
+     * @throws Exception if the request cannot be performed
+     */
+    @Test
+    @WithMockUser
+    @DisplayName("D1b (F-P4-D). PF5 confirm with no version header threads null to the service")
+    void pf5WithNoVersionHeaderThreadsNullVersion() throws Exception {
+        when(cardService.updateCard(any(), any(), any(), any(), any(), any()))
+                .thenReturn(new CardService.CardUpdateResult(
+                        CardService.CardUpdateStatus.CHANGES_OK, stubCard(), ""));
+
+        mockMvc.perform(post(ENDPOINT)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(json(request("JANE ROE", "N", "12", "2030", PfKeyAction.PF5))))
+                .andExpect(status().isOk());
+
+        // The absent header is forwarded as a null observed version (the service maps it to 409).
+        verify(cardService).updateCard(eq(CARD_NUM), eq("JANE ROE"), eq("N"), eq("12"), eq("2030"), isNull());
+    }
+
+    // ==================================================================
+    // C2. ENTER / PF12 with a malformed search key -> same-screen edit (F-P7-CARDUPD)
+    // ==================================================================
+
+    /**
+     * C2a (F-P7-CARDUPD) &mdash; when the submitted card-number search key is
+     * malformed, {@link CardService#viewCard} rejects it with an
+     * {@link IllegalArgumentException} carrying the exact COBOL edit message. On
+     * the ENTER turn the controller must catch that edit failure and re-present
+     * the key-entry screen (HTTP 200) with the message in {@code errorMessage},
+     * exactly as the sibling {@code CardViewController} does &mdash; never an
+     * unhandled HTTP 500.
+     *
+     * @throws Exception if the request cannot be performed
+     */
+    @Test
+    @WithMockUser
+    @DisplayName("C2a (F-P7-CARDUPD). ENTER with a malformed card id is a same-screen edit (200), not a 500")
+    void enterMalformedCardIdIsSameScreenEdit() throws Exception {
+        when(cardService.viewCard(any(), any()))
+                .thenThrow(new IllegalArgumentException(MSG_CARD_FILTER_NOT_NUMERIC));
+
+        CardUpdateRequest malformed = new CardUpdateRequest(
+                ACCT_ID_RENDERED, "ABCDEFGH12345678", null, null, null, null, PfKeyAction.ENTER);
+
+        mockMvc.perform(post(ENDPOINT)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(json(malformed)))
+                // Bounded same-screen outcome: 200 with the exact edit message, never a 500.
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.errorMessage").value(MSG_CARD_FILTER_NOT_NUMERIC))
+                .andExpect(jsonPath("$.infoMessage").value(""));
+
+        // The malformed key was rejected during the lookup; no save is attempted.
+        verify(cardService).viewCard(any(), any());
+        verify(cardService, never()).updateCard(any(), any(), any(), any(), any(), any());
+    }
+
+    /**
+     * C2b (F-P7-CARDUPD) &mdash; the PF12 cancel turn re-fetches the record for
+     * display and must apply the same bounded recovery: a malformed search key
+     * rejected by {@link CardService#viewCard} is re-presented same-screen
+     * (HTTP 200) with the exact edit message rather than surfacing as an HTTP 500.
+     *
+     * @throws Exception if the request cannot be performed
+     */
+    @Test
+    @WithMockUser
+    @DisplayName("C2b (F-P7-CARDUPD). PF12 with a malformed card id is a same-screen edit (200), not a 500")
+    void pf12MalformedCardIdIsSameScreenEdit() throws Exception {
+        when(cardService.viewCard(any(), any()))
+                .thenThrow(new IllegalArgumentException(MSG_CARD_FILTER_NOT_NUMERIC));
+
+        CardUpdateRequest malformed = new CardUpdateRequest(
+                ACCT_ID_RENDERED, "ABCDEFGH12345678", null, null, null, null, PfKeyAction.PF12);
+
+        mockMvc.perform(post(ENDPOINT)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(json(malformed)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.errorMessage").value(MSG_CARD_FILTER_NOT_NUMERIC))
+                .andExpect(jsonPath("$.infoMessage").value(""));
+
+        verify(cardService).viewCard(any(), any());
+        verify(cardService, never()).updateCard(any(), any(), any(), any(), any(), any());
     }
 
     // ==================================================================
@@ -336,15 +475,20 @@ class CardUpdateControllerTest {
     void postPf5SavesSuccessfully() throws Exception {
         Card persisted = new Card(CARD_NUM, ACCT_ID, CVV, "JANE ROE", "2030-12-15", "N");
         persisted.setVersion(VERSION + 1);
-        when(cardService.updateCard(any(), any(), any(), any(), any()))
+        when(cardService.updateCard(any(), any(), any(), any(), any(), any()))
                 .thenReturn(new CardService.CardUpdateResult(
                         CardService.CardUpdateStatus.CHANGES_OK, persisted, ""));
 
+        // The client carries the version observed at preview time (F-P4-D) on the PF5 confirm; the
+        // controller must parse it and thread it through to the service so the stale-preview guard
+        // can run. A CHANGES_OK confirm echoes the persisted (post-write) version back on the header.
         mockMvc.perform(post(ENDPOINT)
+                        .header(HEADER_CARD_VERSION, String.valueOf(VERSION))
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(json(request("JANE ROE", "N", "12", "2030", PfKeyAction.PF5))))
                 .andExpect(status().isOk())
                 .andExpect(content().contentTypeCompatibleWith(MediaType.APPLICATION_JSON))
+                .andExpect(header().string(HEADER_CARD_VERSION, String.valueOf(VERSION + 1)))
                 .andExpect(jsonPath("$.infoMessage").value("Changes committed to database"))
                 .andExpect(jsonPath("$.errorMessage").value(""))
                 .andExpect(jsonPath("$.accountId").value(ACCT_ID_RENDERED))
@@ -356,7 +500,8 @@ class CardUpdateControllerTest {
                 .andExpect(jsonPath("$.expiryDay").value("15"))
                 .andExpect(jsonPath("$.cvv").doesNotExist());
 
-        verify(cardService).updateCard(eq(CARD_NUM), eq("JANE ROE"), eq("N"), eq("12"), eq("2030"));
+        // The observed version is threaded to the service exactly as submitted (eq(VERSION)).
+        verify(cardService).updateCard(eq(CARD_NUM), eq("JANE ROE"), eq("N"), eq("12"), eq("2030"), eq(VERSION));
         verify(cardService, never()).viewCard(any(), any());
     }
 
@@ -400,7 +545,7 @@ class CardUpdateControllerTest {
     @WithMockUser
     @DisplayName("D3. POST PF5 with no changes detected re-prompts on the same screen (200)")
     void postPf5NoChangesDetected() throws Exception {
-        when(cardService.updateCard(any(), any(), any(), any(), any()))
+        when(cardService.updateCard(any(), any(), any(), any(), any(), any()))
                 .thenReturn(new CardService.CardUpdateResult(
                         CardService.CardUpdateStatus.NO_CHANGES_DETECTED, stubCard(),
                         "No change detected with respect to values fetched."));
@@ -430,7 +575,7 @@ class CardUpdateControllerTest {
     @WithMockUser
     @DisplayName("E1. POST PF5 optimistic-lock (Spring) maps to 409 problem+json")
     void postPf5SpringOptimisticLockMapsTo409() throws Exception {
-        when(cardService.updateCard(any(), any(), any(), any(), any()))
+        when(cardService.updateCard(any(), any(), any(), any(), any(), any()))
                 .thenThrow(new OptimisticLockingFailureException(RAW_LOCK_MESSAGE));
 
         MvcResult result = mockMvc.perform(post(ENDPOINT)
@@ -457,7 +602,7 @@ class CardUpdateControllerTest {
     @WithMockUser
     @DisplayName("E2. POST PF5 optimistic-lock (JPA) maps to 409 problem+json")
     void postPf5JpaOptimisticLockMapsTo409() throws Exception {
-        when(cardService.updateCard(any(), any(), any(), any(), any()))
+        when(cardService.updateCard(any(), any(), any(), any(), any(), any()))
                 .thenThrow(new OptimisticLockException(RAW_LOCK_MESSAGE));
 
         MvcResult result = mockMvc.perform(post(ENDPOINT)
@@ -488,7 +633,7 @@ class CardUpdateControllerTest {
     @WithMockUser
     @DisplayName("F1. POST PF5 for a missing card maps to 404 problem+json")
     void postPf5CardNotFoundMapsTo404() throws Exception {
-        when(cardService.updateCard(any(), any(), any(), any(), any()))
+        when(cardService.updateCard(any(), any(), any(), any(), any(), any()))
                 .thenThrow(RecordNotFoundException.of("Card", CARD_NUM));
 
         mockMvc.perform(post(ENDPOINT)
@@ -552,7 +697,7 @@ class CardUpdateControllerTest {
                 .andExpect(jsonPath("$.cvv").doesNotExist());
 
         verify(cardService).viewCard(any(), any());
-        verify(cardService, never()).updateCard(any(), any(), any(), any(), any());
+        verify(cardService, never()).updateCard(any(), any(), any(), any(), any(), any());
     }
 
     /**
@@ -621,7 +766,7 @@ class CardUpdateControllerTest {
     @DisplayName("I. CVV is never present in any response")
     void cvvIsNeverPresentInAnyResponse() throws Exception {
         when(cardService.viewCard(any(), any())).thenReturn(stubCard());
-        when(cardService.updateCard(any(), any(), any(), any(), any()))
+        when(cardService.updateCard(any(), any(), any(), any(), any(), any()))
                 .thenReturn(new CardService.CardUpdateResult(
                         CardService.CardUpdateStatus.CHANGES_OK, stubCard(), ""));
 
@@ -687,7 +832,7 @@ class CardUpdateControllerTest {
         assertThat(body).doesNotContain("9x");
 
         verify(cardService, never()).viewCard(any(), any());
-        verify(cardService, never()).updateCard(any(), any(), any(), any(), any());
+        verify(cardService, never()).updateCard(any(), any(), any(), any(), any(), any());
     }
 
     /**

@@ -21,6 +21,7 @@ import java.util.Collection;
 import java.util.List;
 import java.util.Objects;
 
+import org.springframework.security.core.CredentialsContainer;
 import org.springframework.security.core.GrantedAuthority;
 import org.springframework.security.core.userdetails.UserDetails;
 
@@ -65,12 +66,21 @@ import org.springframework.security.core.userdetails.UserDetails;
  * <p><strong>Confidentiality.</strong> The stored credential is exposed only through
  * {@link #getPassword()}; it is intentionally excluded from {@link #toString()} and
  * from every other representation so it can never be written to a log or an error
- * message (AAP &sect;0.7.3 / &sect;0.9.3).</p>
+ * message (AAP &sect;0.7.3 / &sect;0.9.3). The credential is additionally declared
+ * {@code transient} so it is never written into the serialized form of the principal
+ * (Spring Security may serialize the authenticated principal into the
+ * {@code SecurityContext}), and this class implements {@link CredentialsContainer} so
+ * the authentication manager erases the credential (sets it to {@code null})
+ * immediately after a successful authentication.</p>
  *
- * <p><strong>Immutability &amp; identity.</strong> All fields are {@code final} and
- * validated non-null at construction; there are no setters. Principal identity
+ * <p><strong>Immutability &amp; identity.</strong> The {@code username} and
+ * {@code role} are {@code final} and validated non-null at construction. The
+ * credential is {@code transient} and clearable in one direction only: the
+ * {@link #eraseCredentials()} contract may reset it to {@code null} after
+ * authentication (there is no other setter). Principal identity
  * ({@link #equals(Object)} / {@link #hashCode()}) is defined solely by the
- * {@code username}, which is the stable {@code sec_usr_id} primary key.</p>
+ * {@code username}, which is the stable {@code sec_usr_id} primary key, so erasing
+ * the credential never changes a principal's identity.</p>
  *
  * <p>This class is produced by
  * {@code CardDemoUserDetailsService.loadUserByUsername(String)} and consumed by the
@@ -80,7 +90,7 @@ import org.springframework.security.core.userdetails.UserDetails;
  * @see UserRole
  * @see org.springframework.security.core.userdetails.UserDetails
  */
-public class CardDemoUserDetails implements UserDetails {
+public class CardDemoUserDetails implements UserDetails, CredentialsContainer {
 
     /**
      * Serialization version identifier. {@link UserDetails} extends
@@ -88,7 +98,8 @@ public class CardDemoUserDetails implements UserDetails {
      * required both to keep the zero-warning ({@code -Xlint:all}) build free of the
      * {@code serial} lint warning and to give the principal a stable serialized
      * form (Spring Security may serialize the authenticated principal into the
-     * {@code SecurityContext}).
+     * {@code SecurityContext}). The BCrypt {@code password} is {@code transient} and
+     * therefore is deliberately excluded from that serialized form.
      */
     @Serial
     private static final long serialVersionUID = 1L;
@@ -103,9 +114,17 @@ public class CardDemoUserDetails implements UserDetails {
     /**
      * The stored credential for the user: a BCrypt hash derived from the legacy
      * {@code SEC-USR-PWD} column. Treated as an opaque encoded value and exposed
-     * only through {@link #getPassword()}. Never {@code null}.
+     * only through {@link #getPassword()}.
+     *
+     * <p>Declared {@code transient} so the BCrypt hash is never written into the
+     * principal's serialized form, and non-{@code final} so {@link #eraseCredentials()}
+     * can reset it to {@code null} once authentication has completed. It is
+     * non-{@code null} from construction until it is either erased in memory or
+     * dropped by deserialization; a deserialized principal therefore carries a
+     * {@code null} credential, which is acceptable because the credential is required
+     * only during the initial authentication and never afterwards.</p>
      */
-    private final String password;
+    private transient String password;
 
     /**
      * The user's application role ({@link UserRole#ADMIN} or {@link UserRole#USER}),
@@ -146,13 +165,36 @@ public class CardDemoUserDetails implements UserDetails {
     /**
      * Returns the stored (BCrypt-hashed) credential. This is the only accessor that
      * exposes the credential; it exists solely for the Spring Security
-     * {@code PasswordEncoder} / {@code DaoAuthenticationProvider} comparison.
+     * {@code PasswordEncoder} / {@code DaoAuthenticationProvider} comparison, which
+     * runs while the freshly loaded principal still holds the credential.
      *
-     * @return the encoded credential (never {@code null})
+     * @return the encoded credential; non-{@code null} until {@link #eraseCredentials()}
+     *         is invoked (or the principal is deserialized), after which it is
+     *         {@code null}
      */
     @Override
     public String getPassword() {
         return password;
+    }
+
+    /**
+     * Erases the stored credential by resetting it to {@code null}, satisfying the
+     * {@link CredentialsContainer} contract. Spring Security's authentication
+     * manager invokes this on the authenticated principal immediately after a
+     * successful authentication (its {@code eraseCredentialsAfterAuthentication}
+     * behavior is enabled by default), so the BCrypt hash does not linger in the
+     * {@code SecurityContext} for the remainder of the request.
+     *
+     * <p>Erasing the credential is safe: it is consumed only during the initial
+     * {@code DaoAuthenticationProvider} password comparison, never afterwards, and it
+     * is deliberately excluded from {@link #equals(Object)} / {@link #hashCode()} so
+     * clearing it cannot change this principal's identity. The operation is
+     * idempotent &mdash; invoking it when the credential is already {@code null} is a
+     * no-op.</p>
+     */
+    @Override
+    public void eraseCredentials() {
+        this.password = null;
     }
 
     /**

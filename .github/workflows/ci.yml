@@ -35,10 +35,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
       - name: Set up JDK 25 (Temurin)
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@c5195efecf7bdfc987ee8bae7a71cb8b11521c00 # v4.7.1
         with:
           distribution: temurin
           java-version: '25'
@@ -55,7 +55,7 @@ jobs:
 
       - name: Upload JaCoCo coverage report
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: jacoco-report
           path: target/site/jacoco/
@@ -63,7 +63,7 @@ jobs:
 
       - name: Upload OWASP dependency-check report
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: dependency-check-report
           path: target/dependency-check-report.html
@@ -71,7 +71,7 @@ jobs:
 
       - name: Upload test reports
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: test-reports
           path: |
@@ -85,6 +85,14 @@ jobs:
   # legacy "return code 0 = clean" contract). Runs only on the nightly schedule or an explicit
   # manual dispatch -- never on push / pull_request (those run the build+verify gate above).
   scheduled-batch:
+    # Build gate (QA finding F-P6-E): only run the nightly batch AFTER the
+    # build+verify quality gate (JaCoCo >= 80% coverage, OWASP dependency-check on
+    # high/critical CVEs, zero-warning compile) has passed on this same commit. The
+    # `build` job has no event filter, so it also runs on the schedule / dispatch
+    # triggers; requiring it here means a FAILED gate SKIPS the batch launch instead
+    # of exercising code that never passed verification. `needs` defaults to
+    # requiring success, so a red build blocks this job.
+    needs: build
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     # PostgreSQL 16 service container the batch jobs read/write (Flyway migrates it on start;
@@ -109,10 +117,10 @@ jobs:
           --health-retries 10
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
       - name: Set up JDK 25 (Temurin)
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@c5195efecf7bdfc987ee8bae7a71cb8b11521c00 # v4.7.1
         with:
           distribution: temurin
           java-version: '25'

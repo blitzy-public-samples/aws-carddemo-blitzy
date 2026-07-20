@@ -32,6 +32,7 @@ import org.springframework.context.annotation.Configuration;
 import org.springframework.data.domain.Sort;
 import org.springframework.transaction.PlatformTransactionManager;
 
+import com.aws.carddemo.common.util.PanMasker;
 import com.aws.carddemo.domain.CardXref;
 import com.aws.carddemo.repository.CardXrefRepository;
 
@@ -225,17 +226,24 @@ public class XrefPrintJob {
      * three cross-reference fields &mdash; {@code XREF-CARD-NUM}, {@code XREF-CUST-ID}, and
      * {@code XREF-ACCT-ID} &mdash; with field-name labels acting as the separators the COBOL
      * {@code DISPLAY} rendered. The writer performs <strong>no</strong> persistence: {@code CBACT03C}
-     * only reads and prints, so this job never inserts, updates, or deletes a row. All three fields
-     * are non-sensitive identifiers (see {@link CardXref}), so logging them in full preserves the
-     * legacy output without exposing protected data.</p>
+     * only reads and prints, so this job never inserts, updates, or deletes a row. {@code XREF-CARD-NUM}
+     * is a Primary Account Number (PAN), so it is masked to the PCI-DSS display window (first six /
+     * last four) via {@link PanMasker#mask(String)} before it reaches this diagnostic SYSOUT log; the
+     * customer id and account id are non-sensitive identifiers and are logged in full. A full PAN is
+     * therefore never written to the operational logs (QA finding F-P6-B). This mirrors the card and
+     * customer master-print masking: these jobs emit human-readable {@code LOGGER} lines, not a
+     * fixed-width external file contract, so masking the PAN here is an additive security improvement
+     * that does not alter any byte-for-byte file contract.</p>
      *
      * @return a read-only, logging {@link ItemWriter} over {@link CardXref}
      */
     private ItemWriter<CardXref> xrefItemWriter() {
         return chunk -> {
             for (CardXref cardXref : chunk) {
+                // XREF-CARD-NUM is a PAN; mask to the PCI-DSS display window before logging (F-P6-B).
                 LOGGER.info("CARD-XREF-RECORD XREF-CARD-NUM={} XREF-CUST-ID={} XREF-ACCT-ID={}",
-                        cardXref.getXrefCardNum(), cardXref.getCustId(), cardXref.getAcctId());
+                        PanMasker.mask(cardXref.getXrefCardNum()), cardXref.getCustId(),
+                        cardXref.getAcctId());
             }
         };
     }

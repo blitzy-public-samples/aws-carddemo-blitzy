@@ -342,6 +342,11 @@ public class AccountServiceTest {
             return this;
         }
 
+        private CommandBuilder zipCode(String value) {
+            this.zipCode = value;
+            return this;
+        }
+
         private CommandBuilder lastName(String value) {
             this.lastName = value;
             return this;
@@ -619,6 +624,33 @@ public class AccountServiceTest {
     }
 
     @Test
+    @DisplayName("F-CAUP-1: a valid state with a zip that is not in that state's set returns CHANGES_NOT_OK "
+            + "with 'Invalid zip code for state' and never writes (UsStateZipRule wired into the edit)")
+    void updateAccount_mismatchedStateZipCombination_returnsChangesNotOk() {
+        // F-CAUP-1: proves the 240-entry (state, zip-prefix) membership table from copybook CSLKPCDY
+        // -- re-platformed as UsStateZipRule -- is actually WIRED into the COACTUPC 1200-EDIT-MAP-INPUTS
+        // edit chain (1280-EDIT-US-STATE-ZIP-CD), not merely unit-tested in isolation. "TX" is a valid
+        // state code and "99999" is a valid five-digit numeric zip, so both individual edits pass and
+        // the cross-field combination check runs; the assembled key "TX99" is NOT a member of the set
+        // (documented in UsStateZipRuleTest), so the verbatim COACTUPC message is latched and no write
+        // occurs. The state/zip rule is the real collaborator (never stubbed), so this exercises the
+        // genuine table.
+        stubReadChainPresent(storedAccount(), storedCustomer());
+        stubEditCollaboratorsValid();
+
+        AccountUpdateResult result = service.updateAccount(
+                baseCommand().priorStatus(Status.SHOW_DETAILS)
+                        .stateCode("TX")
+                        .zipCode("99999")
+                        .build(),
+                true);
+
+        assertThat(result.status()).isEqualTo(Status.CHANGES_NOT_OK);
+        assertThat(result.message()).isEqualTo("Invalid zip code for state");
+        verify(accountRepository, never()).save(any(Account.class));
+    }
+
+    @Test
     @DisplayName("a non-numeric signed money field returns CHANGES_NOT_OK with 'Credit Limit is not valid' and never writes")
     void updateAccount_invalidSignedAmount_returnsChangesNotOk() {
         stubReadChainPresent(storedAccount(), storedCustomer());
@@ -739,11 +771,41 @@ public class AccountServiceTest {
                 baseCommand()
                         .priorStatus(Status.CHANGES_OK_NOT_CONFIRMED)
                         .confirmSave(true)
-                        .expectedVersion(null) // skip the pre-check; exercise the save-time failure
+                        // A matching observed version (persisted row is version 0) passes the 9700
+                        // pre-check so the SAVE-TIME concurrent-change failure below is the one under
+                        // test. A null version can no longer be used to "skip the pre-check": it is
+                        // now itself rejected as a conflict (F-P4-B), which the dedicated
+                        // null-version test asserts.
+                        .expectedVersion(0L)
                         .build(),
                 true))
                 .isInstanceOf(OptimisticLockingFailureException.class);
 
+        verify(customerRepository, never()).save(any(Customer.class));
+    }
+
+    @Test
+    @DisplayName("a null observed version on a state-changing confirm is rejected as a conflict (F-P4-B) and writes nothing")
+    void updateAccount_nullExpectedVersionOnConfirm_throwsOptimisticLockingFailure() {
+        // F-P4-B: a missing or malformed X-CardDemo-Account-Version header parses to a null observed
+        // version. On a state-changing PF05 confirm this cannot prove the operator edited the row
+        // they are about to overwrite, so the mandatory-valid-version guard rejects it as a
+        // 409 conflict rather than silently letting stale data overwrite a newer commit. The read
+        // chain is stubbed present so the guard -- not a not-found -- is what rejects the request.
+        Account account = storedAccount(); // persisted at version 0
+        when(accountRepository.findByIdForVersionedUpdate(ACCT_KEY)).thenReturn(Optional.of(account));
+
+        assertThatThrownBy(() -> service.updateAccount(
+                baseCommand()
+                        .priorStatus(Status.CHANGES_OK_NOT_CONFIRMED)
+                        .confirmSave(true)
+                        .expectedVersion(null) // absent/unverifiable observed version
+                        .build(),
+                true))
+                .isInstanceOf(OptimisticLockingFailureException.class)
+                .hasMessage(AccountService.MSG_DATA_CHANGED);
+
+        verify(accountRepository, never()).save(any(Account.class));
         verify(customerRepository, never()).save(any(Customer.class));
     }
 

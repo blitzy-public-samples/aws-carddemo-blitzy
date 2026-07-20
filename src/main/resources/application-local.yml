@@ -59,16 +59,24 @@ spring:
   # NEVER create/alter tables. Do NOT change this to update/create/create-drop.
   # ---------------------------------------------------------------------------
   jpa:
-    # Log every SQL statement Hibernate issues (local troubleshooting only).
-    show-sql: true
+    # SQL visibility is provided through the LOGGER (org.hibernate.SQL: DEBUG in the
+    # logging.level block below), NOT Hibernate's show-sql. show-sql writes raw SQL
+    # straight to System.out, bypassing logback-spring.xml - so those lines carry NO
+    # correlation id and ignore the structured log format/appenders (QA finding
+    # F-P9-A). Keep it OFF and rely on the logger, which routes SQL through logback
+    # with the correlation id intact.
+    show-sql: false
     hibernate:
       # Unchanged from base - restated to make the local contract explicit and
       # guard against accidental drift. Flyway owns the schema; validate only.
       ddl-auto: validate
     properties:
       hibernate:
-        # Pretty-print the logged SQL into readable multi-line form (local dev).
-        format_sql: true
+        # format_sql only pretty-prints the show-sql System.out stream, which is now
+        # disabled (F-P9-A); leaving it off avoids re-enabling that unstructured
+        # channel. The logger-routed SQL (org.hibernate.SQL) stays single-line and
+        # correlation-tagged - the desired shape for structured local logs.
+        format_sql: false
 
   # ---------------------------------------------------------------------------
   # Flyway - migrations stay ENABLED (inherited from base). Explicitly disable
@@ -114,6 +122,11 @@ logging:
     com.aws.carddemo: DEBUG
     # Flyway at INFO so migration apply / validate output is visible on startup.
     org.flywaydb: INFO
+    # SQL visibility for local development WITHOUT Hibernate show-sql (F-P9-A): this
+    # logger routes every issued statement through logback-spring.xml, so each SQL
+    # line carries the request/batch correlation id and honors the structured format
+    # and appenders - unlike show-sql's raw System.out writes.
+    org.hibernate.SQL: DEBUG
 
 # =============================================================================
 # springdoc / OpenAPI 3 - RE-ENABLE the live Swagger UI + dynamic /v3/api-docs

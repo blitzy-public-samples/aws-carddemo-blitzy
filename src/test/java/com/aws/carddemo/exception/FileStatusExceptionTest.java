@@ -235,4 +235,71 @@ class FileStatusExceptionTest {
         assertThat(duplicate.getFileStatus()).isEqualTo(FileStatusException.STATUS_DUPLICATE_KEY);
         assertThat(notFound.getFileStatus()).isNotEqualTo(duplicate.getFileStatus());
     }
+
+    // ------------------------------------------------------------------
+    // 4D. Status-contract validation (F-P9-D): the two-character
+    //     ASCII-alphanumeric FILE STATUS (COBOL PIC X(2)) is enforced at
+    //     construction, so a malformed status is rejected up front rather
+    //     than silently carried through the exception hierarchy.
+    // ------------------------------------------------------------------
+
+    @Test
+    @DisplayName("STATUS_GENERAL_ERROR is the canonical two-character implementor code '99'")
+    void statusGeneralErrorConstantIs99() {
+        assertThat(FileStatusException.STATUS_GENERAL_ERROR).isEqualTo("99");
+    }
+
+    @Test
+    @DisplayName("A null FILE STATUS is rejected with IllegalArgumentException (both constructors)")
+    void nullFileStatusIsRejected() {
+        assertThatThrownBy(() -> new FileStatusException(null, "boom"))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("must not be null");
+        assertThatThrownBy(() -> new FileStatusException(null, "boom", new RuntimeException("root")))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("must not be null");
+    }
+
+    @Test
+    @DisplayName("An empty, single-character, or overlength FILE STATUS is rejected (must be exactly two characters)")
+    void wrongLengthFileStatusIsRejected() {
+        assertThatThrownBy(() -> new FileStatusException("", "boom"))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("exactly two characters");
+        assertThatThrownBy(() -> new FileStatusException("1", "boom"))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("exactly two characters");
+        assertThatThrownBy(() -> new FileStatusException("123", "boom"))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("exactly two characters");
+    }
+
+    @Test
+    @DisplayName("A non-alphanumeric or control character in the FILE STATUS is rejected and rendered safely")
+    void nonAlphanumericFileStatusIsRejected() {
+        // A space is non-alphanumeric.
+        assertThatThrownBy(() -> new FileStatusException("0 ", "boom"))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("ASCII-alphanumeric");
+        // A control character (TAB, U+0009) is rejected; the message escapes it as a
+        // \\uXXXX sequence so a control character can never corrupt or inject into a
+        // log line (the raw tab is replaced by the printable text "u0009").
+        assertThatThrownBy(() -> new FileStatusException("0\t", "boom"))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("ASCII-alphanumeric")
+                .hasMessageContaining("u0009");
+    }
+
+    @Test
+    @DisplayName("Valid two-character ASCII-alphanumeric codes are accepted and preserved verbatim (case-sensitive)")
+    void validFileStatusCodesAreAcceptedVerbatim() {
+        assertThat(new FileStatusException("00", "x").getFileStatus()).isEqualTo("00");
+        assertThat(new FileStatusException("99", "x").getFileStatus()).isEqualTo("99");
+        // Implementor "9x" codes and mixed-case alphanumerics are valid and preserved.
+        assertThat(new FileStatusException("9A", "x").getFileStatus()).isEqualTo("9A");
+        assertThat(new FileStatusException("aB", "x").getFileStatus()).isEqualTo("aB");
+        // The cause-carrying constructor enforces and preserves the same contract.
+        assertThat(new FileStatusException("30", "x", new RuntimeException("root")).getFileStatus())
+                .isEqualTo("30");
+    }
 }

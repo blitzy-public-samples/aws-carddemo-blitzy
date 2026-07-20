@@ -319,6 +319,9 @@ class AccountViewControllerTest {
                 // --- Screen header echo ---
                 .andExpect(jsonPath("$.transactionName").value(THIS_TRANSACTION))
                 .andExpect(jsonPath("$.programName").value(THIS_PROGRAM))
+                // --- Info line: COBOL COACTVWC emits WS-PROMPT-FOR-INPUT as INFOMSGO even on
+                //     the populated detail screen (WS-INFORM-OUTPUT is a dead 88-level); F-P9-F.
+                .andExpect(jsonPath("$.infoMessage").value(PROMPT_FOR_INPUT))
                 // --- Account identity / status ---
                 .andExpect(jsonPath("$.accountId").value(ACCOUNT_ID))
                 .andExpect(jsonPath("$.accountStatus").value("Y"))

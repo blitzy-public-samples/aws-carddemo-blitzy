@@ -125,6 +125,14 @@ class UserUpdateControllerTest {
     /** Not-found message raised by an ENTER fetch or a PF5 save with an unknown id. */
     private static final String MSG_USER_ID_NOT_FOUND = "User ID NOT found...";
 
+    /**
+     * Verbatim COBOL edit message emitted by {@code COUSR02C} {@code PROCESS-ENTER-KEY}
+     * when the operator presses ENTER with a blank user id (legacy
+     * {@code WHEN USRIDINI = SPACES OR LOW-VALUES}). Asserted by the F-P4-G
+     * blank-id-before-lookup guard test.
+     */
+    private static final String MSG_USER_ID_EMPTY = "User ID can NOT be empty...";
+
     /** Invalid-key message shown for any attention key the controller does not map. */
     private static final String MSG_INVALID_KEY = "Invalid key pressed. Please see below...";
 
@@ -133,6 +141,9 @@ class UserUpdateControllerTest {
 
     /** Response header carrying the CICS {@code XCTL} transaction target on PF3/PF12. */
     private static final String HEADER_NEXT_TRANSACTION = "X-CardDemo-Next-Transaction";
+
+    /** Request/response header carrying the observed {@code user_security} version (F-P7-STALE). */
+    private static final String HEADER_USER_VERSION = "X-CardDemo-User-Version";
 
     /** Admin Menu program navigated to on cancel/back (PF3/PF12) &mdash; {@code COADM01C}. */
     private static final String BACK_TARGET_PROGRAM = "COADM01C";
@@ -301,7 +312,51 @@ class UserUpdateControllerTest {
                 .andExpect(jsonPath("$.password").doesNotExist());
 
         // The save path must not have been taken for a fetch.
-        verify(userService, never()).updateUser(any(), any(), any(), any(), anyChar());
+        verify(userService, never()).updateUser(any(), any(), any(), any(), anyChar(), any());
+    }
+
+    @Test
+    @DisplayName("B2b (F-P7-STALE): ENTER fetch emits the observed X-CardDemo-User-Version header for the save to carry back")
+    @WithMockUser(roles = "ADMIN")
+    void fetchEmitsObservedUserVersionHeader() throws Exception {
+        // F-P7-STALE: the edit screen must echo the user_security @Version it read, so the client can
+        // return it on PF5/PF3 and the stale-form guard can verify it. The fetch response therefore
+        // carries the observed version in the X-CardDemo-User-Version header.
+        UserSecurity existing = stubUser("USER0002", "JANE", "ROE", "EXISTPW1", "A");
+        existing.setVersion(7L);
+        when(userService.listUsers(any(), any())).thenReturn(new PageImpl<>(List.of(existing)));
+
+        mockMvc.perform(post(URL)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(body("USER0002", null, null, null, null, PfKeyAction.ENTER)))
+                .andExpect(status().isOk())
+                .andExpect(header().string(HEADER_USER_VERSION, "7"))
+                .andExpect(jsonPath("$.userId").value("USER0002"))
+                .andExpect(jsonPath("$.errorMessage").value(MSG_PRESS_PF5))
+                .andExpect(jsonPath("$.password").doesNotExist());
+    }
+
+    @Test
+    @DisplayName("B3 (F-P4-G): ENTER with a blank user id is a same-screen edit (200) before any lookup")
+    @WithMockUser(roles = "ADMIN")
+    void enterBlankUserIdIsSameScreenEditBeforeLookup() throws Exception {
+        // A blank (spaces) user id reproduces the legacy COUSR02C guard
+        // WHEN USRIDINI = SPACES OR LOW-VALUES: the screen is redisplayed with
+        // "User ID can NOT be empty..." and the record browse is never attempted.
+        mockMvc.perform(post(URL)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(body("   ", null, null, null, null, PfKeyAction.ENTER)))
+                .andExpect(status().isOk())
+                .andExpect(content().contentTypeCompatibleWith(MediaType.APPLICATION_JSON))
+                .andExpect(jsonPath("$.transactionName").value("CU02"))
+                .andExpect(jsonPath("$.programName").value("COUSR02C"))
+                .andExpect(jsonPath("$.errorMessage").value(MSG_USER_ID_EMPTY))
+                // No user detail is echoed and the response never carries a password.
+                .andExpect(jsonPath("$.firstName").doesNotExist())
+                .andExpect(jsonPath("$.password").doesNotExist());
+
+        // The blank id short-circuits BEFORE the browse: the service is never consulted.
+        verify(userService, never()).listUsers(any(), any());
     }
 
     // ==================================================================
@@ -351,7 +406,7 @@ class UserUpdateControllerTest {
     @WithMockUser(roles = "ADMIN")
     void pf5SaveForwardsRawPasswordAndReturnsSuccess() throws Exception {
         UserSecurity saved = stubUser("USER0002", "JOHNNY", "DOE", "EXISTPW1", "A");
-        when(userService.updateUser(any(), any(), any(), any(), anyChar()))
+        when(userService.updateUser(any(), any(), any(), any(), anyChar(), any()))
                 .thenReturn(new UserService.UserResult(true, saved, "User USER0002 has been updated ..."));
 
         String responseBody = mockMvc.perform(post(URL)
@@ -378,7 +433,7 @@ class UserUpdateControllerTest {
         // null and throw.
         ArgumentCaptor<String> passwordCap = ArgumentCaptor.forClass(String.class);
         verify(userService).updateUser(eq("USER0002"), eq("JOHNNY"), eq("DOE"),
-                passwordCap.capture(), eq('A'));
+                passwordCap.capture(), eq('A'), any());
 
         // The RAW request password was forwarded UNCHANGED (the service alone is
         // responsible for hashing); the lower-case 'a' user type was folded to the
@@ -393,7 +448,7 @@ class UserUpdateControllerTest {
         // The mocked service returns the existing record (carrying its stored password)
         // so we can also prove that stored credential is never leaked onto the response.
         UserSecurity existing = stubUser("USER0002", "JOHNNY", "DOE", "EXISTPW1", "U");
-        when(userService.updateUser(any(), any(), any(), any(), anyChar()))
+        when(userService.updateUser(any(), any(), any(), any(), anyChar(), any()))
                 .thenReturn(new UserService.UserResult(true, existing, "User USER0002 has been updated ..."));
 
         String responseBody = mockMvc.perform(post(URL)
@@ -413,7 +468,7 @@ class UserUpdateControllerTest {
         // captor).
         ArgumentCaptor<String> passwordCap = ArgumentCaptor.forClass(String.class);
         verify(userService).updateUser(eq("USER0002"), eq("JOHNNY"), eq("DOE"),
-                passwordCap.capture(), eq('U'));
+                passwordCap.capture(), eq('U'), any());
 
         // The controller forwarded the blank password UNCHANGED - it did not fabricate,
         // substitute, or drop it; UserService/UserMapper own the "leave existing" rule.
@@ -432,7 +487,7 @@ class UserUpdateControllerTest {
         // that space as the "User Type can NOT be empty..." same-screen edit, but that
         // rule lives in (and is unit-tested by) UserService, not the controller.
         UserSecurity saved = stubUser("USER0002", "JOHNNY", "DOE", "EXISTPW1", "U");
-        when(userService.updateUser(any(), any(), any(), any(), anyChar()))
+        when(userService.updateUser(any(), any(), any(), any(), anyChar(), any()))
                 .thenReturn(new UserService.UserResult(true, saved, "User USER0002 has been updated ..."));
 
         mockMvc.perform(post(URL)
@@ -445,7 +500,7 @@ class UserUpdateControllerTest {
         // The absent user type is forwarded verbatim as a single space (the COBOL
         // SPACES empty-type value), reproducing COUSR02C's blank USRTYPEI handling.
         verify(userService).updateUser(eq("USER0002"), eq("JOHNNY"), eq("DOE"),
-                eq("S3CRET1"), eq(' '));
+                eq("S3CRET1"), eq(' '), any());
     }
 
 
@@ -457,7 +512,7 @@ class UserUpdateControllerTest {
     @DisplayName("F1: PF5 save of an unknown id surfaces RecordNotFoundException as 404")
     @WithMockUser(roles = "ADMIN")
     void pf5SaveNotFoundIsNotFound() throws Exception {
-        when(userService.updateUser(any(), any(), any(), any(), anyChar()))
+        when(userService.updateUser(any(), any(), any(), any(), anyChar(), any()))
                 .thenThrow(new RecordNotFoundException(MSG_USER_ID_NOT_FOUND));
 
         mockMvc.perform(post(URL)
@@ -475,7 +530,7 @@ class UserUpdateControllerTest {
     void pf5SaveOptimisticLockConflictIsConflict() throws Exception {
         // The @Version REWRITE integrity check can surface a concurrent-update failure
         // from the service's save(); the global handler maps it to 409 CONFLICT.
-        when(userService.updateUser(any(), any(), any(), any(), anyChar()))
+        when(userService.updateUser(any(), any(), any(), any(), anyChar(), any()))
                 .thenThrow(new OptimisticLockingFailureException("row was updated by another transaction"));
 
         mockMvc.perform(post(URL)
@@ -510,22 +565,57 @@ class UserUpdateControllerTest {
     }
 
     // ==================================================================
-    // H. PF3 / PF12 navigate back to the Admin Menu (COADM01C / CA00)
+    // H. PF3 save-and-exit (COUSR02C WHEN DFHPF3) / PF12 pure cancel (COADM01C / CA00)
     // ==================================================================
 
     @Test
-    @DisplayName("H1: PF3 navigates back to the Admin Menu via COADM01C/CA00 headers")
+    @DisplayName("H1: PF3 SAVES the edit (delegates to updateUser) THEN navigates back to the Admin Menu (F-P4-F)")
     @WithMockUser(roles = "ADMIN")
-    void pf3NavigatesBackToAdminMenu() throws Exception {
+    void pf3SavesThenNavigatesBackToAdminMenu() throws Exception {
+        // F-P4-F: COUSR02C WHEN DFHPF3 performs UPDATE-USER-INFO (validate + rewrite) and THEN
+        // RETURN-TO-PREV-SCREEN. PF3 must therefore persist a valid edit before leaving -- the prior
+        // behavior (navigate back with verifyNoInteractions) silently dropped the change and is the
+        // defect this asserts against. A successful save is followed by the navigate-back headers.
+        UserSecurity saved = stubUser("USER0002", "JOHNNY", "DOE", "EXISTPW1", "A");
+        when(userService.updateUser(any(), any(), any(), any(), anyChar(), any()))
+                .thenReturn(new UserService.UserResult(true, saved, "User USER0002 has been updated ..."));
+
         mockMvc.perform(post(URL)
                         .contentType(MediaType.APPLICATION_JSON)
-                        .content(body("USER0002", null, null, null, null, PfKeyAction.PF3)))
+                        .header(HEADER_USER_VERSION, "3")
+                        .content(body("USER0002", "JOHNNY", "DOE", "S3CRET1", "A", PfKeyAction.PF3)))
                 .andExpect(status().isOk())
                 .andExpect(header().string(HEADER_NEXT_PROGRAM, BACK_TARGET_PROGRAM))
                 .andExpect(header().string(HEADER_NEXT_TRANSACTION, BACK_TARGET_TRANSACTION))
                 .andExpect(jsonPath("$.password").doesNotExist());
 
-        verifyNoInteractions(userService);
+        // The save path WAS taken (unlike the legacy defect) and the observed version was forwarded.
+        verify(userService).updateUser(eq("USER0002"), eq("JOHNNY"), eq("DOE"),
+                eq("S3CRET1"), eq('A'), eq(3L));
+    }
+
+    @Test
+    @DisplayName("H1b: PF3 with a failing mandatory-field edit stays same-screen with the message and does NOT navigate away")
+    @WithMockUser(roles = "ADMIN")
+    void pf3WithEditFailureStaysSameScreen() throws Exception {
+        // COUSR02C UPDATE-USER-INFO sets the error flag on a blank mandatory field. In the REST
+        // translation an unsuccessful save keeps the operator on the screen with the exact message
+        // (mirroring the PF5 same-screen display) rather than navigating away and discarding a still
+        // invalid edit. No navigation headers are emitted.
+        when(userService.updateUser(any(), any(), any(), any(), anyChar(), any()))
+                .thenReturn(new UserService.UserResult(false, null, MSG_USER_ID_EMPTY));
+
+        mockMvc.perform(post(URL)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .header(HEADER_USER_VERSION, "3")
+                        .content(body("USER0002", "JOHNNY", "DOE", "", "A", PfKeyAction.PF3)))
+                .andExpect(status().isOk())
+                .andExpect(header().doesNotExist(HEADER_NEXT_PROGRAM))
+                .andExpect(header().doesNotExist(HEADER_NEXT_TRANSACTION))
+                .andExpect(jsonPath("$.errorMessage").value(MSG_USER_ID_EMPTY))
+                .andExpect(jsonPath("$.password").doesNotExist());
+
+        verify(userService).updateUser(any(), any(), any(), any(), anyChar(), any());
     }
 
     @Test

@@ -90,6 +90,13 @@ its Java target, while this log explains the reasoning behind the design those m
 | [D54](#d54--concurrent-update-maps-to-http-409-across-the-concurrency-exception-family) | J. Online Parity Corrections | Concurrent update maps to HTTP 409 across the concurrency-exception family (F-CAUP-3) | Robustness (extends D18/D15) |
 | [D55](#d55--combine-job-global-sort-is-in-memory-and-buffered-a-documented-daily-volume-ceiling) | I. Batch Parity & Robustness | Combine-job global sort is in-memory and buffered | Constraint documented |
 | [D56](#d56--statement-writer-uses-a-substituting-iso-8859-1-encoder-no-whole-job-abort-on-unmappable-input) | I. Batch Parity & Robustness | Statement writer uses a substituting ISO-8859-1 encoder; no whole-job abort on unmappable input | **Intentional improvement** |
+| [D57](#d57--live-springdoc--swagger-ui-surfaces-are-disabled-in-production-and-re-enabled-only-for-local-development) | F. Security | Live springdoc / Swagger UI disabled in production; re-enabled only for local dev | **Intentional improvement** |
+| [D58](#d58--executive-deck-cdn-assets-are-pinned-with-subresource-integrity-sri-hashes) | F. Security | Executive-deck CDN assets pinned with Subresource Integrity (SRI) hashes | **Intentional improvement** |
+| [D59](#d59--interest-posting-is-idempotent-per-cycle-via-a-last-interest-cycle-marker) | I. Batch Parity & Robustness | Interest posting idempotent per cycle via a last-interest-cycle marker (F-P6-A/F-P5-D) | **Intentional improvement** |
+| [D60](#d60--fixedwidthcodec-substitutes-unmappable-and-framing-characters-deterministically) | I. Batch Parity & Robustness | `FixedWidthCodec` substitutes unmappable/framing characters deterministically (F-P12) | **Intentional improvement** |
+| [D61](#d61--authenticated-principal-credential-is-transient-and-erasable) | F. Security | Authenticated principal credential is transient and erasable (F-P9-C) | **Intentional improvement** |
+| [D62](#d62--file-status-values-are-validated-as-two-character-codes-and-cics-resp-errors-canonicalize-to-99) | C. Online/Batch | FILE STATUS validated as two-character codes; CICS RESP errors canonicalize to 99 (F-P9-D) | Robustness (extends D15) |
+| [D63](#d63--detail-screen-informational-messages-live-literals-restored-obsolete-literals-documented) | J. Online Parity Corrections | Detail-screen info messages: live literals restored, obsolete documented (F-P9-F) | Behavior preservation (parity) + **documented deviation** |
 
 ---
 
@@ -608,7 +615,7 @@ its Java target, while this log explains the reasoning behind the design those m
   **process exit code equals the Spring Batch return code** under the JCL condition-code mapping
   `COMPLETED` &rarr; `0`, `COMPLETED_WITH_REJECTS` &rarr; `4`, and any other outcome (`FAILED`/`STOPPED`)
   &rarr; `8` (realized by the `BatchExitCodeGenerator`; see
-  [D41](#d41--batch-process-exit-code-equals-the-spring-batch-return-code-jcl-condition-code-parity)),
+  [D45](#d45--batch-process-exit-code-equals-the-spring-batch-return-code-jcl-condition-code-parity)),
   failing the workflow if any job returns non-zero; (3) the jobs launched by the correlationId-only nightly loop are
   `accountMasterPrintJob` (CBACT01C), `cardMasterPrintJob` (CBACT02C), `xrefPrintJob` (CBACT03C),
   `customerMasterPrintJob` (CBCUS01C) and `transactionBackupJob` (TRANBKP / IDCAMS `REPRO`) — the
@@ -1704,7 +1711,7 @@ reviewable rationale (Explainability rule, §0.8.2).
   **file** contract is retained throughout: escaping the free-text data values is a no-op for the
   metacharacter-free golden/real data, so the fixed 100-byte record image and the pinned golden SHA-256
   are unchanged.
-- **Rationale (why the parity artifact is kept byte-exact while escaping hostile input):**
+- **Rationale:**
   - **It is a batch file, but it can still be opened in a browser.** The HTML statement is written to the
     `HTMLFILE` DD image by the batch writer and asserted byte-for-byte against the golden fixture. No
     controller serves it as an executable `text/html` response — but QA demonstrated that a data field
@@ -2019,12 +2026,12 @@ reviewable rationale (Explainability rule, §0.8.2).
 - **AAP references:** §0.6.1 (`dependency-check-maven` 12.2.2, `failBuildOnCVSS`), §0.8.1 (security
   scanning: zero critical/high CVEs), §0.9.3 (OWASP dependency-check reports zero critical/high CVEs)
 - **Context:** As the NVD data feed advanced, the OWASP dependency-check gate (`failBuildOnCVSS=7`,
-  scanning all scopes per [D5](#d5)) began failing `./mvnw clean verify` on seven high/critical
+  scanning all scopes per [D5](#d5--owasp-dependency-check-1222-with-failbuildoncvss)) began failing `./mvnw clean verify` on seven high/critical
   transitive CVEs disclosed after the dependency graph was frozen. The gate is behaving correctly; the
   fix is to move each affected coordinate to a patched release where one exists, and to suppress —
   narrowly, dated, and documented — only those with no reachable patched release.
 - **Decision:** Two complementary mechanisms, mirroring the existing forward-pin pattern
-  ([D5](#d5); the embedded-Tomcat pin in `pom.xml` properties):
+  ([D5](#d5--owasp-dependency-check-1222-with-failbuildoncvss); the embedded-Tomcat pin in `pom.xml` properties):
   1. **Forward-pin (fix available)** — override the Spring-Boot-managed version so the patched release
      lands on the graph across every scope:
      - `log4j2.version` &rarr; **2.25.5** (transitive via `spring-boot-starter-logging`'s
@@ -2231,7 +2238,7 @@ decision-log entry" requirement is met for every checkpoint finding, and each is
   would be bounded by available heap rather than by streaming throughput and could exhaust memory. This
   is a **scaling ceiling**, not a correctness defect — within the migrated CardDemo scope it never
   triggers, and the AAP freezes scope to the existing COBOL capability (no feature expansion, §0.3.3).
-- **Alternatives considered:**
+- **Alternatives:**
   1. *External merge sort (bounded-memory, spill-to-disk).* The classic mainframe `DFSORT`/`SyncSort`
      strategy: sort bounded runs, spill each to a temp file, then k-way merge. **Deferred:** it removes
      the heap ceiling but adds substantial code and temp-file lifecycle management for a volume that
@@ -2417,6 +2424,240 @@ decision-log entry" requirement is met for every checkpoint finding, and each is
   would block that asset. *Mitigation:* that is the intended fail-closed behavior; the versions are pinned
   (immutable content is expected), and the hash is regenerated whenever a pinned version is deliberately
   changed.
+
+---
+
+### D59 — Interest posting is idempotent per cycle via a last-interest-cycle marker
+
+- **Status:** Accepted
+- **Type:** **Intentional improvement** (integrity guard; no change to the computed interest amount or
+  to any observable per-account balance for a single, run-once cycle)
+- **AAP references:** §0.7.1 H6 (Read-Update-Rewrite concurrency — the plan calls for an intentional
+  integrity improvement over the mainframe's implicit serialization, documented so it is not read as a
+  regression), §0.4.2 (optimistic locking with a JPA `@Version` column), §0.4.4 (batch restartability),
+  §0.9.2 (golden-file parity — the posted interest is unchanged), §0.8.2 (Explainability — recorded here)
+- **Decision:** The `account` table gains a nullable `last_interest_cycle VARCHAR(10)` marker
+  (`domain/Account.java` `lastInterestCycle`, Flyway `V5__add_account_last_interest_cycle.sql`) that
+  records the 10-character run date (`parmDate`, e.g. `2022071800`) of the most recent interest posting
+  applied to the account. `InterestCalculationJob` posts each account's accumulated interest through
+  `AccountRepository.applyInterestForCycle(...)` — a single `@Modifying(clearAutomatically = true,
+  flushAutomatically = true)` `UPDATE ... WHERE acct_id = :acctId AND (last_interest_cycle IS NULL OR
+  last_interest_cycle <> :cycle)` that adds the interest to the balance, zeroes the cycle credit/debit,
+  advances the marker to the current cycle, and bumps the `@Version` exactly once — returning the number
+  of rows changed (0 when the cycle was already posted). The cycle is read once in
+  `InterestTransactionWriter.beforeStep(...)` (from the `parmDate` job parameter) and both the
+  `TransactionCategoryBalanceItemReader` and the interest writer run with `setSaveState(false)` so a
+  restart re-reads the entire `TCATBAL` input and rebuilds the whole `SYSTRAN` file, which is written to
+  an owner-only `.part` staging file and published with a single atomic move only on success.
+- **Why:** The legacy `1050-UPDATE-ACCOUNT` paragraph (`legacy/cbl/CBACT04C.cbl`) unconditionally adds
+  the accumulated interest to `ACCT-CURR-BAL`; on the mainframe `INTCALC` is a scheduled, run-once-per-
+  cycle job, so re-application never materializes. In the relational target a re-launch or a mid-run
+  restart of `InterestCalculationJob` (whose chunk transactions commit per account) would DOUBLE-APPLY
+  interest to accounts already finalized in the failed/previous run (QA findings F-P6-A and F-P5-D). The
+  cycle predicate makes the balance update EXACTLY-ONCE per (account, cycle) and the full re-read plus
+  atomic publish guarantees a complete `SYSTRAN` file rather than a partial tail after a restart.
+- **Alternatives:**
+  1. *Rely on Spring Batch restart/skip metadata alone.* **Rejected:** the framework's restart resumes an
+     interrupted execution but does not prevent a fresh re-launch (new job instance) from re-posting a
+     cycle, and per-account chunk commits mean a failed run can leave some accounts already posted; a
+     data-level marker is required for true idempotency.
+  2. *Guard with optimistic locking (`@Version`) only.* **Rejected:** `@Version` prevents lost updates
+     between concurrent writers of the same row but does not encode "this cycle was already applied"; two
+     sequential re-runs would each read, increment, and rewrite successfully. The marker encodes the
+     business fact the version cannot.
+  3. *Truncate and recompute all balances each run.* **Rejected:** balances are cumulative business state,
+     not a derived projection; there is no full input from which to recompute them, and truncation would
+     be a far larger and riskier deviation than a per-cycle marker.
+- **Rationale:** The conditional `UPDATE` is a single statement, so under PostgreSQL READ COMMITTED two
+  concurrent postings of the same (account, cycle) serialize on the row lock; the second re-evaluates its
+  `WHERE` against the first's committed row, matches zero rows, and does not re-apply — exactly-once holds
+  under concurrency as well as under sequential re-runs. For a normal single run the computed interest and
+  the resulting balance are identical to the legacy output, so golden-file parity is preserved.
+- **Risk & mitigation:** a legitimate second interest run for a genuinely new cycle must use a different
+  `parmDate`; reusing the same `parmDate` is treated as a duplicate and updates zero rows. *Mitigation:*
+  `parmDate` is the mainframe cycle identifier (the `INTCALC` `PARM`), so distinct cycles already carry
+  distinct dates; the fail-fast `parmDate` validator (D33) rejects a missing/blank parameter before any
+  posting, and the behavior is covered by dedicated idempotency and restart regression tests.
+
+---
+
+### D60 — FixedWidthCodec substitutes unmappable and framing characters deterministically
+
+- **Status:** Accepted
+- **Type:** **Intentional improvement** (defensive encoding determinism; extends the substituting-encoder
+  policy of D35/D56 to the codec layer — no change to layouts, column positions, or metacharacter-free data)
+- **AAP references:** §0.7.2 M2 (external fixed-width file contracts; legacy VSAM stored EBCDIC with binary
+  `COMP-3` while the target stores native types, so the codec preserves the documented layout), §0.4.2
+  (`FixedWidthCodec` as the record-layout–preserving component), §0.8.1 (external interface contracts held
+  byte/semantically identical), §0.8.2 (Explainability — recorded here)
+- **Decision:** `common/util/FixedWidthCodec.sanitizeFieldValue(...)` replaces, before a field is padded or
+  truncated into a fixed-width record, every code unit above `MAX_SINGLE_BYTE_CHAR` (`\u00FF` — the top of
+  the single-byte range, which includes each half of a surrogate pair) with `UNMAPPABLE_REPLACEMENT`
+  (`'?'`), and every embedded line-framing character (`\n`, `\r`) with a space, so each source character
+  maps to exactly one byte and no field can inject a spurious record boundary. A fast-path scan returns
+  clean values (no framing or out-of-range code unit) unchanged, so the common case allocates nothing.
+- **Why:** the fixed-width external contracts (daily-transaction input, reject output, statement/report
+  outputs) are single-byte `PIC X` layouts framed by trailing line separators (D36). A field value
+  carrying a multi-byte or supplementary character, or an embedded `\n`/`\r`, would otherwise widen a
+  record, shift downstream columns, or split one logical record into two — corrupting the layout the
+  combine/report/backup consumers depend on. QA finding F-P12 flagged that the codec must neutralize such
+  input deterministically rather than letting the platform default encoder emit variable-length output.
+- **Alternatives:**
+  1. *Let the JVM default charset encode the field.* **Rejected:** it is platform-dependent and can emit
+     multiple bytes per character, breaking the one-character-one-byte fixed-width invariant; the contract
+     must be deterministic across environments.
+  2. *Throw on any unmappable character.* **Rejected:** a single stray character in one source row would
+     abort the whole batch write; the surrounding batch policy (D35/D56) is substitute-and-continue so one
+     bad record never fails an entire run, and `'?'` is the conventional single-byte substitution.
+  3. *Silently drop the offending character.* **Rejected:** dropping shortens the field and shifts the
+     remaining characters left within the fixed cell, whereas substitution preserves column alignment.
+- **Rationale:** substitution to a single-byte `'?'` (and framing characters to spaces) keeps every field
+  exactly its declared width and every record exactly one line, so metacharacter-free data — the entirety
+  of the seed corpus and all normal postings — is byte-identical to the legacy image while pathological
+  input degrades predictably instead of corrupting the file.
+- **Risk & mitigation:** a genuinely non-Latin-1 source value is lossily represented as `'?'`. *Mitigation:*
+  the legacy layouts are single-byte `PIC X` by definition, so no in-scope field can legitimately carry
+  such data; the substitution is exercised by a dedicated Unicode-replacement codec test.
+
+---
+
+### D61 — Authenticated principal credential is transient and erasable
+
+- **Status:** Accepted
+- **Type:** **Intentional improvement** (security hardening; no change to the authentication outcome or the
+  role model — extends D22)
+- **AAP references:** §0.7.3 L1 (the legacy stores plaintext credentials; the target preserves the
+  authentication behavior while hardening credential handling, and never logs the credential), §0.9.3
+  (passwords are never logged; credentials resolve only from the store), §0.8.2 (Explainability — recorded
+  here)
+- **Decision:** `security/CardDemoUserDetails` declares its encoded `password` field `transient` so the
+  hash is never written into the serialized form of the authenticated principal (for example when the
+  `SecurityContext` is serialized), and the class implements Spring Security's `CredentialsContainer` with
+  an `eraseCredentials()` override that resets the credential to `null` after successful authentication.
+- **Why:** QA finding F-P9-C observed that the credential hash was reachable on the serialized principal.
+  Even though the value is a BCrypt hash rather than a plaintext password, keeping it out of the
+  serialized principal and clearing it post-authentication minimizes the window and surface on which any
+  credential material exists in memory or in a serialized session, consistent with the "credentials are
+  never exposed" posture of §0.9.3.
+- **Alternatives:**
+  1. *Leave the field serializable and rely on it being a hash.* **Rejected:** a hash is still credential
+     material; the framework provides `CredentialsContainer` precisely so principals can shed it, and
+     `transient` costs nothing at runtime.
+  2. *Return `null` from `getPassword()` after authentication instead of erasing.* **Rejected:** the
+     `UserDetailsService` must return a populated credential for the authentication provider to verify it;
+     erasing via the framework contract (invoked once verification succeeds) is the supported sequence and
+     does not break verification.
+- **Rationale:** `transient` addresses the serialization exposure directly, `eraseCredentials()` addresses
+  the in-memory lifetime, and both are no-ops for the authentication decision itself — the provider has
+  already verified the credential by the time erasure runs — so the role `A`=ADMIN / `U`=USER behavior and
+  every existing authentication test are unchanged.
+- **Risk & mitigation:** code that re-reads `getPassword()` after authentication would see `null`.
+  *Mitigation:* nothing in the application re-reads the credential post-authentication (verification is the
+  provider's responsibility), and a regression test asserts the serialized principal carries no BCrypt
+  marker while HTTP Basic authentication continues to succeed.
+
+---
+
+### D62 — FILE STATUS values are validated as two-character codes and CICS RESP errors canonicalize to 99
+
+- **Status:** Accepted
+- **Type:** Robustness (extends D15)
+- **AAP references:** §0.7.2 M1 (FILE STATUS / CICS RESP mapping into a typed exception hierarchy that
+  preserves caller-visible outcomes), §0.4.2 (exception translation), §0.8.3 (caller-visible outcomes
+  preserved), §0.8.2 (Explainability — recorded here)
+- **Decision:** `exception/FileStatusException` validates its `fileStatus` argument on every construction
+  path through `requireValidFileStatus(...)`, which requires a non-null two-character code (rejecting any
+  other length); a canonical `STATUS_GENERAL_ERROR = "99"` constant represents a generic I/O error, and
+  `exception/CicsRespMapper` throws `new FileStatusException(FileStatusException.STATUS_GENERAL_ERROR, ...)`
+  for any non-normal CICS `RESP` value that does not map to a more specific outcome.
+- **Why:** the COBOL `FILE STATUS` data item is `PIC X(2)` — always exactly two characters. QA finding
+  F-P9-D observed that the exception accepted arbitrary-length status strings, so a malformed or truncated
+  code could flow into the typed hierarchy and the `GlobalExceptionHandler` mapping. Enforcing the
+  two-character contract at construction guarantees every `FileStatusException` carries a well-formed code,
+  and canonicalizing unmapped CICS `RESP` errors to `"99"` gives them one deterministic representation.
+- **Alternatives:**
+  1. *Validate at the mapping boundary only.* **Rejected:** the exception is constructed from several call
+     sites (batch file I/O and the CICS RESP mapper); validating in the constructor is the single choke
+     point that no caller can bypass.
+  2. *Accept any string and normalize on read.* **Rejected:** deferring normalization leaves malformed
+     values in flight and spreads the concern across every consumer; failing fast at construction is
+     simpler and keeps the invariant local to the type.
+- **Rationale:** the two-character invariant mirrors the COBOL `PIC X(2)` data item exactly, so the typed
+  hierarchy and its HTTP-status / batch-return-code mapping (D15) operate on the same shape of code the
+  legacy program did, and `"99"` is a conventional COBOL general-error file status, making the canonical
+  value self-descriptive to anyone reading a mainframe-derived log.
+- **Risk & mitigation:** a call site that previously passed a longer diagnostic string as the status now
+  fails fast at construction. *Mitigation:* the diagnostic detail belongs in (and is carried by) the
+  exception message rather than the two-character status field; all in-repository call sites were audited
+  to pass valid codes, and regression tests assert both rejection of malformed input and acceptance of
+  valid codes.
+
+---
+
+### D63 — Detail-screen informational messages: live literals restored, obsolete literals documented
+
+- **Status:** Accepted
+- **Type:** Behavior preservation (parity) + **documented deviation**
+- **AAP references:** §0.7.1 H2 (BMS field-level UI contract — screen messages are part of the observable
+  contract), §0.2.2 (CICS COMMAREA/`XCTL` re-expressed as controller navigation returning the next
+  screen's DTO), §0.7.1 H5 (VSAM browse re-expressed as paged/sorted queries), §0.7.2 M1 (FILE
+  STATUS / CICS RESP re-expressed as a typed exception hierarchy), §0.8.3 (observable contracts preserved),
+  §0.8.2 (Explainability — deviations recorded here with rationale)
+- **Decision:** QA finding F-P9-F flagged seven online informational-message literals as divergent or
+  omitted. Their disposition, after tracing each literal's actual emit path in the legacy source (a defined
+  COBOL 88-level `VALUE` clause is only displayed if a `SET`…`TO TRUE` reaches the field-emit `MOVE`), is:
+  - **Restored (live literal, now emitted on the success path):**
+    - **CAVW / Account View** — success now returns the prompt `Enter or update id of account to display`
+      (`PROMPT_FOR_INPUT`) in `web/AccountViewController`. The named literal `WS-INFORM-OUTPUT`
+      (`legacy/cbl/COACTVWC.cbl` — "Displaying details of given Account") is **never `SET`**, so the
+      message the legacy screen actually shows on a successful view is the default prompt applied in
+      `1200-SETUP-SCREEN-VARS`.
+    - **CCDL / Card View** — success now returns `   Displaying requested details` (three leading spaces
+      preserved) via a `MSG_DISPLAYING_DETAILS` constant in `web/CardViewController`. Here
+      `FOUND-CARDS-FOR-ACCOUNT` (`legacy/cbl/COCRDSLC.cbl`) **is** `SET` and emitted, so the literal is
+      live and is reproduced verbatim, leading whitespace included.
+  - **Confirmed correct with no change (obsolete/dead literal):**
+    - **CAUP / Account Update** — `service/AccountService` already returns
+      `Update account details presented above.` (`PROMPT-FOR-CHANGES`) for the initial detail screen. The
+      literal `Details of selected account shown above` (`FOUND-ACCOUNT-DATA`, set once in
+      `legacy/cbl/COACTUPC.cbl`) is always overwritten by `3250-SETUP-INFOMSG` before every `SEND`, so it
+      is dead code the legacy screen never displays; changing the Java message would INTRODUCE a
+      divergence, so `AccountService` and its tests are intentionally left unchanged.
+  - **Documented deviation (superseded by a target model chosen elsewhere in this log):**
+    - **CT00 / Transaction List paging-boundary literals** ("You are at the top of the page…", "You have
+      reached the bottom/top of the page…", `legacy/cbl/COTRN00C.cbl`) arise from record-at-a-time VSAM
+      `STARTBR`/`READNEXT`/`READPREV` end-of-file conditions and are superseded by the paged-query model
+      ([D10](#d10--alternate-indexes-to-b-tree-indexes-vsam-browse-to-sortedpaged-queries)). The
+      user-facing equivalents "You are already at the top/bottom of the page…" ARE preserved as
+      `MSG_TOP_OF_PAGE` / `MSG_BOTTOM_OF_PAGE` in `web/TransactionListController`.
+    - **File-error / not-found composed literals** (e.g. "Unable to lookup…", "…not found in Cross ref
+      file. Resp:…", across the account/card/transaction/user detail programs) are superseded by the
+      typed-exception → HTTP-status model
+      ([D15](#d15--typed-exception-hierarchy-for-file-status--cics-resp)); the caller-visible outcome
+      (404 / 409 / 400) is preserved even though the free-text composition is not reproduced.
+- **Why:** the initial F-P9-F triage mis-read three 88-level literals as "displayed on success" purely from
+  their `VALUE` clauses. Re-tracing each program's send path (`SET`…`TO TRUE` → the single
+  `MOVE WS-INFO-MSG TO …O` emit) showed two of them (CAVW's `WS-INFORM-OUTPUT`, CAUP's `FOUND-ACCOUNT-DATA`)
+  are never the value actually on screen. Restoring only the genuinely live literals — and leaving the
+  already-correct CAUP message alone — is what preserves parity; "restoring" the dead literals would have
+  been a regression.
+- **Alternatives:**
+  1. *Restore all seven literals verbatim as the finding's title suggests.* **Rejected:** two are dead code
+     the legacy never displays and two are boundary/error messages tied to storage/exception models this
+     migration deliberately replaced (D10, D15); reproducing them would either diverge from the real screen
+     or contradict decisions already accepted in this log.
+  2. *Document all seven as deviations and change no code.* **Rejected:** CAVW and CCDL carry genuinely
+     live literals whose absence is a real parity gap; those are fixed in code, and only the truly
+     superseded messages are documented as deviations.
+- **Rationale:** parity is defined by what the legacy screen actually presents, not by every literal
+  present in the source; tracing the emit path distinguishes the two. The live messages are reproduced
+  exactly (including CCDL's leading spaces), the already-correct message is untouched, and the messages
+  that only exist because of the VSAM browse / CICS RESP models are dispositioned against the decisions
+  that replaced those models.
+- **Risk & mitigation:** a consumer asserting on the exact free-text of a boundary/error message would see
+  the typed-outcome/paged-model equivalents rather than the legacy string. *Mitigation:* the user-facing
+  top/bottom-of-page messages are preserved, the caller-visible error outcomes (HTTP status) are preserved,
+  and the restored CAVW/CCDL success messages are covered by success-path controller tests.
 
 ---
 

@@ -98,6 +98,24 @@ public final class FixedWidthCodec {
     private static final char PAD_ZERO = '0';
 
     /**
+     * Highest UTF-16 code unit that maps to a single byte in the fixed-width output charset
+     * (ISO-8859-1 / Latin-1, code points {@code U+0000}..{@code U+00FF}). Every fixed-width record is
+     * serialized one byte per character, so any code unit above this value &mdash; including each half
+     * of a surrogate pair for a supplementary code point &mdash; is not representable and must be
+     * neutralized before the record is written (see {@link #sanitizeFieldValue(String)}).
+     */
+    private static final char MAX_SINGLE_BYTE_CHAR = '\u00FF';
+
+    /**
+     * Deterministic substitute for a character that is not representable in the single-byte output
+     * charset. {@code '?'} (0x3F) is the conventional replacement and is itself a single byte, so the
+     * substitution is strictly one code unit for one code unit and the record's fixed byte length is
+     * always preserved. Rationale is recorded in the decision log (deterministic-replacement encoding
+     * policy for fixed-width external files).
+     */
+    private static final char UNMAPPABLE_REPLACEMENT = '?';
+
+    /**
      * Non-instantiable stateless utility.
      *
      * @throws AssertionError always &mdash; this class exposes only {@code static} members.
@@ -501,7 +519,7 @@ public final class FixedWidthCodec {
      */
     public static String writeAlphanumeric(String value, int length) {
         requirePositiveLength(length, "alphanumeric");
-        String text = (value == null) ? "" : sanitizeRecordDelimiters(value);
+        String text = (value == null) ? "" : sanitizeFieldValue(value);
         if (text.length() > length) {
             return text.substring(0, length);
         }
@@ -509,27 +527,58 @@ public final class FixedWidthCodec {
     }
 
     /**
-     * Replaces embedded record-delimiter control characters &mdash; line feed ({@code 0x0A}) and
-     * carriage return ({@code 0x0D}) &mdash; inside an alphanumeric field value with spaces, so that a
-     * data byte inside a field can never be confused with the physical newline used to frame the
-     * fixed-width records on disk. The substitution is strictly one-for-one (one control character
-     * becomes one space), so the field's character width &mdash; and therefore the record's fixed
-     * length &mdash; is always preserved. Clean data (no embedded delimiters) is returned unchanged via
-     * a fast path, so byte-for-byte golden output is unaffected. The rationale and the retained
-     * trailing framing newline are recorded in decision log D36.
+     * Neutralizes, strictly one code unit for one code unit, any character in an alphanumeric field
+     * value that would break the fixed-width record contract, so that every rendered record is exactly
+     * {@code length} single bytes and can always be written and later re-read:
+     * <ul>
+     *   <li><strong>Embedded record delimiters</strong> &mdash; line feed ({@code 0x0A}) and carriage
+     *       return ({@code 0x0D}) &mdash; are replaced with a space, so a data byte inside a field can
+     *       never be confused with the physical newline used to frame the records on disk (decision
+     *       log D36).</li>
+     *   <li><strong>Characters outside the single-byte output charset</strong> (any UTF-16 code unit
+     *       above {@value #MAX_SINGLE_BYTE_CHAR}, which includes each half of a surrogate pair for a
+     *       supplementary code point such as an emoji) are replaced with the deterministic
+     *       {@link #UNMAPPABLE_REPLACEMENT} substitute. Because the substitution happens
+     *       <em>before</em> {@link #writeAlphanumeric(String, int) truncation} and is one-for-one, a
+     *       supplementary character can never be split across the truncation boundary into a lone
+     *       surrogate, so the downstream ISO-8859-1 encoder can never raise a
+     *       {@code MalformedInputException}/{@code UnmappableCharacterException} that would abort the
+     *       write and leave a truncated or zero-byte external file (QA findings F-P12-UNICODE-BACKUP,
+     *       F-P12-UNICODE-REPORT). The single-byte legacy {@code PIC X} contract could never carry
+     *       such characters, so deterministic replacement is the parity-preserving policy.</li>
+     * </ul>
+     *
+     * <p>The substitution is strictly one-for-one, so the field's character width &mdash; and
+     * therefore the record's fixed byte length &mdash; is always preserved. A single left-to-right
+     * scan first tests whether any rewrite is required; clean data (no embedded delimiter and no
+     * character above {@value #MAX_SINGLE_BYTE_CHAR}) is returned unchanged via that fast path, so
+     * byte-for-byte golden output for all ASCII/Latin-1 data is unaffected.</p>
      *
      * @param value the raw field value (never {@code null} at the call site)
-     * @return the value with any embedded {@code LF}/{@code CR} replaced by spaces
+     * @return the value with embedded {@code LF}/{@code CR} replaced by spaces and every
+     *         non-single-byte code unit replaced by {@value #UNMAPPABLE_REPLACEMENT}
      */
-    private static String sanitizeRecordDelimiters(String value) {
-        // Fast path: the overwhelming majority of field values contain neither delimiter.
-        if (value.indexOf('\n') < 0 && value.indexOf('\r') < 0) {
+    private static String sanitizeFieldValue(String value) {
+        // Fast path: a single scan; the overwhelming majority of field values contain neither an
+        // embedded record delimiter nor any character outside the single-byte output charset.
+        boolean rewrite = false;
+        for (int i = 0; i < value.length(); i++) {
+            char c = value.charAt(i);
+            if (c == '\n' || c == '\r' || c > MAX_SINGLE_BYTE_CHAR) {
+                rewrite = true;
+                break;
+            }
+        }
+        if (!rewrite) {
             return value;
         }
         char[] chars = value.toCharArray();
         for (int i = 0; i < chars.length; i++) {
-            if (chars[i] == '\n' || chars[i] == '\r') {
-                chars[i] = ' ';
+            char c = chars[i];
+            if (c == '\n' || c == '\r') {
+                chars[i] = PAD_SPACE;
+            } else if (c > MAX_SINGLE_BYTE_CHAR) {
+                chars[i] = UNMAPPABLE_REPLACEMENT;
             }
         }
         return new String(chars);

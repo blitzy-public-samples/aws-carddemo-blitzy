@@ -163,6 +163,15 @@ public class CardViewController {
     static final String MSG_PROMPT_FOR_INPUT = "Please enter Account and Card Number";
 
     /**
+     * Card-found detail message &mdash; COBOL {@code FOUND-CARDS-FOR-ACCOUNT} in
+     * {@code legacy/cbl/COCRDSLC.cbl}: {@code '   Displaying requested details'}. The three
+     * leading spaces are part of the legacy literal and are preserved verbatim; the value is
+     * SET at {@code COCRDSLC} L754/L795 and emitted to {@code INFOMSGO} on the populated card
+     * detail screen, so it is reproduced here for exact observable parity (F-P9-F).
+     */
+    static final String MSG_DISPLAYING_DETAILS = "   Displaying requested details";
+
+    /**
      * Invalid-attention-key message &mdash; COBOL {@code CCDA-MSG-INVALID-KEY}
      * ({@code legacy/cpy/CSMSG01Y.cpy}): {@code 'Invalid key pressed. Please see below...'}.
      */
@@ -314,7 +323,8 @@ public class CardViewController {
                         blankScreen(request.accountId(), request.cardId(), null, ex.getMessage(), now));
             }
             return ResponseEntity.ok(cardMapper.toViewResponse(
-                    card, null, null, now, TRANSACTION_ID, TITLE01, TITLE02, PROGRAM_ID, FUNCTION_KEYS));
+                    card, MSG_DISPLAYING_DETAILS, null, now,
+                    TRANSACTION_ID, TITLE01, TITLE02, PROGRAM_ID, FUNCTION_KEYS));
         }
 
         // Any other explicit attention key: re-display the screen with the invalid-key message,

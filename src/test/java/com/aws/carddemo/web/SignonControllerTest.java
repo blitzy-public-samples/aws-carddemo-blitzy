@@ -298,8 +298,10 @@ class SignonControllerTest {
      * with the failure message on the status line ({@code SEND-SIGNON-SCREEN}); this is a
      * same-screen re-display, <strong>not</strong> a hard error. The controller therefore returns
      * HTTP&nbsp;200 (never a 4xx), with the service's exact message and no navigation header. The
-     * empty-field variant additionally proves the request body is intentionally not
-     * {@code @Valid}-annotated: a blank user id/password is a business message, not a 400.
+     * empty-field variant additionally proves that although the request body is now
+     * {@code @Valid}-annotated, a blank user id/password is still a same-screen business message
+     * (not a 400): the DTO uses {@code @Size(max = 8)} with no {@code @NotBlank}, so a blank value
+     * satisfies validation and is handled by the service (QA finding F-P4-J).
      */
     @Nested
     @DisplayName("POST /api/v1/auth/signon - ENTER, rejected sign-on (same-screen 200)")
@@ -332,10 +334,11 @@ class SignonControllerTest {
         }
 
         @Test
-        @DisplayName("empty user id/password returns HTTP 200 with a business message (NOT 400) - the request is not @Valid")
+        @DisplayName("empty user id/password returns HTTP 200 with a business message (NOT 400) - @Size allows blank, no @NotBlank")
         void emptyFieldsAreBusinessMessagesNotValidationErrors() throws Exception {
-            // The controller does not @Valid the body; the empty-field checks live in the service
-            // (COSGN00C PROCESS-ENTER-KEY), so the service IS reached and returns a same-screen message.
+            // The controller is @Valid, but the DTO uses @Size(max = 8) with no @NotBlank, so a blank
+            // value passes bean validation and the empty-field checks in the service (COSGN00C
+            // PROCESS-ENTER-KEY) are reached, returning a same-screen message rather than a 400.
             when(signonService.signon("", ""))
                     .thenReturn(new SignonService.SignonResult(false, "", ' ', null, MSG_ENTER_USER_ID));
 
@@ -351,7 +354,8 @@ class SignonControllerTest {
                     .andExpect(header().doesNotExist(HEADER_NEXT_PROGRAM))
                     .andReturn();
 
-            // The service being invoked proves the request was not short-circuited by bean validation.
+            // The service being invoked proves a blank field passes bean validation (no @NotBlank)
+            // and is not short-circuited by a 400.
             verify(signonService).signon("", "");
             assertNoPasswordLeak(result, SECRET_PASSWORD);
         }
@@ -455,9 +459,12 @@ class SignonControllerTest {
     /**
      * Case&nbsp;H &mdash; BMS field-contract parity (AAP &sect;0.7 hotspot H2, &sect;0.9.2). The
      * response DTO preserves the {@code COSGN0AO} output-field set (names/order), the request DTO
-     * honors the {@code USERIDI PIC X(8)} maximum length and keeps the password write-only, and an
-     * out-of-contract (9-character) user id is handled without a crash (the controller applies no
-     * bean validation, so it echoes the value rather than rejecting it).
+     * honors the {@code USERIDI}/{@code PASSWDI} {@code PIC X(8)} maximum length and keeps the
+     * password write-only, and an out-of-contract (9-character) user id or password is now
+     * <em>rejected</em> with HTTP&nbsp;400: the controller is {@code @Valid}-annotated and the DTO
+     * carries {@code @Size(max = 8)} (but no {@code @NotBlank}), so the BMS {@code X(8)} length is
+     * enforced while a blank value remains a same-screen business message rather than a validation
+     * error (QA finding F-P4-J).
      */
     @Nested
     @DisplayName("BMS field-contract parity (COSGN00)")
@@ -500,25 +507,37 @@ class SignonControllerTest {
         }
 
         @Test
-        @DisplayName("an out-of-contract 9-character user id is echoed, not rejected (no @Valid, no crash)")
-        void nineCharacterUserIdIsEchoedNotRejected() throws Exception {
-            String nineCharId = "USER00012";
-            when(signonService.signon(nineCharId, SECRET_PASSWORD))
-                    .thenReturn(new SignonService.SignonResult(false, nineCharId, ' ', null, MSG_WRONG_PASSWORD));
+        @DisplayName("F-P4-J: an out-of-contract 9-character user id is rejected with HTTP 400 (BMS X(8) enforced); the service is never called")
+        void nineCharacterUserIdIsRejectedWith400() throws Exception {
+            String nineCharId = "USER00012"; // 9 characters, one over the PIC X(8) limit
 
             mockMvc.perform(post(SIGNON_PATH)
                             .contentType(MediaType.APPLICATION_JSON)
                             .content(toJson(Map.of(
                                     "userId", nineCharId,
-                                    "password", SECRET_PASSWORD,
+                                    "password", SECRET_PASSWORD, // 8-char, valid, so only the id is over-length
                                     "action", PfKeyAction.ENTER.name()))))
-                    // Not a 400: the controller does not bean-validate the body, so the over-length
-                    // id is accepted and echoed on the re-displayed screen rather than crashing.
-                    .andExpect(status().isOk())
-                    .andExpect(jsonPath("$.userId").value(nineCharId))
-                    .andExpect(jsonPath("$.errorMessage").value(MSG_WRONG_PASSWORD));
+                    // The controller is now @Valid and the DTO carries @Size(max = 8): an over-length
+                    // id is a bean-validation failure that GlobalExceptionHandler maps to HTTP 400.
+                    .andExpect(status().isBadRequest());
 
-            verify(signonService).signon(nineCharId, SECRET_PASSWORD);
+            // The over-length id is rejected before the controller body runs, so the credential
+            // service is never reached.
+            verifyNoInteractions(signonService);
+        }
+
+        @Test
+        @DisplayName("F-P4-J: an out-of-contract 9-character password is rejected with HTTP 400 (BMS X(8) enforced); the service is never called")
+        void nineCharacterPasswordIsRejectedWith400() throws Exception {
+            mockMvc.perform(post(SIGNON_PATH)
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(toJson(Map.of(
+                                    "userId", "USER0001", // 8-char, valid
+                                    "password", "TooLong99", // 9 characters, one over the PIC X(8) limit
+                                    "action", PfKeyAction.ENTER.name()))))
+                    .andExpect(status().isBadRequest());
+
+            verifyNoInteractions(signonService);
         }
     }
 

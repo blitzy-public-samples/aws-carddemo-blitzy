@@ -377,9 +377,9 @@ class TransactionReportWriterTest {
         ExitStatus exitStatus = writer.afterStep(se);
 
         assertThat(exitStatus).isEqualTo(ExitStatus.FAILED);
-        // Finalization skipped: neither the page total nor the grand total was written.
-        List<String> lines = readLines();
-        assertThat(lines).noneMatch(l -> l.startsWith("Page Total") || l.startsWith("Grand Total"));
+        // Finalization is skipped and the staging output is discarded, so no final-named report is
+        // published (F-P5-C): a consumer never observes a report that lacks its page/grand totals.
+        assertThat(Files.exists(tempDir.resolve(REPORT_FILE))).isFalse();
     }
 
     @Test
@@ -446,6 +446,107 @@ class TransactionReportWriterTest {
         byte[] bytes = Files.readAllBytes(tempDir.resolve(REPORT_FILE));
         int detailStart = 4 * (RECORD_LENGTH + 1);
         assertThat(bytes[detailStart + 86]).isEqualTo((byte) 0xE9);
+    }
+
+    // ------------------------------------------------------------------------
+    // Case 15 — F-P5-C atomic publish / restart safety (staging file + atomic
+    // rename means a restart or failure never truncates or leaves a partial
+    // final-named report).
+    // ------------------------------------------------------------------------
+
+    /** The hidden staging file name the writer publishes from ({@code .DALYREPT.txt.part}). */
+    private static final String STAGING_FILE = "." + REPORT_FILE + ".part";
+
+    @Test
+    @DisplayName("F-P5-C: a clean run atomically publishes the final report and leaves no staging file")
+    void cleanRunPublishesFinalReportAndLeavesNoStagingFile() throws Exception {
+        List<String> lines = runFull(stepWithDates("2022-07-18", "2022-07-19"),
+                chunk(line("T0000000000001", 1L, CARD_A, "01", "P", 5, "G", "POS", "1.00")));
+
+        // The final report exists and every record is a full 133-byte line ...
+        assertThat(lines).isNotEmpty();
+        assertThat(lines).allSatisfy(l -> assertThat(l).hasSize(RECORD_LENGTH));
+        assertThat(Files.exists(tempDir.resolve(REPORT_FILE))).isTrue();
+        // ... and the hidden staging file was consumed by the atomic publish (nothing left behind).
+        assertThat(Files.exists(tempDir.resolve(STAGING_FILE))).isFalse();
+    }
+
+    @Test
+    @DisplayName("F-P5-C: a failing step publishes no final report and leaves no partial or staging file")
+    void failingStepLeavesNoFinalReportAndNoStagingFile() throws Exception {
+        TransactionReportWriter writer = newWriter();
+        StepExecution se = stepWithDates("2022-07-18", "2022-07-19");
+        writer.beforeStep(se);
+        writer.write(chunk(line("T0000000000001", 1L, CARD_A, "01", "P", 5, "G", "POS", "1.00")));
+
+        // Simulate an upstream failure (reader/processor error) surfacing as a FAILED step status
+        // before the writer's afterStep runs.
+        se.setStatus(BatchStatus.FAILED);
+        ExitStatus exit = writer.afterStep(se);
+
+        // The step maps to the I/O-error return code (RC8) ...
+        assertThat(exit).isEqualTo(ExitStatus.FAILED);
+        // ... no final-named report was ever published (a consumer sees nothing, not a partial file)
+        assertThat(Files.exists(tempDir.resolve(REPORT_FILE))).isFalse();
+        // ... and the staging file was discarded.
+        assertThat(Files.exists(tempDir.resolve(STAGING_FILE))).isFalse();
+    }
+
+    @Test
+    @DisplayName("F-P5-C: a re-run atomically replaces a pre-existing final report with the complete rebuilt report")
+    void rerunAtomicallyReplacesPreexistingFinalReport() throws Exception {
+        // A stale final-named report from a prior run/attempt. In the pre-fix design a restart
+        // truncated this file and resumed mid-stream, silently losing the earlier rows. The fixed
+        // writer instead rebuilds the whole report in a staging file (the reader re-reads the entire
+        // input on restart) and atomically replaces the final file.
+        Path finalReport = tempDir.resolve(REPORT_FILE);
+        Files.writeString(finalReport, "STALE-GARBAGE-FROM-A-PRIOR-RUN", StandardCharsets.ISO_8859_1);
+
+        List<String> lines = runFull(stepWithDates("2022-07-18", "2022-07-19"),
+                chunk(line("T0000000000001", 1L, CARD_A, "01", "P", 5, "G", "POS", "100.00")));
+
+        // The final file now holds ONLY the complete rebuilt report: every record is a full 133-byte
+        // line and none of the stale bytes survive (proving a full replace, not a truncating merge).
+        assertThat(lines).isNotEmpty();
+        assertThat(lines).allSatisfy(l -> assertThat(l).hasSize(RECORD_LENGTH));
+        String content = Files.readString(finalReport, StandardCharsets.ISO_8859_1);
+        assertThat(content).doesNotContain("STALE-GARBAGE-FROM-A-PRIOR-RUN");
+        assertThat(Files.exists(tempDir.resolve(STAGING_FILE))).isFalse();
+    }
+
+    // ------------------------------------------------------------------------
+    // Case 16 — F-P12 non-Latin-1 characters are deterministically replaced so
+    // the ISO-8859-1 writer never aborts on an unmappable character.
+    // ------------------------------------------------------------------------
+
+    @Test
+    @DisplayName("F-P12: non-Latin-1 characters in a report field become '?' and the report publishes cleanly (RC0)")
+    void nonLatin1CharactersInReportFieldAreReplacedAndReportPublishes() throws Exception {
+        TransactionReportWriter writer = newWriter();
+        StepExecution se = stepWithDates("2022-07-18", "2022-07-19");
+        writer.beforeStep(se);
+        // The source field is X(10) at offset 83. It carries an omega (U+03A9, one code unit) and a
+        // grinning-face emoji (U+1F600, a surrogate pair = two code units); every one of those code
+        // units is above the single-byte charset, so each is replaced 1:1 with '?': "A?" + "??" + "B".
+        writer.write(chunk(line("T0000000000001", 1L, CARD_A, "01", "P", 5, "G",
+                "A\u03A9\uD83D\uDE00B", "1.00")));
+        ExitStatus exit = writer.afterStep(se);
+
+        // The writer never aborted on an unmappable character: the step completed with RC0 and the
+        // report was atomically published with no staging residue.
+        assertThat(exit).isEqualTo(ExitStatus.COMPLETED);
+        assertThat(Files.exists(tempDir.resolve(REPORT_FILE))).isTrue();
+        assertThat(Files.exists(tempDir.resolve(STAGING_FILE))).isFalse();
+
+        List<String> lines = readLines();
+        String detail = lines.get(4);
+        assertThat(detail).hasSize(RECORD_LENGTH);
+        assertThat(detail.substring(83, 88)).isEqualTo("A???B");
+
+        // Every byte on disk is a single ISO-8859-1 byte (proves no encoding exception was possible).
+        byte[] bytes = Files.readAllBytes(tempDir.resolve(REPORT_FILE));
+        assertThat(StandardCharsets.ISO_8859_1.newEncoder()
+                .canEncode(new String(bytes, StandardCharsets.ISO_8859_1))).isTrue();
     }
 
     // ------------------------------------------------------------------------

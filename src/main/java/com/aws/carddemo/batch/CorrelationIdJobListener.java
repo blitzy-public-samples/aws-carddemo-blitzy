@@ -17,6 +17,8 @@ package com.aws.carddemo.batch;
 
 import java.util.UUID;
 
+import io.micrometer.tracing.Span;
+import io.micrometer.tracing.Tracer;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.slf4j.MDC;
@@ -26,6 +28,7 @@ import org.springframework.batch.core.JobExecutionListener;
 import org.springframework.batch.core.StepExecution;
 import org.springframework.batch.core.StepExecutionListener;
 import org.springframework.batch.item.ExecutionContext;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.stereotype.Component;
 
 /**
@@ -44,8 +47,21 @@ import org.springframework.stereotype.Component;
  * <p><strong>Registration.</strong> This class is a Spring {@link Component} whose default bean
  * name is {@code correlationIdJobListener}. Every batch {@code @Configuration} registers it on its
  * {@code JobBuilder} via {@code .listener(correlationIdJobListener)} (and, where steps may run on a
- * different thread than the job, on the {@code StepBuilder} as well). It has no injected
- * collaborators; a default constructor is therefore sufficient and no field injection is used.</p>
+ * different thread than the job, on the {@code StepBuilder} as well). Its one collaborator, an
+ * {@link ObjectProvider} of {@link Tracer}, is supplied by constructor injection.</p>
+ *
+ * <p><strong>Trace correlation (QA finding F-P6-C).</strong> Populating the MDC makes the
+ * correlation id appear in every batch <em>log</em> line, but it does not by itself attach the id to
+ * the batch <em>trace</em>. Spring Batch wraps each job and step execution in a Micrometer
+ * {@code Observation} (the {@code spring.batch.job}/{@code spring.batch.step} spans) and, with the
+ * OpenTelemetry tracing bridge, opens that observation's scope <em>before</em> invoking
+ * {@link #beforeJob(JobExecution)} / {@link #beforeStep(StepExecution)}. This listener therefore
+ * tags the current span with a {@code correlationId} attribute in those callbacks, so an operator
+ * can pivot from a log line to the matching trace in Tempo/Grafana (and TraceQL can search by
+ * {@code correlationId}) using the single shared key. The {@link Tracer} is looked up through an
+ * {@link ObjectProvider} so the listener degrades cleanly to a pure-MDC no-op when tracing is not on
+ * the classpath or no span is currently recording; it never fails a batch execution for a tracing
+ * reason.</p>
  *
  * <p><strong>Correlation-ID resolution (in {@link #beforeJob(JobExecution)}).</strong> The id is
  * resolved with the following precedence:</p>
@@ -75,6 +91,26 @@ import org.springframework.stereotype.Component;
 public class CorrelationIdJobListener implements JobExecutionListener, StepExecutionListener {
 
     private static final Logger LOGGER = LoggerFactory.getLogger(CorrelationIdJobListener.class);
+
+    /**
+     * Lazy, optional provider of the Micrometer {@link Tracer}. Resolved through an
+     * {@link ObjectProvider} rather than injected directly so this listener works unchanged whether
+     * or not a tracer bean is present (for example in unit slices with tracing disabled): the
+     * provider yields {@code null} instead of failing to wire.
+     */
+    private final ObjectProvider<Tracer> tracerProvider;
+
+    /**
+     * Creates the listener with a lazy provider of the Micrometer {@link Tracer} used to attach the
+     * {@code correlationId} to batch spans.
+     *
+     * @param tracerProvider the (possibly empty) provider of the tracer bean; never {@code null}
+     *                       (Spring always supplies an {@link ObjectProvider}, even when no tracer
+     *                       bean exists)
+     */
+    public CorrelationIdJobListener(ObjectProvider<Tracer> tracerProvider) {
+        this.tracerProvider = tracerProvider;
+    }
 
     /**
      * SLF4J {@link MDC} key under which the correlation ID is published.
@@ -125,6 +161,8 @@ public class CorrelationIdJobListener implements JobExecutionListener, StepExecu
         // Persist the resolved id so subsequent steps (which may run on other threads) and job
         // restarts observe the same value.
         executionContext.putString(CORRELATION_ID_PARAM, correlationId);
+        // Attach the id to the job span so logs and traces share one searchable key (F-P6-C).
+        tagCurrentSpan(correlationId);
 
         LOGGER.info("Batch job {} started with correlationId={}",
                 jobExecution.getJobInstance().getJobName(), correlationId);
@@ -183,8 +221,36 @@ public class CorrelationIdJobListener implements JobExecutionListener, StepExecu
         }
 
         MDC.put(CORRELATION_ID_MDC_KEY, correlationId);
+        // Attach the id to the step span so logs and traces share one searchable key (F-P6-C).
+        tagCurrentSpan(correlationId);
         LOGGER.debug("Batch step {} started with correlationId={}",
                 stepExecution.getStepName(), correlationId);
+    }
+
+    /**
+     * Attaches the resolved correlation id to the currently recording trace span (if any) as a
+     * {@code correlationId} tag, so that the batch job/step trace carries the same identifier that
+     * appears in the logs and can be searched by it in Tempo/Grafana (QA finding F-P6-C).
+     *
+     * <p>The method is fully defensive and side-effect-free when tracing is unavailable: it is a
+     * no-op when no {@link Tracer} bean is present (the {@link ObjectProvider} yields {@code null})
+     * or when there is no current span (for example an unsampled execution). It therefore never
+     * throws and never affects batch flow control or return codes. It is called from
+     * {@link #beforeJob(JobExecution)} and {@link #beforeStep(StepExecution)}, both of which Spring
+     * Batch invokes inside the job/step observation scope, so {@link Tracer#currentSpan()} resolves
+     * to the batch span being recorded.</p>
+     *
+     * @param correlationId the resolved correlation id; never blank when called
+     */
+    private void tagCurrentSpan(String correlationId) {
+        final Tracer tracer = tracerProvider.getIfAvailable();
+        if (tracer == null) {
+            return;
+        }
+        final Span span = tracer.currentSpan();
+        if (span != null) {
+            span.tag(CORRELATION_ID_MDC_KEY, correlationId);
+        }
     }
 
     /**

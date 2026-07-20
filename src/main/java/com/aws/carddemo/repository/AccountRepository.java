@@ -20,10 +20,12 @@ import com.aws.carddemo.domain.Account;
 import jakarta.persistence.LockModeType;
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.Lock;
+import org.springframework.data.jpa.repository.Modifying;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 import org.springframework.stereotype.Repository;
 
+import java.math.BigDecimal;
 import java.util.List;
 import java.util.Optional;
 
@@ -121,4 +123,62 @@ public interface AccountRepository extends JpaRepository<Account, Long> {
     @Lock(LockModeType.OPTIMISTIC_FORCE_INCREMENT)
     @Query("select a from Account a where a.acctId = :acctId")
     Optional<Account> findByIdForVersionedUpdate(@Param("acctId") Long acctId);
+
+    /**
+     * Applies one interest cycle's accumulated interest to an account
+     * <strong>at most once</strong>, reproducing the {@code 1050-UPDATE-ACCOUNT}
+     * paragraph of the interest-calculation batch {@code legacy/cbl/CBACT04C.cbl}
+     * (L350-370) &mdash; add the accumulated per-account interest to
+     * {@code ACCT-CURR-BAL} and zero both cycle amounts &mdash; while guaranteeing
+     * the balance mutation is idempotent per {@code (account, cycle)}.
+     *
+     * <p><strong>Idempotency guard (QA findings F-P6-A / F-P5-D).</strong> The
+     * {@code WHERE} clause posts interest only when the account's
+     * {@code last_interest_cycle} marker is still {@code NULL} (never posted) or
+     * differs from the {@code cycle} being posted. It then stamps
+     * {@code last_interest_cycle = :cycle}. Consequently a re-run or a mid-run
+     * restart of {@code InterestCalculationJob} for the same {@code parmDate}
+     * updates <em>zero</em> rows for any account already posted in a prior run, so
+     * the balance is never double-applied (the correct outcome is
+     * {@code curr_bal 37.51 / version 1}, not {@code 75.02 / version 2}). Under
+     * PostgreSQL {@code READ COMMITTED} two concurrent postings of the same
+     * {@code (account, cycle)} serialize on the row lock and the second matches
+     * zero rows, so exactly-once holds under concurrency as well as sequential
+     * re-runs.</p>
+     *
+     * <p><strong>Why a bulk update.</strong> A conditional {@code UPDATE ... WHERE}
+     * performs the compare-and-set atomically in a single statement, which a
+     * read-then-{@code save} cannot do without a race window. The optimistic-lock
+     * {@code version} is advanced explicitly ({@code a.version = a.version + 1})
+     * because a JPQL bulk update does not auto-increment a {@code @Version} column;
+     * this keeps the version consistent with the read-then-save path so a
+     * successful posting still advances the version exactly once. {@code @Modifying}
+     * is configured to flush pending changes before, and clear the persistence
+     * context after, the statement so that any subsequently loaded {@link Account}
+     * reflects the committed row rather than a stale first-level-cache copy.</p>
+     *
+     * <p>All arithmetic is performed by the database on the {@code DECIMAL(12,2)}
+     * column against a {@link BigDecimal} parameter; {@code double}/{@code float}
+     * are never involved. This is a documented, additive operational-integrity
+     * mechanism (see {@code docs/decision-log.md}); the marker column is created by
+     * Flyway migration {@code V5__add_account_last_interest_cycle.sql}.</p>
+     *
+     * @param acctId   the account to post interest to (COBOL {@code ACCT-ID PIC 9(11)}); never {@code null}
+     * @param interest the accumulated per-account monthly interest to add (scale&nbsp;2); never {@code null}
+     * @param cycle    the 10-character interest cycle ({@code parmDate}) being posted; never {@code null}
+     * @return the number of rows updated: {@code 1} when the interest was applied,
+     *         {@code 0} when this cycle was already posted to the account (idempotent no-op)
+     */
+    @Modifying(clearAutomatically = true, flushAutomatically = true)
+    @Query("update Account a set "
+            + "a.currBal = a.currBal + :interest, "
+            + "a.currCycCredit = 0, "
+            + "a.currCycDebit = 0, "
+            + "a.lastInterestCycle = :cycle, "
+            + "a.version = a.version + 1 "
+            + "where a.acctId = :acctId "
+            + "and (a.lastInterestCycle is null or a.lastInterestCycle <> :cycle)")
+    int applyInterestForCycle(@Param("acctId") Long acctId,
+            @Param("interest") BigDecimal interest,
+            @Param("cycle") String cycle);
 }

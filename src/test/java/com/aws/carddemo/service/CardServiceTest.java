@@ -396,7 +396,7 @@ class CardServiceTest {
         when(cardRepository.save(any(Card.class))).thenReturn(existing);
 
         CardService.CardUpdateResult result =
-                cardService.updateCard(CARD_NUM_1, "JANE SMITH", "Y", "12", "2030");
+                cardService.updateCard(CARD_NUM_1, "JANE SMITH", "Y", "12", "2030", 0L);
 
         assertThat(result.status()).isEqualTo(CardService.CardUpdateStatus.CHANGES_OK);
         assertThat(result.message()).isEmpty();
@@ -418,7 +418,7 @@ class CardServiceTest {
     void updateCardNotFoundThrowsAndDoesNotSave() {
         when(cardRepository.findById(CARD_NUM_1)).thenReturn(Optional.empty());
 
-        assertThatThrownBy(() -> cardService.updateCard(CARD_NUM_1, "JANE SMITH", "Y", "12", "2030"))
+        assertThatThrownBy(() -> cardService.updateCard(CARD_NUM_1, "JANE SMITH", "Y", "12", "2030", 0L))
                 .isInstanceOf(RecordNotFoundException.class)
                 .hasMessage(MSG_NOT_FIND_ACCTCARD);
 
@@ -432,7 +432,7 @@ class CardServiceTest {
         when(cardRepository.findById(CARD_NUM_1)).thenReturn(Optional.of(existing));
 
         CardService.CardUpdateResult result =
-                cardService.updateCard(CARD_NUM_1, "   ", "Y", "12", "2030");
+                cardService.updateCard(CARD_NUM_1, "   ", "Y", "12", "2030", 0L);
 
         assertThat(result.status()).isEqualTo(CardService.CardUpdateStatus.CHANGES_NOT_OK);
         assertThat(result.message()).isEqualTo(MSG_NAME_NOT_PROVIDED);
@@ -447,7 +447,7 @@ class CardServiceTest {
         when(cardRepository.findById(CARD_NUM_1)).thenReturn(Optional.of(existing));
 
         CardService.CardUpdateResult result =
-                cardService.updateCard(CARD_NUM_1, "JANE5 SMITH", "Y", "12", "2030");
+                cardService.updateCard(CARD_NUM_1, "JANE5 SMITH", "Y", "12", "2030", 0L);
 
         assertThat(result.status()).isEqualTo(CardService.CardUpdateStatus.CHANGES_NOT_OK);
         assertThat(result.message()).isEqualTo(MSG_NAME_ALPHA);
@@ -461,7 +461,7 @@ class CardServiceTest {
         when(cardRepository.findById(CARD_NUM_1)).thenReturn(Optional.of(existing));
 
         CardService.CardUpdateResult result =
-                cardService.updateCard(CARD_NUM_1, "JANE SMITH", "X", "12", "2030");
+                cardService.updateCard(CARD_NUM_1, "JANE SMITH", "X", "12", "2030", 0L);
 
         assertThat(result.status()).isEqualTo(CardService.CardUpdateStatus.CHANGES_NOT_OK);
         assertThat(result.message()).isEqualTo(MSG_STATUS_YES_NO);
@@ -475,7 +475,7 @@ class CardServiceTest {
         when(cardRepository.findById(CARD_NUM_1)).thenReturn(Optional.of(existing));
 
         CardService.CardUpdateResult result =
-                cardService.updateCard(CARD_NUM_1, "JANE SMITH", "Y", "13", "2030");
+                cardService.updateCard(CARD_NUM_1, "JANE SMITH", "Y", "13", "2030", 0L);
 
         assertThat(result.status()).isEqualTo(CardService.CardUpdateStatus.CHANGES_NOT_OK);
         assertThat(result.message()).isEqualTo(MSG_MONTH);
@@ -489,7 +489,7 @@ class CardServiceTest {
         when(cardRepository.findById(CARD_NUM_1)).thenReturn(Optional.of(existing));
 
         CardService.CardUpdateResult result =
-                cardService.updateCard(CARD_NUM_1, "JANE SMITH", "Y", "12", "1800");
+                cardService.updateCard(CARD_NUM_1, "JANE SMITH", "Y", "12", "1800", 0L);
 
         assertThat(result.status()).isEqualTo(CardService.CardUpdateStatus.CHANGES_NOT_OK);
         assertThat(result.message()).isEqualTo(MSG_YEAR);
@@ -504,7 +504,7 @@ class CardServiceTest {
 
         // name (digit), status (X), month (13), year (1800) are all invalid.
         CardService.CardUpdateResult result =
-                cardService.updateCard(CARD_NUM_1, "JANE5", "X", "13", "1800");
+                cardService.updateCard(CARD_NUM_1, "JANE5", "X", "13", "1800", 0L);
 
         assertThat(result.status()).isEqualTo(CardService.CardUpdateStatus.CHANGES_NOT_OK);
         assertThat(result.message()).isEqualTo(MSG_NAME_ALPHA);
@@ -518,7 +518,7 @@ class CardServiceTest {
         when(cardRepository.findById(CARD_NUM_1)).thenReturn(Optional.of(existing));
 
         CardService.CardUpdateResult result =
-                cardService.updateCard(CARD_NUM_1, "JANE SMITH", "X", "13", "1800");
+                cardService.updateCard(CARD_NUM_1, "JANE SMITH", "X", "13", "1800", 0L);
 
         assertThat(result.status()).isEqualTo(CardService.CardUpdateStatus.CHANGES_NOT_OK);
         assertThat(result.message()).isEqualTo(MSG_STATUS_YES_NO);
@@ -532,7 +532,7 @@ class CardServiceTest {
         when(cardRepository.findById(CARD_NUM_1)).thenReturn(Optional.of(existing));
 
         CardService.CardUpdateResult result =
-                cardService.updateCard(CARD_NUM_1, "JANE SMITH", "Y", "13", "1800");
+                cardService.updateCard(CARD_NUM_1, "JANE SMITH", "Y", "13", "1800", 0L);
 
         assertThat(result.status()).isEqualTo(CardService.CardUpdateStatus.CHANGES_NOT_OK);
         assertThat(result.message()).isEqualTo(MSG_MONTH);
@@ -548,7 +548,7 @@ class CardServiceTest {
         when(cardRepository.findById(CARD_NUM_1)).thenReturn(Optional.of(existing));
 
         CardService.CardUpdateResult result =
-                cardService.updateCard(CARD_NUM_1, "jane smith", "Y", "12", "2030");
+                cardService.updateCard(CARD_NUM_1, "jane smith", "Y", "12", "2030", 0L);
 
         assertThat(result.status()).isEqualTo(CardService.CardUpdateStatus.NO_CHANGES_DETECTED);
         assertThat(result.message()).isEqualTo(MSG_NO_CHANGE);
@@ -566,7 +566,42 @@ class CardServiceTest {
         when(cardRepository.save(any(Card.class)))
                 .thenThrow(new OptimisticLockingFailureException("row changed concurrently"));
 
-        assertThatThrownBy(() -> cardService.updateCard(CARD_NUM_1, "JANE SMITH", "Y", "12", "2030"))
+        assertThatThrownBy(() -> cardService.updateCard(CARD_NUM_1, "JANE SMITH", "Y", "12", "2030", 0L))
                 .isInstanceOf(OptimisticLockingFailureException.class);
+    }
+
+    @Test
+    @DisplayName("updateCard: observed version no longer matches stored row → 409 conflict before any edit or write (F-P4-D)")
+    void updateCardStaleObservedVersionThrowsConflictAndDoesNotSave() {
+        // The stored card is at version 0 (as newCard primes it); another request has committed a
+        // change since the preview, so the confirm carries a stale observed version (5). The
+        // stale-preview guard must reject the confirm with the concurrency message BEFORE running any
+        // field edit or invoking save() — a stale form can never silently overwrite the newer row.
+        Card existing = newCard(CARD_NUM_1, ACCOUNT_ID, CVV, "OLD NAME", "2025-06-15", "N");
+        when(cardRepository.findById(CARD_NUM_1)).thenReturn(Optional.of(existing));
+
+        assertThatThrownBy(() -> cardService.updateCard(CARD_NUM_1, "JANE SMITH", "Y", "12", "2030", 5L))
+                .isInstanceOf(OptimisticLockingFailureException.class)
+                .hasMessage(CardService.MSG_DATA_CHANGED);
+
+        // No write occurs: the guard short-circuits ahead of the edits and the REWRITE.
+        verify(cardRepository, never()).save(any(Card.class));
+    }
+
+    @Test
+    @DisplayName("updateCard: null observed version on confirm → 409 conflict before any edit or write (F-P4-D)")
+    void updateCardNullObservedVersionThrowsConflictAndDoesNotSave() {
+        // A null observed version means the client never carried a valid X-CardDemo-Card-Version
+        // header, so the confirm cannot be proven to match the previewed card. A valid observed
+        // version is MANDATORY on the state-changing confirm: the guard rejects the write as a 409
+        // conflict rather than trusting an unverifiable submission.
+        Card existing = newCard(CARD_NUM_1, ACCOUNT_ID, CVV, "OLD NAME", "2025-06-15", "N");
+        when(cardRepository.findById(CARD_NUM_1)).thenReturn(Optional.of(existing));
+
+        assertThatThrownBy(() -> cardService.updateCard(CARD_NUM_1, "JANE SMITH", "Y", "12", "2030", null))
+                .isInstanceOf(OptimisticLockingFailureException.class)
+                .hasMessage(CardService.MSG_DATA_CHANGED);
+
+        verify(cardRepository, never()).save(any(Card.class));
     }
 }

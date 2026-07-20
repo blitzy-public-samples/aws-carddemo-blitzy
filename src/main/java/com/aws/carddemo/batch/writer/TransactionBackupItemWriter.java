@@ -20,10 +20,16 @@ import java.io.UncheckedIOException;
 import java.io.Writer;
 import java.math.BigDecimal;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.AtomicMoveNotSupportedException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
+import java.nio.file.StandardOpenOption;
+import java.nio.file.attribute.PosixFilePermission;
+import java.nio.file.attribute.PosixFilePermissions;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
+import java.util.EnumSet;
 
 import com.aws.carddemo.common.util.FixedWidthCodec;
 import com.aws.carddemo.common.util.FixedWidthCodec.FieldDef;
@@ -31,6 +37,7 @@ import com.aws.carddemo.common.util.FixedWidthCodec.RecordBuilder;
 import com.aws.carddemo.domain.Transaction;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.batch.core.BatchStatus;
 import org.springframework.batch.core.ExitStatus;
 import org.springframework.batch.core.StepExecution;
 import org.springframework.batch.core.StepExecutionListener;
@@ -198,6 +205,18 @@ public class TransactionBackupItemWriter
     private static final DateTimeFormatter TIMESTAMP_FORMAT =
             DateTimeFormatter.ofPattern("yyyyMMddHHmmssSSS");
 
+    /**
+     * Suffix of the owner-only staging file that the step writes to before the completed backup is
+     * atomically published to its final generation-style name. A hidden {@code .}-prefixed name with
+     * this suffix keeps a partially-written backup clearly distinguishable from a published one and
+     * ensures no consumer ever observes a final-named partial file (QA finding F-P5-E).
+     */
+    private static final String PART_SUFFIX = ".part";
+
+    /** Owner read/write only ({@code 0600}) staging-file permissions on POSIX filesystems. */
+    private static final EnumSet<PosixFilePermission> OWNER_ONLY_PERMISSIONS =
+            EnumSet.of(PosixFilePermission.OWNER_READ, PosixFilePermission.OWNER_WRITE);
+
     // ------------------------------------------------------------------------
     // 350-byte TRAN-RECORD field descriptors (copybook CVTRA05Y.cpy).
     // Offsets are zero-based and contiguous; see the class Javadoc for the full table.
@@ -254,10 +273,20 @@ public class TransactionBackupItemWriter
      */
     private final String filePrefix;
 
-    /** Open output stream for the current step; {@code null} outside an active step. */
+    /** Open output stream over the staging file for the current step; {@code null} outside an active step. */
     private Writer writer;
 
-    /** Resolved backup file path for the current step; {@code null} outside an active step. */
+    /**
+     * Owner-only staging file the step writes to during the run; atomically renamed to
+     * {@link #backupFile} on success or deleted on failure. {@code null} outside an active step.
+     */
+    private Path tempFile;
+
+    /**
+     * Final published backup file path for the current step (the generation-style name); the staging
+     * file is atomically moved here only after the backup completes cleanly. {@code null} outside an
+     * active step.
+     */
     private Path backupFile;
 
     /** Count of records written during the current step, for the completion log line. */
@@ -312,20 +341,55 @@ public class TransactionBackupItemWriter
         final String timestamp = LocalDateTime.now().format(TIMESTAMP_FORMAT);
         final String uniqueToken = uniqueRunToken(stepExecution);
         final Path target = Path.of(backupDirectory, filePrefix + timestamp + "." + uniqueToken);
+        // Hidden, owner-only staging file in the same directory as the target, so the atomic publish
+        // is a same-filesystem rename. The final generation-style name is never used for the
+        // in-progress write, so no consumer can observe a final-named partial file (F-P5-E).
+        final Path temp = Path.of(backupDirectory,
+                "." + filePrefix + timestamp + "." + uniqueToken + PART_SUFFIX);
         try {
             final Path parent = target.getParent();
             if (parent != null) {
                 Files.createDirectories(parent);
             }
-            this.writer = Files.newBufferedWriter(target, StandardCharsets.ISO_8859_1);
+            this.writer = openOwnerOnlyStagingWriter(temp);
+            this.tempFile = temp;
             this.backupFile = target;
             this.recordsWritten = 0L;
         } catch (IOException ex) {
+            // Best-effort cleanup of any partially-created staging file, then fail fast (RC 8 analog).
+            deleteQuietly(temp);
+            this.writer = null;
+            this.tempFile = null;
+            this.backupFile = null;
             throw new UncheckedIOException(
-                    "Unable to open transaction backup file " + target, ex);
+                    "Unable to open transaction backup staging file " + temp, ex);
         }
-        LOGGER.info("Transaction backup opened: {} (350-byte fixed-width records, ISO-8859-1).",
-                target);
+        LOGGER.info("Transaction backup staging opened: {} (350-byte fixed-width records, ISO-8859-1); "
+                + "will be atomically published to {} on success.", temp, target);
+    }
+
+    /**
+     * Creates the owner-only staging file and returns a buffered writer over it. On a POSIX
+     * filesystem the file is created with {@code 0600} permissions (owner read/write only) so an
+     * in-progress backup is never world-readable; on a non-POSIX filesystem (which does not support
+     * POSIX permission attributes) it is created without them. Any pre-existing staging file at the
+     * same path (from an aborted prior attempt) is removed first so the fresh run always starts from
+     * an empty file.
+     *
+     * @param temp the staging file path to create and open; never {@code null}
+     * @return a buffered {@link Writer} over the freshly created staging file, encoded ISO-8859-1
+     * @throws IOException if the staging file cannot be created or opened
+     */
+    private static Writer openOwnerOnlyStagingWriter(final Path temp) throws IOException {
+        Files.deleteIfExists(temp);
+        try {
+            Files.createFile(temp, PosixFilePermissions.asFileAttribute(OWNER_ONLY_PERMISSIONS));
+        } catch (UnsupportedOperationException nonPosixFileSystem) {
+            // Non-POSIX filesystem (e.g. Windows): create without POSIX permission attributes.
+            Files.createFile(temp);
+        }
+        return Files.newBufferedWriter(temp, StandardCharsets.ISO_8859_1,
+                StandardOpenOption.WRITE, StandardOpenOption.TRUNCATE_EXISTING);
     }
 
     /**
@@ -430,37 +494,103 @@ public class TransactionBackupItemWriter
     }
 
     /**
-     * Flushes and closes the backup stream at the end of the step.
+     * Finalizes the backup at the end of the step by flushing and closing the staging stream and then
+     * either <strong>atomically publishing</strong> the completed staging file to its final
+     * generation-style name (on success) or <strong>deleting</strong> it (on any failure), so a
+     * consumer never observes a final-named partial file (QA finding F-P5-E).
      *
-     * <p>The flush/close runs inside a {@code try/finally} that always clears the per-step state,
-     * guarding against a {@code null} stream (for example when {@link #beforeStep(StepExecution)}
-     * never ran). If the close fails, the failure is logged at {@code ERROR} and the step exit
-     * status is downgraded to {@link ExitStatus#FAILED} (the return-code-8 analog); otherwise the
+     * <p>The step is treated as failed when the {@link StepExecution} status is
+     * {@link BatchStatus#FAILED} (for example the reader threw because the database connection was
+     * terminated mid-backup) or when the stream cannot be flushed/closed cleanly. In either case the
+     * staging file is discarded and {@link ExitStatus#FAILED} (the return-code-8 analog) is returned.
+     * On a clean run the staging file is renamed to the final path with an atomic move (falling back
+     * to a same-directory rename only where the filesystem cannot perform an atomic move), and the
      * step's existing {@link ExitStatus} is returned unchanged so a clean run maps to return code
-     * 0.</p>
+     * 0. All per-step state is cleared in a {@code finally} block so the singleton bean carries no
+     * state between runs.</p>
      *
      * @param stepExecution the current step execution; never {@code null}
-     * @return {@link ExitStatus#FAILED} if the stream could not be closed cleanly, otherwise the
-     *         unchanged {@link StepExecution#getExitStatus() step exit status}
+     * @return {@link ExitStatus#FAILED} if the step failed or the backup could not be closed and
+     *         published cleanly, otherwise the unchanged {@link StepExecution#getExitStatus() step
+     *         exit status}
      */
     @Override
     public ExitStatus afterStep(StepExecution stepExecution) {
         final Writer target = this.writer;
-        if (target == null) {
-            return stepExecution.getExitStatus();
-        }
+        final Path temp = this.tempFile;
+        final Path published = this.backupFile;
+        boolean failed = stepExecution.getStatus() == BatchStatus.FAILED;
         try {
-            target.flush();
-            target.close();
-            LOGGER.info("Transaction backup closed: {} ({} record(s) written).",
-                    this.backupFile, this.recordsWritten);
-        } catch (IOException ex) {
-            LOGGER.error("Failed to flush/close transaction backup file {}", this.backupFile, ex);
-            return ExitStatus.FAILED;
+            if (target != null) {
+                try {
+                    target.flush();
+                    target.close();
+                } catch (IOException ex) {
+                    LOGGER.error("Failed to flush/close transaction backup staging file {}", temp, ex);
+                    failed = true;
+                }
+            }
+            if (temp == null) {
+                // beforeStep never opened a staging file; nothing to publish or discard.
+                return failed ? ExitStatus.FAILED : stepExecution.getExitStatus();
+            }
+            if (failed) {
+                deleteQuietly(temp);
+                LOGGER.error("Transaction backup failed; staging file {} discarded and no backup was "
+                        + "published (no partial final-named file left behind).", temp);
+                return ExitStatus.FAILED;
+            }
+            try {
+                publishAtomically(temp, published);
+            } catch (IOException ex) {
+                LOGGER.error("Failed to publish transaction backup {} -> {}", temp, published, ex);
+                deleteQuietly(temp);
+                return ExitStatus.FAILED;
+            }
+            LOGGER.info("Transaction backup published: {} ({} record(s) written).",
+                    published, this.recordsWritten);
+            return stepExecution.getExitStatus();
         } finally {
             this.writer = null;
+            this.tempFile = null;
             this.backupFile = null;
         }
-        return stepExecution.getExitStatus();
+    }
+
+    /**
+     * Publishes the completed staging file to its final path with an atomic move. On POSIX this is a
+     * single {@code rename(2)}, so a consumer sees either the previous state or the fully-written
+     * backup, never a partial file. If the filesystem cannot perform an atomic move a plain
+     * same-directory rename is used as the closest available fallback; the final generation-style
+     * name is unique per run, so no pre-existing file is ever replaced.
+     *
+     * @param temp      the completed staging file; never {@code null}
+     * @param published the final destination path; never {@code null}
+     * @throws IOException if the move fails
+     */
+    private static void publishAtomically(final Path temp, final Path published) throws IOException {
+        try {
+            Files.move(temp, published, StandardCopyOption.ATOMIC_MOVE);
+        } catch (AtomicMoveNotSupportedException atomicUnsupported) {
+            Files.move(temp, published);
+        }
+    }
+
+    /**
+     * Deletes the given path if it exists, swallowing any {@link IOException} (logged at {@code WARN})
+     * so cleanup on a failure path never masks the original failure.
+     *
+     * @param path the path to delete; may be {@code null}
+     */
+    private static void deleteQuietly(final Path path) {
+        if (path == null) {
+            return;
+        }
+        try {
+            Files.deleteIfExists(path);
+        } catch (IOException ex) {
+            LOGGER.warn("Unable to delete transaction backup staging file {}: {}",
+                    path, ex.getMessage());
+        }
     }
 }

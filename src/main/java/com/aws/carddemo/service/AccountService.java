@@ -959,8 +959,18 @@ public class AccountService {
         // account is loaded with force-increment above, a prior confirmed edit -- including a
         // customer-only edit -- will have advanced the version, so this single guard rejects a
         // stale editor of either record, covering the whole account+customer aggregate.
+        //
+        // A valid observed version is MANDATORY on this state-changing confirm (F-P4-B): a null
+        // expectedVersion means the client either never carried the X-CardDemo-Account-Version
+        // header or carried a non-numeric / overflowing value that parseVersion could not verify.
+        // Such an unverifiable version cannot prove the operator edited the row they are about to
+        // overwrite, so it is treated as a conflict rather than silently allowed to proceed -- the
+        // stale-write protection must never be bypassed by an absent or malformed version. The
+        // rare, legitimate flow always emits and echoes a numeric version, so this rejects only
+        // stale or contract-violating submissions, exactly the "mandatory valid observed version"
+        // the finding requires.
         Long expectedVersion = command.expectedVersion();
-        if (expectedVersion != null && !expectedVersion.equals(account.getVersion())) {
+        if (expectedVersion == null || !expectedVersion.equals(account.getVersion())) {
             throw new OptimisticLockingFailureException(MSG_DATA_CHANGED);
         }
 

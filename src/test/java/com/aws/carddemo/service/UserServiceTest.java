@@ -125,6 +125,9 @@ public class UserServiceTest {
     /** Record-not-found message for update and delete. */
     private static final String MSG_USER_ID_NOT_FOUND = "User ID NOT found...";
 
+    /** CU02 stale-form conflict message (F-P7-STALE); mirrors {@code UserService.MSG_DATA_CHANGED}. */
+    private static final String MSG_DATA_CHANGED = "Record changed by some one else. Please review";
+
     /** "Nothing changed" message for update ({@code COUSR02C UPDATE-USER-INFO}). */
     private static final String MSG_PLEASE_MODIFY = "Please modify to update ...";
 
@@ -205,7 +208,12 @@ public class UserServiceTest {
                                      String lastName,
                                      String pwdHash,
                                      String type) {
-        return new UserSecurity(id, firstName, lastName, pwdHash, type);
+        UserSecurity u = new UserSecurity(id, firstName, lastName, pwdHash, type);
+        // A persisted row carries a JPA @Version; a freshly-inserted row is version 0. The update
+        // tests carry this same value back as the observed version (F-P7-STALE) so the stale-form
+        // guard passes transparently and the core update logic remains what is under test.
+        u.setVersion(0L);
+        return u;
     }
 
     // ==================================================================
@@ -410,7 +418,7 @@ public class UserServiceTest {
                                                   char userType,
                                                   String expectedMessage) {
         UserService.UserResult result =
-                service.updateUser(userId, firstName, lastName, rawPassword, userType);
+                service.updateUser(userId, firstName, lastName, rawPassword, userType, 0L);
 
         assertThat(result.success()).isFalse();
         assertThat(result.user()).isNull();
@@ -430,7 +438,7 @@ public class UserServiceTest {
                 .thenAnswer(invocation -> invocation.getArgument(0, UserSecurity.class));
 
         UserService.UserResult result =
-                service.updateUser(USER_ID, "Jane", "Smith", NEW_RAW_PASSWORD, 'A');
+                service.updateUser(USER_ID, "Jane", "Smith", NEW_RAW_PASSWORD, 'A', 0L);
 
         ArgumentCaptor<UserSecurity> captor = ArgumentCaptor.forClass(UserSecurity.class);
         verify(userSecurityRepository).save(captor.capture());
@@ -458,7 +466,7 @@ public class UserServiceTest {
                 .thenAnswer(invocation -> invocation.getArgument(0, UserSecurity.class));
 
         UserService.UserResult result =
-                service.updateUser(USER_ID, "Jane", "Doe", NEW_RAW_PASSWORD, 'U');
+                service.updateUser(USER_ID, "Jane", "Doe", NEW_RAW_PASSWORD, 'U', 0L);
 
         ArgumentCaptor<UserSecurity> captor = ArgumentCaptor.forClass(UserSecurity.class);
         verify(userSecurityRepository).save(captor.capture());
@@ -477,7 +485,7 @@ public class UserServiceTest {
         when(passwordEncoder.matches(RAW_PASSWORD_UPPER, STORED_HASH)).thenReturn(true);
 
         UserService.UserResult result =
-                service.updateUser(USER_ID, "Jane", "Doe", RAW_PASSWORD, 'U');
+                service.updateUser(USER_ID, "Jane", "Doe", RAW_PASSWORD, 'U', 0L);
 
         assertThat(result.success()).isFalse();
         assertThat(result.user()).isSameAs(existing);
@@ -490,7 +498,7 @@ public class UserServiceTest {
     void updateUserThrowsWhenNotFound() {
         when(userSecurityRepository.findById(USER_ID)).thenReturn(Optional.empty());
 
-        assertThatThrownBy(() -> service.updateUser(USER_ID, "Jane", "Doe", NEW_RAW_PASSWORD, 'A'))
+        assertThatThrownBy(() -> service.updateUser(USER_ID, "Jane", "Doe", NEW_RAW_PASSWORD, 'A', 0L))
                 .isInstanceOf(RecordNotFoundException.class)
                 .hasMessage(MSG_USER_ID_NOT_FOUND);
 
@@ -507,8 +515,42 @@ public class UserServiceTest {
         when(userSecurityRepository.save(any(UserSecurity.class)))
                 .thenThrow(new OptimisticLockingFailureException("stale user_security row"));
 
-        assertThatThrownBy(() -> service.updateUser(USER_ID, "Jane", "Doe", RAW_PASSWORD, 'U'))
+        assertThatThrownBy(() -> service.updateUser(USER_ID, "Jane", "Doe", RAW_PASSWORD, 'U', 0L))
                 .isInstanceOf(OptimisticLockingFailureException.class);
+    }
+
+    @Test
+    @DisplayName("F-P7-STALE: a stale observed version (does not match the persisted row) is rejected as a conflict and writes nothing")
+    void updateUserStaleObservedVersionThrowsConflict() {
+        // F-P7-STALE: the CU02 form was rendered against version 0, but the persisted row has since
+        // advanced (another administrator committed a change). The observed version (0) no longer
+        // matches the current row (5), so the stale form is rejected as a 409 conflict before any
+        // change is applied -- the fresh state is never overwritten.
+        UserSecurity existing = user(USER_ID, "John", "Doe", STORED_HASH, "U");
+        existing.setVersion(5L); // persisted row advanced past the version the form observed
+        when(userSecurityRepository.findById(USER_ID)).thenReturn(Optional.of(existing));
+
+        assertThatThrownBy(() -> service.updateUser(USER_ID, "Jane", "Doe", RAW_PASSWORD, 'U', 0L))
+                .isInstanceOf(OptimisticLockingFailureException.class)
+                .hasMessage(MSG_DATA_CHANGED);
+
+        verify(userSecurityRepository, never()).save(any(UserSecurity.class));
+    }
+
+    @Test
+    @DisplayName("F-P7-STALE: an absent (null) observed version is rejected as a conflict (mandatory valid version) and writes nothing")
+    void updateUserNullObservedVersionThrowsConflict() {
+        // F-P7-STALE: a null observed version means the save carried no verifiable X-CardDemo-User-Version
+        // header. It cannot prove the operator edited the row they are about to overwrite, so it is
+        // rejected as a conflict rather than silently allowed to proceed (mandatory-valid-version).
+        UserSecurity existing = user(USER_ID, "John", "Doe", STORED_HASH, "U");
+        when(userSecurityRepository.findById(USER_ID)).thenReturn(Optional.of(existing));
+
+        assertThatThrownBy(() -> service.updateUser(USER_ID, "Jane", "Doe", RAW_PASSWORD, 'U', null))
+                .isInstanceOf(OptimisticLockingFailureException.class)
+                .hasMessage(MSG_DATA_CHANGED);
+
+        verify(userSecurityRepository, never()).save(any(UserSecurity.class));
     }
 
     // ==================================================================

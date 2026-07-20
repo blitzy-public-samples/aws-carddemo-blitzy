@@ -25,7 +25,7 @@ One row per COBOL program: its type, unique PROCEDURE DIVISION paragraph count, 
 | 4 | `CBACT04C.cbl` | batch | 22 | batch/InterestCalculationJob | INTCALC |
 | 5 | `CBCUS01C.cbl` | batch | 5 | batch/CustomerMasterPrintJob | (customer master print) |
 | 6 | `CBSTM03A.CBL` | batch | 25 | batch/StatementGenerationJob | CREASTMT |
-| 7 | `CBSTM03B.CBL` | batch | 14 | batch/StatementGenerationJob -> service/StatementFileService | CREASTMT (subprogram) |
+| 7 | `CBSTM03B.CBL` | batch | 14 | batch/StatementGenerationJob -> batch/reader/StatementFileService | CREASTMT (subprogram) |
 | 8 | `CBTRN01C.cbl` | batch | 18 | batch/DailyTransactionValidateJob | (daily validate) |
 | 9 | `CBTRN02C.cbl` | batch | 26 | batch/DailyTransactionPostingJob | POSTTRAN |
 | 10 | `CBTRN03C.cbl` | batch | 26 | batch/TransactionReportJob | TRANREPT.prc |
@@ -174,7 +174,7 @@ Each of the 17 online screens maps its BMS map definition and symbolic copybook 
 
 ### 3.2 Field-level traceability (441 fields)
 
-One row per **named** `DFHMDF` field across all 17 BMS maps (441 fields total; static screen-literal `DFHMDF` entries without a field name are not data-contract fields and are omitted). Each row preserves the field's **length**, **screen position** (`POS=(row,col)`), **`ATTRB`** byte semantics, **`COLOR`**, and any **edit contract** (`PICIN`/`PICOUT` numeric-edit masks, `VALIDN`, `HILIGHT`, `JUSTIFY`), and maps it to its DTO field and direction. Field direction is derived from `ATTRB`: `UNPROT`/`IC` fields are **input (request)**, `PROT`/`ASKIP` fields are **output (response)**.
+One row per **named** `DFHMDF` field across all 17 BMS maps (441 fields total; static screen-literal `DFHMDF` entries without a field name are not data-contract fields and are omitted). Each row preserves the field's **length**, **screen position** (`POS=(row,col)`), **`ATTRB`** byte semantics, **`COLOR`**, and any **edit contract** (`PICIN`/`PICOUT` numeric-edit masks, `VALIDN`, `HILIGHT`, `JUSTIFY`), and maps it to its DTO field and direction. Field direction is derived from `ATTRB`: `UNPROT`/`IC` fields are **input (request)**, `PROT`/`ASKIP` fields are **output (response)**. This static-`ATTRB` derivation is **overridden by the program's runtime behavior** in two cases: (1) fields the program **dynamically unprotects** to accept operator input are **input (request)** even though the map defines them `PROT` — e.g. the Card List per-row selection fields `CRDSEL1`..`CRDSEL7`, which `COCRDLIC` unprotects (`FLG-PROTECT-SELECT-ROWS`) and reads back as the selection (`MOVE CRDSELnI ... TO WS-EDIT-SELECT`), mapped to `CardListRequest.rowSelections`; and (2) `DRK`/`ASKIP` **stopper attributes** that carry no data-contract value are **terminal-only** (no DTO field) — e.g. the Card List `CRDSTP2`..`CRDSTP7` inter-field stoppers.
 
 **`ATTRB` / attribute legend:** `ASKIP` = autoskip (protected, cursor skips) → output; `PROT` = protected → output; `UNPROT` = unprotected → **input**; `NORM` = normal intensity; `BRT` = bright; `DRK` = dark/non-display (e.g. password/CVV); `FSET` = modified-data-tag preset; `IC` = insert-cursor (initial cursor position). `HILIGHT=UNDERLINE` marks an input field's edit box; `VALIDN` carries MUSTFILL/MUSTENTER validation; `PICIN`/`PICOUT` carry the numeric edit mask reproduced by the DTO's Bean-Validation/format rules; `JUSTIFY=RIGHT` right-justifies numeric entry.
 
@@ -332,42 +332,51 @@ One row per **named** `DFHMDF` field across all 17 BMS maps (441 fields total; s
 | `PAGENO` | 3 | 4,76 | - | - | alnum | `pageno` (output (response)) |
 | `ACCTSID` | 11 | 6,44 | FSET,IC,NORM,UNPROT | GREEN | HILIGHT=UNDERLINE | `acctsid` (input (request)) |
 | `CARDSID` | 16 | 7,44 | FSET,NORM,UNPROT | GREEN | HILIGHT=UNDERLINE | `cardsid` (input (request)) |
-| `CRDSEL1` | 1 | 11,12 | FSET,NORM,PROT | DEFAULT | HILIGHT=UNDERLINE | `crdsel1` (output (response)) |
+| `CRDSEL1` | 1 | 11,12 | FSET,NORM,PROT | DEFAULT | HILIGHT=UNDERLINE | `crdsel1` (input (request)) |
 | `ACCTNO1` | 11 | 11,22 | NORM,PROT | DEFAULT | HILIGHT=OFF | `acctno1` (output (response)) |
 | `CRDNUM1` | 16 | 11,43 | NORM,PROT | DEFAULT | HILIGHT=OFF | `crdnum1` (output (response)) |
 | `CRDSTS1` | 1 | 11,67 | NORM,PROT | DEFAULT | HILIGHT=OFF | `crdsts1` (output (response)) |
-| `CRDSEL2` | 1 | 12,12 | FSET,NORM,PROT | DEFAULT | HILIGHT=UNDERLINE | `crdsel2` (output (response)) |
-| `CRDSTP2` | 1 | 12,14 | ASKIP,DRK,FSET | DEFAULT | HILIGHT=OFF | `crdstp2` (output (response)) |
+| `CRDSEL2` | 1 | 12,12 | FSET,NORM,PROT | DEFAULT | HILIGHT=UNDERLINE | `crdsel2` (input (request)) |
+| `CRDSTP2` | 1 | 12,14 | ASKIP,DRK,FSET | DEFAULT | HILIGHT=OFF | `crdstp2` (terminal-only) |
 | `ACCTNO2` | 11 | 12,22 | NORM,PROT | DEFAULT | HILIGHT=OFF | `acctno2` (output (response)) |
 | `CRDNUM2` | 16 | 12,43 | NORM,PROT | DEFAULT | HILIGHT=OFF | `crdnum2` (output (response)) |
 | `CRDSTS2` | 1 | 12,67 | NORM,PROT | DEFAULT | HILIGHT=OFF | `crdsts2` (output (response)) |
-| `CRDSEL3` | 1 | 13,12 | FSET,NORM,PROT | DEFAULT | HILIGHT=UNDERLINE | `crdsel3` (output (response)) |
-| `CRDSTP3` | 1 | 13,14 | ASKIP,DRK,FSET | DEFAULT | HILIGHT=OFF | `crdstp3` (output (response)) |
+| `CRDSEL3` | 1 | 13,12 | FSET,NORM,PROT | DEFAULT | HILIGHT=UNDERLINE | `crdsel3` (input (request)) |
+| `CRDSTP3` | 1 | 13,14 | ASKIP,DRK,FSET | DEFAULT | HILIGHT=OFF | `crdstp3` (terminal-only) |
 | `ACCTNO3` | 11 | 13,22 | NORM,PROT | DEFAULT | HILIGHT=OFF | `acctno3` (output (response)) |
 | `CRDNUM3` | 16 | 13,43 | NORM,PROT | DEFAULT | HILIGHT=OFF | `crdnum3` (output (response)) |
 | `CRDSTS3` | 1 | 13,67 | NORM,PROT | DEFAULT | HILIGHT=OFF | `crdsts3` (output (response)) |
-| `CRDSEL4` | 1 | 14,12 | FSET,NORM,PROT | DEFAULT | HILIGHT=UNDERLINE | `crdsel4` (output (response)) |
-| `CRDSTP4` | 1 | 14,14 | ASKIP,DRK,FSET | DEFAULT | HILIGHT=OFF | `crdstp4` (output (response)) |
+| `CRDSEL4` | 1 | 14,12 | FSET,NORM,PROT | DEFAULT | HILIGHT=UNDERLINE | `crdsel4` (input (request)) |
+| `CRDSTP4` | 1 | 14,14 | ASKIP,DRK,FSET | DEFAULT | HILIGHT=OFF | `crdstp4` (terminal-only) |
 | `ACCTNO4` | 11 | 14,22 | NORM,PROT | DEFAULT | HILIGHT=OFF | `acctno4` (output (response)) |
 | `CRDNUM4` | 16 | 14,43 | NORM,PROT | DEFAULT | HILIGHT=OFF | `crdnum4` (output (response)) |
 | `CRDSTS4` | 1 | 14,67 | NORM,PROT | DEFAULT | HILIGHT=OFF | `crdsts4` (output (response)) |
-| `CRDSEL5` | 1 | 15,12 | FSET,NORM,PROT | DEFAULT | HILIGHT=UNDERLINE | `crdsel5` (output (response)) |
-| `CRDSTP5` | 1 | 15,14 | ASKIP,DRK,FSET | DEFAULT | HILIGHT=OFF | `crdstp5` (output (response)) |
+| `CRDSEL5` | 1 | 15,12 | FSET,NORM,PROT | DEFAULT | HILIGHT=UNDERLINE | `crdsel5` (input (request)) |
+| `CRDSTP5` | 1 | 15,14 | ASKIP,DRK,FSET | DEFAULT | HILIGHT=OFF | `crdstp5` (terminal-only) |
 | `ACCTNO5` | 11 | 15,22 | NORM,PROT | DEFAULT | HILIGHT=OFF | `acctno5` (output (response)) |
 | `CRDNUM5` | 16 | 15,43 | NORM,PROT | DEFAULT | HILIGHT=OFF | `crdnum5` (output (response)) |
 | `CRDSTS5` | 1 | 15,67 | NORM,PROT | DEFAULT | HILIGHT=OFF | `crdsts5` (output (response)) |
-| `CRDSEL6` | 1 | 16,12 | FSET,NORM,PROT | DEFAULT | HILIGHT=UNDERLINE | `crdsel6` (output (response)) |
-| `CRDSTP6` | 1 | 16,14 | ASKIP,DRK,FSET | DEFAULT | HILIGHT=OFF | `crdstp6` (output (response)) |
+| `CRDSEL6` | 1 | 16,12 | FSET,NORM,PROT | DEFAULT | HILIGHT=UNDERLINE | `crdsel6` (input (request)) |
+| `CRDSTP6` | 1 | 16,14 | ASKIP,DRK,FSET | DEFAULT | HILIGHT=OFF | `crdstp6` (terminal-only) |
 | `ACCTNO6` | 11 | 16,22 | NORM,PROT | DEFAULT | HILIGHT=OFF | `acctno6` (output (response)) |
 | `CRDNUM6` | 16 | 16,43 | NORM,PROT | DEFAULT | HILIGHT=OFF | `crdnum6` (output (response)) |
 | `CRDSTS6` | 1 | 16,67 | NORM,PROT | DEFAULT | HILIGHT=OFF | `crdsts6` (output (response)) |
-| `CRDSEL7` | 1 | 17,12 | FSET,NORM,PROT | DEFAULT | HILIGHT=UNDERLINE | `crdsel7` (output (response)) |
-| `CRDSTP7` | 1 | 17,14 | ASKIP,DRK,FSET | DEFAULT | HILIGHT=OFF | `crdstp7` (output (response)) |
+| `CRDSEL7` | 1 | 17,12 | FSET,NORM,PROT | DEFAULT | HILIGHT=UNDERLINE | `crdsel7` (input (request)) |
+| `CRDSTP7` | 1 | 17,14 | ASKIP,DRK,FSET | DEFAULT | HILIGHT=OFF | `crdstp7` (terminal-only) |
 | `ACCTNO7` | 11 | 17,22 | NORM,PROT | DEFAULT | HILIGHT=OFF | `acctno7` (output (response)) |
 | `CRDNUM7` | 16 | 17,43 | NORM,PROT | DEFAULT | HILIGHT=OFF | `crdnum7` (output (response)) |
 | `CRDSTS7` | 1 | 17,67 | NORM,PROT | DEFAULT | HILIGHT=OFF | `crdsts7` (output (response)) |
 | `INFOMSG` | 45 | 20,19 | PROT | NEUTRAL | HILIGHT=OFF | `infomsg` (output (response)) |
 | `ERRMSG` | 78 | 23,1 | ASKIP,BRT,FSET | RED | alnum | `errmsg` (output (response)) |
+
+> **Direction note (runtime override of the static-`ATTRB` rule).** The seven `CRDSEL1`..`CRDSEL7`
+> fields are the per-row **selection input**: although the map defines them `PROT`, `COCRDLIC`
+> dynamically unprotects them (`FLG-PROTECT-SELECT-ROWS`) and reads them back
+> (`MOVE CRDSELnI OF CCRDLIAI TO WS-EDIT-SELECT(n)`, L972+), so they are **input (request)** and map to
+> `CardListRequest.rowSelections`. The six `CRDSTP2`..`CRDSTP7` fields are `DRK`/`ASKIP` inter-field
+> **stopper attributes** that carry no business value and have **no DTO field**, so they are
+> **terminal-only** rather than response data. `CardListResponse.CardListRow` models only the
+> `ACCTNOn`/`CRDNUMn`/`CRDSTSn` output columns.
 
 #### 3.2.6 Card View — `COCRDSL.bms` -> `dto/CardViewRequest.java` / `dto/CardViewResponse.java` (15 fields)
 
@@ -843,17 +852,17 @@ One subsection per program (28 total). Every PROCEDURE DIVISION paragraph from A
 | `3000-ACCTFILE-GET` | Fetch Account record | AccountRepository.findById |
 | `4000-TRNXFILE-GET` | Fetch Transaction record | TransactionRepository.findById |
 | `5000-CREATE-STATEMENT` | Assemble a statement | StatementGenerationJob processor (build statement model) |
-| `5100-WRITE-HTML-HEADER` | Write HTML statement header | service/StatementFileService / writer (HTML header) |
+| `5100-WRITE-HTML-HEADER` | Write HTML statement header | batch/reader/StatementFileService / writer (HTML header) |
 | `5100-EXIT` | Structured paragraph return | (no-op) structured control return |
-| `5200-WRITE-HTML-NMADBS` | Write name/address block | service/StatementFileService / writer (HTML name/address) |
+| `5200-WRITE-HTML-NMADBS` | Write name/address block | batch/reader/StatementFileService / writer (HTML name/address) |
 | `5200-EXIT` | Structured paragraph return | (no-op) structured control return |
-| `6000-WRITE-TRANS` | Write statement transaction lines | service/StatementFileService / writer (statement txn lines) |
-| `8100-FILE-OPEN` | Open statement files (I/O dispatch) | service/StatementFileService (file open dispatch; no explicit open) |
+| `6000-WRITE-TRANS` | Write statement transaction lines | batch/reader/StatementFileService / writer (statement txn lines) |
+| `8100-FILE-OPEN` | Open statement files (I/O dispatch) | batch/reader/StatementFileService (file open dispatch; no explicit open) |
 | `8100-TRNXFILE-OPEN` | Open Transaction file | TransactionRepository - Spring Data JPA (no explicit open) |
 | `8200-XREFFILE-OPEN` | Open CardXref file | CardXrefRepository - Spring Data JPA (no explicit open) |
 | `8300-CUSTFILE-OPEN` | Open Customer file | CustomerRepository - Spring Data JPA (no explicit open) |
 | `8400-ACCTFILE-OPEN` | Open Account file | AccountRepository - Spring Data JPA (no explicit open) |
-| `8500-READTRNX-READ` | Read transactions for statement | service/StatementFileService.readTransactions -> TransactionRepository |
+| `8500-READTRNX-READ` | Read transactions for statement | batch/reader/StatementFileService.readTransactions -> TransactionRepository |
 | `8599-EXIT` | Structured paragraph return | (no-op) structured control return |
 | `9100-TRNXFILE-CLOSE` | Close Transaction file | TransactionRepository - Spring Data JPA (no explicit close) |
 | `9200-XREFFILE-CLOSE` | Close CardXref file | CardXrefRepository - Spring Data JPA (no explicit close) |
@@ -861,24 +870,24 @@ One subsection per program (28 total). Every PROCEDURE DIVISION paragraph from A
 | `9400-ACCTFILE-CLOSE` | Close Account file | AccountRepository - Spring Data JPA (no explicit close) |
 | `9999-ABEND-PROGRAM` | Abnormal-end handler | exception/GlobalExceptionHandler -> thrown exception (online) / batch job failure |
 
-### 4.7 `CBSTM03B.CBL` -> batch/StatementGenerationJob -> service/StatementFileService
+### 4.7 `CBSTM03B.CBL` -> batch/StatementGenerationJob -> batch/reader/StatementFileService
 
 *Statement file-I/O subprogram (called by CBSTM03A). Type: batch; 14 paragraphs; JCL CREASTMT (subprogram); source: `legacy/cbl/CBSTM03B.CBL`.*
 
 | COBOL Paragraph | Purpose | Target Java (class#method or component) |
 |-----------------|---------|-----------------------------------------|
-| `0000-START` | File-I/O subprogram entry (function dispatch) | service/StatementFileService entry (operation dispatch) |
+| `0000-START` | File-I/O subprogram entry (function dispatch) | batch/reader/StatementFileService entry (operation dispatch) |
 | `9999-GOBACK` | Return to caller | Job/Step completion - structured return |
-| `1000-TRNXFILE-PROC` | Transaction file operation (dispatch) | service/StatementFileService - Transaction op (TransactionRepository) |
+| `1000-TRNXFILE-PROC` | Transaction file operation (dispatch) | batch/reader/StatementFileService - Transaction op (TransactionRepository) |
 | `1900-EXIT` | Structured paragraph return | (no-op) structured control return |
 | `1999-EXIT` | Structured paragraph return | (no-op) structured control return |
-| `2000-XREFFILE-PROC` | CardXref file operation (dispatch) | service/StatementFileService - CardXref op (CardXrefRepository) |
+| `2000-XREFFILE-PROC` | CardXref file operation (dispatch) | batch/reader/StatementFileService - CardXref op (CardXrefRepository) |
 | `2900-EXIT` | Structured paragraph return | (no-op) structured control return |
 | `2999-EXIT` | Structured paragraph return | (no-op) structured control return |
-| `3000-CUSTFILE-PROC` | Customer file operation (dispatch) | service/StatementFileService - Customer op (CustomerRepository) |
+| `3000-CUSTFILE-PROC` | Customer file operation (dispatch) | batch/reader/StatementFileService - Customer op (CustomerRepository) |
 | `3900-EXIT` | Structured paragraph return | (no-op) structured control return |
 | `3999-EXIT` | Structured paragraph return | (no-op) structured control return |
-| `4000-ACCTFILE-PROC` | Account file operation (dispatch) | service/StatementFileService - Account op (AccountRepository) |
+| `4000-ACCTFILE-PROC` | Account file operation (dispatch) | batch/reader/StatementFileService - Account op (AccountRepository) |
 | `4900-EXIT` | Structured paragraph return | (no-op) structured control return |
 | `4999-EXIT` | Structured paragraph return | (no-op) structured control return |
 
@@ -1506,7 +1515,7 @@ This section provides the reverse direction required for bidirectional traceabil
 | batch/DailyTransactionValidateJob | CBTRN01C |
 | batch/DailyTransactionPostingJob + service/PostingService | CBTRN02C (POSTTRAN); reject codes 100/101/102/103 at 1500-A/1500-B |
 | batch/InterestCalculationJob | CBACT04C (INTCALC); 1300-COMPUTE-INTEREST |
-| batch/StatementGenerationJob + service/StatementFileService | CBSTM03A.CBL + CBSTM03B.CBL (CREASTMT) |
+| batch/StatementGenerationJob + batch/reader/StatementFileService | CBSTM03A.CBL + CBSTM03B.CBL (CREASTMT) |
 | batch/TransactionReportJob | CBTRN03C (TRANREPT.prc) |
 | batch/AccountMasterPrintJob | CBACT01C |
 | batch/CardMasterPrintJob | CBACT02C |

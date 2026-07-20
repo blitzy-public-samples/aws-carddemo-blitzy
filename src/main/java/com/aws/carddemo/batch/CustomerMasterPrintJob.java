@@ -67,17 +67,23 @@ import com.aws.carddemo.repository.CustomerRepository;
  * </ul>
  *
  * <h2>Sensitive PII &mdash; documented security deviation</h2>
- * The legacy {@code DISPLAY CUSTOMER-RECORD} prints the entire record,
- * including the social security number ({@code CUST-SSN}), the government-issued
- * identifier ({@code CUST-GOVT-ISSUED-ID}), and the date of birth
- * ({@code CUST-DOB-YYYY-MM-DD}). Reproducing that verbatim would write sensitive
- * personal information to the logs. Per Technical Specification &sect;0.7.3 (L1)
- * and &sect;0.9.3, those three fields are therefore <strong>masked</strong> in
- * the printed output (rendered as {@value #MASKED_VALUE}) and are never logged
- * in the clear. This is an intentional, documented improvement recorded in
- * {@code docs/decision-log.md}; it changes only what is emitted to the log, not
- * which rows are processed or the order in which they are read, so behavioral
- * parity of the scan itself is preserved.
+ * The legacy {@code DISPLAY CUSTOMER-RECORD} prints the entire record, including
+ * the social security number ({@code CUST-SSN}), the government-issued identifier
+ * ({@code CUST-GOVT-ISSUED-ID}), the date of birth ({@code CUST-DOB-YYYY-MM-DD}),
+ * the postal address ({@code CUST-ADDR-LINE-1..3}, {@code CUST-ADDR-ZIP}), both
+ * phone numbers ({@code CUST-PHONE-NUM-1/2}), and the EFT (bank) account id
+ * ({@code CUST-EFT-ACCOUNT-ID}). Reproducing that verbatim would write sensitive
+ * personal and financial-contact information to the logs. Per Technical
+ * Specification &sect;0.7.3 (L1) and &sect;0.9.3, those fields are therefore
+ * <strong>masked</strong> in the printed output (rendered as {@value #MASKED_VALUE})
+ * and are never logged in the clear (QA finding F-P6-B extends the original
+ * SSN/GOVT-ID/DOB masking to the address, phone, and EFT identifiers). The coarse
+ * state and country codes, the names, the primary-card-holder indicator, and the
+ * FICO score are retained so the print remains operationally useful. This is an
+ * intentional, documented improvement recorded in {@code docs/decision-log.md};
+ * it changes only what is emitted to the diagnostic SYSOUT log &mdash; not which
+ * rows are processed or the order in which they are read, and not any byte-for-byte
+ * external file contract &mdash; so behavioral parity of the scan itself is preserved.
  *
  * <h2>Spring Batch wiring</h2>
  * <ul>
@@ -265,35 +271,41 @@ public class CustomerMasterPrintJob {
      * field in copybook ({@code CVCUS01Y}) order, with the sensitive fields
      * masked.
      *
-     * <p>The social security number, government-issued identifier, and date of
-     * birth are rendered as {@value #MASKED_VALUE} so their values never reach
-     * the logs, while their positions in the printed layout are preserved. All
-     * other fields are printed as-is. A {@code null} field is rendered as the
-     * literal {@code null}, which reveals no sensitive information for the masked
-     * fields because their values are never emitted.</p>
+     * <p>The social security number, government-issued identifier, date of birth,
+     * postal address (all three lines and the ZIP), both phone numbers, and the
+     * EFT (bank) account id are rendered as {@value #MASKED_VALUE} so their values
+     * never reach the logs, while their positions in the printed layout are
+     * preserved. The remaining fields (id, names, state/country codes, card-holder
+     * indicator, FICO score) are printed as-is. Because the masked fields' values
+     * are never emitted, a {@code null} among them reveals nothing.</p>
      *
      * @param customer the customer to render; never {@code null}
      * @return a masked, single-line representation of the customer suitable for
      *         logging
      */
     private static String formatCustomer(Customer customer) {
+        // Postal address, ZIP, both phone numbers, and the EFT (bank) account id are
+        // personally identifying / financial contact data; they are masked to MASKED_VALUE
+        // for this diagnostic SYSOUT log (QA finding F-P6-B), extending the existing
+        // SSN/GOVT-ID/DOB masking. The coarse state/country codes, names, card-holder
+        // indicator, and FICO score are retained so the print stays operationally useful.
         return new StringBuilder(320)
                 .append("custId=").append(customer.getCustId())
                 .append(", custFirstName=").append(customer.getCustFirstName())
                 .append(", custMiddleName=").append(customer.getCustMiddleName())
                 .append(", custLastName=").append(customer.getCustLastName())
-                .append(", custAddrLine1=").append(customer.getCustAddrLine1())
-                .append(", custAddrLine2=").append(customer.getCustAddrLine2())
-                .append(", custAddrLine3=").append(customer.getCustAddrLine3())
+                .append(", custAddrLine1=").append(MASKED_VALUE)
+                .append(", custAddrLine2=").append(MASKED_VALUE)
+                .append(", custAddrLine3=").append(MASKED_VALUE)
                 .append(", custAddrStateCd=").append(customer.getCustAddrStateCd())
                 .append(", custAddrCountryCd=").append(customer.getCustAddrCountryCd())
-                .append(", custAddrZip=").append(customer.getCustAddrZip())
-                .append(", custPhoneNum1=").append(customer.getCustPhoneNum1())
-                .append(", custPhoneNum2=").append(customer.getCustPhoneNum2())
+                .append(", custAddrZip=").append(MASKED_VALUE)
+                .append(", custPhoneNum1=").append(MASKED_VALUE)
+                .append(", custPhoneNum2=").append(MASKED_VALUE)
                 .append(", ").append(SSN_LABEL).append('=').append(MASKED_VALUE)
                 .append(", ").append(GOVT_ID_LABEL).append('=').append(MASKED_VALUE)
                 .append(", ").append(DOB_LABEL).append('=').append(MASKED_VALUE)
-                .append(", custEftAccountId=").append(customer.getCustEftAccountId())
+                .append(", custEftAccountId=").append(MASKED_VALUE)
                 .append(", custPriCardHolderInd=").append(customer.getCustPriCardHolderInd())
                 .append(", custFicoCreditScore=").append(customer.getCustFicoCreditScore())
                 .toString();

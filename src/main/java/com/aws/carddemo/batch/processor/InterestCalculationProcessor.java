@@ -165,6 +165,14 @@ public class InterestCalculationProcessor
     /** Zero-padded six-digit format for the transaction-id suffix ({@code WS-TRANID-SUFFIX PIC 9(06)}). */
     private static final String TRAN_ID_SUFFIX_FORMAT = "%06d";
 
+    /**
+     * Scale-2 zero interest carried by a <em>finalize-only marker</em> emitted for a zero-rate
+     * account row (see {@link #process(TransactionCategoryBalance)} and QA finding F-P5-A). It
+     * contributes {@code 0.00} to the writer's per-account accumulation while still driving the
+     * account control break so the account's cycle credit/debit are reset.
+     */
+    private static final BigDecimal ZERO_INTEREST = BigDecimal.ZERO.setScale(2);
+
     /** Repository for {@code 1100-GET-ACCT-DATA} account lookups. */
     private final AccountRepository accountRepository;
 
@@ -238,7 +246,9 @@ public class InterestCalculationProcessor
      *       {@code DEFAULT} group. If neither exists, return {@code null} to skip the row (documented
      *       edge choice; see below).</li>
      *   <li>Zero-rate guard ({@code IF DIS-INT-RATE NOT = 0}) &mdash; a zero rate produces no interest
-     *       transaction, so return {@code null} (Spring Batch filters the item).</li>
+     *       transaction but must still finalize the account, so return a <em>finalize-only marker</em>
+     *       ({@code interestTransaction == null}, {@code monthlyInterest == 0.00}) rather than
+     *       {@code null} (QA finding F-P5-A).</li>
      *   <li>{@code 1300-COMPUTE-INTEREST} &mdash; compute the monthly interest with the parity-critical
      *       formula.</li>
      *   <li>{@code 1300-B-WRITE-TX} &mdash; assemble the interest transaction.</li>
@@ -253,12 +263,17 @@ public class InterestCalculationProcessor
      * {@code (type, category)}, so this branch is not expected at runtime. The choice is recorded in
      * {@code docs/decision-log.md}.</p>
      *
-     * <p>A {@code null} return has one of two parity-preserving meanings, both matching the COBOL: a
-     * zero interest rate (no transaction computed/written) or an absent rate row (skip).</p>
+     * <p>Return-value semantics: a fully-populated {@link InterestResult} (interest transaction +
+     * monthly interest + account id) for a normal non-zero-rate row; a <em>finalize-only marker</em>
+     * ({@code interestTransaction == null}, {@code monthlyInterest == 0.00}, account id set) for a
+     * zero-rate row so the account is still finalized (F-P5-A); or {@code null} only for an absent
+     * rate row (neither the account's own disclosure group nor {@code DEFAULT} has a rate), which
+     * Spring Batch filters &mdash; a documented deviation from the legacy abend.</p>
      *
      * @param item the transaction-category-balance row to process; never {@code null}
-     * @return an {@link InterestResult} carrying the interest transaction, the computed monthly
-     *         interest, and the account id; or {@code null} to filter the row (zero or absent rate)
+     * @return a fully-populated {@link InterestResult} for a non-zero rate; a finalize-only marker
+     *         (null transaction, zero interest) for a zero rate; or {@code null} to filter an
+     *         absent-rate row
      * @throws FileStatusException if the account or its card cross-reference cannot be found
      *                             (reproducing the legacy hard-file-error abend, batch RC&nbsp;8)
      */
@@ -306,9 +321,18 @@ public class InterestCalculationProcessor
         }
         final BigDecimal intRate = disclosureGroup.get().getIntRate();
 
-        // ---- Zero-rate guard: COBOL "IF DIS-INT-RATE NOT = 0" gates 1300; a zero rate emits nothing.
+        // ---- Zero-rate guard: COBOL "IF DIS-INT-RATE NOT = 0" gates 1300-COMPUTE/1300-B-WRITE, so a
+        // zero rate writes NO interest transaction. It must NOT, however, filter the account out of the
+        // control break: the legacy program still ADDs the (zero) running total to the account and
+        // resets its cycle credit/debit in 1050-UPDATE-ACCOUNT. Returning null here would drop the
+        // account entirely, leaving a zero-rate-only account un-finalized (cycle amounts never reset,
+        // version never advanced) despite the job completing cleanly (QA finding F-P5-A). Instead emit
+        // a finalize-only marker: interestTransaction == null (nothing to write), monthlyInterest 0.00
+        // (nothing to accumulate), acctId set (so the writer still control-breaks and finalizes it).
         if (intRate.compareTo(BigDecimal.ZERO) == 0) {
-            return null;
+            log.debug("Zero interest rate for account {} type {} cat {}; emitting finalize-only marker "
+                    + "(no interest transaction written)", acctId, typeCd, catCd);
+            return new InterestResult(null, ZERO_INTEREST, acctId);
         }
 
         // ---- 1300-COMPUTE-INTEREST: (TRAN-CAT-BAL * DIS-INT-RATE) / 1200 at scale 2. ----
@@ -356,10 +380,19 @@ public class InterestCalculationProcessor
      * the cycle credit/debit). Keeping the account mutation out of the processor keeps this component
      * side-effect free and independently testable.</p>
      *
-     * @param interestTransaction the interest transaction to be persisted (type {@code 01},
-     *                            category {@code 05}); never {@code null}
+     * <p><strong>Finalize-only marker (F-P5-A).</strong> For a zero-rate row the processor emits a
+     * marker with a {@code null} {@code interestTransaction} and a {@code 0.00} {@code monthlyInterest}
+     * but a populated {@code acctId}. The writer treats a {@code null} transaction as "nothing to
+     * write" yet still runs the account control break and finalize, so a zero-rate-only account is
+     * finalized (cycle credit/debit reset) exactly as the COBOL {@code 1050-UPDATE-ACCOUNT} does.
+     * {@code interestTransaction} is therefore the only nullable component.</p>
+     *
+     * @param interestTransaction the interest transaction to be written (type {@code 01},
+     *                            category {@code 05}), or {@code null} for a zero-rate finalize-only
+     *                            marker
      * @param monthlyInterest     the computed monthly interest (scale&nbsp;2) for per-account
-     *                            accumulation; never {@code null}
+     *                            accumulation ({@code 0.00} for a finalize-only marker); never
+     *                            {@code null}
      * @param acctId              the account id this interest belongs to, the control-break key for
      *                            the writer; never {@code null}
      */

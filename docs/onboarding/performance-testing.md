@@ -53,19 +53,22 @@ correct gate for behavioral parity.
 1. **A running PostgreSQL 16 you can freely fill and drop.** Use the project's
    local stack from [`getting-started.md` §3](./getting-started.md#3-start-the-local-dependencies-docker-compose).
    For performance runs prefer a **dedicated, isolated** database so your numbers
-   are not disturbed by other work. The local stack already parameterizes the
-   host port and container name by `CLONE_INDEX` (`PG_PORT = 5432 + CLONE_INDEX`,
-   container `carddemo-postgres-<CLONE_INDEX>`); set `CLONE_INDEX` so parallel
+   are not disturbed by other work. The Compose stack isolates parallel runs by a
+   **unique project name plus a published-port override**: set `COMPOSE_PROJECT_NAME`
+   to a value unique to your workspace and `POSTGRES_PORT` to a free host port (both
+   honored by [`docker-compose.yml`](../../docker-compose.yml)). Compose then scopes
+   the network, named volumes, and container names to that project, so parallel
    workspaces never share a database:
 
    ```bash
-   export CLONE_INDEX=0            # pick a value unique to your workspace
-   export PG_PORT=$((5432 + CLONE_INDEX))
-   # DB_URL then points at jdbc:postgresql://localhost:${PG_PORT}/carddemo
+   export COMPOSE_PROJECT_NAME=carddemo-perf   # pick a value unique to your workspace
+   export POSTGRES_PORT=5433                   # pick a free host port for this stack
+   docker compose up -d postgres
+   # DB_URL then points at jdbc:postgresql://localhost:${POSTGRES_PORT}/carddemo
    ```
 
 2. **`psql` on your PATH** (from the `postgresql-client` package or the Postgres
-   container: `docker exec -it carddemo-postgres-<CLONE_INDEX> psql ...`).
+   container: `docker exec -it ${COMPOSE_PROJECT_NAME:-carddemo}-postgres-1 psql ...`).
 
 3. **Credentials via environment only** — never hard-code them. The local-dev
    values live in your shell as `DB_URL` / `DB_USERNAME` / `DB_PASSWORD`
@@ -73,7 +76,7 @@ correct gate for behavioral parity.
    The examples below assume:
 
    ```bash
-   export PGHOST=localhost PGPORT=${PG_PORT:-5432}
+   export PGHOST=localhost PGPORT=${POSTGRES_PORT:-5432}
    export PGUSER="$DB_USERNAME" PGPASSWORD="$DB_PASSWORD" PGDATABASE=carddemo
    ```
 
@@ -328,9 +331,9 @@ psql -d postgres -c "DROP DATABASE IF EXISTS carddemo_perf;"
 ```
 
 Keep performance databases **separate** from the functional `carddemo` database
-the app and tests use, and keep them **isolated per workspace** via `CLONE_INDEX`
-(see §2) so parallel runs never contend for the same rows, connections, or buffer
-cache.
+the app and tests use, and keep them **isolated per workspace** via
+`COMPOSE_PROJECT_NAME` + `POSTGRES_PORT` (see §2) so parallel runs never contend
+for the same rows, connections, or buffer cache.
 
 ---
 

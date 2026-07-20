@@ -18,11 +18,14 @@ package com.aws.carddemo.web;
 import java.time.LocalDateTime;
 
 import org.springframework.data.domain.PageRequest;
+import org.springframework.http.HttpHeaders;
 import org.springframework.http.ResponseEntity;
+import org.springframework.util.StringUtils;
 import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
+import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
@@ -169,6 +172,18 @@ public class UserUpdateController {
     private static final String MSG_USER_ID_NOT_FOUND = "User ID NOT found...";
 
     /**
+     * Mandatory-field edit message reproducing {@code COUSR02C}
+     * {@code PROCESS-ENTER-KEY} {@code WHEN USRIDINI OF COUSR2AI = SPACES OR LOW-VALUES}:
+     * {@code 'User ID can NOT be empty...'}. On the ENTER turn a blank user id is
+     * rejected same-screen with this message <em>before</em> any file read, so a
+     * blank key is never fed to the lookup (which would otherwise resolve no match
+     * and surface as an HTTP 404 rather than the legacy same-screen edit) &mdash;
+     * QA finding F-P4-G. The text matches the identical edit in
+     * {@code UserService} exactly.
+     */
+    private static final String MSG_USER_ID_EMPTY = "User ID can NOT be empty...";
+
+    /**
      * Invalid-key message ({@code CCDA-MSG-INVALID-KEY} from {@code CSMSG01Y.cpy}),
      * shown for any attention key the legacy {@code EVALUATE EIBAID} did not handle.
      */
@@ -188,6 +203,16 @@ public class UserUpdateController {
      * legacy {@code CDEMO-TO-TRANID} COMMAREA field.
      */
     private static final String HEADER_NEXT_TRANSACTION = "X-CardDemo-Next-Transaction";
+
+    /**
+     * Request/response header carrying the {@code user_security} {@code @Version} observed when the
+     * edit screen was rendered (F-P7-STALE). {@code fetchUser} emits it on the response so the
+     * client can echo it back on the PF5 (save) and PF3 (save-and-exit) submissions; the controller
+     * forwards it to {@link UserService#updateUser} which rejects an absent or stale version as a
+     * {@code 409} conflict. This is the stateless-HTTP translation of the observed-version state
+     * that a CICS pseudo-conversational COMMAREA would have carried across the turn.
+     */
+    private static final String HEADER_USER_VERSION = "X-CardDemo-User-Version";
 
     /**
      * Fixed page window used to position the {@link UserService#listUsers} browse
@@ -265,14 +290,23 @@ public class UserUpdateController {
     @PostMapping
     @Operation(summary = "Submit the User Update screen",
             description = "Reproduces the COUSR02C flow: fetch, validate, and rewrite the user record.")
-    public ResponseEntity<UserUpdateResponse> update(@Valid @RequestBody UserUpdateRequest request) {
+    public ResponseEntity<UserUpdateResponse> update(
+            @Valid @RequestBody UserUpdateRequest request,
+            @RequestHeader(name = HEADER_USER_VERSION, required = false) String userVersionHeader) {
         LocalDateTime now = LocalDateTime.now();
+        // The observed user_security @Version carried back from the edit screen (F-P7-STALE); an
+        // absent or unparseable value parses to null, which the version-aware save path rejects as a
+        // conflict rather than allowing a stale overwrite.
+        Long expectedVersion = parseVersion(userVersionHeader);
         PfKeyAction action = (request.action() == null) ? PfKeyAction.ENTER : request.action();
         return switch (action) {
             case ENTER -> fetchUser(request, now);
-            case PF5 -> saveUser(request, now);
+            case PF5 -> saveUser(request, now, expectedVersion);
             case PF4 -> ResponseEntity.ok(blankScreen(now, null));
-            case PF3, PF12 -> navigateBack(now);
+            // COUSR02C WHEN DFHPF3: validate + save then RETURN-TO-PREV-SCREEN (save-and-exit),
+            // distinct from PF12's pure cancel/exit (F-P4-F).
+            case PF3 -> saveAndExit(request, now, expectedVersion);
+            case PF12 -> navigateBack(now);
             default -> ResponseEntity.ok(blankScreen(now, MSG_INVALID_KEY));
         };
     }
@@ -299,13 +333,28 @@ public class UserUpdateController {
      */
     private ResponseEntity<UserUpdateResponse> fetchUser(UserUpdateRequest request, LocalDateTime now) {
         String requestedId = normalizeRequestedId(request.userId());
+        // COUSR02C PROCESS-ENTER-KEY mandatory-field edit: a blank user id is rejected same-screen
+        // ("User ID can NOT be empty...") BEFORE the READ-USER-SEC-FILE lookup, so a blank key never
+        // becomes an HTTP 404 not-found (F-P4-G). This mirrors the legacy EVALUATE-TRUE ordering
+        // where the empty-field edit precedes the file read.
+        if (requestedId.isEmpty()) {
+            return ResponseEntity.ok(blankScreen(now, MSG_USER_ID_EMPTY));
+        }
         UserSecurity user = userService.listUsers(requestedId, SINGLE_RECORD)
                 .getContent().stream()
                 .filter(candidate -> candidate.getSecUsrId() != null
                         && candidate.getSecUsrId().equalsIgnoreCase(requestedId))
                 .findFirst()
                 .orElseThrow(() -> new RecordNotFoundException(MSG_USER_ID_NOT_FOUND));
-        return ResponseEntity.ok(userMapper.toUpdateResponse(
+        // Echo the observed @Version so the client can carry it back on PF5 (save) / PF3
+        // (save-and-exit) and the stale-form guard can verify it (F-P7-STALE). The header is emitted
+        // only when the persisted row carries a version.
+        HttpHeaders headers = new HttpHeaders();
+        Long version = user.getVersion();
+        if (version != null) {
+            headers.set(HEADER_USER_VERSION, version.toString());
+        }
+        return ResponseEntity.ok().headers(headers).body(userMapper.toUpdateResponse(
                 user, MSG_PRESS_PF5, now, TRANSACTION_ID, TITLE01, TITLE02, PROGRAM_NAME));
     }
 
@@ -333,16 +382,74 @@ public class UserUpdateController {
      * @return a {@code 200 OK} response carrying the outcome message
      * @throws RecordNotFoundException if no user with the given id exists
      */
-    private ResponseEntity<UserUpdateResponse> saveUser(UserUpdateRequest request, LocalDateTime now) {
+    private ResponseEntity<UserUpdateResponse> saveUser(UserUpdateRequest request, LocalDateTime now,
+                                                        Long expectedVersion) {
         UserService.UserResult result = userService.updateUser(
                 request.userId(),
                 request.firstName(),
                 request.lastName(),
                 request.password(),
-                toUserTypeChar(request.userType()));
+                toUserTypeChar(request.userType()),
+                expectedVersion);
         return ResponseEntity.ok(userMapper.toUpdateResponse(
                 result.user(), result.message(), now,
                 TRANSACTION_ID, TITLE01, TITLE02, PROGRAM_NAME));
+    }
+
+    /**
+     * PF3 path &mdash; <strong>save and exit</strong>. This reproduces {@code COUSR02C}
+     * {@code WHEN DFHPF3}, which performs {@code UPDATE-USER-INFO} (the same validate-and-rewrite as
+     * PF5) and <em>then</em> {@code RETURN-TO-PREV-SCREEN} (an {@code EXEC CICS XCTL} back to the
+     * previous program). PF3 therefore persists a valid edit before leaving &mdash; unlike PF12,
+     * which is a pure cancel that discards edits (F-P4-F). Prior to this fix PF3 navigated back
+     * without ever attempting the save, silently dropping the operator's changes.
+     *
+     * <p>The save is delegated to {@link UserService#updateUser}, exactly as {@link #saveUser}, so
+     * the mandatory-field edits, the observed-version stale-form guard (F-P7-STALE) and the
+     * change-detection all apply identically:</p>
+     * <ul>
+     *   <li>On a <em>successful</em> save the screen is left and the previous program/transaction
+     *       ({@code COADM01C}/{@code CA00}) is conveyed in the {@link #HEADER_NEXT_PROGRAM} /
+     *       {@link #HEADER_NEXT_TRANSACTION} response headers &mdash; the {@code RETURN-TO-PREV-SCREEN}
+     *       translation.</li>
+     *   <li>On a mandatory-field edit failure or the "nothing changed" outcome the operator is kept
+     *       on the same screen with the exact message (as PF5 does), rather than navigating away and
+     *       discarding a still-invalid edit &mdash; consistent with this re-platform's practice of
+     *       surfacing edit/conflict outcomes instead of silently proceeding.</li>
+     * </ul>
+     *
+     * <p>An unknown id raises {@link RecordNotFoundException} (HTTP {@code 404}) and an absent or
+     * stale observed version raises {@code OptimisticLockingFailureException} (HTTP {@code 409}),
+     * both propagating untouched &mdash; identical to the PF5 path.</p>
+     *
+     * @param request         the request carrying the id and edited fields
+     * @param now             the timestamp used to render the header date/time
+     * @param expectedVersion the observed {@code user_security} version carried back from the edit
+     *                        screen (may be {@code null}, which is rejected as a conflict)
+     * @return a save-and-exit {@code 200 OK}: navigation headers + empty screen on success, or the
+     *         same-screen outcome message on an edit failure / no-change
+     */
+    private ResponseEntity<UserUpdateResponse> saveAndExit(UserUpdateRequest request, LocalDateTime now,
+                                                           Long expectedVersion) {
+        UserService.UserResult result = userService.updateUser(
+                request.userId(),
+                request.firstName(),
+                request.lastName(),
+                request.password(),
+                toUserTypeChar(request.userType()),
+                expectedVersion);
+        if (!result.success()) {
+            // UPDATE-USER-INFO set the error flag (mandatory-field edit) or nothing changed: stay on
+            // the screen with the exact message, mirroring the PF5 same-screen display.
+            return ResponseEntity.ok(userMapper.toUpdateResponse(
+                    result.user(), result.message(), now,
+                    TRANSACTION_ID, TITLE01, TITLE02, PROGRAM_NAME));
+        }
+        // Valid edit persisted -> RETURN-TO-PREV-SCREEN (XCTL to the previous program).
+        return ResponseEntity.ok()
+                .header(HEADER_NEXT_PROGRAM, BACK_TARGET_PROGRAM)
+                .header(HEADER_NEXT_TRANSACTION, BACK_TARGET_TRANSACTION)
+                .body(blankScreen(now, null));
     }
 
     /**
@@ -412,5 +519,36 @@ public class UserUpdateController {
             return BLANK_USER_TYPE;
         }
         return Character.toUpperCase(userType.charAt(0));
+    }
+
+    /**
+     * Parses the {@link #HEADER_USER_VERSION} header into the observed {@code user_security}
+     * {@code @Version} (F-P7-STALE). A blank, non-numeric, or out-of-range (overflowing) value
+     * yields {@code null} &mdash; an unverifiable version &mdash; which the version-aware save path
+     * treats as a conflict rather than allowing a stale overwrite. Defensive parsing here also means
+     * a malformed header can never surface as an HTTP {@code 500}. Mirrors the identical helper in
+     * the sibling account/card update controllers.
+     *
+     * @param header the raw header value (may be {@code null})
+     * @return the parsed version, or {@code null} when absent/unparseable/overflowing
+     */
+    private static Long parseVersion(String header) {
+        if (!StringUtils.hasText(header)) {
+            return null;
+        }
+        String value = header.trim();
+        for (int i = 0; i < value.length(); i++) {
+            char c = value.charAt(i);
+            if (c < '0' || c > '9') {
+                return null;
+            }
+        }
+        try {
+            return Long.valueOf(value);
+        } catch (NumberFormatException overflow) {
+            // An all-digit value larger than Long.MAX_VALUE: treat as unverifiable, exactly as every
+            // other unparseable version header.
+            return null;
+        }
     }
 }

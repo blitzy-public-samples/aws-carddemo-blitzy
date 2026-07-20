@@ -18,12 +18,17 @@ package com.aws.carddemo.batch.reader;
 import com.aws.carddemo.domain.DailyTransaction;
 
 import org.springframework.batch.core.configuration.annotation.StepScope;
+import org.springframework.batch.item.ParseException;
 import org.springframework.batch.item.file.FlatFileItemReader;
+import org.springframework.batch.item.file.FlatFileParseException;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.core.io.Resource;
 import org.springframework.stereotype.Component;
 
 import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
+import java.util.HexFormat;
 
 /**
  * Spring Batch {@link FlatFileItemReader} that ingests the raw external, fixed-width
@@ -70,6 +75,15 @@ import java.nio.charset.StandardCharsets;
  * reader is {@code strict}, so a missing input file fails the step deterministically rather than
  * silently loading nothing. Its bean name is the decapitalized class name
  * {@code dailyTransactionFileItemReader}, wired by {@code batch/DailyTransactionLoadJob}.
+ *
+ * <h2>PII-safe parse errors</h2>
+ * A malformed record must never leak card material into the logs. The framework's
+ * {@link org.springframework.batch.item.file.FlatFileParseException} embeds the raw 350-byte record
+ * (which carries a PAN at {@code DALYTRAN-CARD-NUM}, offset 262) in both its message and its
+ * {@code getInput()} accessor, so {@link #read()} is overridden to intercept that exception and
+ * rethrow a sanitized {@link org.springframework.batch.item.ParseException} carrying only line
+ * number, record length, a one-way content fingerprint, and the cause class &mdash; never the raw
+ * record (QA finding F-P5-B).
  *
  * <h2>On {@code @SuppressWarnings("this-escape")}</h2>
  * The constructor establishes the reader's fixed configuration by invoking the inherited
@@ -137,5 +151,88 @@ public class DailyTransactionFileItemReader extends FlatFileItemReader<DailyTran
         setStrict(true);
         // Restartable line-count save-state for chunk-oriented steps.
         setSaveState(true);
+    }
+
+    /**
+     * Reads the next {@link DailyTransaction}, replacing any {@link FlatFileParseException} raised by
+     * the framework with a {@link ParseException} that carries only <em>sanitized</em> diagnostics.
+     *
+     * <p><strong>QA finding F-P5-B.</strong> The stock {@link FlatFileParseException} embeds the
+     * entire raw 350-byte {@code DALYTRAN-RECORD} both in its message and via
+     * {@link FlatFileParseException#getInput()}. Because that record contains a
+     * {@code DALYTRAN-CARD-NUM} (a PAN) at offset 262, allowing the framework's default error
+     * logging to render that exception would leak full card material into operational logs. This
+     * override intercepts the parse failure and rethrows a {@link ParseException} whose message
+     * contains only non-sensitive metadata &mdash; the 1-based line number, the record length, a
+     * truncated SHA-256 content fingerprint (so two failures on the same bytes can be correlated
+     * without revealing them), and the failing cause's class name. The raw record content and the
+     * original {@link FlatFileParseException} are deliberately <strong>not</strong> chained, so no
+     * downstream logger can walk the cause chain back to the unredacted input (nor to a codec
+     * message that may echo a failing field's value).</p>
+     *
+     * <p>Behaviour is otherwise unchanged: end-of-input still returns {@code null}, and because the
+     * load step configures no skip policy the rethrown {@link ParseException} fails the step exactly
+     * as the original {@link FlatFileParseException} did (a parse exception either way) &mdash; only
+     * the logged text differs.</p>
+     *
+     * @return the next decoded {@link DailyTransaction}, or {@code null} at end of input
+     * @throws Exception any non-parse failure is propagated verbatim; a parse failure is rethrown as
+     *                   a sanitized {@link ParseException} in place of the {@link FlatFileParseException}
+     */
+    @Override
+    public DailyTransaction read() throws Exception {
+        try {
+            return super.read();
+        } catch (FlatFileParseException ex) {
+            throw sanitize(ex);
+        }
+    }
+
+    /**
+     * Builds a PII-free {@link ParseException} from a {@link FlatFileParseException}, exposing only
+     * the line number, record length, a content fingerprint, and the cause's class name. Neither the
+     * raw input nor the original exception (whose message embeds the raw input) is referenced by the
+     * returned exception.
+     *
+     * @param ex the framework parse exception carrying the raw record; never {@code null}
+     * @return a sanitized {@link ParseException} safe to log
+     */
+    private static ParseException sanitize(FlatFileParseException ex) {
+        final String rawInput = ex.getInput();
+        final int recordLength = rawInput == null ? 0 : rawInput.length();
+        final Throwable cause = ex.getCause();
+        final String reason = cause == null ? "unknown" : cause.getClass().getSimpleName();
+        return new ParseException(
+                "Failed to parse DALYTRAN-RECORD at line " + ex.getLineNumber()
+                        + " (length=" + recordLength + ", sha256=" + fingerprint(rawInput)
+                        + ", cause=" + reason
+                        + "); raw record withheld to avoid logging card data (F-P5-B)");
+    }
+
+    /**
+     * Computes a short, non-reversible SHA-256 fingerprint (first 8 bytes, hex) of the raw record so
+     * that repeated failures on the identical bytes can be correlated in logs without exposing any
+     * record content. The record is hashed as {@link StandardCharsets#ISO_8859_1} bytes to match the
+     * reader's single-byte decode.
+     *
+     * @param rawInput the raw record text; may be {@code null}
+     * @return a 16-character hex fingerprint, {@code "none"} when {@code rawInput} is {@code null},
+     *         or {@code "unavailable"} if the SHA-256 provider is somehow absent
+     */
+    private static String fingerprint(String rawInput) {
+        if (rawInput == null) {
+            return "none";
+        }
+        try {
+            final byte[] digest = MessageDigest.getInstance("SHA-256")
+                    .digest(rawInput.getBytes(StandardCharsets.ISO_8859_1));
+            // First 8 bytes (64 bits) is ample to correlate identical failing records; the digest is
+            // one-way, so it reveals nothing about the PAN or any other field in the raw record.
+            return HexFormat.of().formatHex(digest, 0, 8);
+        } catch (NoSuchAlgorithmException e) {
+            // SHA-256 is a JCA standard algorithm guaranteed by every conformant JRE; this is a
+            // defensive fallback that still emits no record content.
+            return "unavailable";
+        }
     }
 }

@@ -17,6 +17,7 @@ package com.aws.carddemo.batch;
 
 import java.util.Map;
 
+import com.aws.carddemo.common.util.PanMasker;
 import com.aws.carddemo.domain.Card;
 import com.aws.carddemo.repository.CardRepository;
 
@@ -68,14 +69,24 @@ import org.springframework.transaction.PlatformTransactionManager;
  *       &sect;0.7.2 M1).</li>
  * </ul>
  *
- * <h2>Sensitive data &mdash; CVV masking</h2>
+ * <h2>Sensitive data &mdash; CVV and PAN masking</h2>
  * The {@link Card} entity carries a card verification value (CVV) that is a
  * demonstration-only legacy anti-pattern. It is treated as sensitive and is
  * <strong>never logged in full</strong> (AAP &sect;0.7.3 L1, &sect;0.9.3): the
  * writer emits a fixed mask ({@value #CVV_MASK}) in the CVV position and never
  * reads {@link Card#getCvv()}, so the value cannot leak into the batch log by
- * construction. Formatting is centralized in {@link #formatCardRecord(Card)} so
- * this guarantee is explicit and verifiable.
+ * construction. The card number ({@code CARD-NUM}) is itself a Primary Account
+ * Number (PAN); it is masked to the PCI-DSS display window (first six / last
+ * four) via {@link PanMasker#mask(String)} before it reaches this diagnostic
+ * SYSOUT log, so a full PAN is never written to the operational logs (QA finding
+ * F-P6-B). This mirrors the existing CVV treatment and the customer master-print
+ * job's SSN/GOVT-ID/DOB masking: these master-print jobs emit human-readable
+ * {@code LOGGER} lines (not a fixed-width external file contract), so masking the
+ * sensitive identifiers in them is an additive security improvement that does not
+ * alter any byte-for-byte file contract (the DALYREJS reject image, the SYSTRAN
+ * interest transactions, and the transaction backup remain verbatim). Formatting
+ * is centralized in {@link #formatCardRecord(Card)} so both guarantees are
+ * explicit and verifiable.
  *
  * <h2>Batch infrastructure</h2>
  * <ul>
@@ -243,12 +254,13 @@ public class CardMasterPrintJob {
      * Builds the single-line, log-safe rendering of a card record used by the
      * chunk writer, mirroring the COBOL {@code DISPLAY CARD-RECORD}.
      *
-     * <p>All non-sensitive fields (card number, owning account id, embossed name,
-     * expiration date, active status) are rendered verbatim. The sensitive CVV is
-     * represented only by the fixed mask {@value #CVV_MASK}; the real value is
-     * never read here, so it cannot appear in the batch log. This method is
-     * package-private and {@code static} to make the masking guarantee directly
-     * unit-testable.</p>
+     * <p>The owning account id, embossed name, expiration date, and active status
+     * are rendered verbatim. The card number ({@code CARD-NUM}) is a PAN and is
+     * rendered through {@link PanMasker#mask(String)} (first six / last four), and
+     * the sensitive CVV is represented only by the fixed mask {@value #CVV_MASK};
+     * neither the full PAN nor the real CVV can appear in the batch log. This
+     * method is package-private and {@code static} to make both masking guarantees
+     * directly unit-testable.</p>
      *
      * @param card the card to render (never {@code null})
      * @return a single-line description of the card with the CVV masked
@@ -256,7 +268,8 @@ public class CardMasterPrintJob {
     static String formatCardRecord(Card card) {
         return new StringBuilder(160)
                 .append("CBACT02C CARD-RECORD")
-                .append(" | cardNum=").append(card.getCardNum())
+                // CARD-NUM is a PAN; mask to the PCI-DSS display window before logging (F-P6-B).
+                .append(" | cardNum=").append(PanMasker.mask(card.getCardNum()))
                 .append(" | acctId=").append(card.getAcctId())
                 .append(" | embossedName=").append(card.getCardEmbossedName())
                 .append(" | expirationDate=").append(card.getCardExpirationDate())

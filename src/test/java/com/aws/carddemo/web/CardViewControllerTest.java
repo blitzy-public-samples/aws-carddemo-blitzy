@@ -121,6 +121,13 @@ class CardViewControllerTest {
     /** First-entry prompt &mdash; COBOL {@code WS-PROMPT-FOR-INPUT}. */
     private static final String MSG_PROMPT_FOR_INPUT = "Please enter Account and Card Number";
 
+    /**
+     * COBOL {@code FOUND-CARDS-FOR-ACCOUNT} literal shown on the populated card-detail screen
+     * ({@code legacy/cbl/COCRDSLC.cbl} L129-130); the three leading spaces are part of the
+     * legacy literal and must be preserved verbatim (F-P9-F).
+     */
+    private static final String MSG_DISPLAYING_DETAILS = "   Displaying requested details";
+
     /** Invalid-attention-key message &mdash; COBOL {@code CCDA-MSG-INVALID-KEY}. */
     private static final String MSG_INVALID_KEY = "Invalid key pressed. Please see below...";
 
@@ -327,6 +334,9 @@ class CardViewControllerTest {
                 .andExpect(content().contentTypeCompatibleWith(MediaType.APPLICATION_JSON))
                 .andExpect(jsonPath("$.transactionName").value(TRANSACTION_ID))
                 .andExpect(jsonPath("$.programName").value(PROGRAM_ID))
+                // COBOL COCRDSLC emits FOUND-CARDS-FOR-ACCOUNT ('   Displaying requested
+                // details', leading spaces included) as INFOMSGO on the card-found screen (F-P9-F).
+                .andExpect(jsonPath("$.infoMessage").value(MSG_DISPLAYING_DETAILS))
                 .andExpect(jsonPath("$.accountId").value(ACCT_ID_STR))
                 .andExpect(jsonPath("$.cardId").value(CARD_NUM))
                 .andExpect(jsonPath("$.cardName").value(EMBOSSED_NAME))

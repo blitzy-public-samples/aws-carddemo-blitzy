@@ -416,11 +416,14 @@ class CustomerMasterPrintJobTest {
     /**
      * The sensitive PII fields are masked in the produced output.
      *
-     * <p>Uses a known seed customer's real SSN, government-issued id, and date of birth and asserts
-     * that none of them appears in cleartext anywhere in the output, that the mask token is present,
-     * and that the customer's own printed line carries the masked field markers. This assertion is
-     * meaningful: were the masking removed, the customer's line would print these exact values and
-     * the {@code doesNotContain} checks would fail.</p>
+     * <p>Uses a known seed customer's real SSN, government-issued id, date of birth, postal address,
+     * phone number, and EFT (bank) account id and asserts that none of the distinctive values appears
+     * in cleartext, that the mask token is present, and that the customer's own printed line carries
+     * the masked field markers for all masked fields (SSN, government-issued id, date of birth,
+     * address lines, ZIP, both phone numbers, and EFT account id &mdash; QA finding F-P6-B extends the
+     * masking beyond the original three). This assertion is meaningful: were the masking removed, the
+     * customer's line would print these exact values and the {@code doesNotContain} checks would
+     * fail.</p>
      *
      * @throws Exception if the job launch fails
      */
@@ -433,6 +436,17 @@ class CustomerMasterPrintJobTest {
         assertThat(ssn).as("seed SSN present so the masking check is not vacuous").isNotBlank();
         assertThat(govtId).as("seed government id present").isNotBlank();
         assertThat(dob).as("seed date of birth present").isNotBlank();
+        // Distinctive contact / financial identifiers masked by F-P6-B; captured so the additional
+        // doesNotContain checks below are non-vacuous.
+        String addrLine1 = known.getCustAddrLine1();
+        String phone1 = known.getCustPhoneNum1();
+        String eftAccountId = known.getCustEftAccountId();
+        assertThat(addrLine1).as("seed address present so the address-masking check is not vacuous")
+                .isNotBlank();
+        assertThat(phone1).as("seed phone present so the phone-masking check is not vacuous")
+                .isNotBlank();
+        assertThat(eftAccountId).as("seed EFT account id present so the EFT-masking check is not vacuous")
+                .isNotBlank();
 
         launchJob();
 
@@ -458,6 +472,17 @@ class CustomerMasterPrintJobTest {
         assertThat(knownLine).contains("custGovtIssuedId=" + MASK_TOKEN);
         assertThat(knownLine).contains("custDob=" + MASK_TOKEN);
         assertThat(knownLine).doesNotContain(ssn, govtId, dob);
+        // F-P6-B: postal address (all three lines + ZIP), both phone numbers, and the EFT (bank)
+        // account id are masked too. Assert every masked marker is present on the known customer's
+        // line and that its distinctive real address/phone/EFT values never appear on that line.
+        assertThat(knownLine).contains("custAddrLine1=" + MASK_TOKEN);
+        assertThat(knownLine).contains("custAddrLine2=" + MASK_TOKEN);
+        assertThat(knownLine).contains("custAddrLine3=" + MASK_TOKEN);
+        assertThat(knownLine).contains("custAddrZip=" + MASK_TOKEN);
+        assertThat(knownLine).contains("custPhoneNum1=" + MASK_TOKEN);
+        assertThat(knownLine).contains("custPhoneNum2=" + MASK_TOKEN);
+        assertThat(knownLine).contains("custEftAccountId=" + MASK_TOKEN);
+        assertThat(knownLine).doesNotContain(addrLine1, phone1, eftAccountId);
     }
 
     /**

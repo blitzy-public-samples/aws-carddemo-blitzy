@@ -593,11 +593,19 @@ public class AccountUpdateController {
 
     /**
      * Parses the optimistic-lock version header into a {@link Long}, without throwing: a
-     * {@code null}, blank, or non-numeric value yields {@code null} (skip the cross-request
-     * concurrency check).
+     * {@code null}, blank, non-numeric, or numerically out-of-range value yields {@code null}
+     * (skip the cross-request concurrency check).
+     *
+     * <p>The digit-only scan rejects any value containing a non-digit, but an all-digit value
+     * can still exceed {@link Long#MAX_VALUE} (for example an oversized 20-digit header). Such a
+     * value passes the scan yet overflows {@link Long#valueOf(String)}, so the parse is wrapped
+     * defensively: an overflow is treated exactly like any other invalid value &mdash; it yields
+     * {@code null} and the cross-request check is skipped &mdash; rather than surfacing as an
+     * unhandled {@link NumberFormatException} (which the global handler would map to HTTP 500).
+     * This keeps a malformed version header a bounded, same-screen outcome, never a server error.
      *
      * @param header the raw header value (may be {@code null})
-     * @return the parsed non-negative version, or {@code null} when absent/invalid
+     * @return the parsed non-negative version, or {@code null} when absent/invalid/out-of-range
      */
     private static Long parseVersion(String header) {
         if (!hasText(header)) {
@@ -610,7 +618,13 @@ public class AccountUpdateController {
                 return null;
             }
         }
-        return Long.valueOf(value);
+        try {
+            return Long.valueOf(value);
+        } catch (NumberFormatException overflow) {
+            // An all-digit value larger than Long.MAX_VALUE: treat as invalid (skip the check),
+            // matching the contract for every other unparseable version header.
+            return null;
+        }
     }
 
     /**

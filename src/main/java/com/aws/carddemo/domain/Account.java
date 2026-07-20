@@ -157,6 +157,24 @@ public class Account {
     private Long version;
 
     /**
+     * Interest-cycle idempotency marker: the 10-character run date
+     * ({@code parmDate}, for example {@code 2022071800}) of the most recent
+     * interest posting applied to this account by the interest-calculation batch
+     * job (CBACT04C). {@code null} means interest has never been posted. The
+     * posting is performed by a conditional UPDATE
+     * ({@code AccountRepository.applyInterestForCycle}) that applies interest only
+     * when this marker differs from the cycle being posted, guaranteeing the cycle
+     * balance update is applied at most once per account even across job re-runs
+     * or restarts (QA findings F-P6-A / F-P5-D). This is an additive
+     * operational-integrity column, not a copybook business field; the rationale
+     * is recorded in {@code docs/decision-log.md}. Maps to the nullable
+     * {@code last_interest_cycle VARCHAR(10)} column added by Flyway migration
+     * {@code V5__add_account_last_interest_cycle.sql}.
+     */
+    @Column(name = "last_interest_cycle", length = 10)
+    private String lastInterestCycle;
+
+    /**
      * Protected no-argument constructor required by the JPA specification.
      * Application code should prefer the all-arguments convenience constructor
      * or the setters.
@@ -445,6 +463,29 @@ public class Account {
      */
     public void setVersion(Long version) {
         this.version = version;
+    }
+
+    /**
+     * Returns the interest-cycle idempotency marker (the {@code parmDate} of the
+     * most recent interest posting, or {@code null} if interest has never been
+     * posted to this account).
+     *
+     * @return the last posted interest cycle, or {@code null}
+     */
+    public String getLastInterestCycle() {
+        return lastInterestCycle;
+    }
+
+    /**
+     * Sets the interest-cycle idempotency marker. Normally maintained by the
+     * conditional interest-posting UPDATE
+     * ({@code AccountRepository.applyInterestForCycle}); exposed for detached-entity
+     * and testing scenarios.
+     *
+     * @param lastInterestCycle the 10-character posted interest cycle, or {@code null}
+     */
+    public void setLastInterestCycle(String lastInterestCycle) {
+        this.lastInterestCycle = lastInterestCycle;
     }
 
     /**

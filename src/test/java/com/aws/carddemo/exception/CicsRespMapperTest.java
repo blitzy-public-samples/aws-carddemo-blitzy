@@ -182,17 +182,41 @@ class CicsRespMapperTest {
     }
 
     @Test
-    @DisplayName("An unknown RESP throws EXACTLY the base FileStatusException with status = String.valueOf(respCode)")
+    @DisplayName("An unknown RESP throws EXACTLY the base FileStatusException carrying the canonical general-error FILE STATUS '99'")
     void unknownRespThrowsExactlyBaseFileStatusException() {
         Throwable thrown = catchThrowable(() -> CicsRespMapper.raiseFor(99, "Account", 1));
 
         // isExactlyInstanceOf guarantees the base type, NOT a subclass, so an
-        // unexpected RESP is never mis-classified as not-found or duplicate.
+        // unexpected RESP is never mis-classified as not-found or duplicate. The raw
+        // RESP is preserved in the message; the FILE STATUS is canonicalized to the
+        // valid two-character implementor code STATUS_GENERAL_ERROR ('99').
         assertThat(thrown)
                 .isExactlyInstanceOf(FileStatusException.class)
                 .hasMessageContaining("Account")
                 .hasMessageContaining("RESP=99");
-        assertThat(((FileStatusException) thrown).getFileStatus()).isEqualTo("99");
+        assertThat(((FileStatusException) thrown).getFileStatus())
+                .isEqualTo(FileStatusException.STATUS_GENERAL_ERROR)
+                .isEqualTo("99");
+    }
+
+    @Test
+    @DisplayName("An unknown RESP whose numeric width is not two digits still yields a valid two-character FILE STATUS '99'")
+    void unknownWideRespYieldsCanonicalTwoCharacterStatus() {
+        // A raw CICS RESP can be any width (here 250 -> three digits). It must never be
+        // placed verbatim into the two-character FILE STATUS field (which would both
+        // break the PIC X(2) contract and now be rejected by FileStatusException); it
+        // is canonicalized to STATUS_GENERAL_ERROR while the raw value is preserved in
+        // the message.
+        Throwable thrown = catchThrowable(() -> CicsRespMapper.raiseFor(250, "Account", 1));
+
+        assertThat(thrown)
+                .isExactlyInstanceOf(FileStatusException.class)
+                .hasMessageContaining("RESP=250");
+        FileStatusException fse = (FileStatusException) thrown;
+        assertThat(fse.getFileStatus())
+                .isEqualTo(FileStatusException.STATUS_GENERAL_ERROR)
+                .isEqualTo("99")
+                .hasSize(2);
     }
 
     @Test
@@ -235,7 +259,9 @@ class CicsRespMapperTest {
                 .isExactlyInstanceOf(FileStatusException.class)
                 .hasMessageContaining("RESP=99")
                 .hasMessageContaining("RESP2=7");
-        assertThat(((FileStatusException) thrown).getFileStatus()).isEqualTo("99");
+        assertThat(((FileStatusException) thrown).getFileStatus())
+                .isEqualTo(FileStatusException.STATUS_GENERAL_ERROR)
+                .isEqualTo("99");
     }
 
     // ------------------------------------------------------------------

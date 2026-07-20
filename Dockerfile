@@ -119,6 +119,25 @@ ENV JAVA_TOOL_OPTIONS="-XX:MaxRAMPercentage=75.0 -XX:+ExitOnOutOfMemoryError"
 #   DB_USERNAME             - database user (supplied at runtime)
 #   DB_PASSWORD             - database password (supplied at runtime; never committed)
 
+# ---- Container health probe (QA finding F-P6-G) ----------------------------
+# Report container health from Spring Boot Actuator's liveness surface so an
+# orchestrator (Docker / Compose / Kubernetes) can detect an unhealthy instance
+# and restart or stop routing to it. /actuator/health is exposed and permitAll
+# in every profile (see SecurityConfig), so the probe needs no credentials.
+#
+# The probe is intentionally DEPENDENCY-FREE: this slim JRE base (Ubuntu) ships
+# NO curl/wget/nc, so a curl-based HEALTHCHECK would fail with "command not
+# found". It uses bash's built-in /dev/tcp instead (bash IS present). Note the
+# exec form invoking `bash` explicitly: the default /bin/sh is dash, which does
+# NOT support /dev/tcp. It opens a socket to the app port, issues a single
+# HTTP/1.1 GET with `Connection: close` (so the server closes and grep sees EOF),
+# and succeeds only when the health document reports "status":"UP" - verifying
+# the app is actually serving and healthy, not merely that the port is open.
+# start-period gives the JVM + Flyway migration + context refresh time to come up
+# before failures count against the retry budget.
+HEALTHCHECK --interval=30s --timeout=5s --start-period=60s --retries=3 \
+    CMD ["bash","-c","exec 3<>/dev/tcp/127.0.0.1/8080 || exit 1; printf 'GET /actuator/health HTTP/1.1\\r\\nHost: localhost\\r\\nConnection: close\\r\\n\\r\\n' >&3; grep -q '\"status\":\"UP\"' <&3"]
+
 # Exec form -> `java` runs as PID 1 and receives SIGTERM directly, enabling
 # Spring Boot's graceful shutdown. JAVA_TOOL_OPTIONS (above) is applied
 # automatically by the JVM.

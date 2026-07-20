@@ -409,6 +409,42 @@ class TransactionListControllerTest {
                 .andExpect(header().doesNotExist(HDR_NEXT_PROGRAM));
     }
 
+    /**
+     * F-P4-C &mdash; an extreme {@code page} query parameter cannot overflow the
+     * repository offset ({@code index * PAGE_SIZE}). The controller clamps the
+     * derived zero-based page index to {@code Integer.MAX_VALUE / PAGE_SIZE} so
+     * the browse degrades to an empty page (a bounded same-screen HTTP 200)
+     * instead of propagating an arithmetic overflow into a repository
+     * {@code OFFSET} and surfacing as an HTTP 500. Because the service is mocked
+     * in this web slice the guard is asserted on the {@link Pageable} handed to
+     * the service: its page number is the clamp ceiling, never the raw value.
+     */
+    @Test
+    @DisplayName("H2 (F-P4-C). An extreme page parameter is clamped so the offset cannot overflow (HTTP 200, not 500)")
+    void extremePageParameterIsClampedToAvoidOffsetOverflow() throws Exception {
+        stubBrowse(List.of(), 0L);
+
+        int maxPageIndex = Integer.MAX_VALUE / 10; // PAGE_SIZE = 10
+
+        // An unmapped key (PF5) reaches the WHEN-OTHER branch, which browses the
+        // current page directly (query(currentPage, ...)) using the supplied page
+        // parameter -- the path where the offset-overflow guard must apply.
+        mockMvc.perform(post(BASE_PATH)
+                        .param("page", String.valueOf(Integer.MAX_VALUE))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(json(new TransactionListRequest(null, null, PfKeyAction.PF5))))
+                // Bounded outcome: a same-screen 200, never an HTTP 500.
+                .andExpect(status().isOk());
+
+        ArgumentCaptor<Pageable> pageableCaptor = ArgumentCaptor.forClass(Pageable.class);
+        verify(transactionService, atLeastOnce()).listTransactionsFrom(any(), pageableCaptor.capture());
+        // The raw page (Integer.MAX_VALUE) would map to zero-based 2147483646; the
+        // clamp caps it at Integer.MAX_VALUE / PAGE_SIZE so index * PAGE_SIZE stays
+        // within int range (F-P4-C).
+        assertThat(pageableCaptor.getAllValues())
+                .allMatch(p -> p.getPageNumber() == maxPageIndex && p.getPageSize() == 10);
+    }
+
     // ------------------------------------------------------------------------
     // I. Field-contract parity (COTRN00 row) + monetary fidelity
     // ------------------------------------------------------------------------

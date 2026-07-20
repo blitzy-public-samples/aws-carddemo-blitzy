@@ -19,7 +19,11 @@ package com.aws.carddemo.config;
 import com.fasterxml.jackson.annotation.JsonInclude;
 import com.fasterxml.jackson.core.JsonGenerator;
 import com.fasterxml.jackson.databind.DeserializationFeature;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.SerializationFeature;
+import com.fasterxml.jackson.databind.cfg.CoercionAction;
+import com.fasterxml.jackson.databind.cfg.CoercionInputShape;
+import com.fasterxml.jackson.databind.type.LogicalType;
 import org.springframework.boot.autoconfigure.jackson.Jackson2ObjectMapperBuilderCustomizer;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
@@ -119,6 +123,42 @@ public class JacksonConfig {
                         DeserializationFeature.USE_BIG_DECIMAL_FOR_FLOATS,
                         JsonGenerator.Feature.WRITE_BIGDECIMAL_AS_PLAIN)
                 .featuresToDisable(SerializationFeature.WRITE_DATES_AS_TIMESTAMPS)
-                .serializationInclusion(JsonInclude.Include.NON_NULL);
+                .serializationInclusion(JsonInclude.Include.NON_NULL)
+                // Post-configure the fully-built ObjectMapper to tighten input-shape coercion; this
+                // is applied via postConfigurer because per-type coercion is an ObjectMapper-level
+                // concern that the builder's feature toggles do not express.
+                .postConfigurer(JacksonConfig::disableScalarToStringCoercion);
+    }
+
+    /**
+     * Rejects JSON scalar shapes that would otherwise be silently coerced onto a textual
+     * ({@link String}) target, closing the loosely-typed input gap identified in QA finding
+     * <strong>F-P4-K</strong>.
+     *
+     * <p>By default Jackson coerces a JSON number or boolean into a {@code String}-typed field
+     * (for example {@code {"password": 12345678}} or {@code {"userId": true}} would deserialize
+     * into the string {@code "12345678"} / {@code "true"}), which allowed wrong-typed &mdash; and,
+     * for a numeric password, still usable &mdash; values to slip past the DTO field contract. The
+     * legacy 3270 screens are exclusively text fields (BMS {@code PIC X(n)}), so a JSON scalar is
+     * never a valid representation of a screen field; the correct outcome is a deterministic
+     * rejection, not a coercion.</p>
+     *
+     * <p>Setting {@link CoercionAction#Fail} for the {@link CoercionInputShape#Integer},
+     * {@link CoercionInputShape#Float}, and {@link CoercionInputShape#Boolean} input shapes on the
+     * {@link LogicalType#Textual} target makes such input raise a Jackson
+     * {@code MismatchedInputException}; Spring surfaces that as an
+     * {@code HttpMessageNotReadableException}, which the {@code GlobalExceptionHandler} maps to a
+     * consistent HTTP {@code 400}. The constraint is scoped to textual targets only, so it does not
+     * touch {@link java.math.BigDecimal} (numeric) monetary fields &mdash; preserving the
+     * migration's {@code #1} correctness guarantee &mdash; nor enum targets such as the
+     * attention-key ({@code PfKeyAction}) field.</p>
+     *
+     * @param mapper the fully-built {@code ObjectMapper} to harden (never {@code null})
+     */
+    private static void disableScalarToStringCoercion(ObjectMapper mapper) {
+        var textual = mapper.coercionConfigFor(LogicalType.Textual);
+        textual.setCoercion(CoercionInputShape.Integer, CoercionAction.Fail);
+        textual.setCoercion(CoercionInputShape.Float, CoercionAction.Fail);
+        textual.setCoercion(CoercionInputShape.Boolean, CoercionAction.Fail);
     }
 }

@@ -16,6 +16,7 @@
 package com.aws.carddemo.common.util;
 
 import java.math.BigDecimal;
+import java.nio.charset.StandardCharsets;
 import java.util.List;
 
 import org.junit.jupiter.api.Test;
@@ -265,6 +266,56 @@ class FixedWidthCodecTest {
         assertThat(FixedWidthCodec.writeAlphanumeric("Abshire-Lowe", 20))
                 .isEqualTo("Abshire-Lowe        ")
                 .hasSize(20);
+    }
+
+    // ------------------------------------------------------------------------
+    // F-P12 - non-single-byte characters are deterministically replaced so the
+    // ISO-8859-1 record writers can never abort with an encoding exception that
+    // would leave a truncated or zero-byte external file.
+    // ------------------------------------------------------------------------
+
+    @Test
+    void writeAlphanumericReplacesCharacterAboveLatin1WithQuestionMark() {
+        // A single BMP character above U+00FF (Greek capital omega) cannot be represented in the
+        // single-byte PIC X output charset, so it is replaced 1:1 by '?', preserving the field width.
+        String out = FixedWidthCodec.writeAlphanumeric("A\u03A9B", 6);
+        assertThat(out).isEqualTo("A?B   ").hasSize(6);
+        assertThat(out).doesNotContain("\u03A9");
+    }
+
+    @Test
+    void writeAlphanumericReplacesSupplementaryEmojiSurrogatePairWithTwoQuestionMarks() {
+        // A supplementary code point (U+1F600, a grinning-face emoji) is stored as a UTF-16 surrogate
+        // pair, i.e. two code units. Each half is above U+00FF, so each is replaced by '?' -> the
+        // two-unit emoji becomes "??" and the field width is still preserved exactly.
+        String out = FixedWidthCodec.writeAlphanumeric("X\uD83D\uDE00Y", 8);
+        assertThat(out).isEqualTo("X??Y    ").hasSize(8);
+        // No half of the surrogate pair survives to reach the encoder.
+        assertThat(out.chars()).allMatch(c -> c <= 0x00FF);
+    }
+
+    @Test
+    void writeAlphanumericReplacesUnmappableCharacterBeforeTruncationPreservingWidth() {
+        // Replacement happens before the over-width truncation and is strictly one-for-one, so a
+        // supplementary character can never be split into a lone surrogate at the truncation boundary.
+        // "AB<emoji>CDEF" (6 code units) sanitizes to "AB??CDEF" then truncates to width 4 -> "AB??".
+        String out = FixedWidthCodec.writeAlphanumeric("AB\uD83D\uDE00CDEF", 4);
+        assertThat(out).isEqualTo("AB??").hasSize(4);
+        assertThat(out.chars()).allMatch(c -> c <= 0x00FF);
+    }
+
+    @Test
+    void writeAlphanumericOutputIsAlwaysStrictlyIso88591Encodable() {
+        // The whole point of F-P12: after sanitization the rendered field must always be encodable by
+        // a strict ISO-8859-1 encoder, so the batch writers (which open a strict ISO-8859-1 stream)
+        // can never raise MalformedInput/UnmappableCharacter and abort mid-write. Mix a BMP char
+        // above Latin-1, a surrogate pair, and an embedded newline in one value.
+        String out = FixedWidthCodec.writeAlphanumeric("caf\u00e9-\u03A9-\uD83D\uDE00-x\ny", 40);
+        assertThat(out).hasSize(40);
+        assertThat(StandardCharsets.ISO_8859_1.newEncoder().canEncode(out)).isTrue();
+        // The Latin-1 'é' (U+00E9) is representable and must survive unchanged; only the truly
+        // non-single-byte code units and the newline are rewritten.
+        assertThat(out).startsWith("caf\u00e9-?-??-x y");
     }
 
     // ========================================================================

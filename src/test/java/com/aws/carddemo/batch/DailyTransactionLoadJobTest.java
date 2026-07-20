@@ -47,6 +47,7 @@ import java.math.BigDecimal;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicLong;
 
@@ -224,6 +225,80 @@ class DailyTransactionLoadJobTest {
                 .as("a truncated fixed-width record must fail the load, not silently corrupt it")
                 .isEqualTo(BatchStatus.FAILED);
         assertThat(dailyTransactionRepository.count()).isZero();
+    }
+
+    @Test
+    void malformedFieldFailureDoesNotLeakRawPanBearingRecord() throws Exception {
+        // QA finding F-P5-B: the stock FlatFileParseException embeds the entire raw 350-byte
+        // DALYTRAN-RECORD (which carries a PAN at DALYTRAN-CARD-NUM, offset 262) in its message and
+        // via getInput(), so a malformed record would leak full card material into the logs. Build a
+        // FULL-WIDTH (350-char) but malformed record by corrupting the numeric CAT-CD field
+        // (PIC 9(04) @18) with letters. Because the record is full width this exercises the
+        // field-DECODE failure path (readNumericInt throws inside the mapper -> framework
+        // FlatFileParseException) rather than the short-remainder framing path, and CAT-CD is decoded
+        // before CARD-NUM so the PAN is present in the raw record the framework captures.
+        String valid = fixtureRecords()[0];
+        assertThat(valid).as("fixture record must be full width").hasSize(350);
+        String pan = valid.substring(CARD_NUM_OFFSET, CARD_NUM_OFFSET + CARD_NUM_LENGTH).trim();
+        assertThat(pan)
+                .as("fixture record must carry a PAN so the leak assertion is not vacuous")
+                .isNotBlank()
+                .hasSizeGreaterThanOrEqualTo(6);
+        String malformed = valid.substring(0, CAT_CD_OFFSET) + "ABCD"
+                + valid.substring(CAT_CD_OFFSET + CAT_CD_LENGTH);
+        assertThat(malformed).as("corruption must preserve the 350-char record width").hasSize(350);
+        String location = writeTempInput("dalytran-malformed-catcd.dat", malformed);
+
+        JobExecution execution = launchLoadJob(location);
+
+        assertThat(execution.getStatus())
+                .as("a malformed numeric field must fail the load rather than post a corrupt record")
+                .isEqualTo(BatchStatus.FAILED);
+        assertThat(dailyTransactionRepository.count())
+                .as("nothing is committed when the sole record fails to parse")
+                .isZero();
+
+        String failureText = collectFailureText(execution);
+        assertThat(failureText)
+                .as("the sanitized ParseException (not the raw-record-bearing FlatFileParseException) "
+                        + "must be what fails the step (F-P5-B)")
+                .contains("raw record withheld");
+        assertThat(failureText)
+                .as("the raw PAN-bearing record must never appear in any failure diagnostic (F-P5-B)")
+                .doesNotContain(pan);
+    }
+
+    /** {@code DALYTRAN-CAT-CD PIC 9(04)} offset (0-based) within the 350-byte record. */
+    private static final int CAT_CD_OFFSET = 18;
+    /** {@code DALYTRAN-CAT-CD} field length. */
+    private static final int CAT_CD_LENGTH = 4;
+    /** {@code DALYTRAN-CARD-NUM PIC X(16)} offset (0-based) within the 350-byte record. */
+    private static final int CARD_NUM_OFFSET = 262;
+    /** {@code DALYTRAN-CARD-NUM} field length. */
+    private static final int CARD_NUM_LENGTH = 16;
+
+    /**
+     * Concatenates the {@code toString()} and message of every failure exception recorded on the job
+     * execution and on every step execution, walking each exception's full cause chain, so a test can
+     * assert on the complete set of diagnostics the batch machinery would surface (and log) for a
+     * failure &mdash; proving both what is present (the sanitized marker) and what is absent (the PAN).
+     *
+     * @param execution the completed (failed) job execution
+     * @return the combined failure text across all recorded exceptions and their cause chains
+     */
+    private static String collectFailureText(JobExecution execution) {
+        StringBuilder sb = new StringBuilder();
+        List<Throwable> failures = new ArrayList<>(execution.getAllFailureExceptions());
+        execution.getStepExecutions().forEach(step -> failures.addAll(step.getFailureExceptions()));
+        for (Throwable failure : failures) {
+            for (Throwable current = failure; current != null; current = current.getCause()) {
+                sb.append(current).append('\n');
+                if (current.getMessage() != null) {
+                    sb.append(current.getMessage()).append('\n');
+                }
+            }
+        }
+        return sb.toString();
     }
 
     /**
