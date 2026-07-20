@@ -63,14 +63,24 @@ resources reference the new load modules.
 
 ## 2. Define and install the CICS resources
 
-Submit [`app/jcl/APICSDIN.jcl`](../app/jcl/APICSDIN.jcl). Its first step
-runs `DFHCSDUP` and inlines the definitions from
-[`app/csd/CARDDEMOAPI.CSD`](../app/csd/CARDDEMOAPI.CSD). Its second step
-requests `CEDA INSTALL GROUP(CDEMOAPI)` in `CICSAWSA`.
+Submit [`app/jcl/APICSDIN.jcl`](../app/jcl/APICSDIN.jcl). It runs a single
+`DFHCSDUP` step whose inline definitions are kept byte-consistent with
+[`app/csd/CARDDEMOAPI.CSD`](../app/csd/CARDDEMOAPI.CSD) (the drift guard
+[`app/test/api/check-csd-drift.sh`](../app/test/api/check-csd-drift.sh) fails
+the build on any mismatch). The step `DELETE`s any prior `CDEMOAPI` group so
+reruns are idempotent — a "group not found" `RC=4` on the first run is
+expected and harmless — then `DEFINE`s the group's resources, `ADD`s
+`CDEMOAPI` to the startup group list `&GRPLIST` (default `DFHLIST`), and
+`LIST`s the group. The job is modeled on `app/jcl/CBADMCDJ.jcl`.
 
 ```text
 SUBMIT 'AWS.M2.CARDDEMO.JCL(APICSDIN)'
 ```
+
+`DFHCSDUP` has no `INSTALL` verb and `CEDA` is a terminal transaction, so this
+job intentionally does **not** install the group online; bringing the
+resources online is a separate operator action described at the end of this
+section.
 
 The descriptive file name is `CARDDEMOAPI.CSD`, but the installed CICS group
 is `CDEMOAPI` because CICS group names are limited to eight characters. The
@@ -101,10 +111,12 @@ read-only access is enforced in the service programs (which issue only
 definition that could override the base region's write-capable files. See
 [`docs/decision-log.md`](decision-log.md) (D14).
 
-Verify the install command in `CMDOUT`. Activate the group by adding
-`CDEMOAPI` to the region `GRPLIST` so it installs at the next startup
-(recommended), or run `CEDA INSTALL GROUP(CDEMOAPI)` from an authorized CICS
-terminal. See [`docs/decision-log.md`](decision-log.md) (D15).
+Verify the `DFHCSDUP` `DEFINE`/`ADD` results and the `LIST GROUP(CDEMOAPI)`
+output in the job's `SYSPRINT`/`OUTDD`. Then bring the group online by one of:
+adding `CDEMOAPI` to the region `GRPLIST` so it installs at the next startup
+(the `DFHCSDUP` step above already does this — recommended), or running
+`CEDA INSTALL GROUP(CDEMOAPI)` from an authorized CICS terminal (equivalently
+via the CMCI/SPI). See [`docs/decision-log.md`](decision-log.md) (D15).
 
 ## 3. Enable CICS Web Support and TCP/IP
 
