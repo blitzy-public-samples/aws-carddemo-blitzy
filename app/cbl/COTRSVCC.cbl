@@ -493,7 +493,13 @@
                WHEN DFHRESP(NOTFND)
                   CONTINUE
                WHEN DFHRESP(ENDFILE)
-                  CONTINUE
+      * Defensive best-effort ENDBR for browse-release symmetry on
+      * the ENDFILE path; RESP not tested. See decision log D26.
+                  EXEC CICS ENDBR
+                       DATASET   (WS-CXACAIX-FILE)
+                       RESP      (WS-RESP-CD)
+                       RESP2     (WS-REAS-CD)
+                  END-EXEC
                WHEN OTHER
                   SET WS-BROWSE-ERROR TO TRUE
            END-EVALUATE
@@ -591,7 +597,13 @@
                WHEN DFHRESP(NOTFND)
                   CONTINUE
                WHEN DFHRESP(ENDFILE)
-                  CONTINUE
+      * Defensive best-effort ENDBR for browse-release symmetry on
+      * the ENDFILE path; RESP not tested. See decision log D26.
+                  EXEC CICS ENDBR
+                       DATASET   (WS-TRANSACT-FILE)
+                       RESP      (WS-RESP-CD)
+                       RESP2     (WS-REAS-CD)
+                  END-EXEC
                WHEN OTHER
                   SET WS-BROWSE-ERROR TO TRUE
            END-EVALUATE

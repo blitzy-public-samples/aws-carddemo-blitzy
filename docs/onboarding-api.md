@@ -10,6 +10,14 @@ The API adds new members only. Its service programs use `READ`, `STARTBR`,
 `READNEXT`, and `ENDBR`; they do not issue VSAM `WRITE`, `REWRITE`, or
 `DELETE` commands.
 
+Every step below runs **on the mainframe**: it submits JCL and issues
+`DFHCSDUP`, `CEDA`, and `CEMT` commands against a live z/OS and CICS TS 5.6
+region. These steps therefore require that region and its z/OS toolchain
+(the CICS translator, Enterprise COBOL 6.3, the binder, IDCAMS, and SDSF);
+they cannot be built, installed, or exercised from a non-z/OS checkout of the
+source — for example a Linux or workstation clone used only for editing.
+Confirm the prerequisites below before attempting Section 1.
+
 ## Prerequisites
 
 Two environments are involved, and a clean checkout must satisfy both:
@@ -55,22 +63,6 @@ build JCL exposes `HLQ` as a `SET` symbol; the install/rollback JCL expose
 | `DFHCSD` | `OEM.CICSTS.DFHCSD` | Region CSD dataset to update |
 | listener port | `3001` | `TCPIPSERVICE(CDAPISVC)` port |
 
-### Stage the API source members
-
-Transfer the new members into the same PDS/PDSE libraries the base install
-uses, with `$INDFILE` or your preferred upload tool, in **text mode** so the
-workstation's ASCII is converted to the region's EBCDIC code page (the Unix
-line feed is a transfer delimiter, not part of a record). All API source is
-fixed-format COBOL/JCL in columns 1-72, so every target library is
-`RECFM=FB,LRECL=80` — identical to the base CardDemo `CBL`/`CPY`/`JCL`
-libraries described in the README.
-
-| Repository path | Target dataset | Members | Format |
-|---|---|---|---|
-| `app/cbl/*.cbl` | `AWS.M2.CARDDEMO.CBL` | 8 runtime programs (and the 6 `TST*` drivers) | `FB/80` |
-| `app/cpy/COAP*.cpy` | `AWS.M2.CARDDEMO.CPY` | the 7 API copybooks | `FB/80` |
-| `app/jcl/*.jcl` | `AWS.M2.CARDDEMO.JCL` | the API build/install/rollback JCL | `FB/80` |
-
 The eight runtime programs are `COJSONUC`, `COAPISEC`, `COACSVCC`,
 `COCUSVCC`, `COCRSVCC`, `COXRSVCC`, `COTRSVCC`, and `COAPIRTR`. The seven
 copybooks are `COAPICOM`, `COAPSGNY`, `COAPACTY`, `COAPCUSY`, `COAPCRDY`,
@@ -103,6 +95,43 @@ For a strict, reproducible gate always run the contract test with
 `RELEASE_MODE=1` (see [Section 4](#4-smoke-test-the-installed-api)). Without
 it the test SKIPs and exits `0` when a pinned dependency or the spec file is
 missing, which does not prove the contract.
+
+### Stage the new API source members
+
+Section 1 onward assumes the new API members already exist in the `AWS.M2`
+source partitioned datasets. Because the feature is additive, upload the new
+members into the **existing** CardDemo source PDSes — the same datasets the
+base install created under the README section *Installation on the mainframe*.
+No new dataset is required if that base structure is already in place; a PDS
+that is missing is allocated with the **same attributes the base CardDemo
+source datasets use — `RECFM=FB`, `LRECL=80`, `DSORG=PO`** (the `FB`/`80`
+rows in the README dataset table). Do not invent different attributes for the
+API members.
+
+Upload the following members before building. Members are ordinary text
+source, so transfer them in **text mode** using `IND$FILE` (or your preferred
+upload tool), letting the transfer convert ASCII to the region's EBCDIC code
+page — exactly as the README directs for the CardDemo source folders. Do
+**not** use binary mode for these members; binary transfer in the README
+applies only to the pre-encoded EBCDIC VSAM *data* files, not to source.
+
+| Target PDS (HLQ `AWS.M2`) | DCB | Repository folder | Members (upload with the file extension dropped) |
+|---|---|---|---|
+| `AWS.M2.CARDDEMO.CBL` | `RECFM=FB,LRECL=80` | `app/cbl/` | `COJSONUC`, `COAPISEC`, `COACSVCC`, `COCUSVCC`, `COCRSVCC`, `COXRSVCC`, `COTRSVCC`, `COAPIRTR` (the eight runtime programs) |
+| `AWS.M2.CARDDEMO.CPY` | `RECFM=FB,LRECL=80` | `app/cpy/` | `COAPICOM`, `COAPSGNY`, `COAPACTY`, `COAPCUSY`, `COAPCRDY`, `COAPXRFY`, `COAPTRNY` (the seven API copybooks) |
+| `AWS.M2.CARDDEMO.JCL` | `RECFM=FB,LRECL=80` | `app/jcl/` | `APIBUILD`, `APICSDIN`, `APICSDRB`, `APITSTB` (the four API jobs) |
+| `AWS.M2.CARDDEMO.CBL` | `RECFM=FB,LRECL=80` | `app/test/api/` | `TSTAUTH`, `TSTACCT`, `TSTCUST`, `TSTCARD`, `TSTXREF`, `TSTTRAN` (the six QA drivers — needed only for Section 4) |
+
+A repository file uploads to the like-named member with its extension removed:
+`app/cbl/COAPIRTR.cbl` becomes member `COAPIRTR` in `AWS.M2.CARDDEMO.CBL`, and
+`app/jcl/APIBUILD.jcl` becomes member `APIBUILD` in `AWS.M2.CARDDEMO.JCL`.
+
+Staging order matters: the eight runtime programs and seven copybooks must be
+present before Section 1 (the copybooks so `BUILDONL` can resolve them from
+`AWS.M2.CARDDEMO.CPY`), and the four JCL members must be present so the
+`SUBMIT 'AWS.M2.CARDDEMO.JCL(...)'` commands in Sections 1, 2, and 5 can find
+them. The six `TST*` drivers are required only for the region-only QA runs in
+Section 4 and may be deferred until then.
 
 ## 1. Build the API programs
 
@@ -137,6 +166,33 @@ that all eight load modules exist. On a first installation, the `NEWCOPY`
 commands can precede the corresponding installed PROGRAM resources. After
 Section 2, rerun the `NEWCOPY` step or resubmit the job so all eight PROGRAM
 resources reference the new load modules.
+
+### Targeting a differently-named region
+
+The final SDSF step of `APIBUILD.jcl` (and of the QA job `APITSTB.jcl`) issues
+its `CEMT SET PROG(...) NEWCOPY` commands to region `CICSAWSA`. That region
+name is written literally in the `/MODIFY CICSAWSA,'...'` lines, matching the
+repository-wide convention of `samples/jcl/CICCMP.jcl` and the base
+file-control jobs (`OPENFIL`, `CLOSEFIL`, and the file loaders), which name
+the region the same way. It is deliberately kept literal rather than made a
+JCL symbolic so these build jobs stay byte-for-byte consistent with that
+shipped convention.
+
+If your CICS region is **not** named `CICSAWSA`, change the region name in the
+`/MODIFY` lines — the single point of edit — before submitting each job:
+
+- In `app/jcl/APIBUILD.jcl`, the eight `/MODIFY CICSAWSA,'CEMT SET
+  PROG(...) NEWCOPY'` lines.
+- In `app/jcl/APITSTB.jcl`, the six equivalent `/MODIFY` lines for the
+  `TST*` drivers.
+
+A `NEWCOPY` sent to a mismatched region name is **benign**: the job's compile
+and link-edit steps still build the load modules into `AWS.M2.CARDDEMO.LOADLIB`
+successfully, and only the automatic refresh is skipped. The new modules are
+then picked up the next time the region starts (Section 2 adds `CDEMOAPI` to
+the startup group list `&GRPLIST`), or immediately by re-issuing `CEMT SET
+PROG(...) NEWCOPY` from an authorized terminal on the correct region. No CSD
+or program source needs to change to retarget the region.
 
 ## 2. Define and install the CICS resources
 
@@ -244,8 +300,17 @@ This is a region/operator action, not a source-code change.
 5. Verify `TRANSACTION(CAPI)`, the eight API `PROGRAM` resources, and
    `TSMODEL(CDAPITSM)` are enabled.
 
-If the operator changes the listener port, update the CSD definition before
-installing it and pass the same value as `API_PORT` to the test harness.
+Port `3001` is an install-time default, not an assumption baked into the
+programs; do not assume it is free. If the operator changes the listener port,
+it must be changed in **two byte-identical places** and kept in sync, because
+the CSD `PORTNUMBER` is a fixed resource attribute that cannot use a JCL
+symbolic: update `PORTNUMBER(...)` in
+[`app/csd/CARDDEMOAPI.CSD`](../app/csd/CARDDEMOAPI.CSD) **and** the matching
+`PORTNUMBER(...)` in the inline `DEFINE` stream of
+[`app/jcl/APICSDIN.jcl`](../app/jcl/APICSDIN.jcl) before installing. The drift
+guard [`app/test/api/check-csd-drift.sh`](../app/test/api/check-csd-drift.sh)
+fails the build if the two diverge, so change both to the same value. Then
+pass the same port as `API_PORT` to the test harness (Section 4).
 
 ### Network exposure and transport (loopback-only)
 
@@ -317,11 +382,18 @@ assertions; the script exits `0` when every check passes, `1` on any failure,
 and `2` when a required dependency is missing (`curl`, or `jq` under
 `RELEASE_MODE`).
 
-Run the local contract validator whenever the OpenAPI file or examples
-change. Install the pinned dependencies once (see
-[Prerequisites](#prerequisites)), then run the strict release gate:
+Run the local contract validator whenever the OpenAPI file or examples change.
+A bare run may **SKIP** (and still exit `0`) when the optional validation
+dependencies are absent, so a SKIP must never be read as a PASS. For a release
+gate, install the pinned dependencies (see [Prerequisites](#prerequisites)) and run in strict mode: `RELEASE_MODE=1`
+promotes a missing dependency or spec from a SKIP to a **FAIL** (exit `1`).
 
 ```bash
+# Quick local check — may SKIP and still exit 0 in a minimal environment.
+python3 app/test/api/openapi-contract-test.py
+
+# Release gate — SKIP is promoted to FAIL (exit 1) on any missing dependency
+# or spec, so a clean exit 0 here means the contract genuinely passed.
 python3 -m pip install -r app/test/api/requirements-test.txt
 RELEASE_MODE=1 python3 app/test/api/openapi-contract-test.py
 ```
@@ -346,6 +418,13 @@ curl -sS \
 ```
 
 Never place a real password or bearer token in source control or shared logs.
+Likewise, keep real passwords, tokens, and full PANs out of your shell history
+and out of any screenshots. Avoid typing a real secret directly on the command
+line: read it from a prompt or a protected file (for example
+`read -rs API_PASS`), or prefix the command with a leading space when
+`HISTCONTROL=ignorespace`/`HISTIGNORE` is set so the line is not saved. Before
+capturing a screenshot or screen recording of a terminal or client, replace any
+real credential or PAN with a placeholder.
 
 ### Build, register, and run `TSTTRAN`
 
@@ -385,6 +464,19 @@ The eleven cases are detail `200`, detail `404`, detail `400`, non-empty list
 `400`, missing request container, bad container length, truncated list
 (`truncated=true`, HTTP `200`), and list internal error (HTTP `500`).
 
+Every driver publishes its outcome through `RETURN-CODE` so a batch, EXCI, or
+started-transaction harness can gate on it. The convention is shared by all six
+drivers:
+
+- `0` — all cases passed.
+- `4` — a required fixture was absent, so a case was reported as
+  `INCOMPLETE-FIXTURE ABSENT` and not run. This is release-blocking: load the
+  missing fixture and rerun until the driver returns `0`.
+- `8` — an assertion failed.
+
+A `4` therefore means the run was *incomplete*, not that it passed; treat it
+exactly like a failure for release purposes.
+
 ### Load and restore the account-99 empty-list fixture
 
 [`app/test/api/acctdata-empty.txt`](../app/test/api/acctdata-empty.txt)
@@ -417,9 +509,9 @@ Use cloned VSAM datasets in a disposable region for these volume cases:
 |---|---|---|
 | Card-resolution boundary | 50 cards for one account | List processing remains within the card table limit |
 | Card-resolution overflow | 51 cards for one account | HTTP `500`, canonical internal error |
-| Transaction-list boundary | 50 matching transactions | HTTP `200`, `truncated=false`, complete 50-entry list |
-| Transaction-list overflow | 51 matching transactions | HTTP `200`, `truncated=true`, 50 entries returned |
-| Large response | Full 50-entry list (~16.5 KB) | CHANNEL/CONTAINER carries it; exceeds the 1024-byte COMMAREA convention |
+| Transaction-list boundary | 50 matching transactions | 50 entries returned with `truncated=false` and HTTP `200` |
+| Transaction-list truncation | 51 or more matching transactions | First 50 entries returned with `truncated=true` (a disclosed partial list) and HTTP `200`; request volume never yields HTTP `500` |
+| List transport | A bounded 50-entry list (about 16.5 KB) | Delivered over channel `CDEMOAPILISTCH` and its containers, never COMMAREA; stays below the 32 KB ceiling |
 | Money extrema | Valid maximum positive and negative amounts | Signed JSON strings retain exactly two decimal places |
 
 Restore the cloned datasets after every boundary test.

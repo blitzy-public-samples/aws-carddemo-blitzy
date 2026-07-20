@@ -211,7 +211,8 @@
                    END-IF
                WHEN API-HTTP-NOT-FOUND
                    ADD 1 TO WS-TESTS-SKIP
-                   DISPLAY 'TSTXREF 3000 XREF-SWAP SKIP-FIXTURE ABSENT'
+                   DISPLAY 'TSTXREF 3000 XREF-SWAP '
+                           'INCOMPLETE-FIXTURE ABSENT'
                WHEN OTHER
                    ADD 1 TO WS-TESTS-FAIL
                    DISPLAY 'TSTXREF 3000 XREF-SWAP FAIL'

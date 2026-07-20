@@ -451,6 +451,15 @@
        0000-MAIN.
 
            PERFORM 0050-INIT-REQUEST
+      *    P6-1 - Arm a last-resort abend trap once the requestId is
+      *    built, so a genuine service abend (for example a data
+      *    exception inside a linked CO*SVCC service) is answered with
+      *    the same canonical JSON error envelope and HTTP 500 as a
+      *    RESP-detected failure - not a CICS baseline generic 500
+      *    (rationale in docs/decision-log.md D26).
+           EXEC CICS HANDLE ABEND
+                LABEL(9999-ABEND-HANDLER)
+           END-EXEC
            PERFORM 1000-RECEIVE-REQUEST
            IF STATE-CONTINUE
                PERFORM 2000-PARSE-ROUTE
@@ -2494,6 +2503,33 @@
                    MOVE WS-I TO WS-STR-LEN
                END-IF
            END-PERFORM.
+
+      *----------------------------------------------------------------*
+      *                     9999-ABEND-HANDLER
+      *  P6-1 - Last-resort abend trap armed in 0000-MAIN. A genuine
+      *  task abend (for example a data exception inside a linked
+      *  service) transfers control here. Abend handling is cancelled
+      *  first so this routine cannot loop, then the uniform error
+      *  envelope is serialized and sent with HTTP 500 - the same
+      *  contract honored for RESP-detected failures - and sensitive
+      *  working storage is scrubbed before the task returns. Because
+      *  API access is read-only, CICS has already released the
+      *  task-scoped browse, storage, and enqueue resources, so no
+      *  data or resource leak results.
+      *----------------------------------------------------------------*
+       9999-ABEND-HANDLER.
+           EXEC CICS HANDLE ABEND
+                CANCEL
+           END-EXEC
+           MOVE 500    TO WS-HTTP-STATUS
+           MOVE SPACES TO WS-ERR-MSG
+           SET STATE-ERROR TO TRUE
+           PERFORM 5900-SERIALIZE-ERROR
+           PERFORM 6000-SEND-RESPONSE
+           PERFORM 6900-SCRUB-SENSITIVE
+           EXEC CICS RETURN
+           END-EXEC.
+
       *
       * Ver: CardDemo REST/JSON API v1.0 - COAPIRTR front-door router
       *

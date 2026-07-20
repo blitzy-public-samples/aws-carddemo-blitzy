@@ -203,7 +203,8 @@
                    END-IF
                WHEN API-HTTP-NOT-FOUND
                    ADD 1 TO WS-TESTS-SKIP
-                   DISPLAY 'TSTACCT 3000 ACCT-NEG SKIP-FIXTURE ABSENT'
+                   DISPLAY 'TSTACCT 3000 ACCT-NEG '
+                           'INCOMPLETE-FIXTURE ABSENT'
                WHEN OTHER
                    ADD 1 TO WS-TESTS-FAIL
                    DISPLAY 'TSTACCT 3000 ACCT-NEG FAIL'

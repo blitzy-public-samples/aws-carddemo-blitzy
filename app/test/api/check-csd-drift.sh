@@ -33,8 +33,8 @@ set -eu
 
 # Resolve the repository root from this script's own location so the check is
 # location-independent (works from a CI runner, a hook, or a shell).
-script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
-repo_root=$(CDPATH= cd -- "$script_dir/../../.." && pwd)
+script_dir=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
+repo_root=$(CDPATH='' cd -- "$script_dir/../../.." && pwd)
 
 csd_member="$repo_root/app/csd/CARDDEMOAPI.CSD"
 jcl_job="$repo_root/app/jcl/APICSDIN.jcl"

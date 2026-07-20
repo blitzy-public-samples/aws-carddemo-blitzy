@@ -294,30 +294,30 @@ All paths are prefixed with the versioned base path `/carddemo/api/v1` and are r
 
 ### CICS components
 
-The HTTP/JSON front door runs entirely in-region and is defined in a **new** CSD group `CARDDEMOAPI` (the existing `CARDDEMO` group is untouched):
+The HTTP/JSON front door runs entirely in-region and is defined in a **new** CSD group `CDEMOAPI` (held in the file `app/csd/CARDDEMOAPI.CSD`; the installed group name is `CDEMOAPI` because CICS group names are limited to eight characters, and the existing `CARDDEMO` group is untouched):
 
 * A new `TCPIPSERVICE` listening on an unused TCP port.
 * One or more `URIMAP`s bound to `/carddemo/api/v1/*`.
 * An alias `TRANSACTION` that attaches the router.
-* The router program `COAPIRTR`, which receives the request (`EXEC CICS WEB RECEIVE`), parses the route, enforces the bearer token, and dispatches (via `EXEC CICS LINK`) to the authentication program `COAPISEC` and the read-only service programs `COACSVCC` (accounts), `COCUSVCC` (customers), `COCRSVCC` (cards), `COXRSVCC` (cross-reference), and `COTRSVCC` (transactions), then serializes the JSON response (`EXEC CICS WEB SEND`).
+* The router program `COAPIRTR`, which receives the request (`EXEC CICS WEB RECEIVE`), parses the route, enforces the bearer token, and dispatches (via `EXEC CICS LINK`) to the authentication program `COAPISEC` and the read-only service programs `COACSVCC` (accounts), `COCUSVCC` (customers), `COCRSVCC` (cards), `COXRSVCC` (cross-reference), and `COTRSVCC` (transactions). The router statically `CALL`s the in-repository JSON serializer `COJSONUC` to build each response body, then sends it (`EXEC CICS WEB SEND`).
 
-The `CARDDEMOAPI` group also `ADD`s references to the existing read-only files `ACCTDAT`, `CARDDAT`, `CCXREF`, `CUSTDAT`, `TRANSACT`, and `USRSEC` (plus the alternate-index paths `CARDAIX` and `CXACAIX`) so the new programs can open them; it does not redefine them.
+The `CDEMOAPI` group defines **no `FILE` resources**. The API programs open the existing read-only files `ACCTDAT`, `CARDDAT`, `CCXREF`, `CUSTDAT`, `TRANSACT`, and `USRSEC` (plus the alternate-index paths `CARDAIX` and `CXACAIX`) exactly as the base `CARDDEMO` region already installs them; the group never redefines them. Read-only access is enforced in the service programs (which issue only `READ`/`STARTBR`/`READNEXT`) rather than by a duplicate FILE definition that could override the base region's write-capable files.
 
 ### Installing the API layer
 
 These steps are additive to the existing [Installation on the mainframe](#installation-on-the-mainframe) instructions and follow the same conventions. Edit the HLQs as required before running the jobs.
 
-1. Compile and link the new API programs (`COAPIRTR`, `COAPISEC`, `COACSVCC`, `COCUSVCC`, `COCRSVCC`, `COXRSVCC`, `COTRSVCC`) using the new API compile/link JCL, modeled on `samples/jcl/CICCMP.jcl` (the `BUILDONL` proc with `HLQ=AWS.M2`). Then pick up the new load modules in CICS:
+1. Compile and link the new API programs (`COAPIRTR`, `COAPISEC`, `COACSVCC`, `COCUSVCC`, `COCRSVCC`, `COXRSVCC`, `COTRSVCC`, and the JSON serializer `COJSONUC` -- eight runtime programs in total) using the new API compile/link JCL, modeled on `samples/jcl/CICCMP.jcl` (the `BUILDONL` proc with `HLQ=AWS.M2`). Then pick up the new load modules in CICS:
 
    ```shell
    CEMT SET PROG(COAPIRTR) NEWCOPY
    CEMT SET PROG(COAPISEC) NEWCOPY
    ```
 
-2. Define and install the new `CARDDEMOAPI` CSD group using the new `DFHCSDUP` job. The group defines the `TCPIPSERVICE`, the `URIMAP`(s), the alias `TRANSACTION`, and one `PROGRAM` entry per new program, and it `ADD`s the existing read-only files `ACCTDAT`, `CARDDAT`, `CCXREF`, `CUSTDAT`, `TRANSACT`, and `USRSEC` (plus AIX paths `CARDAIX`, `CXACAIX`).
+2. Define and install the new `CDEMOAPI` CSD group (held in the file `app/csd/CARDDEMOAPI.CSD`) using the new `DFHCSDUP` job. The group defines the `TCPIPSERVICE`, the `URIMAP`(s), the alias `TRANSACTION`, and one `PROGRAM` entry per new program. It defines **no `FILE` resources**: the existing read-only files `ACCTDAT`, `CARDDAT`, `CCXREF`, `CUSTDAT`, `TRANSACT`, and `USRSEC` (plus AIX paths `CARDAIX`, `CXACAIX`) are shared exactly as the base `CARDDEMO` region already installs them and are never redefined here.
 
    ```shell
-   CEDA INSTALL GROUP(CARDDEMOAPI)
+   CEDA INSTALL GROUP(CDEMOAPI)
    ```
 
 3. Enable CICS Web Support / TCP/IP services in the CICS region. This is an operator/SIT action (for example, `TCPIP=YES` in the SIT or startup overrides), not a source edit; then install and open the `TCPIPSERVICE`.

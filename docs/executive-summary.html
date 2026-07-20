@@ -3,7 +3,12 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="description" content="Executive summary of the AWS CardDemo REST/JSON API layer — a read-only, additive HTTP/JSON channel for account, card and transaction inquiry on base CICS Web Support." />
   <title>CardDemo REST/JSON API Layer — Executive Summary</title>
+
+  <!-- Inline, self-contained data-URI favicon (Blitzy mark): prevents a browser
+       /favicon.ico request; adds zero network egress and no sibling asset file. -->
+  <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20viewBox='0%200%2032%2032'%3E%3Crect%20width='32'%20height='32'%20rx='6'%20fill='%235B39F3'/%3E%3Ccircle%20cx='16'%20cy='16'%20r='7'%20fill='%2394FAD5'/%3E%3C/svg%3E" />
 
   <!-- Google Fonts: Inter (body), Space Grotesk (headings), Fira Code (monospace tokens) -->
   <link rel="preconnect" href="https://fonts.googleapis.com" />
@@ -203,6 +208,15 @@
     .cta svg.lucide { stroke: var(--blitzy-white); }
     .reveal .slides section.slide-closing .cta { background: var(--blitzy-teal); color: var(--blitzy-navy); }
     .reveal .slides section.slide-closing .cta svg.lucide { stroke: var(--blitzy-navy); }
+
+    /* Responsive guard: reveal.js Scroll View activates on narrow phones and
+       scales each slide, clipping left-aligned headings/kickers/table columns
+       below ~384px. Inset scaled content; scoped to .reveal-scroll so the
+       desktop scaled-canvas layout is unaffected. */
+    .reveal-viewport.reveal-scroll .slides section {
+      box-sizing: border-box;
+      padding-inline: calc(36px / var(--slide-scale, 1));
+    }
   </style>
 </head>
 <body>
@@ -238,7 +252,7 @@
           <div class="kpi-card">
             <i data-lucide="shield-check"></i>
             <div class="kpi-value">0</div>
-            <div class="kpi-label">Existing files changed</div>
+            <div class="kpi-label">Existing code files changed</div>
           </div>
           <div class="kpi-card">
             <i data-lucide="lock"></i>
@@ -468,8 +482,8 @@ graph LR
           </div>
           <div class="kpi-card">
             <i data-lucide="workflow"></i>
-            <div class="kpi-value">2</div>
-            <div class="kpi-label">JCL jobs: APIBUILD, APICSDIN</div>
+            <div class="kpi-value">4</div>
+            <div class="kpi-label">JCL jobs (build, install, rollback, test)</div>
           </div>
           <div class="kpi-card">
             <i data-lucide="database"></i>
@@ -505,7 +519,7 @@ graph LR
           <div class="kpi-card">
             <i data-lucide="shield-check"></i>
             <div class="kpi-value">0</div>
-            <div class="kpi-label">Existing files changed</div>
+            <div class="kpi-label">Existing code files changed</div>
           </div>
           <div class="kpi-card">
             <i data-lucide="lock"></i>
@@ -601,7 +615,11 @@ graph LR
       transition: 'slide',
       controlsTutorial: false,
       width: 1920,
-      height: 1080
+      height: 1080,
+      // Permit the fixed 1920-wide slide to scale below reveal's default 0.2
+      // floor so it fits sub-435px mobile scroll-view widths (e.g. 375) exactly
+      // instead of being clamped up to 384px and clipped (see decision log D26).
+      minScale: 0.1
     });
 
     Reveal.on('ready', renderVisuals);
