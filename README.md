@@ -1,324 +1,560 @@
-## CardDemo -- Mainframe CardDemo Application
+# CardDemo — Modernized Credit Card Application
 
-- [CardDemo -- Mainframe CardDemo Application](#carddemo----mainframe-card-demo-application)
-- [Description](#description)
-- [Technologies used](#technologies-used)
-- [Installation on the mainframe](#installation-on-the-mainframe)
-- [Application Details](#application-details)
-  - [User Functions](#user-functions)
-  - [Admin Functions](#admin-functions)
-  - [Application Inventory](#application-inventory)
-    - [**Online**](#online)
-    - [**Batch**](#batch)
-  - [Application Screens](#application-screens)
-    - [**Signon Screen**](#signon-screen)
-    - [**Main Menu**](#main-menu)
-    - [**Admin Menu**](#admin-menu)
+> A modern re-platform of the mainframe **CardDemo** demo — the same credit-card
+> business domain (accounts, cards, transactions, bill pay, reporting, and user
+> administration), migrated from COBOL/CICS/VSAM/BMS/JCL to a Python + TypeScript
+> three-tier web stack, with **every business rule preserved exactly**.
+
+The legacy mainframe implementation is retained **unchanged** under [`app/`](#legacy-reference)
+as a reference and golden-master parity source. It is **not built or run** by the
+modern stack — see [Legacy Reference](#legacy-reference).
+
+---
+
+## Table of Contents
+
+- [Overview](#overview)
+- [Architecture](#architecture)
+- [Technology Stack & Prerequisites](#technology-stack--prerequisites)
+- [Repository Structure](#repository-structure)
+- [Quick Start (Docker Compose)](#quick-start-docker-compose)
+- [Local Development Setup](#local-development-setup)
+- [Database Migrations & Seed Data](#database-migrations--seed-data)
+- [Running the Batch Chain](#running-the-batch-chain)
+- [Application Inventory & API Route Mapping](#application-inventory--api-route-mapping)
+- [Testing](#testing)
+- [Configuration](#configuration)
+- [Demo Credentials](#demo-credentials)
+- [Legacy Reference](#legacy-reference)
+- [Documentation](#documentation)
 - [Support](#support)
-- [Roadmap](#roadmap)
 - [Contributing](#contributing)
 - [License](#license)
-- [Project status](#project-status)
+- [Code of Conduct](#code-of-conduct)
 
-<br/>
+---
 
-## Description
-CardDemo is a Mainframe application designed and developed to test and showcase AWS and partner technology for mainframe migration and modernization use-cases such as discovery, migration, modernization, performance test, augmentation, service enablement, service extraction, test creation, test harness, etc.
+## Overview
 
-Note that the intent of this application is to provide mainframe coding scenarios to excercise analysis, transformation and migration tooling. So, the coding style is not uniform across the application
+CardDemo is a credit-card management application. It lets regular users manage
+**accounts**, **credit cards**, **transactions**, **bill payments**, and
+**transaction reports**, and lets administrators manage **users**.
 
-<br/>
+This repository contains a full technology-stack migration of that application
+from a legacy IBM mainframe (COBOL online + batch programs, CICS transaction
+management, VSAM storage, BMS 3270 screens, and JCL job orchestration) to a
+modern three-tier web stack. The migration is faithful: interest calculation,
+transaction-posting validations, cross-reference integrity, bill-payment credit
+checks, pagination limits, and role-based access are all reproduced **1:1** from
+the original programs.
 
-## Technologies used
-1. COBOL
-2. CICS
-3. VSAM
-4. JCL
-5. RACF
+Two behaviour-preserving guarantees underpin the port:
 
-<br/>
+- **Exact decimal arithmetic.** Every monetary and rate value is stored as
+  PostgreSQL `NUMERIC` and computed with Python `Decimal` — **never** floating
+  point — so currency math matches the mainframe byte-for-byte.
+- **Preserved business rules.** Interest (`balance × rate ÷ 1200`, truncated),
+  posting validations (reason codes `100`–`103` and `109`), available-credit
+  (`credit limit − current balance`), the browse limit of **≤ 7 cards per page**,
+  and **admin-only** user administration (`user_type = 'A'`) are ported without
+  behavioural change.
 
-## Installation on the mainframe 
+---
 
-To install this repository on the mainframe please follow the following steps
+## Architecture
 
-1. Clone this repository to your local development environment
+The modern application is organized as three tiers plus a batch package:
 
-2. Create datasets on the mainframe  hold the code
-   * It is recommended to group them under a High Level Qualifier (HLQ)for all your datasets. 
-   * Upload the following application source folders from the main branch of git repository on to your mainframe
-      using $INDFILE or your preferred upload tool.
-   * If you have used AWS.M2 as your HLQ, you should end up with the below code structure on the mainframe
-   
-      | HLQ    | Name          | Format | Length |
-      | :----- | :------------ | :----- | -----: |
-      | AWS.M2 | CARDDEMO.JCL  | FB     |     80 |
-      | AWS.M2 | CARDDEMO.PROC | FB     |     80 |
-      | AWS.M2 | CARDDEMO.CBL  | FB     |     80 |
-      | AWS.M2 | CARDDEMO.CPY  | FB     |     80 |
-      | AWS.M2 | CARDDEMO.BMS  | FB     |     80 |
-      
-3. Use data for testing using either of the below approaches
+- **Backend — Python FastAPI REST API.** A layered service
+  (`routers → services → repositories → models/schemas → core`) built on
+  **async SQLAlchemy 2.0** with **Alembic** migrations. Routers stay thin and
+  delegate to services; services hold the ported COBOL business logic;
+  repositories encapsulate all database access.
+- **Frontend — Next.js (App Router) + Material UI (MUI).** A single-page web
+  application redesigned per **Material Design 3** — a responsive redesign, not a
+  pixel-for-pixel reproduction of the 80×24 terminal screens.
+- **Database — PostgreSQL 17.** Replaces VSAM KSDS and its alternate indexes.
+  Primary keys map from KSDS keys, alternate indexes become `UNIQUE`/secondary
+  indexes, and cross-reference relationships become **foreign-key constraints**.
+- **Batch — Python CLI package (`batch/`).** Reimplements the JCL batch chain as
+  idempotent, re-runnable jobs invoked through a Typer command-line interface,
+  preserving the legacy job sequence and reconcilable outputs.
 
-   ** Use the supplied sample data**
-   
-      * Upload the sample data provided in the main/-/data/EBCDIC/ folder to the mainframe. Ensure that you use transfer mode binary
+### Migration mapping
 
-         | Dataset name                      | Name                                             | Copybook (Layout) | Format | Length | Name of equivalent ascii file |
-         | :---------------------------------| :----------------------------------------------- | :-----            | :----- | -----: | :---------------------------- |
-         | AWS.M2.CARDDEMO.USRSEC.PS         | User Security file                               | CSUSR01Y          | FB     |     80 | See DEFUSR01.jcl (inline)     |
-         | AWS.M2.CARDDEMO.ACCTDATA.PS       | Account Data                                     | CVACT01Y          | FB     |    300 | acctdata.txt                  |
-         | AWS.M2.CARDDEMO.CARDDATA.PS       | Card Data                                        | CVACT02Y          | FB     |    150 | carddata.txt                  |
-         | AWS.M2.CARDDEMO.CUSTDATA.PS       | Customer Data                                    | CVCUS01Y          | FB     |    500 | custdata.txt                  |
-         | AWS.M2.CARDDEMO.CARDXREF.PS       | Customer Account Card Cross reference            | CVACT03Y          | FB     |     50 | cardxref.txt                  |
-         | AWS.M2.CARDDEMO.DALYTRAN.PS.INIT  | Transaction database initialization record       | CVTRA06Y          | FB     |    350 | 1 record (low-values ending with 00000100)|
-         | AWS.M2.CARDDEMO.DALYTRAN.PS       | Transaction data which has to go through posting | CVTRA06Y          | FB     |    350 | dailytran.txt                 |
-         | AWS.M2.CARDDEMO.TRANSACT.VSAM.KSDS| Transaction data entered online                  | CVTRA05Y          | FB     |    350 | not applicable                |
-         | AWS.M2.CARDDEMO.DISCGRP.PS        | Disclosure Groups                                | CVTRA02Y          | FB     |     50 | discgrp.txt                   |
-         | AWS.M2.CARDDEMO.TRANCATG.PS       | Transaction Category Types                       | CVTRA04Y          | FB     |     60 | trancatg.txt                  |
-         | AWS.M2.CARDDEMO.TRANTYPE.PS       | Transaction Types                                | CVTRA03Y          | FB     |     60 | trantype.txt                  |
-         | AWS.M2.CARDDEMO.TCATBALF.PS       | Transaction Category Balance                     | CVTRA01Y          | FB     |     50 | tcatbal.txt                   |
+| Legacy (mainframe) | Modern (target) |
+| :----------------- | :-------------- |
+| COBOL online programs `CO*C` | FastAPI router + service + repository clusters |
+| BMS mapsets `CO*` | Next.js / MUI page components |
+| Batch COBOL `CB*` | `batch/jobs/*.py` modules (Typer CLI) |
+| Copybooks `app/cpy/*.cpy` | SQLAlchemy models + Pydantic schemas |
+| VSAM KSDS + alternate indexes | PostgreSQL tables + PK / UNIQUE / secondary indexes |
+| CICS `COMMAREA` identity | Server-side session / JWT claims (dependency-injected) |
+| JCL job chain | `batch/orchestration/batch_chain.py` (same order) |
 
-      * Execute the following JCLs in order
+### Migration flow
 
-         | Jobname  | What it does                                        |
-         | :------- | :-------------------------------------------------- |
-         | DUSRSECJ | Sets up user security vsam file                     |
-         | CLOSEFIL | Closes files opened by CICS                         |
-         | ACCTFILE | Loads Account database using sample data            |
-         | CARDFILE | Loads Card database with credit card sample data    |
-         | CUSTFILE | Creates customer database                           |
-         | XREFFILE | Loads Customer Card account cross reference to VSAM |
-         | TRANFILE | Copies initial Trasaction file  to VSAM             |
-         | DISCGRP  | Copies initial Disclosure Group file  to VSAM       |
-         | TCATBALF | Copies initial TCATBALF file  to VSAM               |
-         | TRANCATG | Copies initial transaction category file  to VSAM   |
-         | TRANTYPE | Copies initial transaction type file                |
-         | OPENFIL  | Makes files available to CICS                       |
-         | DEFGDGB  | Defines GDG Base                                    |
+```mermaid
+graph LR
+    subgraph Legacy["Legacy mainframe (REFERENCE only, under app/)"]
+        A1["COBOL online CO*C (17)"]
+        A2["BMS maps CO* (17)"]
+        A3["Batch COBOL CB* (10)"]
+        A4["Copybooks app/cpy (28)"]
+        A5["VSAM KSDS + AIX"]
+        A6["JCL chain + COMMAREA"]
+    end
+    subgraph Target["Modern 3-tier stack"]
+        B1["FastAPI routers + services + repositories"]
+        B2["Next.js + Material UI pages"]
+        B3["Python batch/ CLI jobs"]
+        B4["SQLAlchemy models + Pydantic schemas"]
+        B5["PostgreSQL tables + indexes"]
+        B6["Alembic migrations + session/JWT auth"]
+    end
+    A1 --> B1
+    A2 --> B2
+    A3 --> B3
+    A4 --> B4
+    A5 --> B5
+    A6 --> B6
+```
 
+---
 
-4. Compile the Programs. 
-   
-   You should use the compile process followed by your mainframe shopfloor
-   
-   We have however provided some sample JCLs in the samples folder in git to help you craft the JCL   
+## Technology Stack & Prerequisites
 
-5. Create resources in the CARDDEMO group in CICS
-   
-   You have 2 options
-   
-   Be sure to edit the HLQs in the below documents as required before you do the definition
-   
-   * (Preferred) . Use the DFHCSDUP JCL that the resources required by the application
+Install the following before building. Exact pins live in
+[`backend/requirements.txt`](backend/requirements.txt),
+[`backend/pyproject.toml`](backend/pyproject.toml), and
+[`frontend/package.json`](frontend/package.json).
 
-      The resources required are in the CSD file provided in the CSD folder
-       
-      * Group CARDDEMO
-      * Mapsets
-      * Transactions
-      * Maps
-      * Files
-      
-   * Use the CEDA transaction to execute the commands in the above listing
-   
-      * Define group 
-         ```shell
-         DEFINE LIBRARY(COM2DOLL) GROUP(CARDDEMO) DSNAME01(&HLQ..LOADLIB)
-         ```
-      * Define Mapsets, Maps , Programs and Files
-      
-         Sample CEDA commands
-         
-         ```shell
-         DEF PROGRAM(COCRDLIC) GROUP(CARDDEMO)
-         DEF MAPSET(COCRDLI) GROUP(CARDDEMO)
-         DEFINE PROGRAM(COSGN00C) GROUP(CARDDEMO) DA(ANY) TRANSID(CC00) DESCRIPTION(LOGIN)
-         DEFINE TRANSACTION(CC00) GROUP(CARDDEMO) PROGRAM(COSGN00C) TASKDATAL(ANY)
-         ```
+### Backend
 
-   * Install /Load the online resources to your CICS region
+| Component | Version | Purpose |
+| :-------- | :------ | :------ |
+| Python | 3.13 | Backend runtime |
+| FastAPI | 0.136.x | Async REST framework (OpenAPI 3.1) |
+| Uvicorn | 0.34.x (`uvicorn[standard]`) | ASGI server |
+| Pydantic | 2.x | Request/response validation |
+| pydantic-settings | 2.x | Typed configuration from environment variables |
+| SQLAlchemy | 2.0.x (`[asyncio]`) | ORM + async engine |
+| Alembic | 1.14 | Versioned schema migrations |
+| asyncpg | 0.30.x | Async PostgreSQL driver (app runtime) |
+| psycopg2-binary | 2.9.x | Sync PostgreSQL driver (Alembic + loaders) |
+| passlib[bcrypt] | 1.7.x | Password hashing (bcrypt; argon2 acceptable) |
+| PyJWT | 2.x | JWT tokens (session-based auth is the baseline) |
+| reportlab + Jinja2 | 4.2.x / 3.1.x | PDF / HTML statement + report generation |
+| pytest + pytest-asyncio + httpx | 8.x / 0.25.x / 0.28.x | Unit, integration, and golden-master tests |
 
-      ```shell
-      CEDA INSTALL TRANS(CCLI) GROUP(CARDDEMO)
-      CEDA INSTALL FILE(CARDDAT) GROUP(CARDDEMO)
-      CECI LOAD PROG(COCRDUP)
-      CECI LOAD PROG(COCRDUPC)
-      ```
+### Frontend
 
-   * Execute a NEWCOPY of mapsets and maps
-      ```shell
-      CEMT SET PROG(COCRDUP) NEWCOPY
-      CEMT SET PROG(COCRDUPC) NEWCOPY  
-      ```
-6. Enjoy the demo
+| Component | Version | Purpose |
+| :-------- | :------ | :------ |
+| Node.js | 20+ (LTS) | Frontend runtime |
+| Next.js | 16.x | React framework (App Router) |
+| React + React DOM | 19.x | UI runtime |
+| `@mui/material` | 9.x | Material UI component library |
+| `@mui/material-nextjs` | 9.x | MUI SSR integration for the App Router |
+| `@mui/icons-material` | 9.x | MUI icon set |
+| `@emotion/react` + `@emotion/styled` | 11.x | MUI styling engine (peer dependencies) |
+| axios | 1.x | HTTP client |
+| TypeScript | 5.x | Static typing |
 
-   * For online functions : Start the CardDemo application using the CC00 transaction
-     - Enter userid ADMIN001 and the initially configured password PASSWORD to manage users
-     - Enter userid USER0001 and the initially configured password PASSWORD to access back office functions
-   * For batch            : See the instructions for running full batch below.
+### Database & tooling
 
-## Running full batch 
-   
-  * Execute the following JCLs in order
+- **PostgreSQL 17** — the target datastore (VSAM replacement).
+- **Docker + Docker Compose** — for the one-command development environment.
 
-    | Jobname  | What it does                                        |
-    | :------- | :-------------------------------------------------- |
-    | CLOSEFIL | Closes files opened by CICS                         |
-    | ACCTFILE | Loads Account database using sample data            |
-    | CARDFILE | Loads Card database with credit card sample data    |
-    | XREFFILE | Loads Customer Card account cross reference to VSAM |
-    | CUSTFILE | Creates customer database                           |
-    | TRANBKP  | Creates Transaction database                        |
-    | DISCGRP  | Copies initial disclosure Group file  to VSAM       |
-    | TCATBALF | Copies initial TCATBALF file  to VSAM               |
-    | TRANTYPE | Copies initial transaction type file                |
-    | DUSRSECJ | Sets up user security vsam file                     |
-    | POSTTRAN | Core processing job                                 |
-    | INTCALC  | Run interest calculations                           |
-    | TRANBKP  | Backup Transaction database                         |
-    | COMBTRAN | Combine system transactions with daily ones         |
-    | CREASTMT | Produce transaction statement                       | 	
-    | TRANIDX  | Define alternate index on transaction file          |
-    | OPENFIL  | Makes files available to CICS                       |
-<br/>
+> **Note on the batch CLI.** The batch package additionally uses **Typer**
+> (0.15.x). Typer is a `batch/` dependency, not a backend service dependency.
 
-## Application Details 
-The CardDemo is a Credit Card management application, built primarily using COBOL programming language. The application has various functions that allows users to manage Account, Credit card, Transaction and Bill payment. 
+---
 
-There are 2 types of users:
-* Regular User
-* Admin User
+## Repository Structure
 
-The Regular user can perform the user functions and the Admin users can only perform Admin functions.
+The target trees (`backend/`, `frontend/`, `batch/`, `docs/`) and root
+configuration are added **alongside** the untouched legacy `app/` tree.
 
-<br/>
+```text
+/ (repo root)
+├── app/                         LEGACY — mainframe COBOL/CICS/VSAM/BMS/JCL (REFERENCE only, unchanged)
+├── backend/                     FastAPI service
+│   ├── app/
+│   │   ├── main.py              Application factory (create_application) + async lifespan
+│   │   ├── api/v1/              Thin routers (auth, menu, accounts, cards, transactions, reports, billpay, users)
+│   │   ├── services/            Business logic, 1:1 with the COBOL online programs
+│   │   ├── repositories/        Data access, 1:1 with the former VSAM files
+│   │   ├── models/              SQLAlchemy ORM models (one per table) ← record copybooks
+│   │   ├── schemas/             Pydantic request/response DTOs ← record + screen copybooks
+│   │   ├── core/                config, security, exceptions, dependencies (get_db / get_current_user / require_admin)
+│   │   ├── db/                  Async engine + session + declarative Base
+│   │   └── utils/               date_utils, decimal_utils (zoned-decimal decode), validators
+│   ├── alembic/                 Migration environment
+│   │   └── versions/            0001_initial_schema, 0002_seed_data
+│   ├── tests/                   Unit + integration + golden-master parity tests
+│   ├── pyproject.toml           PEP 621 manifest (dependency pins)
+│   ├── requirements.txt         pip manifest (dependency pins)
+│   ├── alembic.ini              Alembic config (DB URL injected from the environment)
+│   ├── Dockerfile               Backend container image
+│   └── .env.example             Environment template (copy to .env — gitignored)
+├── frontend/                    Next.js + Material UI single-page app
+│   ├── src/
+│   │   ├── app/                 App Router: layout.tsx, theme.ts, and one page.tsx per BMS map (17)
+│   │   ├── components/          Reusable MUI components (AppShell, DataTable, FormField, ConfirmDialog, ErrorAlert)
+│   │   ├── lib/                 apiClient.ts (axios + auth interceptor), auth.ts
+│   │   └── types/               TypeScript interfaces ← backend schemas
+│   ├── __tests__/               Component / integration tests per screen
+│   ├── package.json             Dependency pins + scripts
+│   ├── tsconfig.json            TypeScript config
+│   ├── next.config.js           Next.js config
+│   ├── Dockerfile               Frontend container image
+│   └── .env.local.example       Environment template (copy to .env.local — gitignored)
+├── batch/                       Python CLI batch package
+│   ├── cli.py                   Typer entrypoint (python -m batch.cli)
+│   ├── jobs/                    1:1 with the batch COBOL programs (posting, interest, statements, reports)
+│   ├── loaders/                 Seed loaders ← app/data (accounts, cards, customers, xref, transactions, …, users)
+│   ├── orchestration/           batch_chain.py — preserves the legacy CLOSEFIL → … → OPENFIL order
+│   └── tests/                   Batch parity tests
+├── docs/                        Architecture & API reference (Markdown)
+├── docker-compose.yml           postgres:17 + backend + frontend topology
+├── .gitignore
+├── README.md                    This file
+├── LICENSE                      Apache 2.0
+├── NOTICE
+├── CONTRIBUTING.md
+├── CODE_OF_CONDUCT.md
+├── diagrams/                    Legacy flow/screen images (REFERENCE only)
+└── samples/                     Legacy runtime & compile samples (REFERENCE only)
+```
 
-### User Functions
+---
 
-![Alt text](./diagrams/Application-Flow-User.png?raw=true "User Flow")
+## Quick Start (Docker Compose)
 
-<br/>
+The root [`docker-compose.yml`](docker-compose.yml) provisions PostgreSQL 17 plus
+the backend and frontend services.
 
-### Admin Functions
+1. Copy the environment templates and edit the secrets they contain:
 
-![Alt text](./diagrams/Application-Flow-Admin.png?raw=true "Admin Flow")
+   ```bash
+   cp backend/.env.example backend/.env
+   cp frontend/.env.local.example frontend/.env.local
+   # Then edit backend/.env and set a strong SECRET_KEY / SESSION_SECRET, e.g.:
+   #   python -c "import secrets; print(secrets.token_urlsafe(48))"
+   ```
 
-<br/>
+2. Build and start the full stack. The backend and frontend services run under
+   the `full` Compose profile, so pass `--profile full`:
 
-### Application Inventory
+   ```bash
+   docker compose --profile full up --build
+   ```
 
-#### **Online**
+   To bring up **only** PostgreSQL (for local backend/frontend development), use
+   the default profile:
 
-| Transaction |      | BMS Map | Program  | Function            |
-| :---------- | :--- | :------ | :------- | :------------------ |
-| CC00        |      | COSGN00 | COSGN00C | Signon Screen       |
-| CM00        |      | COMEN01 | COMEN01C | Main Menu           |
-|             | CAVW | COACTVW | COACTVWC | Account View        |
-|             | CAUP | COACTUP | COACTUPC | Account Update      |
-|             | CCLI | COCRDLI | COCRDLIC | Credit Card List    |
-|             | CCDL | COCRDSL | COCRDSLC | Credit Card View    |
-|             | CCUP | COCRDUP | COCRDUPC | Credit Card Update  |
-|             | CT00 | COTRN00 | COTRN00C | Transaction List    |
-|             | CT01 | COTRN01 | COTRN01C | Transaction View    |
-|             | CT02 | COTRN02 | COTRN02C | Transaction Add     |
-|             | CR00 | CORPT00 | CORPT00C | Transaction Reports |
-|             | CB00 | COBIL00 | COBIL00C | Bill Payment        |
-| CA00        |      | COADM01 | COADM01C | Admin Menu          |
-|             | CU00 | COUSR00 | COUSR00C | List Users          |
-|             | CU01 | COUSR01 | COUSR01C | Add User            |
-|             | CU02 | COUSR02 | COUSR02C | Update User         |
-|             | CU03 | COUSR03 | COUSR03C | Delete User         |
+   ```bash
+   docker compose up -d db
+   ```
 
-#### **Batch**
+3. Open the running services:
 
-| Job      | Program  | Function                                   |
-| :------- | :------- | :----------------------------------------- |
-| DUSRSECJ | IEBGENER | Initial Load of User security file         |
-| DEFGDGB  | IDCAMS   | Setup GDG Bases                            | 
-| ACCTFILE | IDCAMS   | Refresh Account Master                     |
-| CARDFILE | IDCAMS   | Refresh Card Master                        |
-| CUSTFILE | IDCAMS   | Refresh Customer Master                    |
-| DISCGRP  | IDCAMS   | Load Disclosure Group File                 |
-| TRANFILE | IDCAMS   | Load Transaction Master file               |
-| TRANCATG | IDCAMS   | Load Transaction category types            |
-| TRANTYPE | IDCAMS   | Load Transaction type file                 |
-| XREFFILE | IDCAMS   | Account, Card and Customer cross reference |
-| CLOSEFIL | IEFBR14  | Close VSAM files in CICS                   |
-| TCATBALF | IDCAMS   | Refresh Transaction Category Balance       |
-| TRANBKP  | IDCAMS   | Refresh Transaction Master                 |
-| POSTTRAN | CBTRN02C | Transaction processing job                 |
-| TRANIDX  | IDCAMS   | Define AIX for transaction file            |
-| OPENFIL  | IEFBR14  | Open files in CICS                         |
-| INTCALC  | CBACT04C | Run interest calculations                  |
-| COMBTRAN | SORT     | Combine transaction files                  |
-| CREASTMT | CBSTM03A | Produce transaction statement              |
+   | Service | URL |
+   | :------ | :-- |
+   | Frontend (web app) | http://localhost:3000 |
+   | Backend REST API | http://localhost:8000 |
+   | Interactive API docs (Swagger / OpenAPI) | http://localhost:8000/docs |
+   | PostgreSQL | `localhost:5432` |
 
-<br/>
+The backend waits for PostgreSQL to report healthy before starting. Apply
+migrations and seed data as described in
+[Database Migrations & Seed Data](#database-migrations--seed-data).
 
-### Application Screens
+> **Secrets come from the environment only.** The `.env` / `.env.local` files are
+> gitignored and must never be committed. Never place a real secret value in this
+> repository — see [Configuration](#configuration).
 
-#### **Signon Screen**
+> **Parallel environments.** To run isolated stacks side by side, override the
+> host port and project name, e.g.
+> `POSTGRES_HOST_PORT=5433 COMPOSE_PROJECT_NAME=carddemo-2 docker compose up -d db`.
 
-![Alt text](./diagrams/Signon-Screen.png?raw=true "Signon Screen")
+---
 
+## Local Development Setup
 
-#### **Main Menu**
+Run PostgreSQL first (`docker compose up -d db`), or point `DATABASE_URL` at any
+reachable PostgreSQL 17 instance.
 
-![Alt text](./diagrams/Main-Menu.png?raw=true "Main Menu")
+### Backend
 
-#### **Admin Menu**
+```bash
+cd backend
+python3.13 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+cp .env.example .env          # then edit secrets (SECRET_KEY, SESSION_SECRET, …)
+uvicorn app.main:app --reload
+```
 
-![Alt text](./diagrams/Admin-Menu.png?raw=true "Admin Menu")
+The API is served at http://localhost:8000 with interactive docs at
+http://localhost:8000/docs.
 
-<br/>
+### Frontend
+
+```bash
+cd frontend
+npm install
+cp .env.local.example .env.local   # NEXT_PUBLIC_API_BASE_URL points at the backend
+npm run dev
+```
+
+The web app is served at http://localhost:3000. `NEXT_PUBLIC_API_BASE_URL`
+(default `http://localhost:8000/api/v1`) tells the browser where the backend API
+lives.
+
+### Batch
+
+From the repository root, with the batch package importable and `DATABASE_URL`
+set, explore the command-line interface:
+
+```bash
+python -m batch.cli --help
+```
+
+---
+
+## Database Migrations & Seed Data
+
+The schema comprises **10 tables** (users, accounts, customers, cards, card
+cross-reference, transactions, transaction-category balances, disclosure groups,
+transaction types, transaction categories) with primary keys, unique constraints,
+secondary indexes, and foreign keys.
+
+1. Ensure PostgreSQL 17 is reachable via `DATABASE_URL` (see
+   [Configuration](#configuration)).
+2. Apply migrations with Alembic:
+
+   ```bash
+   cd backend
+   alembic upgrade head
+   ```
+
+   - `0001_initial_schema` creates the 10 tables plus their PK / UNIQUE / index
+     definitions.
+   - `0002_seed_data` seeds reference and sample data sourced from
+     `app/data/ASCII/*.txt`.
+
+3. Alternatively (or to reload individual datasets), run the batch loaders under
+   [`batch/loaders/`](batch/loaders). They load accounts, cards, customers, the
+   card cross-reference, transactions, disclosure groups, transaction categories,
+   transaction types, and transaction-category balances.
+
+> **User seed hashing.** The user-security seed (`init_users`) **hashes** every
+> password with bcrypt (the legacy `USRSEC` dataset exists only in EBCDIC and
+> stored plaintext). Plaintext passwords are never stored or returned — see
+> [Demo Credentials](#demo-credentials).
+
+---
+
+## Running the Batch Chain
+
+The batch chain is orchestrated by
+[`batch/orchestration/batch_chain.py`](batch/orchestration/batch_chain.py) and
+invoked through the Typer CLI. The job order is **preserved exactly** from the
+legacy JCL sequence:
+
+```text
+CLOSEFIL → ACCTFILE → CARDFILE → XREFFILE → CUSTFILE → TRANBKP → DISCGRP →
+TCATBALF → TRANTYPE → DUSRSECJ → POSTTRAN → INTCALC → TRANBKP → COMBTRAN →
+CREASTMT → TRANIDX → OPENFIL
+```
+
+`CLOSEFIL` and `OPENFIL` — originally `IEFBR14` no-ops that quiesced and re-enabled
+the CICS files — become **no-op guard steps**. Every job is **idempotent and
+re-runnable** within a database transaction.
+
+The following table maps each legacy step to the modern module that implements it
+and to its legacy COBOL/JCL source (REFERENCE).
+
+| # | Legacy step | Purpose | Modern implementation | Legacy source |
+| -: | :---------- | :------ | :-------------------- | :------------ |
+| 1 | CLOSEFIL | Quiesce files (guard) | `batch/orchestration/batch_chain.py` (no-op) | `CLOSEFIL.jcl` (IEFBR14) |
+| 2 | ACCTFILE | Refresh Account master | `batch/loaders/load_accounts.py` | `ACCTFILE.jcl` (IDCAMS) |
+| 3 | CARDFILE | Refresh Card master | `batch/loaders/load_cards.py` | `CARDFILE.jcl` (IDCAMS) |
+| 4 | XREFFILE | Load card/account/customer cross-reference | `batch/loaders/load_xref.py` | `XREFFILE.jcl` (IDCAMS) |
+| 5 | CUSTFILE | Refresh Customer master | `batch/loaders/load_customers.py` | `CUSTFILE.jcl` (IDCAMS) |
+| 6 | TRANBKP | Refresh/seed Transaction master | `batch/jobs/backup_tran.py` | `TRANBKP.jcl` (IDCAMS) |
+| 7 | DISCGRP | Load Disclosure Groups | `batch/loaders/load_disclosure_groups.py` | `DISCGRP.jcl` (IDCAMS) |
+| 8 | TCATBALF | Refresh Transaction Category Balance | `batch/loaders/load_tcatbal.py` | `TCATBALF.jcl` (IDCAMS) |
+| 9 | TRANTYPE | Load Transaction Types | `batch/loaders/load_tran_types.py` | `TRANTYPE.jcl` (IDCAMS) |
+| 10 | DUSRSECJ | Initialize user security (passwords hashed) | `batch/loaders/init_users.py` | `DUSRSECJ.jcl` + `USRSEC.PS` |
+| 11 | POSTTRAN | Post daily transactions (codes 100–103, 109) | `batch/jobs/post_transactions.py` | `CBTRN02C` + `POSTTRAN.jcl` |
+| 12 | INTCALC | Interest calculation (`balance × rate ÷ 1200`, truncated) | `batch/jobs/interest_calc.py` | `CBACT04C` + `INTCALC.jcl` |
+| 13 | TRANBKP | Backup Transaction database | `batch/jobs/backup_tran.py` | `TRANBKP.jcl` (IDCAMS) |
+| 14 | COMBTRAN | Combine system + daily transactions | `batch/jobs/combine_tran.py` | `COMBTRAN.jcl` + `REPROCT.ctl` (SORT) |
+| 15 | CREASTMT | Produce statements (CSV + PDF) | `batch/jobs/statement_gen.py` | `CBSTM03A` + `CBSTM03B` + `CREASTMT.jcl` |
+| 16 | TRANIDX | Define transaction alternate index | Alembic index / migration | `TRANIDX.jcl` (IDCAMS AIX) |
+| 17 | OPENFIL | Re-enable files (guard) | `batch/orchestration/batch_chain.py` (no-op) | `OPENFIL.jcl` (IEFBR14) |
+
+Additional standalone reporting jobs port the remaining batch COBOL programs:
+`print_account.py` (`CBACT01C`), `print_card.py` (`CBACT02C`), `print_xref.py`
+(`CBACT03C`), `print_customer.py` (`CBCUS01C`), `read_daily_tran.py` (`CBTRN01C`),
+and `tran_detail_report.py` (`CBTRN03C`).
+
+---
+
+## Application Inventory & API Route Mapping
+
+Each of the 17 legacy online screens maps 1:1 to a modern REST endpoint and a
+frontend route. The table below traces every legacy transaction, BMS map, and
+COBOL program to its modern counterpart.
+
+| Legacy Tx | BMS Map | COBOL Program | Function | REST Endpoint | Frontend Route |
+| :-------- | :------ | :------------ | :------- | :------------ | :------------- |
+| CC00 | COSGN00 | COSGN00C | Signon | `POST /auth/login` | `/signon` |
+| CM00 | COMEN01 | COMEN01C | Main Menu | `GET /menu` | `/menu` |
+| CA00 | COADM01 | COADM01C | Admin Menu | `GET /admin/menu` | `/admin` |
+| CAVW | COACTVW | COACTVWC | Account View | `GET /accounts/{acctId}` | `/accounts/view` |
+| CAUP | COACTUP | COACTUPC | Account Update | `PUT /accounts/{acctId}` | `/accounts/update` |
+| CCLI | COCRDLI | COCRDLIC | Card List (≤ 7/page) | `GET /cards` | `/cards` |
+| CCDL | COCRDSL | COCRDSLC | Card View | `GET /cards/{cardNum}` | `/cards/view` |
+| CCUP | COCRDUP | COCRDUPC | Card Update | `PUT /cards/{cardNum}` | `/cards/update` |
+| CT00 | COTRN00 | COTRN00C | Transaction List | `GET /transactions` | `/transactions` |
+| CT01 | COTRN01 | COTRN01C | Transaction View | `GET /transactions/{tranId}` | `/transactions/view` |
+| CT02 | COTRN02 | COTRN02C | Transaction Add | `POST /transactions` | `/transactions/add` |
+| CR00 | CORPT00 | CORPT00C | Transaction Reports | `GET /reports/transactions` | `/reports` |
+| CB00 | COBIL00 | COBIL00C | Bill Payment | `POST /billpay` | `/billpay` |
+| CU00 | COUSR00 | COUSR00C | List Users (admin) | `GET /admin/users` | `/users` |
+| CU01 | COUSR01 | COUSR01C | Add User (admin) | `POST /admin/users` | `/users/add` |
+| CU02 | COUSR02 | COUSR02C | Update User (admin) | `PUT /admin/users/{userId}` | `/users/update` |
+| CU03 | COUSR03 | COUSR03C | Delete User (admin) | `DELETE /admin/users/{userId}` | `/users/delete` |
+
+**Endpoint prefix.** All endpoints are mounted under the API v1 prefix
+(`/api/v1`, configurable via `API_V1_PREFIX`); for example `POST /auth/login` is
+served at `POST /api/v1/auth/login`.
+
+**Admin gating.** The admin menu and all user-administration screens and endpoints
+are restricted to administrators (`user_type = 'A'`) and enforced on **both** the
+client and the server.
+
+---
+
+## Testing
+
+| Tier | Command | Coverage |
+| :--- | :------ | :------- |
+| Backend | `cd backend && pytest` | Unit tests per service (mirroring each COBOL PROCEDURE DIVISION path) + integration and golden-master parity tests against `app/data` |
+| Batch | `pytest batch/tests` | Batch job parity tests |
+| Frontend | `cd frontend && npm test` | Component / integration tests per screen |
+
+**Golden-master parity.** Modern outputs must reconcile **field-for-field** with
+the legacy outputs for the sample data under `app/data`. This is how the port
+proves it preserves the original business behaviour exactly.
+
+---
+
+## Configuration
+
+All configuration is read from environment variables (no secret is ever hardcoded
+or committed). Copy the templates and edit the values locally:
+
+- Backend: [`backend/.env.example`](backend/.env.example) → `backend/.env`
+- Frontend: [`frontend/.env.local.example`](frontend/.env.local.example) → `frontend/.env.local`
+
+Key backend variables:
+
+| Variable | Purpose |
+| :------- | :------ |
+| `DATABASE_URL` | Async PostgreSQL DSN (`postgresql+asyncpg://…`) used by the app runtime |
+| `SYNC_DATABASE_URL` | Sync PostgreSQL DSN (`postgresql+psycopg2://…`) used by Alembic and loaders |
+| `SECRET_KEY` | Signing key for tokens (set a strong value; never commit it) |
+| `SESSION_SECRET` | Server-side session signing key (session auth is the baseline) |
+| `JWT_ALGORITHM` | JWT signing algorithm (default `HS256`) |
+| `ACCESS_TOKEN_EXPIRE_MINUTES` | Access-token lifetime |
+| `BCRYPT_ROUNDS` | bcrypt work factor (password-hashing cost) |
+| `API_V1_PREFIX` | REST API mount prefix (default `/api/v1`) |
+| `CORS_ORIGINS` | Comma-separated list of allowed frontend origins |
+| `ENVIRONMENT` | Runtime environment (e.g. `development`) |
+
+Key frontend variables:
+
+| Variable | Purpose |
+| :------- | :------ |
+| `NEXT_PUBLIC_API_BASE_URL` | Browser-facing backend API base URL (default `http://localhost:8000/api/v1`) |
+| `BACKEND_INTERNAL_URL` | Server-side backend URL for Next.js rewrites (the `backend` service in Docker) |
+
+> **Never print or commit a real secret.** Generate strong values locally, e.g.
+> `python -c "import secrets; print(secrets.token_urlsafe(48))"`, and keep them in
+> your gitignored `.env` / `.env.local` files only.
+
+---
+
+## Demo Credentials
+
+The seed data provides two demo accounts:
+
+| User ID | Role | Password |
+| :------ | :--- | :------- |
+| `ADMIN001` | Administrator | `PASSWORD` |
+| `USER0001` | Regular user | `PASSWORD` |
+
+These are **non-production seed accounts only**. Their passwords are stored
+**hashed** (bcrypt/argon2) at rest — never in plaintext — and they must never be
+treated as real credentials or hardcoded anywhere in application code. Change or
+remove them before any non-demo use.
+
+---
+
+## Legacy Reference
+
+The [`app/`](app) directory holds the **original mainframe implementation**
+(COBOL online and batch programs, CICS definitions, VSAM layouts, BMS maps,
+copybooks, and JCL). It is preserved **unchanged** for traceability and
+golden-master parity, and is **not built or run** by the modern stack. Do not
+modify `app/`.
+
+Each modern module carries a comment referencing its originating COBOL program,
+copybook, or BMS map, so the lineage from mainframe source to modern
+implementation stays traceable end to end.
+
+The [`diagrams/`](diagrams) and [`samples/`](samples) directories are likewise
+legacy reference material (flow/screen images and mainframe compile samples) and
+are **not part of the modern build**.
+
+---
+
+## Documentation
+
+Architecture notes and the API reference live under [`docs/`](docs). The backend
+also serves interactive, always-current OpenAPI documentation at
+http://localhost:8000/docs while it is running.
+
+---
 
 ## Support
 
-If you have questions or requests for improvement please raise an issue in the repository.
+If you have questions or requests for improvement, please open an issue in the
+repository.
 
-<br/>
-
-## Roadmap
-
-The following features are planned for upcoming releases
-
-1. More database types
-
-   1. Relational Database usage : Db2 
-   
-   2. Hierachical database calls : IMS
-
-2. Integration
-
-   * ftp, sftp
-   
-   * Message queue integration
-   
-   * Exposure of transactions for distributed application integration
-
-<br/>
+---
 
 ## Contributing
 
-We are looking forward to receiving contributions and enhancements to this initial codebase from the mainframe code base
+Contributions are welcome. Please read [`CONTRIBUTING.md`](CONTRIBUTING.md) before
+opening issues or pull requests, and follow the [Code of Conduct](#code-of-conduct).
 
-Feel free to raise issues, create code and raise merge requests for enhancements so that we can build out this application as a resource for programmers wanting to understand and modernize their mainframes.
-
-<br/>
+---
 
 ## License
 
-This is intended to be a community resource and it is released under the Apache 2.0 license.
+This project is released under the **Apache 2.0 License**. See
+[`LICENSE`](LICENSE) for the full text and [`NOTICE`](NOTICE) for attribution
+notices.
 
-<br/>
+---
 
-## Project status
+## Code of Conduct
 
-We are planning a v2 of this application in Q1 2023.
-
-Watch this space for updates
-
-<br/>
-
-
+All participants are expected to abide by the project
+[`CODE_OF_CONDUCT.md`](CODE_OF_CONDUCT.md).
