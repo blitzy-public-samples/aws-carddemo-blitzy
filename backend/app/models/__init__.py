@@ -1,61 +1,77 @@
-# Aggregator for the CardDemo SQLAlchemy ORM layer. Importing this package
-# imports every model module exactly once, which (a) registers all 10 tables
-# into ``app.db.base.Base.metadata`` (consumed by Alembic autogenerate and the
-# golden-master parity tests) and (b) makes the string-based ``relationship(...)``
-# forward references (e.g. "Card", "CardXref") resolvable, so importing any
-# single model and instantiating it — the normal repository consumption
-# pattern — works without the caller having to import every sibling by hand.
-# Ports the VSAM record layouts in app/cpy/*.cpy (AAP 0.5.1). See app/db/base.py,
-# whose docstring documents that this module performs the collective import.
-"""Package aggregator that registers every CardDemo ORM model.
+"""SQLAlchemy ORM models for CardDemo (ported 1:1 from app/cpy record copybooks).
 
-This ``__init__`` is intentionally the one place that imports all ten model
-modules together. SQLAlchemy resolves the string-based relationship targets
-(``relationship("Card")``, ``relationship("CardXref")``, ...) from its class
-registry, and that registry is only complete once **every** mapped class has
-been imported. By importing all models here, the package guarantees that:
+Importing this package registers all 10 tables on ``Base.metadata``.
 
-* ``from app.models.account import Account; Account()`` succeeds — importing any
-  submodule first imports this package, so all sibling classes are already
-  registered when the mapper is configured (this is the exact pattern the
-  repository layer uses).
-* ``from app.db.base import Base; Base.metadata`` holds all ten tables, which
-  Alembic autogenerate and the parity tests rely on.
-* ``sqlalchemy.orm.configure_mappers()`` completes with no unresolved
-  forward-reference errors.
+This package initializer is the single aggregation point for the CardDemo ORM
+layer. It intentionally imports every one of the ten model modules under
+``app.models`` so that, purely as a *side effect* of importing ``app.models``,
+each mapped class is registered on the shared declarative registry and its table
+is attached to ``Base.metadata``.
 
-The models map 1:1 to the legacy VSAM record copybooks (AAP 0.5.1):
+That side effect is load-bearing. It is relied upon by:
 
-* :class:`~app.models.account.Account` — ``CVACT01Y`` (VSAM ``ACCTDATA``)
-* :class:`~app.models.card.Card` — ``CVACT02Y`` (VSAM ``CARDDATA``)
-* :class:`~app.models.card_xref.CardXref` — ``CVACT03Y`` (VSAM ``CARDXREF``)
-* :class:`~app.models.customer.Customer` — ``CVCUS01Y`` (VSAM ``CUSTDATA``)
-* :class:`~app.models.disclosure_group.DisclosureGroup` — ``CVTRA02Y``
-* :class:`~app.models.tran_category_balance.TranCategoryBalance` — ``CVTRA01Y``
-* :class:`~app.models.transaction.Transaction` — ``CVTRA05Y`` (VSAM ``TRANSACT``)
-* :class:`~app.models.transaction_category.TransactionCategory` — ``CVTRA04Y``
-* :class:`~app.models.transaction_type.TransactionType` — ``CVTRA03Y``
-* :class:`~app.models.user.User` — ``CSUSR01Y`` (VSAM ``USRSEC``)
+* ``backend/alembic/env.py`` -- which sets ``target_metadata = Base.metadata``
+  for autogenerate. If a model were not imported here, its table would be
+  silently missing from every generated migration.
+* ``app.repositories``, ``app.services``, ``app.core.dependencies`` and the
+  ``batch`` package -- which import the model classes by name (for example
+  ``from app.models import Account``).
 
-Importing this package has no side effects beyond class registration: the model
-modules import only :mod:`app.db.base` and the standard library / SQLAlchemy, and
-they open no database connection (that is owned by ``app.db.session``).
+Unlike the sibling package markers (``app``, ``app.db``, ``app.core``), which
+are deliberately side-effect-free, this initializer MUST perform these imports;
+they are therefore NOT dead code. The ``__all__`` list at the bottom both
+documents the package's public surface and marks the re-exported names as used,
+so linters do not flag the imports whose sole purpose is mapper registration.
+
+The ten models port the legacy VSAM record copybooks (``app/cpy/*.cpy``) 1:1 and
+all extend the shared declarative :class:`app.db.base.Base`. Monetary and rate
+fields are exact ``NUMERIC`` / :class:`decimal.Decimal` columns -- never floating
+point (AAP section 0.7.1). Two ORM-only synonyms (``card_xref.card_num`` ->
+``xref_card_num`` and ``disclosure_group.acct_group_id`` -> ``group_id``) expose
+copybook/DTO field names without emitting phantom DDL columns.
+
+Model module -> mapped class -> table:
+    account                 -> Account              -> accounts
+    card                    -> Card                 -> cards
+    card_xref               -> CardXref             -> card_xref
+    customer                -> Customer             -> customers
+    disclosure_group        -> DisclosureGroup      -> disclosure_group
+    tran_category_balance   -> TranCategoryBalance  -> tran_category_balance
+    transaction             -> Transaction          -> transactions
+    transaction_category    -> TransactionCategory  -> transaction_category
+    transaction_type        -> TransactionType      -> transaction_type
+    user                    -> User                 -> users
 """
 
+# Re-export the declarative Base for convenience so callers may write
+# ``from app.models import Base``. The canonical definition lives in
+# ``app.db.base``; this is only a convenience alias.
+from app.db.base import Base
+
+# The following model imports are REQUIRED for their side effect: importing each
+# module registers its mapped class on ``Base.metadata``. They are intentionally
+# retained even though a linter may see them as "unused" -- do NOT remove them
+# (see the module docstring). One module per table, ordered alphabetically by
+# module path. The ``transaction`` module additionally exports the two
+# staging-status constants used by the batch posting job and the services layer.
 from app.models.account import Account
 from app.models.card import Card
 from app.models.card_xref import CardXref
 from app.models.customer import Customer
 from app.models.disclosure_group import DisclosureGroup
 from app.models.tran_category_balance import TranCategoryBalance
-from app.models.transaction import Transaction
+from app.models.transaction import STATUS_PENDING, STATUS_POSTED, Transaction
 from app.models.transaction_category import TransactionCategory
 from app.models.transaction_type import TransactionType
 from app.models.user import User
 
-# Public API: the ten ORM model classes, exported for ``from app.models import X``
-# and for tooling that enumerates the mapped entities.
+# Public surface of the package. Enumerating the re-exported names here documents
+# the package API and marks the "unused" model imports above as used -- their
+# real job is mapper/table registration on ``Base.metadata``. Ordered as: the
+# declarative Base, the ten ORM model classes, then the transaction
+# staging-status constants.
 __all__ = [
+    "Base",
     "Account",
     "Card",
     "CardXref",
@@ -66,4 +82,6 @@ __all__ = [
     "TransactionCategory",
     "TransactionType",
     "User",
+    "STATUS_PENDING",
+    "STATUS_POSTED",
 ]

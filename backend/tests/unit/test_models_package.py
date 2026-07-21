@@ -92,12 +92,23 @@ def test_configure_mappers_succeeds(tmp_path):
 
 
 def test_package_exports_all_ten_model_classes(tmp_path):
+    # The package MUST export all ten ORM model classes, and every name listed
+    # in ``__all__`` MUST be importable. The aggregator also re-exports a few
+    # convenience names alongside the models -- the declarative ``Base`` and the
+    # transaction staging-status constants (``STATUS_PENDING``/``STATUS_POSTED``)
+    # consumed by the batch posting job and the services layer -- so this test
+    # verifies the ten model classes are a subset of ``__all__`` rather than
+    # pinning the exact length of the export list.
     probeCode = (
         "import app.models as M; "
-        "print('EXPORT_COUNT=' + str(len(M.__all__))); "
+        "modelClasses = ["
+        "'Account', 'Card', 'CardXref', 'Customer', 'DisclosureGroup', "
+        "'TranCategoryBalance', 'Transaction', 'TransactionCategory', "
+        "'TransactionType', 'User']; "
+        "print('MODEL_COUNT=' + str(sum(name in M.__all__ for name in modelClasses))); "
         "print('ALL_IMPORTABLE=' + str(all(hasattr(M, name) for name in M.__all__)))"
     )
     completed = _RunModelProbe(probeCode, tmp_path)
     assert completed.returncode == 0, completed.stderr
-    assert f"EXPORT_COUNT={EXPECTED_TABLE_COUNT}" in completed.stdout
+    assert f"MODEL_COUNT={EXPECTED_TABLE_COUNT}" in completed.stdout
     assert "ALL_IMPORTABLE=True" in completed.stdout
