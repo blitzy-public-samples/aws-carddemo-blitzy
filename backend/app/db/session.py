@@ -72,7 +72,7 @@ from app.core.config import settings
 # IMPORT-SAFE: this call does not open a socket — the pool connects lazily on
 # first use, so importing this module never requires a running PostgreSQL.
 engine = create_async_engine(
-    settings.DATABASE_URL,
+    settings.DATABASE_URL.get_secret_value(),
     pool_pre_ping=True,
     future=True,
     echo=False,

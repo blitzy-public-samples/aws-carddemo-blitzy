@@ -289,6 +289,10 @@ def ValidateAlpha(fieldName: str, value: str) -> ValidationResult:
         A :class:`ValidationResult`; invalid with :data:`MSG_REQUIRED` when
         blank or :data:`MSG_ALPHA` when a non-alphabetic character is present.
     """
+    # A non-str (non-None) value is not a representable alphabetic field: reject
+    # it as a failed edit rather than letting the regex raise a TypeError.
+    if value is not None and not isinstance(value, str):
+        return _Invalid(MSG_ALPHA.format(field=fieldName))
     if _IsBlank(value):
         return _Invalid(MSG_REQUIRED.format(field=fieldName))
     if ALPHA_PATTERN.fullmatch(value) is None:
@@ -311,6 +315,10 @@ def ValidateAlphanumeric(fieldName: str, value: str) -> ValidationResult:
         A :class:`ValidationResult`; invalid with :data:`MSG_REQUIRED` when
         blank or :data:`MSG_ALPHANUMERIC` when a disallowed character appears.
     """
+    # A non-str (non-None) value is not a representable alphanumeric field:
+    # reject it as a failed edit rather than letting the regex raise TypeError.
+    if value is not None and not isinstance(value, str):
+        return _Invalid(MSG_ALPHANUMERIC.format(field=fieldName))
     if _IsBlank(value):
         return _Invalid(MSG_REQUIRED.format(field=fieldName))
     if ALPHANUMERIC_PATTERN.fullmatch(value) is None:
@@ -336,6 +344,10 @@ def ValidateLength(fieldName: str, value: str, expectedLength: int) -> Validatio
     """
     if value is None:
         return _Invalid(MSG_REQUIRED.format(field=fieldName))
+    # A non-str value has no character length to measure: reject it as a failed
+    # length edit rather than letting len() raise a TypeError.
+    if not isinstance(value, str):
+        return _Invalid(MSG_LENGTH.format(field=fieldName, length=expectedLength))
     if len(value) != expectedLength:
         return _Invalid(MSG_LENGTH.format(field=fieldName, length=expectedLength))
     return _Valid()
@@ -359,6 +371,10 @@ def ValidateNumericId(fieldName: str, value: str, expectedLength: int) -> Valida
         blank or :data:`MSG_NUMERIC_ID` when the value is not exactly
         ``expectedLength`` digits.
     """
+    # A non-str (non-None) value is not a representable digit string: reject it
+    # as a failed numeric-id edit rather than letting len()/scan raise TypeError.
+    if value is not None and not isinstance(value, str):
+        return _Invalid(MSG_NUMERIC_ID.format(field=fieldName, length=expectedLength))
     if _IsBlank(value):
         return _Invalid(MSG_REQUIRED.format(field=fieldName))
     if not _IsAllDigits(value) or len(value) != expectedLength:
@@ -383,6 +399,10 @@ def ValidateYesNo(fieldName: str, value: str) -> ValidationResult:
         blank or :data:`MSG_YES_NO` when the value is not exactly ``Y`` or
         ``N``.
     """
+    # A non-str (non-None) value can never equal "Y"/"N" and an unhashable type
+    # (list/dict) would raise on the membership test: reject it as a failed edit.
+    if value is not None and not isinstance(value, str):
+        return _Invalid(MSG_YES_NO.format(field=fieldName))
     if _IsBlank(value):
         return _Invalid(MSG_REQUIRED.format(field=fieldName))
     if value not in YES_NO_VALUES:
@@ -513,6 +533,10 @@ def ValidateUsPhone(fieldName: str, value: str) -> ValidationResult:
         A :class:`ValidationResult`; invalid with :data:`MSG_PHONE` unless the
         value is exactly ten ASCII digits.
     """
+    # A non-str (non-None) value has no phone text to normalize: reject it as a
+    # failed edit rather than letting str.strip() raise an AttributeError.
+    if value is not None and not isinstance(value, str):
+        return _Invalid(MSG_PHONE.format(field=fieldName))
     normalizedValue = value.strip() if value is not None else ""
     if len(normalizedValue) != PHONE_DIGITS or not _IsAllDigits(normalizedValue):
         return _Invalid(MSG_PHONE.format(field=fieldName))
@@ -539,6 +563,10 @@ def ValidateUsSsn(fieldName: str, value: str) -> ValidationResult:
         is not nine digits, or :data:`MSG_SSN_PART1` when the area number is a
         reserved/invalid value.
     """
+    # A non-str (non-None) value has no SSN text to normalize: reject it as a
+    # failed edit rather than letting str.strip() raise an AttributeError.
+    if value is not None and not isinstance(value, str):
+        return _Invalid(MSG_SSN.format(field=fieldName))
     normalizedValue = value.strip() if value is not None else ""
     if len(normalizedValue) != SSN_LENGTH or not _IsAllDigits(normalizedValue):
         return _Invalid(MSG_SSN.format(field=fieldName))
@@ -566,6 +594,11 @@ def ValidateDateField(fieldName: str, value: str) -> ValidationResult:
     Returns:
         A :class:`ValidationResult` mirroring the delegated date result.
     """
+    # A non-str (non-None) value has no date text to parse: reject it as a
+    # malformed date rather than letting date_utils' str.strip() raise. ``None``
+    # is passed through so the delegate's own required-field message is kept.
+    if value is not None and not isinstance(value, str):
+        return ValidationResult(False, date_utils.MSG_DATE_MALFORMED)
     dateResult = date_utils.ValidateDate(value)
     return ValidationResult(dateResult.isValid, dateResult.message)
 
@@ -586,5 +619,10 @@ def ValidateDateOfBirthField(fieldName: str, value: str) -> ValidationResult:
         A :class:`ValidationResult` mirroring the delegated date-of-birth
         result.
     """
+    # A non-str (non-None) value has no date text to parse: reject it as a
+    # malformed date rather than letting date_utils' str.strip() raise. ``None``
+    # is passed through so the delegate's own required-field message is kept.
+    if value is not None and not isinstance(value, str):
+        return ValidationResult(False, date_utils.MSG_DATE_MALFORMED)
     dobResult = date_utils.ValidateDateOfBirth(value)
     return ValidationResult(dobResult.isValid, dobResult.message)

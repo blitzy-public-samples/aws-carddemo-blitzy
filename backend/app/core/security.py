@@ -204,7 +204,7 @@ def CreateAccessToken(
     }
     encodedToken = jwt.encode(
         tokenPayload,
-        settings.SECRET_KEY,
+        settings.SECRET_KEY.get_secret_value(),
         algorithm=settings.ALGORITHM,
     )
     return encodedToken
@@ -266,7 +266,7 @@ def DecodeAccessToken(token: str) -> dict:
     try:
         tokenClaims = jwt.decode(
             token,
-            settings.SECRET_KEY,
+            settings.SECRET_KEY.get_secret_value(),
             algorithms=[settings.ALGORITHM],
         )
     except jwt.ExpiredSignatureError as expiredError:

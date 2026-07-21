@@ -26,11 +26,35 @@ Design notes:
       external contract, not ordinary local variables.
 """
 
+import re
 from functools import lru_cache
-from typing import Annotated
+from typing import Annotated, Literal
 
-from pydantic import field_validator
+from pydantic import Field, SecretStr, ValidationError, field_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
+
+# ---------------------------------------------------------------------------
+# Hardening constants (ALL_UPPERCASE per the Ochs Rule). These make the
+# fail-fast configuration rules below explicit, single-sourced, and testable.
+# ---------------------------------------------------------------------------
+
+# Minimum acceptable length for SECRET_KEY. A blank or trivially short HS256
+# signing key permits trivial token forgery, so the application must refuse to
+# start with a weak key. 32 characters matches the recommended
+# ``openssl rand -hex 32`` key (see backend/.env.example).
+MINIMUM_SECRET_KEY_LENGTH = 32
+
+# Lower/upper bounds for the bcrypt work factor. Below 4, passlib silently
+# clamps (weakening the hash to cost 4); much above ~15 a single typo turns the
+# authentication path into a multi-second hang (a denial of service). The
+# accepted band keeps hashing both strong and responsive.
+MINIMUM_BCRYPT_ROUNDS = 4
+MAXIMUM_BCRYPT_ROUNDS = 15
+
+# Anchored pattern for a well-formed CORS origin: scheme (http/https) + host
+# (letters, digits, dots, hyphens) + optional ``:port``, and nothing else (no
+# path, query, or trailing slash). Rejects bare values such as ``not-a-url``.
+CORS_ORIGIN_PATTERN = re.compile(r"^https?://[A-Za-z0-9.\-]+(:\d+)?$")
 
 
 class Settings(BaseSettings):
@@ -49,22 +73,31 @@ class Settings(BaseSettings):
         API_V1_PREFIX: URL prefix under which the version-1 routers are mounted.
         ENVIRONMENT: Deployment environment name (``development``, ``staging`` or
             ``production``).
-        DEBUG: Whether debug behavior is enabled; must be ``False`` in
-            production.
+        DEBUG: Whether debug behavior is enabled; defaults to ``False``
+            (secure-by-default) and must be ``False`` in production.
         DATABASE_URL: SQLAlchemy async engine URL (asyncpg driver) used by the
-            application runtime.
+            application runtime. Held as :class:`~pydantic.SecretStr` (embeds a
+            password); read with ``.get_secret_value()``.
         SYNC_DATABASE_URL: SQLAlchemy sync engine URL (psycopg2 driver) used by
-            Alembic migrations and the batch loaders.
-        SECRET_KEY: Signing key for session cookies / JWTs. Required with no
-            default so a missing secret fails fast at startup.
-        AUTH_MODE: Authentication strategy; ``session`` is the confirmed baseline
-            and ``jwt`` is the supported alternative.
+            Alembic migrations and the batch loaders. Held as
+            :class:`~pydantic.SecretStr`.
+        SECRET_KEY: Signing key for session cookies / JWTs, held as
+            :class:`~pydantic.SecretStr`. Required with no default so a missing
+            secret fails fast at startup; :meth:`ValidateSecretKey` additionally
+            rejects a blank or shorter-than-:data:`MINIMUM_SECRET_KEY_LENGTH`
+            key.
+        AUTH_MODE: Authentication strategy, constrained to ``session`` (the
+            confirmed baseline) or ``jwt`` (the supported alternative); any other
+            value fails fast.
         ALGORITHM: JWT signing algorithm.
         ACCESS_TOKEN_EXPIRE_MINUTES: Session / token lifetime in minutes.
         SESSION_COOKIE_NAME: Name of the server-side session cookie.
-        BCRYPT_ROUNDS: bcrypt work factor (cost) used when hashing passwords.
+        BCRYPT_ROUNDS: bcrypt work factor (cost) used when hashing passwords,
+            bounded to ``[MINIMUM_BCRYPT_ROUNDS, MAXIMUM_BCRYPT_ROUNDS]`` so a
+            typo can neither silently weaken hashing nor hang the auth path.
         BACKEND_CORS_ORIGINS: Allowed CORS origins. Accepts either a real list or
-            a comma-separated string from the environment; see
+            a comma-separated string from the environment; each origin must be a
+            well-formed ``scheme://host[:port]`` value. See
             :meth:`AssembleCorsOrigins`.
     """
 
@@ -79,21 +112,45 @@ class Settings(BaseSettings):
     PROJECT_NAME: str = "CardDemo"
     API_V1_PREFIX: str = "/api/v1"
     ENVIRONMENT: str = "development"
-    DEBUG: bool = True
+    # Secure by default: DEBUG is OFF unless explicitly opted into (e.g. via
+    # backend/.env in development). A default of True would leak frame locals
+    # (including this settings object) through debug tracebacks in production.
+    DEBUG: bool = False
 
     # --- Database URLs (consumed by app/db/session.py, Alembic, loaders) ---
-    DATABASE_URL: str = "postgresql+asyncpg://carddemo:carddemo@localhost:5432/carddemo"
-    SYNC_DATABASE_URL: str = "postgresql+psycopg2://carddemo:carddemo@localhost:5432/carddemo"
+    # Typed as SecretStr so the embedded credentials never render in cleartext
+    # through repr()/str()/model_dump() (logging, debug tracebacks, error
+    # reporting). Consumers read the URL with ``.get_secret_value()``.
+    DATABASE_URL: SecretStr = SecretStr(
+        "postgresql+asyncpg://carddemo:carddemo@localhost:5432/carddemo"
+    )
+    SYNC_DATABASE_URL: SecretStr = SecretStr(
+        "postgresql+psycopg2://carddemo:carddemo@localhost:5432/carddemo"
+    )
 
     # --- Security / auth (consumed by app/core/security.py & dependencies.py) ---
     # SECRET_KEY intentionally has NO default (Ochs Rule #3): the one true secret
     # must be supplied by the environment, so the app fails fast when it is unset.
-    SECRET_KEY: str
-    AUTH_MODE: str = "session"
+    # It is typed as SecretStr so it never renders in cleartext via
+    # repr()/str()/model_dump(); ``ValidateSecretKey`` additionally rejects a
+    # blank or trivially short key (an empty/weak HS256 key allows token forgery).
+    SECRET_KEY: SecretStr
+    # AUTH_MODE is constrained to the two authentication strategies the target
+    # supports (AAP 0.8.4): the ``session`` baseline and the ``jwt`` alternative.
+    # Any other value fails fast at startup naming AUTH_MODE.
+    AUTH_MODE: Literal["session", "jwt"] = "session"
     ALGORITHM: str = "HS256"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 60
     SESSION_COOKIE_NAME: str = "carddemo_session"
-    BCRYPT_ROUNDS: int = 12
+    # bcrypt work factor, bounded to a safe band. Below the minimum passlib
+    # silently clamps (weakening security); above the maximum a config typo makes
+    # the hashing/authentication path hang for seconds (a denial of service). An
+    # out-of-range value fails fast at startup naming BCRYPT_ROUNDS.
+    BCRYPT_ROUNDS: int = Field(
+        default=12,
+        ge=MINIMUM_BCRYPT_ROUNDS,
+        le=MAXIMUM_BCRYPT_ROUNDS,
+    )
 
     # --- CORS (consumed by app/main.py -> CORSMiddleware) ---
     # ``NoDecode`` disables pydantic-settings' default JSON decoding of complex
@@ -117,25 +174,100 @@ class Settings(BaseSettings):
                 constructor — either a comma-separated ``str`` or a ``list``.
 
         Returns:
-            The list of trimmed, non-empty origin strings.
+            The list of trimmed, non-empty, well-formed origin strings.
 
         Raises:
-            ValueError: If ``rawValue`` is neither a string nor a list. A
-                specific exception is raised (never a bare ``except``) per the
-                Ochs error-handling rule.
+            ValueError: If ``rawValue`` is neither a string nor a list, or if any
+                supplied origin is not a well-formed ``scheme://host[:port]``
+                value. A specific exception is raised (never a bare ``except``)
+                per the Ochs error-handling rule.
         """
         if isinstance(rawValue, str):
-            return [origin.strip() for origin in rawValue.split(",") if origin.strip()]
-        if isinstance(rawValue, list):
-            return rawValue
-        raise ValueError("BACKEND_CORS_ORIGINS must be a comma-separated string or a list of origins")
+            originList = [origin.strip() for origin in rawValue.split(",") if origin.strip()]
+        elif isinstance(rawValue, list):
+            originList = [str(origin).strip() for origin in rawValue]
+        else:
+            raise ValueError(
+                "BACKEND_CORS_ORIGINS must be a comma-separated string or a list of origins"
+            )
+        for origin in originList:
+            if CORS_ORIGIN_PATTERN.fullmatch(origin) is None:
+                raise ValueError(
+                    f"BACKEND_CORS_ORIGINS contains an invalid origin: {origin!r} "
+                    "(expected scheme://host[:port])"
+                )
+        return originList
+
+    @field_validator("SECRET_KEY")
+    @classmethod
+    def ValidateSecretKey(cls, rawValue: SecretStr) -> SecretStr:
+        """Reject a blank or trivially short signing key (fail fast on a weak key).
+
+        ``SECRET_KEY`` already fails fast when it is entirely unset (pydantic
+        reports it as a required field). This validator closes the remaining
+        gap: a blank/whitespace value, or one shorter than
+        :data:`MINIMUM_SECRET_KEY_LENGTH`, is rejected with a specific,
+        non-secret error that names the offending key. An empty HS256 key would
+        permit trivial session/JWT forgery, so the application must refuse to
+        start with one. The check reads the underlying value via
+        ``get_secret_value`` and never echoes it in the error message.
+
+        Args:
+            rawValue: The SecretStr wrapping the configured signing key.
+
+        Returns:
+            The validated :class:`~pydantic.SecretStr` unchanged.
+
+        Raises:
+            ValueError: If the key is blank/whitespace or shorter than
+                :data:`MINIMUM_SECRET_KEY_LENGTH` characters.
+        """
+        secretValue = rawValue.get_secret_value()
+        if len(secretValue.strip()) < MINIMUM_SECRET_KEY_LENGTH:
+            raise ValueError(
+                "SECRET_KEY must be a non-blank value of at least "
+                f"{MINIMUM_SECRET_KEY_LENGTH} characters"
+            )
+        return rawValue
+
+
+def _BuildSettings() -> Settings:
+    """Construct the settings singleton, sanitizing any validation failure.
+
+    A malformed configuration must still fail fast at import, but the raised
+    error must never echo a secret. pydantic's native
+    :class:`~pydantic.ValidationError` embeds the raw input (which for a missing
+    ``SECRET_KEY`` includes the whole env dict, and thus a fragment of the
+    ``DATABASE_URL`` password) in its rendered ``input_value``. This helper
+    catches that error and re-raises a :class:`ValueError` built solely from the
+    offending field locations and messages — never the input values — so a
+    startup traceback names the bad key(s) without leaking any secret. The
+    original ValidationError context is suppressed (``from None``) so its
+    input-bearing representation is not printed either.
+
+    Returns:
+        The validated :class:`Settings` singleton.
+
+    Raises:
+        ValueError: If configuration validation fails; the message names the
+            offending field(s) and their error type with no secret values.
+    """
+    try:
+        return Settings()
+    except ValidationError as validationError:
+        problemDescriptions = "; ".join(
+            f"{'.'.join(str(locPart) for locPart in fieldError['loc'])}: {fieldError['msg']}"
+            for fieldError in validationError.errors(include_url=False, include_input=False)
+        )
+        raise ValueError(f"Invalid backend configuration: {problemDescriptions}") from None
 
 
 # Module-level singleton. Constructed at import time so configuration errors
-# (for example, a missing SECRET_KEY) surface immediately as a pydantic
-# ValidationError rather than at first use. This is the primary export that every
-# other backend module imports: ``from app.core.config import settings``.
-settings = Settings()
+# (for example, a missing or weak SECRET_KEY) surface immediately — as a
+# sanitized, secret-free ValueError — rather than at first use. This is the
+# primary export that every other backend module imports:
+# ``from app.core.config import settings``.
+settings = _BuildSettings()
 
 
 @lru_cache

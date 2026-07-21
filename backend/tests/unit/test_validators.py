@@ -26,7 +26,9 @@ from app.utils.validators import (
     TRAN_ID_LENGTH,
     USER_ID_LENGTH,
     ValidateAlpha,
+    ValidateAlphanumeric,
     ValidateDateField,
+    ValidateDateOfBirthField,
     ValidateLength,
     ValidateNonNegative,
     ValidateNumericId,
@@ -35,6 +37,7 @@ from app.utils.validators import (
     ValidateSignedNumber,
     ValidateUsPhone,
     ValidateUsSsn,
+    ValidateYesNo,
     ValidationResult,
 )
 
@@ -613,3 +616,136 @@ def test_transaction_origin_date_impossible_day_is_invalid():
     # 2024-02-30 is not a real calendar date and is rejected.
     originResult = ValidateDateField("originDate", "2024-02-30")
     assert originResult.isValid is False
+
+
+# ---------------------------------------------------------------------------
+# Phase Z -- wrong-type robustness (VALIDATORS-1).
+#
+# The string-oriented validators are reusable building blocks that a service or
+# schema layer may hand an unexpected non-str value (e.g. a JSON number, list,
+# or object that slipped past an upstream coercion). A raw ``str``/regex/``len``
+# operation on such a value would raise (TypeError/AttributeError) and surface
+# as an opaque 500 instead of a clean field-level rejection. Each validator must
+# therefore treat a non-str (non-None) value as a *failed edit* -- returning a
+# ValidationResult(isValid=False) with its own field-specific message -- never
+# raising. These tests feed every string validator each representative wrong
+# type and assert a clean invalid result; a crash fails the test loudly. The
+# object-typed validators (which legitimately accept str/int/Decimal) are
+# separately locked to prove they too never raise on an unexpected type.
+# ---------------------------------------------------------------------------
+
+# Representative non-str, non-None values a caller might erroneously supply.
+# ``True`` is included deliberately: bool is an int subclass (never a str), so
+# it must be caught by the same isinstance(value, str) guard. Unhashable types
+# (list, dict) also prove the Y/N membership test can never raise.
+WRONG_TYPE_VALUES = (123, 3.14, True, [1, 2], {"a": 1}, b"abc")
+
+
+def test_validate_alpha_rejects_non_str_without_raising():
+    # A non-str name is a failed alphabetic edit, not an exception.
+    for wrongValue in WRONG_TYPE_VALUES:
+        alphaResult = ValidateAlpha("firstName", wrongValue)
+        assert alphaResult.isValid is False
+        assert alphaResult.message != ""
+
+
+def test_validate_alphanumeric_rejects_non_str_without_raising():
+    # A non-str code is a failed alphanumeric edit, not an exception.
+    for wrongValue in WRONG_TYPE_VALUES:
+        alphanumericResult = ValidateAlphanumeric("addressLine", wrongValue)
+        assert alphanumericResult.isValid is False
+        assert alphanumericResult.message != ""
+
+
+def test_validate_length_rejects_non_str_without_raising():
+    # A non-str value has no character length to measure: reject, never let
+    # len() raise a TypeError.
+    for wrongValue in WRONG_TYPE_VALUES:
+        lengthResult = ValidateLength("userId", wrongValue, USER_ID_LENGTH)
+        assert lengthResult.isValid is False
+        assert lengthResult.message != ""
+
+
+def test_validate_numeric_id_rejects_non_str_without_raising():
+    # A non-str id (e.g. a JSON integer) is a failed numeric-id edit; the
+    # significant-leading-zero contract means it must not be coerced to int.
+    for wrongValue in WRONG_TYPE_VALUES:
+        numericIdResult = ValidateNumericId("acctId", wrongValue, ACCT_ID_LENGTH)
+        assert numericIdResult.isValid is False
+        assert numericIdResult.message != ""
+
+
+def test_validate_yes_no_rejects_non_str_without_raising():
+    # A non-str flag can never equal "Y"/"N"; an unhashable list/dict would
+    # otherwise raise on the membership test.
+    for wrongValue in WRONG_TYPE_VALUES:
+        yesNoResult = ValidateYesNo("activeStatus", wrongValue)
+        assert yesNoResult.isValid is False
+        assert yesNoResult.message != ""
+
+
+def test_validate_us_phone_rejects_non_str_without_raising():
+    # A non-str phone has no text to normalize: reject, never let str.strip()
+    # raise an AttributeError.
+    for wrongValue in WRONG_TYPE_VALUES:
+        phoneResult = ValidateUsPhone("phoneNumber", wrongValue)
+        assert phoneResult.isValid is False
+        assert phoneResult.message != ""
+
+
+def test_validate_us_ssn_rejects_non_str_without_raising():
+    # A non-str SSN has no text to normalize: reject, never let str.strip()
+    # raise an AttributeError.
+    for wrongValue in WRONG_TYPE_VALUES:
+        ssnResult = ValidateUsSsn("ssn", wrongValue)
+        assert ssnResult.isValid is False
+        assert ssnResult.message != ""
+
+
+def test_validate_date_field_rejects_non_str_without_raising():
+    # A non-str date has no text to parse: reject as malformed, never let the
+    # delegate's str.strip() raise.
+    for wrongValue in WRONG_TYPE_VALUES:
+        dateResult = ValidateDateField("originDate", wrongValue)
+        assert dateResult.isValid is False
+        assert dateResult.message != ""
+
+
+def test_validate_date_of_birth_field_rejects_non_str_without_raising():
+    # A non-str date of birth has no text to parse: reject as malformed, never
+    # let the delegate's str.strip() raise.
+    for wrongValue in WRONG_TYPE_VALUES:
+        dobResult = ValidateDateOfBirthField("dateOfBirth", wrongValue)
+        assert dobResult.isValid is False
+        assert dobResult.message != ""
+
+
+def test_string_validators_preserve_valid_str_after_guard():
+    # The wrong-type guard must not disturb the happy path: a well-formed str
+    # still validates for the three validators added to this suite's imports.
+    assert ValidateAlphanumeric("addressLine", "123 Main St").isValid is True
+    assert ValidateYesNo("activeStatus", "Y").isValid is True
+    assert ValidateDateOfBirthField("dateOfBirth", "1990-06-30").isValid is True
+
+
+def test_string_validators_preserve_none_required_message_after_guard():
+    # ``None`` bypasses the wrong-type guard so the pre-existing required/
+    # malformed handling is preserved: blank-style validators still say
+    # "must be supplied", and the date delegate still owns the None message.
+    assert ValidateAlpha("firstName", None).message == "firstName must be supplied."
+    assert ValidateYesNo("activeStatus", None).message == "activeStatus must be supplied."
+    assert ValidateDateField("originDate", None).isValid is False
+
+
+def test_object_typed_validators_never_raise_on_wrong_type():
+    # The object-accepting validators (str/int/Decimal by contract) are left
+    # unchanged by VALIDATORS-1, but must likewise degrade to a bool result --
+    # never an exception -- for any unexpected type.
+    for wrongValue in WRONG_TYPE_VALUES:
+        assert isinstance(ValidateRequired("field", wrongValue).isValid, bool)
+        assert isinstance(ValidateSignedNumber("field", wrongValue).isValid, bool)
+        assert isinstance(ValidateNonNegative("field", wrongValue).isValid, bool)
+        assert isinstance(
+            ValidateNumericRange("field", wrongValue, UNBOUNDED_RANGE).isValid,
+            bool,
+        )
