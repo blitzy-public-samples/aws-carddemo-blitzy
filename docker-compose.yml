@@ -1,62 +1,184 @@
-# CardDemo modernized stack — local development topology.
-# PostgreSQL 17 replaces VSAM. The `backend` (FastAPI) and `frontend` (Next.js) services
-# build from source once implementation agents create it; only the `db` service is required
-# to warm the environment (it runs under the default profile).
+# =============================================================================
+# CardDemo modernized stack — root Docker Compose topology (local / dev).
 #
-# Bring up only the database (default):   docker compose up -d db
-# Bring up the full stack (needs source): docker compose --profile full up -d
+# Traceability: greenfield target for the CardDemo COBOL -> modern migration
+# (AAP 0.4.1 / 0.5.4 / 0.6.3 — CREATE). There is NO legacy source file for this
+# artifact; it is new infrastructure that replaces the mainframe CICS region and
+# JCL/PROC orchestration with a three-tier container topology:
 #
-# Parallel-clone isolation (BP1): override port + project + DB per clone, e.g.
-#   POSTGRES_HOST_PORT=$((5432 + CLONE_INDEX)) COMPOSE_PROJECT_NAME=carddemo-$CLONE_INDEX \
+#   * db       PostgreSQL 17 — relational store that replaces VSAM KSDS + AIX.
+#   * backend  FastAPI (./backend) — REST API that replaces the CICS online
+#              COBOL programs; serves app.main:app on :8000.
+#   * frontend Next.js + Material UI (./frontend) — SPA that replaces the BMS
+#              3270 maps; serves the standalone Next.js server on :3000.
+#
+# Ochs Rule #3 (no hardcoding secrets): NO real secret is committed here. Every
+# credential/key is supplied through ${VAR:-default} interpolation where the
+# default is an OBVIOUS, non-production dev placeholder, or from the developer's
+# own environment (shell / root .env / the optional per-service env_file noted
+# on the backend service). Production MUST override POSTGRES_PASSWORD and
+# SECRET_KEY with real values from the environment — never commit real secrets.
+#
+# -----------------------------------------------------------------------------
+# Usage
+# -----------------------------------------------------------------------------
+# Warm the database only (default profile — backend/frontend are gated behind
+# the `full` profile, so this does not require their source to be built yet):
+#
 #     docker compose up -d db
+#
+# Bring up the whole stack (builds backend + frontend from their Dockerfiles):
+#
+#     docker compose --profile full up -d --build
+#
+# Apply database migrations once the backend image is built. Migrations are kept
+# OUT of image startup so container boot stays idempotent and side-effect free:
+#
+#     docker compose --profile full run --rm backend alembic upgrade head
+#
+# -----------------------------------------------------------------------------
+# Parallel-clone / multi-instance isolation
+# -----------------------------------------------------------------------------
+# Host ports and the Postgres credentials/db name are all interpolated so that
+# several checkouts can run side by side without colliding. Compose already
+# scopes container, network, and volume names by project (derived from the
+# directory name, or COMPOSE_PROJECT_NAME); only the *published host ports* need
+# an explicit offset, for example:
+#
+#     POSTGRES_HOST_PORT=$((5432 + CLONE_INDEX)) \
+#     BACKEND_HOST_PORT=$((8000 + CLONE_INDEX)) \
+#     FRONTEND_HOST_PORT=$((3000 + CLONE_INDEX)) \
+#     COMPOSE_PROJECT_NAME=carddemo-$CLONE_INDEX \
+#         docker compose up -d db
+#
+# NOTE: the obsolete top-level `version:` key is intentionally omitted; current
+# Docker Compose (the Compose Specification) ignores it and warns when present.
+# =============================================================================
+
 services:
+
+  # ---------------------------------------------------------------------------
+  # db — PostgreSQL 17. Relational replacement for the legacy VSAM datastore.
+  # Runs under the DEFAULT profile so `docker compose up -d db` can warm the
+  # database on its own, before the application images exist.
+  # ---------------------------------------------------------------------------
   db:
     image: postgres:17
-    container_name: ${COMPOSE_PROJECT_NAME:-carddemo}-db
+    # Credentials / database name: dev-only defaults via interpolation
+    # (Ochs Rule #3). Override POSTGRES_PASSWORD from the environment for any
+    # shared or production use — the default below is plainly not a real secret.
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-carddemo}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-carddemo}
       POSTGRES_DB: ${POSTGRES_DB:-carddemo}
+    # Publish 5432 for host tooling (psql, host-run migrations/loaders, ...).
+    # ${POSTGRES_HOST_PORT} lets parallel clones pick non-colliding host ports.
     ports:
       - "${POSTGRES_HOST_PORT:-5432}:5432"
+    # Persist data in a named volume so it survives `docker compose down`.
     volumes:
       - carddemo_pgdata:/var/lib/postgresql/data
+    # Dependents wait on `service_healthy`. The doubled `$$` escapes Compose
+    # interpolation so POSTGRES_USER / POSTGRES_DB are expanded by the shell
+    # INSIDE the container (against the values set above), not at parse time.
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-carddemo} -d ${POSTGRES_DB:-carddemo}"]
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
       interval: 5s
       timeout: 5s
       retries: 10
+      start_period: 10s
+    networks:
+      - carddemo-net
+    restart: unless-stopped
 
+  # ---------------------------------------------------------------------------
+  # backend — FastAPI service built from ./backend/Dockerfile. Replaces the
+  # CICS online COBOL programs. Gated behind the `full` profile so it is only
+  # built/started for a full-stack bring-up.
+  # ---------------------------------------------------------------------------
   backend:
     build:
       context: ./backend
       dockerfile: Dockerfile
-    container_name: ${COMPOSE_PROJECT_NAME:-carddemo}-backend
+    # Do not start until PostgreSQL reports healthy (avoids connection races).
     depends_on:
       db:
         condition: service_healthy
+    # Runtime configuration read by app/core/config.py (pydantic-settings):
+    #   * DATABASE_URL / SYNC_DATABASE_URL point at the compose-internal `db`
+    #     hostname (NOT localhost) and carry the async / sync drivers.
+    #   * SECRET_KEY has NO default in config.py and must be >= 32 characters,
+    #     so a turnkey, OBVIOUS dev placeholder is provided here; override it
+    #     from the environment for anything shared. It is plainly not a real key.
+    #   * Every value is interpolated — no real secret is baked into this file.
+    #
+    # Prefer a real backend/.env instead? Uncomment the env_file block below
+    # (`required: false` means it is skipped without error when absent). The
+    # DATABASE_URL / SYNC_DATABASE_URL overrides here intentionally still win so
+    # the container always reaches `db` rather than localhost.
+    #
+    # env_file:
+    #   - path: ./backend/.env
+    #     required: false
     environment:
       DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-carddemo}:${POSTGRES_PASSWORD:-carddemo}@db:5432/${POSTGRES_DB:-carddemo}
       SYNC_DATABASE_URL: postgresql+psycopg2://${POSTGRES_USER:-carddemo}:${POSTGRES_PASSWORD:-carddemo}@db:5432/${POSTGRES_DB:-carddemo}
-      SECRET_KEY: ${SECRET_KEY:-change-me-in-production}
+      SECRET_KEY: ${SECRET_KEY:-dev-only-insecure-secret-key-change-me-please-32plus}
       ENVIRONMENT: ${ENVIRONMENT:-development}
+      BACKEND_CORS_ORIGINS: http://localhost:${FRONTEND_HOST_PORT:-3000}
+    # Publish the ASGI port. The image CMD already runs
+    # `uvicorn app.main:app --host 0.0.0.0 --port 8000`, so no `command:` here.
     ports:
       - "${BACKEND_HOST_PORT:-8000}:8000"
-    profiles: ["full"]
+    networks:
+      - carddemo-net
+    profiles:
+      - full
+    restart: unless-stopped
 
+  # ---------------------------------------------------------------------------
+  # frontend — Next.js + Material UI SPA built from ./frontend/Dockerfile.
+  # Replaces the BMS 3270 maps. Also gated behind the `full` profile.
+  # ---------------------------------------------------------------------------
   frontend:
     build:
       context: ./frontend
       dockerfile: Dockerfile
-    container_name: ${COMPOSE_PROJECT_NAME:-carddemo}-frontend
+      # NEXT_PUBLIC_* values are INLINED into the client bundle at build time,
+      # so the backend origin must be supplied as a build arg (not only at
+      # runtime). It is the ORIGIN ONLY — the axios client appends `/api/v1`.
+      # The browser reaches the backend on its host-published port, so this is
+      # localhost:${BACKEND_HOST_PORT}, NOT the compose-internal `backend` host.
+      args:
+        NEXT_PUBLIC_API_URL: http://localhost:${BACKEND_HOST_PORT:-8000}
+    # Start after the backend (simple ordering; the browser calls the API).
     depends_on:
       - backend
+    # Mirrors the build arg at runtime for any server-side read; the operative
+    # value for client code is the build arg above. Origin only, no /api/v1.
     environment:
-      NEXT_PUBLIC_API_BASE_URL: http://localhost:${BACKEND_HOST_PORT:-8000}/api/v1
-      BACKEND_INTERNAL_URL: http://backend:8000
+      NEXT_PUBLIC_API_URL: http://localhost:${BACKEND_HOST_PORT:-8000}
+    # Publish the Next.js port. The image CMD already runs `node server.js`
+    # (standalone output) bound to 0.0.0.0:3000, so no `command:` here.
     ports:
       - "${FRONTEND_HOST_PORT:-3000}:3000"
-    profiles: ["full"]
+    networks:
+      - carddemo-net
+    profiles:
+      - full
+    restart: unless-stopped
 
+# -----------------------------------------------------------------------------
+# Named volume for PostgreSQL data. Compose scopes the real volume name by
+# project, so parallel clones get independent volumes automatically.
+# -----------------------------------------------------------------------------
 volumes:
   carddemo_pgdata:
+
+# -----------------------------------------------------------------------------
+# Shared user-defined bridge network so the three services resolve each other
+# by service name (for example, the backend reaches the database at host `db`).
+# -----------------------------------------------------------------------------
+networks:
+  carddemo-net:
+    driver: bridge

@@ -1,0 +1,643 @@
+# Ported from legacy COBOL batch program CBTRN02C.cbl + JCL app/jcl/POSTTRAN.jcl
+# (CardDemo). Function: post daily transactions with validation codes 100-103/109
+# and 430-byte reject rows.
+"""Daily-transaction posting job -- Python port of COBOL ``CBTRN02C``.
+
+This module reimplements the CardDemo daily-transaction posting driver
+(``app/cbl/CBTRN02C.cbl``, wired by ``app/jcl/POSTTRAN.jcl``). It walks every
+unposted (``PENDING``) daily transaction, validates it exactly as the legacy
+``1500-VALIDATE-TRAN`` paragraph did, and -- when valid -- posts it by updating
+the transaction-category running balance (``2700-UPDATE-TCATBAL``), updating the
+owning account's balances (``2800-UPDATE-ACCOUNT-REC``) and promoting the daily
+row to the posted ledger (``2900-WRITE-TRANSACTION-FILE``). Invalid transactions
+are *rejected* -- a fixed-width 430-byte reject record is produced
+(``2500-WRITE-REJECT-REC``) and processing continues with the next row; the run
+never aborts on a data reject.
+
+Golden-master parity (AAP 0.8.1) is the hard requirement here: every reject
+reason code, every verbatim description string, the 430-byte reject-record byte
+layout, the validation order and the balance-update arithmetic reproduce the
+mainframe behavior field-for-field. The reject reason codes (100, 101, 102, 103,
+109) and their UPPERCASE descriptions are sourced exclusively from
+:mod:`app.core.exceptions` so there is a single source of truth.
+
+Legacy paragraph -> Python helper map:
+
+* ``1500-VALIDATE-TRAN``        -> :func:`_ValidateTran`
+* ``1500-A-LOOKUP-XREF``        -> xref lookup inside :func:`_ValidateTran`
+* ``1500-B-LOOKUP-ACCT``        -> account lookup + :func:`_CheckAccountLimits`
+* ``2000-POST-TRANSACTION``     -> :func:`_PostTransaction`
+* ``2700-UPDATE-TCATBAL``       -> :func:`_UpdateTcatbal`
+* ``2800-UPDATE-ACCOUNT-REC``   -> :func:`_UpdateAccount`
+* ``2900-WRITE-TRANSACTION-FILE`` -> :func:`_WriteTransaction`
+* ``2500-WRITE-REJECT-REC``     -> :func:`_BuildRejectRow` + :func:`_FormatDailyRecord`
+
+Transaction ownership:
+    The caller owns the unit of work. :func:`PostTransactions` receives an
+    already-open synchronous :class:`~sqlalchemy.orm.Session` (from
+    ``batch.db.GetSyncSession``) and NEVER calls ``commit`` or ``close`` -- it
+    only ``flush``es. Giving each run its own caller-owned transaction preserves
+    idempotency: on re-run, rows already promoted to ``POSTED`` are skipped
+    because the driving query filters on ``PENDING`` (AAP 0.7.6).
+
+Numeric fidelity (AAP 0.7.1):
+    Every monetary value is an exact :class:`decimal.Decimal`; floating point is
+    never used, matching the regulatory numeric-parity requirement. Amounts in
+    the reject record are re-encoded to their signed zoned-decimal byte image via
+    :func:`app.utils.decimal_utils.EncodeZonedDecimal`.
+
+Schema ownership:
+    This module never issues DDL. The database schema is owned exclusively by
+    Alembic (``backend/alembic/versions/*``); posting only reads and writes rows
+    through the supplied ORM session.
+"""
+
+from __future__ import annotations
+
+import logging
+from dataclasses import dataclass, field
+from datetime import date, datetime
+from decimal import Decimal
+
+from sqlalchemy import select
+from sqlalchemy.orm import Session
+
+from app.core.exceptions import (
+    POSTING_REJECT_DESCRIPTIONS,
+    REJECT_RECORD_LENGTH,
+    REJECT_TRAN_DATA_LENGTH,
+    FormatValidationTrailer,
+    PostingRejectCode,
+)
+from app.models import STATUS_PENDING, STATUS_POSTED
+from app.models.account import Account
+from app.models.card_xref import CardXref
+from app.models.tran_category_balance import TranCategoryBalance
+from app.models.transaction import Transaction
+from app.utils.date_utils import FormatLegacyTimestamp, ParseLegacyDate
+from app.utils.decimal_utils import MONEY_SCALE, TRAN_AMOUNT_DIGITS, EncodeZonedDecimal
+
+# Module logger. Only aggregate counts and the legacy start banner are logged;
+# full reject rows and card numbers (PANs) are never logged (AAP 0.7.8).
+LOGGER = logging.getLogger(__name__)
+
+# Legacy start banner, emitted verbatim (CBTRN02C PROCEDURE DIVISION first
+# statement: DISPLAY 'START OF EXECUTION OF PROGRAM CBTRN02C').
+START_MESSAGE = "START OF EXECUTION OF PROGRAM CBTRN02C"
+
+# Sentinel meaning "no validation failure" -- WS-VALIDATION-FAIL-REASON = 0 in
+# the COBOL driver (a passing record).
+NO_FAILURE = 0
+
+# ---------------------------------------------------------------------------
+# Fixed-width field widths of the 350-byte DALYTRAN-RECORD (copybook CVTRA06Y,
+# byte-identical to the posted TRAN-RECORD CVTRA05Y). One ALL_UPPERCASE constant
+# per copybook field, in copybook order; the widths tile REJECT_TRAN_DATA_LENGTH
+# (350) exactly. The trailing FILLER PIC X(20) carries no data and is emitted as
+# spaces only to preserve the 350-byte record length.
+# ---------------------------------------------------------------------------
+TRAN_ID_WIDTH = 16          # DALYTRAN-ID            PIC X(16)
+TRAN_TYPE_CD_WIDTH = 2      # DALYTRAN-TYPE-CD       PIC X(02)
+TRAN_CAT_CD_WIDTH = 4       # DALYTRAN-CAT-CD        PIC 9(04)
+TRAN_SOURCE_WIDTH = 10      # DALYTRAN-SOURCE        PIC X(10)
+TRAN_DESC_WIDTH = 100       # DALYTRAN-DESC          PIC X(100)
+TRAN_AMT_WIDTH = TRAN_AMOUNT_DIGITS  # DALYTRAN-AMT  PIC S9(09)V99 -> 11 digits
+MERCHANT_ID_WIDTH = 9       # DALYTRAN-MERCHANT-ID   PIC 9(09)
+MERCHANT_NAME_WIDTH = 50    # DALYTRAN-MERCHANT-NAME PIC X(50)
+MERCHANT_CITY_WIDTH = 50    # DALYTRAN-MERCHANT-CITY PIC X(50)
+MERCHANT_ZIP_WIDTH = 10     # DALYTRAN-MERCHANT-ZIP  PIC X(10)
+CARD_NUM_WIDTH = 16         # DALYTRAN-CARD-NUM      PIC X(16)
+TIMESTAMP_WIDTH = 26        # DALYTRAN-ORIG-TS / -PROC-TS PIC X(26)
+DALYTRAN_FILLER_WIDTH = 20  # FILLER                 PIC X(20)
+
+# Position (0-based) at which to slice a legacy 26-byte timestamp text down to
+# its 10-character date portion (YYYY-MM-DD) -- the legacy DALYTRAN-ORIG-TS(1:10)
+# reference used by the account-expiration check.
+DATE_TEXT_LENGTH = 10
+
+
+@dataclass
+class PostingResult:
+    """Aggregate outcome of one :func:`PostTransactions` run.
+
+    Groups the four return values into a single object so the public entry point
+    keeps a small parameter/return surface (Ochs Rule: prefer one object over
+    many loose values). The three counters mirror the legacy
+    ``WS-TRANSACTION-COUNT`` / ``WS-REJECT-COUNT`` display totals; a run with a
+    non-zero :attr:`transactionsRejected` corresponds to the legacy
+    ``RETURN-CODE = 4`` (the CLI surfaces that, this module does not exit).
+
+    Attributes:
+        transactionsProcessed: Total daily (``PENDING``) transactions read and
+            examined this run (legacy ``WS-TRANSACTION-COUNT``).
+        transactionsPosted: Count of transactions that validated cleanly and were
+            posted to the ledger and balances.
+        transactionsRejected: Count of transactions that failed validation (or
+            the defensive code-109 account-update guard) and produced a reject
+            record (legacy ``WS-REJECT-COUNT``).
+        rejectRows: The fixed-width reject records, one 430-character string per
+            rejected transaction, laid out exactly like the legacy 430-byte
+            ``DALYREJS`` record (``REJECT-TRAN-DATA`` X(350) + ``VALIDATION-TRAILER``
+            X(80)). The caller (CLI / orchestration) is responsible for writing
+            these to a ``DALYREJS``-equivalent sink.
+    """
+
+    transactionsProcessed: int = 0
+    transactionsPosted: int = 0
+    transactionsRejected: int = 0
+    rejectRows: list[str] = field(default_factory=list)
+
+
+def PostTransactions(session: Session, runDate: date | None = None) -> PostingResult:
+    """Post every pending daily transaction (Python port of ``CBTRN02C``).
+
+    Reproduces the legacy driver loop verbatim: read each unposted daily
+    transaction in a deterministic order, validate it (:func:`_ValidateTran`),
+    then either post it (:func:`_PostTransaction`) or build a 430-byte reject
+    record (:func:`_BuildRejectRow`) and continue. Validation failures are data
+    *rejects*, not fatal errors -- the run never aborts on one. Infrastructure
+    failures (for example :class:`sqlalchemy.exc.SQLAlchemyError`) are allowed to
+    propagate to the caller, which owns rollback.
+
+    The caller owns the transaction: this function never commits or closes the
+    session, only flushes. Because the driving query filters on ``PENDING``, a
+    re-run naturally skips rows already promoted to ``POSTED`` on a prior run,
+    making the job idempotent and re-runnable (AAP 0.7.6).
+
+    Args:
+        session: An already-open synchronous SQLAlchemy session (from
+            ``batch.db.GetSyncSession``). Not committed or closed here.
+        runDate: Optional business date. When supplied it pins the ``proc_ts``
+            date component for reproducible re-runs; when ``None`` the current
+            timestamp is used, matching the legacy default.
+
+    Returns:
+        A :class:`PostingResult` with the processed/posted/rejected counters and
+        the list of fixed-width reject records produced this run.
+    """
+    LOGGER.info(START_MESSAGE)
+    result = PostingResult()
+    postingTimestamp = _ResolvePostingTimestamp(runDate)
+
+    # Drive off the PENDING daily transactions in a stable key order, mirroring
+    # the sequential DALYTRAN read. The set is materialized up front so that the
+    # in-loop status flips (PENDING -> POSTED) cannot perturb the iteration.
+    statement = (
+        select(Transaction)
+        .where(Transaction.status == STATUS_PENDING)
+        .order_by(Transaction.tran_id)
+    )
+    pendingTransactions = session.scalars(statement).all()
+
+    for dailyTran in pendingTransactions:
+        result.transactionsProcessed += 1
+        failReason, failDescription = _ValidateTran(session, dailyTran)
+        if failReason == NO_FAILURE:
+            failReason, failDescription = _PostTransaction(
+                session, dailyTran, postingTimestamp
+            )
+        if failReason == NO_FAILURE:
+            result.transactionsPosted += 1
+        else:
+            rejectRow = _BuildRejectRow(dailyTran, failReason, failDescription)
+            result.rejectRows.append(rejectRow)
+            result.transactionsRejected += 1
+
+    LOGGER.info(
+        "END OF EXECUTION OF PROGRAM CBTRN02C -- processed=%d posted=%d rejected=%d",
+        result.transactionsProcessed,
+        result.transactionsPosted,
+        result.transactionsRejected,
+    )
+    return result
+
+
+def _ResolvePostingTimestamp(runDate: date | None) -> datetime:
+    """Resolve the timestamp stamped into ``proc_ts`` for posted rows.
+
+    The legacy ``2000-POST-TRANSACTION`` stamps ``TRAN-PROC-TS`` from the current
+    timestamp (``Z-GET-DB2-FORMAT-TIMESTAMP``). When an explicit ``runDate`` is
+    supplied, the date component is pinned to it (using the current wall-clock
+    time of day) so a re-run for a given business date is reproducible; when it
+    is omitted the full current timestamp is used, matching the legacy default.
+
+    Args:
+        runDate: Optional business date to pin the processing timestamp to.
+
+    Returns:
+        The naive local :class:`~datetime.datetime` to store in ``proc_ts``.
+    """
+    if runDate is None:
+        return datetime.now()
+    return datetime.combine(runDate, datetime.now().time())
+
+
+def _ValidateTran(session: Session, dailyTran: Transaction) -> tuple[int, str]:
+    """Validate one daily transaction (port of ``1500-VALIDATE-TRAN``).
+
+    Reproduces the legacy validation ORDER exactly:
+
+    1. ``1500-A-LOOKUP-XREF``: look up the card cross-reference. A miss is reject
+       100 ``INVALID CARD NUMBER FOUND`` and validation STOPS here -- the account
+       is deliberately NOT checked.
+    2. ``1500-B-LOOKUP-ACCT`` (only when the xref was found): look up the owning
+       account. A miss is reject 101 ``ACCOUNT RECORD NOT FOUND``; otherwise the
+       credit-limit and expiration checks run (see :func:`_CheckAccountLimits`).
+
+    Args:
+        session: Open session used for the cross-reference and account lookups.
+        dailyTran: The pending daily transaction being validated.
+
+    Returns:
+        A ``(failReason, failDescription)`` tuple: ``(0, "")`` when the
+        transaction passes, otherwise the reject code and its verbatim UPPERCASE
+        description.
+    """
+    # 1500-A-LOOKUP-XREF: READ XREF-FILE ... INVALID KEY -> 100 (STOP; no acct).
+    xref = session.get(CardXref, dailyTran.card_num)
+    if xref is None:
+        return _RejectPair(PostingRejectCode.INVALID_CARD_NUMBER)
+
+    # 1500-B-LOOKUP-ACCT: READ ACCOUNT-FILE ... INVALID KEY -> 101.
+    account = session.get(Account, xref.acct_id)
+    if account is None:
+        return _RejectPair(PostingRejectCode.ACCOUNT_NOT_FOUND)
+
+    # ADD MORE VALIDATIONS HERE (legacy extension point; no new logic added).
+    return _CheckAccountLimits(account, dailyTran)
+
+
+def _CheckAccountLimits(account: Account, dailyTran: Transaction) -> tuple[int, str]:
+    """Apply the credit-limit then expiration checks (part of ``1500-B``).
+
+    Mirrors the two consecutive, INDEPENDENT ``IF`` statements of the legacy
+    ``1500-B-LOOKUP-ACCT`` NOT-INVALID-KEY branch. Check A (credit limit) runs
+    first; Check B (expiration) runs AFTER it as a SEPARATE ``if`` (never an
+    ``elif``) and overwrites the fail reason on failure. Consequently, when BOTH
+    checks fail the final reject code is 103 (last-write-wins) -- this ordering
+    is preserved exactly for golden-master parity.
+
+    The over-limit temp balance matches ``WS-TEMP-BAL = ACCT-CURR-CYC-CREDIT -
+    ACCT-CURR-CYC-DEBIT + DALYTRAN-AMT`` and is computed entirely in
+    :class:`~decimal.Decimal`.
+
+    Args:
+        account: The owning account resolved during validation.
+        dailyTran: The pending daily transaction being validated.
+
+    Returns:
+        A ``(failReason, failDescription)`` tuple; ``(0, "")`` when both checks
+        pass.
+    """
+    failReason = NO_FAILURE
+    failDescription = ""
+
+    tempBal = account.curr_cyc_credit - account.curr_cyc_debit + dailyTran.tran_amt
+
+    # Check A -- credit limit. Legacy: IF ACCT-CREDIT-LIMIT >= WS-TEMP-BAL
+    # CONTINUE ELSE MOVE 102. The `pass` mirrors the COBOL CONTINUE branch.
+    if account.credit_limit >= tempBal:
+        pass
+    else:
+        failReason, failDescription = _RejectPair(
+            PostingRejectCode.OVERLIMIT_TRANSACTION
+        )
+
+    # Check B -- expiration. SEPARATE `if` (not `elif`); its failure assignment
+    # overwrites Check A, so code 103 wins when both A and B fail.
+    if _IsWithinExpiration(account, dailyTran):
+        pass
+    else:
+        failReason, failDescription = _RejectPair(PostingRejectCode.ACCOUNT_EXPIRED)
+
+    return failReason, failDescription
+
+
+def _IsWithinExpiration(account: Account, dailyTran: Transaction) -> bool:
+    """Return whether the transaction date is on/before the account expiration.
+
+    Ports the legacy comparison ``ACCT-EXPIRAION-DATE >= DALYTRAN-ORIG-TS(1:10)``
+    -- a compare of two ``YYYY-MM-DD`` values, equivalent to a chronological date
+    compare. Returns ``True`` when the account has NOT expired relative to the
+    transaction's original date. A missing date on either side cannot satisfy the
+    ``>=`` relation and yields ``False`` (reject 103), mirroring the legacy
+    blank/low-value "compares low" behavior.
+
+    Args:
+        account: The owning account (its ``expiration_date`` is a ``date``).
+        dailyTran: The pending daily transaction whose ``orig_ts`` supplies the
+            original date (via :func:`_OrigDate`).
+
+    Returns:
+        ``True`` if within validity, ``False`` if expired or a date is missing.
+    """
+    expirationDate = account.expiration_date
+    origDate = _OrigDate(dailyTran)
+    if expirationDate is None or origDate is None:
+        return False
+    return expirationDate >= origDate
+
+
+def _OrigDate(dailyTran: Transaction) -> date | None:
+    """Derive the transaction original *date* (legacy ``DALYTRAN-ORIG-TS(1:10)``).
+
+    The legacy code compares the account expiration against the first 10
+    characters (the ``YYYY-MM-DD`` date portion) of the 26-byte original
+    timestamp. The modern ``orig_ts`` column is a timezone-aware ``datetime``, so
+    its ``.date()`` is used directly; a text value (defensive) is truncated to 10
+    characters and parsed via :func:`app.utils.date_utils.ParseLegacyDate`.
+
+    Args:
+        dailyTran: The pending daily transaction.
+
+    Returns:
+        The original :class:`~datetime.date`, or ``None`` when ``orig_ts`` is
+        absent.
+    """
+    origTs = dailyTran.orig_ts
+    if origTs is None:
+        return None
+    if isinstance(origTs, datetime):
+        return origTs.date()
+    return ParseLegacyDate(str(origTs)[:DATE_TEXT_LENGTH])
+
+
+def _RejectPair(code: PostingRejectCode) -> tuple[int, str]:
+    """Return the ``(int code, verbatim description)`` pair for a reject reason.
+
+    Sources the UPPERCASE description from
+    :data:`app.core.exceptions.POSTING_REJECT_DESCRIPTIONS`, so this module never
+    re-declares any reason string (single source of truth; AAP 0.8.1).
+
+    Args:
+        code: The :class:`~app.core.exceptions.PostingRejectCode` member.
+
+    Returns:
+        A ``(int, str)`` tuple of the numeric code and its verbatim description.
+    """
+    return int(code), POSTING_REJECT_DESCRIPTIONS[code]
+
+
+def _PostTransaction(
+    session: Session, dailyTran: Transaction, postingTimestamp: datetime
+) -> tuple[int, str]:
+    """Post a validated transaction (port of ``2000-POST-TRANSACTION``).
+
+    Runs the three posting steps in the EXACT legacy order: update the
+    transaction-category running balance (``2700``), update the owning account's
+    balances (``2800``), then promote the daily row to the posted ledger
+    (``2900``). The cross-reference and account are re-resolved from the session
+    identity map (already loaded during validation, so no new query is issued).
+
+    Code 109 is the defensive equivalent of the legacy ``2800`` ``REWRITE ...
+    INVALID KEY``: if the account cannot be resolved at post time (which should
+    not happen after a passing validation, but the guard is kept) a reject with
+    code 109 ``ACCOUNT RECORD NOT FOUND`` is returned and NOTHING is posted.
+
+    Args:
+        session: Open session; flushed but never committed or closed.
+        dailyTran: The validated daily transaction to post.
+        postingTimestamp: Timestamp stamped into ``proc_ts`` for the posted row.
+
+    Returns:
+        ``(0, "")`` on a successful post, or the code-109 reject pair when the
+        account-update guard trips.
+    """
+    xref = session.get(CardXref, dailyTran.card_num)
+    account = None if xref is None else session.get(Account, xref.acct_id)
+    if account is None:
+        # 2800 REWRITE ... INVALID KEY defensive guard -> reject 109, post nothing.
+        return _RejectPair(PostingRejectCode.ACCOUNT_UPDATE_FAILED)
+
+    _UpdateTcatbal(session, dailyTran, xref.acct_id)  # 2700-UPDATE-TCATBAL
+    _UpdateAccount(session, account, dailyTran)  # 2800-UPDATE-ACCOUNT-REC
+    _WriteTransaction(session, dailyTran, postingTimestamp)  # 2900-WRITE-TRANSACTION-FILE
+    return NO_FAILURE, ""
+
+
+def _UpdateTcatbal(session: Session, dailyTran: Transaction, acctId: str) -> None:
+    """Upsert the transaction-category running balance (port of ``2700``).
+
+    Key is ``(acctId, DALYTRAN-TYPE-CD, DALYTRAN-CAT-CD)`` -- the composite
+    primary key of :class:`~app.models.tran_category_balance.TranCategoryBalance`.
+    When no row exists (legacy ``READ ... INVALID KEY`` -> ``2700-A-CREATE``) a new
+    row is created with balance ``0 + DALYTRAN-AMT``; otherwise the amount is
+    added to the existing balance (``2700-B-UPDATE``). The session is flushed so a
+    freshly created row is immediately visible to a later lookup in the same run
+    -- mirroring the legacy ``WRITE`` that persisted the record at once (needed
+    because the batch session runs with ``autoflush=False``).
+
+    Args:
+        session: Open session; flushed here, never committed.
+        dailyTran: The transaction supplying the type/category codes and amount.
+        acctId: The owning account id (legacy ``XREF-ACCT-ID``), PK part 1.
+    """
+    typeCd = dailyTran.tran_type_cd
+    catCd = dailyTran.tran_cat_cd
+    tcatbal = session.get(TranCategoryBalance, (acctId, typeCd, catCd))
+    if tcatbal is None:
+        newRow = TranCategoryBalance(
+            acct_id=acctId,
+            tran_type_cd=typeCd,
+            tran_cat_cd=catCd,
+            balance=Decimal("0") + dailyTran.tran_amt,
+        )
+        session.add(newRow)
+    else:
+        tcatbal.balance = tcatbal.balance + dailyTran.tran_amt
+    session.flush()
+
+
+def _UpdateAccount(session: Session, account: Account, dailyTran: Transaction) -> None:
+    """Update the account balances for a posted transaction (port of ``2800``).
+
+    Applies the legacy balance-update arithmetic in the EXACT order required for
+    parity:
+
+    1. ``ADD DALYTRAN-AMT TO ACCT-CURR-BAL``.
+    2. ``IF DALYTRAN-AMT >= 0`` add it to ``ACCT-CURR-CYC-CREDIT`` ELSE add it to
+       ``ACCT-CURR-CYC-DEBIT``.
+    3. Flush so the UPDATE is emitted (the account was loaded via this session).
+
+    All arithmetic is performed in :class:`~decimal.Decimal`.
+
+    Args:
+        session: Open session; flushed here, never committed.
+        account: The owning account (mutated in place).
+        dailyTran: The transaction supplying the signed amount.
+    """
+    tranAmt = dailyTran.tran_amt
+    account.curr_bal = account.curr_bal + tranAmt
+    if tranAmt >= 0:
+        account.curr_cyc_credit = account.curr_cyc_credit + tranAmt
+    else:
+        account.curr_cyc_debit = account.curr_cyc_debit + tranAmt
+    session.flush()
+
+
+def _WriteTransaction(
+    session: Session, dailyTran: Transaction, postingTimestamp: datetime
+) -> None:
+    """Promote the daily row to the posted ledger (port of ``2900``).
+
+    Because the daily and posted transactions share the single ``transactions``
+    table (distinguished by ``status``; AAP 0.7.5), "writing" the posted
+    transaction is done by flipping the daily row's status to ``POSTED`` and
+    stamping ``proc_ts`` (legacy ``TRAN-PROC-TS = current timestamp``). No new
+    ``tran_id`` is fabricated -- the daily record already carries every field.
+    The session is flushed; it is never committed here (the caller owns commit).
+
+    Args:
+        session: Open session; flushed here, never committed.
+        dailyTran: The daily transaction being promoted (mutated in place).
+        postingTimestamp: The processing timestamp to stamp into ``proc_ts``.
+    """
+    dailyTran.status = STATUS_POSTED
+    dailyTran.proc_ts = postingTimestamp
+    session.flush()
+
+
+def _BuildRejectRow(dailyTran: Transaction, code: int, description: str) -> str:
+    """Build one 430-byte reject record (port of ``2500-WRITE-REJECT-REC``).
+
+    Concatenates the 350-byte daily-transaction record image
+    (:func:`_FormatDailyRecord`) with the 80-byte validation trailer
+    (:func:`app.core.exceptions.FormatValidationTrailer`: a 4-digit zero-padded
+    reason code plus the description left-justified/space-padded to 76). The
+    result is forced to exactly
+    :data:`app.core.exceptions.REJECT_RECORD_LENGTH` (430) characters
+    defensively, without using a bare ``assert`` for control flow.
+
+    Args:
+        dailyTran: The rejected daily transaction (its raw record image).
+        code: The reject reason code (100/101/102/103/109).
+        description: The verbatim UPPERCASE reject description.
+
+    Returns:
+        The 430-character reject-record string.
+    """
+    data350 = _FormatDailyRecord(dailyTran)
+    trailer80 = FormatValidationTrailer(code, description)
+    rejectRow = data350 + trailer80
+    if len(rejectRow) != REJECT_RECORD_LENGTH:
+        rejectRow = rejectRow.ljust(REJECT_RECORD_LENGTH)[:REJECT_RECORD_LENGTH]
+    return rejectRow
+
+
+def _FormatDailyRecord(dailyTran: Transaction) -> str:
+    """Render the 350-byte ``REJECT-TRAN-DATA`` image of a daily transaction.
+
+    Re-encodes the ORM row back into its fixed-width ``DALYTRAN-RECORD`` byte
+    image (copybook ``CVTRA06Y``), field-by-field in copybook order and to the
+    exact copybook widths, so the reject data reconciles against the mainframe
+    record. Text fields are left-justified/space-padded; numeric identifier
+    fields are right-justified/zero-padded; the amount is a signed zoned-decimal
+    field; the two timestamps use the 26-byte legacy layout; the trailing FILLER
+    is spaces. The result is forced to exactly
+    :data:`app.core.exceptions.REJECT_TRAN_DATA_LENGTH` (350) characters.
+
+    The card number is deliberately NOT masked here: this is the raw record image
+    used for reconciliation (the AAP 0.7.8 masking rule applies to UI and log
+    output, not to this reject sink).
+
+    Args:
+        dailyTran: The daily transaction to render.
+
+    Returns:
+        The 350-character record-image string.
+    """
+    parts = [
+        _PadText(dailyTran.tran_id, TRAN_ID_WIDTH),
+        _PadText(dailyTran.tran_type_cd, TRAN_TYPE_CD_WIDTH),
+        _PadNumeric(dailyTran.tran_cat_cd, TRAN_CAT_CD_WIDTH),
+        _PadText(dailyTran.tran_source, TRAN_SOURCE_WIDTH),
+        _PadText(dailyTran.tran_desc, TRAN_DESC_WIDTH),
+        _EncodeAmount(dailyTran.tran_amt),
+        _PadNumeric(dailyTran.merchant_id, MERCHANT_ID_WIDTH),
+        _PadText(dailyTran.merchant_name, MERCHANT_NAME_WIDTH),
+        _PadText(dailyTran.merchant_city, MERCHANT_CITY_WIDTH),
+        _PadText(dailyTran.merchant_zip, MERCHANT_ZIP_WIDTH),
+        _PadText(dailyTran.card_num, CARD_NUM_WIDTH),
+        _PadTimestamp(dailyTran.orig_ts),
+        _PadTimestamp(dailyTran.proc_ts),
+        " " * DALYTRAN_FILLER_WIDTH,
+    ]
+    record = "".join(parts)
+    return record.ljust(REJECT_TRAN_DATA_LENGTH)[:REJECT_TRAN_DATA_LENGTH]
+
+
+def _PadText(value: str | None, width: int) -> str:
+    """Render a COBOL ``PIC X(width)`` text field: left-justified, space-padded.
+
+    ``None`` becomes all spaces; values longer than ``width`` are truncated.
+
+    Args:
+        value: The field value (``None`` -> spaces).
+        width: The fixed field width in characters.
+
+    Returns:
+        A string of exactly ``width`` characters.
+    """
+    text = "" if value is None else str(value)
+    return text.ljust(width)[:width]
+
+
+def _PadNumeric(value: str | None, width: int) -> str:
+    """Render a COBOL ``PIC 9(width)`` field: right-justified, zero-padded.
+
+    Numeric DISPLAY identifier fields (for example ``CAT-CD`` and
+    ``MERCHANT-ID``) are stored right-justified with leading zeros. ``None``
+    becomes all zeros; a value longer than ``width`` keeps its low-order
+    ``width`` digits.
+
+    Args:
+        value: The field value (``None`` -> zeros).
+        width: The fixed field width in characters.
+
+    Returns:
+        A string of exactly ``width`` characters.
+    """
+    text = "" if value is None else str(value)
+    return text.zfill(width)[-width:]
+
+
+def _EncodeAmount(value: Decimal) -> str:
+    """Render the ``DALYTRAN-AMT PIC S9(09)V99`` signed zoned-decimal field.
+
+    Delegates to :func:`app.utils.decimal_utils.EncodeZonedDecimal` so the amount
+    is rewritten to the exact 11-character overpunch byte image the mainframe
+    would have stored (implied decimal point; sign carried in the final byte).
+
+    Args:
+        value: The transaction amount as an exact :class:`~decimal.Decimal`.
+
+    Returns:
+        The 11-character signed zoned-decimal string.
+    """
+    return EncodeZonedDecimal(value, TRAN_AMT_WIDTH, MONEY_SCALE)
+
+
+def _PadTimestamp(value: datetime | None) -> str:
+    """Render a 26-byte legacy timestamp field (``PIC X(26)``).
+
+    A :class:`~datetime.datetime` is formatted via
+    :func:`app.utils.date_utils.FormatLegacyTimestamp`; ``None`` (for example an
+    unposted daily row's blank ``proc_ts``) becomes 26 spaces. The result is
+    forced to exactly :data:`TIMESTAMP_WIDTH` (26) characters.
+
+    Args:
+        value: The timestamp to render, or ``None`` for a blank field.
+
+    Returns:
+        A string of exactly 26 characters.
+    """
+    if value is None:
+        return " " * TIMESTAMP_WIDTH
+    if isinstance(value, datetime):
+        return FormatLegacyTimestamp(value).ljust(TIMESTAMP_WIDTH)[:TIMESTAMP_WIDTH]
+    return str(value).ljust(TIMESTAMP_WIDTH)[:TIMESTAMP_WIDTH]
+
+
+# Public API of this module: the posting entry point and its result object.
+# Everything else is a module-private helper (leading underscore).
+__all__ = ["PostTransactions", "PostingResult"]
