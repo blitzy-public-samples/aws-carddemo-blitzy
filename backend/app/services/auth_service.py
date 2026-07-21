@@ -1,0 +1,212 @@
+# Authentication/signon service. Ports app/cbl/COSGN00C.cbl (tx CC00): the legacy
+# plaintext compare IF SEC-USR-PWD = WS-USER-PWD (COSGN00C L223) becomes bcrypt
+# VerifyPassword. Identity/role (COCOM01Y COMMAREA) -> stateless session/JWT claims.
+"""Authentication service.
+
+Ported 1:1 from legacy CICS online program COSGN00C (transaction CC00, signon).
+Identity/role was previously propagated via the CICS COMMAREA copybook COCOM01Y;
+it is replaced here by stateless session/JWT claims. The legacy plaintext password
+compare (IF SEC-USR-PWD = WS-USER-PWD) is replaced by bcrypt hash verification.
+See tech spec 0.5.1, 0.7.7, 0.8.1.
+
+The service owns the single sign-on business flow. It reproduces the COSGN00C
+PROCESS-ENTER-KEY and READ-USER-SEC-FILE paragraphs exactly (Minimal Change
+Clause 0.8.1): the field-presence edits, the FUNCTION UPPER-CASE of the entered
+user id and password, the USRSEC lookup, and the four verbatim failure messages
+in the legacy precedence. Data access is delegated to
+:class:`app.repositories.UserRepository` and password verification/token minting
+to :mod:`app.core.security`; the sign-on is a READ-ONLY unit of work and never
+commits. A plaintext password is never stored, logged, echoed, or returned.
+"""
+
+from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.core.config import settings
+from app.core.exceptions import AuthenticationError, DomainValidationError
+from app.core.security import CreateAccessToken, VerifyPassword
+from app.models.user import User
+from app.repositories import UserRepository
+from app.schemas import LoginRequest, LoginResponse
+from app.utils import validators
+
+__all__ = ["AuthService"]
+
+# ---------------------------------------------------------------------------
+# Verbatim WS-MESSAGE literals from COSGN00C (ALL_UPPERCASE constants, Ochs Rule
+# 0.8.2). These are the exact 3270 sign-on messages; under the Minimal Change
+# Clause (0.8.1) they are never reworded, re-cased, or re-punctuated.
+# ---------------------------------------------------------------------------
+MSG_ENTER_USER_ID = "Please enter User ID ..."          # COSGN00C L120
+MSG_ENTER_PASSWORD = "Please enter Password ..."        # COSGN00C L125
+MSG_USER_NOT_FOUND = "User not found. Try again ..."    # COSGN00C L249 (READ RESP 13)
+MSG_WRONG_PASSWORD = "Wrong Password. Try again ..."    # COSGN00C L242 (password mismatch)
+MSG_UNABLE_TO_VERIFY = "Unable to verify the User ..."  # COSGN00C L254 (READ RESP other)
+
+# Field labels handed to the shared mandatory-field edit. Only the edit's boolean
+# result is consumed; the wording surfaced to the caller is always the verbatim
+# COSGN00C message above, so these labels never reach the API response.
+USER_ID_FIELD_LABEL = "User ID"    # COSGN00 USERIDI
+PASSWORD_FIELD_LABEL = "Password"  # COSGN00 PASSWDI
+
+# Auth-mode / token constants aligned with the app.core.config + app.core.security
+# contract (AAP 0.8.4). Under the 'jwt' mode a signed bearer access token is
+# returned on the response; under the 'session' baseline the token fields stay
+# None and the router establishes the session cookie instead.
+JWT_AUTH_MODE = "jwt"          # settings.AUTH_MODE value that returns a token
+BEARER_TOKEN_TYPE = "bearer"   # OAuth2 token scheme reported in JWT mode
+
+
+class AuthService:
+    """Sign-on business logic, ported 1:1 from CICS program COSGN00C (CC00).
+
+    Reproduces the COSGN00C sign-on flow exactly (Minimal Change Clause 0.8.1):
+    the field-presence edits, the uppercasing of the entered user id and password
+    (FUNCTION UPPER-CASE), the USRSEC lookup, and the four failure messages, in
+    the legacy precedence. The single mandatory security uplift is that the
+    plaintext compare ``IF SEC-USR-PWD = WS-USER-PWD`` (COSGN00C L223) becomes a
+    bcrypt hash verification via :func:`app.core.security.VerifyPassword`.
+
+    Identity and role (``CDEMO-USER-ID`` / ``CDEMO-USER-TYPE``) that the mainframe
+    carried forward in the ``COCOM01Y`` COMMAREA are returned in the response
+    instead; the caller (router) establishes the stateless session cookie or JWT
+    and chooses the landing screen from the returned role. The service performs a
+    READ-ONLY unit of work and never commits, and never stores, logs, or returns
+    a plaintext password.
+    """
+
+    def __init__(self) -> None:
+        """Construct the service with its user-security repository.
+
+        Holds no mutable state beyond the stateless
+        :class:`~app.repositories.UserRepository` used to read the ``users``
+        table (the legacy VSAM ``USRSEC`` file).
+        """
+        self.userRepository = UserRepository()
+
+    async def Login(
+        self, session: AsyncSession, loginRequest: LoginRequest
+    ) -> LoginResponse:
+        """Authenticate a sign-on request and return the caller's identity.
+
+        Ports the COSGN00C PROCESS-ENTER-KEY + READ-USER-SEC-FILE flow. The four
+        failure paths are raised in the legacy precedence: empty user id, then
+        empty password, then user-not-found, then wrong-password.
+
+        Args:
+            session: Active async unit-of-work session (READ-ONLY; never committed).
+            loginRequest: The submitted sign-on credentials (user id + password).
+
+        Returns:
+            A :class:`~app.schemas.LoginResponse` carrying the authenticated
+            identity and role. In JWT mode it also carries a signed bearer token;
+            under the session baseline the token fields are ``None``.
+
+        Raises:
+            DomainValidationError: If the user id or password is blank
+                (COSGN00C L120 / L125).
+            AuthenticationError: If the user is unknown (L249), the password does
+                not match (L242), or the USRSEC read fails unexpectedly (L254).
+        """
+        self._CheckRequiredFields(loginRequest)  # COSGN00C L119-129 (presence edits)
+        # FUNCTION UPPER-CASE both fields (COSGN00C L132-136): the user id is the
+        # uppercase USRSEC key, and the password is uppercased to match the legacy
+        # case-insensitive credential policy the seed loader hashes against.
+        normalizedUserId = loginRequest.user_id.strip().upper()
+        submittedPassword = loginRequest.password.upper()
+        userRecord = await self._LoadUser(session, normalizedUserId)  # READ-USER-SEC-FILE
+        if userRecord is None:
+            # READ RESP 13 (NOTFND): user id not on the USRSEC file (COSGN00C L249).
+            raise AuthenticationError(MSG_USER_NOT_FOUND)
+        # Replaces the plaintext compare IF SEC-USR-PWD = WS-USER-PWD (COSGN00C L223).
+        passwordMatches = VerifyPassword(submittedPassword, userRecord.password_hash)
+        if not passwordMatches:
+            # Password mismatch on an existing user (COSGN00C L242).
+            raise AuthenticationError(MSG_WRONG_PASSWORD)
+        return self._BuildResponse(userRecord)  # success (COSGN00C L226-238)
+
+    def _CheckRequiredFields(self, loginRequest: LoginRequest) -> None:
+        """Reproduce the COSGN00C field-presence edits in legacy precedence.
+
+        Mirrors the ``EVALUATE TRUE`` block (COSGN00C L119-129): a blank user id
+        is reported before a blank password. Blankness reuses the shared
+        mandatory-field edit (:func:`app.utils.validators.ValidateRequired`, the
+        port of COBOL ``1215-EDIT-MANDATORY`` covering None / SPACES / LOW-VALUES);
+        only its boolean result is used, and the message surfaced is the verbatim
+        COSGN00C WS-MESSAGE text.
+
+        Args:
+            loginRequest: The submitted sign-on credentials to check.
+
+        Raises:
+            DomainValidationError: If the user id (L120) or, failing that, the
+                password (L125) is blank.
+        """
+        if not validators.ValidateRequired(USER_ID_FIELD_LABEL, loginRequest.user_id).isValid:
+            raise DomainValidationError(MSG_ENTER_USER_ID)
+        if not validators.ValidateRequired(PASSWORD_FIELD_LABEL, loginRequest.password).isValid:
+            raise DomainValidationError(MSG_ENTER_PASSWORD)
+
+    async def _LoadUser(
+        self, session: AsyncSession, normalizedUserId: str
+    ) -> User | None:
+        """Read the USRSEC user record, translating an unexpected read failure.
+
+        Ports READ-USER-SEC-FILE (COSGN00C L210-221): a found record is returned
+        and a NOTFND maps to ``None`` (the repository contract). An unexpected
+        database failure is the modern equivalent of the ``WHEN OTHER`` read branch
+        (COSGN00C L253-257): only the specific
+        :class:`sqlalchemy.exc.SQLAlchemyError` is caught (never a bare except),
+        the original error is chained for diagnostics, and it is re-raised as the
+        verbatim "Unable to verify the User ..." authentication failure rather than
+        being swallowed.
+
+        Args:
+            session: Active async unit-of-work session.
+            normalizedUserId: The uppercased 8-character user id (USRSEC key).
+
+        Returns:
+            The matching :class:`~app.models.user.User`, or ``None`` when absent.
+
+        Raises:
+            AuthenticationError: If the USRSEC read fails unexpectedly (L254).
+        """
+        try:
+            return await self.userRepository.GetByUserId(session, normalizedUserId)
+        except SQLAlchemyError as readError:
+            raise AuthenticationError(MSG_UNABLE_TO_VERIFY) from readError
+
+    def _BuildResponse(self, userRecord: User) -> LoginResponse:
+        """Build the success identity payload, minting a token only in JWT mode.
+
+        Ports the COSGN00C success branch (COSGN00C L226-238), which moved the
+        identity and role into the COMMAREA and routed admins to ``COADM01C`` and
+        regular users to ``COMEN01C``. The modern service instead returns the
+        identity and role, and the router chooses the landing screen from
+        ``user_type``. Under the ``session`` baseline (AAP 0.8.4) the token fields
+        stay ``None`` (the router sets the session cookie); under ``jwt`` a signed
+        bearer access token carrying the ``sub`` / ``user_type`` claims is attached.
+        No password or password hash is placed on the response.
+
+        Args:
+            userRecord: The authenticated USRSEC user record.
+
+        Returns:
+            The populated :class:`~app.schemas.LoginResponse`.
+        """
+        accessToken = None
+        tokenType = None
+        if settings.AUTH_MODE == JWT_AUTH_MODE:
+            accessToken = CreateAccessToken(
+                subject=userRecord.user_id,
+                userType=userRecord.user_type,
+            )
+            tokenType = BEARER_TOKEN_TYPE
+        return LoginResponse(
+            user_id=userRecord.user_id,
+            first_name=userRecord.first_name,
+            last_name=userRecord.last_name,
+            user_type=userRecord.user_type,
+            access_token=accessToken,
+            token_type=tokenType,
+        )

@@ -77,7 +77,10 @@ __all__ = ["ENGINE", "SessionLocal", "GetSyncSession"]
 # * ``settings.SYNC_DATABASE_URL`` is the psycopg2 URL (e.g.
 #   ``postgresql+psycopg2://user:pass@host:5432/carddemo``). We intentionally use
 #   the SYNC url, never ``settings.DATABASE_URL`` (that asyncpg URL is owned by
-#   the backend's async engine).
+#   the backend's async engine). It is a pydantic ``SecretStr`` (so the embedded
+#   credentials never render in cleartext), so the raw URL is read with
+#   ``.get_secret_value()`` before it reaches ``create_engine`` — consistent with
+#   ``backend/app/db/session.py`` and ``backend/alembic/env.py``.
 # * ``pool_pre_ping=True`` issues a lightweight liveness check before handing out
 #   a pooled connection, guarding against stale/dropped connections across the
 #   long-running batch chain.
@@ -88,7 +91,7 @@ __all__ = ["ENGINE", "SessionLocal", "GetSyncSession"]
 #   pool but does not open a socket, so importing this module never requires a
 #   live database.
 ENGINE = create_engine(
-    settings.SYNC_DATABASE_URL,
+    settings.SYNC_DATABASE_URL.get_secret_value(),
     pool_pre_ping=True,
     future=True,
 )

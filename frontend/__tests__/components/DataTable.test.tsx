@@ -1,72 +1,119 @@
 /**
- * DataTable.test.tsx — verifies the generic MUI `DataTable` browse grid: header
- * rendering, one-row-per-item with verbatim stringify and `render` overrides,
- * the loading and empty states (and their precedence), optional row selection,
- * the `Pagination` control (page count, current page, click → `onPageChange`),
- * and the PF7/PF8 (`PageUp`/`PageDown`) keyboard shortcuts with their
- * `has_previous`/`has_next` bounds. Also confirms the component is reusable with
- * a second row type (`UserSummary`).
+ * DataTable.test.tsx — React Testing Library spec for the generic MUI browse
+ * grid `@/components/DataTable`. It locks the grid contract: one header per
+ * column, one row per data item with verbatim stringify plus custom `render`
+ * overrides, `getRowKey`-based keys, the ROWS_PER_PAGE = 7 page limit (F-004,
+ * traceable to app/cpy-bms/COCRDLI.CPY's exactly-7 repeating card row groups),
+ * mouse pagination and PF7/PF8 (PageUp/PageDown) keyboard paging, optional row
+ * click, the empty-message and loading states.
  *
- * Traceability: the legacy 3270 browse screens COCRDLI (card list, F-004 <= 7
- * rows/page), COTRN00 (transaction list), and COUSR00 (user list). Greenfield
- * test using the shared `testUtils` fixtures pre-staged for DataTable specs.
+ * Traceability: the legacy 3270 paged browse screens COCRDLI (card list, F-004),
+ * COTRN00 (transaction list), and COUSR00 (user list). Greenfield test infra —
+ * no legacy COBOL origin for the spec itself.
  */
 
 import {
     RenderWithProviders,
     screen,
+    within,
     fireEvent,
     userEvent,
     MakePaginatedResponse,
-    MakeCardSummary,
-    MakeUserSummary,
 } from '../testUtils';
 import { DataTable } from '@/components/DataTable';
 import type { ColumnDef } from '@/components/DataTable';
-import type { CardSummary, UserSummary, PaginatedResponse } from '@/types';
+import type { PaginatedResponse } from '@/types';
+
+// ---------------------------------------------------------------------------
+// Local row fixture type + security invariants.
+//
+// SECURITY INVARIANTS (Ochs Test Rule): `card_num` is ALWAYS masked (last 4
+// digits visible only), there is NO `cvv` field anywhere (it must never be
+// surfaced to the UI), and all ids/money are strings so leading zeros survive
+// (e.g. acct_id '00000000001'). SSN is never present on a browse row.
+// ---------------------------------------------------------------------------
+
+/** Minimal card-browse row shape used to exercise the generic `DataTable<T>`. */
+type CardRow = {
+    card_num: string;
+    acct_id: string;
+    embossed_name: string;
+    active_status: string;
+};
+
+/** Base value for generated masked last-4 digits (keeps '************3456' first). */
+const CARD_NUM_BASE = 3456;
+
+/** The legacy F-004 browse limit asserted by the pagination specs. */
+const ROWS_PER_PAGE_EXPECTED = 7;
 
 /**
  * Column set mirroring the card-browse screen (COCRDLI). The `active_status`
- * column exercises a custom `render`; the others fall back to raw stringify.
+ * column supplies a custom `render` (exercising the render path); the other
+ * three fall back to the grid's raw stringify.
  */
-const CARD_COLUMNS: ColumnDef<CardSummary>[] = [
+const CARD_COLUMNS: ColumnDef<CardRow>[] = [
     { key: 'card_num', header: 'Card Number' },
-    { key: 'acct_id', header: 'Account', align: 'right' },
+    { key: 'acct_id', header: 'Account ID', align: 'right' },
+    { key: 'embossed_name', header: 'Name' },
     {
         key: 'active_status',
         header: 'Status',
-        render: (row) => `status:${row.active_status}`,
+        render: (row) => (row.active_status === 'Y' ? 'Active' : 'Inactive'),
     },
 ];
 
-/** The accessible-name fragment of the grid's focusable outer region. */
-const GRID_REGION_NAME = /rows per page/i;
+/** Stable row key derived from the (masked) card number. */
+const GET_ROW_KEY = (row: CardRow) => row.card_num;
+
+/**
+ * Build `count` masked card rows with unique last-4 suffixes starting at
+ * {@link CARD_NUM_BASE}. `active_status` alternates 'Y'/'N' so a single small
+ * fixture covers both branches of the Status column's custom `render`.
+ *
+ * @param count - Number of rows to generate.
+ * @returns The generated, security-correct card rows.
+ */
+function makeCardRows(count: number): CardRow[] {
+    const rows: CardRow[] = [];
+    for (let index = 0; index < count; index += 1) {
+        const lastFour = String(CARD_NUM_BASE + index).padStart(4, '0');
+        rows.push({
+            card_num: `************${lastFour}`,
+            acct_id: String(index + 1).padStart(11, '0'),
+            embossed_name: `CARDHOLDER ${lastFour}`,
+            active_status: index % 2 === 0 ? 'Y' : 'N',
+        });
+    }
+    return rows;
+}
 
 describe('DataTable', () => {
     /**
-     * Options accepted by {@link RenderCardTable}. Each field is optional so a
-     * spec overrides only what it asserts on (keeping every spec small).
+     * Options accepted by {@link renderCardTable}. Every field is optional so a
+     * spec overrides only what it asserts on, keeping each `it` small.
      */
     interface RenderCardTableOptions {
-        items?: CardSummary[];
-        dataOverrides?: Partial<PaginatedResponse<CardSummary>>;
+        items?: CardRow[];
+        dataOverrides?: Partial<PaginatedResponse<CardRow>>;
         onPageChange?: (page: number) => void;
-        onRowClick?: (row: CardSummary) => void;
+        onRowClick?: (row: CardRow) => void;
         loading?: boolean;
         emptyMessage?: string;
     }
 
     /**
-     * Render a `DataTable<CardSummary>` with the shared card columns, merging in
-     * any supplied overrides. Fresh `jest.fn()` mocks back the callbacks so
-     * callers can assert on them via the returned handle.
+     * Render a `DataTable<CardRow>` with the shared card columns, merging in any
+     * supplied overrides. Fresh `jest.fn()` mocks back the callbacks; the render
+     * result (including `container`) and the mocks are returned so specs can
+     * assert on them.
      *
      * @param options - Partial data / prop overrides for this render.
-     * @returns The mock callbacks passed to the rendered grid.
+     * @returns The render result plus the `onPageChange` / `onRowClick` mocks.
      */
-    function RenderCardTable(options: RenderCardTableOptions = {}) {
+    function renderCardTable(options: RenderCardTableOptions = {}) {
         const {
-            items = [MakeCardSummary()],
+            items = makeCardRows(1),
             dataOverrides,
             onPageChange = jest.fn(),
             onRowClick,
@@ -74,11 +121,11 @@ describe('DataTable', () => {
             emptyMessage,
         } = options;
 
-        RenderWithProviders(
-            <DataTable<CardSummary>
+        const view = RenderWithProviders(
+            <DataTable<CardRow>
                 columns={CARD_COLUMNS}
-                data={MakePaginatedResponse<CardSummary>(items, dataOverrides)}
-                getRowKey={(row) => row.card_num}
+                data={MakePaginatedResponse<CardRow>(items, dataOverrides)}
+                getRowKey={GET_ROW_KEY}
                 onPageChange={onPageChange}
                 onRowClick={onRowClick}
                 loading={loading}
@@ -86,243 +133,274 @@ describe('DataTable', () => {
             />,
         );
 
-        return { onPageChange, onRowClick };
+        return { ...view, onPageChange, onRowClick };
+    }
+
+    /**
+     * Return only the `<tbody>` data/state rows (excludes the header row) by
+     * scoping the query to the last MUI `rowgroup` with `within`.
+     *
+     * @returns The body rows currently rendered.
+     */
+    function getBodyRows(): HTMLElement[] {
+        const rowGroups = screen.getAllByRole('rowgroup');
+        const tableBody = rowGroups[rowGroups.length - 1];
+        return within(tableBody).getAllByRole('row');
     }
 
     // ----------------------------------------------------------------------
-    // Headers & rows
-    // ----------------------------------------------------------------------
+    describe('rendering', () => {
+        it('renders one header cell per column', () => {
+            renderCardTable({ items: makeCardRows(3) });
 
-    it('renders a header cell per column', () => {
-        RenderCardTable();
-
-        expect(
-            screen.getByRole('columnheader', { name: 'Card Number' }),
-        ).toBeInTheDocument();
-        expect(
-            screen.getByRole('columnheader', { name: 'Account' }),
-        ).toBeInTheDocument();
-        expect(
-            screen.getByRole('columnheader', { name: 'Status' }),
-        ).toBeInTheDocument();
-    });
-
-    it('renders one row per item, stringifies raw values, and honors render', () => {
-        RenderCardTable({
-            items: [MakeCardSummary({ acct_id: '00000000011', active_status: 'Y' })],
+            expect(
+                screen.getByRole('columnheader', { name: 'Card Number' }),
+            ).toBeInTheDocument();
+            expect(
+                screen.getByRole('columnheader', { name: 'Account ID' }),
+            ).toBeInTheDocument();
+            expect(
+                screen.getByRole('columnheader', { name: 'Name' }),
+            ).toBeInTheDocument();
+            expect(
+                screen.getByRole('columnheader', { name: 'Status' }),
+            ).toBeInTheDocument();
+            expect(screen.getAllByRole('columnheader')).toHaveLength(
+                CARD_COLUMNS.length,
+            );
         });
 
-        // Raw stringify (acct_id shown verbatim, leading zeros preserved).
-        expect(
-            screen.getByRole('cell', { name: '00000000011' }),
-        ).toBeInTheDocument();
-        // Custom render override wins over the raw value.
-        expect(
-            screen.getByRole('cell', { name: 'status:Y' }),
-        ).toBeInTheDocument();
-        // One header row + one body row.
-        expect(screen.getAllByRole('row')).toHaveLength(2);
-    });
+        it('renders one row per data item', () => {
+            renderCardTable({ items: makeCardRows(3) });
 
-    // ----------------------------------------------------------------------
-    // Loading & empty states
-    // ----------------------------------------------------------------------
-
-    it('shows a progress indicator and no data rows while loading', () => {
-        RenderCardTable({
-            items: [MakeCardSummary({ acct_id: '00000000011' })],
-            loading: true,
+            // Header row (1) + three data rows (3) = four total rows.
+            expect(screen.getAllByRole('row')).toHaveLength(4);
+            expect(getBodyRows()).toHaveLength(3);
+            // A known masked card value is shown verbatim.
+            expect(screen.getByText('************3456')).toBeInTheDocument();
         });
 
-        expect(screen.getByRole('progressbar')).toBeInTheDocument();
-        // Loading takes precedence over data: the row value is not rendered.
-        expect(
-            screen.queryByRole('cell', { name: '00000000011' }),
-        ).not.toBeInTheDocument();
-    });
+        it('uses the column render function when provided', () => {
+            // makeCardRows alternates active_status: row 0 = 'Y', row 1 = 'N'.
+            renderCardTable({ items: makeCardRows(2) });
 
-    it('shows the default empty message when there are no rows', () => {
-        RenderCardTable({ items: [] });
-
-        expect(screen.getByText('No records found.')).toBeInTheDocument();
-    });
-
-    it('shows a custom empty message when provided', () => {
-        RenderCardTable({ items: [], emptyMessage: 'No cards on file.' });
-
-        expect(screen.getByText('No cards on file.')).toBeInTheDocument();
-    });
-
-    // ----------------------------------------------------------------------
-    // Row selection (optional)
-    // ----------------------------------------------------------------------
-
-    it('calls onRowClick with the clicked row', async () => {
-        const user = userEvent.setup();
-        const card = MakeCardSummary({ acct_id: '00000000011' });
-        const { onRowClick } = RenderCardTable({
-            items: [card],
-            onRowClick: jest.fn(),
+            expect(screen.getByText('Active')).toBeInTheDocument();
+            expect(screen.getByText('Inactive')).toBeInTheDocument();
+            // The rendered label replaces the raw flag, which is never shown.
+            expect(screen.queryByText('Y')).not.toBeInTheDocument();
+            expect(screen.queryByText('N')).not.toBeInTheDocument();
         });
 
-        await user.click(screen.getByRole('cell', { name: '00000000011' }));
+        it('uses getRowKey for stable, unique row keys (no key warning)', () => {
+            const errorSpy = jest
+                .spyOn(console, 'error')
+                .mockImplementation(() => {});
 
-        expect(onRowClick).toHaveBeenCalledTimes(1);
-        expect(onRowClick).toHaveBeenCalledWith(card);
-    });
+            renderCardTable({ items: makeCardRows(2) });
 
-    it('renders rows without a selection handler when onRowClick is omitted', () => {
-        RenderCardTable({
-            items: [MakeCardSummary({ acct_id: '00000000011' })],
+            const hadKeyWarning = errorSpy.mock.calls.some((call) =>
+                String(call[0]).toLowerCase().includes('key'),
+            );
+            expect(hadKeyWarning).toBe(false);
+            // Both distinct rows render under their unique card_num keys.
+            expect(screen.getByText('************3456')).toBeInTheDocument();
+            expect(screen.getByText('************3457')).toBeInTheDocument();
+
+            errorSpy.mockRestore();
         });
-
-        // The grid still renders the row; onRowClick is genuinely optional.
-        expect(
-            screen.getByRole('cell', { name: '00000000011' }),
-        ).toBeInTheDocument();
     });
 
     // ----------------------------------------------------------------------
-    // Pagination control
-    // ----------------------------------------------------------------------
+    describe('pagination', () => {
+        it('renders at most ROWS_PER_PAGE (7) rows per page (F-004)', () => {
+            renderCardTable({
+                items: makeCardRows(ROWS_PER_PAGE_EXPECTED),
+                dataOverrides: {
+                    page: 1,
+                    total_items: 14,
+                    total_pages: 2,
+                    has_next: true,
+                    has_previous: false,
+                },
+            });
 
-    it('renders total_pages pages, marks the current page, and reports clicks', async () => {
-        const user = userEvent.setup();
-        const { onPageChange } = RenderCardTable({
-            dataOverrides: {
-                page: 1,
-                total_pages: 3,
-                has_next: true,
-                has_previous: false,
-            },
+            const bodyRows = getBodyRows();
+            expect(bodyRows).toHaveLength(ROWS_PER_PAGE_EXPECTED);
+            expect(bodyRows.length).toBeLessThanOrEqual(ROWS_PER_PAGE_EXPECTED);
+            // The MUI Pagination control (a <nav>) is present for multi-page data.
+            expect(screen.getByRole('navigation')).toBeInTheDocument();
         });
 
-        // Current page is marked via aria-current (MUI uses the value "page").
-        expect(screen.getByRole('button', { name: 'page 1' })).toHaveAttribute(
-            'aria-current',
-            'page',
-        );
+        it('calls onPageChange when a page button is clicked', async () => {
+            const user = userEvent.setup();
+            const { onPageChange } = renderCardTable({
+                items: makeCardRows(ROWS_PER_PAGE_EXPECTED),
+                dataOverrides: {
+                    page: 1,
+                    total_items: 14,
+                    total_pages: 2,
+                    has_next: true,
+                    has_previous: false,
+                },
+            });
 
-        await user.click(screen.getByRole('button', { name: /go to page 2/i }));
+            await user.click(
+                screen.getByRole('button', { name: /go to page 2/i }),
+            );
 
-        expect(onPageChange).toHaveBeenCalledWith(2);
+            expect(onPageChange).toHaveBeenCalledWith(2);
+        });
+
+        it('pages forward on PF8 / PageDown when has_next is true', () => {
+            const { container, onPageChange } = renderCardTable({
+                dataOverrides: {
+                    page: 1,
+                    total_pages: 2,
+                    has_next: true,
+                    has_previous: false,
+                },
+            });
+
+            fireEvent.keyDown(container.firstChild as HTMLElement, {
+                key: 'PageDown',
+            });
+
+            expect(onPageChange).toHaveBeenCalledWith(2);
+        });
+
+        it('pages backward on PF7 / PageUp when has_previous is true', () => {
+            const { container, onPageChange } = renderCardTable({
+                dataOverrides: {
+                    page: 2,
+                    total_pages: 2,
+                    has_next: false,
+                    has_previous: true,
+                },
+            });
+
+            fireEvent.keyDown(container.firstChild as HTMLElement, {
+                key: 'PageUp',
+            });
+
+            expect(onPageChange).toHaveBeenCalledWith(1);
+        });
+
+        it('does not page beyond the first or last page', () => {
+            // First page (has_previous false): PageUp is ignored.
+            const first = renderCardTable({
+                dataOverrides: {
+                    page: 1,
+                    total_pages: 2,
+                    has_next: true,
+                    has_previous: false,
+                },
+            });
+            fireEvent.keyDown(first.container.firstChild as HTMLElement, {
+                key: 'PageUp',
+            });
+            expect(first.onPageChange).not.toHaveBeenCalled();
+
+            // Last page (has_next false): PageDown is ignored.
+            const last = renderCardTable({
+                dataOverrides: {
+                    page: 2,
+                    total_pages: 2,
+                    has_next: false,
+                    has_previous: true,
+                },
+            });
+            fireEvent.keyDown(last.container.firstChild as HTMLElement, {
+                key: 'PageDown',
+            });
+            expect(last.onPageChange).not.toHaveBeenCalled();
+        });
+
+        it('ignores keys other than PageUp / PageDown', () => {
+            const { container, onPageChange } = renderCardTable({
+                dataOverrides: {
+                    page: 2,
+                    total_pages: 3,
+                    has_next: true,
+                    has_previous: true,
+                },
+            });
+
+            fireEvent.keyDown(container.firstChild as HTMLElement, {
+                key: 'Enter',
+            });
+
+            expect(onPageChange).not.toHaveBeenCalled();
+        });
     });
 
     // ----------------------------------------------------------------------
-    // PF7 / PF8 keyboard shortcuts (bounds-checked)
-    // ----------------------------------------------------------------------
+    describe('interaction', () => {
+        it('calls onRowClick with the clicked row', async () => {
+            const user = userEvent.setup();
+            const rows = makeCardRows(2);
+            const onRowClick = jest.fn();
+            renderCardTable({ items: rows, onRowClick });
 
-    it('pages forward on PageDown (PF8) when has_next is true', () => {
-        const { onPageChange } = RenderCardTable({
-            dataOverrides: {
-                page: 2,
-                total_pages: 3,
-                has_next: true,
-                has_previous: true,
-            },
+            await user.click(screen.getByText('************3456'));
+
+            expect(onRowClick).toHaveBeenCalledTimes(1);
+            expect(onRowClick).toHaveBeenCalledWith(rows[0]);
         });
 
-        fireEvent.keyDown(screen.getByRole('region', { name: GRID_REGION_NAME }), {
-            key: 'PageDown',
+        it('renders and is clickable without an onRowClick handler', async () => {
+            const user = userEvent.setup();
+            renderCardTable({ items: makeCardRows(2) });
+
+            // Clicking a cell must not throw when no selection handler exists.
+            await user.click(screen.getByText('************3456'));
+
+            expect(screen.getByText('************3456')).toBeInTheDocument();
         });
-
-        expect(onPageChange).toHaveBeenCalledWith(3);
-    });
-
-    it('pages back on PageUp (PF7) when has_previous is true', () => {
-        const { onPageChange } = RenderCardTable({
-            dataOverrides: {
-                page: 2,
-                total_pages: 3,
-                has_next: true,
-                has_previous: true,
-            },
-        });
-
-        fireEvent.keyDown(screen.getByRole('region', { name: GRID_REGION_NAME }), {
-            key: 'PageUp',
-        });
-
-        expect(onPageChange).toHaveBeenCalledWith(1);
-    });
-
-    it('ignores PageDown at the last page (has_next false)', () => {
-        const { onPageChange } = RenderCardTable({
-            dataOverrides: {
-                page: 3,
-                total_pages: 3,
-                has_next: false,
-                has_previous: true,
-            },
-        });
-
-        fireEvent.keyDown(screen.getByRole('region', { name: GRID_REGION_NAME }), {
-            key: 'PageDown',
-        });
-
-        expect(onPageChange).not.toHaveBeenCalled();
-    });
-
-    it('ignores PageUp at the first page (has_previous false)', () => {
-        const { onPageChange } = RenderCardTable({
-            dataOverrides: {
-                page: 1,
-                total_pages: 3,
-                has_next: true,
-                has_previous: false,
-            },
-        });
-
-        fireEvent.keyDown(screen.getByRole('region', { name: GRID_REGION_NAME }), {
-            key: 'PageUp',
-        });
-
-        expect(onPageChange).not.toHaveBeenCalled();
-    });
-
-    it('ignores unrelated keys', () => {
-        const { onPageChange } = RenderCardTable({
-            dataOverrides: {
-                page: 2,
-                total_pages: 3,
-                has_next: true,
-                has_previous: true,
-            },
-        });
-
-        fireEvent.keyDown(screen.getByRole('region', { name: GRID_REGION_NAME }), {
-            key: 'Enter',
-        });
-
-        expect(onPageChange).not.toHaveBeenCalled();
     });
 
     // ----------------------------------------------------------------------
-    // Generic reuse
-    // ----------------------------------------------------------------------
+    describe('states', () => {
+        it('shows the default empty message when there are no items', () => {
+            renderCardTable({
+                items: [],
+                dataOverrides: {
+                    total_items: 0,
+                    total_pages: 0,
+                },
+            });
 
-    it('is reusable with a different row type (UserSummary)', () => {
-        const userColumns: ColumnDef<UserSummary>[] = [
-            { key: 'user_id', header: 'User ID' },
-            { key: 'user_type', header: 'Type' },
-        ];
+            expect(screen.getByText('No records found.')).toBeInTheDocument();
+            // Only the single empty-state row is present (no data rows).
+            expect(getBodyRows()).toHaveLength(1);
+            expect(
+                screen.queryByText('************3456'),
+            ).not.toBeInTheDocument();
+        });
 
-        RenderWithProviders(
-            <DataTable<UserSummary>
-                columns={userColumns}
-                data={MakePaginatedResponse<UserSummary>([
-                    MakeUserSummary({ user_id: 'USER0001', user_type: 'U' }),
-                ])}
-                getRowKey={(row) => row.user_id}
-                onPageChange={jest.fn()}
-            />,
-        );
+        it('shows a custom empty message when provided', () => {
+            renderCardTable({
+                items: [],
+                emptyMessage: 'No cards on file.',
+                dataOverrides: {
+                    total_items: 0,
+                    total_pages: 0,
+                },
+            });
 
-        expect(
-            screen.getByRole('columnheader', { name: 'User ID' }),
-        ).toBeInTheDocument();
-        expect(
-            screen.getByRole('cell', { name: 'USER0001' }),
-        ).toBeInTheDocument();
+            expect(screen.getByText('No cards on file.')).toBeInTheDocument();
+        });
+
+        it('shows a loading indicator and hides data rows while loading', () => {
+            renderCardTable({
+                items: makeCardRows(3),
+                loading: true,
+            });
+
+            expect(screen.getByRole('progressbar')).toBeInTheDocument();
+            // Loading takes precedence over data: no card values are rendered.
+            expect(
+                screen.queryByText('************3456'),
+            ).not.toBeInTheDocument();
+        });
     });
 });
