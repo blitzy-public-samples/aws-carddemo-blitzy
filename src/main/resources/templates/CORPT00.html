@@ -257,7 +257,7 @@
             <span class="neutral" style="grid-row:19;grid-column:69/span 5;">(Y/N)</span>
 
             <!-- ===== Error message line (BMS row 23, RED bright, conditional) ===== -->
-            <span class="red bright" role="alert"
+            <span class="bright" th:classappend="${form.errmsgColor}" role="alert"
                   th:if="${!#strings.isEmpty(form.errmsg)}"
                   th:text="*{errmsg}"
                   style="grid-row:23;grid-column:1/span 78;">error message</span>

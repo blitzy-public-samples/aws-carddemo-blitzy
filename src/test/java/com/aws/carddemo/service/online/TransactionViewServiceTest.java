@@ -565,20 +565,23 @@ class TransactionViewServiceTest {
 
     /**
      * {@code PROCESS-ENTER-KEY} with a valid id that is not on file: the CICS
-     * {@code NOTFND} branch of {@code READ-TRANSACT-FILE} (lines 283-287) surfaces as
-     * a {@link RecordNotFoundException} carrying "Transaction ID NOT found..."
-     * (checklist item 3). Because {@link RecordNotFoundException} is not a
-     * {@code DataAccessException}, it propagates past the unexpected-error guard to
-     * the caller. No write is issued.
+     * {@code NOTFND} branch of {@code READ-TRANSACT-FILE} (lines 283-287) moves
+     * "Transaction ID NOT found..." to {@code WS-MESSAGE}, sets {@code ERR-FLG-ON}, and
+     * re-displays the SAME screen inline (it is not an abend). The service therefore
+     * catches the {@link RecordNotFoundException} and returns an error
+     * {@link TransactionViewService.TransactionViewResult} carrying that literal (checklist
+     * item 3; AAP &sect;0.6.5 exception parity), rather than letting it escape to the
+     * full-page handler. No write is issued.
      */
     @Test
-    void processEnterKey_notFoundPropagatesRecordNotFound() {
+    void processEnterKey_notFoundReDisplaysInlineError() {
         when(transactionRepository.findById(TRAN_ID)).thenReturn(Optional.empty());
         COTRN01Form form = formWithTrnidin(TRAN_ID);
 
-        assertThatThrownBy(() -> service.processEnterKey(form, context))
-                .isInstanceOf(RecordNotFoundException.class)
-                .hasMessage(MSG_TRAN_NOT_FOUND);
+        TransactionViewService.TransactionViewResult result = service.processEnterKey(form, context);
+
+        assertThat(result.error()).isTrue();
+        assertThat(result.message()).isEqualTo(MSG_TRAN_NOT_FOUND);
 
         verify(transactionRepository).findById(TRAN_ID);
         verify(transactionRepository, never()).save(any(Transaction.class));

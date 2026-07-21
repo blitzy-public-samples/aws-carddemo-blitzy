@@ -210,7 +210,8 @@
 
         <!-- ============================= Messages / legend =========================== -->
         <!-- Row 23: error / status message (BMS ERRMSG, RED BRT); shown only when set. -->
-        <span role="alert" aria-live="assertive" class="cell r23 c1 red brt"
+        <span role="alert" aria-live="assertive" class="cell r23 c1 brt"
+              th:classappend="${form.errmsgColor}"
               th:if="${!#strings.isEmpty(form.errmsg)}"
               th:text="*{errmsg}">Error message</span>
 

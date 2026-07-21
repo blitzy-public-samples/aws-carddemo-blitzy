@@ -142,6 +142,27 @@ public class BillPayController {
     private static final String MSG_FIELD_LENGTH =
             "Input exceeds the maximum length for a field.";
 
+    /**
+     * Message-line colour token for the error / default line, reproducing the BMS map default
+     * {@code ERRMSG ... COLOR=RED} (finding #11). Consumed by {@code COBIL00.html} via
+     * {@code th:classappend="${form.errmsgColor}"} and matches the template's {@code .red} class.
+     */
+    private static final String MSG_COLOR_ERROR = "red";
+
+    /**
+     * Message-line colour token for the green success line, reproducing the COBOL
+     * {@code MOVE DFHGREEN TO ERRMSGC OF COBIL0AO} on the "Payment successful" branch
+     * (COBIL00C:526, finding #11). Matches the template's {@code .green} class.
+     */
+    private static final String MSG_COLOR_GREEN = "green";
+
+    /**
+     * Message-line colour token for the neutral confirm-payment prompt, reproducing the COBOL
+     * neutral attribute (error flag off) on the confirm branch (finding #11). Matches the
+     * template's {@code .neutral} class.
+     */
+    private static final String MSG_COLOR_NEUTRAL = "neutral";
+
     /** Web route for this screen (COBOL tran {@code CB00}); GET displays, POST submits. */
     private static final String PATH_BILLPAY = "/billpay";
 
@@ -294,6 +315,19 @@ public class BillPayController {
             HttpSession session) {
         // COBOL MAIN-PARA first display: no AID pressed; the service entry point handles
         // first-entry detection, first-display init, and any pre-selected account.
+        //
+        // Finding #10 (INFO): a GET of the CB00 route is the web-tier equivalent of arriving via an
+        // XCTL/redirect. COBOL COBIL00C is only ever reached from the main menu, which sets
+        // CDEMO-PGM-CONTEXT = 0 (MOVE ZEROS) before its XCTL, so the program always sees PGM-ENTER
+        // on its first display. Re-seat CDEMO-PGM-ENTER here so a direct or bookmarked GET (whose
+        // session context may still hold a stale CDEMO-PGM-REENTER left by a prior screen) takes
+        // the first-display branch of BillPayService.mainEntry - a clean empty screen, or the
+        // pre-selected-account pre-load - instead of collapsing the null AID to EVALUATE EIBAID ->
+        // WHEN OTHER on a stale re-enter flag, which surfaced a spurious "Invalid key pressed..."
+        // banner. markEnter() touches only CDEMO-PGM-CONTEXT, never EIBCALEN (isNew), so the cold
+        // first-entry bounce to sign-on is preserved; genuine submissions arrive through
+        // submitBillPay (POST) with the real AID and are unaffected.
+        context.markEnter();
         return handleInteraction(null, form, session);
     }
 
@@ -331,6 +365,7 @@ public class BillPayController {
         if (bindingResult.hasErrors()) {
             populateHeader(form);
             form.setErrmsg(MSG_FIELD_LENGTH);
+            form.setErrmsgColor(MSG_COLOR_NEUTRAL);
             form.setConfirmToken(null);
             return VIEW_BILLPAY;
         }
@@ -389,10 +424,31 @@ public class BillPayController {
         // COBOL SEND-BILLPAY-SCREEN: populate the header and the ERRMSG line, then render.
         populateHeader(form);
         form.setErrmsg(result.message());
+        // Finding #11: colour the ERRMSG line from the service severity, reproducing the COBOL
+        // MOVE DFHGREEN/DFHNEUTR TO ERRMSGC (green success / neutral confirm prompt / red error).
+        form.setErrmsgColor(colorFor(result.severity()));
         // Finding F12: when the neutral confirm-payment prompt is (re)displayed, arm a single-use
         // nonce bound to the account whose balance is shown; otherwise clear any pending nonce.
         armBillPayConfirmation(result, form, session);
         return VIEW_BILLPAY;
+    }
+
+    /**
+     * Maps a service {@link BillPayService.MessageSeverity} to the semantic 3270 colour token for
+     * the {@code ERRMSG} line, reproducing the COBOL {@code MOVE DFHxxx TO ERRMSGC} (finding #11):
+     * {@code SUCCESS} &rarr; {@link #MSG_COLOR_GREEN} ({@code DFHGREEN}), {@code NEUTRAL} &rarr;
+     * {@link #MSG_COLOR_NEUTRAL} (neutral prompt), and {@code ERROR}/{@code NONE} &rarr;
+     * {@link #MSG_COLOR_ERROR} (the BMS default red).
+     *
+     * @param severity the service message severity; must not be {@code null}
+     * @return the colour token consumed by {@code th:classappend="${form.errmsgColor}"}
+     */
+    private static String colorFor(BillPayService.MessageSeverity severity) {
+        return switch (severity) {
+            case SUCCESS -> MSG_COLOR_GREEN;
+            case NEUTRAL -> MSG_COLOR_NEUTRAL;
+            case ERROR, NONE -> MSG_COLOR_ERROR;
+        };
     }
 
     /**
@@ -454,6 +510,9 @@ public class BillPayController {
         // confirm-payment message the service produced (the model holds this same form reference).
         armBillPayConfirmation(result, form, session);
         form.setErrmsg(MSG_CONFIRM_INTEGRITY);
+        // The integrity banner is an error line; override any neutral colour the confirm re-prompt
+        // produced so the banner renders red (finding #11).
+        form.setErrmsgColor(MSG_COLOR_ERROR);
         return VIEW_BILLPAY;
     }
 

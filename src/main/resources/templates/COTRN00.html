@@ -304,6 +304,17 @@
                 <input type="hidden" th:field="*{trnid09}"/>
                 <input type="hidden" th:field="*{trnid10}"/>
 
+                <!--
+                  CDEMO-CT00-PAGE-NUM round-trip (review finding #9): the page counter is
+                  pseudo-conversational cursor state that COTRN00C carries in the COMMAREA across
+                  turns and reads back in PROCESS-PF7-KEY (IF CDEMO-CT00-PAGE-NUM > 1) to decide
+                  whether a previous page exists. The visible value is shown by the c-blue span at
+                  BMS row 4 above; this hidden input carries the same value back so PF7/PF8 step
+                  backward/forward correctly instead of resetting to page one on every turn (which
+                  made F7 after F8 always report "You are already at the top of the page...").
+                -->
+                <input type="hidden" th:field="*{pagenum}"/>
+
                 <!-- Informational instruction line (BMS row 21) -->
                 <span class="f c-neutral brt" style="--r:21;--c:12;--w:50">Type 'S' to View Transaction details from the list</span>
 

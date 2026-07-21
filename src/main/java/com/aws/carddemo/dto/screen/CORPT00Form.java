@@ -411,6 +411,25 @@ public class CORPT00Form {
     }
 
     /**
+     * BMS {@code ERRMSGC} &mdash; the colour attribute of the {@link #errmsg} line, reproducing the
+     * COBOL {@code MOVE DFHxxx TO ERRMSGC OF CORPT0AO}. Holds the semantic 3270 colour token the
+     * template uses to pick the message colour class: {@code "red"} (error; the BMS map default
+     * {@code COLOR=RED}), {@code "green"} (COBOL {@code DFHGREEN}, the "report submitted for
+     * printing" line), or {@code "neutral"} (COBOL {@code DFHNEUTR}). Render-only (never a bound
+     * input; excluded from the {@code @InitBinder} allow-list); defaults to {@code "red"} so any
+     * path that does not explicitly set a colour reproduces the legacy default red line.
+     */
+    private String errmsgColor = "red";
+
+    public String getErrmsgColor() {
+        return errmsgColor;
+    }
+
+    public void setErrmsgColor(String errmsgColor) {
+        this.errmsgColor = errmsgColor;
+    }
+
+    /**
      * Returns a string representation of this form including every value field.
      * No sensitive fields exist on this screen, so all fields are included.
      *

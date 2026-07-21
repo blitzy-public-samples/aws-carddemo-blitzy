@@ -262,7 +262,8 @@
             <span class="cell c-blue" style="top: calc(14 * var(--rh)); left: 18ch;">(A=Admin, U=User)</span>
 
             <!--/* ============== Error message line (BMS row 23), conditional ========= */-->
-            <span class="cell c-red brt clip"
+            <span class="cell brt clip"
+                  th:classappend="${'c-' + form.errmsgColor}"
                   style="top: calc(22 * var(--rh)); left: 0ch; width: 78ch;"
                   th:if="${!#strings.isEmpty(form.errmsg)}"
                   th:text="*{errmsg}"

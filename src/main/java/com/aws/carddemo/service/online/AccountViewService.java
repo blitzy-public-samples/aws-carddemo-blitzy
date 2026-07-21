@@ -333,7 +333,19 @@ public class AccountViewService {
                 return AccountViewResult.showScreenWithMessages(errorMessage, PROMPT_FOR_INPUT_MSG);
             }
             // No error -> walk the read chain and display the account details.
-            readAcct(form);
+            // COACTVWC 9000-READ-ACCT: a NOTFND on the cross-reference, account, or
+            // customer read sets INPUT-ERROR / FLG-ACCTFILTER-NOT-OK, moves the
+            // byte-exact "... not found ..." literal to the message line, and falls
+            // through to re-display the SAME map (WHEN CDEMO-PGM-REENTER SEND-MAP) -
+            // it is NOT an abend. Reproduce that inline re-display here rather than
+            // letting the RecordNotFoundException escape to the full-page handler
+            // (AAP 0.6.5 exception parity).
+            try {
+                readAcct(form);
+            } catch (RecordNotFoundException notFound) {
+                return AccountViewResult.showScreenWithMessages(
+                        notFound.getMessage(), PROMPT_FOR_INPUT_MSG);
+            }
             return AccountViewResult.showScreen(PROMPT_FOR_INPUT_MSG);
         }
         // WHEN OTHER -> unexpected scenario (COBOL abend path). pgmContext is always

@@ -33,6 +33,7 @@ import org.springframework.web.bind.annotation.RequestParam;
 import com.aws.carddemo.dto.CardDemoContext;
 import com.aws.carddemo.dto.CardWorkArea.PfKey;
 import com.aws.carddemo.dto.DateStruct;
+import com.aws.carddemo.exception.DuplicateKeyException;
 import com.aws.carddemo.dto.screen.COUSR00Form;
 import com.aws.carddemo.dto.screen.COUSR01Form;
 import com.aws.carddemo.dto.screen.COUSR02Form;
@@ -162,6 +163,31 @@ public class UserAdminController {
     private static final String MSG_FIELD_LENGTH =
             "Input exceeds the maximum length for a field.";
 
+    /**
+     * Message-line colour token for the error / default line, reproducing the BMS map default
+     * {@code ERRMSG ... COLOR=RED} shared by {@code COUSR01}/{@code COUSR02}/{@code COUSR03}
+     * (finding #11). Consumed by each template via {@code th:classappend="${form.errmsgColor}"}
+     * and (for {@code COUSR03}) {@code 'c-' + form.errmsgColor}; matches the {@code .red}/{@code
+     * .c-red} class.
+     */
+    private static final String MSG_COLOR_ERROR = "red";
+
+    /**
+     * Message-line colour token for the green confirmation line, reproducing the COBOL
+     * {@code MOVE DFHGREEN TO ERRMSGC} on the "has been added/updated/deleted" branches
+     * (COUSR01C:254, COUSR02C:371, COUSR03C:317; finding #11). Matches the {@code .green}/{@code
+     * .c-green} class.
+     */
+    private static final String MSG_COLOR_GREEN = "green";
+
+    /**
+     * Message-line colour token for the neutral prompt line, reproducing the COBOL
+     * {@code MOVE DFHNEUTR TO ERRMSGC} on the confirm-delete / update prompt branches
+     * (COUSR02C:338, COUSR03C:285; finding #11). Matches the {@code .neutral}/{@code .c-neutral}
+     * class.
+     */
+    private static final String MSG_COLOR_NEUTRAL = "neutral";
+
     /** Request-parameter name carrying the activated PF-key token (for example {@code "PF3"}). */
     private static final String PF_KEY_PARAM = "pfkey";
 
@@ -197,6 +223,30 @@ public class UserAdminController {
      * {@code CDEMO-CU03-USR-SELECTED}), used to pre-fill the update/delete screen on first display.
      */
     private static final String SESSION_SELECTED_USER_ID = "userAdminSelectedUserId";
+
+    /**
+     * Session attribute carrying the in-progress cleartext password for the user-<em>add</em> flow
+     * ({@code COUSR01C}), used to reproduce the COBOL 3270 password re-transmit behavior (finding
+     * #14). The add-user BMS map defines PASSWD as {@code ATTRB=(DRK,FSET,UNPROT)}: {@code FSET}
+     * pre-sets the modified-data-tag so the darkened field re-transmits its buffer on every ENTER,
+     * letting a typed password survive a validation-error redisplay without the operator re-keying
+     * it. An HTML {@code <input type="password">} cannot round-trip a value (it always renders
+     * {@code value=""}), so the value is held server-side here and never emitted to the page — this
+     * preserves the reviewed "no password leak in HTML/network/logs" positive and the
+     * {@code COUSR01Form#toString()} "never emitted" contract (review finding F9). See the decision
+     * log for the rationale behind carrying the value in the session rather than a hidden field.
+     */
+    private static final String SESSION_ADD_PASSWD = "userAdminAddPendingPasswd";
+
+    /**
+     * Session attribute carrying the in-progress cleartext password for the user-<em>update</em>
+     * flow ({@code COUSR02C}), used to reproduce the same COBOL 3270 password re-transmit behavior
+     * (finding #14). On the fetch turn {@code COUSR02C} pre-fills PASSWD from {@code USRSEC}; the
+     * darkened {@code FSET} field then re-transmits it on the PF5/PF3 save turn. Because
+     * {@code <input type="password">} cannot round-trip a value, the fetched/edited password is held
+     * server-side here and restored on a blank save submit, never appearing in the rendered page.
+     */
+    private static final String SESSION_UPD_PASSWD = "userAdminUpdatePendingPasswd";
 
     /** COBOL {@code WS-TRANID} of the list program {@code COUSR00C}. */
     private static final String TRAN_LIST = "CU00";
@@ -442,12 +492,18 @@ public class UserAdminController {
      * add service therefore has no first-display method and this GET builds an empty
      * {@link COUSR01Form} with only the header populated (mirroring {@code POPULATE-HEADER-INFO}).</p>
      *
-     * @param model the Spring MVC model that receives the empty add form under
-     *              {@link #MODEL_ATTR_FORM}
+     * @param model   the Spring MVC model that receives the empty add form under
+     *                {@link #MODEL_ATTR_FORM}
+     * @param session the HTTP session; any stale password carry from an abandoned add is cleared so
+     *                a fresh screen never restores a previous operator's value (finding #14)
      * @return the {@code COUSR01} view
      */
     @GetMapping(PATH_USERS_ADD)
-    public String showUserAdd(Model model) {
+    public String showUserAdd(Model model, HttpSession session) {
+        // Finding #14: a genuinely fresh add screen must start with no carried password so that
+        // leaving PASSWD blank here correctly yields "Password can NOT be empty..." rather than
+        // silently reusing a value carried over from an earlier, abandoned add.
+        session.removeAttribute(SESSION_ADD_PASSWD);
         COUSR01Form form = new COUSR01Form();
         populateHeader(form);
         model.addAttribute(MODEL_ATTR_FORM, form);
@@ -470,14 +526,28 @@ public class UserAdminController {
      *   <li><b>any other key</b> &mdash; the invalid-key message.</li>
      * </ul>
      *
-     * <p>A duplicate user id causes the service to raise {@code DuplicateKeyException}; it is
-     * intentionally not caught here and propagates to {@code exception.GlobalExceptionHandler}
-     * (AAP &sect;0.6.5).</p>
+     * <p>A duplicate user id (COBOL {@code WHEN DFHRESP(DUPKEY)}/{@code DUPREC}) re-displays the
+     * SAME screen inline with the byte-exact {@code "User ID already exist..."} line and the cursor
+     * on the USER ID field, exactly as {@code COUSR01C} does via {@code SEND-USRADD-SCREEN} - it is
+     * not an abend. The common (pre-write existence-check) case is returned by the service as an
+     * error outcome; the rare concurrent-insert race surfaces as a {@code DuplicateKeyException}
+     * (which rolls the write back cleanly) and is caught here and re-displayed the same way (AAP
+     * &sect;0.6.5 exception parity).</p>
      *
-     * @param form  the submitted add form (map {@code COUSR1A}) with the five entry fields
-     * @param pfkey the activated PF-key token; {@code null}/unknown collapses to {@code WHEN OTHER}
-     * @param model the Spring MVC model that receives the redisplayed form under
-     *              {@link #MODEL_ATTR_FORM}
+     * <p><b>Finding #14 (password re-transmit parity).</b> The add-user BMS map defines PASSWD as
+     * {@code ATTRB=(DRK,FSET,UNPROT)}, so on the 3270 the darkened field re-transmits its buffer on
+     * every ENTER and the operator never re-keys the password after a validation-error redisplay.
+     * An HTML {@code <input type="password">} cannot round-trip a value, so the cleartext password is
+     * carried server-side (never emitted to the page): a blank submit is refilled from
+     * {@link #SESSION_ADD_PASSWD} before the service runs, and the effective value is re-carried
+     * afterwards unless we navigate away (PF3 redirect) or the form was cleared (a successful add's
+     * {@code INITIALIZE-ALL-FIELDS}, or PF4=Clear, both leaving PASSWD blank).</p>
+     *
+     * @param form    the submitted add form (map {@code COUSR1A}) with the five entry fields
+     * @param pfkey   the activated PF-key token; {@code null}/unknown collapses to {@code WHEN OTHER}
+     * @param model   the Spring MVC model that receives the redisplayed form under
+     *                {@link #MODEL_ATTR_FORM}
+     * @param session the HTTP session holding the finding #14 password carry
      * @return the {@code COUSR01} view, or a {@code redirect:} to the admin menu on PF3
      */
     @PostMapping(PATH_USERS_ADD)
@@ -485,24 +555,50 @@ public class UserAdminController {
             @Valid @ModelAttribute(MODEL_ATTR_FORM) COUSR01Form form,
             BindingResult bindingResult,
             @RequestParam(name = PF_KEY_PARAM, required = false) String pfkey,
-            Model model) {
+            Model model,
+            HttpSession session) {
 
         // Finding #11: reject an over-width field (only reachable by a crafted request) with a
         // neutral banner and no service call, preserving COUSR01C's own edit-message ordering.
         if (bindingResult.hasErrors()) {
             populateHeader(form);
             form.setErrmsg(MSG_FIELD_LENGTH);
+            form.setErrmsgColor(MSG_COLOR_NEUTRAL);
             model.addAttribute(MODEL_ATTR_FORM, form);
             return VIEW_USER_ADD;
         }
 
         UserAddService.AidKey aid = toAddAid(resolvePfKey(pfkey));
-        UserAddService.UserAddResult result = userAddService.mainEntry(aid, form);
+        // Finding #14: refill a blank (non-round-tripped) password from the server-side carry so the
+        // COBOL FSET re-transmit behavior is preserved without ever placing the value in the page.
+        form.setPasswd(restoreCarriedPassword(form.getPasswd(), session, SESSION_ADD_PASSWD));
+        UserAddService.UserAddResult result;
+        try {
+            result = userAddService.mainEntry(aid, form);
+        } catch (DuplicateKeyException duplicate) {
+            // WHEN DFHRESP(DUPKEY)/DUPREC surfaced from the rare concurrent-insert race: re-display
+            // the SAME screen inline with the "User ID already exist..." line (AAP 0.6.5), matching
+            // the pre-write existence-check path handled inside the service. Retain the carry so the
+            // operator can correct the user id and resubmit without re-keying the password.
+            rememberCarriedPassword(form.getPasswd(), session, SESSION_ADD_PASSWD, false);
+            form.setErrmsg(duplicate.getMessage());
+            form.setErrmsgColor(MSG_COLOR_ERROR);
+            populateHeader(form);
+            model.addAttribute(MODEL_ATTR_FORM, form);
+            return VIEW_USER_ADD;
+        }
 
+        // Finding #14: re-carry the effective password for the next turn. Drop it on a redirect
+        // (PF3), and note that a successful add / PF4=Clear leaves PASSWD blank so the carry is
+        // cleared by rememberCarriedPassword's blank check, matching COBOL's cleared screen.
+        rememberCarriedPassword(form.getPasswd(), session, SESSION_ADD_PASSWD, result.isRedirect());
         if (result.isRedirect()) {
             return REDIRECT_PREFIX + routeForProgram(result.targetProgram());
         }
         form.setErrmsg(result.hasMessage() ? result.message() : "");
+        // Finding #11: COUSR01C sets ERRMSGC = DFHGREEN for the "has been added" confirmation
+        // (result.error() == false) and leaves the BMS default red for every error line.
+        form.setErrmsgColor(result.error() ? MSG_COLOR_ERROR : MSG_COLOR_GREEN);
         populateHeader(form);
         model.addAttribute(MODEL_ATTR_FORM, form);
         return VIEW_USER_ADD;
@@ -532,6 +628,10 @@ public class UserAdminController {
      */
     @GetMapping(PATH_USERS_UPDATE)
     public String showUserUpdate(Model model, HttpSession session) {
+        // Finding #14: fresh entry from the list selection - drop any stale password carry before the
+        // fetch so a later save turn restores the freshly-loaded USRSEC value rather than a password
+        // left carried from an earlier, different edit.
+        session.removeAttribute(SESSION_UPD_PASSWD);
         String selectedUserId = readSelectedUserId(session);
         COUSR02Form form = new COUSR02Form();
         form.setUsridin(selectedUserId);
@@ -540,6 +640,10 @@ public class UserAdminController {
         // Finding F12: when the fetch renders the "Press PF5 to save" prompt, arm a single-use nonce
         // bound to the loaded user and echo it onto the form's hidden field for the saving submit.
         armUpdateConfirmation(result, form, session);
+        // Finding #14: remember the cleartext password the fetch loaded from USRSEC so the PF5/PF3
+        // save turn (whose type=password field submits blank) can restore it - the COBOL FSET
+        // re-transmit of the darkened field. Drop it on a first-entry bounce (redirect).
+        rememberCarriedPassword(form.getPasswd(), session, SESSION_UPD_PASSWD, result.isRedirect());
         return renderOrRedirectUpdate(result, form, model);
     }
 
@@ -587,6 +691,7 @@ public class UserAdminController {
         if (bindingResult.hasErrors()) {
             populateHeader(form);
             form.setErrmsg(MSG_FIELD_LENGTH);
+            form.setErrmsgColor(MSG_COLOR_NEUTRAL);
             model.addAttribute(MODEL_ATTR_FORM, form);
             return VIEW_USER_UPDATE;
         }
@@ -609,9 +714,17 @@ public class UserAdminController {
             // Force the server-confirmed identity onto the save; the re-post cannot re-aim it.
             form.setUsridin(armedTarget);
         }
+        // Finding #14: refill a blank (non-round-tripped) password from the server-side carry before
+        // the service runs, so a PF5/PF3 save sees the FSET-re-transmitted value (avoiding a spurious
+        // "Password can NOT be empty...") and an ENTER re-fetch still overwrites it from USRSEC.
+        form.setPasswd(restoreCarriedPassword(form.getPasswd(), session, SESSION_UPD_PASSWD));
         UserUpdateService.UserUpdateResult result =
                 userUpdateService.mainEntry(form, aid, selectedUserId);
         armUpdateConfirmation(result, form, session);
+        // Finding #14: re-carry the effective password for the next turn; drop it on PF3/PF12
+        // navigation (redirect) or when PF4=Clear blanked the field (rememberCarriedPassword's
+        // blank check), matching COBOL's cleared-screen / navigate-away behavior.
+        rememberCarriedPassword(form.getPasswd(), session, SESSION_UPD_PASSWD, result.isRedirect());
         return renderOrRedirectUpdate(result, form, model);
     }
 
@@ -693,6 +806,7 @@ public class UserAdminController {
         if (bindingResult.hasErrors()) {
             populateHeader(form);
             form.setErrmsg(MSG_FIELD_LENGTH);
+            form.setErrmsgColor(MSG_COLOR_NEUTRAL);
             model.addAttribute(MODEL_ATTR_FORM, form);
             return VIEW_USER_DELETE;
         }
@@ -785,6 +899,7 @@ public class UserAdminController {
             return REDIRECT_PREFIX + routeForProgram(context.getToProgram());
         }
         form.setErrmsg(result.hasMessage() ? result.message() : "");
+        form.setErrmsgColor(colorForUpdate(result.severity()));
         populateHeader(form);
         model.addAttribute(MODEL_ATTR_FORM, form);
         return VIEW_USER_UPDATE;
@@ -806,9 +921,47 @@ public class UserAdminController {
             return REDIRECT_PREFIX + routeForProgram(context.getToProgram());
         }
         form.setErrmsg(result.hasMessage() ? result.message() : "");
+        form.setErrmsgColor(colorForDelete(result.severity()));
         populateHeader(form);
         model.addAttribute(MODEL_ATTR_FORM, form);
         return VIEW_USER_DELETE;
+    }
+
+    /**
+     * Maps a {@link UserUpdateService.MessageSeverity} to the semantic 3270 colour token for the
+     * {@code COUSR02} {@code ERRMSG} line, reproducing the COBOL {@code MOVE DFHxxx TO ERRMSGC}
+     * (finding #11): {@code SUCCESS} &rarr; {@link #MSG_COLOR_GREEN} ({@code DFHGREEN} "has been
+     * updated"), {@code NEUTRAL} &rarr; {@link #MSG_COLOR_NEUTRAL} ({@code DFHNEUTR} prompt), and
+     * {@code ERROR}/{@code NONE} &rarr; {@link #MSG_COLOR_ERROR} ({@code DFHRED} / BMS default red).
+     *
+     * @param severity the service message severity; must not be {@code null}
+     * @return the colour token consumed by {@code th:classappend="${form.errmsgColor}"}
+     */
+    private static String colorForUpdate(UserUpdateService.MessageSeverity severity) {
+        return switch (severity) {
+            case SUCCESS -> MSG_COLOR_GREEN;
+            case NEUTRAL -> MSG_COLOR_NEUTRAL;
+            case ERROR, NONE -> MSG_COLOR_ERROR;
+        };
+    }
+
+    /**
+     * Maps a {@link UserDeleteService.MessageSeverity} to the semantic 3270 colour token for the
+     * {@code COUSR03} {@code ERRMSG} line, reproducing the COBOL {@code MOVE DFHxxx TO ERRMSGC}
+     * (finding #11): {@code SUCCESS} &rarr; {@link #MSG_COLOR_GREEN} ({@code DFHGREEN} "has been
+     * deleted"), {@code NEUTRAL} &rarr; {@link #MSG_COLOR_NEUTRAL} ({@code DFHNEUTR} "Press PF5 key
+     * to delete" prompt), and {@code ERROR}/{@code NONE} &rarr; {@link #MSG_COLOR_ERROR} (the BMS
+     * default red).
+     *
+     * @param severity the service message severity; must not be {@code null}
+     * @return the colour token consumed by {@code 'c-' + form.errmsgColor} in {@code COUSR03.html}
+     */
+    private static String colorForDelete(UserDeleteService.MessageSeverity severity) {
+        return switch (severity) {
+            case SUCCESS -> MSG_COLOR_GREEN;
+            case NEUTRAL -> MSG_COLOR_NEUTRAL;
+            case ERROR, NONE -> MSG_COLOR_ERROR;
+        };
     }
 
     // ================================================================================
@@ -881,6 +1034,9 @@ public class UserAdminController {
         // The model holds this same form reference: re-arm a fresh nonce and overlay the banner.
         form.setConfirmToken(confirmationTokenService.arm(session, OP_USER_UPDATE, form.getUsridin()));
         form.setErrmsg(MSG_CONFIRM_INTEGRITY);
+        // The integrity banner is an error line; override any neutral colour the re-prompt produced
+        // so the banner renders red (finding #11).
+        form.setErrmsgColor(MSG_COLOR_ERROR);
         return view;
     }
 
@@ -937,6 +1093,9 @@ public class UserAdminController {
         }
         form.setConfirmToken(confirmationTokenService.arm(session, OP_USER_DELETE, form.getUsridin()));
         form.setErrmsg(MSG_CONFIRM_INTEGRITY);
+        // The integrity banner is an error line; override any neutral colour the re-prompt produced
+        // so the banner renders red (finding #11).
+        form.setErrmsgColor(MSG_COLOR_ERROR);
         return view;
     }
 
@@ -1354,6 +1513,64 @@ public class UserAdminController {
     private static String readSelectedUserId(HttpSession session) {
         Object stored = session.getAttribute(SESSION_SELECTED_USER_ID);
         return (stored instanceof String value) ? value : "";
+    }
+
+    /**
+     * Reports whether a submitted password is effectively blank (COBOL {@code SPACES}/{@code
+     * LOW-VALUES}), i.e. {@code null}, empty, or whitespace-only. Used by the finding #14 password
+     * carry to decide when the darkened {@code FSET} field failed to round-trip a value and the
+     * server-held copy must be restored.
+     *
+     * @param value the submitted password (may be {@code null})
+     * @return {@code true} when the value is {@code null} or contains only whitespace
+     */
+    private static boolean isBlankPassword(String value) {
+        return value == null || value.isBlank();
+    }
+
+    /**
+     * Restores the server-carried password when the browser submitted a blank one, reproducing the
+     * COBOL 3270 {@code FSET} re-transmit of the darkened PASSWD field (finding #14). An HTML
+     * {@code <input type="password">} always renders {@code value=""}, so a redisplay/save turn
+     * arrives with an empty password even though the operator never cleared it; this substitutes the
+     * value held in the session so validation and the write see the original characters. When the
+     * operator did type a (non-blank) password, that value is kept verbatim.
+     *
+     * @param submitted the password bound from the current request (may be {@code null}/blank)
+     * @param session   the HTTP session holding the carried value
+     * @param key       the session attribute key ({@link #SESSION_ADD_PASSWD}/{@link #SESSION_UPD_PASSWD})
+     * @return the submitted password when non-blank, otherwise the carried value, otherwise the
+     *         submitted value unchanged when nothing is carried
+     */
+    private static String restoreCarriedPassword(String submitted, HttpSession session, String key) {
+        if (isBlankPassword(submitted)) {
+            Object carried = session.getAttribute(key);
+            if (carried instanceof String value && !value.isEmpty()) {
+                return value;
+            }
+        }
+        return submitted;
+    }
+
+    /**
+     * Remembers or drops the in-progress password carry after a turn (finding #14). The value is
+     * stored verbatim (preserving exact {@code X(8)} bytes) so the next turn can restore it; it is
+     * removed when the turn navigates away ({@code drop}) or when the effective password is blank
+     * (e.g. after a successful add clears the form, or PF4=Clear blanks the screen), so a later fresh
+     * entry never restores a stale value.
+     *
+     * @param effective the password in effect after processing the turn (may be {@code null}/blank)
+     * @param session   the HTTP session holding the carried value
+     * @param key       the session attribute key ({@link #SESSION_ADD_PASSWD}/{@link #SESSION_UPD_PASSWD})
+     * @param drop      {@code true} to unconditionally remove the carry (navigation away/redirect)
+     */
+    private static void rememberCarriedPassword(String effective, HttpSession session, String key,
+            boolean drop) {
+        if (drop || isBlankPassword(effective)) {
+            session.removeAttribute(key);
+        } else {
+            session.setAttribute(key, effective);
+        }
     }
 
     /**

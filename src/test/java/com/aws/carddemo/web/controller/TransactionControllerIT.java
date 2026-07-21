@@ -3,6 +3,7 @@ package com.aws.carddemo.web.controller;
 import com.aws.carddemo.AbstractPostgresIntegrationTest;
 import com.aws.carddemo.domain.Transaction;
 import com.aws.carddemo.dto.CardDemoContext;
+import com.aws.carddemo.dto.screen.COTRN00Form;
 import com.aws.carddemo.repository.TransactionRepository;
 
 import java.math.BigDecimal;
@@ -14,16 +15,20 @@ import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMock
 import org.springframework.mock.web.MockHttpSession;
 import org.springframework.security.test.context.support.WithMockUser;
 import org.springframework.test.web.servlet.MockMvc;
+import org.springframework.test.web.servlet.MvcResult;
+import org.springframework.test.web.servlet.request.MockHttpServletRequestBuilder;
 import org.springframework.transaction.annotation.Transactional;
 
 import static org.hamcrest.Matchers.blankOrNullString;
 import static org.hamcrest.Matchers.containsString;
 import static org.hamcrest.Matchers.hasProperty;
+import static org.hamcrest.Matchers.is;
 import static org.hamcrest.Matchers.matchesPattern;
 import static org.hamcrest.Matchers.not;
 import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.csrf;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.content;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.model;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.redirectedUrl;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.redirectedUrlPattern;
@@ -159,6 +164,45 @@ class TransactionControllerIT extends AbstractPostgresIntegrationTest {
         return transactionRepository.saveAndFlush(transaction);
     }
 
+    /**
+     * Re-issues a paging {@code POST /transaction/list} exactly as the browser would after a prior
+     * render: it re-submits the pressed PF-key together with the pseudo-conversational cursor state
+     * the {@code COTRN00} screen round-trips - the page counter {@code pagenum}
+     * ({@code CDEMO-CT00-PAGE-NUM}) and the ten per-row transaction ids {@code trnid01..trnid10}
+     * (the {@code TRNIDnn} hidden fields). {@code MockMvc} does not render and re-post HTML, so the
+     * carried fields must be supplied explicitly; reproducing that round-trip is exactly what proves
+     * review finding #9 (without the carried page number PF7 always saw page&nbsp;0/1 and reported
+     * "You are already at the top of the page...").
+     *
+     * @param session the shared re-entry session (COMMAREA carrier)
+     * @param pfkey   the PF-key to submit ({@code PF7} / {@code PF8})
+     * @param prev    the form rendered by the previous step, supplying the round-tripped cursors
+     * @return a request builder ready to {@code perform}
+     */
+    private static MockHttpServletRequestBuilder pagingPost(MockHttpSession session, String pfkey,
+            COTRN00Form prev) {
+        return post("/transaction/list")
+                .session(session)
+                .param("pfkey", pfkey)
+                .param("pagenum", nullToEmpty(prev.getPagenum()))
+                .param("trnid01", nullToEmpty(prev.getTrnid01()))
+                .param("trnid02", nullToEmpty(prev.getTrnid02()))
+                .param("trnid03", nullToEmpty(prev.getTrnid03()))
+                .param("trnid04", nullToEmpty(prev.getTrnid04()))
+                .param("trnid05", nullToEmpty(prev.getTrnid05()))
+                .param("trnid06", nullToEmpty(prev.getTrnid06()))
+                .param("trnid07", nullToEmpty(prev.getTrnid07()))
+                .param("trnid08", nullToEmpty(prev.getTrnid08()))
+                .param("trnid09", nullToEmpty(prev.getTrnid09()))
+                .param("trnid10", nullToEmpty(prev.getTrnid10()))
+                .with(csrf());
+    }
+
+    /** Null-safe param helper: MockMvc rejects a null param value, so blank stands in for absent. */
+    private static String nullToEmpty(String value) {
+        return value == null ? "" : value;
+    }
+
     // ============================================================================================
     // Phase 1 - authorization and first-display GET screens
     // ============================================================================================
@@ -219,6 +263,30 @@ class TransactionControllerIT extends AbstractPostgresIntegrationTest {
     }
 
     /**
+     * Finding #10 (INFO): a direct or bookmarked {@code GET /transaction/view} whose session still
+     * carries a <em>stale</em> {@code CDEMO-PGM-REENTER} left by a prior screen must render a CLEAN
+     * first-display search screen - not the "Tran ID can NOT be empty..." banner that the
+     * {@code EVALUATE EIBAID -> WHEN DFHENTER} arm would emit for the empty form. Every legitimate
+     * transfer into {@code COTRN01C} first sets {@code CDEMO-PGM-CONTEXT = 0} (the transaction-list
+     * dispatch does {@code MOVE 0 TO CDEMO-PGM-CONTEXT} before its {@code XCTL},
+     * {@code legacy/cbl/COTRN00C.cbl} line 191, and the menu likewise), so the arriving program
+     * always sees {@code PGM-ENTER} on its first display. {@code showTransactionView} reproduces that
+     * by re-seating {@link CardDemoContext#markEnter()} on the GET, forcing the first-display branch
+     * of {@code mainEntry}. This models the defect scenario with {@link #reentrySession()} (an
+     * already-initialized context in the re-enter state). A genuine blank-id submission still
+     * surfaces the message through the {@code POST} handler - see
+     * {@link #transactionViewEmptyTranIdRerenders()}.
+     */
+    @Test
+    @WithMockUser(roles = "USER")
+    void transactionViewDirectGetWithStaleReentryIsCleanFirstDisplay() throws Exception {
+        mockMvc.perform(get("/transaction/view").session(reentrySession()))
+                .andExpect(status().isOk())
+                .andExpect(view().name("COTRN01"))
+                .andExpect(model().attribute("form", hasProperty("errmsg", is(blankOrNullString()))));
+    }
+
+    /**
      * A {@code ROLE_USER} first display of {@code GET /transaction/add} renders the {@code COTRN02}
      * add screen (CT02, {@code legacy/cbl/COTRN02C.cbl}).
      */
@@ -228,6 +296,28 @@ class TransactionControllerIT extends AbstractPostgresIntegrationTest {
         mockMvc.perform(get("/transaction/add").session(firstDisplaySession()))
                 .andExpect(status().isOk())
                 .andExpect(view().name("COTRN02"));
+    }
+
+    /**
+     * Finding #10 (INFO): the sibling of {@link #transactionViewDirectGetWithStaleReentryIsCleanFirstDisplay()}
+     * for the {@code CT02} add screen. A direct or bookmarked {@code GET /transaction/add} whose
+     * session still carries a <em>stale</em> {@code CDEMO-PGM-REENTER} left by a prior screen must
+     * render a CLEAN first-display add screen - not the "Account or Card Number must be entered..."
+     * banner that the {@code EVALUATE EIBAID -> WHEN DFHENTER -> PROCESS-ENTER-KEY} arm emits for the
+     * empty form. COBOL {@code COTRN02C} is only ever entered with {@code CDEMO-PGM-CONTEXT = 0} (the
+     * menu {@code MOVE ZEROS} before its {@code XCTL}, and the card/transaction-list dispatch that
+     * pre-selects a card sets pgmContext to enter), so {@code showTransactionAdd} re-seats
+     * {@link CardDemoContext#markEnter()} on the GET to force the first-display branch. Modeled with
+     * {@link #reentrySession()}. A genuine empty submission still surfaces the message through the
+     * {@code POST} handler.
+     */
+    @Test
+    @WithMockUser(roles = "USER")
+    void transactionAddDirectGetWithStaleReentryIsCleanFirstDisplay() throws Exception {
+        mockMvc.perform(get("/transaction/add").session(reentrySession()))
+                .andExpect(status().isOk())
+                .andExpect(view().name("COTRN02"))
+                .andExpect(model().attribute("form", hasProperty("errmsg", is(blankOrNullString()))));
     }
 
     // ============================================================================================
@@ -317,29 +407,63 @@ class TransactionControllerIT extends AbstractPostgresIntegrationTest {
     }
 
     /**
-     * {@code PF8} (page forward) then {@code PF7} (page backward) both re-render the {@code COTRN00}
-     * browse screen ({@code PROCESS-PF8-KEY} / {@code PROCESS-PF7-KEY}, {@code legacy/cbl/COTRN00C.cbl}).
-     * The two submissions share one re-entry session so the paging state round-trips.
+     * True bidirectional multipage paging (review finding #9). With twelve transactions the browse
+     * spans two pages (ten + two): {@code ENTER} loads page one, {@code PF8} advances to page two,
+     * and {@code PF7} returns to page one - each step re-submitting the pseudo-conversational cursor
+     * state the {@code COTRN00} screen round-trips (the page counter {@code CDEMO-CT00-PAGE-NUM} and
+     * the ten {@code TRNIDnn} hidden fields; {@code legacy/cbl/COTRN00C.cbl}
+     * {@code PROCESS-PF8-KEY}/{@code PROCESS-PF7-KEY}).
+     *
+     * <p>Before the fix the page number was rendered display-only and excluded from binding, so it
+     * never round-tripped and {@code PF7} after {@code PF8} always saw page&nbsp;0/1 and reported
+     * "You are already at the top of the page..." without paging. This test asserts the page content
+     * actually advances (page-two ids) and returns (page-one ids) and that the page counter
+     * progresses 1&rarr;2&rarr;1; it also asserts the rendered page-one screen carries the hidden
+     * {@code pagenum} input that makes the round-trip possible.</p>
      */
     @Test
     @WithMockUser(roles = "USER")
     void transactionListPf7Pf8Paging() throws Exception {
+        // Twelve ids (…0001..…0012) => page one = …0001..…0010, page two = …0011..…0012.
         for (int i = 1; i <= 12; i++) {
             arrangeTransaction(String.format("%016d", i), new BigDecimal("-123.45"));
         }
         MockHttpSession session = reentrySession();
-        mockMvc.perform(post("/transaction/list")
-                        .session(session)
-                        .param("pfkey", "PF8")
-                        .with(csrf()))
+
+        // ENTER: PROCESS-ENTER-KEY loads page one (CDEMO-CT00-PAGE-NUM -> 1). The rendered screen
+        // must carry the hidden pagenum round-trip input (finding #9), so the browser resubmits it.
+        MvcResult page1 = mockMvc.perform(post("/transaction/list")
+                        .session(session).param("pfkey", "ENTER").with(csrf()))
                 .andExpect(status().isOk())
-                .andExpect(view().name("COTRN00"));
-        mockMvc.perform(post("/transaction/list")
-                        .session(session)
-                        .param("pfkey", "PF7")
-                        .with(csrf()))
+                .andExpect(view().name("COTRN00"))
+                .andExpect(model().attribute("form", hasProperty("trnid01", is("0000000000000001"))))
+                .andExpect(model().attribute("form", hasProperty("trnid10", is("0000000000000010"))))
+                .andExpect(model().attribute("form", hasProperty("pagenum", is("00000001"))))
+                .andExpect(content().string(containsString("name=\"pagenum\"")))
+                .andReturn();
+        COTRN00Form f1 = (COTRN00Form) page1.getModelAndView().getModel().get("form");
+
+        // PF8 (PROCESS-PF8-KEY): advance to page two (…0011, …0012); page counter -> 2.
+        MvcResult page2 = mockMvc.perform(pagingPost(session, "PF8", f1))
                 .andExpect(status().isOk())
-                .andExpect(view().name("COTRN00"));
+                .andExpect(view().name("COTRN00"))
+                .andExpect(model().attribute("form", hasProperty("trnid01", is("0000000000000011"))))
+                .andExpect(model().attribute("form", hasProperty("trnid02", is("0000000000000012"))))
+                .andExpect(model().attribute("form", hasProperty("pagenum", is("00000002"))))
+                .andReturn();
+        COTRN00Form f2 = (COTRN00Form) page2.getModelAndView().getModel().get("form");
+
+        // PF7 (PROCESS-PF7-KEY): the carried page number (2 > 1) pages back to page one
+        // (…0001..…0010); page counter -> 1. The boundary note is the "reached the top" browse
+        // signal, never the pre-fix "already at the top" guard (which meant no paging happened).
+        mockMvc.perform(pagingPost(session, "PF7", f2))
+                .andExpect(status().isOk())
+                .andExpect(view().name("COTRN00"))
+                .andExpect(model().attribute("form", hasProperty("trnid01", is("0000000000000001"))))
+                .andExpect(model().attribute("form", hasProperty("trnid10", is("0000000000000010"))))
+                .andExpect(model().attribute("form", hasProperty("pagenum", is("00000001"))))
+                .andExpect(model().attribute("form",
+                        hasProperty("errmsg", not(containsString("already at the top")))));
     }
 
     /**
@@ -401,23 +525,29 @@ class TransactionControllerIT extends AbstractPostgresIntegrationTest {
     }
 
     /**
-     * A non-existent id raises the CICS {@code NOTFND} path as a {@code RecordNotFoundException}
-     * ({@code legacy/cbl/COTRN01C.cbl}); it is not swallowed by the controller and is mapped by
-     * {@code GlobalExceptionHandler} to the {@code error} view with HTTP {@code 404} and the
-     * "Transaction ID NOT found..." message under {@code errorMessage}. The table is empty at seed, so
-     * any id is not found.
+     * A non-existent transaction id follows the CICS {@code NOTFND} path in
+     * {@code READ-TRANSACT-FILE} ({@code legacy/cbl/COTRN01C.cbl} line 285): {@code COTRN01C} sets
+     * {@code WS-MESSAGE = "Transaction ID NOT found..."}, {@code SET ERR-FLG-ON}, and falls through
+     * to {@code SEND-TRNVIEW-SCREEN}, re-displaying the SAME {@code COTRN01} screen inline - it is
+     * <em>not</em> an abend. {@code TransactionViewService.processEnterKey} reproduces that by
+     * catching {@code RecordNotFoundException} and returning an inline error redisplay (AAP
+     * &sect;0.6.5 exception parity, review finding #8), so the response is HTTP {@code 200} on the
+     * {@code COTRN01} view with the "Transaction ID NOT found..." message on the error line - never
+     * the full-page {@code error} view (HTTP {@code 404}). The table is empty at seed, so any id is
+     * not found.
      */
     @Test
     @WithMockUser(roles = "USER")
-    void transactionViewNotFoundPropagates() throws Exception {
+    void transactionViewNotFoundReDisplaysInline() throws Exception {
         mockMvc.perform(post("/transaction/view")
                         .session(reentrySession())
                         .param("pfkey", "ENTER")
                         .param("trnidin", "0000000000000099")
                         .with(csrf()))
-                .andExpect(status().isNotFound())
-                .andExpect(view().name("error"))
-                .andExpect(model().attribute("errorMessage", containsString("NOT found")));
+                .andExpect(status().isOk())
+                .andExpect(view().name("COTRN01"))
+                .andExpect(model().attribute("form",
+                        hasProperty("errmsg", containsString("NOT found"))));
     }
 
     /**
@@ -485,7 +615,10 @@ class TransactionControllerIT extends AbstractPostgresIntegrationTest {
                         .with(csrf()))
                 .andExpect(status().isOk())
                 .andExpect(view().name("COTRN02"))
-                .andExpect(model().attribute("form", hasProperty("errmsg", containsString("successfully"))));
+                .andExpect(model().attribute("form", hasProperty("errmsg", containsString("successfully"))))
+                // Finding #11: the "Transaction added successfully" line is coloured green by the
+                // COBOL MOVE DFHGREEN TO ERRMSGC (COTRN02C:727).
+                .andExpect(model().attribute("form", hasProperty("errmsgColor", is("green"))));
     }
 
     /**

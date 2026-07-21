@@ -153,6 +153,11 @@ class COUSR03FormTest {
         assertThat(fieldNames).contains("confirmToken");
         Set<String> bmsFieldNames = new java.util.HashSet<>(fieldNames);
         bmsFieldNames.remove("confirmToken");
+        // The ERRMSG colour attribute {@code errmsgColor} is the migration of the BMS ERRMSGC colour
+        // byte (review finding #11) - a render-only sibling of {@code errmsg}, not a BMS value
+        // property. Assert it is present, then exclude it from the BMS-property check.
+        assertThat(fieldNames).contains("errmsgColor");
+        bmsFieldNames.remove("errmsgColor");
         assertThat(bmsFieldNames)
             .hasSize(EXPECTED_PROPERTIES.length)
             .containsExactlyInAnyOrder(EXPECTED_PROPERTIES)

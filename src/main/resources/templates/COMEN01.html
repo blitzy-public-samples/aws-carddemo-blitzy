@@ -266,7 +266,8 @@
                        autofocus>
 
                 <!-- ================= Error message (row 23, conditional) ================= -->
-                <div class="cell red errmsg r23 col1 w78"
+                <div class="cell errmsg r23 col1 w78"
+                     th:classappend="${form.errmsgColor}"
                      role="alert"
                      th:if="${!#strings.isEmpty(form.errmsg)}"
                      th:text="*{errmsg}"></div>

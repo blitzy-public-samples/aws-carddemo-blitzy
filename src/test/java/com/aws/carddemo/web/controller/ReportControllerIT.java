@@ -3,6 +3,7 @@ package com.aws.carddemo.web.controller;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.hamcrest.Matchers.containsString;
 import static org.hamcrest.Matchers.hasProperty;
+import static org.hamcrest.Matchers.is;
 import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.csrf;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
@@ -364,7 +365,79 @@ class ReportControllerIT extends AbstractPostgresIntegrationTest {
                 .andExpect(status().isOk())
                 .andExpect(view().name(VIEW_REPORT))
                 .andExpect(model().attribute(MODEL_ATTR_FORM,
-                        hasProperty(FORM_PROPERTY_ERRMSG, containsString("Not a valid Month"))));
+                        hasProperty(FORM_PROPERTY_ERRMSG, containsString("Not a valid Month"))))
+                // Finding #11: the invalid-date line is a COBOL error, so it renders red.
+                .andExpect(model().attribute(MODEL_ATTR_FORM,
+                        hasProperty("errmsgColor", is("red"))));
+    }
+
+    /**
+     * w045 Finding&nbsp;K (parity regression guard) - a Custom submission whose window is
+     * <em>reversed but individually valid</em> ({@code start = 12/31/2022}, {@code end = 01/01/2022};
+     * both are real calendar dates, but {@code start > end}) must be <em>accepted and run to
+     * {@link BatchStatus#COMPLETED}</em>, producing an empty report - it must never fail validation
+     * and never abend the batch job.
+     *
+     * <p>This locks in the removal of an earlier <em>invented</em> {@code start > end} guard that was
+     * an undocumented deviation from the legacy behavior (flagged by w045 Finding&nbsp;K). Two layers
+     * are proven here in a single end-to-end submission:</p>
+     * <ol>
+     *   <li><b>Online validation ({@code ReportSubmitService.validateCustomRange}, the
+     *       {@code CORPT00C PROCESS-ENTER-KEY WHEN CUSTOMI} branch)</b> applies only per-date checks -
+     *       empty / numeric / month&nbsp;&le;&nbsp;12 / day&nbsp;&le;&nbsp;31 / {@code CSUTLDTC}
+     *       calendar validity. It performs <em>no</em> relative-order comparison, so both individually
+     *       valid dates pass and the green "submitted for printing" line is returned (the job is
+     *       launched).</li>
+     *   <li><b>Batch execution ({@code TransactionReportJobConfig.transactionReportTasklet}, the
+     *       {@code CBTRN03C} membership test {@code TRAN-PROC-TS(1:10) >= WS-START-DATE AND <=
+     *       WS-END-DATE})</b> applies only the inclusive window filter, which a reversed window leaves
+     *       unsatisfiable for every record; the tasklet therefore emits a header-only, zero-total
+     *       report and returns {@code RepeatStatus.FINISHED}, so the durable {@link JobExecution}
+     *       reaches {@link BatchStatus#COMPLETED} rather than {@link BatchStatus#FAILED}.</li>
+     * </ol>
+     *
+     * <p>If the invented ordering guard were ever reintroduced at either layer this test would fail:
+     * the online guard would re-render {@code CORPT00} with a validation error (no job launched, so
+     * {@code getJobInstanceCount == 0}), and a batch-level guard would drive the execution to
+     * {@link BatchStatus#FAILED} (AAP &sect;0.6.4 byte-and-behavior-identical report interface;
+     * Explainability rule - no unexplained deviations).</p>
+     *
+     * @throws Exception if the request cannot be performed
+     */
+    @Test
+    @WithMockUser(roles = "USER")
+    void reportCustomReversedButValidWindowCompletesWithoutAbend() throws Exception {
+        // Reversed window: 2022-12-31 (start) is AFTER 2022-01-01 (end); both are valid calendar
+        // dates, so validation passes and the job is launched with the reversed range.
+        mockMvc.perform(post(PATH_REPORT).session(seededSession(true))
+                        .with(csrf())
+                        .param("custom", FLAG_SELECTED)
+                        .param("sdtmm", "12")
+                        .param("sdtdd", "31")
+                        .param("sdtyyyy", "2022")
+                        .param("edtmm", "01")
+                        .param("edtdd", "01")
+                        .param("edtyyyy", "2022")
+                        .param("confirm", CONFIRM_YES)
+                        .param(PARAM_PFKEY, KEY_ENTER))
+                .andExpect(status().isOk())
+                .andExpect(view().name(VIEW_REPORT))
+                // Accepted: no invented online start>end guard rejected the reversed-but-valid window.
+                .andExpect(model().attribute(MODEL_ATTR_FORM,
+                        hasProperty(FORM_PROPERTY_ERRMSG, containsString("submitted for printing"))))
+                // Finding #11: the accepted line is coloured green (CORPT00C:448 MOVE DFHGREEN).
+                .andExpect(model().attribute(MODEL_ATTR_FORM,
+                        hasProperty("errmsgColor", is("green"))));
+
+        // Durable: the accepted submission recorded exactly one report JobInstance (the online guard,
+        // if present, would have short-circuited before the launch, leaving this at zero).
+        assertThat(jobExplorer.getJobInstanceCount(REPORT_JOB_NAME)).isEqualTo(1);
+
+        // The crux of w045 Finding K: with the invented ordering guard removed, the reversed window
+        // yields an empty report that runs to COMPLETED - never FAILED (an abend).
+        JobExecution execution = awaitLatestReportExecutionTerminal();
+        assertThat(execution).isNotNull();
+        assertThat(execution.getStatus()).isEqualTo(BatchStatus.COMPLETED);
     }
 
     /**
@@ -433,7 +506,11 @@ class ReportControllerIT extends AbstractPostgresIntegrationTest {
                 .andExpect(status().isOk())
                 .andExpect(view().name(VIEW_REPORT))
                 .andExpect(model().attribute(MODEL_ATTR_FORM,
-                        hasProperty(FORM_PROPERTY_ERRMSG, containsString("submitted for printing"))));
+                        hasProperty(FORM_PROPERTY_ERRMSG, containsString("submitted for printing"))))
+                // Finding #11: the "submitted for printing" line is coloured green by the COBOL
+                // MOVE DFHGREEN TO ERRMSGC (CORPT00C:448).
+                .andExpect(model().attribute(MODEL_ATTR_FORM,
+                        hasProperty("errmsgColor", is("green"))));
     }
 
     /**

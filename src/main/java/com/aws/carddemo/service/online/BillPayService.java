@@ -17,6 +17,7 @@ package com.aws.carddemo.service.online;
 
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
+import java.util.Comparator;
 import java.util.List;
 import java.util.Locale;
 
@@ -102,9 +103,11 @@ import com.aws.carddemo.util.CobolDecimal;
  *
  * <h2>Exception mapping (AAP &sect;0.6.5)</h2>
  * <p>COBOL {@code FILE STATUS} / CICS {@code RESP} handling is preserved as follows. A
- * {@code NOTFND} on the account or cross-reference read becomes a
- * {@link RecordNotFoundException} carrying the COBOL message {@code "Account ID NOT found..."}.
- * A {@code DUPKEY}/{@code DUPREC} on the transaction write becomes a
+ * {@code NOTFND} on the account or cross-reference read raises a {@link RecordNotFoundException}
+ * carrying the COBOL message {@code "Account ID NOT found..."}; {@link #processEnterKey} catches it
+ * and re-displays the SAME screen inline with that error line (COBOL {@code READ-ACCTDAT-FILE WHEN
+ * NOTFND} sets {@code WS-ERR-FLG} and re-sends the map - it is not an abend), rather than surfacing
+ * a full-page error. A {@code DUPKEY}/{@code DUPREC} on the transaction write becomes a
  * {@link DuplicateKeyException} carrying {@code "Tran ID already exist..."}. Any other
  * unexpected data-access failure (the COBOL {@code WHEN OTHER} branches, e.g.
  * {@code "Unable to lookup Account..."}, {@code "Unable to Update Account..."},
@@ -597,20 +600,23 @@ public class BillPayService {
      *
      * <p>This method is {@link Transactional} so that the confirmed-payment sequence &mdash;
      * read account, write transaction, rewrite account &mdash; is one atomic unit of work
-     * (AAP &sect;0.6.1); a {@link RecordNotFoundException} or {@link DuplicateKeyException} thrown
-     * mid-sequence rolls the whole payment back. When invoked internally from
-     * {@link #mainEntry(AidKey, COBIL00Form)} it joins that method's transaction (default
-     * {@code REQUIRED} propagation); when invoked directly by the controller through the Spring
-     * proxy its own annotation applies.</p>
+     * (AAP &sect;0.6.1); a {@link DuplicateKeyException} thrown mid-sequence rolls the whole payment
+     * back. When invoked internally from {@link #mainEntry(AidKey, COBIL00Form)} it joins that
+     * method's transaction (default {@code REQUIRED} propagation); when invoked directly by the
+     * controller through the Spring proxy its own annotation applies.</p>
+     *
+     * <p>A {@code NOTFND} on either the account read ({@code READ-ACCTDAT-FILE}) or the
+     * cross-reference read ({@code READ-CXACAIX-FILE}) is <em>not</em> an abend: the COBOL sets
+     * {@code WS-ERR-FLG}, moves {@code "Account ID NOT found..."} to {@code WS-MESSAGE}, and
+     * re-sends the map. This method reproduces that by catching the {@link RecordNotFoundException}
+     * and returning an error {@link BillPayResult} for inline re-display (AAP &sect;0.6.5), so it
+     * does not escape to the full-page handler.</p>
      *
      * @param form the submitted bill-payment screen form supplying the account id and
      *             confirmation, and receiving the balance display and cleared fields; must not
      *             be {@code null}
-     * @return the interaction outcome: an error, the confirm prompt, the success line, or a
-     *         cleared screen
-     * @throws RecordNotFoundException if the account or its cross-reference is not found
-     *                                 (COBOL {@code NOTFND}, message {@code "Account ID NOT
-     *                                 found..."})
+     * @return the interaction outcome: an error (including the inline account/cross-reference
+     *         not-found line), the confirm prompt, the success line, or a cleared screen
      * @throws DuplicateKeyException   if the transaction id already exists (COBOL
      *                                 {@code DUPKEY}/{@code DUPREC}, message {@code "Tran ID
      *                                 already exist..."})
@@ -629,19 +635,38 @@ public class BillPayService {
         // IF NOT ERR-FLG-ON: MOVE ACTIDINI TO ACCT-ID / XREF-ACCT-ID, then EVALUATE CONFIRMI.
         Account account;
         String confirm = form.getConfirm();
-        if ("Y".equals(confirm) || "y".equals(confirm)) {
-            // WHEN 'Y' WHEN 'y': SET CONF-PAY-YES; READ-ACCTDAT-FILE.
-            confirmed = true;
-            account = readAcctdatFile(parseAccountId(actid));
-        } else if ("N".equals(confirm) || "n".equals(confirm)) {
-            // WHEN 'N' WHEN 'n': CLEAR-CURRENT-SCREEN then set the error flag (silent) -> stop.
-            return clearCurrentScreen(form);
-        } else if (isBlankOrLowValues(confirm)) {
-            // WHEN SPACES WHEN LOW-VALUES: READ-ACCTDAT-FILE (no confirmation yet).
-            account = readAcctdatFile(parseAccountId(actid));
-        } else {
-            // WHEN OTHER: invalid confirmation value.
-            return BillPayResult.error(MSG_INVALID_CONFIRM);
+        // READ-ACCTDAT-FILE WHEN NOTFND moves 'Account ID NOT found...' to the message, sets
+        // ERR-FLG, and re-displays the SAME screen inline (it is not an abend). Reproduce that
+        // inline re-display here rather than letting the RecordNotFoundException escape to the
+        // full-page handler (AAP 0.6.5 exception parity). No payment is attempted on a miss.
+        try {
+            if ("Y".equals(confirm) || "y".equals(confirm)) {
+                // WHEN 'Y' WHEN 'y': SET CONF-PAY-YES; READ-ACCTDAT-FILE.
+                confirmed = true;
+                account = readAcctdatFile(parseAccountId(actid));
+            } else if ("N".equals(confirm) || "n".equals(confirm)) {
+                // WHEN 'N' WHEN 'n': CLEAR-CURRENT-SCREEN then set the error flag (silent) -> stop.
+                return clearCurrentScreen(form);
+            } else if (isBlankOrLowValues(confirm)) {
+                // WHEN SPACES WHEN LOW-VALUES: READ-ACCTDAT-FILE (no confirmation yet).
+                account = readAcctdatFile(parseAccountId(actid));
+            } else {
+                // WHEN OTHER: invalid confirmation value (COBIL00C lines 185-190). The COBOL sets the
+                // error and PERFORMs SEND-BILLPAY-SCREEN while CURBALI holds LOW-VALUES (the protected
+                // balance field is not transmitted on the RECEIVE), so BMS leaves the balance displayed
+                // on the prior confirm-prompt turn UNCHANGED on the terminal - the balance "remains
+                // visible" (review finding #13). The stateless Thymeleaf model re-renders CURBALI from
+                // the form each turn and COBIL00.html renders it as a display-only <span> (never
+                // round-tripped), so the balance would otherwise vanish. Re-read the account - the
+                // balance is unchanged because no payment was made - and populate CURBALI before
+                // returning the "Invalid value..." error, reproducing the observable contract.
+                account = readAcctdatFile(parseAccountId(actid));
+                form.setCurbal(formatCurrentBalance(CobolDecimal.nullToZero(account.getCurrBal())));
+                return BillPayResult.error(MSG_INVALID_CONFIRM);
+            }
+        } catch (RecordNotFoundException notFound) {
+            // WHEN NOTFND on the ACCTDAT (or its cross-reference) read -> inline error re-display.
+            return BillPayResult.error(notFound.getMessage());
         }
 
         // MOVE ACCT-CURR-BAL TO WS-CURR-BAL; MOVE WS-CURR-BAL TO CURBALI (display).
@@ -656,8 +681,18 @@ public class BillPayService {
 
         // IF CONF-PAY-YES -> perform the payment (block C); ELSE -> confirm prompt.
         if (confirmed) {
-            // READ-CXACAIX-FILE -> the card number that owns this account.
-            String cardNum = readCxacaixFile(account.getAcctId());
+            // READ-CXACAIX-FILE -> the card number that owns this account. Its WHEN NOTFND
+            // branch also moves 'Account ID NOT found...' to the message, sets ERR-FLG, and
+            // re-displays the SAME screen inline (PERFORM SEND-BILLPAY-SCREEN) - it is not an
+            // abend and no transaction is written. Reproduce that inline re-display here rather
+            // than letting the RecordNotFoundException escape to the full-page handler
+            // (AAP 0.6.5 exception parity).
+            String cardNum;
+            try {
+                cardNum = readCxacaixFile(account.getAcctId());
+            } catch (RecordNotFoundException notFound) {
+                return BillPayResult.error(notFound.getMessage());
+            }
 
             // MOVE HIGH-VALUES TO TRAN-ID; STARTBR/READPREV/ENDBR; MOVE TRAN-ID TO
             // WS-TRAN-ID-NUM; ADD 1 -> the next transaction id.
@@ -772,7 +807,14 @@ public class BillPayService {
      * the relational model the alternate index is a derived query
      * ({@link CardXrefRepository#findByXrefAcctId(Long)}); because that key is non-unique (an
      * account can own more than one card) the query returns a list and this method takes the
-     * first cross-reference, reproducing the single-record CICS {@code READ}. The COBOL
+     * cross-reference with the <em>lowest</em> {@code XREF-CARD-NUM}
+     * ({@link Comparator#comparing(java.util.function.Function) min by card number}). A native VSAM
+     * {@code READ} through a non-unique alternate index returns the base-cluster record with the
+     * lowest prime key among the duplicates - and the {@code CCXREF} base cluster is keyed by
+     * {@code XREF-CARD-NUM} - so lowest-card-number selection reproduces the single-record CICS
+     * {@code READ} deterministically (review finding w045-J; matches {@code TransactionAddService}'s
+     * {@code .min(comparing(getXrefCardNum))}). Taking an unordered {@code findFirst()} instead would
+     * make the derived card depend on database row order. The COBOL
      * {@code RESP} handling is preserved: {@code NORMAL} returns the card number; {@code NOTFND}
      * (no cross-reference for the account) becomes a {@link RecordNotFoundException} carrying
      * {@code "Account ID NOT found..."}; any other response (the COBOL {@code WHEN OTHER} branch,
@@ -785,7 +827,7 @@ public class BillPayService {
      */
     private String readCxacaixFile(Long acctId) {
         return cardXrefRepository.findByXrefAcctId(acctId).stream()
-                .findFirst()
+                .min(Comparator.comparing(CardXref::getXrefCardNum))
                 .map(CardXref::getXrefCardNum)
                 .orElseThrow(() -> new RecordNotFoundException(MSG_ACCT_NOT_FOUND));
     }

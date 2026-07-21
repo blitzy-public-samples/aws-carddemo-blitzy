@@ -485,17 +485,28 @@ public class UserAddService {
     public UserAddResult writeUserSecFile(UserSecurity user, COUSR01Form form) {
         String userId = user.getUsrId();
 
-        // WHEN DFHRESP(DUPKEY) / WHEN DFHRESP(DUPREC): the RIDFLD key already exists.
+        // WHEN DFHRESP(DUPKEY) / WHEN DFHRESP(DUPREC): the RIDFLD key already exists. The COBOL
+        // sets WS-ERR-FLG, moves 'User ID already exist...' to WS-MESSAGE, positions the cursor on
+        // the USER ID field (MOVE -1 TO USERIDL), and re-displays the SAME screen inline via
+        // SEND-USRADD-SCREEN - it is NOT an abend. Reproduce that inline error re-display here
+        // (symmetric with the WHEN OTHER arm below) rather than a full-page 409 (AAP 0.6.5 parity).
+        // This existsById pre-check is the common case and attempts no write, so the @Transactional
+        // unit-of-work is untouched and can commit cleanly with nothing persisted.
         if (userId != null && userSecurityRepository.existsById(userId)) {
-            throw new DuplicateKeyException(MSG_USER_ID_EXISTS);
+            return UserAddResult.ofError(MSG_USER_ID_EXISTS, CursorField.USER_ID);
         }
 
         try {
             // WHEN DFHRESP(NORMAL): persist the new USRSEC record.
             userSecurityRepository.save(user);
         } catch (DataIntegrityViolationException duplicateAtSave) {
-            // Race: a concurrent insert created the same key after the existence check above.
-            // This is still the CICS DUPKEY/DUPREC condition, so map it to the same typed exception.
+            // Race: a concurrent insert created the same key after the existence check above. This
+            // is still the CICS DUPKEY/DUPREC condition. Because the failed save() has already
+            // poisoned the @Transactional unit-of-work (marked rollback-only), we cannot return a
+            // normal result here without risking an UnexpectedRollbackException at commit; instead
+            // re-raise the typed exception (which rolls the write back cleanly), and let the
+            // controller catch it and re-display the SAME screen inline - the same net parity
+            // outcome as the pre-check path above (AAP 0.6.5).
             throw new DuplicateKeyException(MSG_USER_ID_EXISTS, duplicateAtSave);
         } catch (DataAccessException writeFailure) {
             // WHEN OTHER: any other FILE STATUS / RESP -> redisplay "Unable to Add User...".

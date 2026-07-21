@@ -127,6 +127,29 @@ public class MenuController {
     private static final String MSG_FIELD_LENGTH =
             "Input exceeds the maximum length for a field.";
 
+    /**
+     * Message-line colour token for the error / default line, reproducing the BMS map default
+     * {@code ERRMSG ... COLOR=RED} (finding #11). Consumed by {@code COMEN01.html} via
+     * {@code th:classappend="${form.errmsgColor}"} and matches the template's {@code .red} class.
+     */
+    private static final String MSG_COLOR_ERROR = "red";
+
+    /**
+     * Message-line colour token for the informational line, reproducing the COBOL
+     * {@code MOVE DFHGREEN TO ERRMSGC OF COMEN1AO} on the "coming soon" branch (COMEN01C:158,
+     * finding #11). Matches the template's {@code .green} class.
+     */
+    private static final String MSG_COLOR_GREEN = "green";
+
+    /**
+     * Message-line colour token for the neutral line, reproducing the BMS {@code DFHNEUTR}
+     * (white) attribute (finding #11). Used for the Java-only over-width guard banner
+     * ({@link #MSG_FIELD_LENGTH}), which carries no COBOL business-edit message and is therefore
+     * rendered neutral so it never masquerades as a COBOL red error. Matches the template's
+     * {@code .neutral} class.
+     */
+    private static final String MSG_COLOR_NEUTRAL = "neutral";
+
     /** COBOL {@code WS-TRANID VALUE 'CM00'} - this screen's CICS transaction id. */
     private static final String TRANSACTION_ID = "CM00";
 
@@ -232,7 +255,7 @@ public class MenuController {
         }
         // COBOL MAIN-PARA lines 87-90: NOT CDEMO-PGM-REENTER -> fresh SEND-MENU-SCREEN.
         context.markReenter();
-        renderMenu(form, null);
+        renderMenu(form, null, MSG_COLOR_ERROR);
         return VIEW_MENU;
     }
 
@@ -263,7 +286,7 @@ public class MenuController {
         // template maxlength / 3270 field width) re-displays the menu with a neutral banner and does
         // no option routing, so the COBOL menu edit ordering is untouched.
         if (bindingResult.hasErrors()) {
-            renderMenu(form, MSG_FIELD_LENGTH);
+            renderMenu(form, MSG_FIELD_LENGTH, MSG_COLOR_NEUTRAL);
             return VIEW_MENU;
         }
         PfKey key = resolvePfKey(pfkey);
@@ -272,7 +295,7 @@ public class MenuController {
             case PFK03 -> returnToSignon();
             default -> {
                 // COBOL MAIN-PARA WHEN OTHER (lines 99-102): CCDA-MSG-INVALID-KEY.
-                renderMenu(form, Messages.CCDA_MSG_INVALID_KEY);
+                renderMenu(form, Messages.CCDA_MSG_INVALID_KEY, MSG_COLOR_ERROR);
                 yield VIEW_MENU;
             }
         };
@@ -308,12 +331,13 @@ public class MenuController {
             }
             // Defensive: unreachable for the ten seeded options (all mapped above);
             // re-display the menu rather than emit an unmapped redirect.
-            renderMenu(form, null);
+            renderMenu(form, null, MSG_COLOR_ERROR);
             return VIEW_MENU;
         }
         // COBOL SEND-MENU-SCREEN with a message: invalid option / admin-only (error)
-        // or the green "coming soon" note (informational). Text preserved verbatim.
-        renderMenu(form, result.message());
+        // or the green "coming soon" note (informational). Text preserved verbatim. Finding #11:
+        // colour the line from the service severity (INFORMATION -> DFHGREEN, else the default red).
+        renderMenu(form, result.message(), colorFor(result.severity()));
         return VIEW_MENU;
     }
 
@@ -345,14 +369,34 @@ public class MenuController {
      * clears the line, matching the COBOL {@code MOVE SPACES TO WS-MESSAGE} on the
      * no-message path.</p>
      *
-     * @param form    the form to populate for rendering
-     * @param message the message to show on the error/message line, or {@code null}
-     *                for no message
+     * @param form        the form to populate for rendering
+     * @param message     the message to show on the error/message line, or {@code null}
+     *                    for no message
+     * @param errmsgColor the semantic 3270 colour of the message line (the COBOL {@code ERRMSGC}
+     *                    attribute): {@link #MSG_COLOR_GREEN} for the {@code DFHGREEN} "coming soon"
+     *                    line, otherwise {@link #MSG_COLOR_ERROR} (the BMS default red)
      */
-    private void renderMenu(COMEN01Form form, String message) {
+    private void renderMenu(COMEN01Form form, String message, String errmsgColor) {
         populateHeader(form);
         populateOptions(form);
         form.setErrmsg(message);
+        form.setErrmsgColor(errmsgColor);
+    }
+
+    /**
+     * Maps a {@link MainMenuService.MessageSeverity} to the semantic 3270 colour token for the
+     * {@code ERRMSG} line, reproducing the COBOL {@code MOVE DFHxxx TO ERRMSGC} (finding #11):
+     * {@code INFORMATION} &rarr; {@link #MSG_COLOR_GREEN} (the {@code DFHGREEN} "coming soon"
+     * note), and {@code ERROR}/{@code NONE} &rarr; {@link #MSG_COLOR_ERROR} (the BMS default red).
+     *
+     * @param severity the service message severity; must not be {@code null}
+     * @return the colour token consumed by {@code th:classappend="${form.errmsgColor}"}
+     */
+    private static String colorFor(MainMenuService.MessageSeverity severity) {
+        return switch (severity) {
+            case INFORMATION -> MSG_COLOR_GREEN;
+            case ERROR, NONE -> MSG_COLOR_ERROR;
+        };
     }
 
     /**

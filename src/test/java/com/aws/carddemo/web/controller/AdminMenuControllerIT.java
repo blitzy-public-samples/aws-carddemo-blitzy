@@ -6,14 +6,17 @@ import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.CsvSource;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
+import org.springframework.mock.web.MockHttpSession;
 import org.springframework.security.test.context.support.WithMockUser;
 import org.springframework.security.test.context.support.WithUserDetails;
 import org.springframework.test.web.servlet.MockMvc;
 
 import com.aws.carddemo.AbstractPostgresIntegrationTest;
+import com.aws.carddemo.dto.CardDemoContext;
 
 import static org.hamcrest.Matchers.containsString;
 import static org.hamcrest.Matchers.hasProperty;
+import static org.hamcrest.Matchers.is;
 import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.csrf;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
@@ -95,6 +98,12 @@ class AdminMenuControllerIT extends AbstractPostgresIntegrationTest {
 
     /** Glob for the anonymous-redirect assertion; tolerant of the entry point's absolute URL. */
     private static final String SIGNON_URL_PATTERN = "**/signon";
+
+    /** Scoped-proxy session attribute under which the session-scoped {@link CardDemoContext} lives. */
+    private static final String CONTEXT_SESSION_ATTR = "scopedTarget.cardDemoContext";
+
+    /** A non-sign-on hand-off target ({@code COADM01C}) left in {@code CDEMO-TO-PROGRAM} by a prior turn. */
+    private static final String PGM_ADMIN_MENU = "COADM01C";
 
     /** Seeded administrator id ({@code SEC-USR-TYPE = 'A'}) from {@code V2__reference_data.sql}. */
     private static final String SEEDED_ADMIN_ID = "ADMIN001";
@@ -245,6 +254,46 @@ class AdminMenuControllerIT extends AbstractPostgresIntegrationTest {
     }
 
     /**
+     * PF3 must return to the sign-on screen ({@code /signon}) <em>even when the session's
+     * {@code CDEMO-TO-PROGRAM} ({@link CardDemoContext#getToProgram()}) was already populated by a
+     * prior turn</em> &mdash; the live pseudo-conversational state that {@link #adminMenuPf3RedirectsToSignon()}
+     * (a brand-new session with a blank hand-off target) does not exercise.
+     *
+     * <p><strong>Regression for w045 Finding C (admin-menu PF3 self-loop).</strong> COBOL
+     * {@code COADM01C} line 97 performs an <em>unconditional</em>
+     * {@code MOVE 'COSGN00C' TO CDEMO-TO-PROGRAM} in the {@code WHEN DFHPF3} branch before
+     * {@code PERFORM RETURN-TO-SIGNON-SCREEN}; {@code RETURN-TO-SIGNON-SCREEN} itself only defaults
+     * the target when it is {@code LOW-VALUES OR SPACES} (lines 162-163, a defensive fallback).
+     * Before the fix, the controller's PF3 branch called {@code returnToSignonScreen} without the
+     * line-97 move, so a populated {@code CDEMO-TO-PROGRAM} (here {@code COADM01C}) survived and drove
+     * {@code routeForProgram(...)} back to {@code /admin/menu} (the self-loop). Seeding the
+     * session-scoped context with a non-sign-on hand-off target reproduces the defect and locks in
+     * the fix.</p>
+     *
+     * @throws Exception if the request cannot be performed
+     */
+    @Test
+    @DisplayName("POST /admin/menu with PF3 redirects to sign-on even when CDEMO-TO-PROGRAM is already set (w045 Finding C)")
+    @WithMockUser(roles = "ADMIN")
+    void adminMenuPf3RedirectsToSignonWhenToProgramAlreadyPopulated() throws Exception {
+        // Reproduce the live state: a prior turn left CDEMO-TO-PROGRAM = 'COADM01C' (non-blank,
+        // non-sign-on). markInitialized()+markReenter() model an established pseudo-conversation.
+        CardDemoContext context = new CardDemoContext();
+        context.markInitialized();
+        context.markReenter();
+        context.setToProgram(PGM_ADMIN_MENU);
+        MockHttpSession session = new MockHttpSession();
+        session.setAttribute(CONTEXT_SESSION_ATTR, context);
+
+        mockMvc.perform(post(ADMIN_MENU_PATH)
+                        .session(session)
+                        .param(PARAM_PFKEY, KEY_PF3)
+                        .with(csrf()))
+                .andExpect(status().is3xxRedirection())
+                .andExpect(redirectedUrl(ROUTE_SIGNON));
+    }
+
+    /**
      * An out-of-range option with ENTER re-renders the menu ({@code COADM01}) with the COBOL
      * invalid-option message ({@code "Please enter a valid option number..."}), reproducing
      * {@code PROCESS-ENTER-KEY}'s {@code WS-OPTION > CDEMO-ADMIN-OPT-COUNT} branch.
@@ -262,7 +311,11 @@ class AdminMenuControllerIT extends AbstractPostgresIntegrationTest {
                 .andExpect(status().isOk())
                 .andExpect(view().name(VIEW_COADM01))
                 .andExpect(model().attribute(MODEL_ATTR_FORM,
-                        hasProperty("errmsg", containsString(MSG_FRAGMENT_VALID_OPTION))));
+                        hasProperty("errmsg", containsString(MSG_FRAGMENT_VALID_OPTION))))
+                // Finding #11: the invalid-option line is a COBOL error, so it renders in the BMS
+                // default red (ERRMSGC never overridden to DFHGREEN/DFHNEUTR on this branch).
+                .andExpect(model().attribute(MODEL_ATTR_FORM,
+                        hasProperty("errmsgColor", is("red"))));
     }
 
     /**
@@ -282,7 +335,11 @@ class AdminMenuControllerIT extends AbstractPostgresIntegrationTest {
                 .andExpect(status().isOk())
                 .andExpect(view().name(VIEW_COADM01))
                 .andExpect(model().attribute(MODEL_ATTR_FORM,
-                        hasProperty("errmsg", containsString(MSG_FRAGMENT_INVALID_KEY))));
+                        hasProperty("errmsg", containsString(MSG_FRAGMENT_INVALID_KEY))))
+                // Finding #11: the invalid-key line is a COBOL error, so it renders in the BMS
+                // default red.
+                .andExpect(model().attribute(MODEL_ATTR_FORM,
+                        hasProperty("errmsgColor", is("red"))));
     }
 
     // ---------------------------------------------------------------------------------------------

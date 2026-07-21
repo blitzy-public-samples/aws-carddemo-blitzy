@@ -212,7 +212,7 @@
             <span class="cell blue" style="--r:15; --c:19;">(A=Admin, U=User)</span>
 
             <!-- ============== Error message (row 23, conditional) ============== -->
-            <span role="alert" aria-live="assertive" class="cell red bright out" style="--r:23; --c:1; --len:78;"
+            <span role="alert" aria-live="assertive" class="cell bright out" th:classappend="${form.errmsgColor}" style="--r:23; --c:1; --len:78;"
                   th:if="${form.errmsg != null and !#strings.isEmpty(form.errmsg)}"
                   th:text="*{errmsg}">error message</span>
 

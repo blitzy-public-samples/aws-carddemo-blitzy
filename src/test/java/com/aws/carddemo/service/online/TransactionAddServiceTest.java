@@ -1180,6 +1180,37 @@ class TransactionAddServiceTest {
     }
 
     /**
+     * {@code COPY-LAST-TRAN-DATA} copies the free-text fields through COBOL {@code MOVE}-to-shorter-
+     * PIC-X truncation (review finding #12). The source {@link Transaction} text columns are
+     * {@code CHAR(n)} ({@code bpchar}) and are returned space-padded to the full column width (e.g.
+     * {@code TRAN-DESC} is {@code CHAR(100)}, wider than the {@code TDESCI PIC X(60)} screen field);
+     * copying the raw padded value into the narrower {@code @Size} form field previously overflowed
+     * with "Input exceeds the maximum length..." and trapped the screen. Each field must be truncated
+     * to its BMS width - {@code TDESCI} X(60), {@code MNAMEI} X(30), {@code MCITYI} X(25) - so the
+     * copied value always fits the form constraint, matching the COBOL {@code MOVE} exactly.
+     */
+    @Test
+    void copyLastTranData_overWidthTextFields_truncatedToBmsWidths() {
+        Transaction wide = sampleTransaction("0000000000000009");
+        wide.setTranDesc("D".repeat(100));    // TRAN-DESC CHAR(100) -> TDESCI X(60)
+        wide.setMerchantName("N".repeat(50));  // TRAN-MERCHANT-NAME CHAR(50) -> MNAMEI X(30)
+        wide.setMerchantCity("C".repeat(50));  // TRAN-MERCHANT-CITY CHAR(50) -> MCITYI X(25)
+        when(cardXrefRepository.findByXrefAcctId(ACCT_ID)).thenReturn(List.of(xref(CARD_NUM, 9L, ACCT_ID)));
+        when(transactionRepository.findAll(any(Pageable.class))).thenReturn(pageOf(wide));
+        when(dateConversionService.validateDate("2022-11-05", DATE_MASK)).thenReturn(validDate());
+        when(dateConversionService.validateDate("2022-11-06", DATE_MASK)).thenReturn(validDate());
+
+        COTRN02Form form = new COTRN02Form();
+        form.setActidin(ACCT_ID_PADDED);
+        service.copyLastTranData(form);
+
+        // Each over-width field is truncated to its BMS screen width (never overflows @Size).
+        assertThat(form.getTdesc()).isEqualTo("D".repeat(60));
+        assertThat(form.getMname()).isEqualTo("N".repeat(30));
+        assertThat(form.getMcity()).isEqualTo("C".repeat(25));
+    }
+
+    /**
      * {@code CLEAR-CURRENT-SCREEN} (PF4) blanks every input and the message line and positions the
      * cursor on the account-id field (COBOL lines 753-778).
      */

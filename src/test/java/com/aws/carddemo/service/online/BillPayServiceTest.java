@@ -254,15 +254,29 @@ class BillPayServiceTest {
     /**
      * A confirm value that is neither {@code Y}/{@code y}, {@code N}/{@code n}, nor blank takes the
      * COBOL {@code EVALUATE CONFIRMI WHEN OTHER} branch and returns
-     * {@code "Invalid value. Valid values are (Y/N)..."} before any read.
+     * {@code "Invalid value. Valid values are (Y/N)..."}. The COBOL sets the error and re-sends the
+     * screen while {@code CURBALI} holds {@code LOW-VALUES} (the protected balance field is not
+     * transmitted on the RECEIVE), so BMS leaves the balance from the prior confirm-prompt turn
+     * displayed - the balance "remains visible" (review finding #13). The stateless web tier
+     * reproduces that observable contract by re-reading the account (unchanged, since no payment is
+     * made) and populating {@code CURBALI} before returning the error. No payment is attempted: the
+     * cross-reference, the transaction store, and the account rewrite are never reached.
      */
     @Test
-    void processEnterKey_invalidConfirmValue_returnsErrorAndReadsNothing() {
-        BillPayResult result = service.processEnterKey(form(ACCT_ID_FIELD, "X"));
+    void processEnterKey_invalidConfirmValue_returnsErrorAndRetainsBalance() {
+        Account account = accountWithBalance(new BigDecimal("500.00"));
+        when(accountRepository.findByIdForUpdate(ACCT_ID)).thenReturn(Optional.of(account));
+
+        COBIL00Form form = form(ACCT_ID_FIELD, "X");
+        BillPayResult result = service.processEnterKey(form);
 
         assertThat(result.severity()).isEqualTo(MessageSeverity.ERROR);
         assertThat(result.message()).isEqualTo(MSG_INVALID_CONFIRM);
-        verifyNoInteractions(accountRepository, cardXrefRepository, transactionRepository, context);
+        // Finding #13: the balance stays visible on the invalid-confirm error turn.
+        assertThat(form.getCurbal()).isEqualTo("+0000000500.00");
+        verify(accountRepository).findByIdForUpdate(ACCT_ID);
+        verify(accountRepository, never()).save(any(Account.class));
+        verifyNoInteractions(cardXrefRepository, transactionRepository, context);
     }
 
     /**
@@ -290,21 +304,24 @@ class BillPayServiceTest {
     // ==================================================================
 
     /**
-     * READ-ACCTDAT-FILE {@code NOTFND}: a confirmed payment for an unknown account throws
-     * {@link RecordNotFoundException} carrying {@code "Account ID NOT found..."} (FILE STATUS
-     * {@code "23"}); the cross-reference, the transaction store, and the account rewrite are never
-     * reached (checklist item 1).
+     * READ-ACCTDAT-FILE {@code NOTFND}: a confirmed payment for an unknown account is the COBOL
+     * {@code WHEN NOTFND} branch, which moves {@code "Account ID NOT found..."} to {@code WS-MESSAGE},
+     * sets {@code WS-ERR-FLG}, and re-displays the SAME screen inline (PERFORM SEND-BILLPAY-SCREEN) -
+     * it is NOT an abend. The service therefore returns an ERROR-severity {@link BillPayResult}
+     * carrying that literal (AAP &sect;0.6.5 exception parity), not a full-page error; the
+     * cross-reference, the transaction store, and the account rewrite are never reached
+     * (checklist item 1).
      */
     @Test
-    void processEnterKey_accountNotFound_throwsRecordNotFound() {
+    void processEnterKey_accountNotFound_returnsInlineError() {
         when(accountRepository.findByIdForUpdate(ACCT_ID)).thenReturn(Optional.empty());
 
         COBIL00Form form = form(ACCT_ID_FIELD, "Y");
 
-        assertThatThrownBy(() -> service.processEnterKey(form))
-                .isInstanceOf(RecordNotFoundException.class)
-                .hasMessage(MSG_ACCT_NOT_FOUND)
-                .hasFieldOrPropertyWithValue("fileStatus", RecordNotFoundException.FILE_STATUS);
+        BillPayResult result = service.processEnterKey(form);
+
+        assertThat(result.severity()).isEqualTo(MessageSeverity.ERROR);
+        assertThat(result.message()).isEqualTo(MSG_ACCT_NOT_FOUND);
 
         verify(accountRepository).findByIdForUpdate(ACCT_ID);
         verify(accountRepository, never()).save(any(Account.class));
@@ -464,6 +481,36 @@ class BillPayServiceTest {
     }
 
     /**
+     * <b>Deterministic card derivation (review finding w045-J).</b> When an account owns more than
+     * one card, {@code READ-CXACAIX-FILE} must resolve a single, stable card. A native VSAM
+     * {@code READ} through the non-unique {@code CXACAIX} alternate index returns the base-cluster
+     * record with the lowest prime key - and the {@code CCXREF} base cluster is keyed by
+     * {@code XREF-CARD-NUM} - so the migration selects the lowest card number
+     * ({@code .min(comparing(getXrefCardNum))}), matching {@code TransactionAddService}. An unordered
+     * {@code findFirst()} would let the derived card depend on database row order. The cross-reference
+     * list here is returned in a deliberately non-ascending order, yet the written transaction must
+     * still carry the lowest card number.
+     */
+    @Test
+    void processEnterKey_confirmedPayment_derivesLowestCardNumberDeterministically() {
+        Account account = accountWithBalance(new BigDecimal("500.00"));
+        when(accountRepository.findByIdForUpdate(ACCT_ID)).thenReturn(Optional.of(account));
+        // Multiple cards for the account, supplied out of ascending order to expose findFirst vs min.
+        CardXref high = new CardXref("9999999999999999", CUST_ID, ACCT_ID);
+        CardXref mid = new CardXref("4111111111111111", CUST_ID, ACCT_ID);
+        CardXref low = new CardXref("2222222222222222", CUST_ID, ACCT_ID);
+        when(cardXrefRepository.findByXrefAcctId(ACCT_ID)).thenReturn(List.of(high, mid, low));
+        when(transactionRepository.findAll(any(Pageable.class))).thenReturn(noTransactions());
+
+        service.processEnterKey(form(ACCT_ID_FIELD, "Y"));
+
+        ArgumentCaptor<Transaction> txnCaptor = ArgumentCaptor.forClass(Transaction.class);
+        verify(transactionRepository).saveAndFlush(txnCaptor.capture());
+        // Lowest XREF-CARD-NUM selected regardless of the list ordering (deterministic).
+        assertThat(txnCaptor.getValue().getCardNum()).isEqualTo("2222222222222222");
+    }
+
+    /**
      * <b>26-character timestamp (checklist item 5).</b> {@code GET-CURRENT-TIMESTAMP} assembles a
      * {@code YYYY-MM-DD-HH.MM.SS.NNNNNN} timestamp with the fractional-seconds positions zero-filled
      * ({@code MOVE ZEROS TO WS-TIMESTAMP-TM-MS6}); the migrated {@link LocalDateTime} is therefore
@@ -519,20 +566,24 @@ class BillPayServiceTest {
 
     /**
      * READ-CXACAIX-FILE {@code NOTFND}: when no cross-reference exists for the account, the confirmed
-     * payment throws {@link RecordNotFoundException} ({@code "Account ID NOT found..."}) before any
-     * transaction is written or the account rewritten.
+     * payment is the COBOL {@code WHEN NOTFND} branch of {@code READ-CXACAIX-FILE}, which moves
+     * {@code "Account ID NOT found..."} to {@code WS-MESSAGE}, sets {@code WS-ERR-FLG}, and
+     * re-displays the SAME screen inline (PERFORM SEND-BILLPAY-SCREEN) - it is NOT an abend. The
+     * service returns an ERROR-severity {@link BillPayResult} carrying that literal (AAP &sect;0.6.5),
+     * and no transaction is written nor the account rewritten.
      */
     @Test
-    void processEnterKey_confirmedPayment_crossReferenceNotFound_throwsRecordNotFound() {
+    void processEnterKey_confirmedPayment_crossReferenceNotFound_returnsInlineError() {
         Account account = accountWithBalance(new BigDecimal("500.00"));
         when(accountRepository.findByIdForUpdate(ACCT_ID)).thenReturn(Optional.of(account));
         when(cardXrefRepository.findByXrefAcctId(ACCT_ID)).thenReturn(List.of());
 
         COBIL00Form form = form(ACCT_ID_FIELD, "Y");
 
-        assertThatThrownBy(() -> service.processEnterKey(form))
-                .isInstanceOf(RecordNotFoundException.class)
-                .hasMessage(MSG_ACCT_NOT_FOUND);
+        BillPayResult result = service.processEnterKey(form);
+
+        assertThat(result.severity()).isEqualTo(MessageSeverity.ERROR);
+        assertThat(result.message()).isEqualTo(MSG_ACCT_NOT_FOUND);
 
         verify(cardXrefRepository).findByXrefAcctId(ACCT_ID);
         verify(transactionRepository, never()).saveAndFlush(any(Transaction.class));

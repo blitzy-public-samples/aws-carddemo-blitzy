@@ -240,7 +240,8 @@
 
             <!-- Row 23: error / informational message (red, bold; empty when none) -->
             <span id="errmsg-line"
-                  class="fld red bright"
+                  class="fld bright"
+                  th:classappend="${form.errmsgColor}"
                   style="top:calc(22 * var(--rh)); left:0; width:78ch"
                   role="alert"
                   aria-live="assertive"

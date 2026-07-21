@@ -117,6 +117,29 @@ public class AdminMenuController {
     private static final String MSG_FIELD_LENGTH =
             "Input exceeds the maximum length for a field.";
 
+    /**
+     * Message-line colour token for the error / default line, reproducing the BMS map default
+     * {@code ERRMSG ... COLOR=RED} (finding #11). Consumed by {@code COADM01.html} via
+     * {@code th:classappend="${form.errmsgColor}"} and matches the template's {@code .red} class.
+     */
+    private static final String MSG_COLOR_ERROR = "red";
+
+    /**
+     * Message-line colour token for the informational line, reproducing the COBOL
+     * {@code MOVE DFHGREEN TO ERRMSGC OF COADM1AO} on the "coming soon" branch (COADM01C:148,
+     * finding #11). Matches the template's {@code .green} class.
+     */
+    private static final String MSG_COLOR_GREEN = "green";
+
+    /**
+     * Message-line colour token for the neutral line, reproducing the BMS {@code DFHNEUTR}
+     * (white) attribute (finding #11). Used for the Java-only over-width guard banner
+     * ({@link #MSG_FIELD_LENGTH}), which carries no COBOL business-edit message and is therefore
+     * rendered neutral so it never masquerades as a COBOL red error. Matches the template's
+     * {@code .neutral} class.
+     */
+    private static final String MSG_COLOR_NEUTRAL = "neutral";
+
     /** Model attribute name the {@code COADM01} template binds via {@code th:object="${form}"}. */
     private static final String MODEL_ATTR_FORM = "form";
 
@@ -264,7 +287,7 @@ public class AdminMenuController {
         // template maxlength / 3270 field width) re-displays the menu with a neutral banner and does
         // no option routing, so the COBOL admin-menu edit ordering is untouched.
         if (bindingResult.hasErrors()) {
-            return renderMenu(form, MSG_FIELD_LENGTH);
+            return renderMenu(form, MSG_FIELD_LENGTH, MSG_COLOR_NEUTRAL);
         }
 
         PfKey key = resolvePfKey(pfkey);
@@ -277,17 +300,30 @@ public class AdminMenuController {
                 return REDIRECT_PREFIX + routeForProgram(result.targetProgram());
             }
             // Invalid option (or the preserved "coming soon" branch): redisplay with the message.
-            return renderMenu(form, result.message());
+            // COBOL COADM01C sets ERRMSGC = DFHGREEN for the "coming soon" note (result.error()
+            // == false) and leaves the BMS default red for the invalid-option error (finding #11).
+            return renderMenu(form, result.message(),
+                    result.error() ? MSG_COLOR_ERROR : MSG_COLOR_GREEN);
         }
 
         // WHEN DFHPF3 MOVE 'COSGN00C' TO CDEMO-TO-PROGRAM, PERFORM RETURN-TO-SIGNON-SCREEN.
         if (PfKeyHandler.isPf3(key)) {
+            // COBOL COADM01C line 97: MOVE 'COSGN00C' TO CDEMO-TO-PROGRAM is UNCONDITIONAL and
+            // precedes PERFORM RETURN-TO-SIGNON-SCREEN. This move must be reproduced here, because
+            // in the live pseudo-conversational flow the session's CDEMO-TO-PROGRAM
+            // (CardDemoContext#getToProgram) is already populated by a prior turn (typically the
+            // admin-menu program itself). AdminMenuService#returnToSignonScreen only defaults the
+            // target when it is blank/LOW-VALUES (COBOL lines 162-163, the defensive fallback), so
+            // without this unconditional move the stale target would drive routeForProgram(...) back
+            // to /admin/menu and the admin could never exit to sign-on via PF3 (w045 Finding C). This
+            // matches AdminMenuService#mainEntry's own PF3 branch and the passing CM00 pattern.
+            context.setToProgram(PGM_SIGNON);
             AdminMenuResult result = adminMenuService.returnToSignonScreen(context);
             return REDIRECT_PREFIX + routeForProgram(result.targetProgram());
         }
 
         // WHEN OTHER MOVE CCDA-MSG-INVALID-KEY TO WS-MESSAGE, PERFORM SEND-MENU-SCREEN.
-        return renderMenu(form, Messages.CCDA_MSG_INVALID_KEY);
+        return renderMenu(form, Messages.CCDA_MSG_INVALID_KEY, MSG_COLOR_ERROR);
     }
 
     /**
@@ -298,15 +334,19 @@ public class AdminMenuController {
      * display fields are not part of the HTTP submission, so they are rebuilt here before the
      * supplied message is placed on the screen's message line ({@code ERRMSG}).</p>
      *
-     * @param form   the screen form to redisplay (already bound in the model as
-     *               {@link #MODEL_ATTR_FORM})
-     * @param errmsg the message to show on the {@code ERRMSG} line
+     * @param form        the screen form to redisplay (already bound in the model as
+     *                    {@link #MODEL_ATTR_FORM})
+     * @param errmsg      the message to show on the {@code ERRMSG} line
+     * @param errmsgColor the semantic 3270 colour of the message line (the COBOL {@code ERRMSGC}
+     *                    attribute): {@link #MSG_COLOR_GREEN} for the {@code DFHGREEN} "coming soon"
+     *                    line, otherwise {@link #MSG_COLOR_ERROR} (the BMS default red)
      * @return the logical view name {@link #VIEW_NAME}
      */
-    private String renderMenu(COADM01Form form, String errmsg) {
+    private String renderMenu(COADM01Form form, String errmsg, String errmsgColor) {
         populateHeader(form);
         populateMenuOptions(form);
         form.setErrmsg(errmsg);
+        form.setErrmsgColor(errmsgColor);
         return VIEW_NAME;
     }
 

@@ -429,7 +429,7 @@ public class CardListService {
                 state.setRidCardNum("");       // WS-CARD-RID left LOW-VALUES by INITIALIZE
                 readForward(form, work, paging, state);
             }
-            return CardListResult.showList(state.getErrorMessage());
+            return commonReturnShowList(state);
         }
 
         if (effectiveAid == PfKey.PFK07 && paging.isFirstPage()) {
@@ -437,7 +437,7 @@ public class CardListService {
             // re-list forward from the current first key.
             state.setRidCardNum(paging.getFirstCardNum());
             readForward(form, work, paging, state);
-            return CardListResult.showList(state.getErrorMessage());
+            return commonReturnShowList(state);
         }
 
         if (effectiveAid == PfKey.PFK03
@@ -456,7 +456,7 @@ public class CardListService {
             paging.setLastPageShown(false);    // SET CA-LAST-PAGE-NOT-SHOWN TO TRUE
             state.setRidCardNum(paging.getFirstCardNum());
             readForward(form, work, paging, state);
-            return CardListResult.showList(state.getErrorMessage());
+            return commonReturnShowList(state);
         }
 
         if (effectiveAid == PfKey.PFK08 && paging.isNextPageExists()) {
@@ -464,7 +464,7 @@ public class CardListService {
             state.setRidCardNum(paging.getLastCardNum());
             paging.setScreenNum(paging.getScreenNum() + 1);   // ADD +1 TO WS-CA-SCREEN-NUM
             readForward(form, work, paging, state);
-            return CardListResult.showList(state.getErrorMessage());
+            return commonReturnShowList(state);
         }
 
         if (effectiveAid == PfKey.PFK07 && !paging.isFirstPage()) {
@@ -472,7 +472,7 @@ public class CardListService {
             state.setRidCardNum(paging.getFirstCardNum());
             paging.setScreenNum(paging.getScreenNum() - 1);   // SUBTRACT 1 FROM WS-CA-SCREEN-NUM
             readBackwards(form, work, paging, state);
-            return CardListResult.showList(state.getErrorMessage());
+            return commonReturnShowList(state);
         }
 
         if (effectiveAid == PfKey.ENTER
@@ -496,7 +496,43 @@ public class CardListService {
         // WHEN OTHER (lines 572-582): default - list the first page forward.
         state.setRidCardNum(paging.getFirstCardNum());
         readForward(form, work, paging, state);
-        return CardListResult.showList(state.getErrorMessage());
+        return commonReturnShowList(state);
+    }
+
+    /**
+     * Re-stamps the shared context and builds the show-list result - the Java migration of the
+     * COBOL {@code COMMON-RETURN} paragraph ({@code legacy/cbl/COCRDLIC.cbl} lines 604-613), which
+     * every {@code EXEC CICS RETURN} funnels through.
+     *
+     * <p>The COBOL <em>unconditionally</em> sets {@code CDEMO-FROM-PROGRAM = LIT-THISPGM}
+     * ({@code COCRDLIC}) before returning, so the next pseudo-conversational turn always re-enters
+     * this program and therefore processes paging ({@code PF7}/{@code PF8}), the {@code S}/{@code U}
+     * row selection and the {@code PF3} exit. Setting it only on the select branches left a
+     * menu-entry turn (arriving with {@code CDEMO-FROM-PROGRAM = COMEN01C}) stuck: it fell through
+     * to the {@code WHEN OTHER} default, rendered page&nbsp;1 and never re-stamped the origin, so
+     * the following {@code F8}/selection turns saw the stale menu origin and were ignored (review
+     * finding #5). Routing every {@link Routing#SHOW_LIST} return through this helper restores the
+     * COBOL {@code COMMON-RETURN} contract.</p>
+     *
+     * <p>It also carries the two {@code 1400-SETUP-MESSAGE} category flags to the web tier: a
+     * structurally invalid filter ({@code FLG-ACCTFILTER-NOT-OK}/{@code FLG-CARDFILTER-NOT-OK}),
+     * whose message the controller preserves rather than overwriting with a paging-boundary line,
+     * and the empty-first-page {@code WS-NO-RECORDS-FOUND} flag, which suppresses the info line
+     * (review finding #7).</p>
+     *
+     * @param state the per-request state supplying the business error line and its category
+     * @return a {@link Routing#SHOW_LIST} result carrying the error line and category flags
+     */
+    private CardListResult commonReturnShowList(CardListState state) {
+        context.setFromTranid(TRANSACTION_ID);    // MOVE LIT-THISTRANID TO CDEMO-FROM-TRANID
+        context.setFromProgram(PROGRAM_NAME);     // MOVE LIT-THISPGM    TO CDEMO-FROM-PROGRAM
+        context.setLastMapset(PROGRAM_NAME);      // MOVE LIT-THISMAPSET TO CDEMO-LAST-MAPSET
+        context.setLastMap(PROGRAM_NAME);         // MOVE LIT-THISMAP    TO CDEMO-LAST-MAP
+        boolean filterError =
+                state.getAcctFilter() == CardListState.FilterFlag.NOT_OK
+                        || state.getCardFilter() == CardListState.FilterFlag.NOT_OK;
+        return CardListResult.showList(state.getErrorMessage(), filterError,
+                state.isNoRecordsFound());
     }
 
     /**
@@ -1336,13 +1372,21 @@ public class CardListService {
      * @param routing      the routing outcome
      * @param errorMessage the business error line (empty when none)
      */
-    public record CardListResult(Routing routing, String errorMessage) {
+    public record CardListResult(Routing routing, String errorMessage,
+                                 boolean filterError, boolean noRecordsFound) {
 
         /**
          * Canonical constructor normalizing a {@code null} error message to the empty string.
          *
-         * @param routing      the routing outcome
-         * @param errorMessage the business error line, or {@code null}
+         * @param routing        the routing outcome
+         * @param errorMessage   the business error line, or {@code null}
+         * @param filterError    {@code true} when a structurally invalid account/card filter
+         *                       produced the message ({@code FLG-ACCTFILTER-NOT-OK} /
+         *                       {@code FLG-CARDFILTER-NOT-OK}); such a message is preserved by the
+         *                       controller's {@code 1400-SETUP-MESSAGE} rather than overwritten by
+         *                       a paging-boundary line
+         * @param noRecordsFound {@code true} when the forward browse found no rows on the first
+         *                       page ({@code WS-NO-RECORDS-FOUND}), which suppresses the info line
          */
         public CardListResult {
             if (errorMessage == null) {
@@ -1356,17 +1400,36 @@ public class CardListService {
          * @return the show-list result
          */
         public static CardListResult showList() {
-            return new CardListResult(Routing.SHOW_LIST, "");
+            return new CardListResult(Routing.SHOW_LIST, "", false, false);
         }
 
         /**
-         * Creates a {@link Routing#SHOW_LIST} result carrying the given error message.
+         * Creates a {@link Routing#SHOW_LIST} result carrying the given error message with the
+         * message-category flags cleared.
          *
          * @param errorMessage the business error line (may be {@code null})
          * @return the show-list result
          */
         public static CardListResult showList(String errorMessage) {
-            return new CardListResult(Routing.SHOW_LIST, errorMessage);
+            return new CardListResult(Routing.SHOW_LIST, errorMessage, false, false);
+        }
+
+        /**
+         * Creates a {@link Routing#SHOW_LIST} result carrying the business error line together
+         * with the {@code 1400-SETUP-MESSAGE} category flags, so the controller can reproduce the
+         * COBOL {@code EVALUATE TRUE} exactly (a filter error is kept; the {@code NO MORE RECORDS}
+         * read-forward default is overridable by the paging-boundary lines; the info line is
+         * suppressed when no records were found).
+         *
+         * @param errorMessage   the business error line (may be {@code null})
+         * @param filterError    whether a structurally invalid filter produced the message
+         * @param noRecordsFound whether the first page came back empty
+         * @return the show-list result
+         */
+        public static CardListResult showList(String errorMessage,
+                                              boolean filterError,
+                                              boolean noRecordsFound) {
+            return new CardListResult(Routing.SHOW_LIST, errorMessage, filterError, noRecordsFound);
         }
 
         /**
@@ -1376,7 +1439,7 @@ public class CardListService {
          * @return the redirect result
          */
         public static CardListResult redirect() {
-            return new CardListResult(Routing.REDIRECT, "");
+            return new CardListResult(Routing.REDIRECT, "", false, false);
         }
 
         /**

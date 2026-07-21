@@ -3,6 +3,7 @@ package com.aws.carddemo.web.controller;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.hamcrest.Matchers.containsString;
 import static org.hamcrest.Matchers.hasProperty;
+import static org.hamcrest.Matchers.is;
 import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.csrf;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
@@ -356,17 +357,22 @@ class UserAdminControllerIT extends AbstractPostgresIntegrationTest {
                         .with(csrf()))
                 .andExpect(status().isOk())
                 .andExpect(view().name(VIEW_ADD))
-                .andExpect(model().attribute("form", hasProperty("errmsg", containsString("has been added"))));
+                .andExpect(model().attribute("form", hasProperty("errmsg", containsString("has been added"))))
+                // Finding #11: the "has been added" line is coloured green by the COBOL
+                // MOVE DFHGREEN TO ERRMSGC (COUSR01C:254).
+                .andExpect(model().attribute("form", hasProperty("errmsgColor", is("green"))));
     }
 
     @Test
     @WithMockUser(username = "ADMIN001", roles = "ADMIN")
     @Transactional
-    @DisplayName("CU01: adding an existing user id raises DuplicateKeyException handled as 409")
-    void userAddDuplicatePropagates() throws Exception {
-        // COBOL DUPKEY on the write becomes a DuplicateKeyException that GlobalExceptionHandler
-        // renders as HTTP 409 with the shared "error" view and an "errorMessage" model attribute —
-        // it is NOT a COUSR01 form re-render.
+    @DisplayName("CU01: adding an existing user id re-renders COUSR01 inline with the duplicate message")
+    void userAddDuplicateRerendersInline() throws Exception {
+        // COBOL WHEN DFHRESP(DUPKEY)/DUPREC: MOVE 'Y' TO WS-ERR-FLG, MOVE 'User ID already
+        // exist...' TO WS-MESSAGE, MOVE -1 TO USERIDL (cursor on USER ID), PERFORM
+        // SEND-USRADD-SCREEN — the SAME screen is re-displayed inline with the error line. It is
+        // NOT an abend, so this must be an HTTP 200 COUSR01 re-render carrying the message on the
+        // form's errmsg, NOT a full-page HTTP 409 error view (AAP §0.6.5 exception parity).
         mockMvc.perform(post(ROUTE_ADD).session(adminReenterSession())
                         .param("pfkey", "ENTER")
                         .param("fname", "Dup")
@@ -375,9 +381,11 @@ class UserAdminControllerIT extends AbstractPostgresIntegrationTest {
                         .param("passwd", SEEDED_PASSWORD)
                         .param("usrtype", "U")
                         .with(csrf()))
-                .andExpect(status().isConflict())
-                .andExpect(view().name("error"))
-                .andExpect(model().attribute("errorMessage", containsString("already exist")));
+                .andExpect(status().isOk())
+                .andExpect(view().name(VIEW_ADD))
+                .andExpect(model().attribute("form", hasProperty("errmsg", containsString("already exist"))))
+                // Finding #11: the duplicate-user line is a COBOL error, so it renders red.
+                .andExpect(model().attribute("form", hasProperty("errmsgColor", is("red"))));
     }
 
     @Test
@@ -420,7 +428,12 @@ class UserAdminControllerIT extends AbstractPostgresIntegrationTest {
                 .andExpect(status().isOk())
                 .andExpect(view().name(VIEW_ADD))
                 .andExpect(model().attribute("form",
-                        hasProperty("errmsg", containsString("exceeds the maximum length"))));
+                        hasProperty("errmsg", containsString("exceeds the maximum length"))))
+                // Finding #11: the over-width guard banner is a Java-only @Size guard with no COBOL
+                // business-edit equivalent; it is rendered neutral (DFHNEUTR / white) so it never
+                // masquerades as a COBOL red error.
+                .andExpect(model().attribute("form",
+                        hasProperty("errmsgColor", is("neutral"))));
 
         assertThat(userSecurityRepository.findByUsrId("NINECHAR9"))
                 .as("an over-width add must not create any USRSEC row")
@@ -451,6 +464,62 @@ class UserAdminControllerIT extends AbstractPostgresIntegrationTest {
 
     @Test
     @WithMockUser(username = "ADMIN001", roles = "ADMIN")
+    @Transactional
+    @DisplayName("CU01 (finding #14): a typed password survives a validation-error redisplay so the "
+            + "corrected resubmit adds the user without re-keying it")
+    void userAddPasswordCarriedAcrossRedisplay() throws Exception {
+        // COBOL parity: the add-user BMS PASSWD field is ATTRB=(DRK,FSET,UNPROT) - FSET pre-sets the
+        // MDT so the darkened field re-transmits its buffer on every ENTER, so after a validation
+        // error on a DIFFERENT field the operator corrects that field and presses ENTER WITHOUT
+        // re-keying the password. An HTML <input type="password"> cannot round-trip a value (it
+        // always renders value=""), so the controller carries the password server-side. Both turns
+        // must share one session for the carry to persist (as a browser's JSESSIONID does).
+        MockHttpSession session = adminReenterSession();
+
+        // Turn 1: every field valid EXCEPT a blank user type (validated last, after the password),
+        // so the password IS accepted and remembered before the redisplay. The screen re-renders
+        // with "User Type can NOT be empty..." and NO user is created.
+        mockMvc.perform(post(ROUTE_ADD).session(session)
+                        .param("pfkey", "ENTER")
+                        .param("fname", "Carry")
+                        .param("lname", "User")
+                        .param("userid", "CARRYU01")
+                        .param("passwd", SEEDED_PASSWORD)
+                        .param("usrtype", "")
+                        .with(csrf()))
+                .andExpect(status().isOk())
+                .andExpect(view().name(VIEW_ADD))
+                .andExpect(model().attribute("form",
+                        hasProperty("errmsg", containsString("User Type can NOT be empty"))));
+
+        // Turn 2 (same session): the operator supplies the user type and resubmits WITHOUT re-keying
+        // the password - <input type="password"> submits blank. The carried password must be
+        // restored so the add succeeds ("... has been added ..."), NOT rejected with "Password can
+        // NOT be empty...". This is the finding #14 regression guard.
+        mockMvc.perform(post(ROUTE_ADD).session(session)
+                        .param("pfkey", "ENTER")
+                        .param("fname", "Carry")
+                        .param("lname", "User")
+                        .param("userid", "CARRYU01")
+                        .param("passwd", "")
+                        .param("usrtype", "U")
+                        .with(csrf()))
+                .andExpect(status().isOk())
+                .andExpect(view().name(VIEW_ADD))
+                .andExpect(model().attribute("form", hasProperty("errmsg", containsString("has been added"))));
+
+        // The stored password is the carried cleartext value (parity - no hashing), proving the
+        // carry fed the write rather than an empty string.
+        assertThat(userSecurityRepository.findByUsrId("CARRYU01"))
+                .as("the carried password must have been written verbatim")
+                .isPresent()
+                .get()
+                .extracting(u -> u.getUsrPwd().trim())
+                .isEqualTo(SEEDED_PASSWORD.trim());
+    }
+
+    @Test
+    @WithMockUser(username = "ADMIN001", roles = "ADMIN")
     @DisplayName("CU02: ENTER fetches an existing user and prompts for a PF5 save (COUSR02)")
     void userUpdateFetchExisting() throws Exception {
         // Fetching a seeded user populates the editable fields and prompts "Press PF5 key to save
@@ -464,7 +533,11 @@ class UserAdminControllerIT extends AbstractPostgresIntegrationTest {
                 // USER0002 is seeded as "AJITH KUMAR"; a populated first name proves the fetch
                 // loaded the record into the editable fields.
                 .andExpect(model().attribute("form", hasProperty("fname", containsString("AJITH"))))
-                .andExpect(model().attribute("form", hasProperty("errmsg", containsString("PF5"))));
+                .andExpect(model().attribute("form", hasProperty("errmsg", containsString("PF5"))))
+                // Finding #11: the "Press PF5 key to save your updates ..." prompt is the COBOL
+                // DFHNEUTR line (UserUpdateService returns MessageSeverity.NEUTRAL), so it renders
+                // neutral (white), not the BMS default red.
+                .andExpect(model().attribute("form", hasProperty("errmsgColor", is("neutral"))));
     }
 
     @Test
@@ -515,6 +588,51 @@ class UserAdminControllerIT extends AbstractPostgresIntegrationTest {
                         .with(csrf()))
                 .andExpect(status().isOk())
                 .andExpect(view().name(VIEW_UPDATE))
+                .andExpect(model().attribute("form", hasProperty("errmsg", containsString("has been updated"))))
+                // Finding #11: the "has been updated" line is coloured green by the COBOL
+                // MOVE DFHGREEN TO ERRMSGC (COUSR02C:371).
+                .andExpect(model().attribute("form", hasProperty("errmsgColor", is("green"))));
+    }
+
+    @Test
+    @WithMockUser(username = "ADMIN001", roles = "ADMIN")
+    @Transactional
+    @DisplayName("CU02 (finding #14): the fetched password survives to the PF5 save so a blank "
+            + "password field does not spuriously reject the update")
+    void userUpdatePasswordCarriedToSave() throws Exception {
+        // COBOL parity: COUSR02C pre-fills PASSWD from USRSEC on the fetch turn, and the darkened
+        // FSET field re-transmits it on the PF5 save. An HTML <input type="password"> submits blank,
+        // so without the server-side carry the save would fail "Password can NOT be empty..." even
+        // though the operator changed only the name. The fetch and save share one session so the
+        // carried (fetched) password persists to the save.
+        MockHttpSession session = adminReenterSession();
+
+        // Fetch (ENTER) loads USER0002 and arms the confirmation nonce; capture the token so the
+        // save can present it (as the browser round-trips the hidden field). The controller also
+        // remembers the fetched cleartext password here.
+        MvcResult fetch = mockMvc.perform(post(ROUTE_UPDATE).session(session)
+                        .param("pfkey", "ENTER")
+                        .param("usridin", "USER0002")
+                        .with(csrf()))
+                .andExpect(status().isOk())
+                .andExpect(model().attribute("form", hasProperty("errmsg", containsString("PF5"))))
+                .andReturn();
+        String token = ((COUSR02Form) fetch.getModelAndView().getModel().get("form")).getConfirmToken();
+        assertThat(token).as("the fetch turn must arm a confirmation token").isNotBlank();
+
+        // Save (PF5) with a BLANK password field but a changed first name: the carried password must
+        // be restored so the update succeeds ("... has been updated ..."), NOT rejected as empty.
+        mockMvc.perform(post(ROUTE_UPDATE).session(session)
+                        .param("pfkey", "PF5")
+                        .param("usridin", "USER0002")
+                        .param("confirmToken", token)
+                        .param("fname", "Changed")
+                        .param("lname", "Name")
+                        .param("passwd", "")
+                        .param("usrtype", "U")
+                        .with(csrf()))
+                .andExpect(status().isOk())
+                .andExpect(view().name(VIEW_UPDATE))
                 .andExpect(model().attribute("form", hasProperty("errmsg", containsString("has been updated"))));
     }
 
@@ -561,7 +679,32 @@ class UserAdminControllerIT extends AbstractPostgresIntegrationTest {
                         .with(csrf()))
                 .andExpect(status().isOk())
                 .andExpect(view().name(VIEW_DELETE))
-                .andExpect(model().attribute("form", hasProperty("errmsg", containsString("has been deleted"))));
+                .andExpect(model().attribute("form", hasProperty("errmsg", containsString("has been deleted"))))
+                // Finding #11: the "has been deleted" line is coloured green by the COBOL
+                // MOVE DFHGREEN TO ERRMSGC (COUSR03C:317).
+                .andExpect(model().attribute("form", hasProperty("errmsgColor", is("green"))));
+    }
+
+    @Test
+    @WithMockUser(username = "ADMIN001", roles = "ADMIN")
+    @DisplayName("CU03: an unknown user id re-renders COUSR03 inline with a NOT-found message (finding #15)")
+    void userDeleteNotFoundRerenders() throws Exception {
+        // w-report finding #15 (GROUP A inline re-display): a NOTFND on the delete ENTER-fetch is
+        // handled INLINE by UserDeleteService.processEnterKey (catch RecordNotFoundException ->
+        // UserDeleteResult.error(...)), reproducing the COBOL COUSR03C READ-USER-SEC-FILE WHEN NOTFND
+        // "MOVE 'User ID NOT found...' TO WS-MESSAGE, SET ERR-FLG-ON, re-display the SAME screen" - so
+        // the outcome is 200 + COUSR03 with "User ID NOT found...", never a 404 / error view. This is
+        // symmetric to userUpdateNotFoundRerenders (CU02) and locks in the runtime-verified behavior
+        // (POST /admin/users/delete ENTER usridin=ZZZZZZZZ -> 200 inline, red error line).
+        mockMvc.perform(post(ROUTE_DELETE).session(adminReenterSession())
+                        .param("pfkey", "ENTER")
+                        .param("usridin", "ZZZZZZZZ")
+                        .with(csrf()))
+                .andExpect(status().isOk())
+                .andExpect(view().name(VIEW_DELETE))
+                .andExpect(model().attribute("form", hasProperty("errmsg", containsString("NOT found"))))
+                // Finding #11: the NOTFND line is a COBOL error (SET ERR-FLG-ON), so it renders red.
+                .andExpect(model().attribute("form", hasProperty("errmsgColor", is("red"))));
     }
 
     @Test

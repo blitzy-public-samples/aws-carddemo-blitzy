@@ -398,21 +398,25 @@ class CardDetailServiceTest {
 
     /**
      * Re-entry with valid inputs but no matching card reproduces the CICS {@code NOTFND} of
-     * {@code 9100-GETCARD-BYACCTCARD}: the modern design surfaces it as a
-     * {@link RecordNotFoundException} carrying the by-card miss literal
-     * {@code "Did not find cards for this search condition"}. The read is a {@code findById} and
-     * nothing is written.
+     * {@code 9100-GETCARD-BYACCTCARD}: the COBOL sets {@code INPUT-ERROR}, moves the by-card miss
+     * literal {@code "Did not find cards for this search condition"} to {@code WS-RETURN-MSG}, and
+     * FELL THROUGH to {@code 1000-SEND-MAP} to re-display the SAME screen inline (it is not an
+     * abend). {@code mainEntry} therefore returns an ERROR-severity {@link CardDetailResult}
+     * carrying that literal (AAP &sect;0.6.5 exception parity), not a full-page error. The read is a
+     * {@code findById} and nothing is written.
      */
     @Test
-    void reentry_validAccountAndCard_cardNotFound_throwsRecordNotFound() {
+    void reentry_validAccountAndCard_cardNotFound_reDisplaysInlineError() {
         when(context.isProgramReenter()).thenReturn(true);
         when(cardRepository.findById(VALID_CARD)).thenReturn(Optional.empty());
 
         COCRDSLForm form = formWith(VALID_ACCT, VALID_CARD);
 
-        assertThatThrownBy(() -> service.mainEntry(form, PfKey.ENTER))
-                .isInstanceOf(RecordNotFoundException.class)
-                .hasMessage(MSG_DID_NOT_FIND_CARDS);
+        CardDetailResult result = service.mainEntry(form, PfKey.ENTER);
+
+        assertThat(result.severity()).isEqualTo(MessageSeverity.ERROR);
+        assertThat(result.message()).isEqualTo(MSG_DID_NOT_FIND_CARDS);
+        assertThat(form.getErrmsg()).isEqualTo(MSG_DID_NOT_FIND_CARDS);
 
         verify(cardRepository).findById(VALID_CARD);
         verify(cardRepository, never()).findByCardAcctId(any());

@@ -201,7 +201,7 @@
         <span class="f blue" id="usrtype-hint" style="top:16.25em; left:18ch;">(A=Admin, U=User)</span>
 
         <!-- ===================== Error message line (row 23) =================== -->
-        <div class="f red bright" style="top:27.5em; left:0ch; width:78ch;"
+        <div class="f bright" th:classappend="${form.errmsgColor}" style="top:27.5em; left:0ch; width:78ch;"
              role="alert"
              th:if="${!#strings.isEmpty(form.errmsg)}"
              th:text="*{errmsg}">Error message goes here</div>

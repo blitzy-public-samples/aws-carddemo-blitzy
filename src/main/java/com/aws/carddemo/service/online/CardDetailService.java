@@ -370,7 +370,17 @@ public class CardDetailService {
             work.setAcctId(formatFixedDigits(                       // MOVE CDEMO-ACCT-ID TO CC-ACCT-ID-N
                     context.getAcctId(), ACCT_ID_WIDTH));
             work.setCardNum(selectedCardNum);                       // MOVE CDEMO-CARD-NUM TO CC-CARD-NUM-N
-            readData(work, state, form);                            // PERFORM 9000-READ-DATA
+            // 9000-READ-DATA WHEN NOTFND sets INPUT-ERROR + the "... did not find ..."
+            // return message and the COBOL FELL THROUGH to 1000-SEND-MAP to re-display
+            // the SAME screen inline (it is not an abend). Reproduce that here rather
+            // than letting the RecordNotFoundException escape to the full-page handler
+            // (AAP 0.6.5 exception parity). The read helper has already populated
+            // state.returnMsg / inputError before throwing.
+            try {
+                readData(work, state, form);                        // PERFORM 9000-READ-DATA
+            } catch (RecordNotFoundException notFound) {
+                ensureReturnMsg(state, notFound.getMessage());
+            }
             return buildShowResult(form, state);                    // PERFORM 1000-SEND-MAP
         }
 
@@ -386,7 +396,14 @@ public class CardDetailService {
             // WHEN CDEMO-PGM-REENTER (lines 357-371): validate the submitted inputs.
             processInputs(form, work, state);                       // PERFORM 2000-PROCESS-INPUTS
             if (!state.isInputError()) {
-                readData(work, state, form);                        // PERFORM 9000-READ-DATA
+                // See the from-list arm above: a NOTFND on the keyed read re-displays
+                // the SAME screen inline (COBOL fall-through to 1000-SEND-MAP), not a
+                // full-page error (AAP 0.6.5 exception parity).
+                try {
+                    readData(work, state, form);                    // PERFORM 9000-READ-DATA
+                } catch (RecordNotFoundException notFound) {
+                    ensureReturnMsg(state, notFound.getMessage());
+                }
             }
             return buildShowResult(form, state);                    // PERFORM 1000-SEND-MAP
         }
@@ -710,10 +727,11 @@ public class CardDetailService {
      *       entity is in hand here).</li>
      *   <li>{@code WHEN NOTFND} &rarr; flag the input in error, mark both filters
      *       {@code NOT-OK}, set {@link #DID_NOT_FIND_ACCTCARD_COMBO} when no message is pending
-     *       ({@code IF WS-RETURN-MSG-OFF}), and raise {@link RecordNotFoundException}. The
-     *       COBOL fell through to re-display the screen; the modern design surfaces the miss as
-     *       a typed exception handled by the web-tier {@code GlobalExceptionHandler} (AAP
-     *       &sect;0.6.5).</li>
+     *       ({@code IF WS-RETURN-MSG-OFF}), and raise {@link RecordNotFoundException}. The COBOL
+     *       fell through to re-display the SAME screen inline (it is not an abend), so
+     *       {@link #mainEntry} catches this exception and routes to {@link #buildShowResult},
+     *       reproducing that inline re-display carrying the not-found message (AAP
+     *       &sect;0.6.5 exception parity) rather than surfacing a full-page error.</li>
      *   <li>{@code WHEN OTHER} (a genuine file error) &rarr; the COBOL built
      *       {@link #XREF_READ_ERROR}; here a Spring {@code DataAccessException} thrown by the
      *       repository propagates unchanged to the same central handler, which renders that
@@ -872,6 +890,25 @@ public class CardDetailService {
             return CardDetailResult.error(state.getReturnMsg());
         }
         return CardDetailResult.information(state.getInfoMsg());
+    }
+
+    /**
+     * Finalizes the transient read state for an inline not-found re-display - the COBOL {@code WHEN
+     * NOTFND} bookkeeping ({@code SET INPUT-ERROR}; {@code IF WS-RETURN-MSG-OFF} move the not-found
+     * literal to {@code WS-RETURN-MSG}) for the case where a keyed read raised
+     * {@link RecordNotFoundException}. The read helpers ({@link #getCardByAccountCard},
+     * {@link #getCardByAccount}) already set both before raising, so this is a defensive backstop
+     * that guarantees {@link #buildShowResult} can re-show the SAME map (COBOL {@code 1000-SEND-MAP})
+     * carrying the message, rather than aborting to the full-page handler (AAP &sect;0.6.5).
+     *
+     * @param state   the per-request read state to finalize for re-display
+     * @param message the byte-exact COBOL not-found literal carried by the exception
+     */
+    private void ensureReturnMsg(ProcessingState state, String message) {
+        state.setInputError(true);                 // SET INPUT-ERROR
+        if (state.isReturnMsgOff()) {              // IF WS-RETURN-MSG-OFF
+            state.setReturnMsg(message);           // MOVE <not-found literal> TO WS-RETURN-MSG
+        }
     }
 
     // ------------------------------------------------------------------------

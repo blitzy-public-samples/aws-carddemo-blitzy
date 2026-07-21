@@ -672,18 +672,22 @@ class UserDeleteServiceTest {
 
     /**
      * Parity item 3 via the PF5 path: when the keyed read finds nothing (COBOL {@code NOTFND}),
-     * {@code READ-USER-SEC-FILE} raises {@link RecordNotFoundException}, which propagates out of
-     * {@code DELETE-USER-INFO} (it is not a {@code DataAccessException}, so the {@code WHEN OTHER}
-     * catch never swallows it) and the delete is never reached.
+     * {@code READ-USER-SEC-FILE} moves {@code "User ID NOT found..."} to {@code WS-MESSAGE}, sets
+     * {@code ERR-FLG-ON}, short-circuits the delete, and re-displays the SAME screen inline (the
+     * failed CICS {@code READ ... UPDATE} left nothing to delete) - it is not an abend.
+     * {@code DELETE-USER-INFO} therefore catches the {@link RecordNotFoundException} and returns an
+     * ERROR-severity outcome carrying that literal (AAP &sect;0.6.5 exception parity), and the
+     * delete is never reached.
      */
     @Test
-    void deleteUserInfo_whenUserNotFound_throwsRecordNotFoundAndDoesNotDelete() {
+    void deleteUserInfo_whenUserNotFound_returnsInlineErrorAndDoesNotDelete() {
         when(userSecurityRepository.findByUsrIdForUpdate(USER_ID)).thenReturn(Optional.empty());
 
         COUSR03Form form = formWithUserId(USER_ID);
-        assertThatThrownBy(() -> service.deleteUserInfo(form, context))
-                .isInstanceOf(RecordNotFoundException.class)
-                .hasMessage(MSG_USER_ID_NOT_FOUND);
+        UserDeleteService.UserDeleteResult result = service.deleteUserInfo(form, context);
+
+        assertThat(result.severity()).isEqualTo(UserDeleteService.MessageSeverity.ERROR);
+        assertThat(result.message()).isEqualTo(MSG_USER_ID_NOT_FOUND);
 
         verify(userSecurityRepository).findByUsrIdForUpdate(USER_ID);
         verify(userSecurityRepository, never()).delete(any());
@@ -942,9 +946,20 @@ class UserDeleteServiceTest {
                 .map(Field::getName))
                 .contains("confirmToken");
 
+        // The ERRMSG colour attribute errmsgColor (review finding #11) is the migration of the BMS
+        // ERRMSGC colour attribute - a non-BMS presentation-control field that drives the
+        // severity-driven message-line colour (DFHGREEN success / DFHNEUTR neutral / DFHRED error).
+        // Like confirmToken it is not one of the COUSR3A display fields, so assert it is present and
+        // then exclude it from the BMS display-field count (matching COUSR03FormTest).
+        assertThat(Arrays.stream(COUSR03Form.class.getDeclaredFields())
+                .filter(field -> !field.isSynthetic())
+                .map(Field::getName))
+                .contains("errmsgColor");
+
         long declaredFields = Arrays.stream(COUSR03Form.class.getDeclaredFields())
                 .filter(field -> !field.isSynthetic())
                 .filter(field -> !"confirmToken".equals(field.getName()))
+                .filter(field -> !"errmsgColor".equals(field.getName()))
                 .count();
         assertThat(declaredFields).isEqualTo(11L);
 

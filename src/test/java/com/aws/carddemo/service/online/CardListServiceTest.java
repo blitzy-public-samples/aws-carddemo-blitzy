@@ -428,6 +428,44 @@ class CardListServiceTest {
         assertThat(populatedRowCount(paging)).isEqualTo(MAX_SCREEN_LINES);
     }
 
+    /**
+     * Review finding #5 (dest report, CRITICAL): the card-list re-entry state machine must be
+     * re-armed on <em>every</em> return, including the plain menu entry that falls through the
+     * main EVALUATE to {@code WHEN OTHER}. When the user arrives from the main menu the commarea
+     * still carries {@code CDEMO-FROM-PROGRAM = 'COMEN01C'}, so no selection / paging branch is
+     * eligible and the listing is produced by the {@code WHEN OTHER} arm (COCRDLIC.cbl lines
+     * 572-582). The COBOL {@code COMMON-RETURN} paragraph (lines 604-613) then unconditionally
+     * executes {@code MOVE LIT-THISPGM TO CDEMO-FROM-PROGRAM} (and the matching tranid / mapset /
+     * map moves) so the <em>next</em> pseudo-conversational turn re-enters {@code COCRDLIC} and its
+     * F7/F8 paging, S/U selection and PF3-exit logic become reachable.
+     * <p>
+     * Before the fix the {@code WHEN OTHER} render path never re-stamped the origin, so a
+     * menu-entered list stayed pinned to {@code COMEN01C}: F8/F7 were stuck on page one, S/U
+     * selection was ignored and PF3 did not exit. This test drives exactly that menu-entry turn and
+     * proves {@code commonReturnShowList} now re-stamps both the origin program and transaction id,
+     * matching COBOL {@code COMMON-RETURN}.
+     */
+    @Test
+    void mainEntryFromMenu_reStampsOriginToThisProgram() {
+        // EIBCALEN > 0 (a commarea is present) but CDEMO-FROM-PROGRAM is the menu, not this program.
+        when(context.isNew()).thenReturn(false);
+        when(context.isProgramEnter()).thenReturn(true);
+        when(context.getFromProgram()).thenReturn(MENU_PROGRAM);
+        stubBrowseWindows(ascendingCards(8, FILTER_ACCOUNT));
+        CardListPagingState paging = new CardListPagingState();
+
+        CardListResult result =
+                service.mainEntry(new COCRDLIForm(), PfKey.ENTER, new CardWorkArea(), paging);
+
+        // The menu entry lists the first page via WHEN OTHER ...
+        assertThat(result.routing()).isEqualTo(Routing.SHOW_LIST);
+        assertThat(paging.getScreenNum()).isEqualTo(1);
+        assertThat(populatedRowCount(paging)).isEqualTo(MAX_SCREEN_LINES);
+        // ... and COMMON-RETURN re-stamps the origin so the NEXT turn re-enters COCRDLIC.
+        verify(context).setFromProgram(LIST_PROGRAM);
+        verify(context).setFromTranid(LIST_TRANSACTION);
+    }
+
     // ------------------------------------------------------------------
     // Backward paging (9100-READ-BACKWARDS; checklist item 3)
     // ------------------------------------------------------------------

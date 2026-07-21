@@ -394,6 +394,14 @@ public class CardController {
     private String processList(COCRDLIForm form, PfKey key, HttpSession session) {
         CardListPagingState paging = getOrCreatePagingState(session);
         CardWorkArea work = new CardWorkArea();
+        // COBOL 2100-RECEIVE-SCREEN (legacy/cbl/COCRDLIC.cbl lines 969-970): move the submitted
+        // account/card filter fields from the map into the CC work area so 2210-EDIT-ACCOUNT /
+        // 2220-EDIT-CARD can validate and apply them. Without this the filters were silently
+        // dropped and every list came back unfiltered (review finding #6).
+        //   MOVE ACCTSIDI OF CCRDLIAI TO CC-ACCT-ID
+        //   MOVE CARDSIDI OF CCRDLIAI TO CC-CARD-NUM
+        work.setAcctId(form.getAcctsid());
+        work.setCardNum(form.getCardsid());
         CardListResult result = cardListService.mainEntry(form, key, work, paging);
         if (result.routing() == CardListService.Routing.REDIRECT) {
             return redirectFor(context.getToProgram());
@@ -436,33 +444,41 @@ public class CardController {
         form.setPageno(String.valueOf(paging.getScreenNum()));
 
         String errmsg = result.errorMessage();   // WS-ERROR-MSG (never null per the record).
-        String infomsg = null;                    // WS-INFO-MSG default = WS-NO-INFO-MESSAGE.
-        boolean businessError = errmsg != null && !errmsg.isEmpty();
+        boolean infoHint = false;                  // WS-INFO-MSG starts at WS-NO-INFO-MESSAGE.
 
-        if (businessError) {
-            // WHEN FLG-ACCTFILTER-NOT-OK / FLG-CARDFILTER-NOT-OK -> CONTINUE (keep WS-ERROR-MSG);
-            // also the WS-NO-RECORDS-FOUND path, whose info line the trailing IF suppresses.
-            infomsg = null;
+        // 1400-SETUP-MESSAGE EVALUATE TRUE (legacy/cbl/COCRDLIC.cbl lines 897-923), in order.
+        // Only a structurally invalid filter (FLG-*FILTER-NOT-OK) is preserved verbatim; the
+        // 9000-READ-FORWARD "NO MORE RECORDS" line is an overridable default, so the paging
+        // boundary WHENs below can replace it and raise CA-LAST-PAGE-SHOWN (review finding #7).
+        if (result.filterError()) {
+            // WHEN FLG-ACCTFILTER-NOT-OK / FLG-CARDFILTER-NOT-OK -> CONTINUE (keep WS-ERROR-MSG,
+            // no action hint).
+            infoHint = false;
         } else if (PfKeyHandler.isPf7(key) && paging.isFirstPage()) {
             // WHEN CCARD-AID-PFK07 AND CA-FIRST-PAGE.
             errmsg = MSG_NO_PREVIOUS_PAGES;
         } else if (PfKeyHandler.isPf8(key)
                 && !paging.isNextPageExists() && paging.isLastPageShown()) {
-            // WHEN CCARD-AID-PFK08 AND CA-NEXT-PAGE-NOT-EXISTS AND CA-LAST-PAGE-SHOWN.
+            // WHEN CCARD-AID-PFK08 AND CA-NEXT-PAGE-NOT-EXISTS AND CA-LAST-PAGE-SHOWN: a second
+            // forward key-press once the final page is already on screen replaces the
+            // read-forward "NO MORE RECORDS" default with the paging-boundary line.
             errmsg = MSG_NO_MORE_PAGES;
         } else if (PfKeyHandler.isPf8(key) && !paging.isNextPageExists()) {
-            // WHEN CCARD-AID-PFK08 AND CA-NEXT-PAGE-NOT-EXISTS.
-            infomsg = INFO_LIST_ACTIONS;
+            // WHEN CCARD-AID-PFK08 AND CA-NEXT-PAGE-NOT-EXISTS: the first time the final page is
+            // reached keep the "NO MORE RECORDS" error line, show the action hint, and raise
+            // CA-LAST-PAGE-SHOWN so the *next* F8 reports "NO MORE PAGES".
+            infoHint = true;
             if (!paging.isLastPageShown()) {
                 paging.setLastPageShown(true);   // SET CA-LAST-PAGE-SHOWN TO TRUE.
             }
         } else {
-            // WHEN WS-NO-INFO-MESSAGE / CA-NEXT-PAGE-EXISTS -> the record-actions hint.
-            infomsg = INFO_LIST_ACTIONS;
+            // WHEN WS-NO-INFO-MESSAGE / WHEN CA-NEXT-PAGE-EXISTS -> the record-actions hint.
+            infoHint = true;
         }
 
         form.setErrmsg(errmsg);     // MOVE WS-ERROR-MSG TO ERRMSGO (always).
-        form.setInfomsg(infomsg);   // Guarded by NOT WS-NO-INFO-MESSAGE AND NOT WS-NO-RECORDS-FOUND.
+        // IF NOT WS-NO-INFO-MESSAGE AND NOT WS-NO-RECORDS-FOUND -> MOVE WS-INFO-MSG TO INFOMSGO.
+        form.setInfomsg(infoHint && !result.noRecordsFound() ? INFO_LIST_ACTIONS : null);
         return VIEW_LIST;
     }
 
@@ -552,6 +568,21 @@ public class CardController {
      * entry the service prompts for the search keys, and when the operator arrived from the card
      * list it fetches the selected card ready for update.</p>
      *
+     * <p><b>Finding #4 (GET first-entry parity).</b> On the mainframe a fresh {@code CCUP} start
+     * arrives with {@code EIBCALEN = 0} and the program {@code INITIALIZE}s working storage, sets
+     * {@code CDEMO-PGM-ENTER} and {@code CCUP-DETAILS-NOT-FETCHED}, and renders the empty search
+     * prompt. A browser GET is that pseudo-conversational first SEND. The only origin that carries a
+     * pre-selected card into this screen is the card list ({@code COCRDLIC}), which {@code XCTL}s
+     * with {@code CDEMO-CARD-NUM} set so the update screen auto-fetches it (service Branch 2). Every
+     * <em>other</em> GET &mdash; a cold/bookmarked navigation, a browser refresh after leaving the
+     * flow, the menu, or a re-navigation while the shared session context still names a different
+     * from-program &mdash; must render the clean prompt rather than re-run the input edits on the
+     * empty form (which would surface a stale red error line). Because the {@link CardDemoContext}
+     * is session-scoped and long-lived (it is not recreated per screen the way a CICS COMMAREA is on
+     * a fresh start), we reproduce {@code EIBCALEN = 0} here by re-seating the program-enter posture
+     * unless this GET is the card-list hand-off, so {@code mainEntry} converges on the fresh-entry
+     * branch (Branch 3) with no carried-over message.</p>
+     *
      * @param form    the card-update form, bound as the {@code form} model attribute
      * @param session the HTTP session carrying the update snapshot (COMMAREA carrier)
      * @param model   the view model (carries the review-finding-#10 {@code confirmMode} flag)
@@ -560,6 +591,23 @@ public class CardController {
     @GetMapping(ROUTE_UPDATE)
     public String displayUpdate(@ModelAttribute("form") COCRDUPForm form, HttpSession session,
                                 Model model) {
+        // Finding #4: a GET of the CCUP route is the web-tier equivalent of a fresh CICS
+        // transaction start (COBOL EIBCALEN = 0), so unconditionally re-seat CDEMO-PGM-ENTER and
+        // reinitialize the program-private update state before delegating. This mirrors COBOL,
+        // where every entry begins PGM-ENTER + DETAILS-NOT-FETCHED and the service's EVALUATE then
+        // selects the arm. The card-list hand-off still auto-fetches its selected card because
+        // Branch 2 keys on CDEMO-PGM-ENTER + FROM = COCRDLIC + a live selection (all still carried
+        // on the session context - initialize() resets only the CCUP-private state, never the
+        // context selection) and re-seating merely guarantees PGM-ENTER, which the hand-off needs
+        // anyway. Every other GET - the menu hand-off, a direct/bookmarked navigation, or a stale
+        // re-enter left over from a prior interaction (e.g. list -> select -> update -> F3 -> list
+        // -> re-GET, where CDEMO-FROM-PROGRAM stays COCRDLIC but the context is in re-enter state)
+        // - converges on the clean search prompt (Branch 3) instead of falling through to input
+        // processing (Branch 5) on the empty form, which previously surfaced a stale red
+        // validation line such as "Card name not provided". Genuine input processing is preserved
+        // for form submissions, which arrive through the POST handler (submitUpdate), never here.
+        getOrCreateUpdateState(session).initialize();
+        context.markEnter();
         return processUpdate(form, PfKey.ENTER, session, model);
     }
 

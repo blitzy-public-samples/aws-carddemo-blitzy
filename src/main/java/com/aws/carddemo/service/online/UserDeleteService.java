@@ -97,14 +97,21 @@ import com.aws.carddemo.security.SessionRevocationService;
  * The redirect destination is written to {@link CardDemoContext#getToProgram()} and read back by the
  * controller, so {@link UserDeleteResult} itself carries no program name.</p>
  *
- * <h2>Exception parity (AAP &sect;0.6.5)</h2>
- * <p>The COBOL {@code EVALUATE WS-RESP-CD} branches map as follows: a {@code NOTFND} read (CICS
- * {@code RESP} 13, COBOL FILE STATUS 13/23) raises {@link RecordNotFoundException}, which the online
- * {@code @ControllerAdvice} handler surfaces as the {@code "User ID NOT found..."} error line; a
- * genuine {@code WHEN OTHER} I/O failure surfaces as a Spring {@link DataAccessException}, which this
- * service catches to reproduce the exact COBOL {@code "Unable to ..."} message on the re-displayed
- * screen without aborting. Because {@link RecordNotFoundException} is <em>not</em> a
- * {@link DataAccessException}, the {@code OTHER} catch never swallows a not-found signal.</p>
+ * <h2>Exception parity (AAP &sect;0.6.5, review finding #15)</h2>
+ * <p>The COBOL {@code EVALUATE WS-RESP-CD} branches map as follows. A {@code NOTFND} read (CICS
+ * {@code RESP} 13, COBOL FILE STATUS 13/23) raises {@link RecordNotFoundException}, which
+ * <em>this service catches inline</em> at both the ENTER-key fetch ({@code processEnterKey}) and the
+ * PF5 delete ({@code deleteUserInfo}) call sites and reproduces as the {@code "User ID NOT found..."}
+ * error line on the <em>re-displayed</em> COUSR03 screen &mdash; exactly as {@code COUSR03C} sets
+ * {@code ERR-FLG-ON} and keeps the operator on the map after a failed lookup. It is deliberately
+ * <em>not</em> allowed to propagate to the global {@code @ControllerAdvice} handler (which renders a
+ * full-page error), because the COBOL contract for a not-found key is an inline same-screen
+ * re-display, not an abend (AAP &sect;0.6.5). A genuine {@code WHEN OTHER} I/O failure surfaces as a
+ * Spring {@link DataAccessException}, which this service likewise catches to reproduce the exact
+ * COBOL {@code "Unable to ..."} message on the re-displayed screen without aborting. The two catches
+ * are distinct and ordered: {@link RecordNotFoundException} is <em>not</em> a
+ * {@link DataAccessException}, so the not-found path yields the precise {@code "User ID NOT found..."}
+ * text rather than the generic {@code "Unable to ..."} I/O-error text.</p>
  *
  * <h2>Session lifecycle on delete (review findings #8, #43)</h2>
  * <p><b>Self-delete is allowed, matching the source.</b> {@code COUSR03C} has no guard preventing an
@@ -519,9 +526,11 @@ public class UserDeleteService {
      * {@link #readUserSecFile(String)}, and on success the first name, last name and user type are
      * populated on the form and the neutral {@link #MSG_PRESS_PF5_TO_DELETE} confirmation prompt is
      * returned (COBOL {@code MOVE DFHNEUTR TO ERRMSGC}). A {@code NOTFND} read raises
-     * {@link RecordNotFoundException} (surfaced centrally as {@link #MSG_USER_ID_NOT_FOUND}); a genuine
-     * {@code WHEN OTHER} I/O failure is caught and reproduced as the {@link #MSG_UNABLE_TO_LOOKUP}
-     * error line, exactly as the COBOL re-displays the screen without aborting.</p>
+     * {@link RecordNotFoundException}, which is <em>caught inline here</em> and re-displayed as the
+     * {@link #MSG_USER_ID_NOT_FOUND} error line on the same screen (not propagated to the global
+     * handler; AAP &sect;0.6.5); a genuine {@code WHEN OTHER} I/O failure is caught and reproduced as
+     * the {@link #MSG_UNABLE_TO_LOOKUP} error line, exactly as the COBOL re-displays the screen
+     * without aborting.</p>
      *
      * <p>This method performs no navigation, so the injected {@link CardDemoContext} hand-off is not
      * mutated here; {@code ctx} is retained as part of the preserved paragraph signature (the COBOL
@@ -551,11 +560,18 @@ public class UserDeleteService {
         form.setUsrtype("");
 
         // COBOL: MOVE USRIDINI TO SEC-USR-ID, PERFORM READ-USER-SEC-FILE. NOTFND raises
-        // RecordNotFoundException (handled centrally); a genuine I/O failure (WHEN OTHER) surfaces as a
+        // RecordNotFoundException, caught here and re-displayed inline as the exact "User ID NOT
+        // found..." line (AAP 0.6.5); a genuine I/O failure (WHEN OTHER) surfaces as a
         // DataAccessException, reproduced as the exact "Unable to lookup User..." line.
         UserSecurity user;
         try {
             user = readUserSecFile(userId);
+        } catch (RecordNotFoundException notFound) {
+            // READ-USER-SEC-FILE WHEN NOTFND: MOVE "User ID NOT found..." TO WS-MESSAGE,
+            // SET ERR-FLG-ON, and re-display the SAME screen inline (it is not an abend).
+            // Reproduce that inline re-display here rather than letting the exception escape
+            // to the full-page handler (AAP 0.6.5 exception parity).
+            return UserDeleteResult.error(notFound.getMessage());
         } catch (DataAccessException ex) {
             return UserDeleteResult.error(MSG_UNABLE_TO_LOOKUP);
         }
@@ -607,6 +623,12 @@ public class UserDeleteService {
         UserSecurity user;
         try {
             user = readUserSecFile(userId);
+        } catch (RecordNotFoundException notFound) {
+            // READ-USER-SEC-FILE WHEN NOTFND on the PF5 delete path: surface the byte-exact
+            // "User ID NOT found..." line and short-circuit the delete, re-displaying the SAME
+            // screen inline (the failed CICS READ ... UPDATE left nothing to delete). Not a
+            // full-page abend (AAP 0.6.5 exception parity).
+            return UserDeleteResult.error(notFound.getMessage());
         } catch (DataAccessException ex) {
             return UserDeleteResult.error(MSG_UNABLE_TO_LOOKUP);
         }
@@ -625,8 +647,9 @@ public class UserDeleteService {
      *       also issued a {@code SEND-USRDEL-SCREEN}; that duplicate send collapses to the single
      *       render performed by the controller for the caller's returned outcome.</li>
      *   <li><b>NOTFND</b> &mdash; raises {@link RecordNotFoundException} carrying
-     *       {@link #MSG_USER_ID_NOT_FOUND}, surfaced by the online {@code @ControllerAdvice} handler as
-     *       the error line (AAP &sect;0.6.5).</li>
+     *       {@link #MSG_USER_ID_NOT_FOUND}; both call paths ({@link #processEnterKey} and
+     *       {@link #deleteUserInfo}) catch it and re-display the SAME screen inline with that error
+     *       line (AAP &sect;0.6.5 exception parity), rather than aborting to the full-page handler.</li>
      *   <li><b>OTHER</b> &mdash; a genuine data-access failure propagates as a Spring
      *       {@link DataAccessException} for the caller to translate into the
      *       {@code "Unable to lookup User..."} line.</li>

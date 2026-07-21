@@ -3,7 +3,9 @@ package com.aws.carddemo.web.controller;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.hamcrest.Matchers.containsString;
 import static org.hamcrest.Matchers.hasProperty;
+import static org.hamcrest.Matchers.is;
 import static org.hamcrest.Matchers.matchesPattern;
+import static org.hamcrest.Matchers.not;
 import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.csrf;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
@@ -78,9 +80,6 @@ class BillPayControllerIT extends AbstractPostgresIntegrationTest {
     /** Logical Thymeleaf view name for the bill-payment screen (BMS map {@code COBIL00}). */
     private static final String VIEW_BILLPAY = "COBIL00";
 
-    /** Shared error view rendered by {@code GlobalExceptionHandler} (also Spring Boot's default). */
-    private static final String VIEW_ERROR = "error";
-
     /** Route the PF3 (back) key returns to &mdash; the main menu ({@code COMEN01C} / {@code CM00}). */
     private static final String ROUTE_MENU = "/menu";
 
@@ -113,9 +112,6 @@ class BillPayControllerIT extends AbstractPostgresIntegrationTest {
 
     /** Screen-form property carrying the error / status message line ({@code ERRMSG}). */
     private static final String PROP_ERRMSG = "errmsg";
-
-    /** Model-attribute name the error view carries the message line under (mirrors {@code ERRMSGO}). */
-    private static final String MODEL_ERROR_MESSAGE = "errorMessage";
 
     /** PF-key token for the ENTER action ({@code COBIL00.html} submit). */
     private static final String KEY_ENTER = "ENTER";
@@ -254,6 +250,30 @@ class BillPayControllerIT extends AbstractPostgresIntegrationTest {
                 .andExpect(model().attributeExists(MODEL_FORM));
     }
 
+    /**
+     * Finding #10 (INFO): a direct or bookmarked {@code GET /billpay} whose session still carries a
+     * <em>stale</em> {@code CDEMO-PGM-REENTER} left by a prior screen must render a CLEAN
+     * first-display screen - not the "Invalid key pressed..." banner that the {@code EVALUATE EIBAID}
+     * {@code WHEN OTHER} arm would emit for the GET's {@code null} AID. COBOL {@code COBIL00C} is only
+     * ever reached from the main menu, which sets {@code CDEMO-PGM-CONTEXT = 0} (MOVE ZEROS) before
+     * its {@code XCTL}, so the program always sees {@code PGM-ENTER} on its first display.
+     * {@code showBillPay} reproduces that by re-seating {@link CardDemoContext#markEnter()} on the
+     * GET, forcing the first-display branch of {@code mainEntry}. This models the defect scenario
+     * with {@code initializedSession(true)} (an already-initialized context in the re-enter state).
+     * Genuine key presses still dispatch through the {@code POST} handler ({@code submitBillPay})
+     * with the real AID.
+     *
+     * @throws Exception if the request cannot be performed
+     */
+    @Test
+    @WithMockUser(roles = "USER")
+    void billPayDirectGetWithStaleReentryIsCleanFirstDisplay() throws Exception {
+        mockMvc.perform(get(PATH_BILLPAY).session(initializedSession(true)))
+                .andExpect(status().isOk())
+                .andExpect(view().name(VIEW_BILLPAY))
+                .andExpect(model().attribute(MODEL_FORM, hasProperty(PROP_ERRMSG, not(containsString("Invalid key")))));
+    }
+
     // --- Phase 2: CB00 payment path ----------------------------------------
 
     /**
@@ -280,7 +300,11 @@ class BillPayControllerIT extends AbstractPostgresIntegrationTest {
                 .andExpect(view().name(VIEW_BILLPAY))
                 .andExpect(model().attribute(MODEL_FORM, hasProperty(PROP_CURBAL, matchesPattern(BALANCE_PATTERN))))
                 .andExpect(model().attribute(MODEL_FORM,
-                        hasProperty(PROP_ERRMSG, containsString("Confirm to make a bill payment"))));
+                        hasProperty(PROP_ERRMSG, containsString("Confirm to make a bill payment"))))
+                // Finding #11: the confirm-payment prompt is the COBOL DFHNEUTR line, so it renders
+                // neutral (white), not the BMS default red.
+                .andExpect(model().attribute(MODEL_FORM,
+                        hasProperty("errmsgColor", is("neutral"))));
     }
 
     /**
@@ -352,30 +376,47 @@ class BillPayControllerIT extends AbstractPostgresIntegrationTest {
                 .andExpect(status().isOk())
                 .andExpect(view().name(VIEW_BILLPAY))
                 .andExpect(model().attribute(MODEL_FORM,
-                        hasProperty(PROP_ERRMSG, containsString("Payment successful"))));
+                        hasProperty(PROP_ERRMSG, containsString("Payment successful"))))
+                // Finding #11: the payment-successful line is coloured green by the COBOL
+                // MOVE DFHGREEN TO ERRMSGC (COBIL00C:526).
+                .andExpect(model().attribute(MODEL_FORM,
+                        hasProperty("errmsgColor", is("green"))));
     }
 
     /**
-     * Submitting a non-existent account id surfaces the not-found outcome.
+     * Submitting a non-existent account id re-displays the {@code COBIL00} screen inline with the
+     * COBOL not-found message (review finding #1-twin).
      *
-     * <p>Reproduces the COBOL {@code READ-ACCTDAT-FILE} {@code NOTFND} branch: the missing account
-     * raises {@code RecordNotFoundException}, which {@code GlobalExceptionHandler} renders as the
-     * shared {@code error} view with HTTP {@code 404} and the message line carrying the COBOL
-     * {@code "Account ID NOT found..."} text.</p>
+     * <p>Reproduces the COBOL {@code READ-ACCTDAT-FILE} {@code NOTFND} branch of {@code COBIL00C}
+     * ({@code PROCESS-ENTER-KEY}): the missing account sets {@code WS-ERR-FLG}, moves
+     * {@code "Account ID NOT found..."} to {@code WS-MESSAGE}, and re-sends the same
+     * {@code COBIL00} map so the operator can correct the account id in place - it does <em>not</em>
+     * abend to a full-screen error. The Java migration therefore catches the
+     * {@code RecordNotFoundException} inside {@link BillPayService#processEnterKey} and returns an
+     * error {@link BillPayService.BillPayResult}, which the controller renders as the
+     * {@code COBIL00} view with HTTP {@code 200} and the message on the {@code ERRMSG} field - never
+     * the shared full-page {@code error} view. Asserting the inline re-display is the corrected
+     * parity contract (the earlier expectation of HTTP {@code 404} on the {@code error} view encoded
+     * the pre-fix escape-to-handler behavior).</p>
      *
      * @throws Exception if the request cannot be performed
      */
     @Test
     @WithMockUser(roles = "USER")
-    void billPayNotFoundPropagates() throws Exception {
+    void billPayNotFoundReDisplaysInline() throws Exception {
         mockMvc.perform(post(PATH_BILLPAY)
                         .session(initializedSession(true))
                         .param(PARAM_ACCT, NONEXISTENT_ACCT_ID)
                         .param(PARAM_PFKEY, KEY_ENTER)
                         .with(csrf()))
-                .andExpect(status().isNotFound())
-                .andExpect(view().name(VIEW_ERROR))
-                .andExpect(model().attribute(MODEL_ERROR_MESSAGE, containsString("found")));
+                .andExpect(status().isOk())
+                .andExpect(view().name(VIEW_BILLPAY))
+                .andExpect(model().attribute(MODEL_FORM,
+                        hasProperty(PROP_ERRMSG, containsString("NOT found"))))
+                // Finding #11: the account-not-found line is a COBOL error, so it renders in the
+                // BMS default red.
+                .andExpect(model().attribute(MODEL_FORM,
+                        hasProperty("errmsgColor", is("red"))));
     }
 
     /**

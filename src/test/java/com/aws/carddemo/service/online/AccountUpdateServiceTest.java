@@ -289,6 +289,115 @@ class AccountUpdateServiceTest {
     }
 
     @Test
+    @DisplayName("(A1b) Successful fetch populates every COACTUP display field from the baseline "
+            + "(3202-SHOW-ORIGINAL-VALUES; review finding #2)")
+    void successfulFetch_populatesAllOriginalDisplayFields() {
+        AccountUpdateState state = new AccountUpdateState(); // DETAILS_NOT_FETCHED
+
+        Account account = new Account();
+        account.setAcctId(ACCT_ID);
+        account.setActiveStatus("Y");
+        account.setCurrBal(new BigDecimal("250.00"));
+        account.setCreditLimit(new BigDecimal("1000.00"));
+        account.setCashCreditLimit(new BigDecimal("500.00"));
+        account.setCurrCycCredit(new BigDecimal("100.00"));
+        account.setCurrCycDebit(new BigDecimal("50.00"));
+        account.setOpenDate(LocalDate.of(2020, 1, 15));
+        account.setExpiraionDate(LocalDate.of(2025, 12, 31));
+        account.setReissueDate(LocalDate.of(2021, 6, 1));
+        account.setGroupId("GROUP01");
+
+        Customer customer = new Customer();
+        customer.setCustId(CUST_ID);
+        customer.setSsn(123456789L);
+        customer.setDateOfBirth(LocalDate.of(1980, 5, 20));
+        customer.setFicoCreditScore(700);
+        customer.setFirstName("JOHN");
+        customer.setMiddleName("QUINCY");
+        customer.setLastName("DOE");
+        customer.setAddrLine1("123 MAIN ST");
+        customer.setAddrLine2("APT 4");
+        customer.setAddrLine3("LOS ANGELES");
+        customer.setAddrStateCd("CA");
+        customer.setAddrCountryCd("USA");
+        customer.setAddrZip("90001");
+        customer.setPhoneNum1("(212)555-1234");
+        customer.setPhoneNum2("(908)119-8310");
+        customer.setGovtIssuedId("GOVT123");
+        customer.setEftAccountId("1234567890");
+        customer.setPriCardHolderInd("Y");
+
+        when(context.getAcctId()).thenReturn(ACCT_ID);
+        when(context.getCustId()).thenReturn(CUST_ID);
+        when(cardXrefRepository.findByXrefAcctId(ACCT_ID))
+                .thenReturn(List.of(new CardXref(XREF_CARD_NUM, CUST_ID, ACCT_ID)));
+        when(accountRepository.findById(ACCT_ID)).thenReturn(Optional.of(account));
+        when(customerRepository.findById(CUST_ID)).thenReturn(Optional.of(customer));
+
+        // A deliberately blank form (only the search key) reproduces finding #2: before
+        // the fix, the fetched account/customer detail fields were never moved onto the
+        // screen (3202-SHOW-ORIGINAL-VALUES was missing), so a successful search returned
+        // an empty CACTUPA. The fetch turn reads only the search key, so the remaining
+        // fields must be filled from the fetched baseline, not from the submitted form.
+        COACTUPForm blank = new COACTUPForm();
+        blank.setAcctsid(ACCT_ID_TEXT);
+
+        AccountUpdateResult result = service.process(blank, PfKey.ENTER, state);
+
+        assertThat(result.changeAction()).isEqualTo(ChangeAction.SHOW_DETAILS);
+        assertThat(result.inputError()).isFalse();
+
+        // Account block - IF FOUND-ACCT-IN-MASTER OR FOUND-CUST-IN-MASTER (money via
+        // toPlainString; CCYYMMDD dates split into year/month/day).
+        assertThat(blank.getAcctsid()).isEqualTo(ACCT_ID_TEXT);
+        assertThat(blank.getAcsttus()).isEqualTo("Y");
+        assertThat(blank.getAcurbal()).isEqualTo("250.00");
+        assertThat(blank.getAcrdlim()).isEqualTo("1000.00");
+        assertThat(blank.getAcshlim()).isEqualTo("500.00");
+        assertThat(blank.getAcrcycr()).isEqualTo("100.00");
+        assertThat(blank.getAcrcydb()).isEqualTo("50.00");
+        assertThat(blank.getOpnyear()).isEqualTo("2020");
+        assertThat(blank.getOpnmon()).isEqualTo("01");
+        assertThat(blank.getOpnday()).isEqualTo("15");
+        assertThat(blank.getExpyear()).isEqualTo("2025");
+        assertThat(blank.getExpmon()).isEqualTo("12");
+        assertThat(blank.getExpday()).isEqualTo("31");
+        assertThat(blank.getRisyear()).isEqualTo("2021");
+        assertThat(blank.getRismon()).isEqualTo("06");
+        assertThat(blank.getRisday()).isEqualTo("01");
+        assertThat(blank.getAaddgrp()).isEqualTo("GROUP01");
+
+        // Customer block - IF FOUND-CUST-IN-MASTER (SSN 3/2/4 split, phone area/prefix/
+        // line split, and the legacy CUST-ADDR-LINE-3 -> CITY quirk).
+        assertThat(blank.getAcstnum()).isEqualTo("000000001");
+        assertThat(blank.getActssn1()).isEqualTo("123");
+        assertThat(blank.getActssn2()).isEqualTo("45");
+        assertThat(blank.getActssn3()).isEqualTo("6789");
+        assertThat(blank.getAcstfco()).isEqualTo("700");
+        assertThat(blank.getDobyear()).isEqualTo("1980");
+        assertThat(blank.getDobmon()).isEqualTo("05");
+        assertThat(blank.getDobday()).isEqualTo("20");
+        assertThat(blank.getAcsfnam()).isEqualTo("JOHN");
+        assertThat(blank.getAcsmnam()).isEqualTo("QUINCY");
+        assertThat(blank.getAcslnam()).isEqualTo("DOE");
+        assertThat(blank.getAcsadl1()).isEqualTo("123 MAIN ST");
+        assertThat(blank.getAcsadl2()).isEqualTo("APT 4");
+        assertThat(blank.getAcscity()).isEqualTo("LOS ANGELES"); // addr line 3 -> CITY
+        assertThat(blank.getAcsstte()).isEqualTo("CA");
+        assertThat(blank.getAcszipc()).isEqualTo("90001");
+        assertThat(blank.getAcsctry()).isEqualTo("USA");
+        assertThat(blank.getAcsph1a()).isEqualTo("212");
+        assertThat(blank.getAcsph1b()).isEqualTo("555");
+        assertThat(blank.getAcsph1c()).isEqualTo("1234");
+        assertThat(blank.getAcsph2a()).isEqualTo("908");
+        assertThat(blank.getAcsph2b()).isEqualTo("119");
+        assertThat(blank.getAcsph2c()).isEqualTo("8310");
+        assertThat(blank.getAcsgovt()).isEqualTo("GOVT123");
+        assertThat(blank.getAcseftc()).isEqualTo("1234567890");
+        assertThat(blank.getAcspflg()).isEqualTo("Y");
+    }
+
+    @Test
     @DisplayName("(A2a) Xref not found -> banner, input error, and the read chain stops (guard active)")
     void readChain_xrefNotFound_setsBannerAndStopsChain() {
         AccountUpdateState state = new AccountUpdateState();

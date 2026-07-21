@@ -372,6 +372,26 @@ public class TransactionAddService {
     /** Fixed merchant-id width ({@code TRAN-MERCHANT-ID PIC 9(09)} echoed to {@code MIDI}). */
     private static final int MERCHANT_ID_WIDTH = 9;
 
+    // -- BMS screen-field widths for the copy-last-transaction text moves (review finding #12) ------
+    // COBOL COPY-LAST-TRAN-DATA (legacy/cbl/COTRN02C.cbl lines 481-492) moves each transaction text
+    // field into a BMS map field whose PIC X(n) width is narrower than (or equal to) the underlying
+    // TRAN-RECORD field. A COBOL MOVE to a shorter PIC X field truncates to the destination width, so
+    // the copied value can never overflow the BMS field. These constants are the BMS field widths
+    // (identical to the COTRN02Form @Size ceilings) used by {@link #truncateToWidth(String, int)} to
+    // reproduce that MOVE truncation and prevent the "Input exceeds the maximum length..." overflow.
+    /** {@code TTYPCDI PIC X(02)} - transaction type code display width. */
+    private static final int TTYPCD_WIDTH = 2;
+    /** {@code TRNSRCI PIC X(10)} - transaction source display width. */
+    private static final int TRNSRC_WIDTH = 10;
+    /** {@code TDESCI PIC X(60)} - transaction description display width ({@code TRAN-DESC} is {@code X(100)}). */
+    private static final int TDESC_WIDTH = 60;
+    /** {@code MNAMEI PIC X(30)} - merchant name display width ({@code TRAN-MERCHANT-NAME} is {@code X(50)}). */
+    private static final int MNAME_WIDTH = 30;
+    /** {@code MCITYI PIC X(25)} - merchant city display width ({@code TRAN-MERCHANT-CITY} is {@code X(50)}). */
+    private static final int MCITY_WIDTH = 25;
+    /** {@code MZIPI PIC X(10)} - merchant ZIP display width. */
+    private static final int MZIP_WIDTH = 10;
+
     /** Immutable {@code YYYY-MM-DD} formatter used for the date-string &harr; {@link LocalDateTime} mapping. */
     private static final DateTimeFormatter ISO_DATE = DateTimeFormatter.ofPattern("yyyy-MM-dd", Locale.ROOT);
 
@@ -972,21 +992,31 @@ public class TransactionAddService {
      * {@code YYYY-MM-DD}. The card number is intentionally not copied - the COBOL leaves
      * {@code CARDNINI} as set by key-field validation.</p>
      *
+     * <p>The six free-text fields ({@code TTYPCDI}, {@code TRNSRCI}, {@code TDESCI}, {@code MNAMEI},
+     * {@code MCITYI}, {@code MZIPI}) are copied through {@link #truncateToWidth(String, int)} to
+     * reproduce COBOL {@code MOVE}-to-shorter-PIC-X truncation (review finding #12). The source
+     * {@link Transaction} text columns are {@code CHAR(n)} ({@code bpchar}), so Hibernate returns them
+     * space-padded to the full column width (e.g. {@code TRAN-DESC} is {@code CHAR(100)}); copying the
+     * raw padded value into the narrower {@code @Size} form field (e.g. {@code tdesc} is
+     * {@code @Size(max=60)}) previously overflowed with "Input exceeds the maximum length..." and
+     * trapped the screen. Truncating to the BMS field width matches the COBOL {@code MOVE} exactly and
+     * keeps the copied value within the form constraint.</p>
+     *
      * @param transaction the source record
      * @param form        the destination screen form
      */
     private void copyTransactionToForm(Transaction transaction, COTRN02Form form) {
-        form.setTtypcd(transaction.getTranTypeCd());
+        form.setTtypcd(truncateToWidth(transaction.getTranTypeCd(), TTYPCD_WIDTH));
         form.setTcatcd(formatOptionalNumber(transaction.getTranCatCd(), CATEGORY_CODE_WIDTH));
-        form.setTrnsrc(transaction.getTranSource());
+        form.setTrnsrc(truncateToWidth(transaction.getTranSource(), TRNSRC_WIDTH));
         form.setTrnamt(formatAmountEditMask(transaction.getTranAmt()));
-        form.setTdesc(transaction.getTranDesc());
+        form.setTdesc(truncateToWidth(transaction.getTranDesc(), TDESC_WIDTH));
         form.setTorigdt(formatFormDate(transaction.getOrigTs()));
         form.setTprocdt(formatFormDate(transaction.getProcTs()));
         form.setMid(formatOptionalNumber(transaction.getMerchantId(), MERCHANT_ID_WIDTH));
-        form.setMname(transaction.getMerchantName());
-        form.setMcity(transaction.getMerchantCity());
-        form.setMzip(transaction.getMerchantZip());
+        form.setMname(truncateToWidth(transaction.getMerchantName(), MNAME_WIDTH));
+        form.setMcity(truncateToWidth(transaction.getMerchantCity(), MCITY_WIDTH));
+        form.setMzip(truncateToWidth(transaction.getMerchantZip(), MZIP_WIDTH));
     }
 
     /**
@@ -1135,6 +1165,27 @@ public class TransactionAddService {
             builder.append(' ');
         }
         return builder.toString();
+    }
+
+    /**
+     * Truncates {@code value} to at most {@code width} characters, reproducing the truncation half of a
+     * COBOL {@code MOVE} into a shorter {@code PIC X(width)} field (review finding #12). A value already
+     * within {@code width} (including a {@code null}, treated as absent) is returned unchanged; a longer
+     * value keeps its leading {@code width} characters. Because the source {@link Transaction} text
+     * columns are {@code CHAR(n)} and therefore returned space-padded to the full column width, the
+     * result for the copy-last-transaction fields is exactly the destination BMS field's fixed-width
+     * content, matching the COBOL {@code MOVE} byte-for-byte.
+     *
+     * @param value the source value (may be {@code null})
+     * @param width the destination field width (the BMS {@code PIC X} length)
+     * @return {@code value} truncated to {@code width} characters, or {@code value} unchanged when
+     *         {@code null} or already within {@code width}
+     */
+    private static String truncateToWidth(String value, int width) {
+        if (value == null || value.length() <= width) {
+            return value;
+        }
+        return value.substring(0, width);
     }
 
     /**

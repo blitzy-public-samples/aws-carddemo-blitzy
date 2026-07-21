@@ -254,7 +254,7 @@
 
       <!-- ==================== Messages & PF-key legend ================= -->
       <!-- Row 23: error / status message (RED, bright), shown only when present -->
-      <div class="cell red brt errmsg" style="--r:23;--c:1" role="alert" th:if="${!#strings.isEmpty(form.errmsg)}" th:text="*{errmsg}"></div>
+      <div class="cell brt errmsg" th:classappend="${form.errmsgColor}" style="--r:23;--c:1" role="alert" th:if="${!#strings.isEmpty(form.errmsg)}" th:text="*{errmsg}"></div>
 
       <!-- Row 24: PF-key legend. ENTER is the first submit button in document
            order, so pressing Enter in any field submits with pfkey=ENTER (the

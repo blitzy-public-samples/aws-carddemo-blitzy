@@ -496,6 +496,25 @@ public class COTRN02Form {
     }
 
     /**
+     * BMS {@code ERRMSGC} &mdash; the colour attribute of the {@link #errmsg} line, reproducing the
+     * COBOL {@code MOVE DFHxxx TO ERRMSGC OF COTRN2AO}. Holds the semantic 3270 colour token the
+     * template uses to pick the message colour class: {@code "red"} (error; the BMS map default
+     * {@code COLOR=RED}), {@code "green"} (COBOL {@code DFHGREEN}, the "Transaction added
+     * successfully" line), or {@code "neutral"} (COBOL {@code DFHNEUTR}). Render-only (never a bound
+     * input; excluded from the {@code @InitBinder} allow-list); defaults to {@code "red"} so any
+     * path that does not explicitly set a colour reproduces the legacy default red line.
+     */
+    private String errmsgColor = "red";
+
+    public String getErrmsgColor() {
+        return errmsgColor;
+    }
+
+    public void setErrmsgColor(String errmsgColor) {
+        this.errmsgColor = errmsgColor;
+    }
+
+    /**
      * Returns a non-sensitive diagnostic representation containing only the class name and an opaque
      * per-instance identity token. Screen-form fields (which may include card numbers, account and
      * customer identifiers, names, balances, or credentials) are never rendered, so form state cannot

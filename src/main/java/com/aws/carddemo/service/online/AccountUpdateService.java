@@ -3529,6 +3529,69 @@ public class AccountUpdateService {
         return (value == null) ? "" : value;
     }
 
+    /**
+     * Renders a monetary {@link BigDecimal} to its display string using
+     * {@link BigDecimal#toPlainString()} (value-faithful, no exponent, no
+     * floating point), matching {@code COACTVWC}'s {@code formatAmount}. A
+     * {@code null} amount renders as the empty string.
+     *
+     * <p>The COBOL {@code 3202} moves each amount through the
+     * {@code WS-EDIT-CURRENCY-9-2-F} edit mask, but the {@code COACTUP} money
+     * fields are <em>editable</em> and must round-trip back through
+     * {@code NUMVAL-C} ({@link #numvalC(String)}); the plain string is the
+     * value-faithful form {@code NUMVAL-C} accepts, so display-then-resubmit is a
+     * numeric no-op (documented parity choice - AAP &sect;0.6.1 decimal fidelity).</p>
+     *
+     * @param amount the monetary value, or {@code null}
+     * @return the plain-string representation, or {@code ""} when {@code null}
+     */
+    private static String formatAmount(BigDecimal amount) {
+        return (amount == null) ? "" : amount.toPlainString();
+    }
+
+    /**
+     * Extracts a date component from the fetched compact {@code CCYYMMDD}
+     * baseline, the exact inverse of {@link NewInput#composeOpenDate()} /
+     * {@link NewInput#composeDob()} (which concatenate {@code seg(year,4) +
+     * seg(mon,2) + seg(day,2)}). The value is imaged to eight characters first, so
+     * a {@code null}/blank baseline yields blank components that image back to the
+     * same eight spaces during {@code 1205-COMPARE-OLD-NEW}.
+     *
+     * @param ccyymmdd the fetched compact date (may be {@code null})
+     * @param part     {@code 0} for the 4-digit year, {@code 1} for the 2-digit
+     *                 month, otherwise the 2-digit day
+     * @return the requested fixed-width component
+     */
+    private static String oldDatePart(String ccyymmdd, int part) {
+        String d = fixedWindow(ccyymmdd, 8);
+        return switch (part) {
+            case 0 -> d.substring(0, 4);
+            case 1 -> d.substring(4, 6);
+            default -> d.substring(6, 8);
+        };
+    }
+
+    /**
+     * Extracts an SSN component from the fetched 9-digit baseline, the exact
+     * inverse of {@link NewInput#composeSsn()} (which concatenates
+     * {@code seg(ssn1,3) + seg(ssn2,2) + seg(ssn3,4)}), mirroring the COBOL
+     * {@code MOVE ACUP-OLD-CUST-SSN-X(1:3) / (4:2) / (6:4)}. The value is imaged
+     * to nine characters first so a blank baseline yields blank components.
+     *
+     * @param ssn9 the fetched 9-digit SSN (may be {@code null})
+     * @param part {@code 0} for the 3-digit area, {@code 1} for the 2-digit group,
+     *             otherwise the 4-digit serial
+     * @return the requested fixed-width component
+     */
+    private static String oldSsnPart(String ssn9, int part) {
+        String s = fixedWindow(ssn9, 9);
+        return switch (part) {
+            case 0 -> s.substring(0, 3);
+            case 1 -> s.substring(3, 5);
+            default -> s.substring(5, 9);
+        };
+    }
+
 
     // =====================================================================
     // Phase 5 - Read chain (9000/9200/9300/9400/9500) and dual-entity
@@ -4348,10 +4411,124 @@ public class AccountUpdateService {
             // issues the redirect using the target recorded on the context.
             return AccountUpdateResult.exit(banner);
         }
+        // 3200-SETUP-SCREEN-VARS (COBOL lines 2698-2727), performed at SEND-MAP
+        // time before COMMON-RETURN. The screen disposition is driven purely by
+        // ACUP-CHANGE-ACTION:
+        //   * WHEN ACUP-SHOW-DETAILS -> 3202-SHOW-ORIGINAL-VALUES: re-present the
+        //     fetched ACUP-OLD-DETAILS baseline. This is the only state that needs
+        //     a server-side field move, because the map fields are otherwise empty
+        //     on the fetch turn (review finding #2: none of the 27 detail fields
+        //     were being populated).
+        //   * WHEN ACUP-CHANGES-MADE (E/N/C/L/F) -> 3203-SHOW-UPDATED-VALUES:
+        //     re-present ACUP-NEW-DETAILS, which the bound COACTUPForm already
+        //     carries across the turn, so no move is required here.
+        //   * WHEN ACUP-DETAILS-NOT-FETCHED / CC-ACCT-ID-N = 0 -> 3201: the empty
+        //     search screen; the fresh form already renders blank.
+        if (st.getState().getChangeAction() == ChangeAction.SHOW_DETAILS) {
+            populateOriginalDisplay(form, st.getState().getOldSnapshot(), st);
+        }
         MessageSeverity severity =
                 (banner == null || banner.isBlank()) ? MessageSeverity.NONE : MessageSeverity.ERROR;
         return AccountUpdateResult.show(banner, severity, st.isInputError(),
                 st.getState().getChangeAction(), st.getFieldFlags());
+    }
+
+    /**
+     * {@code 3202-SHOW-ORIGINAL-VALUES} ({@code legacy/cbl/COACTUPC.cbl} lines
+     * 2789-2863) - copies the fetched {@code ACUP-OLD-DETAILS} baseline onto the
+     * {@code COACTUP} screen when the render state is
+     * {@link ChangeAction#SHOW_DETAILS}. This is the account-update analogue of
+     * {@code COACTVWC}'s {@code 1200-SETUP-SCREEN-VARS} account/customer moves and
+     * closes review finding #2 (the fetched detail fields were never populated, so
+     * the screen came back blank after a successful search).
+     *
+     * <p><b>Guard parity.</b> The account block is emitted under
+     * {@code IF FOUND-ACCT-IN-MASTER OR FOUND-CUST-IN-MASTER} and the customer
+     * block under {@code IF FOUND-CUST-IN-MASTER}, exactly as the COBOL. On the
+     * fetch turn both flags are set by {@code 9300-GETACCTDATA-BYACCT} /
+     * {@code 9400-GETCUSTDATA-BYCUST}; on a subsequent no-change re-display
+     * {@code 1200-EDIT-MAP-INPUTS} re-asserts them.</p>
+     *
+     * <p><b>Field-shape parity.</b> Monetary fields are rendered with
+     * {@link #formatAmount(BigDecimal)} ({@link BigDecimal#toPlainString()}, no
+     * floating point) so the value round-trips through the editable
+     * {@code NUMVAL-C} inputs; the compact {@code CCYYMMDD} dates and the 9-digit
+     * SSN are split back into their year/month/day and 3/2/4 screen components -
+     * the exact inverse of {@link NewInput#composeOpenDate()} /
+     * {@link NewInput#composeSsn()} used by {@code 1205-COMPARE-OLD-NEW}, so a
+     * populate-then-resubmit with no edits compares equal and never reports a
+     * spurious change. Phone components reuse {@link #oldPhonePart(String, int)},
+     * and - a preserved legacy quirk - customer address line 3 populates the
+     * <em>city</em> field ({@code MOVE ACUP-OLD-CUST-ADDR-LINE-3 TO ACSCITYO}).</p>
+     *
+     * @param form the bound screen form to populate (the same instance the view
+     *             renders)
+     * @param old  the fetched {@code ACUP-OLD-DETAILS} baseline, or {@code null}
+     *             when no successful fetch has occurred (defensive no-op)
+     * @param st   the per-request state carrying the {@code FOUND-*} flags
+     */
+    private void populateOriginalDisplay(COACTUPForm form, AccountSnapshot old, ProcessingState st) {
+        if (old == null) {
+            return;
+        }
+
+        // Echo the validated account id, zero-filled to 11 (the pre-EVALUATE
+        // MOVE CC-ACCT-ID TO ACCTSIDO of 3200), matching COACTVWC's acctsid echo.
+        if (old.getAcctId() != null) {
+            form.setAcctsid(old.getAcctId());
+        }
+
+        // IF FOUND-ACCT-IN-MASTER OR FOUND-CUST-IN-MASTER (account block).
+        if (st.isFoundAcctInMaster() || st.isFoundCustInMaster()) {
+            form.setAcsttus(nz(old.getActiveStatus()));
+            form.setAcurbal(formatAmount(old.getCurrBal()));
+            form.setAcrdlim(formatAmount(old.getCreditLimit()));
+            form.setAcshlim(formatAmount(old.getCashCreditLimit()));
+            form.setAcrcycr(formatAmount(old.getCurrCycCredit()));
+            form.setAcrcydb(formatAmount(old.getCurrCycDebit()));
+            form.setOpnyear(oldDatePart(old.getOpenDate(), 0));
+            form.setOpnmon(oldDatePart(old.getOpenDate(), 1));
+            form.setOpnday(oldDatePart(old.getOpenDate(), 2));
+            form.setExpyear(oldDatePart(old.getExpirationDate(), 0));
+            form.setExpmon(oldDatePart(old.getExpirationDate(), 1));
+            form.setExpday(oldDatePart(old.getExpirationDate(), 2));
+            form.setRisyear(oldDatePart(old.getReissueDate(), 0));
+            form.setRismon(oldDatePart(old.getReissueDate(), 1));
+            form.setRisday(oldDatePart(old.getReissueDate(), 2));
+            form.setAaddgrp(nz(old.getGroupId()));
+        }
+
+        // IF FOUND-CUST-IN-MASTER (customer block).
+        if (st.isFoundCustInMaster()) {
+            form.setAcstnum(nz(old.getCustId()));
+            form.setActssn1(oldSsnPart(old.getSsn(), 0));
+            form.setActssn2(oldSsnPart(old.getSsn(), 1));
+            form.setActssn3(oldSsnPart(old.getSsn(), 2));
+            form.setAcstfco(nz(old.getFicoScore()));
+            form.setDobyear(oldDatePart(old.getDateOfBirth(), 0));
+            form.setDobmon(oldDatePart(old.getDateOfBirth(), 1));
+            form.setDobday(oldDatePart(old.getDateOfBirth(), 2));
+            form.setAcsfnam(nz(old.getFirstName()));
+            form.setAcsmnam(nz(old.getMiddleName()));
+            form.setAcslnam(nz(old.getLastName()));
+            form.setAcsadl1(nz(old.getAddrLine1()));
+            form.setAcsadl2(nz(old.getAddrLine2()));
+            // Legacy quirk: customer address line 3 populates the CITY field
+            // (MOVE ACUP-OLD-CUST-ADDR-LINE-3 TO ACSCITYO), mirrored in COACTVWC.
+            form.setAcscity(nz(old.getAddrLine3()));
+            form.setAcsstte(nz(old.getAddrStateCd()));
+            form.setAcszipc(nz(old.getAddrZip()));
+            form.setAcsctry(nz(old.getAddrCountryCd()));
+            form.setAcsph1a(oldPhonePart(old.getPhoneNum1(), 0));
+            form.setAcsph1b(oldPhonePart(old.getPhoneNum1(), 1));
+            form.setAcsph1c(oldPhonePart(old.getPhoneNum1(), 2));
+            form.setAcsph2a(oldPhonePart(old.getPhoneNum2(), 0));
+            form.setAcsph2b(oldPhonePart(old.getPhoneNum2(), 1));
+            form.setAcsph2c(oldPhonePart(old.getPhoneNum2(), 2));
+            form.setAcsgovt(nz(old.getGovtIssuedId()));
+            form.setAcseftc(nz(old.getEftAccountId()));
+            form.setAcspflg(nz(old.getPriHolderInd()));
+        }
     }
 
     /**

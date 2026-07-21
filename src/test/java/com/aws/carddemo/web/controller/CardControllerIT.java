@@ -2,6 +2,7 @@ package com.aws.carddemo.web.controller;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.hamcrest.Matchers.containsString;
+import static org.hamcrest.Matchers.emptyOrNullString;
 import static org.hamcrest.Matchers.equalTo;
 import static org.hamcrest.Matchers.hasProperty;
 import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.csrf;
@@ -98,14 +99,8 @@ class CardControllerIT extends com.aws.carddemo.AbstractPostgresIntegrationTest 
     /** Logical view of the card-update screen (BMS map {@code COCRDUP}). */
     private static final String VIEW_UPDATE = "COCRDUP";
 
-    /** Shared error view rendered by {@link com.aws.carddemo.exception.GlobalExceptionHandler}. */
-    private static final String VIEW_ERROR = "error";
-
     /** Model attribute holding the bound screen form for every card view. */
     private static final String ATTR_FORM = "form";
-
-    /** Model attribute holding the on-screen error line (BMS {@code ERRMSGO} analogue). */
-    private static final String ATTR_ERROR_MESSAGE = "errorMessage";
 
     /** Request parameter carrying the submitted PF-key token. */
     private static final String PARAM_PFKEY = "pfkey";
@@ -168,11 +163,64 @@ class CardControllerIT extends com.aws.carddemo.AbstractPostgresIntegrationTest 
     /** A card number absent from the seed &mdash; drives the {@code NOTFND} / not-found path. */
     private static final String MISSING_CARD_NUM = "9999999999999999";
 
+    /**
+     * Account id filter for the list-narrowing / paging-boundary tests (review findings #6 and #7),
+     * left-padded to the {@code PIC X(11)} field width. Deliberately <em>not</em>
+     * {@link #SEEDED_ACCT_ID}: account {@code 50}'s card is the ascending-first card in the whole
+     * cluster, so filtering to it would leave row one unchanged and a broken filter would still pass.
+     * Account {@code 1}'s single card ({@link #FILTER_ACCT_LATE_CARD_NUM}) sorts at ascending rank 49
+     * (page seven), so filtering to it visibly changes row one and collapses the list to a single row.
+     */
+    private static final String FILTER_ACCT_ID_LATE = "00000000001";
+
+    /**
+     * The single card owned by {@link #FILTER_ACCT_ID_LATE} (account {@code 1}). Its {@code card_num}
+     * sorts near the end of the cluster (rank 49 of 50), so it never appears on the unfiltered first
+     * page; seeing it in row one proves the account filter was actually applied (finding #6).
+     */
+    private static final String FILTER_ACCT_LATE_CARD_NUM = "9680294154603697";
+
+    /**
+     * The unfiltered ascending-first card ({@code card_num} order, not account order). Used as the
+     * negative control in the filter-narrowing test: after filtering to account {@code 1}, row one
+     * must no longer be this value (COBOL {@code COCRDLIC} lists by the {@code CARDDAT} KSDS key).
+     */
+    private static final String UNFILTERED_FIRST_CARD_NUM = "0500024453765740";
+
+    /**
+     * Paging-boundary line raised only on the <em>second</em> forward key-press once the last page is
+     * already on screen (COBOL {@code COCRDLIC} {@code 1400-SETUP-MESSAGE},
+     * {@code legacy/cbl/COCRDLIC.cbl} line 908). Distinct from {@link #MSG_NO_MORE_RECORDS}.
+     */
+    private static final String MSG_NO_MORE_PAGES = "NO MORE PAGES TO DISPLAY";
+
+    /**
+     * Read-forward end-of-file line (COBOL {@code COCRDLIC} {@code 9000-READ-FORWARD},
+     * {@code legacy/cbl/COCRDLIC.cbl} lines 1219/1239). It is the overridable default the first
+     * boundary key-press keeps; the second boundary key-press replaces it with
+     * {@link #MSG_NO_MORE_PAGES} (finding #7).
+     */
+    private static final String MSG_NO_MORE_RECORDS = "NO MORE RECORDS TO SHOW";
+
     /** Scoped-proxy session attribute under which the session-scoped {@link CardDemoContext} lives. */
     private static final String CONTEXT_SESSION_ATTR = "scopedTarget.cardDemoContext";
 
     /** COBOL {@code LIT-CCLISTPGM} &mdash; the card-list program the detail/update screens return from. */
     private static final String LIT_CCLISTPGM = "COCRDLIC";
+
+    /**
+     * COBOL {@code LIT-THISPGM VALUE 'COCRDUPC'} - the card-update program itself. Used to build a
+     * re-navigation context whose {@code CDEMO-FROM-PROGRAM} is neither the menu nor the card list,
+     * exercising the finding #4 fresh-GET guard.
+     */
+    private static final String LIT_CCUPPGM = "COCRDUPC";
+
+    /**
+     * COBOL {@code 'Please enter Account and Card Number'} - the card-update fresh-entry information
+     * line ({@code 3250-SETUP-INFOMSG} under {@code CDEMO-PGM-ENTER}). A clean first-entry GET must
+     * show this prompt with no error line.
+     */
+    private static final String INFO_PROMPT_FOR_SEARCH_KEYS = "Please enter Account and Card Number";
 
     /** Seeded embossed name for {@link #SEEDED_CARD_NUM} (alphabetic + space, edit-valid). */
     private static final String SEEDED_CARD_NAME = "Aniya Von";
@@ -431,6 +479,98 @@ class CardControllerIT extends com.aws.carddemo.AbstractPostgresIntegrationTest 
                 .andExpect(view().name(VIEW_UPDATE));
     }
 
+    /**
+     * Builds a session whose {@link CardDemoContext} is a live, re-entered context (a prior turn
+     * already ran) whose {@code CDEMO-FROM-PROGRAM} is neither the menu ({@code COMEN01C}) nor the
+     * card list ({@code COCRDLIC}) - here the card-update program itself, as after a completed
+     * interaction the operator re-navigates to. Without the finding #4 guard a fresh GET in this
+     * state falls through to input processing on the empty form and surfaces a stale error line.
+     *
+     * @return a session pre-seeded with a re-entered, non-list, non-menu context
+     */
+    private static MockHttpSession reNavigatedUpdateSessionNotFromList() {
+        CardDemoContext context = new CardDemoContext();
+        context.markInitialized();            // not new (EIBCALEN != 0)
+        context.markReenter();                // NOT program-enter - a prior turn already ran
+        context.setFromProgram(LIT_CCUPPGM);  // CDEMO-FROM-PROGRAM is neither COMEN01C nor COCRDLIC
+        MockHttpSession session = new MockHttpSession();
+        session.setAttribute(CONTEXT_SESSION_ATTR, context);
+        return session;
+    }
+
+    /**
+     * Finding #4 - a GET to the card-update route that is NOT the card-list hand-off must render a
+     * clean first-entry screen. A re-navigation while the session context still names a non-list,
+     * non-menu from-program previously fell through to {@code mainEntry}'s input-processing branch
+     * on the empty form, surfacing a stale red error line on a first-entry-looking screen. The GET
+     * now re-seats the {@code CDEMO-PGM-ENTER} posture (COBOL {@code EIBCALEN = 0}), so the screen
+     * shows the search prompt ({@link #INFO_PROMPT_FOR_SEARCH_KEYS}) with an empty error line.
+     *
+     * @throws Exception if the request cannot be performed
+     */
+    @Test
+    @WithMockUser(roles = "USER")
+    void cardUpdateReNavigatedGetNotFromListShowsCleanFirstEntry() throws Exception {
+        mockMvc.perform(get(ROUTE_UPDATE).session(reNavigatedUpdateSessionNotFromList()))
+                .andExpect(status().isOk())
+                .andExpect(view().name(VIEW_UPDATE))
+                // No stale error line carried over (the finding #4 defect).
+                .andExpect(model().attribute("form", hasProperty(PROP_ERR_MSG, emptyOrNullString())))
+                // The clean first-entry prompt is shown instead.
+                .andExpect(model().attribute("form",
+                        hasProperty("infomsg", equalTo(INFO_PROMPT_FOR_SEARCH_KEYS))));
+    }
+
+    /**
+     * Builds a session reproducing the exact runtime scenario of finding #4 that a from-program
+     * check alone does not cover: a live, RE-ENTERED context whose {@code CDEMO-FROM-PROGRAM} is
+     * still the card list ({@code COCRDLIC}) - as it is after list -&gt; select 'U' -&gt; update
+     * -&gt; F3 -&gt; (the list re-renders, restoring FROM = COCRDLIC) -&gt; the operator re-navigates
+     * to the update route - yet the context is in re-enter state (a prior turn already ran) while
+     * still carrying the live account/card selection from the earlier row pick. A fresh GET in this
+     * state found neither Branch 2 (auto-fetch needs {@code CDEMO-PGM-ENTER}, which re-enter had
+     * cleared) nor Branch 3, and fell through to input processing on the empty form, surfacing a
+     * stale red error line ("Card name not provided"). Re-seating {@code CDEMO-PGM-ENTER} on every
+     * GET restores Branch 2, so the live selection auto-fetches with no stale error.
+     *
+     * @return a session pre-seeded with a re-entered, from-list context holding a live selection
+     */
+    private static MockHttpSession reNavigatedUpdateSessionFromListWithSelection() {
+        CardDemoContext context = new CardDemoContext();
+        context.markInitialized();                        // not new (EIBCALEN != 0)
+        context.markReenter();                            // NOT program-enter - a prior turn already ran
+        context.setFromProgram(LIT_CCLISTPGM);            // FROM = COCRDLIC (restored by the list re-render)
+        context.setAcctId(Long.valueOf(SEEDED_ACCT_ID));  // live selection carried from the row pick
+        context.setCardNum(SEEDED_CARD_NUM);
+        MockHttpSession session = new MockHttpSession();
+        session.setAttribute(CONTEXT_SESSION_ATTR, context);
+        return session;
+    }
+
+    /**
+     * Finding #4 (runtime scenario) - a re-navigated GET whose stale {@code CDEMO-FROM-PROGRAM} is
+     * still {@code COCRDLIC} and which carries a live selection must auto-fetch that selection with
+     * NO stale error line, exactly as the card-list hand-off does, rather than falling through to
+     * input processing on the empty form. This is the scenario the earlier from-program-only guard
+     * missed (FROM is still the list, so the guard did not fire) and which the unconditional
+     * {@code CDEMO-PGM-ENTER} re-seat on GET resolves. Asserts the selected card is auto-fetched and
+     * shown ({@code CARDSID} populated with {@link #SEEDED_CARD_NUM}) with an empty error line.
+     *
+     * @throws Exception if the request cannot be performed
+     */
+    @Test
+    @WithMockUser(roles = "USER")
+    void cardUpdateReNavigatedGetFromListWithSelectionAutoFetchesNoStaleError() throws Exception {
+        mockMvc.perform(get(ROUTE_UPDATE).session(reNavigatedUpdateSessionFromListWithSelection()))
+                .andExpect(status().isOk())
+                .andExpect(view().name(VIEW_UPDATE))
+                // No stale error line carried over (the finding #4 defect signature).
+                .andExpect(model().attribute(ATTR_FORM, hasProperty(PROP_ERR_MSG, emptyOrNullString())))
+                // The live selection is auto-fetched and shown (Branch 2), not a blank/erroring form.
+                .andExpect(model().attribute(ATTR_FORM,
+                        hasProperty("cardsid", containsString(SEEDED_CARD_NUM))));
+    }
+
     // ========================================================================
     // Phase 2 - CCLI card-list path (COCRDLIC): page seven; row 'S' -> detail,
     // 'U' -> update; PF3 -> menu; PF7/PF8 paging.
@@ -525,6 +665,98 @@ class CardControllerIT extends com.aws.carddemo.AbstractPostgresIntegrationTest 
     }
 
     /**
+     * Submitting an account-id filter narrows the listing to that account's cards (review finding
+     * #6). COBOL {@code COCRDLIC} {@code 2100-RECEIVE-SCREEN} copies {@code ACCTSIDI} into
+     * {@code CC-ACCT-ID}, {@code 2210-EDIT-ACCOUNT} validates it, and {@code 9000-READ-FORWARD}
+     * skips every card whose {@code CARD-ACCT-ID} differs; before the fix the controller dropped the
+     * filter and every list came back unfiltered.
+     *
+     * <p>The list is keyed by the {@code CARDDAT} card-number, not by account, so the unfiltered
+     * first row is {@link #UNFILTERED_FIRST_CARD_NUM} (account {@code 50}). Filtering to account
+     * {@code 1} - whose only card sorts at ascending rank 49 - must change row one to
+     * {@link #FILTER_ACCT_LATE_CARD_NUM} and leave row two blank (a single match). Asserting row one
+     * is the account's late-sorting card (never the unfiltered first row) proves the filter was
+     * applied rather than ignored.</p>
+     *
+     * @throws Exception if the request cannot be performed
+     */
+    @Test
+    @WithMockUser(roles = "USER")
+    void cardListFilterByAccountNarrowsToThatAccountsCards() throws Exception {
+        MockHttpSession session = new MockHttpSession();
+        // Fresh entry lists the unfiltered first page and arms the pseudo-conversational re-enter.
+        MvcResult first = mockMvc.perform(get(ROUTE_LIST).session(session))
+                .andExpect(status().isOk())
+                .andExpect(view().name(VIEW_LIST))
+                .andReturn();
+        COCRDLIForm unfiltered = (COCRDLIForm) first.getModelAndView().getModel().get(ATTR_FORM);
+        assertThat(unfiltered.getCrdnum1())
+                .as("sanity: the unfiltered listing is keyed by card number, so row one is account 50's card")
+                .isEqualTo(UNFILTERED_FIRST_CARD_NUM);
+
+        // Re-enter with the account filter set: the listing must collapse to account 1's single card.
+        MvcResult filtered = mockMvc.perform(post(ROUTE_LIST).session(session).with(csrf())
+                        .param(PARAM_PFKEY, PF_ENTER)
+                        .param(PARAM_ACCT_ID, FILTER_ACCT_ID_LATE))
+                .andExpect(status().isOk())
+                .andExpect(view().name(VIEW_LIST))
+                .andReturn();
+        COCRDLIForm form = (COCRDLIForm) filtered.getModelAndView().getModel().get(ATTR_FORM);
+        assertThat(form.getCrdnum1())
+                .as("account filter applied -> row one is account 1's late-sorting card, not the unfiltered first row")
+                .isEqualTo(FILTER_ACCT_LATE_CARD_NUM);
+        assertThat(form.getCrdnum2())
+                .as("account 1 owns exactly one card -> row two is blank (the list was narrowed, not left unfiltered)")
+                .isBlank();
+    }
+
+    /**
+     * The <em>second</em> forward key-press at the end of the list reports {@code NO MORE PAGES TO
+     * DISPLAY}, not the read-forward {@code NO MORE RECORDS TO SHOW} default (review finding #7).
+     * COBOL {@code COCRDLIC} {@code 1400-SETUP-MESSAGE} keeps the read-forward end-of-file line the
+     * first time the final page is reached and raises {@code CA-LAST-PAGE-SHOWN}; only once that flag
+     * is set does the next {@code PFK08} replace the line with the paging-boundary message
+     * ({@code legacy/cbl/COCRDLIC.cbl} line 908).
+     *
+     * <p>Filtering to account {@code 1} yields a one-card, one-page listing, so the first page is the
+     * last page and two successive PF8 presses exercise the boundary transition deterministically:
+     * the first keeps {@link #MSG_NO_MORE_RECORDS} (and raises the flag), the second shows
+     * {@link #MSG_NO_MORE_PAGES}.</p>
+     *
+     * @throws Exception if the request cannot be performed
+     */
+    @Test
+    @WithMockUser(roles = "USER")
+    void cardListSecondPf8AtBoundaryShowsNoMorePagesNotNoMoreRecords() throws Exception {
+        MockHttpSession session = new MockHttpSession();
+        mockMvc.perform(get(ROUTE_LIST).session(session))
+                .andExpect(status().isOk())
+                .andExpect(view().name(VIEW_LIST));
+        // ENTER with the one-card account filter: page one is also the last page (next page absent).
+        mockMvc.perform(post(ROUTE_LIST).session(session).with(csrf())
+                        .param(PARAM_PFKEY, PF_ENTER)
+                        .param(PARAM_ACCT_ID, FILTER_ACCT_ID_LATE))
+                .andExpect(status().isOk())
+                .andExpect(view().name(VIEW_LIST));
+        // First PF8 at the boundary keeps "NO MORE RECORDS TO SHOW" and raises CA-LAST-PAGE-SHOWN.
+        mockMvc.perform(post(ROUTE_LIST).session(session).with(csrf())
+                        .param(PARAM_PFKEY, PF_PF8)
+                        .param(PARAM_ACCT_ID, FILTER_ACCT_ID_LATE))
+                .andExpect(status().isOk())
+                .andExpect(view().name(VIEW_LIST))
+                .andExpect(model().attribute(ATTR_FORM,
+                        hasProperty(PROP_ERR_MSG, containsString(MSG_NO_MORE_RECORDS))));
+        // Second PF8 at the boundary replaces it with the paging-boundary line "NO MORE PAGES...".
+        mockMvc.perform(post(ROUTE_LIST).session(session).with(csrf())
+                        .param(PARAM_PFKEY, PF_PF8)
+                        .param(PARAM_ACCT_ID, FILTER_ACCT_ID_LATE))
+                .andExpect(status().isOk())
+                .andExpect(view().name(VIEW_LIST))
+                .andExpect(model().attribute(ATTR_FORM,
+                        hasProperty(PROP_ERR_MSG, containsString(MSG_NO_MORE_PAGES))));
+    }
+
+    /**
      * PF3 from the card list exits to the main menu (COBOL {@code COCRDLIC} PF3 -> {@code COMEN01C}),
      * which the controller renders as {@code redirect:/menu}.
      *
@@ -572,16 +804,24 @@ class CardControllerIT extends com.aws.carddemo.AbstractPostgresIntegrationTest 
     }
 
     /**
-     * A non-existent card on the detail screen reproduces the COBOL {@code NOTFND} response:
-     * {@code COCRDSLC} raises {@link com.aws.carddemo.exception.RecordNotFoundException}, which the
-     * {@link com.aws.carddemo.exception.GlobalExceptionHandler} renders as the shared error view
-     * with HTTP 404 and the not-found message line ({@code COCRDSLForm.errmsg} is {@code X(80)}).
+     * A non-existent card on the detail screen reproduces the COBOL {@code COCRDSLC} {@code NOTFND}
+     * response as an <em>inline re-display</em>, not a full-page error (review finding #3, dest
+     * report). On {@code NOTFND} {@code COCRDSLC} sets the "... did not find ..." return message and
+     * FELL THROUGH to {@code 1000-SEND-MAP} to re-display the SAME {@code COCRDSL} screen (it is not
+     * an abend); the migrated
+     * {@link com.aws.carddemo.service.online.CardDetailService#mainEntry} therefore catches the read
+     * chain's {@link com.aws.carddemo.exception.RecordNotFoundException} (the re-enter arm) and routes
+     * it back through {@code buildShowResult} / {@code 1000-SEND-MAP}. The response is HTTP 200 on
+     * view {@link #VIEW_DETAIL} with the byte-exact COBOL message on the form's {@code errmsg} line
+     * (the {@code ERRMSGO} analogue), mirroring the account-view sibling (finding #1) and AAP
+     * &sect;0.6.5 exception parity. The full-page {@code error.html} path (finding #25) is guarded
+     * separately by {@link com.aws.carddemo.web.ErrorViewIT}.
      *
      * @throws Exception if the request cannot be performed
      */
     @Test
     @WithMockUser(roles = "USER")
-    void cardDetailNotFoundPropagates() throws Exception {
+    void cardDetailNotFoundReDisplaysInline() throws Exception {
         MockHttpSession session = new MockHttpSession();
         mockMvc.perform(get(ROUTE_DETAIL).session(session))
                 .andExpect(status().isOk())
@@ -590,28 +830,27 @@ class CardControllerIT extends com.aws.carddemo.AbstractPostgresIntegrationTest 
                         .param(PARAM_PFKEY, PF_ENTER)
                         .param(PARAM_ACCT_ID, SEEDED_ACCT_ID)
                         .param(PARAM_CARD_ID, MISSING_CARD_NUM))
-                .andExpect(status().isNotFound())
-                .andExpect(view().name(VIEW_ERROR))
-                .andExpect(model().attribute(ATTR_ERROR_MESSAGE, containsString(NOT_FOUND_FRAGMENT)));
+                .andExpect(status().isOk())
+                .andExpect(view().name(VIEW_DETAIL))
+                .andExpect(model().attribute(ATTR_FORM,
+                        hasProperty(PROP_ERR_MSG, containsString(NOT_FOUND_FRAGMENT))));
     }
 
     /**
-     * Review finding #25 - the shared error view actually renders as the CardDemo terminal screen.
-     * The {@link com.aws.carddemo.exception.GlobalExceptionHandler} returns
-     * {@code ModelAndView("error")}; before the fix no {@code templates/error.html} existed, so the
-     * logical name {@code "error"} resolved to Spring Boot's generic Whitelabel error view bean (the
-     * assertions in {@link #cardDetailNotFoundPropagates()} only check the view <em>name</em> and
-     * model, which the Whitelabel page also satisfies). This test drives the same {@code NOTFND}
-     * path but asserts on the <em>rendered response body</em>: it must contain the CardDemo terminal
-     * chrome ({@code "Application Error"} title, the {@code PF3=Return to Sign On} recovery link) and
-     * the handler's error-message line ({@code "Did not find"}), proving {@code error.html} - not the
-     * Whitelabel page - was rendered.
+     * Companion to {@link #cardDetailNotFoundReDisplaysInline()} that asserts on the <em>rendered
+     * response body</em> rather than the model attribute: the inline {@code NOTFND} re-display must
+     * render the real {@code COCRDSL} terminal screen - its static chrome ({@code "View Credit Card
+     * Detail"}) plus the not-found message on the error line - proving a genuine CardDemo screen is
+     * returned and never a blank page or Spring Boot's generic Whitelabel page. Before the GROUP A
+     * #3 fix this path abended to the full-page error view (HTTP 404); COBOL {@code COCRDSLC} instead
+     * re-displays {@code COCRDSL} via {@code 1000-SEND-MAP} (AAP &sect;0.6.5). The dedicated full-page
+     * {@code error.html} render check for finding #25 lives in {@link com.aws.carddemo.web.ErrorViewIT}.
      *
      * @throws Exception if the request cannot be performed
      */
     @Test
     @WithMockUser(roles = "USER")
-    void cardDetailNotFoundRendersCardDemoErrorScreen() throws Exception {
+    void cardDetailNotFoundReDisplaysCocrdslScreenNotWhitelabel() throws Exception {
         MockHttpSession session = new MockHttpSession();
         mockMvc.perform(get(ROUTE_DETAIL).session(session))
                 .andExpect(status().isOk())
@@ -620,10 +859,9 @@ class CardControllerIT extends com.aws.carddemo.AbstractPostgresIntegrationTest 
                         .param(PARAM_PFKEY, PF_ENTER)
                         .param(PARAM_ACCT_ID, SEEDED_ACCT_ID)
                         .param(PARAM_CARD_ID, MISSING_CARD_NUM))
-                .andExpect(status().isNotFound())
-                .andExpect(view().name(VIEW_ERROR))
-                .andExpect(content().string(containsString("Application Error")))
-                .andExpect(content().string(containsString("PF3=Return to Sign On")))
+                .andExpect(status().isOk())
+                .andExpect(view().name(VIEW_DETAIL))
+                .andExpect(content().string(containsString("View Credit Card Detail")))
                 .andExpect(content().string(containsString(NOT_FOUND_FRAGMENT)));
     }
 

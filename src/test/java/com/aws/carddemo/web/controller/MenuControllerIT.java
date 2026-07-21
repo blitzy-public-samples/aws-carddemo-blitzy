@@ -17,6 +17,7 @@ package com.aws.carddemo.web.controller;
 
 import static org.hamcrest.Matchers.containsString;
 import static org.hamcrest.Matchers.hasProperty;
+import static org.hamcrest.Matchers.is;
 import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.csrf;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
@@ -285,7 +286,9 @@ class MenuControllerIT extends AbstractPostgresIntegrationTest {
                         .with(csrf()))
                 .andExpect(status().isOk())
                 .andExpect(view().name(VIEW_MENU))
-                .andExpect(model().attribute(MODEL_ATTR_FORM, hasProperty("errmsg", containsString("valid option"))));
+                .andExpect(model().attribute(MODEL_ATTR_FORM, hasProperty("errmsg", containsString("valid option"))))
+                // Finding #11: the invalid-option line is a COBOL error, so it renders red.
+                .andExpect(model().attribute(MODEL_ATTR_FORM, hasProperty("errmsgColor", is("red"))));
     }
 
     /**
@@ -307,7 +310,9 @@ class MenuControllerIT extends AbstractPostgresIntegrationTest {
                         .with(csrf()))
                 .andExpect(status().isOk())
                 .andExpect(view().name(VIEW_MENU))
-                .andExpect(model().attribute(MODEL_ATTR_FORM, hasProperty("errmsg", containsString("Invalid key pressed"))));
+                .andExpect(model().attribute(MODEL_ATTR_FORM, hasProperty("errmsg", containsString("Invalid key pressed"))))
+                // Finding #11: the invalid-key line is a COBOL error, so it renders red.
+                .andExpect(model().attribute(MODEL_ATTR_FORM, hasProperty("errmsgColor", is("red"))));
     }
 
     // ---------------------------------------------------------------------

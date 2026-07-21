@@ -452,22 +452,24 @@ class UserAddServiceTest {
 
     /**
      * A keyed write whose {@code RIDFLD} key already exists is the COBOL
-     * {@code WHEN DFHRESP(DUPKEY) / WHEN DFHRESP(DUPREC)} branch. It is detected deterministically by
-     * {@code existsById} and surfaced as the CardDemo {@link DuplicateKeyException} carrying the
-     * byte-exact "User ID already exist..." message and FILE STATUS {@code "22"}. No insert is
-     * attempted, so nothing is persisted.
+     * {@code WHEN DFHRESP(DUPKEY) / WHEN DFHRESP(DUPREC)} branch. The COBOL sets {@code WS-ERR-FLG},
+     * moves the byte-exact {@code "User ID already exist..."} literal to {@code WS-MESSAGE},
+     * positions the cursor on the USER ID field ({@code MOVE -1 TO USERIDL}), and re-displays the
+     * SAME screen inline via {@code SEND-USRADD-SCREEN} - it is NOT an abend (AAP &sect;0.6.5
+     * exception parity). The pre-write {@code existsById} check detects this deterministically and
+     * returns the error outcome; no insert is attempted, so nothing is persisted.
      */
     @Test
-    void writeUserSecFile_whenUserIdAlreadyExists_throwsDuplicateKeyException() {
+    void writeUserSecFile_whenUserIdAlreadyExists_returnsInlineDuplicateError() {
         UserSecurity user = userWith(VALID_USERID, VALID_FNAME, VALID_LNAME, VALID_PASSWD, VALID_USRTYPE);
         when(userSecurityRepository.existsById(VALID_USERID)).thenReturn(true);
 
-        assertThatThrownBy(() -> service.writeUserSecFile(user, form))
-                .isInstanceOfSatisfying(DuplicateKeyException.class, ex -> {
-                    assertThat(ex.getMessage()).isEqualTo(MSG_USER_ID_EXISTS);
-                    assertThat(ex.getFileStatus()).isEqualTo(DuplicateKeyException.FILE_STATUS);
-                    assertThat(ex.getFileStatus()).isEqualTo("22");
-                });
+        UserAddService.UserAddResult result = service.writeUserSecFile(user, form);
+
+        assertThat(result.error()).isTrue();
+        assertThat(result.message()).isEqualTo(MSG_USER_ID_EXISTS);
+        assertThat(result.cursorField()).isEqualTo(UserAddService.CursorField.USER_ID);
+        assertThat(result.isRedirect()).isFalse();
 
         verify(userSecurityRepository).existsById(VALID_USERID);
         verify(userSecurityRepository, never()).save(any());

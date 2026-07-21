@@ -212,6 +212,12 @@ class COBIL00FormTest {
         List<String> bmsFieldNames = new ArrayList<>(fieldNames);
         bmsFieldNames.remove("confirmToken");
 
+        // The ERRMSG colour attribute {@code errmsgColor} is the migration of the BMS ERRMSGC colour
+        // byte (review finding #11) - a render-only sibling of {@code errmsg}, not one of the ten
+        // BMS value fields (it carries no PIC width / @Size). Assert it is present, then exclude it.
+        assertThat(fieldNames).contains("errmsgColor");
+        bmsFieldNames.remove("errmsgColor");
+
         // Field presence: exactly the 10 BMS value fields of map COBIL0A, no more, no fewer.
         assertThat(bmsFieldNames).containsExactlyInAnyOrder(
                 "trnname", "title01", "curdate", "pgmname", "title02",

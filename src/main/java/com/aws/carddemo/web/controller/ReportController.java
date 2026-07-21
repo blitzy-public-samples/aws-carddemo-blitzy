@@ -154,6 +154,29 @@ public class ReportController {
     private static final String MSG_FIELD_LENGTH =
             "Input exceeds the maximum length for a field.";
 
+    /**
+     * Message-line colour token for the error / default line, reproducing the BMS map default
+     * {@code ERRMSG ... COLOR=RED} (finding #11). Consumed by {@code CORPT00.html} via
+     * {@code th:classappend="${form.errmsgColor}"} and matches the template's {@code .red} class.
+     */
+    private static final String MSG_COLOR_ERROR = "red";
+
+    /**
+     * Message-line colour token for the green success line, reproducing the COBOL
+     * {@code MOVE DFHGREEN TO ERRMSGC OF CORPT0AO} on the "report submitted for printing" branch
+     * (CORPT00C:448, finding #11). Matches the template's {@code .green} class.
+     */
+    private static final String MSG_COLOR_GREEN = "green";
+
+    /**
+     * Message-line colour token for the neutral line, reproducing the BMS {@code DFHNEUTR}
+     * (white) attribute (finding #11). Used for the Java-only over-width guard banner
+     * ({@link #MSG_FIELD_LENGTH}), which carries no COBOL business-edit message and is therefore
+     * rendered neutral so it never masquerades as a COBOL red error. Matches the template's
+     * {@code .neutral} class.
+     */
+    private static final String MSG_COLOR_NEUTRAL = "neutral";
+
     /** Web route for this screen (COBOL tran {@code CR00}); GET displays, POST submits. */
     private static final String PATH_REPORT = "/report";
 
@@ -308,6 +331,7 @@ public class ReportController {
         if (bindingResult.hasErrors()) {
             populateHeader(form);
             form.setErrmsg(MSG_FIELD_LENGTH);
+            form.setErrmsgColor(MSG_COLOR_NEUTRAL);
             return VIEW_REPORT;
         }
         AidKey aid = toAidKey(resolvePfKey(pfkey));
@@ -345,7 +369,26 @@ public class ReportController {
         // COBOL SEND-TRNRPT-SCREEN: populate the header and the ERRMSG line, then render.
         populateHeader(form);
         form.setErrmsg(result.message());
+        // Finding #11: colour the ERRMSG line from the service severity, reproducing the COBOL
+        // MOVE DFHGREEN TO ERRMSGC on the success branch (green) versus the default red error line.
+        form.setErrmsgColor(colorFor(result.severity()));
         return VIEW_REPORT;
+    }
+
+    /**
+     * Maps a {@link ReportSubmitService.MessageSeverity} to the semantic 3270 colour token for the
+     * {@code ERRMSG} line, reproducing the COBOL {@code MOVE DFHxxx TO ERRMSGC} (finding #11):
+     * {@code SUCCESS} &rarr; {@link #MSG_COLOR_GREEN} (the {@code DFHGREEN} "report submitted" line),
+     * and {@code ERROR}/{@code NONE} &rarr; {@link #MSG_COLOR_ERROR} (the BMS default red).
+     *
+     * @param severity the service message severity; must not be {@code null}
+     * @return the colour token consumed by {@code th:classappend="${form.errmsgColor}"}
+     */
+    private static String colorFor(ReportSubmitService.MessageSeverity severity) {
+        return switch (severity) {
+            case SUCCESS -> MSG_COLOR_GREEN;
+            case ERROR, NONE -> MSG_COLOR_ERROR;
+        };
     }
 
     /**

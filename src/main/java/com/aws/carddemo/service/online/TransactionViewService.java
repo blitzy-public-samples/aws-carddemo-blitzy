@@ -527,6 +527,12 @@ public class TransactionViewService {
         Transaction transaction;
         try {
             transaction = readTransactFile(tranId);
+        } catch (RecordNotFoundException notFound) {
+            // READ-TRANSACT-FILE WHEN NOTFND: MOVE "Transaction ID NOT found..." TO
+            // WS-MESSAGE, SET ERR-FLG-ON, and re-display the SAME screen inline (it is
+            // not an abend). Reproduce that inline re-display here rather than letting the
+            // RecordNotFoundException escape to the full-page handler (AAP 0.6.5 parity).
+            return TransactionViewResult.ofError(notFound.getMessage());
         } catch (DataAccessException unexpected) {
             // READ-TRANSACT-FILE WHEN OTHER: unexpected read failure -> redisplay with message.
             return TransactionViewResult.ofError(MSG_UNABLE_LOOKUP);

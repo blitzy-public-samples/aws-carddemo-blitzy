@@ -152,6 +152,29 @@ public class TransactionController {
     private static final String MSG_FIELD_LENGTH =
             "Input exceeds the maximum length for a field.";
 
+    /**
+     * Message-line colour token for the error / default line on the {@code COTRN02} add screen,
+     * reproducing the BMS map default {@code ERRMSG ... COLOR=RED} (finding #11). Consumed by
+     * {@code COTRN02.html} via {@code th:classappend="${form.errmsgColor}"} ({@code .red} class).
+     */
+    private static final String MSG_COLOR_ERROR = "red";
+
+    /**
+     * Message-line colour token for the green success line on the {@code COTRN02} add screen,
+     * reproducing the COBOL {@code MOVE DFHGREEN TO ERRMSGC OF COTRN2AO} on the "Transaction added
+     * successfully" branch (COTRN02C:727, finding #11). Matches the template's {@code .green} class.
+     */
+    private static final String MSG_COLOR_GREEN = "green";
+
+    /**
+     * Message-line colour token for the neutral line, reproducing the BMS {@code DFHNEUTR}
+     * (white) attribute (finding #11). Used for the Java-only over-width guard banner
+     * ({@link #MSG_FIELD_LENGTH}), which carries no COBOL business-edit message and is therefore
+     * rendered neutral so it never masquerades as a COBOL red error. Matches the template's
+     * {@code .neutral} class.
+     */
+    private static final String MSG_COLOR_NEUTRAL = "neutral";
+
     /** Route for CT00 (transaction browse). */
     private static final String ROUTE_LIST = "/transaction/list";
 
@@ -362,6 +385,21 @@ public class TransactionController {
      */
     @GetMapping(ROUTE_VIEW)
     public String showTransactionView(@ModelAttribute(ATTR_FORM) COTRN01Form form, Model model) {
+        // Finding #10 (INFO): a GET of the CT01 route is the web-tier equivalent of arriving via an
+        // XCTL/redirect, and every legitimate transfer into COTRN01C first sets
+        // CDEMO-PGM-CONTEXT = 0 - the transaction-list dispatch does MOVE 0 TO CDEMO-PGM-CONTEXT
+        // before its XCTL (legacy/cbl/COTRN00C.cbl line 191) and the menu likewise (MOVE ZEROS) -
+        // so the arriving program always sees PGM-ENTER on its first display. Re-seat
+        // CDEMO-PGM-ENTER here so a direct or bookmarked GET (whose session context may still hold
+        // a stale CDEMO-PGM-REENTER left by a prior screen) takes the first-display branch of
+        // TransactionViewService.mainEntry - a clean empty search screen, or the list-forwarded
+        // selection pre-load - instead of falling through to EVALUATE EIBAID -> WHEN DFHENTER on an
+        // empty form, which surfaced a spurious "Tran ID can NOT be empty..." banner. markEnter()
+        // touches only CDEMO-PGM-CONTEXT, never EIBCALEN (isNew), so the cold first-entry bounce to
+        // sign-on is preserved; the one-shot selected-transaction flash still drives the
+        // list -> view pre-load; and genuine submissions arrive through handleTransactionView
+        // (POST) with the real AID and are unaffected.
+        context.markEnter();
         String selectedTranId = readSelectedTranId(model);
         TransactionViewResult result =
                 transactionViewService.mainEntry(form, TransactionViewService.AidKey.ENTER, selectedTranId);
@@ -448,6 +486,23 @@ public class TransactionController {
      */
     @GetMapping(ROUTE_ADD)
     public String showTransactionAdd(@ModelAttribute(ATTR_FORM) COTRN02Form form) {
+        // Finding #10 (INFO): a GET of the CT02 route is the web-tier equivalent of arriving via an
+        // XCTL/redirect, and every legitimate transfer into COTRN02C first sets
+        // CDEMO-PGM-CONTEXT = 0 - the main menu does MOVE ZEROS before its XCTL, and the
+        // card-detail/transaction-list dispatch that pre-selects a card sets pgmContext to enter -
+        // so the arriving program always sees PGM-ENTER on its first display. Re-seat
+        // CDEMO-PGM-ENTER here so a direct or bookmarked GET (whose session context may still hold a
+        // stale CDEMO-PGM-REENTER left by a prior screen) takes the first-display branch of
+        // TransactionAddService.mainEntry - a clean empty add screen, or the pre-selected-card
+        // pre-load - instead of falling through to EVALUATE EIBAID -> WHEN DFHENTER ->
+        // PROCESS-ENTER-KEY on an empty form, which surfaced a spurious
+        // "Account or Card Number must be entered..." banner. This is the same root cause and fix
+        // as the sibling CT01 view path above. markEnter() touches only CDEMO-PGM-CONTEXT, never
+        // EIBCALEN (isNew), so the cold first-entry bounce to sign-on is preserved; the
+        // pre-selected-card pre-load still runs (it keys on the ENTER state that markEnter
+        // guarantees plus the card carried on the session context); and genuine submissions arrive
+        // through handleTransactionAdd (POST) with the real AID and are unaffected.
+        context.markEnter();
         TransactionAddResult result = transactionAddService.mainEntry(form, PfKey.ENTER);
         if (result.action() == ScreenAction.REDIRECT) {
             return REDIRECT_PREFIX + routeForProgram(context.getToProgram());
@@ -486,6 +541,7 @@ public class TransactionController {
         if (bindingResult.hasErrors()) {
             populateHeader(form);
             form.setErrmsg(MSG_FIELD_LENGTH);
+            form.setErrmsgColor(MSG_COLOR_NEUTRAL);
             return VIEW_ADD;
         }
         TransactionAddResult result = transactionAddService.mainEntry(form, resolvePfKey(pfkey));
@@ -511,7 +567,27 @@ public class TransactionController {
     private String renderAdd(COTRN02Form form, TransactionAddResult result) {
         populateHeader(form);
         form.setErrmsg(result.message());
+        // Finding #11: colour the ERRMSG line from the service severity, reproducing the COBOL
+        // MOVE DFHGREEN TO ERRMSGC on the "added successfully" branch (green) versus the red error.
+        form.setErrmsgColor(colorFor(result.severity()));
         return VIEW_ADD;
+    }
+
+    /**
+     * Maps a {@link TransactionAddService.MessageSeverity} to the semantic 3270 colour token for the
+     * {@code COTRN02} {@code ERRMSG} line, reproducing the COBOL {@code MOVE DFHxxx TO ERRMSGC}
+     * (finding #11): {@code INFORMATION} &rarr; {@link #MSG_COLOR_GREEN} (the {@code DFHGREEN}
+     * "Transaction added successfully" line), and {@code ERROR}/{@code NONE} &rarr;
+     * {@link #MSG_COLOR_ERROR} (the BMS default red).
+     *
+     * @param severity the service message severity; must not be {@code null}
+     * @return the colour token consumed by {@code th:classappend="${form.errmsgColor}"}
+     */
+    private static String colorFor(TransactionAddService.MessageSeverity severity) {
+        return switch (severity) {
+            case INFORMATION -> MSG_COLOR_GREEN;
+            case ERROR, NONE -> MSG_COLOR_ERROR;
+        };
     }
 
     // ============================================================================================
@@ -682,10 +758,15 @@ public class TransactionController {
      * {@code COTRN00C} paragraph {@code PROCESS-ENTER-KEY} resolves the chosen row by reading
      * {@code TRNIDnnI} from the received map (never a re-browsed value). Preserving that contract
      * requires the browser to re-submit {@code trnid0N} (rendered as hidden inputs in
-     * {@code COTRN00.html}) and this binder to accept them. The remaining display cells
-     * ({@code tdate0N}, {@code tdesc0N}, {@code tamt00N}, {@code pagenum}) are never read back by the
-     * COBOL — they are re-derived from the file on each SEND — so they stay excluded and cannot be
-     * over-posted. Display-only header/title/date/message fields are likewise excluded.
+     * {@code COTRN00.html}) and this binder to accept them. The page counter {@code pagenum}
+     * ({@code CDEMO-CT00-PAGE-NUM}) is likewise part of the pseudo-conversational cursor state: the
+     * COBOL carries it in the COMMAREA across turns ({@code COTRN00C} lines 111/140/194/520) and
+     * reads it back in {@code PROCESS-PF7-KEY} ({@code IF CDEMO-CT00-PAGE-NUM > 1}, line 245) to
+     * decide whether a previous page exists before paging backward, so it must round-trip too and
+     * is accepted here (review finding #9). The remaining display cells ({@code tdate0N},
+     * {@code tdesc0N}, {@code tamt00N}) are never read back by the COBOL — they are re-derived from
+     * the file on each SEND — so they stay excluded and cannot be over-posted. Display-only
+     * header/title/date/message fields are likewise excluded.
      *
      * @param binder the per-request data binder for the bound form
      */
@@ -698,6 +779,9 @@ public class TransactionController {
         if (COTRN00Form.class.equals(targetType)) {
             binder.setAllowedFields(
                     "trnidin",
+                    // CDEMO-CT00-PAGE-NUM: pseudo-conversational page counter carried across the
+                    // turn and read back in PROCESS-PF7-KEY to gate backward paging (finding #9).
+                    "pagenum",
                     "sel0001", "sel0002", "sel0003", "sel0004", "sel0005",
                     "sel0006", "sel0007", "sel0008", "sel0009", "sel0010",
                     "trnid01", "trnid02", "trnid03", "trnid04", "trnid05",

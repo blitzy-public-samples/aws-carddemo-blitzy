@@ -107,14 +107,8 @@ class AccountControllerIT extends AbstractPostgresIntegrationTest {
     /** Logical Thymeleaf view name for CAUP (BMS map COACTUP). */
     private static final String VIEW_ACCOUNT_UPDATE = "COACTUP";
 
-    /** Shared error view rendered by {@code GlobalExceptionHandler} for typed exceptions. */
-    private static final String VIEW_ERROR = "error";
-
     /** Model attribute holding the screen form ({@code th:object="${form}"}). */
     private static final String MODEL_ATTR_FORM = "form";
-
-    /** Model attribute holding the error banner on the global error view (BMS ERRMSGO analogue). */
-    private static final String MODEL_ATTR_ERROR_MESSAGE = "errorMessage";
 
     /** Form property carrying the account-id search filter (BMS ACCTSIDI, PIC 9(11)). */
     private static final String PROP_ACCT_ID = "acctsid";
@@ -365,13 +359,19 @@ class AccountControllerIT extends AbstractPostgresIntegrationTest {
     }
 
     /**
-     * A not-found account on the CAVW path surfaces as {@code RecordNotFoundException} from the read
-     * chain and is translated by {@code GlobalExceptionHandler} to the shared error view with HTTP 404
-     * and the COBOL not-found message on the {@code errorMessage} attribute.
+     * A not-found account on the CAVW path is re-displayed <em>inline</em> on the
+     * {@code COACTVW} screen with HTTP&nbsp;200 and the byte-exact COBOL not-found message on
+     * the form's {@code errmsg} line ({@code ERRMSGO}), mirroring {@code COACTVWC}'s
+     * {@code 1100-SEND-MAP} re-display rather than abending to a full-page error (review
+     * finding #1). {@code AccountViewService.mainEntry} catches the read chain's
+     * {@code RecordNotFoundException} and routes it to the same pseudo-conversational
+     * re-display the mainframe used. A fully-unknown account fails the
+     * {@code 9200-GETCARDXREF-BYACCT} cross-reference read first, so the surfaced text is the
+     * cross-reference not-found message (not the account-master one).
      */
     @Test
     @WithMockUser(roles = ROLE_USER)
-    void accountViewNotFoundPropagates() throws Exception {
+    void accountViewNotFoundReDisplaysInline() throws Exception {
         MockHttpSession session = new MockHttpSession();
         mockMvc.perform(get(ROUTE_ACCOUNT_VIEW).session(session))
                 .andExpect(status().isOk());
@@ -380,10 +380,10 @@ class AccountControllerIT extends AbstractPostgresIntegrationTest {
                         .param(PARAM_ACCT_ID, MISSING_ACCT_ID)
                         .param(PARAM_PFKEY, PFKEY_ENTER)
                         .with(csrf()))
-                .andExpect(status().isNotFound())
-                .andExpect(view().name(VIEW_ERROR))
-                .andExpect(model().attribute(MODEL_ATTR_ERROR_MESSAGE,
-                        containsString(VIEW_NOT_FOUND_FRAGMENT)));
+                .andExpect(status().isOk())
+                .andExpect(view().name(VIEW_ACCOUNT_VIEW))
+                .andExpect(model().attribute(MODEL_ATTR_FORM,
+                        hasProperty(PROP_ERR_MSG, containsString(VIEW_NOT_FOUND_FRAGMENT))));
     }
 
     /**
