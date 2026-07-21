@@ -27,7 +27,7 @@ graph TD
         BMS["17 BMS Maps<br/>COSGN00, COMEN01, COACTVW ..."]
     end
     subgraph APP["Application Tier - CICS Region"]
-        ONL["18 Online COBOL Programs<br/>pseudo-conversational<br/>COSGN00C, COACTVWC ..."]
+        ONL["18 online CICS programs<br/>pseudo-conversational<br/>COSGN00C, COACTVWC ..."]
         CA["COMMAREA COCOM01Y<br/>session state"]
     end
     subgraph BATCH["Batch Tier - JES2 / JCL"]

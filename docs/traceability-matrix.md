@@ -112,7 +112,7 @@ the **10** repositories, the **17** online services + **9** controllers, the bus
 `SecurityConfig` / routing derived from the CSD, the `CSSTRPFY` / `CSUTLDPY` / `CSUTLDWY` PF-key &
 date-support utilities (`util/PfKeyHandler`, `util/DateConversionSupport`), the `CSUTLDTC` date
 utility (`util/DateConversionService`), the **17** BMS screens (Thymeleaf templates), the
-`V1`–`V3` Flyway schema/seed/index migrations, and the cross-cutting `config` / `exception` /
+`V0`–`V4` Flyway schema/seed/index migrations, and the cross-cutting `config` / `exception` /
 `security` / `util` foundation, plus the `CBADMCDJ` admin driver (`batch/AdminBatchJobConfig`, a
 documented no-op `Tasklet`). The remaining **3** constructs are the explicitly logged intentional
 non-migrations — `UNUSED1Y.cpy` (dead code) and `OPENFIL.jcl` / `CLOSEFIL.jcl` (N/A under a
@@ -1334,9 +1334,9 @@ intentional non-migrations ledgered in this section.
 Traceability is designed to be **bidirectional**. In addition to the forward tables above, generated
 Java classes carry a Javadoc **origin-tag convention** citing the `legacy/` source path (and, where
 relevant, the CICS transaction id or JCL job) they were derived from. **This convention is applied
-across the generated application:** of the **121** Java files under `src/main/java/**`, **96 carry an
+across the generated application:** of the **123** Java files under `src/main/java/**`, **96 carry an
 explicit `Origin:` Javadoc tag** and a further **20** cite their `legacy/` source in class-Javadoc
-prose — so **116 of 121** carry a legacy-origin citation. The remaining **5** are net-new
+prose — so **116 of 123** carry a legacy-origin citation. The remaining **7** are net-new
 cross-cutting infrastructure classes with **no COBOL antecedent**, for which omitting a legacy origin
 is correct:
 
@@ -1347,8 +1347,10 @@ is correct:
 | `util/batch/BatchFilePathResolver` | Path-traversal-safe dataset resolution (#18) — a security hardening with no COBOL counterpart |
 | `util/batch/AtomicFileStepPublisher` | Atomic (temp-fsync-rename, 0600) output publication (#18/#34) — infrastructure, not a ported program |
 | `util/batch/FixedBlockLineAggregator` | Reusable `RECFM=FB` output framing helper (#17); it realises a COBOL *concept* but is generic Spring Batch infrastructure, not a 1:1 program port |
+| `config/logging/SensitiveDataMasker` | Log-sink PAN redaction (QA finding F-1 / Observability rule) — masks 13+ digit runs in framework-generated log text; the mainframe had no logging framework, so there is no COBOL antecedent |
+| `config/logging/MaskingLogbackEncoder` | Logback encoder wrapper that applies `SensitiveDataMasker` to the rendered log bytes (QA finding F-1) — observability infrastructure, not a ported program |
 
-This 121 / 116 / 5 split is verifiable directly from the tree (`grep -rl 'legacy/\|Origin:'
+This 123 / 116 / 7 split is verifiable directly from the tree (`grep -rl 'legacy/\|Origin:'
 src/main/java`). The paragraph-level reverse detail — which Java method each COBOL paragraph maps to —
 is the forward enumeration in [§8.1](#81-exhaustive-paragraph--section--classmethod--test-enumeration);
 each method there carries the corresponding `Origin:`/legacy citation in its own Javadoc, closing the

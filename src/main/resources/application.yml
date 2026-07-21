@@ -164,3 +164,15 @@ logging:
   level:
     root: INFO
     com.aws.carddemo: INFO
+    # F-A: silence the benign, INTENTIONAL Spring Security startup WARN
+    # ("Global AuthenticationManager configured with an AuthenticationProvider bean.
+    #  UserDetailsService beans will not be used ...") emitted on every boot because
+    # CardDemo deliberately registers BOTH a custom cleartext CardDemoAuthenticationProvider
+    # (the AuthenticationManager ProviderManager bean) and a CardDemoUserDetailsService bean
+    # for COBOL cleartext-password parity. This is Spring Security's own self-documented
+    # remedy (raise this logger to ERROR); Logback treats '$' as a name-hierarchy separator,
+    # so this outer-class level also covers the inner ...$InitializeUserDetailsManagerConfigurer
+    # emitter, while the sibling AuthenticationProvider INFO line is retained. Rationale and
+    # alternatives are recorded in docs/decision-log.md (the F-A decision row); this keeps the
+    # observability-first startup log clean/truthful without hiding any other logs.
+    org.springframework.security.config.annotation.authentication.configuration.InitializeUserDetailsBeanManagerConfigurer: ERROR

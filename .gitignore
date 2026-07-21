@@ -1,0 +1,58 @@
+# ---------------------------------------------------------------------------
+# .gitignore — build-output & local-tooling hygiene for the CardDemo Java app
+#
+# Addresses QA finding F-03 (Filesystem Hygiene): the Maven `target/` build
+# output — compiled classes, the Spring Boot fat JAR, and the Surefire /
+# Failsafe / JaCoCo / OWASP reports — must never pollute `git status` or be
+# accidentally committed by a `git add -A`. Only generated build artifacts and
+# local editor / OS files are ignored here; no tracked source is affected.
+# This complements the existing `.gitattributes` line-ending policy as the
+# repository's single, explicit build-output ignore contract.
+#
+# NOTE: the retained COBOL / CICS / JCL / BMS assets under legacy/ are tracked
+# SOURCE (never build output) and are intentionally NOT ignored. The Maven
+# Wrapper (mvnw, mvnw.cmd, .mvn/wrapper/**) is likewise tracked and not ignored.
+# ---------------------------------------------------------------------------
+
+# --- Maven build output -----------------------------------------------------
+target/
+
+# Spring Boot repackage / `java -jar` working manifest emitted at the repo root
+# by a local build or run (same build-output hygiene concern as target/). No
+# tracked META-INF exists in this repository, so this only ignores the generated
+# root artifact and never a source path.
+/META-INF/
+
+# --- Compiled Java bytecode -------------------------------------------------
+*.class
+
+# --- Log files --------------------------------------------------------------
+*.log
+
+# --- IntelliJ IDEA ----------------------------------------------------------
+.idea/
+*.iml
+*.ipr
+*.iws
+/out/
+
+# --- Eclipse ----------------------------------------------------------------
+.classpath
+.project
+.settings/
+/bin/
+
+# --- NetBeans ---------------------------------------------------------------
+/nbproject/
+/nbbuild/
+/nbdist/
+.nb-gradle/
+
+# --- Visual Studio Code -----------------------------------------------------
+.vscode/
+
+# --- OS / editor cruft ------------------------------------------------------
+.DS_Store
+Thumbs.db
+*.swp
+*~

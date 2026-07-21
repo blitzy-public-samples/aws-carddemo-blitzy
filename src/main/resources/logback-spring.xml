@@ -72,8 +72,17 @@
        service boundaries; missing correlation IDs render as empty via the :- default. -->
   <springProfile name="dev">
     <appender name="CONSOLE_PLAIN" class="ch.qos.logback.core.ConsoleAppender">
-      <encoder>
-        <pattern>%d{yyyy-MM-dd HH:mm:ss.SSS} %-5level [${appName},%X{traceId:-},%X{spanId:-}] %logger{36} - %msg%n</pattern>
+      <!-- Wrapped in MaskingLogbackEncoder so any card PAN echoed by a framework
+           message/stack trace (e.g. Spring Batch FlatFileParseException on a
+           malformed fixed-width record) is redacted before it is written
+           (QA finding F-1 / Observability rule). Delegate class is stated
+           explicitly (Logback's implicit default for a class-less <encoder> is
+           PatternLayoutEncoder). Masking runs on rendered bytes and changes no
+           batch behaviour; rationale in docs/decision-log.md. -->
+      <encoder class="com.aws.carddemo.config.logging.MaskingLogbackEncoder">
+        <delegate class="ch.qos.logback.classic.encoder.PatternLayoutEncoder">
+          <pattern>%d{yyyy-MM-dd HH:mm:ss.SSS} %-5level [${appName},%X{traceId:-},%X{spanId:-}] %logger{36} - %msg%n</pattern>
+        </delegate>
       </encoder>
     </appender>
     <root level="INFO">
@@ -90,8 +99,16 @@
        every MDC entry, so the traceId/spanId correlation IDs appear automatically. -->
   <springProfile name="!dev">
     <appender name="CONSOLE_JSON" class="ch.qos.logback.core.ConsoleAppender">
-      <encoder class="org.springframework.boot.logging.logback.StructuredLogEncoder">
-        <format>ecs</format>
+      <!-- Wrapped in MaskingLogbackEncoder so any card PAN embedded in a
+           framework-generated message or stack trace is redacted before it is
+           written to the structured JSON message / error.stack_trace fields
+           (QA finding F-1 / Observability rule). Masking runs on the rendered
+           bytes and does not change any batch behaviour; rationale in
+           docs/decision-log.md. -->
+      <encoder class="com.aws.carddemo.config.logging.MaskingLogbackEncoder">
+        <delegate class="org.springframework.boot.logging.logback.StructuredLogEncoder">
+          <format>ecs</format>
+        </delegate>
       </encoder>
     </appender>
     <root level="INFO">

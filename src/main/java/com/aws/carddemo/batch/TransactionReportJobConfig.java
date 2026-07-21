@@ -326,6 +326,13 @@ public class TransactionReportJobConfig {
      * The optional {@code outputPath} job parameter selects the report file; when absent, a timestamped
      * file under {@value #DEFAULT_OUTPUT_DIR} emulates the JCL generation-data-group {@code +1} output.</p>
      *
+     * <p>The window bounds are applied purely as the inclusive membership filter of COBOL
+     * {@code CBTRN03C} ({@code TRAN-PROC-TS(1:10) >= WS-START-DATE AND <= WS-END-DATE}); their relative
+     * order is never validated. A reversed window ({@code endDate} before {@code startDate}) therefore
+     * excludes every record and the job runs to {@link RepeatStatus#FINISHED}/{@code COMPLETED} with an
+     * empty report (header block plus a zero grand total), exactly as the legacy program does - it does
+     * not abend (AAP &sect;0.6.4; Explainability rule).</p>
+     *
      * <p>Because the bean is {@code @StepScope}, the {@code @Value} job-parameter expressions are
      * resolved lazily per step execution; {@link #transactionReportStep()} passes {@code null}
      * placeholders that the scoped proxy replaces with the real parameter values at run time.</p>
@@ -348,11 +355,17 @@ public class TransactionReportJobConfig {
         return (contribution, chunkContext) -> {
             LocalDate startDate = parseRequiredDate(startDateParam, "startDate");
             LocalDate endDate = parseRequiredDate(endDateParam, "endDate");
-            if (endDate.isBefore(startDate)) {
-                throw new IllegalArgumentException(
-                        "Job parameter 'endDate' (" + endDate + ") must not precede 'startDate' ("
-                                + startDate + ")");
-            }
+            // No start/end ordering guard: COBOL CBTRN03C (legacy/cbl/CBTRN03C.cbl:L172-178) applies
+            // only the inclusive membership test "IF TRAN-PROC-TS(1:10) >= WS-START-DATE AND
+            // <= WS-END-DATE ... ELSE NEXT SENTENCE". When the window is reversed (endDate < startDate)
+            // that predicate is unsatisfiable for every record, so the legacy program silently skips
+            // them all and still runs to normal end-of-job, emitting a report with only its header
+            // block and a zero grand total. buildReportLines() reproduces this exactly via the same
+            // inclusive skip below (procDate.isBefore(startDate) || procDate.isAfter(endDate)), so a
+            // reversed window here must yield an empty COMPLETED report - NOT an abend. An earlier
+            // invented endDate.isBefore(startDate) guard that failed the job was an undocumented
+            // deviation from this behavior and has been removed for parity (AAP 0.6.4 byte-and-
+            // behavior-identical report interface; Explainability rule - no unexplained deviations).
 
             // The report file name uses the Spring Batch job-instance id as a restart-stable GDG
             // generation number so a restarted instance re-publishes the same file (finding #19).

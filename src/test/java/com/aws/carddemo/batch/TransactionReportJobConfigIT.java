@@ -672,6 +672,61 @@ class TransactionReportJobConfigIT extends AbstractPostgresIntegrationTest {
     }
 
     /**
+     * A reversed reporting window ({@code endDate} before {@code startDate}) runs to
+     * {@code COMPLETED} rather than abending, and excludes every record from the detail body. This is
+     * the Finding K parity behavior: COBOL {@code CBTRN03C} (legacy/cbl/CBTRN03C.cbl:L172-178) applies
+     * only the inclusive membership filter {@code TRAN-PROC-TS(1:10) >= WS-START-DATE AND <=
+     * WS-END-DATE}; it never compares the two bounds, so a reversed window makes that predicate
+     * unsatisfiable for every record and the program ends normally. The same in-2022 data that a
+     * normal window would include is seeded here to prove it is excluded (not merely absent), and the
+     * window is passed end-before-start. Before the fix an invented {@code endDate.isBefore(startDate)}
+     * guard failed the job; this test would then have observed {@code FAILED} with no report file.
+     *
+     * <p>With no in-window record, paragraph {@code 1100-WRITE-TRANSACTION-REPORT} never runs, so the
+     * one-time {@code 1120-WRITE-HEADERS} block - written lazily on the first detail line - is absent:
+     * the report carries <strong>no</strong> {@code DALYREPT} name header and no detail lines, and no
+     * control break fires so no account-total line is written. The end-of-file trailer still runs
+     * (main loop lines 197-203): the retained last physical {@code TRAN-AMT} is added once more (the
+     * documented stale-add quirk), then {@code 1110-WRITE-PAGE-TOTALS} and
+     * {@code 1110-WRITE-GRAND-TOTALS} emit exactly one page-total and one grand-total line.
+     *
+     * @param tempDir a per-test temporary directory for the report output
+     * @throws Exception if the job launch fails
+     */
+    @Test
+    void reversedDateWindowCompletesWithNoInWindowDetail(@TempDir Path tempDir) throws Exception {
+        String inNormalWindow1 = "TXNREV0000000001";
+        String inNormalWindow2 = "TXNREV0000000002";
+        // Both dated inside 2022 - a normal [2022-01-01 .. 2022-12-31] window would include them.
+        transactionRepository.saveAll(List.of(
+                transaction(inNormalWindow1, CARD_1, "10.00", at(2022, 6, 15)),
+                transaction(inNormalWindow2, CARD_2, "20.00", at(2022, 7, 20))));
+
+        Path reportOut = tempDir.resolve("tranrept-reversed.txt");
+        // Reversed window: startDate=2022-12-31 (END_DATE), endDate=2022-01-01 (START_DATE).
+        JobExecution execution = launchReport(reportOut, END_DATE, START_DATE);
+
+        // Core Finding K fix: the job COMPLETES, it does not abend on the reversed window.
+        assertThat(execution.getStatus()).isEqualTo(BatchStatus.COMPLETED);
+        assertThat(execution.getExitStatus()).isEqualTo(ExitStatus.COMPLETED);
+        assertThat(Files.exists(reportOut)).isTrue();
+
+        List<String> lines = readReport(reportOut);
+        assertThat(lines).isNotEmpty();
+        // Lazy header (1120-WRITE-HEADERS) never fires without an in-window detail record: no name header.
+        assertThat(linesStartingWith(lines, NAME_HEADER_PREFIX)).isEmpty();
+        // Every seeded record is excluded, so no detail line carries either seeded transaction id ...
+        String report = String.join("\n", lines);
+        assertThat(report).doesNotContain(inNormalWindow1);
+        assertThat(report).doesNotContain(inNormalWindow2);
+        // ... and no control break occurs, so no account-total line is emitted.
+        assertThat(linesStartingWith(lines, ReportAccountTotals.LABEL)).isEmpty();
+        // The end-of-file trailer still emits exactly one page-total (stale-add quirk) and one grand total.
+        assertThat(linesStartingWith(lines, ReportPageTotals.LABEL)).hasSize(1);
+        assertThat(linesStartingWith(lines, ReportGrandTotals.LABEL)).hasSize(1);
+    }
+
+    /**
      * Launches {@code transactionReportJob} for the class reporting window, writing to the supplied
      * output path with a unique {@code run.id} so each launch is a fresh job instance.
      *
@@ -680,9 +735,26 @@ class TransactionReportJobConfigIT extends AbstractPostgresIntegrationTest {
      * @throws Exception if the launch fails
      */
     private JobExecution launchReport(Path outputPath) throws Exception {
+        return launchReport(outputPath, START_DATE, END_DATE);
+    }
+
+    /**
+     * Launches {@code transactionReportJob} for an explicit {@code [startDate, endDate]} window,
+     * writing to the supplied output path with a unique {@code run.id} so each launch is a fresh job
+     * instance. Used to exercise a reversed window (Finding K parity), where the bounds are passed in
+     * end-before-start order rather than the class default.
+     *
+     * @param outputPath the report output file
+     * @param startDate  the {@code startDate} job parameter ({@code yyyy-MM-dd})
+     * @param endDate    the {@code endDate} job parameter ({@code yyyy-MM-dd})
+     * @return the resulting {@link JobExecution}
+     * @throws Exception if the launch fails
+     */
+    private JobExecution launchReport(Path outputPath, String startDate, String endDate)
+            throws Exception {
         JobParameters parameters = new JobParametersBuilder()
-                .addString("startDate", START_DATE)
-                .addString("endDate", END_DATE)
+                .addString("startDate", startDate)
+                .addString("endDate", endDate)
                 .addString("outputPath", outputPath.toString())
                 .addLong("run.id", System.nanoTime())
                 .toJobParameters();

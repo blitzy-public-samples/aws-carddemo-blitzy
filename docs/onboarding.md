@@ -51,6 +51,7 @@ toolchain are required.**
 | **Docker** | Docker Desktop or Engine | **Required** for the Testcontainers-based integration tests (they start a real PostgreSQL container), and the easiest way to run PostgreSQL locally for development. | `docker --version` and `docker info` (the daemon must be running). |
 | **PostgreSQL** | **18.x** (supported floor **16**) | The relational store that replaces VSAM. Needed **only if you are not using Docker** to run the database. | `psql --version` |
 | **Maven** | *(none to install)* | Build orchestration. **You do not install Maven separately** — the bundled **Maven Wrapper** (`./mvnw` on macOS/Linux, `mvnw.cmd` on Windows) pins **Maven 3.9.9**. | `./mvnw -version` |
+| **`unzip`** | any recent | Used by the **Maven Wrapper** on the **first** `./mvnw` run to unpack the pinned Maven 3.9.9 `.zip`. Pre-installed on macOS and most Linux distributions; on minimal images (slim CI/dev containers) install it (e.g. `apt-get install -y unzip`). Not needed once the distribution is cached. See [Common pitfalls](#7-common-pitfalls--troubleshooting). | `unzip -v` |
 
 Notes:
 
@@ -214,9 +215,11 @@ You do **not** run any DDL by hand. On startup the application applies its
 
 | Migration | Contents |
 | :-------- | :------- |
+| `V0__spring_batch_metadata.sql` | The Spring Batch metadata schema — the `BATCH_*` job/step tables and their sequences that Spring Batch's `JdbcJobRepository` requires before any batch job can run or restart. |
 | `V1__schema.sql` | The relational schema — one table per VSAM file, with primary keys and composite keys preserved (`NUMERIC`, `CHAR(n)`, `NUMERIC(n+2,2)` mappings from the copybook layouts). |
 | `V2__reference_data.sql` | Reference and sample seed data, **including the demo application users** (see [§4.3](#43-run-the-application)). |
 | `V3__indexes.sql` | Secondary indexes that reproduce the legacy VSAM alternate indexes (for example the transaction-by-card index). |
+| `V4__card_xref_unique_card_num.sql` | Adds the single-key `UNIQUE` constraint (`uk_card_xref_card_num`) on `card_xref(xref_card_num)`, in place before Hibernate `ddl-auto=validate` verifies the JPA entity mappings at startup. |
 
 Because Flyway initializes everything, the **only** manual database step is creating an
 empty database ([§3.1](#31-start-postgresql)); a freshly created database is fully populated
@@ -420,6 +423,17 @@ the **before/after architecture** see [`docs/architecture/`](./architecture/); a
 
 These are the issues new developers hit most often. Most are configuration or environment
 problems, not code problems.
+
+* **First `./mvnw` on a clean machine fails with "your Maven distribution might be
+  compromised" → you are missing `unzip`.** The Maven Wrapper downloads the pinned Maven
+  3.9.9 **`.zip`** and needs `unzip` to unpack it. When `unzip` is absent the wrapper falls
+  back to the `.tar.gz` archive but still validates it against the **`.zip`** SHA-256 pinned
+  in `.mvn/wrapper/maven-wrapper.properties`, so the checksum legitimately mismatches and the
+  wrapper refuses to run. The security-flavoured message is real fail-safe behaviour, but the
+  true cause is the missing `unzip`, not a tampered download. **Fix:** install `unzip`
+  (`apt-get install -y unzip`, `dnf install -y unzip`, or `brew install unzip`) and re-run
+  `./mvnw -version`. Once the distribution is cached under `~/.m2/wrapper/dists/` the wrapper
+  no longer downloads or unpacks it, so this only affects the very first run.
 
 * **Docker is not running → integration tests fail.** `./mvnw verify` starts a real
   PostgreSQL container through Testcontainers. If you see errors about not being able to
