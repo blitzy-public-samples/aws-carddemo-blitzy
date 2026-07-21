@@ -358,6 +358,54 @@ the **same** parameters to resume that instance; change a parameter (or add `run
 start a **new** instance. A job that already `COMPLETED` cannot be re-run with identical parameters,
 guarding against reprocessing the same input twice.
 
+**Abnormal termination & automatic recovery (finding F-02).** If a batch JVM is killed while a job
+is running — a `SIGTERM` from the scheduler, a `kill -9`, an OOM, or a node crash — Spring Batch has
+no chance to mark the run terminal, so the `JobExecution` is left `STARTED` (the metadata still says
+"running" even though nothing is). By itself that **blocks restart**: relaunching the same instance
+would fail with `JobExecutionAlreadyRunningException`, because Spring Batch refuses to start an
+instance that appears to be already running. CardDemo recovers from this **automatically**:
+
+- At job start, `BatchExecutionOwnerListener` stamps each `JobExecution`'s execution context with the
+  **owning host name and process id** (`carddemo.owner.host` / `carddemo.owner.pid`). The stamp is
+  persisted before the first chunk, so it survives an abrupt crash.
+- On the **next** CLI batch launch, `BatchExecutionRecovery` (an `ApplicationRunner` that runs
+  *before* the Spring Batch job launcher) scans the running executions of the job being launched and
+  **abandons** — marks `FAILED`, with a clear exit message — any execution left behind by a dead
+  owner. The relaunch then resumes the instance normally. In practice you simply **relaunch the job
+  on the same host** and it recovers itself; the log shows a `WARN` such as
+  `Reconciled stale batch execution <id> of job '<name>' to FAILED (owner process dead)` followed by a
+  normal completion and exit code `0`.
+
+  This covers **both** `SIGTERM` and `kill -9`: because recovery happens at the *next startup*, it
+  does not depend on any shutdown hook having run (a `kill -9` gives the dying JVM no chance to run
+  one). A best-effort `DisposableBean` shutdown marker additionally tries to mark this JVM's own
+  running executions `STOPPED` on a *graceful* stop, but the startup reconciliation is the
+  authoritative path.
+
+- **Why this never disturbs a genuinely running job.** The reconciler abandons an execution only when
+  **all** of the following hold: the owner **host equals this host**, the owner **pid differs from
+  this JVM's pid**, and the owner **process is no longer alive** (`ProcessHandle.of(pid)`). A live
+  owner (a real concurrent run), an execution owned by **another host**, or one with **no owner
+  stamp** is left untouched. Consequently the concurrency guarantee is fully preserved — a second
+  launch of an instance that is *actually* running is still refused with
+  `JobExecutionAlreadyRunningException`. (The four-part discriminator and its non-regression are
+  proven by `BatchExecutionRecoveryIT`, which races real OS processes.)
+
+**Manual recovery (rare edge cases).** The automatic path handles same-host recovery. Manual
+intervention is only needed when the reconciler *intentionally* declines to act — most notably a
+stale execution whose owner **host is a different (now-decommissioned) machine**, which this host
+must not assume is dead:
+
+- Preferred: relaunch the job **on the host that originally ran it** — that host's reconciler will
+  recognize its own dead pid and clean the execution.
+- Otherwise, abandon the stale execution explicitly. Spring Batch's `JobOperator` bean is
+  auto-configured; an operator task can call `jobOperator.stop(executionId)` (best-effort) and then
+  `jobOperator.abandon(executionId)` to move a non-running `STARTED`/`STOPPED` execution to
+  `ABANDONED`, after which the instance is restartable with its original parameters. As a
+  DBA-level last resort the same effect is achieved by setting the stale row's `status`/`exit_code`
+  to `FAILED` (with a non-null `end_time`) in `BATCH_JOB_EXECUTION` (and its `BATCH_STEP_EXECUTION`
+  rows) — exactly what the automatic reconciler does on your behalf in the common case.
+
 For the **complete JCL-job → Spring Batch job mapping** (including which COBOL program each
 job derives from), see [`docs/traceability-matrix.md`](./traceability-matrix.md) and the
 **Batch** table in [`README.md`](../README.md).

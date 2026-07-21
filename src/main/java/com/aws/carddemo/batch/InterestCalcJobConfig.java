@@ -415,12 +415,26 @@ public class InterestCalcJobConfig {
      * missing account is therefore fatal, reproduced here by throwing {@link IllegalStateException}
      * so the step fails rather than continuing with no account context.</p>
      *
+     * <p><strong>Concurrency (AAP &sect;0.6.1 / &sect;0.7.1; decision-log #52).</strong> The read
+     * uses {@link AccountRepository#findByIdForUpdate(Long)} &mdash; a {@code SELECT ... FOR UPDATE}
+     * pessimistic write lock &mdash; not the plain {@code findById}. This account is later mutated by
+     * {@link #updateAccount(Account, java.math.BigDecimal)} ({@code REWRITE FD-ACCTFILE-REC}) on a
+     * control break, so the read begins a read-modify-rewrite. Because
+     * {@link #interestCalcStep()} runs the whole account-key scan inside a <em>single</em> tasklet
+     * transaction, the lock acquired here is held until that transaction commits, serializing this
+     * job against any concurrent writer of the same account row (an online
+     * {@code AccountUpdateService}/{@code BillPayService} turn or a concurrent poster). Without it,
+     * PostgreSQL {@code READ COMMITTED} would let a concurrent committed balance change be silently
+     * overwritten by the blind {@code save} in {@code updateAccount} &mdash; a lost update the legacy
+     * single-threaded batch window never exhibited. This mirrors {@code PostTransactionJobConfig}'s
+     * posting path and closes the parity gap the QA seam gate flagged (finding F-03).</p>
+     *
      * @param acctId the account id to load (COBOL {@code TRANCAT-ACCT-ID} moved to {@code FD-ACCT-ID})
-     * @return the managed {@link Account}
+     * @return the managed, write-locked {@link Account}
      * @throws IllegalStateException if no account exists for {@code acctId} (COBOL abend)
      */
     private Account getAccountData(Long acctId) {
-        return accountRepository.findById(acctId)
+        return accountRepository.findByIdForUpdate(acctId)
                 .orElseThrow(() -> new IllegalStateException(
                         "Account not found for interest calculation: acctId=" + acctId));
     }

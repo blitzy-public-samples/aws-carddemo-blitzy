@@ -65,15 +65,17 @@ public interface AccountRepository extends JpaRepository<Account, Long> {
      * account lock also serializes the dependent {@code 2700-UPDATE-TCATBAL} update, so no second
      * lock &mdash; and therefore no lock-ordering / deadlock concern &mdash; arises.</p>
      *
-     * <p><strong>Scope:</strong> used by every read-update-rewrite path that the COBOL guarded with a
-     * {@code READ ... UPDATE} record lock &mdash; {@code PostTransactionJobConfig}'s posting processor
-     * (batch tier), {@code AccountUpdateService}'s write turn ({@code COACTUPC 9600-WRITE-PROCESSING};
-     * account locked first, then customer), and {@code BillPayService}'s write turn
-     * ({@code COBIL00C UPDATE-ACCTDAT-FILE}). Only the read-only account-view path
-     * ({@code AccountViewService}) keeps the plain {@code findById}, matching the COBOL {@code READ}
-     * (without {@code UPDATE}) it migrates. Must be invoked within an active transaction (the online
-     * {@code @Transactional} unit-of-work or the Spring Batch chunk transaction); calling it outside a
-     * transaction has no lasting lock effect.</p>
+     * <p><strong>Scope:</strong> used by every read-update-rewrite path that mutates an account
+     * balance &mdash; the batch tier's {@code PostTransactionJobConfig} posting processor
+     * ({@code CBTRN02C}) and {@code InterestCalcJobConfig} account read
+     * ({@code CBACT04C 1100-GET-ACCT-DATA}, whose accumulated interest is rewritten by
+     * {@code 1050-UPDATE-ACCOUNT}), and the online tier's {@code AccountUpdateService} write turn
+     * ({@code COACTUPC 9600-WRITE-PROCESSING}; account locked first, then customer) and
+     * {@code BillPayService} write turn ({@code COBIL00C UPDATE-ACCTDAT-FILE}). Only the read-only
+     * account-view path ({@code AccountViewService}) keeps the plain {@code findById}, matching the
+     * COBOL {@code READ} (without {@code UPDATE}) it migrates. Must be invoked within an active
+     * transaction (the online {@code @Transactional} unit-of-work or the Spring Batch step/chunk
+     * transaction); calling it outside a transaction has no lasting lock effect.</p>
      *
      * @param acctId the account primary key ({@code ACCT-ID PIC 9(11)})
      * @return the locked account if present, otherwise empty

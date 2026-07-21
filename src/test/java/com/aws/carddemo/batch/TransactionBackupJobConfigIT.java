@@ -422,6 +422,57 @@ class TransactionBackupJobConfigIT extends AbstractPostgresIntegrationTest {
     }
 
     /**
+     * End-to-end gate for QA finding&nbsp;<strong>F-01</strong>: a failure to <em>publish</em> the
+     * completed backup output must fail the job, not be silently swallowed as {@code COMPLETED}.
+     *
+     * <p>The chunk phase writes every record to the deterministic {@code .inprogress} temp exactly as
+     * usual, but the final atomic rename cannot succeed because the {@code outputPath} target already
+     * exists as a non-empty directory. Before the fix {@link AtomicFileStepPublisher#afterStep} let the
+     * resulting {@code UncheckedIOException} escape the listener callback, where Spring Batch merely
+     * logged it after having already marked the step {@code COMPLETED} &mdash; so the job reported
+     * {@code COMPLETED}/exit&nbsp;0 while the {@code TRANSACT} backup image was never published. The fix
+     * fails the step, which fails the job. This test asserts the job now ends {@code FAILED} with the
+     * cause recorded, the target is never partially overwritten, and the {@code .inprogress} temp is
+     * left in place for a restart to re-publish once the operator clears the cause.</p>
+     *
+     * @throws Exception if the launcher fails to run the job
+     */
+    @Test
+    @DisplayName("F-01: a publish failure fails the backup job (not a false COMPLETED)")
+    void publishFailureFailsTheJob() throws Exception {
+        // outputPath already exists as a NON-EMPTY directory -> the atomic move onto it must fail.
+        Path backupOut = tempDir.resolve("transact.bkp");
+        Files.createDirectory(backupOut);
+        Files.writeString(backupOut.resolve("blocker"), "x");
+        long countBefore = transactionRepository.count();
+
+        JobExecution execution = launchBackup(backupOut);
+
+        assertThat(execution.getStatus())
+                .as("finalization failure fails the job instead of a false COMPLETED")
+                .isEqualTo(BatchStatus.FAILED);
+        assertThat(execution.getExitStatus().getExitCode())
+                .as("failed job yields a non-COMPLETED exit code (drives RC 8)")
+                .isEqualTo(ExitStatus.FAILED.getExitCode());
+        assertThat(execution.getAllFailureExceptions())
+                .as("the publish failure cause is recorded on the execution").isNotEmpty();
+        assertThat(Files.isDirectory(backupOut))
+                .as("the target was never partially overwritten").isTrue();
+
+        try (var stream = Files.list(tempDir)) {
+            List<Path> temps = stream
+                    .filter(p -> p.getFileName().toString().startsWith("transact.bkp.")
+                            && p.getFileName().toString().endsWith(".inprogress"))
+                    .toList();
+            assertThat(temps)
+                    .as("the .inprogress temp is left in place for a restart to re-publish")
+                    .isNotEmpty();
+        }
+        assertThat(transactionRepository.count())
+                .as("a failed backup mutates no data").isEqualTo(countBefore);
+    }
+
+    /**
      * Builds a fully populated {@link Transaction} with deterministic, known field values so that a
      * round-trip parse of its exported record can be asserted field-by-field.
      *

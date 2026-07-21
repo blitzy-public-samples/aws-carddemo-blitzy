@@ -151,7 +151,7 @@ class InterestCalcJobConfigTest {
         // (1000.00 * 19.99) / 1200 = 16.6583... -> DOWN 16.65 (NOT HALF_UP 16.66)
         when(catBalRepo.streamAllByAccountKeyOrder())
                 .thenAnswer(inv -> Stream.of(tcb(11L, "01", 5, "1000.00")));
-        when(accountRepo.findById(11L)).thenReturn(Optional.of(account(11L, "GRP", "0.00")));
+        when(accountRepo.findByIdForUpdate(11L)).thenReturn(Optional.of(account(11L, "GRP", "0.00")));
         stubXref(11L, "1234567890123456");
         stubDisc("GRP", "01", 5, "19.99");
 
@@ -170,7 +170,7 @@ class InterestCalcJobConfigTest {
         // (100.00 * 20.00) / 1200 = 1.6666... -> DOWN 1.66 (HALF_UP would give 1.67)
         when(catBalRepo.streamAllByAccountKeyOrder())
                 .thenAnswer(inv -> Stream.of(tcb(11L, "01", 5, "100.00")));
-        when(accountRepo.findById(11L)).thenReturn(Optional.of(account(11L, "GRP", "0.00")));
+        when(accountRepo.findByIdForUpdate(11L)).thenReturn(Optional.of(account(11L, "GRP", "0.00")));
         stubXref(11L, "1234567890123456");
         stubDisc("GRP", "01", 5, "20.00");
 
@@ -186,8 +186,8 @@ class InterestCalcJobConfigTest {
         when(catBalRepo.streamAllByAccountKeyOrder()).thenAnswer(inv -> Stream.of(
                 tcb(11L, "01", 5, "1000.00"),
                 tcb(22L, "01", 5, "1000.00")));
-        when(accountRepo.findById(11L)).thenReturn(Optional.of(account(11L, "GRP", "0.00")));
-        when(accountRepo.findById(22L)).thenReturn(Optional.of(account(22L, "GRP", "0.00")));
+        when(accountRepo.findByIdForUpdate(11L)).thenReturn(Optional.of(account(11L, "GRP", "0.00")));
+        when(accountRepo.findByIdForUpdate(22L)).thenReturn(Optional.of(account(22L, "GRP", "0.00")));
         stubXref(11L, "1111111111111111");
         stubXref(22L, "2222222222222222");
         stubDisc("GRP", "01", 5, "19.99");
@@ -207,7 +207,7 @@ class InterestCalcJobConfigTest {
     void interestTransactionTaggingMatchesCobol() {
         when(catBalRepo.streamAllByAccountKeyOrder())
                 .thenAnswer(inv -> Stream.of(tcb(11L, "07", 9, "1000.00")));
-        when(accountRepo.findById(11L)).thenReturn(Optional.of(account(11L, "GRP", "0.00")));
+        when(accountRepo.findByIdForUpdate(11L)).thenReturn(Optional.of(account(11L, "GRP", "0.00")));
         stubXref(11L, "4444333322221111");
         stubDisc("GRP", "07", 9, "19.99");
 
@@ -229,7 +229,7 @@ class InterestCalcJobConfigTest {
     void defaultDisclosureGroupUsedWhenSpecificMissing() {
         when(catBalRepo.streamAllByAccountKeyOrder())
                 .thenAnswer(inv -> Stream.of(tcb(11L, "01", 5, "1200.00")));
-        when(accountRepo.findById(11L)).thenReturn(Optional.of(account(11L, "MISSING", "0.00")));
+        when(accountRepo.findByIdForUpdate(11L)).thenReturn(Optional.of(account(11L, "MISSING", "0.00")));
         stubXref(11L, "1234567890123456");
         // specific (MISSING,01,5) not found -> Optional.empty(); DEFAULT stubbed:
         when(discRepo.findById(new DisclosureGroup.DisclosureGroupId("MISSING", "01", 5)))
@@ -247,7 +247,7 @@ class InterestCalcJobConfigTest {
     void defaultDisclosureGroupBothMissingThrows() {
         when(catBalRepo.streamAllByAccountKeyOrder())
                 .thenAnswer(inv -> Stream.of(tcb(11L, "01", 5, "1000.00")));
-        when(accountRepo.findById(11L)).thenReturn(Optional.of(account(11L, "MISSING", "0.00")));
+        when(accountRepo.findByIdForUpdate(11L)).thenReturn(Optional.of(account(11L, "MISSING", "0.00")));
         stubXref(11L, "1234567890123456");
         when(discRepo.findById(any())).thenReturn(Optional.empty());
 
@@ -264,8 +264,8 @@ class InterestCalcJobConfigTest {
                 tcb(11L, "01", 5, "1000.00"),   // rate 0 -> skipped
                 tcb(11L, "02", 5, "1200.00"),   // rate 12.00 -> 12.00 interest
                 tcb(22L, "01", 5, "1000.00")));  // rate 0 -> skipped (also the final account)
-        when(accountRepo.findById(11L)).thenReturn(Optional.of(account(11L, "GRP", "500.00")));
-        when(accountRepo.findById(22L)).thenReturn(Optional.of(account(22L, "GRP", "0.00")));
+        when(accountRepo.findByIdForUpdate(11L)).thenReturn(Optional.of(account(11L, "GRP", "500.00")));
+        when(accountRepo.findByIdForUpdate(22L)).thenReturn(Optional.of(account(22L, "GRP", "0.00")));
         stubXref(11L, "1111111111111111");
         stubXref(22L, "2222222222222222");
         stubDisc("GRP", "01", 5, "0.00");   // zero rate -> skipped (acct 11 row 1, acct 22 row)
@@ -295,8 +295,8 @@ class InterestCalcJobConfigTest {
         when(catBalRepo.streamAllByAccountKeyOrder()).thenAnswer(inv -> Stream.of(
                 tcb(11L, "01", 5, "1000.00"),   // A: (1000*12)/1200 = 10.00
                 tcb(22L, "01", 5, "2000.00")));  // B: (2000*12)/1200 = 20.00
-        when(accountRepo.findById(11L)).thenReturn(Optional.of(a));
-        when(accountRepo.findById(22L)).thenReturn(Optional.of(b));
+        when(accountRepo.findByIdForUpdate(11L)).thenReturn(Optional.of(a));
+        when(accountRepo.findByIdForUpdate(22L)).thenReturn(Optional.of(b));
         stubXref(11L, "1111111111111111");
         stubXref(22L, "2222222222222222");
         stubDisc("GRP", "01", 5, "12.00");
@@ -333,7 +333,7 @@ class InterestCalcJobConfigTest {
     void missingAccountThrows() {
         when(catBalRepo.streamAllByAccountKeyOrder())
                 .thenAnswer(inv -> Stream.of(tcb(11L, "01", 5, "1000.00")));
-        when(accountRepo.findById(11L)).thenReturn(Optional.empty());
+        when(accountRepo.findByIdForUpdate(11L)).thenReturn(Optional.empty());
 
         assertThrows(IllegalStateException.class, () -> config.calculateInterest(PROC_DATE));
     }
@@ -343,7 +343,7 @@ class InterestCalcJobConfigTest {
     void missingXrefThrows() {
         when(catBalRepo.streamAllByAccountKeyOrder())
                 .thenAnswer(inv -> Stream.of(tcb(11L, "01", 5, "1000.00")));
-        when(accountRepo.findById(11L)).thenReturn(Optional.of(account(11L, "GRP", "0.00")));
+        when(accountRepo.findByIdForUpdate(11L)).thenReturn(Optional.of(account(11L, "GRP", "0.00")));
         when(xrefRepo.findByXrefAcctId(11L)).thenReturn(new ArrayList<>());
 
         assertThrows(IllegalStateException.class, () -> config.calculateInterest(PROC_DATE));

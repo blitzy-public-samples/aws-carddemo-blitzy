@@ -133,8 +133,31 @@ public final class AtomicFileStepPublisher implements StepExecutionListener {
      * Publishes every prepared in-progress temp file to its final target when the step completed
      * successfully, or leaves them untouched (for restart) otherwise.
      *
+     * <p><strong>Finalization is part of the step contract (finding&nbsp;F-01).</strong> The atomic
+     * rename performed here <em>is</em> the step's externally observable output; a batch step whose
+     * chunk phase completed but whose output was never published has <em>not</em> succeeded. Spring
+     * Batch, however, invokes this callback <em>after</em> it has already set the step's
+     * {@link BatchStatus#COMPLETED}, and it merely logs any exception a listener throws from
+     * {@code afterStep} &mdash; so a finalization failure that simply propagated would leave the step
+     * (and its job) reporting {@code COMPLETED}/exit&nbsp;0 while the byte-exact external file
+     * (e.g. the {@code DALYREJS} reject feed, a statement, a transaction backup, or a category-balance
+     * report) was silently lost, orphaned as an {@code .inprogress} temp. To prevent that
+     * false-success/data-loss defect, a publication failure is caught here and turned into a genuine
+     * step failure: the throwable is recorded on the {@link StepExecution}, the status is forced to
+     * {@link BatchStatus#FAILED}, and {@link ExitStatus#FAILED} is returned. Returning a failed status
+     * (rather than re-throwing) is what actually flips the already-{@code COMPLETED} step to
+     * {@code FAILED}; that failure then propagates to the {@code JobExecution}, so the CLI batch
+     * process exits non-zero (RC&nbsp;8 via the return-code exit-code generator) and the job instance
+     * is restartable.</p>
+     *
+     * <p>The {@code .inprogress} temp files are intentionally left in place on such a failure (see the
+     * class contract, step&nbsp;3): a restart resumes/re-publishes them once the operator has cleared
+     * the underlying cause (for example a target path that had been replaced by a directory), so no
+     * output is dropped and none is published in a partial state.</p>
+     *
      * @param stepExecution the finished step execution
-     * @return the step's own exit status, unchanged
+     * @return the step's own exit status when publication succeeded (or the step had not completed);
+     *         {@link ExitStatus#FAILED} if publishing a completed step's output failed
      */
     @Override
     public ExitStatus afterStep(StepExecution stepExecution) {
@@ -144,16 +167,29 @@ public final class AtomicFileStepPublisher implements StepExecutionListener {
             return stepExecution.getExitStatus();
         }
         ExecutionContext ec = stepExecution.getExecutionContext();
-        for (String targetKey : registeredTargetKeys(ec)) {
-            String tempKey = targetKey.substring(0, targetKey.length() - SUFFIX_TARGET.length())
-                    + SUFFIX_TEMP;
-            if (!ec.containsKey(tempKey)) {
-                continue;
+        try {
+            for (String targetKey : registeredTargetKeys(ec)) {
+                String tempKey = targetKey.substring(0, targetKey.length() - SUFFIX_TARGET.length())
+                        + SUFFIX_TEMP;
+                if (!ec.containsKey(tempKey)) {
+                    continue;
+                }
+                Path temp = Paths.get(ec.getString(tempKey));
+                Path target = Paths.get(ec.getString(targetKey));
+                restrictPermissions(temp);
+                resolver.atomicPublish(temp, target);
             }
-            Path temp = Paths.get(ec.getString(tempKey));
-            Path target = Paths.get(ec.getString(targetKey));
-            restrictPermissions(temp);
-            resolver.atomicPublish(temp, target);
+        } catch (RuntimeException ex) {
+            // Finalization failed (e.g. BatchFilePathResolver.atomicPublish threw UncheckedIOException
+            // because Files.move could not rename onto the target). Fail the step instead of letting
+            // the exception be swallowed by the listener contract (finding F-01). The temp file is left
+            // in place for a restart to re-publish once the cause is cleared.
+            LOGGER.error("Atomic publication of completed step [{}] output failed; failing the step so "
+                    + "the false-COMPLETED / silent data-loss defect (finding F-01) cannot occur",
+                    stepExecution.getStepName(), ex);
+            stepExecution.addFailureException(ex);
+            stepExecution.setStatus(BatchStatus.FAILED);
+            return ExitStatus.FAILED.addExitDescription(ex);
         }
         return stepExecution.getExitStatus();
     }
