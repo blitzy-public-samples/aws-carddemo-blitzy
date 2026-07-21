@@ -1,0 +1,62 @@
+# CardDemo modernized stack — local development topology.
+# PostgreSQL 17 replaces VSAM. The `backend` (FastAPI) and `frontend` (Next.js) services
+# build from source once implementation agents create it; only the `db` service is required
+# to warm the environment (it runs under the default profile).
+#
+# Bring up only the database (default):   docker compose up -d db
+# Bring up the full stack (needs source): docker compose --profile full up -d
+#
+# Parallel-clone isolation (BP1): override port + project + DB per clone, e.g.
+#   POSTGRES_HOST_PORT=$((5432 + CLONE_INDEX)) COMPOSE_PROJECT_NAME=carddemo-$CLONE_INDEX \
+#     docker compose up -d db
+services:
+  db:
+    image: postgres:17
+    container_name: ${COMPOSE_PROJECT_NAME:-carddemo}-db
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-carddemo}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-carddemo}
+      POSTGRES_DB: ${POSTGRES_DB:-carddemo}
+    ports:
+      - "${POSTGRES_HOST_PORT:-5432}:5432"
+    volumes:
+      - carddemo_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-carddemo} -d ${POSTGRES_DB:-carddemo}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: ${COMPOSE_PROJECT_NAME:-carddemo}-backend
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-carddemo}:${POSTGRES_PASSWORD:-carddemo}@db:5432/${POSTGRES_DB:-carddemo}
+      SYNC_DATABASE_URL: postgresql+psycopg2://${POSTGRES_USER:-carddemo}:${POSTGRES_PASSWORD:-carddemo}@db:5432/${POSTGRES_DB:-carddemo}
+      SECRET_KEY: ${SECRET_KEY:-change-me-in-production}
+      ENVIRONMENT: ${ENVIRONMENT:-development}
+    ports:
+      - "${BACKEND_HOST_PORT:-8000}:8000"
+    profiles: ["full"]
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: ${COMPOSE_PROJECT_NAME:-carddemo}-frontend
+    depends_on:
+      - backend
+    environment:
+      NEXT_PUBLIC_API_BASE_URL: http://localhost:${BACKEND_HOST_PORT:-8000}/api/v1
+      BACKEND_INTERNAL_URL: http://backend:8000
+    ports:
+      - "${FRONTEND_HOST_PORT:-3000}:3000"
+    profiles: ["full"]
+
+volumes:
+  carddemo_pgdata:
