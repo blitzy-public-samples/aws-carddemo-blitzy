@@ -36,7 +36,12 @@ Design constraints honored here:
 * **Exact decimal, never floating point.** Numeric and monetary checks route
   through :func:`app.utils.decimal_utils.ToDecimal` so values remain
   :class:`decimal.Decimal`; binary floating-point rounding can never
-  contaminate a monetary edit.
+  contaminate a monetary edit. The numeric validators additionally reject
+  non-finite Decimals (``NaN``, ``Infinity``, ``-Infinity``): a legacy COBOL
+  signed zoned-decimal DISPLAY field (``WS-EDIT-SIGNED-NUMBER-9V2-X PIC X(15)``,
+  COACTUPC.cbl:L55-58) can only hold a fixed-format signed number, so a
+  non-finite value is not a representable monetary amount and is treated as a
+  failed edit rather than being allowed to propagate into later arithmetic.
 * **Specific exceptions only.** Numeric parsing catches exactly
   :class:`ValueError`, :class:`TypeError`, and
   :class:`decimal.InvalidOperation`; there is no bare ``except``.
@@ -217,6 +222,34 @@ def _IsAllDigits(text: str) -> bool:
     return bool(text) and text.isascii() and text.isdigit()
 
 
+def _ToFiniteDecimal(value: object) -> Decimal:
+    """Convert ``value`` to a finite :class:`decimal.Decimal` or raise.
+
+    Wraps :func:`app.utils.decimal_utils.ToDecimal` (which already forbids
+    ``float`` inputs) and adds the finiteness guard the numeric field edits
+    require: a legacy COBOL signed zoned-decimal field cannot represent
+    ``NaN``, ``Infinity``, or ``-Infinity``, so a non-finite value is not a
+    valid monetary amount. Rejecting it here (before any comparison) also
+    prevents an uncaught :class:`decimal.InvalidOperation` from a later
+    ``NaN`` comparison in the range/non-negative checks.
+
+    Args:
+        value: The candidate value (``str``, ``int``, or ``Decimal``).
+
+    Returns:
+        The value as a finite :class:`decimal.Decimal`.
+
+    Raises:
+        ValueError: If the parsed Decimal is non-finite (``NaN``/``Infinity``).
+            (:func:`decimal_utils.ToDecimal` raises ``ValueError``/``TypeError``
+            for unparseable or unsupported inputs.)
+    """
+    decimalValue = decimal_utils.ToDecimal(value)
+    if not decimalValue.is_finite():
+        raise ValueError(f"Non-finite decimal is not a valid amount: {value!r}")
+    return decimalValue
+
+
 # ---------------------------------------------------------------------------
 # Public API -- core generic validators (COACTUPC WS-GENERIC-EDITS).
 # ---------------------------------------------------------------------------
@@ -367,9 +400,9 @@ def ValidateSignedNumber(fieldName: str, value: object) -> ValidationResult:
 
     Represents the ``WS-EDIT-SIGNED-NUMBER-9V2`` edit used for monetary inputs
     (balances, credit limits, transaction amounts). A blank value is rejected
-    as "must be supplied"; otherwise the value must parse as an exact
-    :class:`decimal.Decimal` via :func:`app.utils.decimal_utils.ToDecimal`,
-    which rejects binary floating-point inputs outright.
+    as "must be supplied"; otherwise the value must parse as an exact, finite
+    :class:`decimal.Decimal` via :func:`_ToFiniteDecimal`, which rejects binary
+    floating-point inputs and non-finite values (``NaN``/``Infinity``) outright.
 
     Args:
         fieldName: Field label used to build the failure message.
@@ -377,12 +410,13 @@ def ValidateSignedNumber(fieldName: str, value: object) -> ValidationResult:
 
     Returns:
         A :class:`ValidationResult`; invalid with :data:`MSG_REQUIRED` when
-        blank or :data:`MSG_SIGNED_NUMBER` when the value is not numeric.
+        blank or :data:`MSG_SIGNED_NUMBER` when the value is not a finite
+        number.
     """
     if _IsBlank(value):
         return _Invalid(MSG_REQUIRED.format(field=fieldName))
     try:
-        decimal_utils.ToDecimal(value)
+        _ToFiniteDecimal(value)
     except (InvalidOperation, ValueError, TypeError):
         return _Invalid(MSG_SIGNED_NUMBER.format(field=fieldName))
     return _Valid()
@@ -397,9 +431,11 @@ def ValidateNumericRange(
 
     The ``bounds`` are grouped into a single ``(minValue, maxValue)`` tuple to
     respect the Ochs "<=4 parameters" rule; either bound may be None to leave
-    that side unbounded. The value is parsed with
-    :func:`app.utils.decimal_utils.ToDecimal` and compared as an exact
-    :class:`decimal.Decimal` (used for credit-limit and amount range checks).
+    that side unbounded. The value is parsed with :func:`_ToFiniteDecimal` and
+    compared as an exact, finite :class:`decimal.Decimal` (used for credit-limit
+    and amount range checks). A non-finite value (``NaN``/``Infinity``) is
+    rejected up front, so it can never reach — and raise from — the range
+    comparison.
 
     Args:
         fieldName: Field label used to build the failure message.
@@ -408,11 +444,11 @@ def ValidateNumericRange(
 
     Returns:
         A :class:`ValidationResult`; invalid with :data:`MSG_SIGNED_NUMBER`
-        when non-numeric or :data:`MSG_RANGE` when out of range.
+        when non-numeric or non-finite, or :data:`MSG_RANGE` when out of range.
     """
     minValue, maxValue = bounds
     try:
-        decimalValue = decimal_utils.ToDecimal(value)
+        decimalValue = _ToFiniteDecimal(value)
     except (InvalidOperation, ValueError, TypeError):
         return _Invalid(MSG_SIGNED_NUMBER.format(field=fieldName))
     if minValue is not None and decimalValue < minValue:
@@ -426,9 +462,12 @@ def ValidateNonNegative(fieldName: str, value: object) -> ValidationResult:
     """Validate that a numeric value is zero or positive.
 
     A common credit-limit building block: the value is parsed with
-    :func:`app.utils.decimal_utils.ToDecimal` and compared as an exact
-    :class:`decimal.Decimal`. The specific business formulas (available credit
-    = limit - balance, over-limit) live in the service layer, not here.
+    :func:`_ToFiniteDecimal` and compared as an exact, finite
+    :class:`decimal.Decimal`. A non-finite value (``NaN``/``Infinity``) is
+    rejected before the comparison, so ``NaN`` cannot raise from ``<`` nor can
+    ``Infinity`` be accepted as non-negative. The specific business formulas
+    (available credit = limit - balance, over-limit) live in the service layer,
+    not here.
 
     Args:
         fieldName: Field label used to build the failure message.
@@ -436,10 +475,11 @@ def ValidateNonNegative(fieldName: str, value: object) -> ValidationResult:
 
     Returns:
         A :class:`ValidationResult`; invalid with :data:`MSG_SIGNED_NUMBER`
-        when non-numeric or :data:`MSG_NON_NEGATIVE` when negative.
+        when non-numeric or non-finite, or :data:`MSG_NON_NEGATIVE` when
+        negative.
     """
     try:
-        decimalValue = decimal_utils.ToDecimal(value)
+        decimalValue = _ToFiniteDecimal(value)
     except (InvalidOperation, ValueError, TypeError):
         return _Invalid(MSG_SIGNED_NUMBER.format(field=fieldName))
     if decimalValue < Decimal(0):
