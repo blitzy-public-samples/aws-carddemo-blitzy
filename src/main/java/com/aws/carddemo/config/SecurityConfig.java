@@ -20,6 +20,7 @@ import org.springframework.security.web.authentication.session.ChangeSessionIdAu
 import org.springframework.security.web.authentication.session.CompositeSessionAuthenticationStrategy;
 import org.springframework.security.web.authentication.session.RegisterSessionAuthenticationStrategy;
 import org.springframework.security.web.authentication.session.SessionAuthenticationStrategy;
+import org.springframework.security.web.header.writers.ReferrerPolicyHeaderWriter;
 import org.springframework.security.web.session.HttpSessionEventPublisher;
 
 /**
@@ -241,6 +242,36 @@ public class SecurityConfig {
         // CSRF stays enabled (default): all state-changing requests are Thymeleaf form POSTs carrying
         // the CSRF token; there are no REST endpoints to exempt, so CSRF is never disabled.
         http.csrf(Customizer.withDefaults());
+
+        // Response security headers (SEC-F3, CWE-693 defense-in-depth). Spring Security already emits
+        // X-Content-Type-Options: nosniff, X-Frame-Options: DENY, and Cache-Control: no-store by
+        // default; this customizer AUGMENTS those defaults (it does not disable them) with the three
+        // application-level hardening headers the security review found absent:
+        //   - Content-Security-Policy: the screens are server-rendered Thymeleaf that load only
+        //     same-origin CSS/JS assets, so default-src/style-src 'self' is a tight fit. The BMS field
+        //     coordinates are rendered as static inline style="..." attributes (grid positions, not
+        //     user-controlled data), so style-src additionally allows 'unsafe-inline'. object-src 'none'
+        //     blocks plugin/embed vectors and frame-ancestors 'none' mirrors X-Frame-Options: DENY as
+        //     the modern clickjacking control. No 'unsafe-inline' script and no remote origins are
+        //     permitted, so this does not weaken the (verified) Thymeleaf output escaping.
+        //   - Referrer-Policy: no-referrer — the app has no outbound links, so no Referer needs to leak.
+        //   - Permissions-Policy: disable powerful browser features the application never uses.
+        // These are static, non-parameterized directives (no reflected input), and no new external
+        // interface is introduced. Rationale is recorded in docs/decision-log.md (SEC-F3).
+        http.headers(headers -> headers
+                .contentSecurityPolicy(csp -> csp.policyDirectives(
+                        "default-src 'self'; "
+                                + "style-src 'self' 'unsafe-inline'; "
+                                + "img-src 'self' data:; "
+                                + "object-src 'none'; "
+                                + "base-uri 'self'; "
+                                + "form-action 'self'; "
+                                + "frame-ancestors 'none'"))
+                .referrerPolicy(referrer -> referrer.policy(
+                        ReferrerPolicyHeaderWriter.ReferrerPolicy.NO_REFERRER))
+                .permissionsPolicyHeader(permissions -> permissions.policy(
+                        "geolocation=(), camera=(), microphone=(), payment=(), usb=(), "
+                                + "accelerometer=(), gyroscope=(), magnetometer=()")));
 
         return http.build();
     }

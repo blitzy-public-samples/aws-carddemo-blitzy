@@ -66,6 +66,23 @@
         <postgresql.version>42.7.13</postgresql.version>
         <log4j2.version>2.26.1</log4j2.version>
         <!--
+          Logback security-patch override (SEC-F6). The Spring Boot 3.5.16 parent BOM manages
+          logback (logback-classic + logback-core) via the `logback.version` property at 1.5.34,
+          which is in-range for CVE-2026-13006 (CWE-917 Expression Injection, HIGH CVSS 7.0): a
+          crafted Janino-evaluated `condition` attribute of an <if> configuration element can
+          execute arbitrary code. The definitive upstream fix is logback 1.5.38 (which additionally
+          removes Janino conditional support entirely). The OWASP dependency-check gate
+          (failBuildOnCVSS=7) produced a FALSE NEGATIVE for this advisory, so it is pinned here at
+          source rather than suppressed. Overriding this single property retargets BOTH version-less
+          logback artifacts (classic + core) consistently, and 1.5.38 stays WITHIN the logback 1.5.x
+          line the BOM already uses (API-stable, low-risk, preserves Spring Boot 3.5.16
+          compatibility). Reachability note: this application's logback-spring.xml contains no <if>
+          conditionals and Janino is not on the classpath, so the CVE is not runtime-exploitable
+          here; the bump is applied to satisfy the AAP "OWASP zero critical/high CVEs" gate and to
+          patch the shipped artifact at source. Rationale is recorded in docs/decision-log.md.
+        -->
+        <logback.version>1.5.38</logback.version>
+        <!--
           Flyway PostgreSQL-18 compatibility override (#49). The Spring Boot 3.5.16 parent BOM
           manages Flyway (flyway-core + flyway-database-postgresql) at 11.7.2 via the
           `flyway.version` property. Flyway 11.7.2 encodes its highest *tested* PostgreSQL major

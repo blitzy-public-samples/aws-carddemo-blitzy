@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<!--
+<!--/*
   ~ AWS CardDemo - Bill Payment screen (server-rendered Thymeleaf view).
   ~
   ~ Origin (read-only, 1:1 reproduction):
@@ -15,7 +15,7 @@
   ~ contract on a fixed 24x80 monospaced grid. Field positions (row, col), colors and
   ~ literal labels are taken verbatim from legacy/bms/COBIL00.bms. Migration rationale is
   ~ recorded in docs/decision-log.md, not repeated in code comments.
--->
+*/-->
 <html lang="en" xmlns:th="http://www.thymeleaf.org">
 <head>
     <th:block th:replace="~{fragments/bms-palette :: palette}"></th:block>
@@ -195,8 +195,8 @@
         <!-- Row 8: 70-dash separator (BMS COLOR=YELLOW, LENGTH=70). -->
         <span class="cell r8 c6 yellow">----------------------------------------------------------------------</span>
 
-        <!-- Row 11: current balance (display-formatted string, read-only; NEVER an
-             input and NEVER a numeric/BigDecimal - see COBIL00Form#getCurbal). -->
+        <!--/* Row 11: current balance (display-formatted string, read-only; NEVER an
+             input and NEVER a numeric/BigDecimal - see COBIL00Form#getCurbal). */-->
         <span class="cell r11 c6 turq">Your current balance is: </span>
         <span class="cell r11 c32 blue" th:text="*{curbal}">$0.00</span>
 
