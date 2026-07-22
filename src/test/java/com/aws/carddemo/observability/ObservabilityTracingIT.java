@@ -78,8 +78,16 @@ class ObservabilityTracingIT extends AbstractPostgresIntegrationTest {
     /** PF-key token for the ENTER action (resolved to {@code DFHENTER}). */
     private static final String PFKEY_ENTER = "ENTER";
 
-    /** Flyway-seeded account id whose {@code CCXREF} rows the read chain resolves. */
-    private static final String SEEDED_ACCT_ID = "1";
+    /**
+     * Account-id search token submitted to the account-view filter. Must be the full 11-digit
+     * zero-padded form: {@code AccountViewService} reproduces COACTVWC's {@code PIC X(11)}
+     * character-move edit (legacy {@code COACTVWC} 2210-EDIT-ACCOUNT, lines 666-667), which rejects
+     * any input that is not exactly 11 digits <em>before</em> the {@code CXACAIX} repository read
+     * runs. A shorter token (e.g. {@code "1"}) would now be rejected at the edit and the
+     * {@code carddemo.repository.cardxref.by-account} span would never fire. The token resolves to
+     * Flyway-seeded account {@code 1}, whose {@code CCXREF} rows the read chain then loads.
+     */
+    private static final String SEEDED_ACCT_ID = "00000000001";
 
     /** Non-admin role; either authenticated role may reach the account-view screen. */
     private static final String ROLE_USER = "USER";

@@ -487,8 +487,10 @@ public class AccountViewService {
             return ACCT_NOT_PROVIDED_MSG;
         }
 
-        // Not numeric, or all zeroes (a shorter all-digit value is zero-filled and
-        // therefore acceptable, matching the PIC 9(11) numeric field semantics).
+        // Not numeric, or all zeroes. The COBOL character MOVE into the fixed
+        // PIC X(11) field means a shorter entry keeps trailing spaces and fails
+        // IS NUMERIC, so only an exactly-eleven-digit, non-zero value is accepted
+        // (COACTVWC.cbl 2210-EDIT-ACCOUNT L666-667).
         if (!isEligibleAccountNumber(candidate)) {
             context.setAcctId(0L);
             return ACCT_FILTER_INVALID_MSG;
@@ -785,16 +787,22 @@ public class AccountViewService {
     /**
      * Tests whether a supplied account filter is an acceptable account number,
      * reproducing the COBOL {@code NOT (CC-ACCT-ID IS NOT NUMERIC OR ZEROES)}
-     * condition for the {@code PIC 9(11)} field: composed solely of digits, no wider
-     * than eleven digits, and not all zeroes.
+     * condition (COACTVWC.cbl {@code 2210-EDIT-ACCOUNT} L666-667). The legacy field
+     * {@code CC-ACCT-ID} is {@code PIC X(11)} (with a {@code PIC 9(11)} redefinition)
+     * populated by a <em>character</em> {@code MOVE ACCTSIDI TO CC-ACCT-ID}. A filter
+     * shorter than eleven characters therefore leaves trailing spaces in the fixed
+     * {@code X(11)} field, so {@code IS NUMERIC} fails and the value is rejected (for
+     * example {@code "5"} becomes {@code "5          "}). Consequently a valid filter
+     * must fill all eleven positions with digits and must not be all zeroes; this is
+     * the identical rule enforced by the account-update screen ({@code COACTUPC.cbl}
+     * {@code 1210-EDIT-ACCOUNT}).
      *
      * @param candidate the trimmed filter value (assumed non-blank)
-     * @return {@code true} when the value is a non-zero all-digit number of at most
-     *         eleven digits
+     * @return {@code true} when the value is a non-zero, exactly eleven-digit number
      */
     private static boolean isEligibleAccountNumber(String candidate) {
         return isAllDigits(candidate)
-                && candidate.length() <= ACCT_ID_WIDTH
+                && candidate.length() == ACCT_ID_WIDTH
                 && !isAllZeros(candidate);
     }
 

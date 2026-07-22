@@ -140,8 +140,13 @@ class AccountControllerIT extends AbstractPostgresIntegrationTest {
     /** PF-key token for PF12 - re-fetch/discard on the update screen (resolved to {@code DFHPF12}). */
     private static final String PFKEY_PF12 = "PF12";
 
-    /** Seeded, fully cross-referenced account id from {@code V2__reference_data.sql} (xref+account+customer). */
-    private static final String SEEDED_ACCT_ID = "1";
+    /**
+     * Seeded, fully cross-referenced account id from {@code V2__reference_data.sql} (xref+account+customer),
+     * expressed as the full eleven-digit {@code PIC 9(11)} filter. Both account screens reject a shorter
+     * entry (the legacy character {@code MOVE} into the fixed {@code X(11)} field leaves trailing spaces
+     * and fails {@code IS NUMERIC}; QA finding w002 m1), so the exact eleven-digit form is required.
+     */
+    private static final String SEEDED_ACCT_ID = "00000000001";
 
     /** Seeded current balance for account {@link #SEEDED_ACCT_ID} ({@code acct_curr_bal} 194.00, scale 2). */
     private static final String SEEDED_CURR_BAL = "194.00";

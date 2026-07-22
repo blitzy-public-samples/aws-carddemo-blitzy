@@ -366,15 +366,20 @@ class AccountViewServiceTest {
     }
 
     /**
-     * A shorter all-digit value is a valid zero-filled account number under the
-     * {@code PIC 9(11)} numeric-field semantics, so it is accepted and parsed.
+     * A shorter all-digit value does <em>not</em> fill the fixed {@code PIC X(11)}
+     * field: the legacy character {@code MOVE ACCTSIDI TO CC-ACCT-ID} leaves trailing
+     * spaces, so {@code IS NUMERIC} fails and 2210-EDIT-ACCOUNT (COACTVWC.cbl
+     * L666-667) rejects it with the invalid-filter literal - identical to the
+     * account-update screen's rule. Parity with the mainframe (and with
+     * {@code COACTUPC 1210-EDIT-ACCOUNT}) takes precedence over the earlier
+     * zero-filling convenience (QA finding w002 m1).
      */
     @Test
-    void editAccount_shorterAllDigitFilter_isAcceptedAsZeroFilled() {
+    void editAccount_shorterAllDigitFilter_returnsInvalidFilterMessage() {
         String message = service.editAccount(workAreaWith("123"));
 
-        assertThat(message).isNull();
-        verify(context).setAcctId(123L);
+        assertThat(message).isEqualTo(ACCT_FILTER_INVALID);
+        verify(context).setAcctId(0L);
     }
 
     // ------------------------------------------------------------------
