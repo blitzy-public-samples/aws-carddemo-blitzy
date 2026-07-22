@@ -4,9 +4,11 @@ import com.aws.carddemo.security.CardDemoAuthenticationProvider;
 import com.aws.carddemo.security.CardDemoUserDetailsService;
 import jakarta.servlet.DispatcherType;
 import java.util.List;
+import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.security.authentication.AuthenticationManager;
+import org.springframework.security.authentication.DefaultAuthenticationEventPublisher;
 import org.springframework.security.authentication.ProviderManager;
 import org.springframework.security.config.Customizer;
 import org.springframework.security.config.annotation.method.configuration.EnableMethodSecurity;
@@ -14,6 +16,7 @@ import org.springframework.security.config.annotation.web.builders.HttpSecurity;
 import org.springframework.security.config.annotation.web.configuration.EnableWebSecurity;
 import org.springframework.security.core.session.SessionRegistry;
 import org.springframework.security.core.session.SessionRegistryImpl;
+import org.springframework.security.web.AuthenticationEntryPoint;
 import org.springframework.security.web.SecurityFilterChain;
 import org.springframework.security.web.authentication.LoginUrlAuthenticationEntryPoint;
 import org.springframework.security.web.authentication.session.ChangeSessionIdAuthenticationStrategy;
@@ -123,14 +126,44 @@ public class SecurityConfig {
      * &mdash; the cleartext comparison lives entirely inside {@link CardDemoAuthenticationProvider} for
      * COBOL parity.</p>
      *
+     * <p><strong>Signon observability (finding P7-OBS-01).</strong> A bare {@link ProviderManager}
+     * publishes no authentication events because its default publisher is the internal
+     * {@code NullEventPublisher}. Since signon is controller-managed, this {@link ProviderManager} &mdash;
+     * not Spring Security's form-login filter &mdash; is the single real authentication boundary that
+     * {@code SignonController#processSignon} reaches on every ENTER submission. Wiring a
+     * {@link DefaultAuthenticationEventPublisher} here makes that boundary publish an
+     * {@link org.springframework.security.authentication.event.AuthenticationSuccessEvent} on success and
+     * an {@link org.springframework.security.authentication.event.AbstractAuthenticationFailureEvent}
+     * (mapped from {@code BadCredentialsException} / {@code UsernameNotFoundException}) on failure. The
+     * {@code ObservabilityConfig.SignonMetrics} listeners translate those events into the
+     * {@code carddemo.signon} counter (tag {@code outcome=success|failure}, carrying <em>no</em> user
+     * identifier), closing the previously dead {@code @Observed} seam on the never-called
+     * {@code SignonService.mainEntry}. Publishing is synchronous and side-effect free with respect to the
+     * authentication outcome: {@code authenticate(..)} still returns/throws exactly as before, so
+     * behavioral parity and every existing security assertion are preserved.</p>
+     *
      * @param cardDemoAuthenticationProvider the custom cleartext authentication provider (injected by
      *                                        type; discovered via component scanning)
-     * @return a {@link ProviderManager} backed solely by the CardDemo authentication provider
+     * @param applicationEventPublisher      the Spring {@link ApplicationEventPublisher} (the application
+     *                                        context) used to build the
+     *                                        {@link DefaultAuthenticationEventPublisher} so authentication
+     *                                        events reach the observability listeners (finding P7-OBS-01)
+     * @return a {@link ProviderManager} backed solely by the CardDemo authentication provider and wired to
+     *         publish authentication success/failure events for signon observability
      */
     @Bean
     public AuthenticationManager authenticationManager(
-            CardDemoAuthenticationProvider cardDemoAuthenticationProvider) {
-        return new ProviderManager(cardDemoAuthenticationProvider);
+            CardDemoAuthenticationProvider cardDemoAuthenticationProvider,
+            ApplicationEventPublisher applicationEventPublisher) {
+        ProviderManager providerManager = new ProviderManager(cardDemoAuthenticationProvider);
+        // P7-OBS-01: a bare ProviderManager uses a NullEventPublisher and emits no events. Because signon
+        // is controller-managed (this manager is the real, controller-reached authentication boundary),
+        // wire an event publisher so success/failure authentications are observable via the
+        // carddemo.signon counter in ObservabilityConfig.SignonMetrics. This does not alter the
+        // authentication result contract (authenticate(..) still returns/throws identically).
+        providerManager.setAuthenticationEventPublisher(
+                new DefaultAuthenticationEventPublisher(applicationEventPublisher));
+        return providerManager;
     }
 
     /**
@@ -217,15 +250,36 @@ public class SecurityConfig {
 
         // Unauthenticated access to a protected URL redirects to the signon screen COSGN00 (CC00),
         // reproducing the "sign on first" behavior WITHOUT enabling form-login processing on /signon
-        // (SignonController owns POST /signon).
-        http.exceptionHandling(ex -> ex.authenticationEntryPoint(
-                new LoginUrlAuthenticationEntryPoint("/signon")));
+        // (SignonController owns POST /signon). Finding P5-11: when the unauthenticated request carries a
+        // stale session id (getRequestedSessionId() present but no longer valid - i.e. an idle HTTP
+        // session the servlet container has already timed out), redirect to /signon?timeout so the signon
+        // screen can explain the required re-authentication; a fresh visitor with no session id gets the
+        // plain /signon. This entry point fires only on PROTECTED resources via ExceptionTranslationFilter
+        // (AFTER CsrfFilter), so a token-less state-changing POST is still refused with 403 by the
+        // CsrfFilter and is never rerouted here - unlike a blanket invalidSessionUrl, which would add
+        // SessionManagementFilter and mask the CSRF denial with a redirect.
+        LoginUrlAuthenticationEntryPoint signonEntryPoint = new LoginUrlAuthenticationEntryPoint("/signon");
+        LoginUrlAuthenticationEntryPoint timeoutEntryPoint =
+                new LoginUrlAuthenticationEntryPoint("/signon?timeout");
+        AuthenticationEntryPoint sessionAwareEntryPoint = (request, response, authException) -> {
+            boolean staleSession = request.getRequestedSessionId() != null
+                    && !request.isRequestedSessionIdValid();
+            (staleSession ? timeoutEntryPoint : signonEntryPoint).commence(request, response, authException);
+        };
+        http.exceptionHandling(ex -> ex.authenticationEntryPoint(sessionAwareEntryPoint));
 
         // Session management: attach the shared SessionRegistry so live sessions can be tracked and
         // revoked (findings #8/#43). maximumSessions(-1) imposes NO concurrency cap but activates the
         // ConcurrentSessionFilter, so a session marked expireNow() by SessionRevocationService is
         // enforced on its next request and redirected to the expired URL.
         http.sessionManagement(session -> session
+                // maximumSessions(-1) imposes NO concurrency cap but activates the ConcurrentSessionFilter,
+                // so a session marked expireNow() by SessionRevocationService is enforced on its next
+                // request and redirected to expiredUrl (/signon?expired). Idle-timeout messaging
+                // (/signon?timeout, finding P5-11) is delivered by the stale-session-aware
+                // authenticationEntryPoint above rather than invalidSessionUrl here: invalidSessionUrl
+                // would pull in SessionManagementFilter and reroute token-less POSTs to the timeout URL,
+                // masking the CsrfFilter's 403 (regression seen in *PostWithoutCsrfIsForbidden ITs).
                 .maximumSessions(-1)
                 .sessionRegistry(sessionRegistry)
                 .expiredUrl("/signon?expired"));
@@ -237,7 +291,12 @@ public class SecurityConfig {
         http.logout(logout -> logout
                 .logoutUrl("/logout")
                 .logoutSuccessUrl("/signon?logout")
-                .invalidateHttpSession(true));
+                .invalidateHttpSession(true)
+                // Finding P5-11: clear the JSESSIONID cookie on logout so the browser does not retain a
+                // cookie pointing at the now-invalidated session. The post-logout redirect target
+                // (/signon?logout) is permitAll, so the authenticationEntryPoint never fires for it and
+                // the ?logout marker is always preserved (never rerouted to ?timeout).
+                .deleteCookies("JSESSIONID"));
 
         // CSRF stays enabled (default): all state-changing requests are Thymeleaf form POSTs carrying
         // the CSRF token; there are no REST endpoints to exempt, so CSRF is never disabled.

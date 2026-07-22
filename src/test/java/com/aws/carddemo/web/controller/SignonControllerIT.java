@@ -155,6 +155,60 @@ class SignonControllerIT extends AbstractPostgresIntegrationTest {
                 .andExpect(model().attributeExists(MODEL_ATTR_FORM));
     }
 
+    /**
+     * Finding P5-11: {@code GET /signon?logout} renders the accessible session-ended notice on the
+     * {@code ERRMSG} line. The menu PF3 Exit and the explicit {@code /logout} paths redirect here with
+     * the {@code ?logout} marker; {@code SignonController.showSignon} maps it to the operator-facing
+     * message so the ended session is explained rather than silently presenting a blank sign-on screen.
+     *
+     * @throws Exception if the request cannot be performed
+     */
+    @Test
+    @DisplayName("GET /signon?logout renders the accessible session-ended notice (finding P5-11)")
+    void signonLogoutMarkerShowsEndedNotice() throws Exception {
+        mockMvc.perform(get("/signon").param("logout", ""))
+                .andExpect(status().isOk())
+                .andExpect(view().name(VIEW_SIGNON))
+                .andExpect(model().attribute(MODEL_ATTR_FORM,
+                        hasProperty(FORM_PROP_ERRMSG, containsString("session has ended"))));
+    }
+
+    /**
+     * Finding P5-11: {@code GET /signon?expired} renders the accessible session-revoked notice. A
+     * concurrent sign-on elsewhere, or a password change / account deletion, drives Spring Security's
+     * {@code expiredUrl} (via {@code SessionRevocationService}) to redirect here with the
+     * {@code ?expired} marker, which the controller maps to the "no longer valid" message.
+     *
+     * @throws Exception if the request cannot be performed
+     */
+    @Test
+    @DisplayName("GET /signon?expired renders the accessible session-revoked notice (finding P5-11)")
+    void signonExpiredMarkerShowsRevokedNotice() throws Exception {
+        mockMvc.perform(get("/signon").param("expired", ""))
+                .andExpect(status().isOk())
+                .andExpect(view().name(VIEW_SIGNON))
+                .andExpect(model().attribute(MODEL_ATTR_FORM,
+                        hasProperty(FORM_PROP_ERRMSG, containsString("no longer valid"))));
+    }
+
+    /**
+     * Finding P5-11: {@code GET /signon?timeout} renders the accessible idle-timeout notice. When an
+     * idle HTTP session has been timed out by the container, the stale-session-aware
+     * {@code authenticationEntryPoint} redirects the next protected-resource request here with the
+     * {@code ?timeout} marker, which the controller maps to the "timed out due to inactivity" message.
+     *
+     * @throws Exception if the request cannot be performed
+     */
+    @Test
+    @DisplayName("GET /signon?timeout renders the accessible idle-timeout notice (finding P5-11)")
+    void signonTimeoutMarkerShowsTimeoutNotice() throws Exception {
+        mockMvc.perform(get("/signon").param("timeout", ""))
+                .andExpect(status().isOk())
+                .andExpect(view().name(VIEW_SIGNON))
+                .andExpect(model().attribute(MODEL_ATTR_FORM,
+                        hasProperty(FORM_PROP_ERRMSG, containsString("timed out due to inactivity"))));
+    }
+
     // --- Phase 2: POST sign-on success -> role-based redirect ---------------
     //     (COSGN00C PROCESS-ENTER-KEY + READ-USER-SEC-FILE + XCTL)
 

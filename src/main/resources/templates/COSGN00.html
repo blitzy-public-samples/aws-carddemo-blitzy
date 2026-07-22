@@ -46,7 +46,10 @@
       color: var(--bms-neutral);
       background-color: var(--bms-bg);
       font-family: "Courier New", "DejaVu Sans Mono", "Liberation Mono", Consolas, monospace;
-      font-size: clamp(0.5rem, 1.9vw, 1rem);
+      /* BLITZY [QA P5-06/P5-13]: shared responsive cell size (legible 13px floor, then
+         pan/scroll) replaces the former clamp(0.5rem,...) that collapsed to an illegible
+         ~8px and produced sub-tappable inputs on small viewports. */
+      font-size: var(--bms-cell);
       line-height: 1.2;
       letter-spacing: 0;
       border: 1px solid #1a1a1a;
@@ -178,12 +181,12 @@
 
         <!-- Row 19: User ID entry -->
         <label class="cell c-turq" style="grid-row: 19; grid-column: 29 / span 13;" for="userid">User ID     :</label>
-        <input class="field" style="grid-row: 19; grid-column: 43 / span 8;" type="text" th:field="*{userid}" maxlength="8" size="8" autofocus autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false">
+        <input class="field" style="grid-row: 19; grid-column: 43 / span 8;" type="text" th:field="*{userid}" maxlength="8" size="8" th:autofocus="${form.focusField == 'userid'}" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false">
         <span class="cell c-blue" style="grid-row: 19; grid-column: 52 / span 8;">(8 Char)</span>
 
         <!-- Row 20: Password entry (BMS DRK -> masked) -->
         <label class="cell c-turq" style="grid-row: 20; grid-column: 29 / span 13;" for="passwd">Password    :</label>
-        <input class="field" style="grid-row: 20; grid-column: 43 / span 8;" type="password" th:field="*{passwd}" maxlength="8" size="8" autocomplete="off">
+        <input class="field" style="grid-row: 20; grid-column: 43 / span 8;" type="password" th:field="*{passwd}" maxlength="8" size="8" th:autofocus="${form.focusField == 'passwd'}" autocomplete="off">
         <span class="cell c-blue" style="grid-row: 20; grid-column: 52 / span 8;">(8 Char)</span>
 
         <!-- Row 23: error message line (BMS COLOR=RED, BRT); shown only when present -->

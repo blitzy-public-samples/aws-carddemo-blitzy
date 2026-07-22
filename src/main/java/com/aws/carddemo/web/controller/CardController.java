@@ -500,6 +500,15 @@ public class CardController {
      */
     @GetMapping(ROUTE_DETAIL)
     public String displayDetail(@ModelAttribute("form") COCRDSLForm form) {
+        // Finding P5-05: a GET of the CCDL route is the web equivalent of a fresh CICS transaction
+        // start (COBOL EIBCALEN = 0), so re-seat CDEMO-PGM-ENTER before delegating - exactly as the
+        // sibling card-update GET does (finding #4). This converges CardDetailService.mainEntry on
+        // the first-entry arm (a clean search prompt, or the card-list hand-off auto-fetch when a
+        // selection is carried - that arm keys on CDEMO-PGM-ENTER + FROM = COCRDLIC + a live
+        // selection, all still on the session context) instead of the stale re-enter arm that runs
+        // 2000-PROCESS-INPUTS on the empty form and surfaces a stale red validation line. Genuine
+        // input processing is preserved for form submissions, which arrive through the POST handler.
+        context.markEnter();
         return processDetail(form, PfKey.ENTER);
     }
 

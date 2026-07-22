@@ -45,7 +45,9 @@
     body {
       min-height: 100vh;
       display: flex;
-      justify-content: center;
+      /* BLITZY [QA P5-06/P5-13]: "safe center" keeps the artboard start (left edge)
+         reachable when it overflows a narrow viewport, instead of clipping it. */
+      justify-content: safe center;
       align-items: flex-start;
       overflow-x: auto;
       padding: 0.75rem 0;
@@ -57,7 +59,9 @@
       color: var(--bms-neutral);
       background-color: var(--bms-bg);
       font-family: "Courier New", "DejaVu Sans Mono", "Liberation Mono", Consolas, monospace;
-      font-size: clamp(0.5rem, 1.9vw, 1rem);
+      /* BLITZY [QA P5-06/P5-13]: shared responsive cell size (legible floor, then scroll)
+         replaces the former clamp(0.5rem,...) that collapsed to an illegible ~8px. */
+      font-size: var(--bms-cell);
       line-height: 1.2;
       letter-spacing: 0;
       border: 1px solid #1a1a1a;

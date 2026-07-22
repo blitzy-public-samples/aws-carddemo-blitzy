@@ -5,6 +5,7 @@ import java.io.OutputStream;
 import java.io.UncheckedIOException;
 import java.nio.channels.FileChannel;
 import java.nio.file.AtomicMoveNotSupportedException;
+import java.nio.file.FileAlreadyExistsException;
 import java.nio.file.Files;
 import java.nio.file.LinkOption;
 import java.nio.file.Path;
@@ -53,6 +54,25 @@ public final class BatchFilePathResolver {
 
     private static final Set<PosixFilePermission> OWNER_ONLY =
             EnumSet.of(PosixFilePermission.OWNER_READ, PosixFilePermission.OWNER_WRITE);
+
+    /**
+     * Owner-only ({@code 0700}) directory permissions used for the private per-job-instance
+     * <em>staging directory</em> that hosts a step's in-progress temp file(s) (QA finding
+     * <strong>P4-SEC-01</strong>). The {@code OWNER_EXECUTE} (traverse) bit is required so the owner
+     * process can enter the directory to create and read the temp; the absence of any group/other bit
+     * is what makes the enclosed temp unreachable by other principals regardless of the temp file's
+     * own umask-derived mode.
+     */
+    private static final Set<PosixFilePermission> OWNER_ONLY_DIR =
+            EnumSet.of(PosixFilePermission.OWNER_READ, PosixFilePermission.OWNER_WRITE,
+                    PosixFilePermission.OWNER_EXECUTE);
+
+    /**
+     * Fixed name prefix of the private per-job-instance staging directory created by
+     * {@link #createSecureStagingDirectory(Path, long)}. The job-instance id is appended to make the
+     * directory deterministic (a restart of the same instance reuses it) and unique per instance.
+     */
+    private static final String STAGING_DIR_PREFIX = ".carddemo-inprogress-";
 
     private final List<Path> allowedRoots;
     private final boolean posixSupported;
@@ -136,6 +156,83 @@ public final class BatchFilePathResolver {
                     "Batch output target must not be a symbolic link: " + describe(target));
         }
         return target;
+    }
+
+    /**
+     * Creates (or, on a restart, re-asserts) a <em>private owner-only ({@code 0700}) staging
+     * directory</em> alongside {@code target}, into which a step's in-progress temp file(s) are
+     * written before atomic publication (QA finding <strong>P4-SEC-01</strong>).
+     *
+     * <p><strong>Why a staging directory.</strong> Spring Batch's
+     * {@link org.springframework.batch.item.file.FlatFileItemWriter} creates its output file itself
+     * (via {@code File.createNewFile()}), so the file's mode is dictated by the process umask
+     * ({@code 0644} under the common {@code 0022}) for the entire duration of the step &mdash; a
+     * world-readable window on data such as the {@code DALYREJS} reject feed or a customer statement.
+     * The temp file's own mode cannot be pinned before the writer creates it without breaking the
+     * writer's restart/append contract; instead the temp is placed inside a directory whose mode
+     * <em>is</em> pinned to {@code 0700} at creation. Because a POSIX {@code mkdir} applies
+     * {@code mode & ~umask} and {@code 0700} carries no group/other bits, the requested mode survives
+     * any umask, so the directory is owner-only from the instant it exists (race-free). With the
+     * enclosing directory non-traversable by group/other, the enclosed temp is unreachable by any
+     * other principal regardless of its own {@code 0644} mode.</p>
+     *
+     * <p>The directory is a sibling-level child of the target's real parent
+     * ({@code <parent>/.carddemo-inprogress-<instanceId>}), guaranteeing it shares a filesystem with
+     * the final target so the subsequent {@link #atomicPublish(Path, Path)} rename stays atomic. The
+     * name is deterministic per job instance so a restart reuses the same directory and resumes the
+     * same in-progress temp; a step that publishes several outputs sharing one parent shares one
+     * staging directory. The directory is created if absent, and if it already exists (restart, or a
+     * sibling output of the same step) its owner-only mode is re-asserted and a planted symlink or
+     * non-directory in its place is rejected.</p>
+     *
+     * @param target     the resolved final target (from {@link #resolveOutputTarget(String)}) whose
+     *                   parent hosts the staging directory; must not be {@code null}
+     * @param instanceId the job-instance id, making the staging directory deterministic and unique
+     * @return the private staging directory path (created with, or re-asserted to, {@code 0700})
+     * @throws IllegalArgumentException if {@code target} has no parent, or the staging path already
+     *                                  exists as a symbolic link or non-directory
+     * @throws UncheckedIOException     if the staging directory cannot be created
+     */
+    public Path createSecureStagingDirectory(Path target, long instanceId) {
+        Objects.requireNonNull(target, "target must not be null");
+        Path parent = target.getParent();
+        if (parent == null) {
+            throw new IllegalArgumentException(
+                    "Batch output target has no parent directory: " + describe(target));
+        }
+        Path stagingDir = parent.resolve(STAGING_DIR_PREFIX + instanceId);
+        try {
+            if (posixSupported) {
+                FileAttribute<Set<PosixFilePermission>> attr =
+                        PosixFilePermissions.asFileAttribute(OWNER_ONLY_DIR);
+                try {
+                    Files.createDirectory(stagingDir, attr);
+                } catch (FileAlreadyExistsException alreadyExists) {
+                    // Restart of the same instance, or a second output of the same step reusing the
+                    // directory: it must be a real directory (never a planted symlink), and its
+                    // owner-only mode is re-asserted defensively.
+                    if (Files.isSymbolicLink(stagingDir)
+                            || !Files.isDirectory(stagingDir, LinkOption.NOFOLLOW_LINKS)) {
+                        throw new IllegalArgumentException(
+                                "Batch staging path must be a real directory: " + describe(stagingDir));
+                    }
+                    Files.setPosixFilePermissions(stagingDir, OWNER_ONLY_DIR);
+                }
+            } else {
+                // Non-POSIX filesystem: create the directory and best-effort restrict it to the owner.
+                Files.createDirectories(stagingDir);
+                stagingDir.toFile().setReadable(false, false);
+                stagingDir.toFile().setReadable(true, true);
+                stagingDir.toFile().setWritable(false, false);
+                stagingDir.toFile().setWritable(true, true);
+                stagingDir.toFile().setExecutable(false, false);
+                stagingDir.toFile().setExecutable(true, true);
+            }
+        } catch (IOException ex) {
+            throw new UncheckedIOException(
+                    "Unable to create batch staging directory: " + describe(stagingDir), ex);
+        }
+        return stagingDir;
     }
 
     /**

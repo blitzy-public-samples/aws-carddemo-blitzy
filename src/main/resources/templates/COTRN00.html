@@ -70,7 +70,8 @@
             width: 80ch;
             height: calc(24 * var(--rh));
             margin: 0 auto;
-            font-size: 1rem;
+            /* BLITZY [QA P5-06/P5-13]: responsive artboard cell size (legible floor then pan). */
+            font-size: var(--bms-cell);
             line-height: var(--rh);
             background: var(--c-bg);
         }

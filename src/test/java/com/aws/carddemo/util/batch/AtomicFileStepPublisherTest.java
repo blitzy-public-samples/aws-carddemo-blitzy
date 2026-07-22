@@ -6,6 +6,7 @@ import java.io.IOException;
 import java.io.UncheckedIOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.attribute.PosixFilePermission;
 import java.util.List;
 
 import org.junit.jupiter.api.DisplayName;
@@ -80,6 +81,55 @@ class AtomicFileStepPublisherTest {
         assertThat(Files.readString(target)).isEqualTo("REJECTED-RECORD\n");
         assertThat(Files.exists(temp)).as("in-progress temp removed after publication").isFalse();
         assertThat(stepExecution.getFailureExceptions()).isEmpty();
+    }
+
+    /**
+     * P4-SEC-01 gate: the in-progress temp is created inside a <em>private owner-only ({@code 0700})
+     * per-job-instance staging directory</em> beside the target, not as a world-readable sibling of
+     * the target. Because the enclosing directory carries no group/other permission bit, the temp is
+     * unreachable by any other principal for the whole duration of the step regardless of the umask
+     * the {@code FlatFileItemWriter} creates the temp under. On a completed step the temp is published
+     * and the now-empty staging directory is removed.
+     */
+    @Test
+    @DisplayName("P4-SEC-01: in-progress temp lives in a private 0700 staging directory, cleaned on publish")
+    void preparePlacesTempInPrivateOwnerOnlyStagingDirectory() throws IOException {
+        AtomicFileStepPublisher publisher = newPublisher();
+        StepExecution stepExecution = completedStep();
+
+        Path target = root.resolve("statement.txt");
+        Path temp = publisher.prepare(target.toString(), stepExecution);
+
+        // The temp is NOT a sibling of the target; it lives inside a private per-instance staging dir.
+        Path stagingDir = temp.getParent();
+        assertThat(stagingDir)
+                .as("the temp is relocated out of the shared target directory")
+                .isNotEqualTo(target.getParent());
+        assertThat(stagingDir.getFileName().toString())
+                .as("the private staging directory is named per job instance")
+                .startsWith(".carddemo-inprogress-");
+        assertThat(temp.getFileName().toString()).endsWith(".inprogress");
+
+        // The staging directory is owner-only (rwx------ = 0700): no group/other bit, so the enclosed
+        // temp is unreachable by any other principal regardless of its own umask-derived mode.
+        if (stagingDir.getFileSystem().supportedFileAttributeViews().contains("posix")) {
+            assertThat(Files.getPosixFilePermissions(stagingDir))
+                    .as("the staging directory must be private owner-only 0700 (P4-SEC-01)")
+                    .containsExactlyInAnyOrder(
+                            PosixFilePermission.OWNER_READ,
+                            PosixFilePermission.OWNER_WRITE,
+                            PosixFilePermission.OWNER_EXECUTE);
+        }
+
+        // On successful completion the temp is published and the now-empty staging dir is removed.
+        Files.writeString(temp, "STMT\n");
+        ExitStatus result = publisher.afterStep(stepExecution);
+
+        assertThat(result.getExitCode()).isEqualTo(ExitStatus.COMPLETED.getExitCode());
+        assertThat(Files.readString(target)).isEqualTo("STMT\n");
+        assertThat(Files.exists(temp)).as("temp published and gone").isFalse();
+        assertThat(Files.exists(stagingDir))
+                .as("the emptied staging directory is cleaned up after publication").isFalse();
     }
 
     /**

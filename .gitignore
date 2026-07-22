@@ -56,3 +56,13 @@ target/
 Thumbs.db
 *.swp
 *~
+
+# --- QA runtime scratch & captured evidence (local validation only) ---------
+# Per-phase QA runtime working directories (pid files, logs, harness output)
+# and the screenshot / screen-recording evidence captured during local runtime
+# re-verification. These are local validation artifacts — never source — and
+# must not pollute `git status` or be committed (same build/run-output hygiene
+# contract as target/). Anchored with a leading `/` to the repo root so the
+# tracked `blitzy-deck/` presentation directory is never matched.
+/blitzy/
+/.qa-runtime-*/

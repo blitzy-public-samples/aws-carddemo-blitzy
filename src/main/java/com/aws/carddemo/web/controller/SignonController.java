@@ -20,6 +20,7 @@ import com.aws.carddemo.dto.CardWorkArea.PfKey;
 import com.aws.carddemo.dto.DateStruct;
 import com.aws.carddemo.dto.screen.COSGN00Form;
 import com.aws.carddemo.service.online.SignonService;
+import com.aws.carddemo.service.online.SignonService.CursorField;
 import com.aws.carddemo.service.online.SignonService.SignonResult;
 import com.aws.carddemo.util.PfKeyHandler;
 import com.aws.carddemo.util.constants.Messages;
@@ -175,6 +176,40 @@ public class SignonController {
     private static final String MSG_FIELD_LENGTH =
             "Input exceeds the maximum length for a field.";
 
+    /** Query marker set by the PF3 Exit / explicit {@code /logout} redirect (finding P5-11). */
+    private static final String PARAM_LOGOUT = "logout";
+
+    /** Query marker set by Spring Security's session {@code expiredUrl} (finding P5-11). */
+    private static final String PARAM_EXPIRED = "expired";
+
+    /** Query marker set by the stale-session-aware {@code authenticationEntryPoint} (finding P5-11). */
+    private static final String PARAM_TIMEOUT = "timeout";
+
+    /**
+     * Accessible notice shown after the operator ended the session with PF3 Exit or an explicit
+     * logout (finding P5-11), rendered on the {@code ERRMSG} line ({@code role="alert"
+     * aria-live="assertive"} on {@code COSGN00.html}). A web-tier session-lifecycle message with no
+     * COBOL {@code COSGN00C} equivalent, so it is defined here rather than in {@link Messages}.
+     */
+    private static final String MSG_SESSION_ENDED =
+            "Your session has ended. Please sign on to continue.";
+
+    /**
+     * Accessible notice shown when the session was revoked - a concurrent sign-on elsewhere, or a
+     * password change / account deletion invalidated it (Spring Security {@code expiredUrl} driven
+     * by {@code SessionRevocationService}, finding P5-11). Rendered on the {@code ERRMSG} line.
+     */
+    private static final String MSG_SESSION_EXPIRED =
+            "Your session is no longer valid. Please sign on again.";
+
+    /**
+     * Accessible notice shown when the session expired through inactivity / an unknown session id
+     * (delivered by the stale-session-aware {@code authenticationEntryPoint} in {@code SecurityConfig},
+     * finding P5-11). Rendered on the {@code ERRMSG} line.
+     */
+    private static final String MSG_SESSION_TIMEOUT =
+            "Your session timed out due to inactivity. Please sign on again.";
+
     /** Redirect to the sign-on route (used for the application root). */
     private static final String SIGNON_REDIRECT = "redirect:/signon";
 
@@ -297,13 +332,34 @@ public class SignonController {
      * @return the logical view name {@link #VIEW_SIGNON}
      */
     @GetMapping(PATH_SIGNON)
-    public String showSignon(@ModelAttribute(MODEL_ATTR_FORM) COSGN00Form form) {
+    public String showSignon(@ModelAttribute(MODEL_ATTR_FORM) COSGN00Form form,
+            @RequestParam(name = PARAM_LOGOUT, required = false) String logout,
+            @RequestParam(name = PARAM_EXPIRED, required = false) String expired,
+            @RequestParam(name = PARAM_TIMEOUT, required = false) String timeout) {
         // COBOL MAIN-PARA lines 80-83: first-entry initial display of the empty screen.
         populateHeader(form);
+        // Finding P5-11: the sign-on screen is the only place a re-authentication prompt can be
+        // shown after the session ends. Map the query markers set by the session-ending paths -
+        // ?logout (PF3 Exit / explicit logout), ?expired (concurrent-session or credential-change
+        // revocation via SessionRevocationService -> expiredUrl), and ?timeout (idle-timeout / stale
+        // session id via the authenticationEntryPoint) - to the accessible ERRMSG line so the operator is
+        // told why they must sign on again. A plain first visit carries no marker and stays blank
+        // (parity). These web-tier session events have no COBOL equivalent (the mainframe RACF/CICS
+        // signon has no browser session), so the text is defined on this controller.
+        if (logout != null) {
+            form.setErrmsg(MSG_SESSION_ENDED);
+        } else if (expired != null) {
+            form.setErrmsg(MSG_SESSION_EXPIRED);
+        } else if (timeout != null) {
+            form.setErrmsg(MSG_SESSION_TIMEOUT);
+        }
         if (context.isNew()) {
             // Latch the COMMAREA (EXEC CICS RETURN TRANSID(CC00)); next submit is re-entry.
             context.markInitialized();
         }
+        // P5-08: first-entry display places the cursor on the User ID field (COBOL
+        // showSignon() -> CursorField.USER_ID), replacing the previously hardcoded autofocus.
+        form.setFocusField(COSGN00Form.FOCUS_USER_ID);
         return VIEW_SIGNON;
     }
 
@@ -388,7 +444,9 @@ public class SignonController {
         // COBOL PROCESS-ENTER-KEY EVALUATE TRUE: blank User ID / password validation.
         SignonResult validation = signonService.processEnterKey(form, context);
         if (validation.isShowSignon()) {
-            return renderSignon(form, validation.message());
+            // P5-08: carry the COBOL cursor position (blank User ID -> USERIDL, blank
+            // password -> PASSWDL) through to the template's autofocus target.
+            return renderSignon(form, validation.message(), validation.cursorField());
         }
 
         // COBOL IF NOT ERR-FLG-ON PERFORM READ-USER-SEC-FILE: authenticate the credentials.
@@ -404,7 +462,9 @@ public class SignonController {
         } catch (AuthenticationException failure) {
             // COBOL READ-USER-SEC-FILE failure branches (WHEN 13 / wrong password / WHEN OTHER).
             SignonResult mapped = signonService.mapAuthenticationFailure(failure);
-            return renderSignon(form, mapped.message());
+            // P5-08: user-not-found -> USERIDL, wrong password -> PASSWDL (COBOL READ-USER-SEC-FILE
+            // failure branches), so the cursor lands on the field the operator must correct.
+            return renderSignon(form, mapped.message(), mapped.cursorField());
         }
     }
 
@@ -450,8 +510,37 @@ public class SignonController {
      * @return the logical view name {@link #VIEW_SIGNON}
      */
     private String renderSignon(COSGN00Form form, String message) {
+        // COBOL WHEN OTHER / thank-you paths move -1 to no field: no explicit cursor.
+        return renderSignon(form, message, CursorField.NONE);
+    }
+
+    /**
+     * Re-displays the sign-on screen with a message and an explicit cursor position -
+     * the controller half of {@code SEND-SIGNON-SCREEN} including the COBOL
+     * {@code MOVE -1 TO USERIDL} / {@code MOVE -1 TO PASSWDL} attribute-length cursor
+     * moves (QA finding P5-08).
+     *
+     * <p>Populates the fixed header ({@code POPULATE-HEADER-INFO}), sets the message
+     * line ({@code MOVE WS-MESSAGE TO ERRMSGO}; a {@code null} message clears the line),
+     * and translates the service-computed {@link CursorField} into the form's
+     * output-only {@code focusField} rendering hint so the template autofocuses the
+     * failing/next editable field ({@link CursorField#USER_ID} &rarr; User ID,
+     * {@link CursorField#PASSWORD} &rarr; Password). {@link CursorField#NONE} leaves the
+     * hint unset, matching the COBOL branches that move {@code -1} to no field.</p>
+     *
+     * @param form    the form to populate for rendering
+     * @param message the message to show on the message line, or {@code null} for none
+     * @param cursor  the field the cursor should land on; never {@code null}
+     * @return the logical view name {@link #VIEW_SIGNON}
+     */
+    private String renderSignon(COSGN00Form form, String message, CursorField cursor) {
         populateHeader(form);
         form.setErrmsg(message);
+        form.setFocusField(switch (cursor) {
+            case USER_ID -> COSGN00Form.FOCUS_USER_ID;
+            case PASSWORD -> COSGN00Form.FOCUS_PASSWORD;
+            case NONE -> null;
+        });
         return VIEW_SIGNON;
     }
 
@@ -525,6 +614,8 @@ public class SignonController {
     private String renderLengthGuard(COSGN00Form form) {
         populateHeader(form);
         form.setErrmsg(MSG_FIELD_LENGTH);
+        // P5-08: send the cursor to the first entry field so the operator can re-enter.
+        form.setFocusField(COSGN00Form.FOCUS_USER_ID);
         return VIEW_SIGNON;
     }
 

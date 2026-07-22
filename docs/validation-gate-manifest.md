@@ -57,14 +57,14 @@ extractor.
 |--:|------|-------------|----------------|-----------------|
 | 1 | Compile | `maven-compiler-plugin:compile` (`--release 25`) | All sources compile | **PASS** — BUILD SUCCESS |
 | 2 | Zero-warning (lint) | `-Xlint:all` + `<failOnWarning>true</failOnWarning>` | Any `javac` warning fails the build | **PASS** — build green; only `[WARNING]` in the log is the intentional offline-OWASP-skip note, which is a plugin-execution notice, not a compiler warning |
-| 3 | Unit tests (Surefire 3.5.6) | `surefire:test` | 0 failures / 0 errors | **PASS** — Tests run: **1051**, Failures: 0, Errors: 0, Skipped: 0 |
-| 4 | Integration tests (Failsafe 3.5.6) | `failsafe:integration-test` + `verify` (Testcontainers PostgreSQL) | 0 failures / 0 errors | **PASS** — Tests run: **340**, Failures: 0, Errors: 0, Skipped: 0 |
-| 5 | Coverage (JaCoCo 0.8.15) | `jacoco:check` `<minimum>0.80</minimum>` | Line coverage ≥ 80% | **PASS** — "All coverage checks have been met"; LINE **90.99%** (9660/10616), INSTRUCTION 91.75%, over 221 classes |
+| 3 | Unit tests (Surefire 3.5.6) | `surefire:test` | 0 failures / 0 errors | **PASS** — Tests run: **1102**, Failures: 0, Errors: 0, Skipped: 0 |
+| 4 | Integration tests (Failsafe 3.5.6) | `failsafe:integration-test` + `verify` (Testcontainers PostgreSQL) | 0 failures / 0 errors | **PASS** — Tests run: **364**, Failures: 0, Errors: 0, Skipped: 0 |
+| 5 | Coverage (JaCoCo 0.8.15) | `jacoco:check` `<counter>LINE</counter><value>COVEREDRATIO</value><minimum>0.80</minimum>` | Line coverage ≥ 80% | **PASS** — "All coverage checks have been met"; LINE **90.85%** (10,178/11,203), INSTRUCTION 91.60%, over 229 classes |
 | 6 | Dependency SCA (OWASP 12.2.2) | `dependency-check:check` `<failBuildOnCVSS>7</failBuildOnCVSS>` | Zero unsuppressed CVSS ≥ 7 (High/Critical) | **PASS** — BUILD SUCCESS, no failure sentinel; shipped compile/runtime scope = only `jackson-databind:2.21.5` (patched) proven via `dependency:tree` |
 | 7 | Traceability (100%) | Regenerable extractor over `legacy/cbl/**` → `traceability-matrix.md` §8.1 | Every COBOL paragraph/section mapped | **PASS** — 528 declarations enumerated (527 unique, 1 documented dup); 28 program sub-tables |
 | 8 | Package / BUILD SUCCESS | `spring-boot:repackage` + reactor result | Deployable artifact; overall reactor success | **PASS** — BUILD SUCCESS, total time 01:32 min |
 
-**Aggregate test count:** 1051 unit + 340 integration = **1391 tests, 0 failures, 0 errors, 0 skipped.**
+**Aggregate test count:** 1102 unit + 364 integration = **1466 tests, 0 failures, 0 errors, 0 skipped.** (Counts reflect the post-QA-remediation delivered HEAD, which added regression tests for the 30 QA findings; regenerate with the §1 `clean verify` command and read the Surefire/Failsafe `Tests run` totals plus `target/site/jacoco/jacoco.csv` for the LINE `COVEREDRATIO`.)
 
 ## 3. Prior-Finding Resolution Matrix (all 49)
 
@@ -177,8 +177,8 @@ weakening a test to pass (the source/COBOL oracle always won).
 
 ## 5. Summary & Sign-off
 
-- **All eight gates: PASS.** Compile, zero-warning lint, 1051 unit tests, 340
-  integration tests, 90.99% line coverage (gate ≥80%), OWASP zero unsuppressed
+- **All eight gates: PASS.** Compile, zero-warning lint, 1102 unit tests, 364
+  integration tests, 90.85% line coverage (gate ≥80%), OWASP zero unsuppressed
   High/Critical, 100% traceability, and overall BUILD SUCCESS.
 - **All 49 review findings: RESOLVED** (10 CRITICAL, 34 MAJOR, 5 MINOR) — see §3.
 - **13 in-remediation corrections re-validated** — see §4; none weakened a test.

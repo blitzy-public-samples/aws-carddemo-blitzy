@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>CardDemo Modernization &mdash; Executive Summary | Blitzy</title>
-  <meta name="description" content="Executive summary of the AWS CardDemo mainframe COBOL to Java 25 and Spring Boot migration, delivered by Blitzy with 100% behavioral parity.">
+  <meta name="description" content="Executive summary of the AWS CardDemo mainframe COBOL to Java 25 and Spring Boot migration, delivered by Blitzy as a behavior-preserving migration verified by parity tests.">
   <!--
     Content-Security-Policy. The deck loads three pinned libraries (reveal.js,
     Mermaid, Lucide) from a single CDN origin (jsDelivr). default-src 'self'
@@ -124,10 +124,13 @@
        Sizing only (font-size / padding / heading margins) - all color and surface
        styling stays in the theme. */
     .reveal .risk-compact h2 { margin-bottom: 0.12em; }
-    .reveal .risk-compact .content-lead { margin: 0.15em 0 0.5em; }
-    .reveal .risk-compact .risk-table { font-size: 0.64em; }
+    .reveal .risk-compact .content-lead { margin: 0.12em 0 0.35em; }
+    /* Five risk rows (a fifth, "Runtime toolchain currency", was added to keep the
+       risk register honest). Tighten the em-based type scale and cell padding so the
+       taller table still clears the reserved bottom-right control band on desktop. */
+    .reveal .risk-compact .risk-table { font-size: 0.56em; }
     .reveal .risk-compact .risk-table td,
-    .reveal .risk-compact .risk-table th { padding: 0.3em 0.55em; }
+    .reveal .risk-compact .risk-table th { padding: 0.22em 0.5em; }
 
     /* Onboarding timeline (slide 15): wrap the theme's horizontal flex timeline into
        a compact 3-across, 2-row layout that fits the 1280x720 canvas.
@@ -142,8 +145,8 @@
        stays in the theme. */
     .reveal .blitzy-timeline.timeline-wrap {
       flex-wrap: wrap;
-      gap: 0.7em;
-      font-size: 0.72em;
+      gap: 0.6em;
+      font-size: 0.62em;
     }
     .reveal .blitzy-timeline.timeline-wrap > .blitzy-step {
       flex: 1 1 28%;
@@ -155,6 +158,47 @@
     .reveal .blitzy-timeline.timeline-wrap > .blitzy-step > svg.lucide,
     .reveal .blitzy-timeline.timeline-wrap > .blitzy-step > [data-lucide] {
       width: 1.4em; height: 1.4em;
+    }
+
+    /* ------------------------------------------------------------------
+       #39 Control safe-area density (P8-DECK-04). The theme (Section 4)
+       reserves a bottom inset on content / comparison / agenda slides and
+       moves the slide counter to the bottom-left so neither the counter nor
+       the bottom-right navigation controls overlap slide content. The two
+       densest slides additionally need their content trimmed so it clears the
+       reserved band on the 1280x720 canvas. Sizing only - all color / surface
+       styling stays in the theme.
+       (a) Deterministic-mapping table (slide 10): the 9-row table is the
+           tallest single element in the deck; reveal pins it to the top and it
+           reached into the control zone. Tightening the cell padding lets the
+           whole table clear the reserved band while staying readable. */
+    .reveal .slide-comparison .blitzy-table td,
+    .reveal .slide-comparison .blitzy-table th {
+      padding-top: 0.34em;
+      padding-bottom: 0.34em;
+    }
+    /* (b) Slide 8 "Target Stack" 8-up card grid: its bottom row of four cards
+           would otherwise reach into the reserved control band. This grid uses the
+           .is-dense variant, whose gap/padding rule (Section above) is more specific
+           than a plain section-scoped selector, so .is-dense is included here to win
+           specificity and tighten the bottom row up out of the controls' way.
+           (Slide 11's 6-up grid already clears the band at the default density and
+           is deliberately left alone: shrinking it further would let reveal.js
+           vertically re-center the now-shorter content back down into the band.) */
+    .reveal section[aria-labelledby="s8-title"] .blitzy-card-grid.is-dense { row-gap: 0.35em; }
+    .reveal section[aria-labelledby="s8-title"] .blitzy-card-grid.is-dense .blitzy-card {
+      padding-top: 0.4em;
+      padding-bottom: 0.4em;
+    }
+    /* (c) Slide 11 "Parity Guarantees" 6-up grid is authored at the default
+           (non-dense) density, so its six tall cards overflow the 1280x720 canvas
+           and the bottom row reaches into the control band. Apply the deck's dense
+           gap/padding values (matching the .is-dense variant used elsewhere) scoped
+           to this slide so the grid fits and the bottom row clears the controls. */
+    .reveal section[aria-labelledby="s11-title"] .blitzy-card-grid { row-gap: 0.5em; column-gap: 0.55em; }
+    .reveal section[aria-labelledby="s11-title"] .blitzy-card-grid .blitzy-card {
+      padding: 0.55em 0.9em;
+      gap: 0.25em;
     }
 
     /* ------------------------------------------------------------------
@@ -207,9 +251,9 @@
            Visual: gradient hero (gradient-text title + gradient accent band)
                    and a three-icon hero row.
            =================================================================== -->
-      <section class="slide-title" data-slide-type="title">
+      <section class="slide-title" data-slide-type="title" aria-labelledby="s1-title">
         <span class="eyebrow">Executive Summary</span>
-        <h1 class="blitzy-gradient-text">CardDemo Modernization</h1>
+        <h1 id="s1-title" class="blitzy-gradient-text">CardDemo Modernization</h1>
         <p class="subtitle">Mainframe COBOL &rarr; Java 25 + Spring Boot</p>
         <div class="accent-band" aria-hidden="true"></div>
         <div class="icon-row" aria-hidden="true">
@@ -217,7 +261,7 @@
           <i data-lucide="server"></i>
           <i data-lucide="coffee"></i>
         </div>
-        <p class="hero-tagline">Autonomous migration by Blitzy &bull; 100% behavioral parity</p>
+        <p class="hero-tagline">Autonomous migration by Blitzy &bull; behavior-preserving by design</p>
         <p class="wordmark blitzy-gradient-text">Blitzy</p>
       </section>
 
@@ -225,8 +269,8 @@
            SLIDE 2 - AGENDA
            Visual: numbered chip cards, each with a Lucide icon.
            =================================================================== -->
-      <section class="slide-agenda" data-slide-type="agenda">
-        <h2>Agenda</h2>
+      <section class="slide-agenda" data-slide-type="agenda" aria-labelledby="s2-title">
+        <h2 id="s2-title">Agenda</h2>
         <div class="blitzy-card-grid fixed-3 is-dense">
           <div class="blitzy-card">
             <span class="blitzy-chip">01</span>
@@ -256,7 +300,7 @@
             <span class="blitzy-chip">05</span>
             <div class="card-icon"><i data-lucide="gauge"></i></div>
             <div class="card-title">Quality, observability &amp; risks</div>
-            <div class="card-desc">Gates met and risks flagged openly</div>
+            <div class="card-desc">Quality gates &mdash; and risks flagged openly</div>
           </div>
           <div class="blitzy-card">
             <span class="blitzy-chip">06</span>
@@ -271,10 +315,10 @@
            SLIDE 3 - SECTION DIVIDER (01)
            Visual: oversized Lucide icon + large gradient numeral.
            =================================================================== -->
-      <section class="slide-section" data-slide-type="section">
+      <section class="slide-section" data-slide-type="section" aria-labelledby="s3-title">
         <div class="section-icon" aria-hidden="true"><i data-lucide="help-circle"></i></div>
         <div class="section-number">01</div>
-        <h2 class="section-title">Why Modernize</h2>
+        <h2 id="s3-title" class="section-title">Why Modernize</h2>
         <p class="section-desc">Reduce mainframe risk and cost and unlock modern tooling &mdash; without changing behavior.</p>
       </section>
 
@@ -282,8 +326,8 @@
            SLIDE 4 - CONTENT: Business context
            Visual: row of stat cards with big numbers and Lucide icons.
            =================================================================== -->
-      <section class="slide-content" data-slide-type="content">
-        <h2>What Is CardDemo?</h2>
+      <section class="slide-content" data-slide-type="content" aria-labelledby="s4-title">
+        <h2 id="s4-title">What Is CardDemo?</h2>
         <p class="content-lead">A credit-card management demo: accounts, cards, customers, transactions, bill pay, reporting and user administration &mdash; migrated whole, in a single phase.</p>
         <div class="blitzy-card-grid fixed-4">
           <div class="blitzy-stat">
@@ -303,7 +347,7 @@
           </div>
           <div class="blitzy-stat">
             <div class="stat-icon" aria-hidden="true"><i data-lucide="calendar-clock"></i></div>
-            <span class="blitzy-stat-num">10</span>
+            <span class="blitzy-stat-num">12</span>
             <span class="blitzy-stat-label">batch jobs</span>
           </div>
         </div>
@@ -314,8 +358,8 @@
            SLIDE 5 - CONTENT: Legacy stack
            Visual: icon card grid of the legacy technologies with counts.
            =================================================================== -->
-      <section class="slide-content" data-slide-type="content">
-        <h2>The Legacy Stack</h2>
+      <section class="slide-content" data-slide-type="content" aria-labelledby="s5-title">
+        <h2 id="s5-title">The Legacy Stack</h2>
         <p class="content-lead">A classic IBM z/OS three-tier application &mdash; proven, but increasingly costly and scarce in skills.</p>
         <div class="blitzy-card-grid fixed-3">
           <div class="blitzy-card">
@@ -355,8 +399,8 @@
            SLIDE 6 - CONTENT: BEFORE architecture (Mermaid)
            Visual: Mermaid graph of the four z/OS tiers. Title above, legend below.
            =================================================================== -->
-      <section class="slide-content" data-slide-type="content">
-        <p class="diagram-title">Before &mdash; AWS CardDemo z/OS Mainframe Architecture</p>
+      <section class="slide-content" data-slide-type="content" aria-labelledby="s6-title">
+        <p class="diagram-title" id="s6-title" role="heading" aria-level="2">Before &mdash; AWS CardDemo z/OS Mainframe Architecture</p>
         <pre class="mermaid">
 graph TD
   subgraph PRES["Presentation - 3270 / BMS"]
@@ -392,20 +436,20 @@ graph TD
            SLIDE 7 - SECTION DIVIDER (02)
            Visual: oversized Lucide icon + large gradient numeral.
            =================================================================== -->
-      <section class="slide-section" data-slide-type="section">
+      <section class="slide-section" data-slide-type="section" aria-labelledby="s7-title">
         <div class="section-icon" aria-hidden="true"><i data-lucide="layout-template"></i></div>
         <div class="section-number">02</div>
-        <h2 class="section-title">The Solution</h2>
-        <p class="section-desc">Idiomatic Spring Boot &mdash; the same behavior, expressed in a modern, locally testable stack.</p>
+        <h2 id="s7-title" class="section-title">The Solution</h2>
+        <p class="section-desc">Idiomatic Spring Boot &mdash; behavior preserved, expressed in a modern, locally testable stack.</p>
       </section>
 
       <!-- ===================================================================
            SLIDE 8 - CONTENT: Target stack
            Visual: icon card grid of the target technologies with pinned versions.
            =================================================================== -->
-      <section class="slide-content" data-slide-type="content">
-        <h2>The Target Stack</h2>
-        <p class="content-lead">Same repository; the original COBOL is retained read-only under <code>legacy/</code> for reference and traceability.</p>
+      <section class="slide-content" data-slide-type="content" aria-labelledby="s8-title">
+        <h2 id="s8-title">The Target Stack</h2>
+        <p class="content-lead">Same repository; the original COBOL is retained unchanged under <code>legacy/</code> for reference and traceability.</p>
         <div class="blitzy-card-grid fixed-4 is-dense">
           <div class="blitzy-card">
             <div class="card-icon"><i data-lucide="coffee"></i></div>
@@ -454,13 +498,13 @@ graph TD
            SLIDE 9 - CONTENT: AFTER architecture (Mermaid)
            Visual: Mermaid graph of the Spring layers. Title above, legend below.
            =================================================================== -->
-      <section class="slide-content" data-slide-type="content">
-        <p class="diagram-title">After &mdash; Java 25 + Spring Boot Layered Architecture</p>
+      <section class="slide-content" data-slide-type="content" aria-labelledby="s9-title">
+        <p class="diagram-title" id="s9-title" role="heading" aria-level="2">After &mdash; Java 25 + Spring Boot Layered Architecture</p>
         <pre class="mermaid">
 graph TD
   subgraph WEB["Web - Spring MVC"]
     BR["Browser"]
-    CTRL["Controllers (18 routes)"]
+    CTRL["Controllers (35 handlers / 18 IDs)"]
     TPL["Thymeleaf Screens"]
   end
   subgraph SVC["Service Tier"]
@@ -473,7 +517,7 @@ graph TD
   subgraph PER["Persistence Tier"]
     REPOS["JPA Repositories"]
     PG["PostgreSQL 18 (Flyway)"]
-    FILES["FlatFile Reader / Writer"]
+    FILES["Fixed-block Reader / Writer"]
   end
   SECX["Spring Security Roles"]
   OBS["Observability Stack"]
@@ -495,8 +539,8 @@ graph TD
            SLIDE 10 - COMPARISON: Deterministic mapping
            Visual: two-column mapping table with an arrow column and Lucide icons.
            =================================================================== -->
-      <section class="slide-comparison" data-slide-type="comparison">
-        <h2>Deterministic Mapping</h2>
+      <section class="slide-comparison" data-slide-type="comparison" aria-labelledby="s10-title">
+        <h2 id="s10-title">Deterministic Mapping</h2>
         <p class="content-lead">Every construct maps one-for-one &mdash; enabling 100% traceability.</p>
         <table class="blitzy-table">
           <thead>
@@ -555,9 +599,9 @@ graph TD
            SLIDE 11 - CONTENT: Parity guarantees
            Visual: icon card grid of parity mechanisms.
            =================================================================== -->
-      <section class="slide-content" data-slide-type="content">
-        <h2>Parity Guarantees</h2>
-        <p class="content-lead">How identical behavior is engineered, not assumed.</p>
+      <section class="slide-content" data-slide-type="content" aria-labelledby="s11-title">
+        <h2 id="s11-title">Parity Guarantees</h2>
+        <p class="content-lead">How behavior is preserved by construction, verified by tests &mdash; not assumed.</p>
         <div class="blitzy-card-grid fixed-3">
           <div class="blitzy-card">
             <div class="card-icon"><i data-lucide="calculator"></i></div>
@@ -596,8 +640,8 @@ graph TD
            SLIDE 12 - CONTENT: Quality &amp; validation
            Visual: metric cards + a coverage progress meter.
            =================================================================== -->
-      <section class="slide-content" data-slide-type="content">
-        <h2>Quality &amp; Validation</h2>
+      <section class="slide-content" data-slide-type="content" aria-labelledby="s12-title">
+        <h2 id="s12-title">Quality &amp; Validation</h2>
         <p class="content-lead">Validated locally &mdash; no mainframe required.</p>
         <div class="blitzy-card-grid fixed-4 metric-compact">
           <div class="blitzy-card">
@@ -607,8 +651,8 @@ graph TD
           </div>
           <div class="blitzy-card">
             <div class="card-icon"><i data-lucide="shield-check"></i></div>
-            <div class="card-title">OWASP clean</div>
-            <div class="card-desc">Zero critical / high CVEs</div>
+            <div class="card-title">OWASP dependency scan</div>
+            <div class="card-desc">No critical / high in managed dependencies</div>
           </div>
           <div class="blitzy-card">
             <div class="card-icon"><i data-lucide="check-circle"></i></div>
@@ -633,8 +677,8 @@ graph TD
            SLIDE 13 - CONTENT: Observability &amp; operations
            Visual: horizontal icon pipeline of the observability chain.
            =================================================================== -->
-      <section class="slide-content" data-slide-type="content">
-        <h2>Observability &amp; Operations</h2>
+      <section class="slide-content" data-slide-type="content" aria-labelledby="s13-title">
+        <h2 id="s13-title">Observability &amp; Operations</h2>
         <p class="content-lead">Operational readiness ships with the migration &mdash; a non-functional requirement, not a business feature.</p>
         <div class="pipeline">
           <div class="pipeline-node">
@@ -668,8 +712,8 @@ graph TD
            SLIDE 14 - CONTENT: Risks &amp; mitigations (MANDATORY risk slide)
            Visual: risk matrix / severity-chip table with Lucide alert icons.
            =================================================================== -->
-      <section class="slide-content risk-compact" data-slide-type="content">
-        <h2>Risks &amp; Mitigations</h2>
+      <section class="slide-content risk-compact" data-slide-type="content" aria-labelledby="s14-title">
+        <h2 id="s14-title">Risks &amp; Mitigations</h2>
         <p class="content-lead">Flagged openly, each with a mitigation or suggested next step.</p>
         <table class="blitzy-table risk-table">
           <thead>
@@ -700,8 +744,17 @@ graph TD
             </tr>
             <tr>
               <td>
+                <span class="risk-cell"><i data-lucide="alert-triangle"></i>
+                  <span><strong>Runtime toolchain currency.</strong> The application dependency graph passes the OWASP critical/high gate, but the pinned JDK build carries published advisories; a newer patch release resolves them but was not installable in the offline build environment.</span>
+                </span>
+              </td>
+              <td><span class="sev-med">Elevated</span></td>
+              <td>Adopt the next JDK patch release &mdash; tracked as a next task.</td>
+            </tr>
+            <tr>
+              <td>
                 <span class="risk-cell"><i data-lucide="shield-check"></i>
-                  <span><strong>Concurrency &amp; duplicate-key parity.</strong> The legacy locked records under update in <em>both</em> tiers &mdash; online <code>CICS READ&nbsp;&hellip;&nbsp;UPDATE</code> and the posting job&rsquo;s dataset ENQ (<code>DISP=OLD</code>) &mdash; and abended on a duplicate write. Both are reproduced with row-level pessimistic locks (<code>SELECT&nbsp;&hellip;&nbsp;FOR UPDATE</code>) across the online services and the batch poster (no lost update), a true-<code>INSERT</code> duplicate-key abend (no silent double-post), and the JCL <code>0&thinsp;/&thinsp;4&thinsp;/&thinsp;8</code> RETURN-CODE contract.</span>
+                  <span><strong>Concurrency &amp; duplicate-key parity.</strong> The legacy locked records under update (online <code>CICS READ&nbsp;&hellip;&nbsp;UPDATE</code> and the posting job&rsquo;s dataset ENQ) and abended on a duplicate write. Both are reproduced with row-level pessimistic locks and a true-<code>INSERT</code> duplicate-key abend, preserving the <code>0&thinsp;/&thinsp;4&thinsp;/&thinsp;8</code> RETURN-CODE contract.</span>
                 </span>
               </td>
               <td><span class="sev-low">Hardened</span></td>
@@ -724,8 +777,8 @@ graph TD
            SLIDE 15 - CONTENT: Onboarding &amp; next steps
            Visual: numbered timeline / step flow (auto-numbered by the theme).
            =================================================================== -->
-      <section class="slide-content" data-slide-type="content">
-        <h2>Onboarding &amp; Next Steps</h2>
+      <section class="slide-content" data-slide-type="content" aria-labelledby="s15-title">
+        <h2 id="s15-title">Onboarding &amp; Next Steps</h2>
         <p class="content-lead">From a clean machine to a running, modifiable application.</p>
         <div class="blitzy-timeline timeline-wrap">
           <div class="blitzy-step">
@@ -740,8 +793,8 @@ graph TD
           </div>
           <div class="blitzy-step">
             <i data-lucide="key-round"></i>
-            <span class="step-title">Set datasource env vars</span>
-            <span class="step-desc">SPRING_DATASOURCE_URL / USERNAME / PASSWORD</span>
+            <span class="step-title">Set required env vars</span>
+            <span class="step-desc">SPRING_DATASOURCE_URL / USERNAME / PASSWORD &bull; CARDDEMO_SEED_PASSWORD (8 uppercase chars)</span>
           </div>
           <div class="blitzy-step">
             <i data-lucide="play"></i>
@@ -767,10 +820,10 @@ graph TD
            SLIDE 16 - CLOSING
            Visual: gradient hero recap + wordmark + compact stat strip.
            =================================================================== -->
-      <section class="slide-closing" data-slide-type="closing">
+      <section class="slide-closing" data-slide-type="closing" aria-labelledby="s16-title">
         <div class="icon-row" aria-hidden="true"><i data-lucide="badge-check"></i></div>
-        <h1 class="blitzy-gradient-text">Migration Complete</h1>
-        <p class="subtitle">Behavior preserved &mdash; stack modernized.</p>
+        <h1 id="s16-title" class="blitzy-gradient-text">Migration Delivered</h1>
+        <p class="subtitle">Behavior preserved, stack modernized &mdash; open items tracked to acceptance.</p>
         <div class="accent-band" aria-hidden="true"></div>
         <div class="stat-strip">
           <div class="blitzy-stat">
@@ -782,8 +835,8 @@ graph TD
             <span class="blitzy-stat-label">programs</span>
           </div>
           <div class="blitzy-stat">
-            <span class="blitzy-stat-num">100%</span>
-            <span class="blitzy-stat-label">behavioral parity</span>
+            <span class="blitzy-stat-num">1,466</span>
+            <span class="blitzy-stat-label">tests passing</span>
           </div>
           <div class="blitzy-stat">
             <span class="blitzy-stat-num">&ge;80%</span>

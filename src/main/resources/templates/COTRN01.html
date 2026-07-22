@@ -57,11 +57,16 @@
 
         .screen-wrap {
             inline-size: 100%;
+            /* BLITZY [QA P5-06/P5-13]: horizontal scroll keeps the 80-col artboard's
+               left origin reachable on narrow viewports (scrollLeft 0 = left edge). */
+            overflow-x: auto;
         }
 
         /* The 80-column x 24-row terminal artboard, centered on the page. */
         .screen {
             position: relative;
+            /* BLITZY [QA P5-06/P5-13]: responsive artboard cell size (legible floor then pan). */
+            font-size: var(--bms-cell);
             inline-size: calc(var(--cols) * 1ch);
             block-size: calc(var(--rows) * var(--row-h));
             margin-block: 1rem;

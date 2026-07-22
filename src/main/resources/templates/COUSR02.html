@@ -76,7 +76,8 @@
             width: 80ch;
             height: calc(24 * var(--row-h));
             background: var(--c-bg);
-            font-size: 1rem;
+            /* BLITZY [QA P5-06/P5-13]: responsive artboard cell size (legible floor then pan). */
+            font-size: var(--bms-cell);
             line-height: var(--row-h);
         }
 
@@ -186,7 +187,7 @@
             <!-- ============== User-ID fetch key (row 6) ======================== -->
             <label class="cell green" style="--r:6; --c:6;" for="usridin">Enter User ID:</label>
             <input class="field green" style="--r:6; --c:21; --len:8;" type="text"
-                   id="usridin" th:field="*{usridin}" maxlength="8" size="8" autofocus />
+                   id="usridin" th:field="*{usridin}" maxlength="8" size="8" th:autofocus="${form.focusField == 'usridin'}" />
 
             <!-- ============== Asterisk separator (row 8, exactly 70) =========== -->
             <span class="cell yellow" style="--r:8; --c:6;" aria-hidden="true">**********************************************************************</span>
@@ -194,21 +195,21 @@
             <!-- ============== First / Last name (row 11) ======================= -->
             <label class="cell turquoise" style="--r:11; --c:6;" for="fname">First Name:</label>
             <input class="field green" style="--r:11; --c:18; --len:20;" type="text"
-                   id="fname" th:field="*{fname}" maxlength="20" size="20" />
+                   id="fname" th:field="*{fname}" maxlength="20" size="20" th:autofocus="${form.focusField == 'fname'}" />
             <label class="cell turquoise" style="--r:11; --c:45;" for="lname">Last Name:</label>
             <input class="field green" style="--r:11; --c:56; --len:20;" type="text"
-                   id="lname" th:field="*{lname}" maxlength="20" size="20" />
+                   id="lname" th:field="*{lname}" maxlength="20" size="20" th:autofocus="${form.focusField == 'lname'}" />
 
             <!-- ============== Password (row 13, masked) ======================== -->
             <label class="cell turquoise" style="--r:13; --c:6;" for="passwd">Password:</label>
             <input class="field green" style="--r:13; --c:16; --len:8;" type="password"
-                   id="passwd" th:field="*{passwd}" maxlength="8" size="8" autocomplete="new-password" />
+                   id="passwd" th:field="*{passwd}" maxlength="8" size="8" th:autofocus="${form.focusField == 'passwd'}" autocomplete="new-password" />
             <span class="cell blue" style="--r:13; --c:25;">(8 Char)</span>
 
             <!-- ============== User type (row 15) =============================== -->
             <label class="cell turquoise" style="--r:15; --c:6;" for="usrtype">User Type: </label>
             <input class="field green" style="--r:15; --c:17; --len:1;" type="text"
-                   id="usrtype" th:field="*{usrtype}" maxlength="1" size="1" />
+                   id="usrtype" th:field="*{usrtype}" maxlength="1" size="1" th:autofocus="${form.focusField == 'usrtype'}" />
             <span class="cell blue" style="--r:15; --c:19;">(A=Admin, U=User)</span>
 
             <!-- ============== Error message (row 23, conditional) ============== -->

@@ -26,6 +26,7 @@ import com.aws.carddemo.dto.CardDemoContext;
 import com.aws.carddemo.dto.screen.COUSR02Form;
 import com.aws.carddemo.exception.RecordNotFoundException;
 import com.aws.carddemo.repository.UserSecurityRepository;
+import com.aws.carddemo.util.InputSafety;
 import com.aws.carddemo.security.SessionRevocationService;
 
 /**
@@ -328,6 +329,35 @@ public class UserUpdateService {
     }
 
     /**
+     * The screen field the cursor should be positioned on, modeling the COBOL
+     * {@code MOVE -1 TO USRIDINL / FNAMEL / LNAMEL / PASSWDL / USRTYPEL}
+     * attribute-length cursor moves in {@code COUSR02C} (QA finding P5-08). The
+     * controller translates the selected constant into the update form's
+     * {@code focusField} rendering hint so the browser autofocuses the failing /
+     * next editable field, reproducing the 3270 cursor placement.
+     */
+    public enum CursorField {
+
+        /** No explicit cursor request (COBOL moves {@code -1} to no field, e.g. a successful update). */
+        NONE,
+
+        /** COBOL {@code USRIDINL} &mdash; the user-id entry field. */
+        USER_ID,
+
+        /** COBOL {@code FNAMEL} &mdash; the first-name entry field. */
+        FIRST_NAME,
+
+        /** COBOL {@code LNAMEL} &mdash; the last-name entry field. */
+        LAST_NAME,
+
+        /** COBOL {@code PASSWDL} &mdash; the password entry field. */
+        PASSWORD,
+
+        /** COBOL {@code USRTYPEL} &mdash; the user-type entry field. */
+        USER_TYPE
+    }
+
+    /**
      * Immutable outcome of a {@code COUSR02C} business method: the routing action the controller must
      * take, the message to display, and the message's severity/colour. Modelled as a record because it
      * is a transparent, value-based carrier.
@@ -339,15 +369,20 @@ public class UserUpdateService {
      * @param action   the routing action to take next; never {@code null}
      * @param message  the message to display; never {@code null} after construction (empty when absent)
      * @param severity the message colour/severity contract; never {@code null}
+     * @param cursorField the field the cursor should land on (QA finding P5-08); never {@code null}
+     *                    after construction ({@code null} is normalized to {@link CursorField#NONE})
      */
-    public record UserUpdateResult(RoutingAction action, String message, MessageSeverity severity) {
+    public record UserUpdateResult(RoutingAction action, String message, MessageSeverity severity,
+            CursorField cursorField) {
 
         /**
-         * Canonical constructor enforcing the non-null invariants and normalizing the message.
+         * Canonical constructor enforcing the non-null invariants and normalizing the message and
+         * cursor.
          *
          * @param action   the routing action; must not be {@code null}
          * @param message  the message text; {@code null} is normalized to {@code ""}
          * @param severity the message severity; must not be {@code null}
+         * @param cursorField the cursor position; {@code null} is normalized to {@link CursorField#NONE}
          */
         public UserUpdateResult {
             if (action == null) {
@@ -359,57 +394,80 @@ public class UserUpdateService {
             if (message == null) {
                 message = "";
             }
+            if (cursorField == null) {
+                cursorField = CursorField.NONE;
+            }
         }
 
         /**
          * Creates a redirect outcome carrying no message (the COBOL {@code XCTL} path).
          *
          * @return a {@link RoutingAction#REDIRECT} result with an empty, {@link MessageSeverity#NONE}
-         *         message
+         *         message and {@link CursorField#NONE}
          */
         static UserUpdateResult redirect() {
-            return new UserUpdateResult(RoutingAction.REDIRECT, "", MessageSeverity.NONE);
+            return new UserUpdateResult(RoutingAction.REDIRECT, "", MessageSeverity.NONE, CursorField.NONE);
         }
 
         /**
          * Creates a plain re-display outcome carrying no message (the COBOL {@code SEND-USRUPD-SCREEN}
-         * path with {@code WS-MESSAGE} spaces).
+         * path with {@code WS-MESSAGE} spaces). The first-entry / cleared screen positions the cursor
+         * on the user-id field (COBOL {@code MOVE -1 TO USRIDINL}).
          *
          * @return a {@link RoutingAction#SHOW_SCREEN} result with an empty, {@link MessageSeverity#NONE}
-         *         message
+         *         message and the cursor on {@link CursorField#USER_ID}
          */
         static UserUpdateResult showScreen() {
-            return new UserUpdateResult(RoutingAction.SHOW_SCREEN, "", MessageSeverity.NONE);
+            return new UserUpdateResult(RoutingAction.SHOW_SCREEN, "", MessageSeverity.NONE,
+                    CursorField.USER_ID);
         }
 
         /**
-         * Creates a re-display outcome carrying a red error/validation message (COBOL {@code DFHRED}).
+         * Creates a re-display outcome carrying a red error/validation message (COBOL {@code DFHRED})
+         * with no explicit cursor. Retained for callers that do not position the cursor; prefer
+         * {@link #error(String, CursorField)} so the cursor lands on the offending field (P5-08).
          *
          * @param message the error text to display
          * @return a {@link RoutingAction#SHOW_SCREEN} result with an {@link MessageSeverity#ERROR} message
          */
         static UserUpdateResult error(String message) {
-            return new UserUpdateResult(RoutingAction.SHOW_SCREEN, message, MessageSeverity.ERROR);
+            return error(message, CursorField.NONE);
         }
 
         /**
-         * Creates a re-display outcome carrying a neutral informational message (COBOL {@code DFHNEUTR}).
+         * Creates a re-display outcome carrying a red error/validation message (COBOL {@code DFHRED})
+         * and an explicit cursor position (COBOL {@code MOVE -1 TO xxxL}; QA finding P5-08).
+         *
+         * @param message the error text to display
+         * @param cursor  the field the cursor should land on
+         * @return a {@link RoutingAction#SHOW_SCREEN} result with an {@link MessageSeverity#ERROR} message
+         */
+        static UserUpdateResult error(String message, CursorField cursor) {
+            return new UserUpdateResult(RoutingAction.SHOW_SCREEN, message, MessageSeverity.ERROR, cursor);
+        }
+
+        /**
+         * Creates a re-display outcome carrying a neutral informational message (COBOL {@code DFHNEUTR})
+         * and an explicit cursor position.
          *
          * @param message the informational text to display
+         * @param cursor  the field the cursor should land on
          * @return a {@link RoutingAction#SHOW_SCREEN} result with a {@link MessageSeverity#NEUTRAL} message
          */
-        static UserUpdateResult neutral(String message) {
-            return new UserUpdateResult(RoutingAction.SHOW_SCREEN, message, MessageSeverity.NEUTRAL);
+        static UserUpdateResult neutral(String message, CursorField cursor) {
+            return new UserUpdateResult(RoutingAction.SHOW_SCREEN, message, MessageSeverity.NEUTRAL, cursor);
         }
 
         /**
-         * Creates a re-display outcome carrying a green success message (COBOL {@code DFHGREEN}).
+         * Creates a re-display outcome carrying a green success message (COBOL {@code DFHGREEN}). The
+         * COBOL success path moves {@code -1} to no field, so the cursor is {@link CursorField#NONE}.
          *
          * @param message the success text to display
          * @return a {@link RoutingAction#SHOW_SCREEN} result with a {@link MessageSeverity#SUCCESS} message
          */
         static UserUpdateResult success(String message) {
-            return new UserUpdateResult(RoutingAction.SHOW_SCREEN, message, MessageSeverity.SUCCESS);
+            return new UserUpdateResult(RoutingAction.SHOW_SCREEN, message, MessageSeverity.SUCCESS,
+                    CursorField.NONE);
         }
 
         /**
@@ -574,7 +632,8 @@ public class UserUpdateService {
     UserUpdateResult processEnterKey(COUSR02Form form, CardDemoContext ctx) {
         // WHEN USRIDINI = SPACES OR LOW-VALUES -> "User ID can NOT be empty...".
         if (isBlankOrLowValues(form.getUsridin())) {
-            return UserUpdateResult.error(MSG_USERID_EMPTY);
+            // P5-08: COBOL MOVE -1 TO USRIDINL.
+            return UserUpdateResult.error(MSG_USERID_EMPTY, CursorField.USER_ID);
         }
 
         // IF NOT ERR-FLG-ON: clear the editable fields, then read the record.
@@ -583,6 +642,16 @@ public class UserUpdateService {
         form.setPasswd("");
         form.setUsrtype("");
 
+        // Boundary NUL guard (finding P13-INPUT-01): an embedded NUL (COBOL LOW-VALUES) in the id can
+        // never come from a 3270 field and cannot be stored by PostgreSQL (SQLSTATE 22021); binding it
+        // would abort this @Transactional unit-of-work and escape as UnexpectedRollbackException (HTTP
+        // 500) on commit. Treat it exactly as a keyed NOTFND - the controlled "User ID NOT found..."
+        // line with the editable fields left cleared - without touching the database.
+        if (InputSafety.containsNul(form.getUsridin())) {
+            // P5-08: treated as keyed NOTFND -> COBOL MOVE -1 TO USRIDINL.
+            return UserUpdateResult.error(MSG_USER_NOT_FOUND, CursorField.USER_ID);
+        }
+
         try {
             UserSecurity user = readUserSecFile(rtrim(form.getUsridin()));
             // READ NORMAL: populate the editable fields and prompt to save (DFHNEUTR).
@@ -590,13 +659,16 @@ public class UserUpdateService {
             form.setLname(user.getUsrLname());
             form.setPasswd(user.getUsrPwd());
             form.setUsrtype(user.getUsrType());
-            return UserUpdateResult.neutral(MSG_PRESS_PF5);
+            // P5-08: after a valid lookup COBOL positions the cursor on USRIDINL (L153).
+            return UserUpdateResult.neutral(MSG_PRESS_PF5, CursorField.USER_ID);
         } catch (RecordNotFoundException notFound) {
             // READ NOTFND: "User ID NOT found..."; editable fields stay cleared.
-            return UserUpdateResult.error(MSG_USER_NOT_FOUND);
+            // P5-08: COBOL MOVE -1 TO USRIDINL (L344).
+            return UserUpdateResult.error(MSG_USER_NOT_FOUND, CursorField.USER_ID);
         } catch (DataAccessException dataError) {
             // READ WHEN OTHER: "Unable to lookup User..."; editable fields stay cleared.
-            return UserUpdateResult.error(MSG_UNABLE_LOOKUP);
+            // P5-08: COBOL MOVE -1 TO FNAMEL (L351).
+            return UserUpdateResult.error(MSG_UNABLE_LOOKUP, CursorField.FIRST_NAME);
         }
     }
 
@@ -630,20 +702,30 @@ public class UserUpdateService {
     @Transactional
     UserUpdateResult updateUserInfo(COUSR02Form form, CardDemoContext ctx) {
         // EVALUATE TRUE validation ladder (short-circuits on the first blank field, in COBOL order).
+        // P5-08: each blank field positions the cursor on its own entry field (COBOL MOVE -1 TO xxxL).
         if (isBlankOrLowValues(form.getUsridin())) {
-            return UserUpdateResult.error(MSG_USERID_EMPTY);
+            return UserUpdateResult.error(MSG_USERID_EMPTY, CursorField.USER_ID);
         }
         if (isBlankOrLowValues(form.getFname())) {
-            return UserUpdateResult.error(MSG_FNAME_EMPTY);
+            return UserUpdateResult.error(MSG_FNAME_EMPTY, CursorField.FIRST_NAME);
         }
         if (isBlankOrLowValues(form.getLname())) {
-            return UserUpdateResult.error(MSG_LNAME_EMPTY);
+            return UserUpdateResult.error(MSG_LNAME_EMPTY, CursorField.LAST_NAME);
         }
         if (isBlankOrLowValues(form.getPasswd())) {
-            return UserUpdateResult.error(MSG_PASSWD_EMPTY);
+            return UserUpdateResult.error(MSG_PASSWD_EMPTY, CursorField.PASSWORD);
         }
         if (isBlankOrLowValues(form.getUsrtype())) {
-            return UserUpdateResult.error(MSG_USRTYPE_EMPTY);
+            return UserUpdateResult.error(MSG_USRTYPE_EMPTY, CursorField.USER_TYPE);
+        }
+
+        // Boundary NUL guard (finding P13-INPUT-01): reject an embedded NUL in the id before the keyed
+        // read-for-update, so a value PostgreSQL cannot store (SQLSTATE 22021) never poisons this
+        // @Transactional unit-of-work (which would otherwise commit-fail with UnexpectedRollbackException
+        // -> HTTP 500). Surfaced as the controlled keyed-NOTFND "User ID NOT found..." line, with no I/O.
+        if (InputSafety.containsNul(form.getUsridin())) {
+            // P5-08: treated as keyed NOTFND -> COBOL MOVE -1 TO USRIDINL.
+            return UserUpdateResult.error(MSG_USER_NOT_FOUND, CursorField.USER_ID);
         }
 
         // IF NOT ERR-FLG-ON: read the record for update.
@@ -651,9 +733,11 @@ public class UserUpdateService {
         try {
             user = readUserSecFile(rtrim(form.getUsridin()));
         } catch (RecordNotFoundException notFound) {
-            return UserUpdateResult.error(MSG_USER_NOT_FOUND);
+            // P5-08: COBOL MOVE -1 TO USRIDINL (L344).
+            return UserUpdateResult.error(MSG_USER_NOT_FOUND, CursorField.USER_ID);
         } catch (DataAccessException dataError) {
-            return UserUpdateResult.error(MSG_UNABLE_LOOKUP);
+            // P5-08: COBOL MOVE -1 TO FNAMEL (L351).
+            return UserUpdateResult.error(MSG_UNABLE_LOOKUP, CursorField.FIRST_NAME);
         }
 
         // Compare each field; on a difference apply the edit and flag the record modified.
@@ -698,7 +782,8 @@ public class UserUpdateService {
             }
             return result;
         }
-        return UserUpdateResult.error(MSG_PLEASE_MODIFY);
+        // P5-08: COBOL WHEN OTHER moves the cursor to FNAMEL (L211).
+        return UserUpdateResult.error(MSG_PLEASE_MODIFY, CursorField.FIRST_NAME);
     }
 
     /**
@@ -777,7 +862,8 @@ public class UserUpdateService {
             return UserUpdateResult.success(buildUpdatedMessage(user.getUsrId()));
         } catch (DataAccessException dataError) {
             // WHEN OTHER: "Unable to Update User...".
-            return UserUpdateResult.error(MSG_UNABLE_UPDATE);
+            // P5-08: COBOL MOVE -1 TO FNAMEL (L388).
+            return UserUpdateResult.error(MSG_UNABLE_UPDATE, CursorField.FIRST_NAME);
         }
     }
 

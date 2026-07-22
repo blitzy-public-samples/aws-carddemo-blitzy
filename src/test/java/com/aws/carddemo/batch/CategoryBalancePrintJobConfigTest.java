@@ -43,7 +43,7 @@ import org.springframework.transaction.PlatformTransactionManager;
  * <pre>
  * col: 0         1         2         3
  *      0123456789012345678901234567890123456789
- *      00000000099 01 0005 000000504.77        
+ *      00000000099 01 0005 000000504.77
  *      |          | |  |    |           |      |
  *      +acctId(11) +type +cat +balance(12) +pad(8)
  * </pre>

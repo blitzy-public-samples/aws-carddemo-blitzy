@@ -44,7 +44,9 @@
             font-size: 1rem;
         }
 
-        main { display: block; padding: var(--lh) 0; }
+        /* BLITZY [QA P5-06/P5-13]: horizontal scroll keeps the 80-col artboard's left
+           origin reachable on narrow viewports (scrollLeft 0 = left edge). */
+        main { display: block; padding: var(--lh) 0; overflow-x: auto; }
 
         /* The 24x80 canvas; positioning context for every absolutely placed cell. */
         .screen {
@@ -52,6 +54,8 @@
             width: 80ch;
             height: calc(24 * var(--lh));
             margin: 0 auto;
+            /* BLITZY [QA P5-06/P5-13]: responsive artboard cell size (legible floor then pan). */
+            font-size: var(--bms-cell);
             line-height: var(--lh);
             background: #000000;
         }

@@ -1,5 +1,6 @@
 package com.aws.carddemo.config;
 
+import io.micrometer.core.instrument.Counter;
 import io.micrometer.core.instrument.Meter;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.config.MeterFilter;
@@ -11,6 +12,9 @@ import org.springframework.boot.actuate.autoconfigure.metrics.MeterRegistryCusto
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.context.event.EventListener;
+import org.springframework.security.authentication.event.AbstractAuthenticationFailureEvent;
+import org.springframework.security.authentication.event.AuthenticationSuccessEvent;
 
 /**
  * Observability wiring for the CardDemo migration (Actuator health/readiness + Micrometer
@@ -65,6 +69,18 @@ import org.springframework.context.annotation.Configuration;
  * &mdash; so the instrumentation stays low-cardinality and free of sensitive data, adding no business
  * behavior (observability remains a purely non-functional concern). This decision, and the
  * supersession of F15, are recorded in {@code docs/decision-log.md}.</p>
+ *
+ * <p><strong>Signon counter (review finding P7-OBS-01).</strong> Because signon is
+ * controller-managed &mdash; {@code SignonController} calls the {@code AuthenticationManager} directly
+ * rather than through Spring Security's form-login filter &mdash; the {@code @Observed} seam on
+ * {@code SignonService.mainEntry} is never reached by the web path, so {@code carddemo.signon} never
+ * emitted even though the account/card observations did. That real authentication boundary is the
+ * {@code ProviderManager} exposed by {@code SecurityConfig}, which is now wired with a
+ * {@link org.springframework.security.authentication.DefaultAuthenticationEventPublisher}; the nested
+ * {@link SignonMetrics} listener (registered by {@link #signonMetrics(MeterRegistry)}) translates each
+ * published success/failure authentication event into the {@code carddemo.signon} counter tagged only
+ * {@code outcome=success|failure}. No user identifier is ever attached, so the counter stays
+ * low-cardinality and free of sensitive data.</p>
  *
  * <p><strong>Required declarative configuration</strong> (owned by the resources agent in
  * {@code src/main/resources/application.yml}; deliberately not created by this class):</p>
@@ -237,5 +253,116 @@ public class ObservabilityConfig {
                 return MeterFilterReply.NEUTRAL;
             }
         };
+    }
+
+    /**
+     * Registers the {@link SignonMetrics} listener that emits the {@code carddemo.signon} counter at the
+     * real, controller-reached authentication boundary (review finding P7-OBS-01).
+     *
+     * <p>Taking {@link MeterRegistry} as a <em>method</em> parameter (rather than a constructor
+     * dependency of this {@code @Configuration}) is deliberate: this class also contributes the
+     * {@link #commonTagsCustomizer()} and {@link #suppressDuplicateBatchActiveJobMeter()} registry
+     * customizers, and the auto-configured {@link MeterRegistry} is only fully post-processed with those
+     * customizers <em>after</em> it is built. Because Spring resolves a {@code @Bean} method's parameters
+     * lazily at that bean's creation time, {@code signonMetrics} receives the fully-customized registry
+     * and no configuration-time dependency cycle is introduced.</p>
+     *
+     * <p>The returned bean's {@link EventListener}-annotated methods are detected by Spring's event
+     * infrastructure exactly as they would be on any component, so no additional registration is
+     * required. Rationale is recorded in {@code docs/decision-log.md}.</p>
+     *
+     * @param meterRegistry the fully-customized auto-configured meter registry the counters register on
+     * @return the {@link SignonMetrics} listener bean that increments {@code carddemo.signon}
+     */
+    @Bean
+    public SignonMetrics signonMetrics(MeterRegistry meterRegistry) {
+        return new SignonMetrics(meterRegistry);
+    }
+
+    /**
+     * Application-event listener that emits the {@code carddemo.signon} counter on every authentication
+     * decision made at the controller-reached {@code ProviderManager} boundary (review finding
+     * P7-OBS-01).
+     *
+     * <p><strong>Why this exists.</strong> The migration's signon is controller-managed:
+     * {@code SignonController} calls {@code AuthenticationManager.authenticate(..)} directly instead of
+     * using Spring Security's form-login filter, and the {@code @Observed(name = "carddemo.signon")}
+     * annotation sits on {@code SignonService.mainEntry}, which the web path never invokes &mdash; so the
+     * intended signon metric was dead and {@code carddemo.signon} never appeared in Prometheus while the
+     * account/card observations did. {@code SecurityConfig} now wires a
+     * {@link org.springframework.security.authentication.DefaultAuthenticationEventPublisher} into that
+     * {@code ProviderManager}, so each authentication publishes a success or failure event; this listener
+     * turns those events into the counter.</p>
+     *
+     * <p><strong>No sensitive data.</strong> The counter carries only the low-cardinality
+     * {@code outcome} tag ({@code success} / {@code failure}). No user id, password, account, card,
+     * customer or transaction identifier is ever read from the event or attached as a tag, keeping the
+     * metric low-cardinality and free of personally-identifying data. Observability adds no business
+     * behavior; the listeners never influence the authentication outcome.</p>
+     *
+     * <p>Both counters share the meter name {@code carddemo.signon} and the single tag key
+     * {@code outcome}, so their tag-key sets are identical &mdash; the consistency Prometheus requires of
+     * meters that share a name. They are pre-registered at construction so both series are present (at
+     * zero) from startup and a before/after scrape cleanly shows the increment.</p>
+     */
+    public static final class SignonMetrics {
+
+        /** Meter name of the signon counter, exported by Prometheus as {@code carddemo_signon_total}. */
+        static final String SIGNON_METER_NAME = "carddemo.signon";
+
+        /**
+         * Tag key distinguishing a successful from a failed authentication ({@code success} /
+         * {@code failure}).
+         */
+        static final String OUTCOME_TAG = "outcome";
+
+        /** Counter incremented on a successful authentication ({@code outcome=success}). */
+        private final Counter successCounter;
+
+        /** Counter incremented on a failed authentication ({@code outcome=failure}). */
+        private final Counter failureCounter;
+
+        /**
+         * Pre-registers the success and failure signon counters on the supplied registry so both
+         * {@code carddemo.signon} series exist (at zero) from application startup.
+         *
+         * @param meterRegistry the meter registry the {@code carddemo.signon} counters register on
+         */
+        public SignonMetrics(MeterRegistry meterRegistry) {
+            this.successCounter = Counter.builder(SIGNON_METER_NAME)
+                    .tag(OUTCOME_TAG, "success")
+                    .description("Signon authentication attempts by outcome (no user identifiers)")
+                    .register(meterRegistry);
+            this.failureCounter = Counter.builder(SIGNON_METER_NAME)
+                    .tag(OUTCOME_TAG, "failure")
+                    .description("Signon authentication attempts by outcome (no user identifiers)")
+                    .register(meterRegistry);
+        }
+
+        /**
+         * Increments the {@code carddemo.signon} counter tagged {@code outcome=success} when the
+         * controller-reached {@code ProviderManager} authenticates a principal.
+         *
+         * @param event the published success event; its principal and authorities are intentionally not
+         *              read, so no user identifier can leak into a tag
+         */
+        @EventListener
+        public void onAuthenticationSuccess(AuthenticationSuccessEvent event) {
+            successCounter.increment();
+        }
+
+        /**
+         * Increments the {@code carddemo.signon} counter tagged {@code outcome=failure} for any
+         * authentication failure (a wrong password or an unknown user), which Spring Security publishes as
+         * a subclass of {@link AbstractAuthenticationFailureEvent}.
+         *
+         * @param event the published failure event; its exception and authentication request are
+         *              intentionally not read, so neither a user identifier nor a reason string can leak
+         *              into a tag
+         */
+        @EventListener
+        public void onAuthenticationFailure(AbstractAuthenticationFailureEvent event) {
+            failureCounter.increment();
+        }
     }
 }

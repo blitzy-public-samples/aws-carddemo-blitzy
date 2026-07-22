@@ -188,6 +188,40 @@ public class UserAdminController {
      */
     private static final String MSG_COLOR_NEUTRAL = "neutral";
 
+    // Autofocus hint tokens (QA finding P5-08). Each is the th:field name of a screen entry field;
+    // the controller sets the matching COUSR01/COUSR02 form.focusField from the service-computed
+    // CursorField (COBOL MOVE -1 TO xxxL), and the template renders th:autofocus on that field.
+
+    /** COUSR01 first-name field token (COBOL {@code FNAMEL}). */
+    private static final String FOCUS_ADD_FIRST_NAME = "fname";
+
+    /** COUSR01 last-name field token (COBOL {@code LNAMEL}). */
+    private static final String FOCUS_ADD_LAST_NAME = "lname";
+
+    /** COUSR01 user-id field token (COBOL {@code USERIDL}); the add screen binds {@code userid}. */
+    private static final String FOCUS_ADD_USER_ID = "userid";
+
+    /** COUSR01 password field token (COBOL {@code PASSWDL}). */
+    private static final String FOCUS_ADD_PASSWORD = "passwd";
+
+    /** COUSR01 user-type field token (COBOL {@code USRTYPEL}). */
+    private static final String FOCUS_ADD_USER_TYPE = "usrtype";
+
+    /** COUSR02 user-id field token (COBOL {@code USRIDINL}); the update screen binds {@code usridin}. */
+    private static final String FOCUS_UPD_USER_ID = "usridin";
+
+    /** COUSR02 first-name field token (COBOL {@code FNAMEL}). */
+    private static final String FOCUS_UPD_FIRST_NAME = "fname";
+
+    /** COUSR02 last-name field token (COBOL {@code LNAMEL}). */
+    private static final String FOCUS_UPD_LAST_NAME = "lname";
+
+    /** COUSR02 password field token (COBOL {@code PASSWDL}). */
+    private static final String FOCUS_UPD_PASSWORD = "passwd";
+
+    /** COUSR02 user-type field token (COBOL {@code USRTYPEL}). */
+    private static final String FOCUS_UPD_USER_TYPE = "usrtype";
+
     /** Request-parameter name carrying the activated PF-key token (for example {@code "PF3"}). */
     private static final String PF_KEY_PARAM = "pfkey";
 
@@ -506,6 +540,8 @@ public class UserAdminController {
         session.removeAttribute(SESSION_ADD_PASSWD);
         COUSR01Form form = new COUSR01Form();
         populateHeader(form);
+        // P5-08: first-display cursor on the first-name field (COBOL COUSR01C MOVE -1 TO FNAMEL).
+        form.setFocusField(FOCUS_ADD_FIRST_NAME);
         model.addAttribute(MODEL_ATTR_FORM, form);
         return VIEW_USER_ADD;
     }
@@ -583,6 +619,9 @@ public class UserAdminController {
             rememberCarriedPassword(form.getPasswd(), session, SESSION_ADD_PASSWD, false);
             form.setErrmsg(duplicate.getMessage());
             form.setErrmsgColor(MSG_COLOR_ERROR);
+            // P5-08: the duplicate-id path positions the cursor on the user-id field (COBOL
+            // WRITE-USER-SEC-FILE DUPKEY -> MOVE -1 TO USERIDL, L265).
+            form.setFocusField(FOCUS_ADD_USER_ID);
             populateHeader(form);
             model.addAttribute(MODEL_ATTR_FORM, form);
             return VIEW_USER_ADD;
@@ -599,6 +638,9 @@ public class UserAdminController {
         // Finding #11: COUSR01C sets ERRMSGC = DFHGREEN for the "has been added" confirmation
         // (result.error() == false) and leaves the BMS default red for every error line.
         form.setErrmsgColor(result.error() ? MSG_COLOR_ERROR : MSG_COLOR_GREEN);
+        // P5-08: translate the service-computed cursor (COBOL MOVE -1 TO xxxL) into the form's
+        // autofocus hint so the cursor lands on the failing / next editable field.
+        form.setFocusField(focusTokenForAdd(result.cursorField()));
         populateHeader(form);
         model.addAttribute(MODEL_ATTR_FORM, form);
         return VIEW_USER_ADD;
@@ -628,6 +670,14 @@ public class UserAdminController {
      */
     @GetMapping(PATH_USERS_UPDATE)
     public String showUserUpdate(Model model, HttpSession session) {
+        // Finding P5-05: a GET of the CU02 route is the web equivalent of a fresh CICS transaction
+        // start (COBOL EIBCALEN = 0), so re-seat CDEMO-PGM-ENTER before delegating. The service's
+        // first-entry arm shows a clean prompt (or auto-fetches when the list carried a selection
+        // via SESSION_SELECTED_USER_ID); without this a reused session still in the re-enter state
+        // would drive PROCESS-ENTER-KEY on a blank user id and surface "User ID can NOT be empty..."
+        // before the operator interacts. markEnter() touches only pgmContext (never initialized),
+        // so the cold/unauthenticated first-entry sign-on bounce is preserved.
+        context.markEnter();
         // Finding #14: fresh entry from the list selection - drop any stale password carry before the
         // fetch so a later save turn restores the freshly-loaded USRSEC value rather than a password
         // left carried from an earlier, different edit.
@@ -752,6 +802,14 @@ public class UserAdminController {
      */
     @GetMapping(PATH_USERS_DELETE)
     public String showUserDelete(Model model, HttpSession session) {
+        // Finding P5-05: a GET of the CU03 route is the web equivalent of a fresh CICS transaction
+        // start (COBOL EIBCALEN = 0), so re-seat CDEMO-PGM-ENTER before delegating. The service's
+        // first-entry arm shows a clean prompt (or auto-fetches when the list carried a selection);
+        // without this a reused session still in the re-enter state would drive PROCESS-ENTER-KEY on
+        // a blank user id and surface "User ID can NOT be empty..." before the operator interacts.
+        // markEnter() touches only pgmContext (never initialized), so the cold first-entry sign-on
+        // bounce is preserved.
+        context.markEnter();
         String selectedUserId = readSelectedUserId(session);
         COUSR03Form form = new COUSR03Form();
         form.setUsridin(selectedUserId);
@@ -900,6 +958,9 @@ public class UserAdminController {
         }
         form.setErrmsg(result.hasMessage() ? result.message() : "");
         form.setErrmsgColor(colorForUpdate(result.severity()));
+        // P5-08: translate the service-computed cursor (COBOL MOVE -1 TO xxxL) into the form's
+        // autofocus hint so the cursor lands on the failing / next editable field.
+        form.setFocusField(focusTokenForUpdate(result.cursorField()));
         populateHeader(form);
         model.addAttribute(MODEL_ATTR_FORM, form);
         return VIEW_USER_UPDATE;
@@ -942,6 +1003,49 @@ public class UserAdminController {
             case SUCCESS -> MSG_COLOR_GREEN;
             case NEUTRAL -> MSG_COLOR_NEUTRAL;
             case ERROR, NONE -> MSG_COLOR_ERROR;
+        };
+    }
+
+    /**
+     * Maps a {@link UserAddService.CursorField} to the {@code COUSR01} form's autofocus token,
+     * reproducing the COBOL {@code MOVE -1 TO FNAMEL/LNAMEL/USERIDL/PASSWDL/USRTYPEL} cursor moves
+     * in {@code COUSR01C} (QA finding P5-08). The returned token is the {@code th:field} name the
+     * template compares against {@code form.focusField} to render {@code th:autofocus}.
+     *
+     * @param cursor the service-computed cursor position; {@code null} yields no autofocus
+     * @return the target field's {@code th:field} name, or {@code null} for no explicit cursor
+     */
+    private static String focusTokenForAdd(UserAddService.CursorField cursor) {
+        if (cursor == null) {
+            return null;
+        }
+        return switch (cursor) {
+            case FIRST_NAME -> FOCUS_ADD_FIRST_NAME;
+            case LAST_NAME -> FOCUS_ADD_LAST_NAME;
+            case USER_ID -> FOCUS_ADD_USER_ID;
+            case PASSWORD -> FOCUS_ADD_PASSWORD;
+            case USER_TYPE -> FOCUS_ADD_USER_TYPE;
+        };
+    }
+
+    /**
+     * Maps a {@link UserUpdateService.CursorField} to the {@code COUSR02} form's autofocus token,
+     * reproducing the COBOL {@code MOVE -1 TO USRIDINL/FNAMEL/LNAMEL/PASSWDL/USRTYPEL} cursor moves
+     * in {@code COUSR02C} (QA finding P5-08). The returned token is the {@code th:field} name the
+     * template compares against {@code form.focusField} to render {@code th:autofocus}.
+     *
+     * @param cursor the service-computed cursor position; {@link UserUpdateService.CursorField#NONE}
+     *               yields no autofocus (the COBOL success path moves {@code -1} to no field)
+     * @return the target field's {@code th:field} name, or {@code null} for no explicit cursor
+     */
+    private static String focusTokenForUpdate(UserUpdateService.CursorField cursor) {
+        return switch (cursor) {
+            case NONE -> null;
+            case USER_ID -> FOCUS_UPD_USER_ID;
+            case FIRST_NAME -> FOCUS_UPD_FIRST_NAME;
+            case LAST_NAME -> FOCUS_UPD_LAST_NAME;
+            case PASSWORD -> FOCUS_UPD_PASSWORD;
+            case USER_TYPE -> FOCUS_UPD_USER_TYPE;
         };
     }
 

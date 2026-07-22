@@ -561,6 +561,22 @@ class UserDeleteServiceTest {
     }
 
     /**
+     * Finding P13-INPUT-01: an id carrying an embedded NUL (U+0000, COBOL LOW-VALUES) is rejected at
+     * the boundary as a controlled keyed NOTFND ("User ID NOT found...") with no repository access, so
+     * a value PostgreSQL cannot store (SQLSTATE 22021) can never poison the transaction and escape as
+     * UnexpectedRollbackException / HTTP 500. The repository must never be consulted.
+     */
+    @Test
+    void processEnterKey_withEmbeddedNulUserId_returnsNotFoundAndDoesNotLookUp() {
+        UserDeleteService.UserDeleteResult result =
+                service.processEnterKey(formWithUserId("A\u0000B"), context);
+
+        assertThat(result.severity()).isEqualTo(UserDeleteService.MessageSeverity.ERROR);
+        assertThat(result.message()).isEqualTo(MSG_USER_ID_NOT_FOUND);
+        verifyNoInteractions(userSecurityRepository);
+    }
+
+    /**
      * A genuine data-access failure during the confirmation read (COBOL {@code READ-USER-SEC-FILE
      * WHEN OTHER}) is caught and reproduced as the {@code "Unable to lookup User..."} error line;
      * the screen is re-displayed without aborting and no delete is attempted.
@@ -646,6 +662,24 @@ class UserDeleteServiceTest {
 
         assertThat(result.severity()).isEqualTo(UserDeleteService.MessageSeverity.ERROR);
         assertThat(result.message()).isEqualTo(MSG_USER_ID_EMPTY);
+        verifyNoInteractions(userSecurityRepository);
+        verifyNoInteractions(context);
+    }
+
+    /**
+     * Finding P13-INPUT-01 via the PF5 commit path: an id carrying an embedded NUL (U+0000, COBOL
+     * LOW-VALUES) is rejected at the boundary as a controlled keyed NOTFND ("User ID NOT found...")
+     * before the {@code READ ... UPDATE}, so a value PostgreSQL cannot store (SQLSTATE 22021) can
+     * never enter the {@code @Transactional} unit-of-work, mark it rollback-only, and escape as
+     * UnexpectedRollbackException / HTTP 500. Neither the read nor the delete is reached.
+     */
+    @Test
+    void deleteUserInfo_withEmbeddedNulUserId_returnsNotFoundAndDoesNotDelete() {
+        UserDeleteService.UserDeleteResult result =
+                service.deleteUserInfo(formWithUserId("A\u0000B"), context);
+
+        assertThat(result.severity()).isEqualTo(UserDeleteService.MessageSeverity.ERROR);
+        assertThat(result.message()).isEqualTo(MSG_USER_ID_NOT_FOUND);
         verifyNoInteractions(userSecurityRepository);
         verifyNoInteractions(context);
     }

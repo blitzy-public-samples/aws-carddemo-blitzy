@@ -65,7 +65,7 @@
             width: 80ch;
             height: 36rem;               /* 24 rows * 1.5rem */
             margin: 0;
-            font-size: 16px;             /* fixes the ch advance for the grid */
+            font-size: var(--bms-cell); /* BLITZY [QA P5-06/P5-13]: responsive ch advance (legible floor then pan) */
             line-height: 1.5rem;
             background-color: var(--bms-bg);
             color: var(--bms-neutral);
@@ -171,7 +171,7 @@
             <span class="cell" style="top:1.5rem;left:70ch;color:var(--bms-blue);" th:text="*{curtime} ?: 'hh:mm:ss'">hh:mm:ss</span>
 
             <!-- ===================== Row 4: screen title ===================== -->
-            <h1 class="cell" style="top:4.5rem;left:29ch;color:var(--bms-neutral);font-weight:normal;font-size:1rem;">View Credit Card Detail</h1>
+            <h1 class="cell" style="top:4.5rem;left:29ch;color:var(--bms-neutral);font-weight:normal;">View Credit Card Detail</h1>
 
             <!-- ================= Row 7: Account Number (input) ============== -->
             <label class="cell" for="acctsid" style="top:9rem;left:22ch;color:var(--bms-turquoise);">Account Number    :</label>

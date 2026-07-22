@@ -29,6 +29,7 @@ import com.aws.carddemo.dto.CardDemoContext;
 import com.aws.carddemo.dto.screen.COUSR03Form;
 import com.aws.carddemo.exception.RecordNotFoundException;
 import com.aws.carddemo.repository.UserSecurityRepository;
+import com.aws.carddemo.util.InputSafety;
 import com.aws.carddemo.security.SessionRevocationService;
 
 /**
@@ -554,6 +555,16 @@ public class UserDeleteService {
             return UserDeleteResult.error(MSG_USER_ID_EMPTY);
         }
 
+        // Boundary NUL guard (finding P13-INPUT-01): an embedded NUL (COBOL LOW-VALUES) in the id can
+        // never arrive from a 3270 field and cannot be stored by PostgreSQL (SQLSTATE 22021); binding it
+        // would abort this transaction and escape as UnexpectedRollbackException (HTTP 500) on commit.
+        // Reject it here as a controlled keyed NOTFND ("User ID NOT found...") with no database access.
+        // (Note: Java String.isBlank() above does not treat NUL as blank, so this guard also covers an
+        // all-NUL id.) Never fold NUL to space then trim - that is a NUL-truncation bypass (CWE-158).
+        if (InputSafety.containsNul(userId)) {
+            return UserDeleteResult.error(MSG_USER_ID_NOT_FOUND);
+        }
+
         // COBOL (first IF NOT ERR-FLG-ON): MOVE SPACES TO FNAMEI, LNAMEI, USRTYPEI before the read.
         form.setFname("");
         form.setLname("");
@@ -614,6 +625,14 @@ public class UserDeleteService {
         // COBOL EVALUATE TRUE: WHEN USRIDINI = SPACES OR LOW-VALUES -> empty-id error, no I/O.
         if (userId == null || userId.isBlank()) {
             return UserDeleteResult.error(MSG_USER_ID_EMPTY);
+        }
+
+        // Boundary NUL guard (finding P13-INPUT-01): reject an embedded NUL in the id before the keyed
+        // read-then-delete, so a value PostgreSQL cannot store (SQLSTATE 22021) never poisons this
+        // @Transactional unit-of-work (which would otherwise commit-fail with UnexpectedRollbackException
+        // -> HTTP 500). Surfaced as the controlled keyed-NOTFND "User ID NOT found..." line, with no I/O.
+        if (InputSafety.containsNul(userId)) {
+            return UserDeleteResult.error(MSG_USER_ID_NOT_FOUND);
         }
 
         // COBOL (IF NOT ERR-FLG-ON): PERFORM READ-USER-SEC-FILE then PERFORM DELETE-USER-SEC-FILE.

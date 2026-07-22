@@ -319,6 +319,29 @@
   color: var(--blitzy-accent);
 }
 
+/* Accessibility: guarantee each navigation control is at least a 44x44 CSS-px
+   pointer target (WCAG 2.5.5 / 2.5.8). reveal.js draws the arrow as a small
+   border-triangle inside the button; we flex-center it so the triangle stays
+   centered while the button's hit area grows. !important is required to beat
+   reveal.css's own button sizing given the CDN load order. */
+.reveal .controls button {
+  width: 44px !important;
+  height: 44px !important;
+  display: inline-flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+}
+
+/* Accessibility: a high-contrast, always-visible keyboard focus ring on the
+   navigation controls (previously they showed no outline/shadow when focused).
+   :focus-visible keeps the ring off for mouse users but on for keyboard/AT. */
+.reveal .controls button:focus-visible {
+  outline: 3px solid var(--blitzy-accent);
+  outline-offset: 2px;
+  border-radius: 10px;
+  box-shadow: var(--blitzy-focus-ring);
+}
+
 .reveal .slide-number {
   color: var(--blitzy-text-muted);
   background: rgba(20, 18, 33, 0.6);
@@ -326,9 +349,24 @@
   font-size: 0.5em;
   padding: 0.2em 0.6em;
   border-radius: 6px;
+  /* Move the counter to the bottom-LEFT so it never overlaps the bottom-right
+     navigation-control cluster or lower-right slide content (safe-area fix). */
+  left: 12px;
+  right: auto;
+  bottom: 12px;
 }
 
 .reveal .slide-number a { color: var(--blitzy-text-muted); }
+
+/* Control safe-area: reserve space at the bottom of dense content slides so the
+   bottom-right navigation controls never overlap slide content. Centered title,
+   section-divider and closing slides are sparse and keep the full canvas. */
+.reveal .slides section.slide-content,
+.reveal .slides section.slide-comparison,
+.reveal .slides section.slide-agenda {
+  padding-bottom: var(--deck-control-safe, 60px);
+  box-sizing: border-box;
+}
 
 /* Backgrounds behind reveal fragments stay transparent to keep the theme. */
 .reveal .backgrounds { background: transparent; }

@@ -185,9 +185,6 @@ public class BillPayService {
     /** Width of the {@code TRAN-ID} key (COBOL {@code PIC 9(16)} / {@code PIC X(16)}). */
     private static final int TRAN_ID_WIDTH = 16;
 
-    /** Width of the {@code ACTID} account-id field (COBOL {@code PIC X(11)}). */
-    private static final int ACCT_ID_WIDTH = 11;
-
     /**
      * Number of whole integer digit positions in the balance edit mask
      * (COBOL {@code WS-CURR-BAL PIC +9999999999.99} &mdash; ten digits before the decimal point).
@@ -517,13 +514,16 @@ public class BillPayService {
         // transaction; mark re-enter and optionally pre-process a pre-selected account.
         if (context.isProgramEnter()) {
             context.markReenter();
-            Long selectedAcctId = context.getAcctId();
-            // IF CDEMO-CB00-TRN-SELECTED NOT = SPACES AND LOW-VALUES -> pre-load + PROCESS-ENTER-KEY.
-            if (selectedAcctId != null) {
-                form.setActidin(formatAccountId(selectedAcctId));
-                return processEnterKey(form);
-            }
-            // Otherwise just show the (empty) bill-pay screen.
+            // Finding P5-03: the COBOL first-display pre-load is guarded by CDEMO-CB00-TRN-SELECTED
+            // - a COBIL00C working-storage field declared AFTER COPY COCOM01Y, i.e. bill-pay-PRIVATE
+            // and NOT part of the shared COMMAREA. COBIL00C never sets it, so it is always
+            // LOW-VALUES and the pre-load branch is dead: legacy bill-pay always opens on the empty
+            // prompt. The Java port had wrongly bound that guard to the SHARED
+            // CardDemoContext.getAcctId() (CDEMO-ACCT-ID), which sibling programs populate, so
+            // entering bill-pay in a reused session leaked a stale account into ACTIDIN and ran an
+            // immediate lookup (spurious "Account ID NOT found" / a prepopulated account id).
+            // Restore parity: the first display is always the empty bill-pay screen, independent of
+            // any cross-program account selection carried on the session context.
             return BillPayResult.showScreen();
         }
 
@@ -998,18 +998,6 @@ public class BillPayService {
     private static long parseTranId(String tranId) {
         String trimmed = (tranId == null) ? "" : tranId.trim();
         return trimmed.isEmpty() ? 0L : Long.parseLong(trimmed);
-    }
-
-    /**
-     * Formats a numeric account id into the fixed-width account-id field, reproducing the COBOL
-     * move of the selected account id into {@code ACTIDINI} ({@code PIC X(11)}) on the
-     * first-entry pre-load ({@code legacy/cbl/COBIL00C.cbl}).
-     *
-     * @param acctId the numeric account id; must not be {@code null}
-     * @return the id as an 11-digit zero-padded string
-     */
-    private static String formatAccountId(Long acctId) {
-        return String.format(Locale.ROOT, "%0" + ACCT_ID_WIDTH + "d", acctId);
     }
 
     /**

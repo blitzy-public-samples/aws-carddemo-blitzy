@@ -503,6 +503,29 @@ class UserUpdateServiceTest {
     }
 
     /**
+     * Finding P13-INPUT-01: {@code PROCESS-ENTER-KEY} with an id carrying an embedded NUL
+     * (U+0000, COBOL LOW-VALUES) is rejected at the boundary as a controlled keyed NOTFND
+     * ("User ID NOT found...") with the editable fields left cleared and no repository access, so a
+     * value PostgreSQL cannot store (SQLSTATE 22021) can never reach the database and escape as a
+     * misleading duplicate (409) or an UnexpectedRollbackException (500).
+     */
+    @Test
+    void processEnterKey_embeddedNulUserIdReturnsNotFoundAndDoesNotLookUp() {
+        COUSR02Form form = formOf("A\u0000B", "STALE", "STALE", "STALE", "U");
+
+        UserUpdateResult result = service.processEnterKey(form, context);
+
+        assertThat(result.action()).isEqualTo(RoutingAction.SHOW_SCREEN);
+        assertThat(result.severity()).isEqualTo(MessageSeverity.ERROR);
+        assertThat(result.message()).isEqualTo(MSG_USER_NOT_FOUND);
+        assertThat(form.getFname()).isEmpty();
+        assertThat(form.getLname()).isEmpty();
+        assertThat(form.getPasswd()).isEmpty();
+        assertThat(form.getUsrtype()).isEmpty();
+        verifyNoInteractions(userSecurityRepository);
+    }
+
+    /**
      * {@code PROCESS-ENTER-KEY} with a present user id reads the record and, on the
      * COBOL {@code NORMAL} branch, loads the four editable fields onto the form and
      * returns the neutral ({@code DFHNEUTR}) "Press PF5..." save prompt. The password
@@ -580,6 +603,25 @@ class UserUpdateServiceTest {
 
         assertThat(result.severity()).isEqualTo(MessageSeverity.ERROR);
         assertThat(result.message()).isEqualTo(MSG_USERID_EMPTY);
+        verifyNoInteractions(userSecurityRepository);
+    }
+
+    /**
+     * Finding P13-INPUT-01: {@code UPDATE-USER-INFO} clears the entire blank-field validation ladder
+     * (all five fields present) but the id carries an embedded NUL (U+0000, COBOL LOW-VALUES); the
+     * boundary guard rejects it as a controlled keyed NOTFND ("User ID NOT found...") before the
+     * {@code READ ... UPDATE}, so a value PostgreSQL cannot store (SQLSTATE 22021) never enters this
+     * {@code @Transactional} unit-of-work, cannot mark it rollback-only, and cannot escape as an
+     * UnexpectedRollbackException / HTTP 500. No read or rewrite is attempted.
+     */
+    @Test
+    void updateUserInfo_embeddedNulUserIdReturnsNotFoundAndDoesNotRead() {
+        COUSR02Form form = formOf("A\u0000B", "John", "Smith", "PASS0001", "U");
+
+        UserUpdateResult result = service.updateUserInfo(form, context);
+
+        assertThat(result.severity()).isEqualTo(MessageSeverity.ERROR);
+        assertThat(result.message()).isEqualTo(MSG_USER_NOT_FOUND);
         verifyNoInteractions(userSecurityRepository);
     }
 
@@ -897,4 +939,3 @@ class UserUpdateServiceTest {
         }
     }
 }
-

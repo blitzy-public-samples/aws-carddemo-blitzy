@@ -62,6 +62,25 @@ public class COSGN00Form {
     private String errmsg;
 
     /**
+     * Server-computed autofocus hint (QA finding P5-08). Carries the field the
+     * cursor should land on when the screen is (re-)displayed, mirroring the
+     * COBOL {@code MOVE -1 TO USERIDL} / {@code MOVE -1 TO PASSWDL}
+     * attribute-length cursor moves in {@code COSGN00C}. The value is one of the
+     * {@code th:field} names of the two entry fields ({@link #FOCUS_USER_ID} /
+     * {@link #FOCUS_PASSWORD}), or {@code null} when no explicit cursor is
+     * requested (COBOL {@code WHEN OTHER} invalid-key path). It is an
+     * output-only rendering hint set by the controller from the service's
+     * {@code CursorField}; it is never a bound BMS data field.
+     */
+    private String focusField;
+
+    /** {@link #focusField} token selecting the User ID entry field. */
+    public static final String FOCUS_USER_ID = "userid";
+
+    /** {@link #focusField} token selecting the Password entry field. */
+    public static final String FOCUS_PASSWORD = "passwd";
+
+    /**
      * Creates an empty sign-on screen form. Required for Spring MVC
      * {@code @ModelAttribute} binding and standard JavaBean instantiation;
      * all properties are populated by request binding.
@@ -270,6 +289,26 @@ public class COSGN00Form {
     }
 
     /**
+     * Returns the server-computed autofocus hint (QA finding P5-08).
+     *
+     * @return {@link #FOCUS_USER_ID}, {@link #FOCUS_PASSWORD}, or {@code null}
+     *         when no explicit cursor position is requested
+     */
+    public String getFocusField() {
+        return focusField;
+    }
+
+    /**
+     * Sets the server-computed autofocus hint (QA finding P5-08).
+     *
+     * @param focusField {@link #FOCUS_USER_ID}, {@link #FOCUS_PASSWORD}, or
+     *                   {@code null} for no explicit cursor position
+     */
+    public void setFocusField(String focusField) {
+        this.focusField = focusField;
+    }
+
+    /**
      * Returns a diagnostic representation of this form including every value
      * field. The {@code passwd} field is intentionally rendered as
      * {@code ***} so the cleartext password is never emitted to logs or
@@ -291,6 +330,7 @@ public class COSGN00Form {
                 + ", userid='" + userid + '\''
                 + ", passwd='***'"
                 + ", errmsg='" + errmsg + '\''
+                + ", focusField='" + focusField + '\''
                 + '}';
     }
 }

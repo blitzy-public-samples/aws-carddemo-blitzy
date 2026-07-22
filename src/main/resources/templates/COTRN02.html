@@ -46,7 +46,7 @@
       background: var(--screen-bg);
       color: var(--neutral);
       font-family: "Courier New", Courier, "DejaVu Sans Mono", monospace;
-      font-size: 16px;
+      font-size: var(--bms-cell); /* BLITZY [QA P5-06/P5-13]: responsive artboard cell size (legible floor then pan) */
       line-height: var(--rh);
       display: flex;
       justify-content: safe center;
@@ -85,7 +85,7 @@
       white-space: pre;            /* preserve literal spacing in labels/legend */
     }
 
-    h1.cell { font-size: 1rem; font-weight: normal; }
+    h1.cell { font-size: inherit; font-weight: normal; }  /* BLITZY [QA P5-06/P5-13]: inherit responsive cell size so ch basis stays consistent */
 
     /* Color attribute classes (BMS COLOR=...) */
     .blue { color: var(--blue); }

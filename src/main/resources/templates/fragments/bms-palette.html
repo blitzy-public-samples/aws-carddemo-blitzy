@@ -7,15 +7,19 @@
   template includes it via  <th:block th:replace="~{fragments/bms-palette :: palette}">
   so all screens share one definition and a future designer changes a colour in ONE place.
 
-  The two legacy BMS foreground colours that failed WCAG 2.1 AA normal-text contrast on the
-  black (#000000) background are replaced with accessible equivalents obtained by brightening
-  the SAME hue axis until >= 4.5:1 (preserving colour semantics):
-    * BLUE  #0000CD (1.88:1, fail) -> #6E6EFF (5.34:1, pass) -- hue 240 preserved (R=G lifts luminance)
-    * RED   #CD0000 (3.60:1, fail) -> #FF0000 (5.25:1, pass) -- hue 0 preserved (authentic 3270 bright red)
-  The remaining BMS colours already pass AA and keep their exact legacy values:
-    GREEN #00CD00 (9.73:1), TURQUOISE #00CDCD (10.6:1), YELLOW #CCCC00 (12.2:1), NEUTRAL #FFFFFF (21:1).
-  Rationale and the contrast figures are recorded in docs/decision-log.md; contrast is asserted
-  automatically by BmsPaletteContrastTest.
+  BLITZY [QA finding P5-12 - literal BMS palette parity]: this fragment now renders the EXACT
+  legacy BMS 3270 foreground colours. There is no Figma for this migration, so (per the AAP
+  precedence rule) the BMS colour contract is the authoritative design intent (AAP section 0.3.4
+  "colors rendered as styles" one-for-one), and WCAG contrast heuristics NEVER override that
+  design contract. An earlier revision brightened BLUE/RED for WCAG 2.1 AA, but that changed the
+  observable colour contract without an accepted requirement change, so the literal values are
+  restored:
+    * BLUE  #0000CD  -- authentic 3270 blue (BMS COLOR=BLUE)
+    * RED   #CD0000  -- authentic 3270 red  (BMS COLOR=RED)
+  The remaining BMS colours were already literal and are unchanged:
+    GREEN #00CD00, TURQUOISE #00CDCD, YELLOW #CCCC00, NEUTRAL #FFFFFF.
+  Rationale (parity-vs-contrast resolution) is recorded in docs/decision-log.md; the literal
+  palette is asserted automatically by BmsPaletteContrastTest.
 
   BLITZY [A11Y / review finding #56]: this shared fragment also defines the .visually-hidden
   screen-reader utility so every screen can expose an off-grid semantic <h1> heading (and other
@@ -28,14 +32,46 @@
 <th:block th:fragment="palette">
 <style>
     :root {
-        --bms-blue:      #6E6EFF; /* was #0000CD - accessible, hue 240 preserved (WCAG AA 5.34:1) */
-        --bms-red:       #FF0000; /* was #CD0000 - accessible, hue 0 preserved   (WCAG AA 5.25:1) */
-        --bms-green:     #00CD00; /* legacy value retained (9.73:1)  */
-        --bms-turquoise: #00CDCD; /* legacy value retained (10.6:1)  */
-        --bms-yellow:    #CCCC00; /* legacy value retained (12.2:1)  */
-        --bms-neutral:   #FFFFFF; /* legacy value retained (21:1)    */
-        --bms-bg:        #000000; /* terminal background             */
+        --bms-blue:      #0000CD; /* literal BMS COLOR=BLUE (QA P5-12 parity) */
+        --bms-red:       #CD0000; /* literal BMS COLOR=RED  (QA P5-12 parity) */
+        --bms-green:     #00CD00; /* literal BMS COLOR=GREEN                  */
+        --bms-turquoise: #00CDCD; /* literal BMS COLOR=TURQUOISE              */
+        --bms-yellow:    #CCCC00; /* literal BMS COLOR=YELLOW                 */
+        --bms-neutral:   #FFFFFF; /* literal BMS COLOR=NEUTRAL                */
+        --bms-bg:        #000000; /* terminal background                     */
+
+        /*
+         * BLITZY [QA finding P5-06 / P5-13 - responsive terminal parity]: shared cell
+         * size for the fixed 24x80 artboard. Every screen's 80-column grid element
+         * (.screen / .grid / .terminal / .scr) sets  font-size: var(--bms-cell)  so all
+         * 17 screens share ONE responsive behaviour instead of the previous divergent
+         * per-screen rules (sign-on scaled to an illegible ~8px; the other screens kept a
+         * fixed ~768px width and clipped fields/PF-keys off-screen on small viewports).
+         *
+         * The advance of the monospace cell was measured at ch = 0.6em, so the rendered
+         * artboard width is  80ch = 48 * cell . The clamp therefore behaves as:
+         *   - viewport >= ~769px : 1rem (16px) ceiling  -> 768px artboard, centered.
+         *   - viewport ~625-769px: 2.083vw              -> artboard fills the width exactly.
+         *   - viewport <  ~625px : 0.8125rem (13px) floor-> 624px artboard; the terminal
+         *                          scroll-container pans (both axes) so every cell and
+         *                          control stays reachable and legible on a 375px phone.
+         * This "fit-to-width down to a legible floor, then scroll" model preserves the
+         * 80x24 grid exactly (no reflow of the BMS contract) while keeping text readable
+         * and controls operable at the required 375x812 and 800x600 breakpoints.
+         * Rationale is recorded in docs/decision-log.md.
+         */
+        --bms-cell:      clamp(0.8125rem, 2.083vw, 1rem);
     }
+
+    /*
+     * BLITZY [QA finding P5-06 / P5-13]: cross-cutting responsive safety net shared by
+     * every screen. box-sizing keeps borders/padding inside the artboard math; disabling
+     * the mobile text auto-inflation stops the OS from re-scaling the carefully sized
+     * monospace grid. These are safe global rules (no colour or geometry override) that
+     * complement each screen's  font-size: var(--bms-cell)  on its 80-column element.
+     */
+    *, *::before, *::after { box-sizing: border-box; }
+    html { -webkit-text-size-adjust: 100%; text-size-adjust: 100%; }
 
     /*
      * Screen-reader-only utility (review finding #56). Removes the element from the visual

@@ -77,7 +77,8 @@
             border: 1px solid #333;
             color: var(--c-neutral);
             font-family: var(--mono);
-            font-size: 1rem;
+            /* BLITZY [QA P5-06/P5-13]: responsive artboard cell size (legible floor then pan). */
+            font-size: var(--bms-cell);
             line-height: var(--line);
             white-space: pre;
         }
@@ -112,7 +113,7 @@
             color: var(--c-green);
             caret-color: var(--c-green);
             font-family: var(--mono);
-            font-size: 1rem;
+            font-size: inherit;  /* BLITZY [QA P5-06/P5-13]: inherit responsive cell size so ch basis stays consistent */
             line-height: var(--line);
             text-align: left;
             -webkit-appearance: none;
@@ -124,40 +125,32 @@
             background: rgba(255, 255, 255, 0.16);
         }
 
-        /* ---- Web affordance for the ENTER / F3 PF-keys (below the grid) ---- */
-        .action-bar {
-            width: 80ch;
-            max-width: 100%;
-            margin: 0.75rem auto 0;
-            display: flex;
-            flex-wrap: wrap;
-            gap: 2ch;
-        }
-        .term-btn {
-            font-family: var(--mono);
-            font-size: 1rem;
+        /* ---- PF-key controls (finding P5-09/P5-10) ---------------------- */
+        /* Single coherent control set INSIDE the 24x80 grid (COMEN01 pattern): the
+           row-24 legend IS the clickable submit buttons, rendered as terminal text in
+           the BMS legend colour, so there is no duplicate action bar below the terminal
+           and nothing clips at short viewport heights. ENTER is first so pressing Enter
+           posts pfkey=ENTER. */
+        .pfkey {
+            font: inherit;
             color: var(--c-yellow);
-            background: #111;
-            border: 1px solid var(--c-yellow);
-            border-radius: 0;
-            padding: 0.4rem 1.5ch;
+            background: transparent;
+            border: 0;
+            padding: 0;
+            margin: 0;
+            height: var(--line);
+            line-height: var(--line);
+            white-space: pre;
             cursor: pointer;
+            vertical-align: baseline;
         }
-        .term-btn--alt {
-            color: var(--c-turquoise);
-            border-color: var(--c-turquoise);
-        }
-        .term-btn:focus-visible {
-            outline: 2px solid var(--c-neutral);
-            outline-offset: 2px;
-        }
-        .term-btn:active, .term-btn--alt:active { text-decoration: underline; filter: brightness(1.3); }
+        .pfkey:active { text-decoration: underline; filter: brightness(1.3); }
         @media (hover: hover) {
-            .term-btn:hover { background: var(--c-yellow); color: #000; }
-            .term-btn--alt:hover { background: var(--c-turquoise); color: #000; }
+            .pfkey:hover { text-decoration: underline; }
         }
-        @media (prefers-reduced-motion: no-preference) {
-            .term-btn { transition: background 150ms ease-out, color 150ms ease-out; }
+        .pfkey:focus-visible {
+            outline: 2px solid var(--c-neutral);
+            outline-offset: -2px;
         }
     </style>
 </head>
@@ -262,15 +255,12 @@
                   th:text="*{errmsg}"
                   style="grid-row:23;grid-column:1/span 78;">error message</span>
 
-            <!-- ===== PF-key legend (BMS row 24, YELLOW; two spaces preserved) ===== -->
-            <span class="yellow" style="grid-row:24;grid-column:1/span 23;">ENTER=Continue  F3=Back</span>
-        </div>
-
-        <!-- PF-key affordances. The controller reads request param "pfkey".
-             ENTER is the first submit control, so pressing Enter in any field posts pfkey=ENTER. -->
-        <div class="action-bar">
-            <button type="submit" name="pfkey" value="ENTER" class="term-btn">ENTER = Continue</button>
-            <button type="submit" name="pfkey" value="PF3" class="term-btn term-btn--alt">F3 = Back</button>
+            <!-- ===== PF-key legend (BMS row 24, YELLOW; two spaces preserved) rendered AS the
+                 clickable submit buttons (finding P5-09/P5-10). Single in-terminal control set,
+                 replacing the former legend span + external action bar. The controller reads
+                 request param "pfkey"; ENTER is first so pressing Enter in any field posts
+                 pfkey=ENTER. ===== -->
+            <div class="yellow" style="grid-row:24;grid-column:1/span 78;"><button type="submit" name="pfkey" value="ENTER" class="pfkey">ENTER=Continue</button>  <button type="submit" name="pfkey" value="PF3" class="pfkey">F3=Back</button></div>
         </div>
     </form>
 </main>

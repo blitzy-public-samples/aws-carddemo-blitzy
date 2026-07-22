@@ -62,7 +62,10 @@
             position: relative;
             width: 80ch;
             height: calc(24 * var(--rh));
-            font-size: 16px;
+            /* BLITZY [QA P5-06/P5-13]: shared responsive artboard cell size (legible floor,
+               then pan) replaces the fixed 16px that kept the 768px artboard clipping
+               fields/PF-keys off-screen on small viewports. */
+            font-size: var(--bms-cell);
             line-height: 1.5;
             background: #000000;
             border: 1px solid #333333;
@@ -82,12 +85,13 @@
         }
 
         /* ---- BMS colour palette (centralized) --------------------------- */
-        /* BLITZY [A11Y / review finding #53]: colours are defined once in
+        /* BLITZY [finding P5-12]: colours are defined once in
            templates/fragments/bms-palette.html and referenced via var(--bms-*).
-           The two BMS foreground colours that failed WCAG 2.1 AA contrast on the
-           black background (BLUE, RED) are replaced with accessible equivalents
-           brightened along the same hue axis (>= 4.5:1); the rest keep their
-           legacy values. Contrast is asserted by BmsPaletteContrastTest. */
+           All six BMS foreground colours (blue, red, green, turquoise, yellow,
+           neutral) render at their literal 3270 values defined centrally in that
+           fragment; the BMS colour contract is the authoritative design intent
+           and is asserted by BmsPaletteContrastTest. Screen templates must never
+           inline the raw blue/red hex - they reference var(--bms-*) only. */
         .blue    { color: var(--bms-blue); }
         .yellow  { color: var(--bms-yellow); }
         .turq    { color: var(--bms-turquoise); }
@@ -123,36 +127,33 @@
             background: #001400;
         }
 
-        /* ---- PF-key controls (accessible web affordance for ENTER/F3) --- */
-        /* The on-screen legend on row 24 preserves the original PF-key
-           contract; these submit buttons are the clickable, no-JavaScript
-           web equivalent. "Continue" is first in the DOM so pressing Enter
-           in the option field submits with pfkey=ENTER. */
-        .controls {
-            width: 80ch;
-            display: flex;
-            gap: 1ch;
-            margin-top: 0.5rem;
-        }
-        .pfkey-btn {
-            font-family: 'Courier New', Courier, monospace;
-            font-size: 16px;
-            background: #111111;
-            color: var(--bms-yellow);
-            border: 1px solid #444444;
-            padding: 0.25rem 1ch;
+        /* ---- PF-key controls (finding P5-09/P5-10) ---------------------- */
+        /* Single coherent control set INSIDE the 24x80 terminal geometry, matching
+           the COMEN01 pattern: the row-24 PF-key legend IS the set of clickable
+           submit buttons (styled as terminal text), so there is no duplicate control
+           block below the terminal and nothing clips at short viewport heights.
+           "Continue" is first in the DOM so pressing Enter posts pfkey=ENTER, and the
+           external /js/bms-pfkeys.js maps the physical PF keys to these same buttons. */
+        .pfkey {
+            font: inherit;
+            color: inherit;                 /* inherits .yellow from the row-24 wrapper */
+            background: transparent;
+            border: 0;
+            padding: 0;
+            margin: 0;
+            height: var(--rh);
+            line-height: var(--rh);
+            white-space: pre;               /* preserve the two-space BMS legend gap */
             cursor: pointer;
+            vertical-align: baseline;
         }
-        .pfkey-btn:active { text-decoration: underline; filter: brightness(1.3); }
+        .pfkey:active { text-decoration: underline; filter: brightness(1.3); }
         @media (hover: hover) {
-            .pfkey-btn:hover { background: #1c1c00; color: #FFFF33; }
+            .pfkey:hover { text-decoration: underline; }
         }
-        @media (prefers-reduced-motion: no-preference) {
-            .pfkey-btn { transition: background-color 180ms ease-out, color 180ms ease-out; }
-        }
-        .pfkey-btn:focus-visible {
+        .pfkey:focus-visible {
             outline: 2px solid #00CDCD;
-            outline-offset: 2px;
+            outline-offset: -2px;           /* inset so the parent overflow:hidden never clips it */
         }
 
         /* ---- Skip link (invisible until focused) ------------------------ */
@@ -247,37 +248,22 @@
                   aria-live="assertive"
                   th:text="*{errmsg} ?: ''"></span>
 
-            <!-- Row 24: PF-key legend (verbatim from BMS INITIAL) -->
-            <span class="fld yellow"
-                  style="top:calc(23 * var(--rh)); left:0; width:23ch">ENTER=Continue  F3=Exit</span>
-        </div>
-
-        <!-- Clickable PF-key controls (work without JavaScript; keyboard/AT friendly) -->
-        <div class="controls">
-            <button type="submit" name="pfkey" value="ENTER" id="pf-continue" class="pfkey-btn">ENTER = Continue</button>
-            <button type="submit" name="pfkey" value="PF3" id="pf-exit" class="pfkey-btn">F3 = Exit</button>
+            <!-- Row 24: PF-key legend rendered AS the clickable submit buttons (finding
+                 P5-09/P5-10). This single in-terminal control set replaces the former
+                 duplicate: a static legend span plus an external .controls button block.
+                 The buttons render as terminal text (verbatim from the BMS INITIAL legend,
+                 two spaces between), work without JavaScript, and are keyboard/AT friendly;
+                 "Continue" is first so Enter posts pfkey=ENTER. -->
+            <div class="fld yellow" style="top:calc(23 * var(--rh)); left:0; width:78ch"><button type="submit" name="pfkey" value="ENTER" id="pf-continue" class="pfkey">ENTER=Continue</button>  <button type="submit" name="pfkey" value="PF3" id="pf-exit" class="pfkey">F3=Exit</button></div>
         </div>
     </form>
     </main>
 
-    <script>
-        /* Progressive enhancement only. The two submit buttons above are the
-           canonical controls and function fully without JavaScript. This maps
-           the physical 3270 PF3 key to the Exit action so keyboard users get
-           terminal-faithful behaviour. ENTER is handled natively by the browser
-           (form submits via the first submit button, which carries pfkey=ENTER).
-           No third-party libraries are used. */
-        (function () {
-            document.addEventListener('keydown', function (event) {
-                if (event.key === 'F3') {
-                    event.preventDefault();
-                    var exitButton = document.getElementById('pf-exit');
-                    if (exitButton) {
-                        exitButton.click();
-                    }
-                }
-            });
-        })();
-    </script>
+    <!-- Progressive enhancement only: the submit buttons above are the canonical controls and work
+         fully without JavaScript. This external script (finding P5-04) maps the physical 3270 PF
+         keys to the matching pfkey submit button so keyboard users get terminal-faithful behaviour.
+         It is served from /js (same origin), satisfying the Content-Security-Policy default-src
+         'self'; the previous inline <script> was blocked by CSP and never ran. -->
+    <script th:src="@{/js/bms-pfkeys.js}"></script>
 </body>
 </html>

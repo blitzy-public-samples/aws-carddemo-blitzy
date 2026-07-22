@@ -13,23 +13,28 @@ import java.util.stream.Stream;
 import org.junit.jupiter.api.Test;
 
 /**
- * Static (no Spring context) verification of review finding #53 &mdash; the accessible, centralized
- * BMS colour palette.
+ * Static (no Spring context) verification of the centralized BMS 3270 colour palette
+ * (QA finding <b>P5-12</b>, superseding review finding #53).
+ *
+ * <p>There is no Figma for this migration, so the BMS colour contract is the authoritative
+ * design intent (AAP &sect;0.3.4, "colors rendered as styles" one-for-one). Under the AAP
+ * precedence rule, WCAG contrast heuristics never override that design contract; an earlier
+ * revision brightened BLUE/RED to {@code #6E6EFF}/{@code #FF0000} for WCAG 2.1 AA, but that
+ * silently changed the observable colour contract, so P5-12 restores the literal BMS palette.
+ * Consequently this test asserts <em>exact palette parity</em> rather than a contrast floor (the
+ * class name is retained for continuity and the decision-log cross-reference).</p>
  *
  * <p>Three properties are asserted directly against the template sources:</p>
  * <ol>
- *   <li>The two BMS foreground colours that previously failed contrast are defined once in the
- *       shared fragment {@code templates/fragments/bms-palette.html} and both meet the WCAG 2.1 AA
- *       normal-text ratio (&ge; 4.5:1) against the black terminal background.</li>
- *   <li>No screen template hardcodes the inaccessible legacy hexes {@code #0000CD} / {@code #CD0000}
- *       any more (they are referenced only through {@code var(--bms-*)}).</li>
+ *   <li>The shared fragment {@code templates/fragments/bms-palette.html} defines every BMS
+ *       foreground colour with its exact literal 3270 hex (BLUE {@code #0000CD}, RED
+ *       {@code #CD0000}, GREEN {@code #00CD00}, TURQUOISE {@code #00CDCD}, YELLOW {@code #CCCC00},
+ *       NEUTRAL {@code #FFFFFF}) plus the black terminal background {@code #000000}.</li>
+ *   <li>No screen template hardcodes the centralized BLUE/RED hexes; they are referenced only
+ *       through {@code var(--bms-*)} so the fragment stays the single source of truth.</li>
  *   <li>Every screen template includes the centralized palette fragment, so the custom properties
  *       always resolve.</li>
  * </ol>
- *
- * <p>The WCAG contrast maths mirror the {@code relative luminance} definition (sRGB linearization
- * with the 0.03928 knee, then the 0.2126/0.7152/0.0722 weighting) and the
- * {@code (L1 + 0.05) / (L2 + 0.05)} ratio with the darker colour (pure black) as {@code L2}.</p>
  */
 class BmsPaletteContrastTest {
 
@@ -39,27 +44,8 @@ class BmsPaletteContrastTest {
     /** The single source of truth for the terminal palette. */
     private static final Path PALETTE = TEMPLATES.resolve("fragments").resolve("bms-palette.html");
 
-    /** WCAG 2.1 AA minimum contrast ratio for normal-size text. */
-    private static final double AA_NORMAL_TEXT = 4.5;
-
     /** Matches a {@code --name: #RRGGBB} custom-property declaration. */
     private static final Pattern VAR = Pattern.compile("--%s:\\s*#([0-9A-Fa-f]{6})");
-
-    private static double linearize(int channel) {
-        double s = channel / 255.0;
-        return (s <= 0.03928) ? (s / 12.92) : Math.pow((s + 0.055) / 1.055, 2.4);
-    }
-
-    private static double relativeLuminance(String rrggbb) {
-        int r = Integer.parseInt(rrggbb.substring(0, 2), 16);
-        int g = Integer.parseInt(rrggbb.substring(2, 4), 16);
-        int b = Integer.parseInt(rrggbb.substring(4, 6), 16);
-        return 0.2126 * linearize(r) + 0.7152 * linearize(g) + 0.0722 * linearize(b);
-    }
-
-    private static double contrastOnBlack(String rrggbb) {
-        return (relativeLuminance(rrggbb) + 0.05) / (0.0 + 0.05);
-    }
 
     private static String paletteValue(String content, String name) {
         Matcher matcher = Pattern.compile(String.format(VAR.pattern(), name)).matcher(content);
@@ -84,23 +70,33 @@ class BmsPaletteContrastTest {
     }
 
     @Test
-    void centralizedBlueAndRedMeetWcagAaOnBlack() {
+    void paletteDefinesLiteralBmsColours() {
+        // QA P5-12: the fragment must render the EXACT literal BMS 3270 palette (parity), because
+        // the BMS colour contract is the authoritative design intent and WCAG contrast never
+        // overrides it (AAP precedence; decision-log). Assert every foreground colour and the
+        // black terminal background verbatim, case-insensitively.
         String palette = read(PALETTE);
-        String blue = paletteValue(palette, "bms-blue");
-        String red = paletteValue(palette, "bms-red");
-
-        assertThat(contrastOnBlack(blue))
-                .as("--bms-blue #%s on #000000 must meet WCAG 2.1 AA normal-text contrast", blue)
-                .isGreaterThanOrEqualTo(AA_NORMAL_TEXT);
-        assertThat(contrastOnBlack(red))
-                .as("--bms-red #%s on #000000 must meet WCAG 2.1 AA normal-text contrast", red)
-                .isGreaterThanOrEqualTo(AA_NORMAL_TEXT);
+        assertThat(paletteValue(palette, "bms-blue"))
+                .as("--bms-blue must be the literal BMS blue").isEqualToIgnoringCase("0000CD");
+        assertThat(paletteValue(palette, "bms-red"))
+                .as("--bms-red must be the literal BMS red").isEqualToIgnoringCase("CD0000");
+        assertThat(paletteValue(palette, "bms-green"))
+                .as("--bms-green must be the literal BMS green").isEqualToIgnoringCase("00CD00");
+        assertThat(paletteValue(palette, "bms-turquoise"))
+                .as("--bms-turquoise must be the literal BMS turquoise").isEqualToIgnoringCase("00CDCD");
+        assertThat(paletteValue(palette, "bms-yellow"))
+                .as("--bms-yellow must be the literal BMS yellow").isEqualToIgnoringCase("CCCC00");
+        assertThat(paletteValue(palette, "bms-neutral"))
+                .as("--bms-neutral must be the literal BMS neutral").isEqualToIgnoringCase("FFFFFF");
+        assertThat(paletteValue(palette, "bms-bg"))
+                .as("--bms-bg must be the black terminal background").isEqualToIgnoringCase("000000");
     }
 
     @Test
-    void noScreenTemplateHardcodesInaccessibleLegacyHex() {
-        // The fragment documents the "was #0000CD -> ..." mapping in comments; every other
-        // template must reference the palette only through var(--bms-*).
+    void noScreenTemplateHardcodesCentralizedBlueOrRed() {
+        // Single-source-of-truth guard: every screen template must reference the centralized
+        // BLUE/RED only through var(--bms-*), never as a raw hex, so a future palette change stays
+        // a one-line edit in the fragment.
         List<Path> offenders = templateFiles().stream()
                 .filter(p -> !p.getFileName().toString().equals("bms-palette.html"))
                 .filter(p -> {
@@ -110,7 +106,7 @@ class BmsPaletteContrastTest {
                 .toList();
 
         assertThat(offenders)
-                .as("no screen template may hardcode the inaccessible legacy BMS blue/red")
+                .as("no screen template may hardcode the centralized BMS blue/red; use var(--bms-*)")
                 .isEmpty();
     }
 

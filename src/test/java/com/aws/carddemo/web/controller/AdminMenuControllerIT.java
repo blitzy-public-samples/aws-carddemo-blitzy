@@ -243,14 +243,16 @@ class AdminMenuControllerIT extends AbstractPostgresIntegrationTest {
      * @throws Exception if the request cannot be performed
      */
     @Test
-    @DisplayName("POST /admin/menu with PF3 redirects to the sign-on screen")
+    @DisplayName("POST /admin/menu with PF3 logs out and redirects to the sign-on screen (?logout)")
     @WithMockUser(roles = "ADMIN")
     void adminMenuPf3RedirectsToSignon() throws Exception {
+        // Finding P5-01: PF3 Exit performs a real server-side logout and lands on the sign-on screen
+        // with the ?logout marker (finding P5-11 renders the accessible notice).
         mockMvc.perform(post(ADMIN_MENU_PATH)
                         .param(PARAM_PFKEY, KEY_PF3)
                         .with(csrf()))
                 .andExpect(status().is3xxRedirection())
-                .andExpect(redirectedUrl(ROUTE_SIGNON));
+                .andExpect(redirectedUrl(ROUTE_SIGNON + "?logout"));
     }
 
     /**
@@ -290,7 +292,7 @@ class AdminMenuControllerIT extends AbstractPostgresIntegrationTest {
                         .param(PARAM_PFKEY, KEY_PF3)
                         .with(csrf()))
                 .andExpect(status().is3xxRedirection())
-                .andExpect(redirectedUrl(ROUTE_SIGNON));
+                .andExpect(redirectedUrl(ROUTE_SIGNON + "?logout"));
     }
 
     /**

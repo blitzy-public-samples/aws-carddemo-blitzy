@@ -459,7 +459,10 @@ class TransactionBackupJobConfigIT extends AbstractPostgresIntegrationTest {
         assertThat(Files.isDirectory(backupOut))
                 .as("the target was never partially overwritten").isTrue();
 
-        try (var stream = Files.list(tempDir)) {
+        // The in-progress temp now lives inside the private 0700 per-instance staging directory
+        // (<parent>/.carddemo-inprogress-<id>/transact.bkp.<id>.inprogress) that P4-SEC-01 introduced,
+        // so scan recursively rather than only the temp-dir root.
+        try (var stream = Files.walk(tempDir)) {
             List<Path> temps = stream
                     .filter(p -> p.getFileName().toString().startsWith("transact.bkp.")
                             && p.getFileName().toString().endsWith(".inprogress"))

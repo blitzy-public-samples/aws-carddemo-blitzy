@@ -19,6 +19,7 @@ import com.aws.carddemo.repository.UserSecurityRepository;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
 /**
@@ -173,6 +174,21 @@ class CardDemoUserDetailsServiceTest {
     void nullUsernameThrowsUsernameNotFound() {
         assertThatThrownBy(() -> service.loadUserByUsername(null))
                 .isInstanceOf(UsernameNotFoundException.class);
+    }
+
+    @Test
+    @DisplayName("embedded-NUL username is rejected as not-found before any repository access "
+            + "(finding P13-INPUT-01)")
+    void embeddedNulUsernameThrowsUsernameNotFoundWithoutRepositoryAccess() {
+        // An embedded NUL (U+0000, COBOL LOW-VALUES) can never arrive in a 3270 field and cannot be
+        // stored by PostgreSQL (SQLSTATE 22021). It must be rejected at this boundary - before the
+        // findByUsrId read - as an ordinary unknown id, so signon shows the controlled "User not
+        // found. Try again ..." line instead of the misleading data-integrity 409. The repository must
+        // never be consulted with an unstorable parameter.
+        assertThatThrownBy(() -> service.loadUserByUsername("A\u0000B"))
+                .isInstanceOf(UsernameNotFoundException.class);
+
+        verifyNoInteractions(repository);
     }
 
     @Test

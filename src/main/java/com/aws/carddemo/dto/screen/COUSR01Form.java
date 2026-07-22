@@ -68,6 +68,19 @@ public class COUSR01Form {
     private String errmsg;
 
     /**
+     * Server-computed autofocus hint (QA finding P5-08). Carries the field the
+     * cursor should land on when the screen is (re-)displayed, mirroring the
+     * COBOL {@code MOVE -1 TO FNAMEL / LNAMEL / USERIDL / PASSWDL / USRTYPEL}
+     * attribute-length cursor moves in {@code COUSR01C}. The value is the
+     * {@code th:field} name of the target entry field
+     * ({@code fname}/{@code lname}/{@code userid}/{@code passwd}/{@code usrtype}),
+     * or {@code null} when no explicit cursor is requested. It is an output-only
+     * rendering hint set by the controller from the service's {@code CursorField}
+     * and is never a bound BMS data field.
+     */
+    private String focusField;
+
+    /**
      * Creates an empty user-add screen form. Required for Spring MVC
      * {@code @ModelAttribute} binding and standard JavaBean instantiation;
      * all properties are populated by request binding.
@@ -293,6 +306,24 @@ public class COUSR01Form {
      */
     public void setErrmsg(String errmsg) {
         this.errmsg = errmsg;
+    }
+
+    /**
+     * Returns the server-computed autofocus hint (QA finding P5-08).
+     *
+     * @return the target field's {@code th:field} name, or {@code null} for none
+     */
+    public String getFocusField() {
+        return focusField;
+    }
+
+    /**
+     * Sets the server-computed autofocus hint (QA finding P5-08).
+     *
+     * @param focusField the target field's {@code th:field} name, or {@code null}
+     */
+    public void setFocusField(String focusField) {
+        this.focusField = focusField;
     }
 
     /**

@@ -36,6 +36,15 @@ spring:
       pool-name: carddemo-pool
       maximum-pool-size: 10
       minimum-idle: 2
+      # P7-OBS-02: bound how long a connection acquisition may block. The 'db' health
+      # contributor calls dataSource.getConnection(), which blocks up to this timeout when
+      # PostgreSQL is unreachable; the HikariCP default of 30s meant /actuator/health and every
+      # DB-backed route stalled ~30s before surfacing 503. 5s bounds that diagnostic window so
+      # readiness/health fail promptly during an outage. validation-timeout (which MUST be less
+      # than connection-timeout) bounds the aliveness probe Hikari runs on a borrowed connection.
+      # These are infrastructure timeouts only and change no business behavior.
+      connection-timeout: 5000
+      validation-timeout: 3000
 
   jpa:
     hibernate:
@@ -111,6 +120,64 @@ spring:
     mode: HTML
     encoding: UTF-8
 
+  # ---------------------------------------------------------------------------
+  # P7-PERF-01: static-resource HTTP caching + content versioning. The
+  # server-rendered BMS screens embed their CSS inline, so the only
+  # classpath:/static asset is /js/bms-pfkeys.js (the COADM01 physical-PF-key
+  # helper). Enabling the content strategy appends a content hash to that
+  # asset's URL and rewrites the Thymeleaf @{...} link via the auto-registered
+  # ResourceUrlEncodingFilter, so a long max-age is SAFE: the URL changes
+  # whenever the file changes, so a cached copy can never be stale. This
+  # replaces the previous TTL-0 delivery with a cacheable, versioned asset. It
+  # changes NO security control - the hashed URL is still same-origin, so the
+  # Content-Security-Policy is untouched, and no Subresource-Integrity attribute
+  # exists on any app asset (SRI lives only on the standalone executive deck's
+  # pinned CDN links, which this does not touch).
+  web:
+    resources:
+      cache:
+        cachecontrol:
+          max-age: 30d
+          cache-public: true
+        use-last-modified: true
+      chain:
+        strategy:
+          content:
+            enabled: true
+            paths: /**
+
+# -----------------------------------------------------------------------------
+# server: embedded-Tomcat concerns - HTTP response compression (P7-PERF-01) and
+# the explicit session-cookie attributes (P7-SEC-02). Net-new migration
+# deliverable; there is no COBOL source equivalent.
+# -----------------------------------------------------------------------------
+server:
+  compression:
+    # P7-PERF-01: gzip text responses so the dense server-rendered screens (and
+    # any JSON/CSS/JS) are not delivered uncompressed. Only compressible text
+    # MIME types are listed; responses below 1 KiB stay uncompressed because the
+    # gzip framing overhead is not worthwhile for tiny payloads.
+    enabled: true
+    mime-types: text/html,text/css,text/plain,text/xml,application/javascript,application/json,application/xml,image/svg+xml
+    min-response-size: 1024
+  servlet:
+    session:
+      cookie:
+        # P7-SEC-02: make the session-cookie attributes explicit. HttpOnly keeps
+        # JSESSIONID out of document.cookie (defense against XSS token theft) and
+        # an explicit SameSite=Lax lets the cookie ride top-level GET navigations
+        # (so a redirect back to a protected screen keeps the session) while
+        # withholding it on cross-site POST / subresource requests as CSRF
+        # defense-in-depth. Path stays the servlet default context root ("/").
+        http-only: true
+        same-site: lax
+        # Secure is environment-aware: on plain-HTTP local dev a browser would
+        # drop a Secure cookie and break signon, so it defaults to false and is
+        # switched on (CARDDEMO_COOKIE_SECURE=true) wherever the app is served
+        # over HTTPS / behind TLS termination. This mirrors the datasource
+        # credentials: environment-specific values are externalized, not hardcoded.
+        secure: ${CARDDEMO_COOKIE_SECURE:false}
+
 # -----------------------------------------------------------------------------
 # Observability (AAP Observability rule): least-exposure Actuator surface plus
 # Micrometer tracing and a Prometheus scrape endpoint. Structured JSON logging and
@@ -139,6 +206,17 @@ management:
       show-details: when_authorized
       roles:
         - ADMIN
+      group:
+        # P7-OBS-02: the readiness probe must reflect the REQUIRED datasource so an orchestrator
+        # stops routing traffic when the database is unreachable. By default the readiness group
+        # contains only 'readinessState' - an in-memory lifecycle flag that stays UP throughout a
+        # DB outage - so GET /actuator/health/readiness returned 200/UP in milliseconds even with
+        # PostgreSQL down. Adding the auto-configured 'db' contributor makes readiness return
+        # 503/DOWN promptly during an outage (bounded by the Hikari connection-timeout above), and
+        # UP again once the database recovers. Liveness intentionally remains the process-only
+        # 'livenessState' so a transient DB outage does not trigger a pod restart.
+        readiness:
+          include: readinessState,db
   tracing:
     sampling:
       # Sample 100% of traces locally so every request is observable during

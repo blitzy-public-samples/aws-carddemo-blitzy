@@ -25,11 +25,17 @@ import com.aws.carddemo.service.online.MainMenuService.RoutingAction;
 import com.aws.carddemo.util.PfKeyHandler;
 import com.aws.carddemo.util.constants.Messages;
 import com.aws.carddemo.util.constants.ScreenTitles;
+import jakarta.servlet.http.HttpServletRequest;
+import jakarta.servlet.http.HttpServletResponse;
 import jakarta.validation.Valid;
 import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import org.springframework.security.core.Authentication;
+import org.springframework.security.core.context.SecurityContextHolder;
+import org.springframework.security.web.authentication.logout.CookieClearingLogoutHandler;
+import org.springframework.security.web.authentication.logout.SecurityContextLogoutHandler;
 import org.springframework.stereotype.Controller;
 import org.springframework.validation.BindingResult;
 import org.springframework.web.bind.WebDataBinder;
@@ -165,6 +171,14 @@ public class MenuController {
     /** Redirect to the sign-on route (mirrors {@code XCTL COSGN00C}). */
     private static final String SIGNON_REDIRECT = "redirect:/signon";
 
+    /**
+     * Redirect target for the {@code PF3} Exit action, carrying the {@code ?logout} marker so the
+     * re-rendered sign-on screen can show an accessible "your session has ended" notice (finding
+     * P5-11). Distinct from {@link #SIGNON_REDIRECT} (the cold first-entry bounce, which is not a
+     * user-initiated logout).
+     */
+    private static final String SIGNON_REDIRECT_LOGOUT = "redirect:/signon?logout";
+
     /** Request-parameter name carrying the pressed PF-key from the COMEN01 form. */
     private static final String PARAM_PFKEY = "pfkey";
 
@@ -268,7 +282,8 @@ public class MenuController {
      * resolved to a {@link PfKey} and dispatched: {@code ENTER} runs
      * {@code PROCESS-ENTER-KEY} (see {@link #processEnter(COMEN01Form)}); {@code PF3}
      * ({@link PfKey#PFK03}) mirrors {@code XCTL COSGN00C} (see
-     * {@link #returnToSignon()}); any other key is the COBOL {@code WHEN OTHER}
+     * {@link #returnToSignon(HttpServletRequest, HttpServletResponse)}); any other key
+     * is the COBOL {@code WHEN OTHER}
      * branch and re-displays the menu with {@link Messages#CCDA_MSG_INVALID_KEY}.</p>
      *
      * @param form  the bound menu form (COBOL {@code COMEN1AI}); supplies the entered
@@ -281,7 +296,8 @@ public class MenuController {
     @PostMapping("/menu")
     public String handleMenu(@Valid @ModelAttribute("form") COMEN01Form form,
             BindingResult bindingResult,
-            @RequestParam(name = PARAM_PFKEY, required = false, defaultValue = ENTER_TOKEN) String pfkey) {
+            @RequestParam(name = PARAM_PFKEY, required = false, defaultValue = ENTER_TOKEN) String pfkey,
+            HttpServletRequest request, HttpServletResponse response) {
         // Review finding #11: an over-width field (only reachable by a crafted client bypassing the
         // template maxlength / 3270 field width) re-displays the menu with a neutral banner and does
         // no option routing, so the COBOL menu edit ordering is untouched.
@@ -292,7 +308,7 @@ public class MenuController {
         PfKey key = resolvePfKey(pfkey);
         return switch (key) {
             case ENTER -> processEnter(form);
-            case PFK03 -> returnToSignon();
+            case PFK03 -> returnToSignon(request, response);
             default -> {
                 // COBOL MAIN-PARA WHEN OTHER (lines 99-102): CCDA-MSG-INVALID-KEY.
                 renderMenu(form, Messages.CCDA_MSG_INVALID_KEY, MSG_COLOR_ERROR);
@@ -351,13 +367,29 @@ public class MenuController {
      * sign-on target ({@code CDEMO-TO-PROGRAM}/{@code CDEMO-TO-TRANID}) before
      * issuing the redirect.</p>
      *
-     * @return a {@code redirect:} to the sign-on route
+     * <p><b>Finding P5-01 (F3 Exit must end the authenticated session).</b> On the mainframe the
+     * {@code PF3} branch issues {@code EXEC CICS XCTL PROGRAM('COSGN00C')}, abandoning the
+     * pseudo-conversation and its {@code COMMAREA}. A bare {@code redirect:/signon} left the
+     * authenticated HTTP session and the Spring Security context intact, so the protected menu
+     * stayed reachable through the browser Back button or direct navigation. This method now
+     * performs a real server-side logout - {@link SecurityContextLogoutHandler} invalidates the
+     * session and clears the {@link SecurityContextHolder} - before redirecting to the sign-on
+     * screen with the {@code ?logout} marker (finding P5-11 renders the accessible notice).</p>
+     *
+     * @param request  the current request, whose session is invalidated by the logout handler
+     * @param response the current response, passed to the logout handler for cookie clean-up
+     * @return a {@code redirect:} to the sign-on route carrying the {@code ?logout} marker
      */
-    private String returnToSignon() {
+    private String returnToSignon(HttpServletRequest request, HttpServletResponse response) {
         context.setFromTranid(TRANSACTION_ID);
         context.setFromProgram(PROGRAM_NAME);
         mainMenuService.returnToSignonScreen(context);
-        return SIGNON_REDIRECT;
+        Authentication auth = SecurityContextHolder.getContext().getAuthentication();
+        new SecurityContextLogoutHandler().logout(request, response, auth);
+        // Clear the session cookie so the ?logout redirect is not re-routed to the ?timeout
+        // invalid-session URL (finding P5-11); otherwise the stale JSESSIONID would be re-presented.
+        new CookieClearingLogoutHandler("JSESSIONID").logout(request, response, auth);
+        return SIGNON_REDIRECT_LOGOUT;
     }
 
     /**

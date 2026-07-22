@@ -257,13 +257,16 @@ class MenuControllerIT extends AbstractPostgresIntegrationTest {
      */
     @Test
     @WithMockUser(roles = "USER")
-    @DisplayName("POST /menu with PF3 redirects to the sign-on screen")
+    @DisplayName("POST /menu with PF3 logs out and redirects to the sign-on screen (?logout)")
     void menuPf3RedirectsToSignon() throws Exception {
+        // Finding P5-01: PF3 Exit is the web equivalent of XCTL COSGN00C - it performs a real
+        // server-side logout (session invalidation + SecurityContext clear) and lands on the
+        // sign-on screen carrying the ?logout marker (finding P5-11 renders the accessible notice).
         mockMvc.perform(post("/menu")
                         .param("pfkey", PFKEY_PF3)
                         .with(csrf()))
                 .andExpect(status().is3xxRedirection())
-                .andExpect(redirectedUrl(SIGNON_ROUTE));
+                .andExpect(redirectedUrl(SIGNON_ROUTE + "?logout"));
     }
 
     /**

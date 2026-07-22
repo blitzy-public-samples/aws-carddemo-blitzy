@@ -90,7 +90,10 @@
             grid-template-rows: repeat(24, var(--row-height));
             align-items: center;
             width: 80ch;
-            font-size: 1rem;
+            /* BLITZY [QA P5-06/P5-13]: shared responsive artboard cell size so the fixed
+               80-column grid scales to a legible floor then pans, instead of staying a
+               fixed 768px that clipped fields/PF-keys off-screen on small viewports. */
+            font-size: var(--bms-cell);
             line-height: var(--row-height);
         }
 
@@ -153,7 +156,9 @@
         /* Line-4 screen title (BMS ATTRB=BRT, COLOR=NEUTRAL): bright white, bold. */
         .title-main {
             margin: 0;
-            font-size: 1rem;
+            /* BLITZY [QA P5-06/P5-13]: inherit the artboard cell size so the title scales
+               with the grid (was a fixed 1rem that mis-sized against a shrunk grid). */
+            font-size: inherit;
             font-weight: 700;
         }
 

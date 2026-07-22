@@ -91,6 +91,17 @@ public class GlobalExceptionHandler {
     private static final String ATTR_TIMESTAMP = "timestamp";
 
     /**
+     * Sanitized on-screen line for a request that carried a byte the database cannot store &mdash;
+     * specifically an untranslatable character (SQLSTATE {@code 22021}, for example an embedded NUL /
+     * COBOL {@code LOW-VALUES}). Rendered with HTTP {@code 400 Bad Request} and no FILE STATUS: this is
+     * malformed input, not a duplicate key and not a server logic error. It carries no echo of the
+     * offending value. Used as defence-in-depth behind the keyed-lookup boundary rejection (finding
+     * P13-INPUT-01).
+     */
+    private static final String MSG_INVALID_INPUT =
+            "The request contained characters that cannot be processed.";
+
+    /**
      * Handles a record-not-found condition (CardDemo FILE STATUS {@code "23"} / CICS
      * {@code NOTFND}). Logged at {@code WARN} because a missing keyed record is an expected,
      * user-recoverable outcome (for example a mistyped account or card number).
@@ -217,6 +228,21 @@ public class GlobalExceptionHandler {
     @ExceptionHandler({ org.springframework.dao.DuplicateKeyException.class,
             org.springframework.dao.DataIntegrityViolationException.class })
     public ModelAndView handleDataAccessDuplicate(org.springframework.dao.DataAccessException ex) {
+        String sqlState = sqlStateOf(ex);
+        // An untranslatable-character violation (SQLSTATE 22021 - for example an embedded NUL / COBOL
+        // LOW-VALUES that PostgreSQL cannot store) is malformed input, NOT a duplicate key. Carving it
+        // out here prevents the misleading "Record already exists." / FILE STATUS 22 / HTTP 409 that the
+        // blanket DataIntegrityViolationException mapping would otherwise produce (finding P13-INPUT-01).
+        // The primary defence is boundary rejection in the keyed-lookup services; this is
+        // defence-in-depth for any residual path that still reaches the database.
+        if (isUntranslatableCharacter(sqlState)) {
+            log.warn("Invalid character in request (bridged from {}, SQLSTATE {}): {}",
+                    ex.getClass().getName(), sqlState, ex.getMessage());
+            return errorView(MSG_INVALID_INPUT, null, HttpStatus.BAD_REQUEST);
+        }
+        // Otherwise - a unique-key violation (SQLSTATE 23505), Spring's own DuplicateKeyException, or
+        // any other integrity constraint - reproduce the CardDemo duplicate-key behaviour unchanged:
+        // FILE STATUS "22" / CICS DUPREC / HTTP 409 Conflict.
         DuplicateKeyException translated = new DuplicateKeyException("Record already exists.", ex);
         log.warn("Duplicate/constraint violation (bridged from {}) [FILE STATUS {}]: {}",
                 ex.getClass().getName(), translated.getFileStatus(), translated.getMessage());
@@ -286,6 +312,54 @@ public class GlobalExceptionHandler {
     }
 
     /**
+     * Bridges a transaction-completion failure &mdash; any remaining Spring
+     * {@code org.springframework.transaction.TransactionException} not matched by the more specific
+     * {@link #handleCannotCreateTransaction(org.springframework.transaction.CannotCreateTransactionException)
+     * transaction-begin} handler above &mdash; into the correct CardDemo status semantics by inspecting
+     * the originating SQLSTATE, so a failure that occurs while <em>committing</em> never escapes as a
+     * bare container {@code 500}.
+     *
+     * <p>The motivating case (finding P13-INPUT-01) is {@code UnexpectedRollbackException}: a service
+     * method annotated {@link org.springframework.transaction.annotation.Transactional Transactional}
+     * performs a keyed read/write that the database aborts (for example an embedded NUL yields SQLSTATE
+     * {@code 22021}), catches the resulting {@code DataAccessException} to re-display its screen inline,
+     * and then returns normally &mdash; but the underlying transaction was already marked rollback-only
+     * by the aborted statement, so the framework's commit throws {@code UnexpectedRollbackException} (a
+     * {@code TransactionException}, <strong>not</strong> a {@code DataAccessException}). Without this
+     * handler that would fall through to the generic {@code 500}. The primary defence is boundary
+     * rejection of unstorable input in the keyed-lookup services; this handler is defence-in-depth that
+     * classifies whatever reaches it by SQLSTATE: connection-loss ({@code 08*} / {@code 57P01..03})
+     * &rarr; {@link ResourceUnavailable} / FILE STATUS {@code "93"} / HTTP {@code 503}; untranslatable
+     * character ({@code 22021}) &rarr; HTTP {@code 400}; anything else &rarr; a sanitized {@code 500}.
+     * Referenced by fully-qualified name (no import), consistent with the other framework bridges.</p>
+     *
+     * @param ex the transaction-completion failure being bridged
+     * @return the error screen with the mapped message line and HTTP status for the classified cause
+     */
+    @ExceptionHandler(org.springframework.transaction.TransactionException.class)
+    public ModelAndView handleTransactionException(org.springframework.transaction.TransactionException ex) {
+        String sqlState = sqlStateOf(ex);
+        if (isConnectionLoss(sqlState)) {
+            ResourceUnavailable translated =
+                    new ResourceUnavailable("Data service unavailable. Please retry.", ex);
+            log.error("Transaction failed to complete (bridged from {}, SQLSTATE {}) [FILE STATUS {}]: {}",
+                    ex.getClass().getName(), sqlState, translated.getFileStatus(),
+                    translated.getMessage(), ex);
+            return errorView(translated.getMessage(), translated.getFileStatus(),
+                    HttpStatus.SERVICE_UNAVAILABLE);
+        }
+        if (isUntranslatableCharacter(sqlState)) {
+            log.warn("Invalid character in request (bridged from {}, SQLSTATE {}): {}",
+                    ex.getClass().getName(), sqlState, ex.getMessage());
+            return errorView(MSG_INVALID_INPUT, null, HttpStatus.BAD_REQUEST);
+        }
+        log.error("Transaction failure (bridged from {}): {}",
+                ex.getClass().getName(), ex.getMessage(), ex);
+        return errorView("Unable to process the request due to a data error.", null,
+                HttpStatus.INTERNAL_SERVER_ERROR);
+    }
+
+    /**
      * Bridges any remaining Spring {@code org.springframework.dao.DataAccessException} not matched by
      * a more specific bridge handler above &mdash; the least-specific data-access catch-all, mapped
      * to base {@link FileStatusException} semantics. This is the online analogue of the COBOL
@@ -298,10 +372,113 @@ public class GlobalExceptionHandler {
      */
     @ExceptionHandler(org.springframework.dao.DataAccessException.class)
     public ModelAndView handleDataAccess(org.springframework.dao.DataAccessException ex) {
+        String sqlState = sqlStateOf(ex);
+        // A connection-class failure (SQLSTATE class 08, e.g. 08006 connection_failure / 08003 / 08001)
+        // or a PostgreSQL operator-intervention shutdown (57P01 admin_shutdown, 57P02 crash_shutdown,
+        // 57P03 cannot_connect_now) that reaches here wrapped in an UNCATEGORIZED DataAccessException -
+        // typically Hibernate's JpaSystemException raised when an already-established pooled connection
+        // is dropped abruptly - is a resource-unavailable condition, not a generic logic error. Map it
+        // to FILE STATUS "93" / CICS NOTOPEN / HTTP 503 so the abrupt-loss path matches the orderly
+        // DataAccessResourceFailureException path handled above (finding P4-ERR-01).
+        if (isConnectionLoss(sqlState)) {
+            ResourceUnavailable translated =
+                    new ResourceUnavailable("Data service unavailable. Please retry.", ex);
+            log.error("Data resource failure (bridged from {}, SQLSTATE {}) [FILE STATUS {}]: {}",
+                    ex.getClass().getName(), sqlState, translated.getFileStatus(),
+                    translated.getMessage(), ex);
+            return errorView(translated.getMessage(), translated.getFileStatus(),
+                    HttpStatus.SERVICE_UNAVAILABLE);
+        }
+        // An untranslatable-character violation (SQLSTATE 22021) is malformed input -> HTTP 400 Bad
+        // Request, never a bare 500 (finding P13-INPUT-01, defence-in-depth).
+        if (isUntranslatableCharacter(sqlState)) {
+            log.warn("Invalid character in request (bridged from {}, SQLSTATE {}): {}",
+                    ex.getClass().getName(), sqlState, ex.getMessage());
+            return errorView(MSG_INVALID_INPUT, null, HttpStatus.BAD_REQUEST);
+        }
         log.error("Unhandled data-access failure (bridged from {}): {}",
                 ex.getClass().getName(), ex.getMessage(), ex);
         return errorView("Unable to process the request due to a data error.", null,
                 HttpStatus.INTERNAL_SERVER_ERROR);
+    }
+
+    /**
+     * Extracts the originating two-to-five-character SQLSTATE from a framework exception by walking its
+     * cause chain (and, for {@link java.sql.SQLException}, its {@link java.sql.SQLException#getNextException()
+     * next-exception} chain), returning the first non-blank SQLSTATE found.
+     *
+     * <p>Spring and Hibernate wrap the driver's {@code SQLException} several layers deep (for example
+     * {@code JpaSystemException} &rarr; Hibernate {@code JDBCException} &rarr; {@code PSQLException}), so
+     * the SQLSTATE that classifies the failure is not on the top-level exception. The traversal is a
+     * cycle-safe depth-first search over both {@code getCause()} and {@code getNextException()} using an
+     * identity-based visited set, so a self-referential or shared cause cannot loop.</p>
+     *
+     * @param ex the framework exception to inspect; may be {@code null}
+     * @return the first non-blank SQLSTATE discovered in the cause/next chain, or {@code null} when none
+     *         is present (for example a failure with no underlying {@code SQLException})
+     */
+    private static String sqlStateOf(Throwable ex) {
+        java.util.Set<Throwable> seen =
+                java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<>());
+        java.util.Deque<Throwable> stack = new java.util.ArrayDeque<>();
+        if (ex != null) {
+            stack.push(ex);
+        }
+        while (!stack.isEmpty()) {
+            Throwable current = stack.pop();
+            if (current == null || !seen.add(current)) {
+                continue;
+            }
+            if (current instanceof java.sql.SQLException sqlException) {
+                String state = sqlException.getSQLState();
+                if (state != null && !state.isBlank()) {
+                    return state;
+                }
+                java.sql.SQLException next = sqlException.getNextException();
+                if (next != null) {
+                    stack.push(next);
+                }
+            }
+            Throwable cause = current.getCause();
+            if (cause != null) {
+                stack.push(cause);
+            }
+        }
+        return null;
+    }
+
+    /**
+     * Reports whether a SQLSTATE denotes a lost or unobtainable database connection: SQLSTATE class
+     * {@code 08} (<em>Connection Exception</em>, e.g. {@code 08006} connection_failure, {@code 08003},
+     * {@code 08001}, {@code 08004}) or the PostgreSQL class {@code 57} operator-intervention shutdown
+     * codes {@code 57P01} (admin_shutdown), {@code 57P02} (crash_shutdown), and {@code 57P03}
+     * (cannot_connect_now). These map to CardDemo FILE STATUS {@code "93"} / HTTP {@code 503}.
+     *
+     * @param sqlState the SQLSTATE to classify; may be {@code null}
+     * @return {@code true} when {@code sqlState} denotes a connection-loss/unavailable condition
+     */
+    private static boolean isConnectionLoss(String sqlState) {
+        if (sqlState == null || sqlState.length() < 2) {
+            return false;
+        }
+        if (sqlState.startsWith("08")) {
+            return true;
+        }
+        return "57P01".equals(sqlState) || "57P02".equals(sqlState) || "57P03".equals(sqlState);
+    }
+
+    /**
+     * Reports whether a SQLSTATE denotes an untranslatable character in the request &mdash; SQLSTATE
+     * {@code 22021} (<em>character_not_in_repertoire</em>), raised for example when a bound parameter
+     * contains an embedded NUL (COBOL {@code LOW-VALUES}) that a PostgreSQL text column cannot store.
+     * This is malformed input and maps to HTTP {@code 400}, never to a duplicate-key {@code 409} or a
+     * generic {@code 500}.
+     *
+     * @param sqlState the SQLSTATE to classify; may be {@code null}
+     * @return {@code true} when {@code sqlState} is {@code "22021"}
+     */
+    private static boolean isUntranslatableCharacter(String sqlState) {
+        return "22021".equals(sqlState);
     }
 
     /**

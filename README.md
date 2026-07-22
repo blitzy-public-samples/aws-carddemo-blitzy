@@ -130,10 +130,25 @@ Configuration is environment-driven and contains **no hardcoded secrets**. The b
 | `SPRING_DATASOURCE_URL`      | JDBC URL of the PostgreSQL database | `jdbc:postgresql://localhost:5432/carddemo` |
 | `SPRING_DATASOURCE_USERNAME` | Database user                       | supplied via environment / secret manager   |
 | `SPRING_DATASOURCE_PASSWORD` | Database password                   | supplied via environment / secret manager   |
+| `CARDDEMO_SEED_PASSWORD`     | **Required.** Cleartext password seeded for every demo `USRSEC` principal (`ADMIN001`&hellip;, `USER0001`&hellip;) by the `V2` Flyway migration. **Exactly 8 uppercase characters** (the `usr_pwd` column is `CHAR(8)`, origin `SEC-USR-PWD PIC X(08)`; the signon provider uppercases the entered password before the fixed-width comparison, so use uppercase). Has **no default** &mdash; a clean checkout carries no reusable secret and the migration **fails closed** if it is unset. | supplied via environment / secret manager (e.g. an 8-char uppercase value) |
 
 **Flyway** manages the database schema as versioned migrations, applied automatically on startup so that a freshly created database is initialized with no manual steps. The full set is present: `V0__spring_batch_metadata.sql` (the Spring Batch metadata tables), `V1__schema.sql` (application schema), `V2__reference_data.sql` (reference and sample seed data), `V3__indexes.sql` (alternate-index equivalents), and `V4__card_xref_unique_card_num.sql` (the `uk_card_xref_card_num` single-key unique constraint on `card_xref`).
 
 > **Flyway is pinned to a PostgreSQL&nbsp;18&ndash;tested release.** The project overrides the Spring Boot 3.5.16 parent BOM's Flyway version (`11.7.2`, whose highest *tested* PostgreSQL is 17) to `11.20.3` via the `flyway.version` property in [`pom.xml`](./pom.xml). Flyway&nbsp;11.20.3 marks PostgreSQL&nbsp;18 as tested, so startup against the target PostgreSQL&nbsp;18.4 server produces **no** compatibility warning and the build/start logs stay warning-free. All `V0`&ndash;`V4` migrations apply cleanly and idempotently on 16/17/18. The override stays within the Flyway&nbsp;11.x major line the BOM already uses (API-stable); see the rationale and risk/mitigation in [`docs/decision-log.md`](./docs/decision-log.md).
+
+> **Required before any build, `verify`, or `run` command.** In addition to the datasource
+> variables, you **must** export **`CARDDEMO_SEED_PASSWORD`** (see the table above) before the
+> first `./mvnw clean verify`, `./mvnw spring-boot:run`, or database migration. The `V2`
+> reference-data migration seeds every demo `USRSEC` principal with this value via the Flyway
+> placeholder `${carddemo_seed_password}`, which [`application.yml`](./src/main/resources/application.yml)
+> binds to the environment variable with **no default**. If it is unset, Flyway fails closed and
+> both `./mvnw clean verify` (seed migration under Testcontainers) and `./mvnw spring-boot:run`
+> (startup migration) abort. Use **exactly 8 uppercase characters** &mdash; it becomes the sign-on
+> password for `ADMIN001`/`USER0001` etc. For local development, for example:
+>
+> ```shell
+> export CARDDEMO_SEED_PASSWORD='CDEMOPWD'   # 8 uppercase chars; supply from your secret store, do not hardcode in scripts
+> ```
 
 ### Build
 

@@ -28,6 +28,7 @@ import com.aws.carddemo.dto.screen.COUSR00Form;
 import com.aws.carddemo.exception.EndOfFileException;
 import com.aws.carddemo.exception.RecordNotFoundException;
 import com.aws.carddemo.repository.UserSecurityRepository;
+import com.aws.carddemo.util.InputSafety;
 
 /**
  * User-list online service, the Java migration of the CICS COBOL program
@@ -650,7 +651,16 @@ public class UserListService {
         }
 
         // IF USRIDINI = SPACES OR LOW-VALUES -> low-values start key, ELSE the entered filter.
-        String startKey = isBlankOrLowValues(form.getUsridin()) ? null : form.getUsridin();
+        // Boundary NUL guard (finding P13-INPUT-01): a filter carrying an embedded NUL (COBOL
+        // LOW-VALUES) is malformed input PostgreSQL cannot bind (SQLSTATE 22021, which would otherwise
+        // surface as a misleading data-integrity "duplicate"/HTTP 409). Because this value is only a
+        // range-scan start position - not an identity key - the safe, controlled treatment is to browse
+        // from the low-values start key, exactly as for a blank filter, so no unstorable parameter is
+        // ever bound. (A start position cannot be NUL-truncated into a different identity, CWE-158.)
+        String rawFilter = form.getUsridin();
+        String startKey = (isBlankOrLowValues(rawFilter) || InputSafety.containsNul(rawFilter))
+                ? null
+                : rawFilter;
 
         // MOVE 0 TO CDEMO-CU00-PAGE-NUM, PERFORM PROCESS-PAGE-FORWARD.
         work.pageNumber = 0;

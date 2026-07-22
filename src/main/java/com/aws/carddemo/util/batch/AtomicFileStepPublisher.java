@@ -8,6 +8,7 @@ import java.nio.file.Paths;
 import java.nio.file.attribute.PosixFilePermission;
 import java.util.ArrayList;
 import java.util.EnumSet;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -36,16 +37,32 @@ import org.springframework.batch.item.ExecutionContext;
  *   <li>The writer bean calls {@link #prepare(String, StepExecution)} (or the named
  *       {@link #prepare(String, StepExecution, String)} overload) at step time. That resolves the
  *       final target through the {@link BatchFilePathResolver} (safe-root containment + symlink
- *       rejection) and returns a <em>deterministic</em> sibling temporary path
- *       ({@code <target>.<jobInstanceId>.inprogress}) that the writer targets instead of the final
- *       file. The determinism is what makes a restart resume the very same temp file that the failed
- *       execution was appending to.</li>
+ *       rejection), creates a <em>private owner-only ({@code 0700}) per-job-instance staging
+ *       directory</em> beside the target
+ *       ({@code <parent>/.carddemo-inprogress-<jobInstanceId>}) via
+ *       {@link BatchFilePathResolver#createSecureStagingDirectory(Path, long)}, and returns a
+ *       <em>deterministic</em> temporary path <em>inside that directory</em>
+ *       ({@code <stagingDir>/<target>.<jobInstanceId>.inprogress}) that the writer targets instead of
+ *       the final file. The determinism is what makes a restart resume the very same temp file that
+ *       the failed execution was appending to.</li>
+ *   <li><strong>Confidentiality of the in-progress file (QA finding&nbsp;P4-SEC-01).</strong> Spring
+ *       Batch's {@code FlatFileItemWriter} creates the temp file itself, so its mode is fixed by the
+ *       process umask ({@code 0644} under the usual {@code 0022}) for the whole duration of the step.
+ *       Rather than fight that (which would break the writer's restart/append contract), the temp is
+ *       created <em>within</em> the {@code 0700} staging directory: because that directory is not
+ *       traversable by group or other, the enclosed temp is unreachable by any other principal from
+ *       the instant it exists, closing the world-readable window race-free (the directory's mode is
+ *       pinned at creation and, having no group/other bits, survives any umask). The staging directory
+ *       is created <em>before</em> the writer opens the file, so Spring's own {@code mkdirs} never
+ *       recreates it under the umask.</li>
  *   <li>On {@link #afterStep(StepExecution)} for a {@link BatchStatus#COMPLETED} step, every prepared
  *       temp file is set to owner-only ({@code 0600}) permissions, flushed to durable storage and
- *       <em>atomically renamed</em> onto its final target. Each final file therefore only ever
- *       appears complete.</li>
- *   <li>On a failed step the temp files are intentionally left in place so a restart can resume them;
- *       the final targets are never touched, so no partial output is published (rollback safety).</li>
+ *       <em>atomically renamed</em> onto its final target (an intra-filesystem rename, since the
+ *       staging directory is a child of the target's parent). Each final file therefore only ever
+ *       appears complete, and each now-empty staging directory is then removed.</li>
+ *   <li>On a failed step the temp files (and their staging directories) are intentionally left in
+ *       place so a restart can resume them; the final targets are never touched, so no partial output
+ *       is published (rollback safety).</li>
  * </ol>
  *
  * <p>A single step may publish <em>more than one</em> output file (for example the statement job's
@@ -70,6 +87,13 @@ public final class AtomicFileStepPublisher implements StepExecutionListener {
 
     /** Suffix (appended to {@code KEY_PREFIX + logicalName}) of the in-progress temporary path key. */
     private static final String SUFFIX_TEMP = ".temp";
+
+    /**
+     * Suffix (appended to {@code KEY_PREFIX + logicalName}) of the private staging-directory path key
+     * (QA finding&nbsp;P4-SEC-01). Recorded per output so {@link #afterStep(StepExecution)} can remove
+     * the (now-empty) staging directory after a successful publish.
+     */
+    private static final String SUFFIX_STAGE = ".stage";
 
     /** Logical name used by the single-file {@link #prepare(String, StepExecution)} convenience overload. */
     private static final String DEFAULT_NAME = "default";
@@ -104,10 +128,12 @@ public final class AtomicFileStepPublisher implements StepExecutionListener {
     }
 
     /**
-     * Resolves the safe final target for {@code rawTargetPath}, records the target and a deterministic
-     * in-progress temporary path in the step {@link ExecutionContext} under the given logical name, and
-     * returns the temporary path the writer should target. A step may call this multiple times with
-     * distinct {@code logicalName}s to publish several output files atomically.
+     * Resolves the safe final target for {@code rawTargetPath}, creates a private owner-only
+     * ({@code 0700}) per-job-instance staging directory beside it (QA finding&nbsp;P4-SEC-01), records
+     * the target, the deterministic in-progress temporary path <em>inside that staging directory</em>,
+     * and the staging directory itself in the step {@link ExecutionContext} under the given logical
+     * name, and returns the temporary path the writer should target. A step may call this multiple
+     * times with distinct {@code logicalName}s to publish several output files atomically.
      *
      * @param rawTargetPath the raw job-parameter output path
      * @param stepExecution the running step execution (source of the job-instance id and the
@@ -122,10 +148,16 @@ public final class AtomicFileStepPublisher implements StepExecutionListener {
         Objects.requireNonNull(logicalName, "logicalName must not be null");
         Path target = resolver.resolveOutputTarget(rawTargetPath);
         long instanceId = stepExecution.getJobExecution().getJobInstance().getInstanceId();
-        Path temp = target.resolveSibling(target.getFileName() + "." + instanceId + ".inprogress");
+        // P4-SEC-01: place the in-progress temp inside a private 0700 per-instance staging directory
+        // (created here, before the writer opens the file) so it is never world-readable while the
+        // step streams into it. The filename keeps the deterministic <target>.<instanceId>.inprogress
+        // shape so a restart of the same instance resumes the very same temp.
+        Path stagingDir = resolver.createSecureStagingDirectory(target, instanceId);
+        Path temp = stagingDir.resolve(target.getFileName() + "." + instanceId + ".inprogress");
         ExecutionContext ec = stepExecution.getExecutionContext();
         ec.putString(KEY_PREFIX + logicalName + SUFFIX_TARGET, target.toString());
         ec.putString(KEY_PREFIX + logicalName + SUFFIX_TEMP, temp.toString());
+        ec.putString(KEY_PREFIX + logicalName + SUFFIX_STAGE, stagingDir.toString());
         return temp;
     }
 
@@ -167,10 +199,13 @@ public final class AtomicFileStepPublisher implements StepExecutionListener {
             return stepExecution.getExitStatus();
         }
         ExecutionContext ec = stepExecution.getExecutionContext();
+        // Staging directories to remove once every output has been published. Deduplicated because a
+        // multi-output step whose targets share one parent shares a single staging directory.
+        Set<Path> stagingDirs = new LinkedHashSet<>();
         try {
             for (String targetKey : registeredTargetKeys(ec)) {
-                String tempKey = targetKey.substring(0, targetKey.length() - SUFFIX_TARGET.length())
-                        + SUFFIX_TEMP;
+                String base = targetKey.substring(0, targetKey.length() - SUFFIX_TARGET.length());
+                String tempKey = base + SUFFIX_TEMP;
                 if (!ec.containsKey(tempKey)) {
                     continue;
                 }
@@ -178,12 +213,23 @@ public final class AtomicFileStepPublisher implements StepExecutionListener {
                 Path target = Paths.get(ec.getString(targetKey));
                 restrictPermissions(temp);
                 resolver.atomicPublish(temp, target);
+                String stageKey = base + SUFFIX_STAGE;
+                if (ec.containsKey(stageKey)) {
+                    stagingDirs.add(Paths.get(ec.getString(stageKey)));
+                }
+            }
+            // Every temp has been renamed out; remove each now-empty private staging directory. This
+            // runs only on the success path - a failed step (handled below) leaves the staging
+            // directory and its temp in place for a restart to resume/re-publish.
+            for (Path stagingDir : stagingDirs) {
+                resolver.deleteQuietly(stagingDir);
             }
         } catch (RuntimeException ex) {
             // Finalization failed (e.g. BatchFilePathResolver.atomicPublish threw UncheckedIOException
             // because Files.move could not rename onto the target). Fail the step instead of letting
-            // the exception be swallowed by the listener contract (finding F-01). The temp file is left
-            // in place for a restart to re-publish once the cause is cleared.
+            // the exception be swallowed by the listener contract (finding F-01). The temp file - and
+            // its private staging directory (P4-SEC-01) - are left in place for a restart to re-publish
+            // once the cause is cleared (no staging directory is removed on this failure path).
             LOGGER.error("Atomic publication of completed step [{}] output failed; failing the step so "
                     + "the false-COMPLETED / silent data-loss defect (finding F-01) cannot occur",
                     stepExecution.getStepName(), ex);

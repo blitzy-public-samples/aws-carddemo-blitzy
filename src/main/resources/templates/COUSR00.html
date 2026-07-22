@@ -64,6 +64,8 @@
     .screen {
       position: relative;
       width: 80ch;
+      /* BLITZY [QA P5-06/P5-13]: responsive artboard cell size (legible floor then pan). */
+      font-size: var(--bms-cell);
       height: calc(24 * var(--rh));
       /* Finding #54: no auto margins — auto margins steal flex free space and
          nullify `main`'s `justify-content: safe center`, re-introducing the

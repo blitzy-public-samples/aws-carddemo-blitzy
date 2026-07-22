@@ -34,14 +34,24 @@
             background: #000000;
             color: #ffffff;
             font-family: "Courier New", Consolas, "Liberation Mono", monospace;
+            /* BLITZY [QA P5-06/P5-13]: horizontal scroll container keeps the 80-col
+               artboard's left origin reachable on narrow viewports; `safe center`
+               falls back to start-alignment (scrollLeft 0 = left edge) on overflow. */
+            display: flex;
+            justify-content: safe center;
+            align-items: flex-start;
+            overflow-x: auto;
         }
+        body > * { flex-shrink: 0; }
 
         /* Terminal frame: sized to content, centered; provides the black
            3270-style bezel around the 80-column screen. */
         .terminal {
             width: -moz-fit-content;
             width: fit-content;
-            margin: 1.5rem auto;
+            /* BLITZY [QA P5-06/P5-13]: no horizontal auto margin — auto margins steal
+               flex free space and nullify the parent's `safe center`. */
+            margin: 1.5rem 0;
             padding: 1rem 1.25rem;
             background: #000000;
             border: 1px solid #333333;
@@ -54,7 +64,8 @@
             position: relative;
             width: 80ch;
             height: 30em;              /* 24 rows * 1.25em */
-            font-size: 1rem;
+            /* BLITZY [QA P5-06/P5-13]: responsive artboard cell size (legible floor then pan). */
+            font-size: var(--bms-cell);
             line-height: 1.25;
             font-family: inherit;
         }
@@ -169,19 +180,19 @@
         <label class="f turquoise" style="top:8.75em; left:5ch;"  for="fname">First Name:</label>
         <input class="inp green" style="top:8.75em; left:17ch; width:20ch;"
                type="text" id="fname" th:field="*{fname}" maxlength="20"
-               autofocus autocomplete="off" autocapitalize="off" spellcheck="false">
+               th:autofocus="${form.focusField == 'fname'}" autocomplete="off" autocapitalize="off" spellcheck="false">
 
         <label class="f turquoise" style="top:8.75em; left:44ch;" for="lname">Last Name:</label>
         <input class="inp green" style="top:8.75em; left:55ch; width:20ch;"
                type="text" id="lname" th:field="*{lname}" maxlength="20"
-               autocomplete="off" autocapitalize="off" spellcheck="false">
+               th:autofocus="${form.focusField == 'lname'}" autocomplete="off" autocapitalize="off" spellcheck="false">
 
         <!-- ============================ Body (row 11) ========================== -->
         <label class="f turquoise" style="top:12.5em; left:5ch;"  for="userid">User ID:</label>
         <input class="inp green" style="top:12.5em; left:14ch; width:8ch;"
                type="text" id="userid" th:field="*{userid}" maxlength="8"
                aria-describedby="userid-hint"
-               autocomplete="off" autocapitalize="off" spellcheck="false">
+               th:autofocus="${form.focusField == 'userid'}" autocomplete="off" autocapitalize="off" spellcheck="false">
         <span class="f blue" id="userid-hint" style="top:12.5em; left:23ch;">(8 Char)</span>
 
         <label class="f turquoise" style="top:12.5em; left:44ch;" for="passwd">Password:</label>
@@ -189,7 +200,7 @@
         <input class="inp green" style="top:12.5em; left:54ch; width:8ch;"
                type="password" id="passwd" th:field="*{passwd}" maxlength="8"
                aria-describedby="passwd-hint"
-               autocomplete="new-password" autocapitalize="off" spellcheck="false">
+               th:autofocus="${form.focusField == 'passwd'}" autocomplete="new-password" autocapitalize="off" spellcheck="false">
         <span class="f blue" id="passwd-hint" style="top:12.5em; left:63ch;">(8 Char)</span>
 
         <!-- ============================ Body (row 14) ========================== -->
@@ -197,7 +208,7 @@
         <input class="inp green" style="top:16.25em; left:16ch; width:1ch;"
                type="text" id="usrtype" th:field="*{usrtype}" maxlength="1"
                aria-describedby="usrtype-hint"
-               autocomplete="off" autocapitalize="characters" spellcheck="false">
+               th:autofocus="${form.focusField == 'usrtype'}" autocomplete="off" autocapitalize="characters" spellcheck="false">
         <span class="f blue" id="usrtype-hint" style="top:16.25em; left:18ch;">(A=Admin, U=User)</span>
 
         <!-- ===================== Error message line (row 23) =================== -->

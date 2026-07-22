@@ -85,6 +85,8 @@
             min-width: 80ch;
             height: calc(24 * var(--rh));
             background: var(--bg);
+            /* BLITZY [QA P5-06/P5-13]: responsive artboard cell size (legible floor then pan). */
+            font-size: var(--bms-cell);
             line-height: var(--rh);
         }
 
@@ -103,7 +105,7 @@
             padding: 0;
             white-space: pre;       /* preserve exact BMS INITIAL spacing in labels */
             font-weight: normal;
-            font-size: 1rem;
+            font-size: inherit;  /* BLITZY [QA P5-06/P5-13]: inherit responsive cell size so ch basis stays consistent */
         }
 
         /* A fixed-width value cell (--w characters wide), clipped to its field extent. */
@@ -137,7 +139,7 @@
             border-bottom: 1px solid var(--green);  /* mirrors HILIGHT=UNDERLINE */
             color: var(--green);
             font-family: inherit;
-            font-size: 1rem;
+            font-size: inherit;  /* BLITZY [QA P5-06/P5-13]: inherit responsive cell size so ch width stays consistent */
             padding: 0;
             margin: 0;
         }
@@ -149,7 +151,7 @@
             border: none;
             color: var(--turq);
             font-family: inherit;
-            font-size: 1rem;
+            font-size: inherit;  /* BLITZY [QA P5-06/P5-13]: inherit responsive cell size so legend aligns with grid */
             cursor: pointer;
             text-align: left;
         }

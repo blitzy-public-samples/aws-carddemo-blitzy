@@ -36,7 +36,7 @@
         :root {
             /* One monospace row height and font size drive the whole 24x80 grid. */
             --lh: 21px;   /* height of one terminal row  */
-            --fs: 16px;   /* terminal font size          */
+            --fs: var(--bms-cell);   /* BLITZY [QA P5-06/P5-13]: responsive cell size (legible floor then pan) */
             /* 3270 color palette mapped to inline hex (see agent prompt). */
             --c-blue:  var(--bms-blue);
             --c-yellow:var(--bms-yellow);

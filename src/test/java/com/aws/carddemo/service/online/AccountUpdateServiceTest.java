@@ -398,6 +398,84 @@ class AccountUpdateServiceTest {
     }
 
     @Test
+    @DisplayName("(A1c) Fetch normalises a CHAR(10)-padded ZIP to the leftmost five characters so an "
+            + "untouched ZIP round-trips through the PIC X(5) ACSZIPC field "
+            + "(finding P5-02; MOVE X(10)->X(5) parity, COACTUPC.cbl:2843)")
+    void successfulFetch_normalisesPaddedZipToFiveCharsForRoundTrip() {
+        AccountUpdateState state = new AccountUpdateState(); // DETAILS_NOT_FETCHED
+
+        Account account = freshAccount();
+        account.setActiveStatus("Y");
+
+        Customer customer = freshCustomer();
+        customer.setFirstName("JOHN");
+        customer.setLastName("DOE");
+        // CUST-ADDR-ZIP is CHAR(10). PostgreSQL's JDBC driver returns a CHAR(n) column
+        // right-padded to its declared width, so a genuine 5-digit ZIP arrives as ten
+        // characters ("90001" + five pad spaces). Before finding P5-02 was fixed this raw
+        // 10-character value was moved verbatim into the maxlength=5 / @Size(max=5) ACSZIPC
+        // field, tripping a red maximum-length error that blocked the entire CAUP round-trip.
+        customer.setAddrZip("90001     "); // exactly ten characters
+
+        when(context.getAcctId()).thenReturn(ACCT_ID);
+        when(context.getCustId()).thenReturn(CUST_ID);
+        when(cardXrefRepository.findByXrefAcctId(ACCT_ID))
+                .thenReturn(List.of(new CardXref(XREF_CARD_NUM, CUST_ID, ACCT_ID)));
+        when(accountRepository.findById(ACCT_ID)).thenReturn(Optional.of(account));
+        when(customerRepository.findById(CUST_ID)).thenReturn(Optional.of(customer));
+
+        COACTUPForm blank = new COACTUPForm();
+        blank.setAcctsid(ACCT_ID_TEXT);
+
+        AccountUpdateResult result = service.process(blank, PfKey.ENTER, state);
+
+        // The fetch succeeds and shows the record with no edit error ...
+        assertThat(result.changeAction()).isEqualTo(ChangeAction.SHOW_DETAILS);
+        assertThat(result.inputError()).isFalse();
+
+        // ... and the display field now carries exactly the leftmost five characters, with no
+        // trailing pad, so it satisfies the PIC X(5) contract (maxlength=5 / @Size(max=5)) and an
+        // untouched ZIP survives the resubmit instead of failing maximum-length validation.
+        assertThat(blank.getAcszipc()).isEqualTo("90001");
+        assertThat(blank.getAcszipc().length()).isLessThanOrEqualTo(5);
+    }
+
+    @Test
+    @DisplayName("(A1d) Fetch of a stored ZIP+4 keeps the leftmost five digits (left-justified right "
+            + "truncation), matching MOVE X(10)->X(5) (finding P5-02; COACTUPC.cbl:2843)")
+    void successfulFetch_truncatesStoredZipPlusFourToLeftmostFiveDigits() {
+        AccountUpdateState state = new AccountUpdateState(); // DETAILS_NOT_FETCHED
+
+        Account account = freshAccount();
+        account.setActiveStatus("Y");
+
+        Customer customer = freshCustomer();
+        customer.setFirstName("JANE");
+        customer.setLastName("ROE");
+        // A stored ZIP+4 fills the CHAR(10) column exactly; the PIC X(5) field keeps only the
+        // base ZIP. Proving the leftmost five (not a trailing-space strip) locks the COBOL
+        // left-justified right-truncation semantics of the alphanumeric MOVE.
+        customer.setAddrZip("19852-6716"); // exactly ten characters
+
+        when(context.getAcctId()).thenReturn(ACCT_ID);
+        when(context.getCustId()).thenReturn(CUST_ID);
+        when(cardXrefRepository.findByXrefAcctId(ACCT_ID))
+                .thenReturn(List.of(new CardXref(XREF_CARD_NUM, CUST_ID, ACCT_ID)));
+        when(accountRepository.findById(ACCT_ID)).thenReturn(Optional.of(account));
+        when(customerRepository.findById(CUST_ID)).thenReturn(Optional.of(customer));
+
+        COACTUPForm blank = new COACTUPForm();
+        blank.setAcctsid(ACCT_ID_TEXT);
+
+        AccountUpdateResult result = service.process(blank, PfKey.ENTER, state);
+
+        assertThat(result.changeAction()).isEqualTo(ChangeAction.SHOW_DETAILS);
+        assertThat(result.inputError()).isFalse();
+        // Left-justified right truncation -> the leftmost five characters "19852".
+        assertThat(blank.getAcszipc()).isEqualTo("19852");
+    }
+
+    @Test
     @DisplayName("(A2a) Xref not found -> banner, input error, and the read chain stops (guard active)")
     void readChain_xrefNotFound_setsBannerAndStopsChain() {
         AccountUpdateState state = new AccountUpdateState();

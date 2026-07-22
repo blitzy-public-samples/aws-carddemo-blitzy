@@ -15,11 +15,17 @@
  */
 package com.aws.carddemo.web.controller;
 
+import jakarta.servlet.http.HttpServletRequest;
+import jakarta.servlet.http.HttpServletResponse;
 import jakarta.validation.Valid;
 import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Locale;
 
+import org.springframework.security.core.Authentication;
+import org.springframework.security.core.context.SecurityContextHolder;
+import org.springframework.security.web.authentication.logout.CookieClearingLogoutHandler;
+import org.springframework.security.web.authentication.logout.SecurityContextLogoutHandler;
 import org.springframework.stereotype.Controller;
 import org.springframework.ui.Model;
 import org.springframework.validation.BindingResult;
@@ -167,6 +173,13 @@ public class AdminMenuController {
     /** Route back to the sign-on screen ({@code COSGN00C}); the PF3 / first-entry destination. */
     private static final String ROUTE_SIGNON = "/signon";
 
+    /**
+     * Sign-on route with the {@code ?logout} marker, the redirect target of the {@code PF3} Exit
+     * action after a real server-side logout (finding P5-01). The marker lets the sign-on screen
+     * render the accessible "session ended" notice (finding P5-11).
+     */
+    private static final String ROUTE_SIGNON_LOGOUT = "/signon?logout";
+
     /** Target program for option 1 (COBOL {@code CDEMO-ADMIN-OPT-PGMNAME}, {@code CARDDEMO.CSD}). */
     private static final String PGM_USER_LIST = "COUSR00C";
 
@@ -281,7 +294,8 @@ public class AdminMenuController {
     public String handleMenuSelection(
             @Valid @ModelAttribute(MODEL_ATTR_FORM) COADM01Form form,
             BindingResult bindingResult,
-            @RequestParam(name = PF_KEY_PARAM, required = false) String pfkey) {
+            @RequestParam(name = PF_KEY_PARAM, required = false) String pfkey,
+            HttpServletRequest request, HttpServletResponse response) {
 
         // Review finding #11: an over-width field (only reachable by a crafted client bypassing the
         // template maxlength / 3270 field width) re-displays the menu with a neutral banner and does
@@ -318,8 +332,21 @@ public class AdminMenuController {
             // to /admin/menu and the admin could never exit to sign-on via PF3 (w045 Finding C). This
             // matches AdminMenuService#mainEntry's own PF3 branch and the passing CM00 pattern.
             context.setToProgram(PGM_SIGNON);
-            AdminMenuResult result = adminMenuService.returnToSignonScreen(context);
-            return REDIRECT_PREFIX + routeForProgram(result.targetProgram());
+            adminMenuService.returnToSignonScreen(context);
+            // Finding P5-01: the COBOL PF3 branch issues EXEC CICS XCTL PROGRAM('COSGN00C'),
+            // abandoning the pseudo-conversation and its COMMAREA. A bare redirect to the sign-on
+            // screen left the authenticated HTTP session and the Spring Security context intact, so
+            // the admin menu stayed reachable via the browser Back button or direct navigation.
+            // Perform a real server-side logout (invalidate the session, clear the SecurityContext)
+            // so Exit truly ends the authenticated conversation, then land on the sign-on screen
+            // with the ?logout marker (finding P5-11 renders the accessible notice). The XCTL target
+            // is unconditionally COSGN00C here, so the redirect is the fixed sign-on route.
+            Authentication auth = SecurityContextHolder.getContext().getAuthentication();
+            new SecurityContextLogoutHandler().logout(request, response, auth);
+            // Clear the session cookie so the ?logout redirect is not re-routed to the ?timeout
+            // invalid-session URL (finding P5-11); otherwise the stale JSESSIONID is re-presented.
+            new CookieClearingLogoutHandler("JSESSIONID").logout(request, response, auth);
+            return REDIRECT_PREFIX + ROUTE_SIGNON_LOGOUT;
         }
 
         // WHEN OTHER MOVE CCDA-MSG-INVALID-KEY TO WS-MESSAGE, PERFORM SEND-MENU-SCREEN.

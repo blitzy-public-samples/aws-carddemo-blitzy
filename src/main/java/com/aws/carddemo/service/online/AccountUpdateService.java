@@ -3592,6 +3592,29 @@ public class AccountUpdateService {
         };
     }
 
+    /**
+     * Renders the stored ZIP for the {@code ACSZIPC} display field, reproducing the legacy
+     * {@code MOVE ACUP-OLD-CUST-ADDR-ZIP TO ACSZIPCO OF CACTUPAO} (legacy/cbl/COACTUPC.cbl:2843).
+     *
+     * <p>The persisted ZIP is {@code CUST-ADDR-ZIP PIC X(10)} ({@code CHAR(10)}), but the BMS field
+     * {@code ACSZIPCO}/{@code ACSZIPCI} is {@code PIC X(5)} (legacy/cpy-bms/COACTVW.CPY:410,186). A
+     * COBOL alphanumeric {@code MOVE} from a longer to a shorter field is left-justified with right
+     * truncation, so the map shows only the first five characters. Reproducing that truncation keeps
+     * the displayed value within the {@code maxlength="5"} / {@code @Size(max = 5)} contract of
+     * {@link com.aws.carddemo.dto.screen.COACTUPForm#getAcszipc()} (finding P5-02), so an unchanged ZIP
+     * round-trips to confirmation/commit rather than tripping bean validation. Because
+     * {@link #fixedWindow(String, int)} left-truncates, applying this again to an already five-character
+     * value is a no-op (idempotent).</p>
+     *
+     * @param zipX10 the stored ZIP ({@code CUST-ADDR-ZIP PIC X(10)}); may be {@code null}
+     * @return the first {@link #ZIP_EDIT_WIDTH} characters, exactly as the legacy {@code X(10) -> X(5)}
+     *         {@code MOVE} would display (never {@code null})
+     */
+    private static String oldZipForDisplay(String zipX10) {
+        return fixedWindow(zipX10, ZIP_EDIT_WIDTH);
+    }
+
+
 
     // =====================================================================
     // Phase 5 - Read chain (9000/9200/9300/9400/9500) and dual-entity
@@ -4517,7 +4540,15 @@ public class AccountUpdateService {
             // (MOVE ACUP-OLD-CUST-ADDR-LINE-3 TO ACSCITYO), mirrored in COACTVWC.
             form.setAcscity(nz(old.getAddrLine3()));
             form.setAcsstte(nz(old.getAddrStateCd()));
-            form.setAcszipc(nz(old.getAddrZip()));
+            // Finding P5-02: the stored ZIP is CUST-ADDR-ZIP PIC X(10) (CHAR(10), so JPA returns ten
+            // characters), but the BMS output field ACSZIPCO - like the input ACSZIPCI - is PIC X(5).
+            // Legacy COACTUPC.cbl:2843 (MOVE ACUP-OLD-CUST-ADDR-ZIP TO ACSZIPCO) therefore performs an
+            // alphanumeric MOVE X(10) -> X(5): left-justified with right truncation to the first five
+            // characters. Reproduce that here so the displayed value fits the maxlength-5 / @Size(max=5)
+            // form field and an unchanged ZIP round-trips to confirmation/commit (the TRIM-based change
+            // detection at legacy 1745-1747, mirrored by upperTrimEq, then sees it unchanged) instead of
+            // failing bean validation with a spurious maximum-length error.
+            form.setAcszipc(oldZipForDisplay(old.getAddrZip()));
             form.setAcsctry(nz(old.getAddrCountryCd()));
             form.setAcsph1a(oldPhonePart(old.getPhoneNum1(), 0));
             form.setAcsph1b(oldPhonePart(old.getPhoneNum1(), 1));

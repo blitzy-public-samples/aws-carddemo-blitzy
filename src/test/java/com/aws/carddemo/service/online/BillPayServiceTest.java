@@ -695,28 +695,29 @@ class BillPayServiceTest {
     }
 
     /**
-     * <b>First program entry with a pre-selected account (checklist item 9).</b> On the first display
-     * within the conversation ({@code IF NOT CDEMO-PGM-REENTER}) the program is marked re-entered and,
-     * when an account has been pre-selected (COBOL {@code CDEMO-CB00-TRN-SELECTED}, mapped to
-     * {@link CardDemoContext#getAcctId()}), that id is pre-loaded and {@code PROCESS-ENTER-KEY} runs
-     * immediately. With a blank confirm this reads the account and returns the confirm prompt.
+     * <b>First program entry shows the empty screen and ignores any cross-program account (finding
+     * P5-03).</b> The COBOL first-display pre-load is guarded by {@code CDEMO-CB00-TRN-SELECTED} - a
+     * COBIL00C working-storage field declared after {@code COPY COCOM01Y}, i.e. bill-pay-private and
+     * <em>not</em> part of the shared COMMAREA. COBIL00C never sets it, so it is always
+     * {@code LOW-VALUES} and the pre-load branch is dead: legacy bill-pay always opens on the empty
+     * prompt. The port had wrongly bound that guard to the shared {@link CardDemoContext#getAcctId()}
+     * (which sibling programs populate), leaking a stale account into the screen. On first entry the
+     * program is now marked re-entered and the empty bill-pay screen is returned with no store
+     * access, and the shared context account id is never consulted.
      */
     @Test
-    void mainEntry_firstProgramEntryWithPreselectedAccount_readsAndPromptsForConfirmation() {
+    void mainEntry_firstProgramEntry_showsEmptyScreenIgnoringContextAccount() {
         when(context.isProgramEnter()).thenReturn(true);
-        when(context.getAcctId()).thenReturn(ACCT_ID);
-        Account account = accountWithBalance(new BigDecimal("500.00"));
-        when(accountRepository.findByIdForUpdate(ACCT_ID)).thenReturn(Optional.of(account));
 
         BillPayResult result = service.mainEntry(AidKey.ENTER, new COBIL00Form());
 
-        assertThat(result.severity()).isEqualTo(MessageSeverity.NEUTRAL);
-        assertThat(result.message()).isEqualTo(MSG_CONFIRM_PAYMENT);
+        assertThat(result.isRedirect()).isFalse();
+        assertThat(result.severity()).isEqualTo(MessageSeverity.NONE);
+        assertThat(result.hasMessage()).isFalse();
         verify(context).markReenter();
-        verify(accountRepository).findByIdForUpdate(ACCT_ID);
-        verify(accountRepository, never()).save(any(Account.class));
-        verify(transactionRepository, never()).saveAndFlush(any(Transaction.class));
-        verifyNoInteractions(cardXrefRepository);
+        // Finding P5-03: the shared cross-program account id must never be pre-loaded on first entry.
+        verify(context, never()).getAcctId();
+        verifyNoInteractions(accountRepository, cardXrefRepository, transactionRepository);
     }
 
     /**

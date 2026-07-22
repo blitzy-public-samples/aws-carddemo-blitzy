@@ -61,7 +61,7 @@
             color: var(--col-neutral);
             font-family: "Consolas", "DejaVu Sans Mono", "Liberation Mono",
                          "Courier New", monospace;
-            font-size: 16px;
+            font-size: var(--bms-cell); /* BLITZY [QA P5-06/P5-13]: responsive artboard cell size (legible floor then pan) */
             line-height: var(--rh);
             display: flex;
             justify-content: safe center;
@@ -161,37 +161,14 @@
         /* JUSTIFY=(RIGHT) fields. */
         input.right { text-align: right; }
 
-        /* PF-key controls. The row-24 legend above is the faithful visual
-           reproduction of the BMS FKEYS/FKEYSC fields; these buttons are the
-           operable equivalents of the physical keys. The ENTER button is first
-           so pressing Enter inside the form submits with pfkey=ENTER. */
-        .controls {
-            width: calc(var(--screen-cols) * 1ch);
-            margin-top: 0.75rem;
-            display: flex;
-            gap: 0.5rem;
-            flex-wrap: wrap;
-        }
-        .controls button {
-            font: inherit;
-            cursor: pointer;
-            background: #111;
-            color: var(--col-yellow);
-            border: 1px solid var(--col-yellow);
-            border-radius: 2px;
-            padding: 0.15rem 0.6rem;
-        }
-        .controls button:focus-visible {
-            outline: 2px solid var(--col-neutral);
-            outline-offset: 1px;
-        }
-        .controls button:active { text-decoration: underline; filter: brightness(1.3); }
-        @media (hover: hover) {
-            .controls button:hover { background: #222; }
-        }
-        @media (prefers-reduced-motion: no-preference) {
-            .controls button { transition: background-color 150ms ease-out; }
-        }
+        /* PF-key controls (QA P5-09/P5-10). The row-24 legend below is the
+           faithful, data-driven visual reproduction of the BMS FKEYS/FKEYSC
+           fields. The previously duplicated control block that rendered BELOW
+           the terminal (and clipped at short viewport heights) has been
+           removed; the operable submit buttons now live INSIDE the terminal
+           section as a single visually-hidden (keyboard- and AT-reachable)
+           group, so there is exactly one coherent control set within the 24x80
+           geometry and no bespoke .controls styling is required. */
 
         /* Screen-reader-only utility (invisible accessibility). */
         .visually-hidden {
@@ -300,23 +277,33 @@
                 <!-- ===================== PF-key legend (row 24) =========== -->
                 <!-- Two BMS fields: FKEYS (cols 1-21) + FKEYSC (col 23),
                      positioned at their true columns so the single blank at
-                     col 22 is reproduced exactly. -->
+                     col 22 is reproduced exactly. These spans remain the
+                     faithful, data-driven visual reproduction of the BMS
+                     legend (the controller MAY override FKEYS/FKEYSC). -->
                 <span class="f w c-yellow" style="--r:24; --c:1; --w:21;"
                       th:text="*{fkeys} ?: 'ENTER=Process F3=Exit'">ENTER=Process F3=Exit</span>
                 <span class="f w c-yellow" style="--r:24; --c:23; --w:18;"
                       th:text="*{fkeysc} ?: 'F5=Save F12=Cancel'">F5=Save F12=Cancel</span>
 
-            </section>
+                <!-- Operable PF-key controls (QA P5-09/P5-10): the duplicate
+                     control block that previously rendered BELOW the terminal
+                     (and clipped at short viewport heights) is removed. Because
+                     the row-24 legend above is a data-driven pair of fields
+                     (FKEYS/FKEYSC) combining several keys per field, it cannot
+                     be split into per-key visible buttons without losing the
+                     data-driven binding; operability is therefore provided by
+                     this single coherent, keyboard- and AT-reachable control
+                     group kept INSIDE the terminal geometry (visually-hidden,
+                     zero visual footprint). ENTER is first so pressing Enter
+                     inside the form submits with pfkey=ENTER. -->
+                <div class="visually-hidden" role="group" aria-label="Function keys">
+                    <button type="submit" name="pfkey" value="ENTER">ENTER=Process</button>
+                    <button type="submit" name="pfkey" value="PF3" formnovalidate>F3=Exit</button>
+                    <button type="submit" name="pfkey" value="PF5">F5=Save</button>
+                    <button type="submit" name="pfkey" value="PF12" formnovalidate>F12=Cancel</button>
+                </div>
 
-            <!-- Operable PF-key controls (map the 3270 AID keys to submit
-                 actions read by the controller via the "pfkey" request param).
-                 ENTER is first so the form's default submit is pfkey=ENTER. -->
-            <div class="controls">
-                <button type="submit" name="pfkey" value="ENTER">ENTER=Process</button>
-                <button type="submit" name="pfkey" value="PF3" formnovalidate>F3=Exit</button>
-                <button type="submit" name="pfkey" value="PF5">F5=Save</button>
-                <button type="submit" name="pfkey" value="PF12" formnovalidate>F12=Cancel</button>
-            </div>
+            </section>
 
         </form>
     </main>

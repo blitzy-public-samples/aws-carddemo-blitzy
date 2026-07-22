@@ -5,6 +5,7 @@ import java.util.ArrayList;
 import java.util.List;
 import org.springframework.batch.core.BatchStatus;
 import org.springframework.batch.core.JobExecution;
+import org.springframework.batch.core.JobExecutionException;
 import org.springframework.boot.ExitCodeGenerator;
 import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
@@ -59,15 +60,63 @@ public class CardDemoApplication {
      * ({@code spring.batch.job.enabled=false} by default), so its exit code would be {@code 0}
      * regardless.</p>
      *
+     * <p><strong>Pre-execution batch-launch failure (QA finding&nbsp;P6-02).</strong> Some batch
+     * outcomes are decided <em>before</em> a {@link JobExecution} ever exists &mdash; most importantly
+     * relaunching an already-{@link BatchStatus#COMPLETED} job instance, which Spring Boot's
+     * {@code JobLauncherApplicationRunner} surfaces as a
+     * {@code JobInstanceAlreadyCompleteException} thrown out of {@link SpringApplication#run} during
+     * context startup (wrapped in an {@link IllegalStateException}). That throwable escapes
+     * <em>before</em> the exit translation above runs and no {@link JobExecutionEvent} is published,
+     * so the JVM would otherwise terminate with the generic startup exit code {@code 1}, hiding the
+     * failure from batch automation that expects the {@code 0/4/8} ladder. The {@code try/catch}
+     * therefore detects a batch-launch failure (a {@link JobExecutionException} anywhere in the cause
+     * chain) and maps it to the documented RETURN-CODE {@code 8}
+     * ({@link BatchReturnCodeExitCodeGenerator#RC_FAILED}, the {@code 9999-ABEND-PROGRAM}
+     * equivalent); any other startup failure is rethrown unchanged so its diagnostics and exit code
+     * are preserved.</p>
+     *
      * @param args command-line arguments forwarded to
      *             {@link SpringApplication#run(Class, String...)}
      */
     public static void main(String[] args) {
-        ConfigurableApplicationContext context =
-                SpringApplication.run(CardDemoApplication.class, args);
+        ConfigurableApplicationContext context;
+        try {
+            context = SpringApplication.run(CardDemoApplication.class, args);
+        } catch (RuntimeException startupFailure) {
+            // P6-02: a batch job that cannot even be launched (e.g. an already-COMPLETED instance is
+            // re-run) throws out of SpringApplication.run before the RETURN-CODE translation below and
+            // never publishes a JobExecutionEvent, so the process would exit 1. Map any such
+            // pre-execution batch-launch failure to the documented RETURN-CODE 8; rethrow everything
+            // else so genuine (non-batch) startup failures keep their own diagnostics and exit code.
+            if (isBatchLaunchFailure(startupFailure)) {
+                System.exit(BatchReturnCodeExitCodeGenerator.RC_FAILED);
+                return;
+            }
+            throw startupFailure;
+        }
         if (!(context instanceof WebServerApplicationContext)) {
             System.exit(SpringApplication.exit(context));
         }
+    }
+
+    /**
+     * Reports whether {@code failure} (or any throwable in its cause chain) is a Spring Batch
+     * launch failure &mdash; a {@link JobExecutionException} such as the
+     * {@code JobInstanceAlreadyCompleteException} raised when an already-completed job instance is
+     * relaunched (QA finding&nbsp;P6-02). Spring Boot wraps the checked {@link JobExecutionException}
+     * thrown by {@code JobLauncherApplicationRunner} in an {@link IllegalStateException}, so the
+     * discriminating type is found by walking the cause chain rather than by the top-level type.
+     *
+     * @param failure the throwable that propagated out of {@link SpringApplication#run}
+     * @return {@code true} if the failure is (or was caused by) a batch-launch {@link JobExecutionException}
+     */
+    private static boolean isBatchLaunchFailure(Throwable failure) {
+        for (Throwable cause = failure; cause != null; cause = cause.getCause()) {
+            if (cause instanceof JobExecutionException) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /**

@@ -9,6 +9,7 @@ import org.springframework.stereotype.Service;
 
 import com.aws.carddemo.domain.UserSecurity;
 import com.aws.carddemo.repository.UserSecurityRepository;
+import com.aws.carddemo.util.InputSafety;
 
 /**
  * Spring Security {@link UserDetailsService} for AWS CardDemo: the Java realization of the legacy
@@ -122,6 +123,17 @@ public class CardDemoUserDetailsService implements UserDetailsService {
     public UserDetails loadUserByUsername(String username) throws UsernameNotFoundException {
         // Defensive null guard: fail as "not found" without echoing a null and without risking an NPE.
         if (username == null) {
+            throw new UsernameNotFoundException("User not found");
+        }
+
+        // Boundary NUL guard (finding P13-INPUT-01): an embedded NUL (U+0000, COBOL LOW-VALUES) can
+        // never arrive in a data byte of a 3270/BMS field, and PostgreSQL cannot store it - binding it
+        // would abort the lookup with SQLSTATE 22021 and surface, misleadingly, as a data-integrity
+        // "duplicate" (HTTP 409). Reject it here, before the repository read, as an ordinary unknown
+        // id: the thrown UsernameNotFoundException maps to the exact COBOL "User not found. Try again
+        // ..." line (SignonService.mapAuthenticationFailure), a controlled outcome with no DB access,
+        // no 409, and no NUL-truncation bypass (never fold NUL to space then trim - CWE-158).
+        if (InputSafety.containsNul(username)) {
             throw new UsernameNotFoundException("User not found");
         }
 

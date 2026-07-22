@@ -168,6 +168,14 @@ from the environment, never from source or `application.yml`:**
 | `SPRING_DATASOURCE_URL` | JDBC URL of the PostgreSQL database | `jdbc:postgresql://localhost:5432/carddemo` |
 | `SPRING_DATASOURCE_USERNAME` | Database user | `carddemo` |
 | `SPRING_DATASOURCE_PASSWORD` | Database password | *(supplied from your shell / secret manager)* |
+| `CARDDEMO_SEED_PASSWORD` | **Required.** Cleartext password seeded for every demo `USRSEC` principal (`ADMIN001`&hellip;, `USER0001`&hellip;) by the `V2` migration, via the Flyway placeholder `${carddemo_seed_password}` (bound in `application.yml` with **no default** &mdash; fails closed). **Exactly 8 uppercase characters** (`usr_pwd` is `CHAR(8)`, origin `SEC-USR-PWD PIC X(08)`; the signon provider uppercases before the fixed-width compare). It becomes the sign-on password for the seeded logins. | *(supplied from your shell / secret manager; 8 uppercase chars)* |
+
+> **You must set `CARDDEMO_SEED_PASSWORD` before the first migration, `./mvnw spring-boot:run`,
+> or `./mvnw clean verify`** (§4/§5). Without it the `V2` seed migration fails closed and both a
+> clean run and the test suite abort. This is required **in addition to** the datasource
+> variables. The integration tests run the same seed migration under **Testcontainers**, so
+> `CARDDEMO_SEED_PASSWORD` is required for `./mvnw verify` even though the `SPRING_DATASOURCE_*`
+> variables are not (see §3.3).
 
 **macOS / Linux (bash / zsh):**
 
@@ -175,6 +183,7 @@ from the environment, never from source or `application.yml`:**
 export SPRING_DATASOURCE_URL='jdbc:postgresql://localhost:5432/carddemo'
 export SPRING_DATASOURCE_USERNAME='carddemo'
 export SPRING_DATASOURCE_PASSWORD="$CARDDEMO_DB_PASSWORD"   # reuse the value from §3.1; do not hardcode
+export CARDDEMO_SEED_PASSWORD='CDEMOPWD'                    # exactly 8 uppercase chars; seeds every demo USRSEC login; no default (fails closed)
 ```
 
 **Windows (PowerShell):**
@@ -183,6 +192,7 @@ export SPRING_DATASOURCE_PASSWORD="$CARDDEMO_DB_PASSWORD"   # reuse the value fr
 $Env:SPRING_DATASOURCE_URL      = 'jdbc:postgresql://localhost:5432/carddemo'
 $Env:SPRING_DATASOURCE_USERNAME = 'carddemo'
 $Env:SPRING_DATASOURCE_PASSWORD = $Env:CARDDEMO_DB_PASSWORD   # from your secret store; do not hardcode
+$Env:CARDDEMO_SEED_PASSWORD     = 'CDEMOPWD'                  # exactly 8 uppercase chars; seeds every demo USRSEC login; no default (fails closed)
 ```
 
 > **Security rule (non-negotiable).** Never place a real password in `application.yml`, in
@@ -202,7 +212,10 @@ Two Spring profiles tailor configuration to context:
 
 * **`test`** — used automatically by the test suite; the integration tests provision their
   PostgreSQL through **Testcontainers**, so you generally do not set the
-  `SPRING_DATASOURCE_*` variables for `./mvnw test` / `./mvnw verify`.
+  `SPRING_DATASOURCE_*` variables for `./mvnw test` / `./mvnw verify`. You **do**, however,
+  still need to export `CARDDEMO_SEED_PASSWORD` (§3.2): the integration tests apply the same
+  `V2` seed migration inside their Testcontainers database, and that migration fails closed
+  when the placeholder is unbound.
 
 The base `application.yml` holds settings common to every profile; the profile-specific
 `application-dev.yml` / `application-test.yml` layer on top.
@@ -294,15 +307,19 @@ To activate the local development profile explicitly:
 ./mvnw spring-boot:run -Dspring-boot.run.profiles=dev
 ```
 
-Make sure PostgreSQL is running and the `SPRING_DATASOURCE_*` environment variables are set
-([§3](#3-configure-the-database)) before you start the app. Once it is up, open it in a
+Make sure PostgreSQL is running and that both the `SPRING_DATASOURCE_*` variables **and**
+`CARDDEMO_SEED_PASSWORD` are set ([§3.2](#32-set-the-datasource-environment-variables)) before
+you start the app — on a fresh database the `V2` seed migration runs on first startup and
+fails closed if `CARDDEMO_SEED_PASSWORD` is unset. Once it is up, open it in a
 browser and sign on. As in the legacy system, two demo logins are provided as **seed data**
 (loaded by the `V2` Flyway migration):
 
-* **`ADMIN001`** — with the initially configured password — for **admin functions** (user
-  administration).
-* **`USER0001`** — with the initially configured password — for **back-office (regular user)
-  functions**.
+* **`ADMIN001`** — for **admin functions** (user administration).
+* **`USER0001`** — for **back-office (regular user) functions**.
+
+The sign-on password for **both** seeded logins is the value you exported as
+`CARDDEMO_SEED_PASSWORD` (§3.2) — the migration seeds that exact cleartext value (uppercased,
+8 characters) into every demo `USRSEC` principal.
 
 These are seeded **application user** records. The **database** credentials, by contrast,
 are always supplied through the `SPRING_DATASOURCE_*` environment variables and are never
@@ -328,7 +345,8 @@ parameters as `name=value` arguments — for example the daily transaction posti
 
 ```bash
 ./mvnw -DskipTests package        # build the jar once
-# PostgreSQL must be running and the datasource env vars exported (see section 3)
+# PostgreSQL must be running and the section 3 env vars exported — the SPRING_DATASOURCE_*
+# variables AND CARDDEMO_SEED_PASSWORD (the jar applies Flyway, incl. the V2 seed, at startup)
 java -jar target/carddemo-1.0.0.jar \
   --spring.main.web-application-type=none \
   --spring.batch.job.enabled=true \

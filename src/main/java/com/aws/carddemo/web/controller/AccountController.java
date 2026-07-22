@@ -183,9 +183,6 @@ public class AccountController {
     /** HTTP session attribute key holding the CAUP program-private {@link AccountUpdateState}. */
     private static final String SESSION_ATTR_UPDATE_STATE = "accountUpdateState";
 
-    /** {@code PIC 9(11)} zero-padded edit mask for the account-id search field ({@code ACCTSID}). */
-    private static final String ACCT_ID_FORMAT = "%011d";
-
     /** Main-menu program ({@code COMEN01C}); the default PF3 return target for both screens. */
     private static final String PGM_MENU = "COMEN01C";
 
@@ -313,7 +310,12 @@ public class AccountController {
     @GetMapping(ROUTE_ACCOUNT_VIEW)
     public String showAccountView(@ModelAttribute(MODEL_ATTR_FORM) COACTVWForm form) {
         populateViewHeader(form);
-        form.setAcctsid(formattedContextAcctId());
+        // Finding P5-03: on first entry the COBOL blanks ACCTSIDO (WHEN CDEMO-PGM-ENTER); it never
+        // prefills the persistent CDEMO-ACCT-ID. The port had prefilled from the SHARED session
+        // account id, leaking a stale account (e.g. "00000000003", or "00000000000" when zero)
+        // selected on an unrelated screen into the search field. Leave the field blank; the operator
+        // supplies the account id, which the POST re-entry echoes as the screen-local CC-ACCT-ID.
+        form.setAcctsid("");
         form.setInfomsg(INFO_VIEW_PROMPT);
         form.setErrmsg("");
         // CDEMO-PGM-CONTEXT: flip to re-enter so the POST edits/reads the account id.
@@ -396,7 +398,11 @@ public class AccountController {
         AccountUpdateState state = new AccountUpdateState();
         session.setAttribute(SESSION_ATTR_UPDATE_STATE, state);
         populateUpdateHeader(form);
-        form.setAcctsid(formattedContextAcctId());
+        // Finding P5-03: on first entry the COBOL blanks ACCTSIDO (WHEN CDEMO-PGM-ENTER) and never
+        // prefills the persistent CDEMO-ACCT-ID; the port had leaked the SHARED session account id
+        // into the search field. Leave it blank - the operator types the account id, which the POST
+        // re-entry echoes as the screen-local CC-ACCT-ID work area.
+        form.setAcctsid("");
         form.setInfomsg(infoForAccountUpdate(state.getChangeAction()));
         form.setErrmsg("");
         // Review finding #10: a fresh not-fetched screen is never in the confirm
@@ -597,24 +603,6 @@ public class AccountController {
         AccountUpdateState fresh = new AccountUpdateState();
         session.setAttribute(SESSION_ATTR_UPDATE_STATE, fresh);
         return fresh;
-    }
-
-    /**
-     * Formats the account id held on the session context for the {@code ACCTSID}
-     * search field, or the empty string when no account has been selected.
-     *
-     * <p>Applies the COBOL {@code PIC 9(11)} zero-padded edit mask so the rendered
-     * value matches the fixed-width map field exactly.</p>
-     *
-     * @return the 11-digit zero-padded account id, or {@code ""} when
-     *         {@link CardDemoContext#getAcctId()} is {@code null}
-     */
-    private String formattedContextAcctId() {
-        Long acctId = context.getAcctId();
-        if (acctId == null) {
-            return "";
-        }
-        return String.format(Locale.ROOT, ACCT_ID_FORMAT, acctId);
     }
 
     /**

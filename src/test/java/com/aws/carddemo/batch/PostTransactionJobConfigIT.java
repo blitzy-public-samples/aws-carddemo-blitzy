@@ -838,8 +838,11 @@ class PostTransactionJobConfigIT extends AbstractPostgresIntegrationTest {
      * @throws IOException if the directory cannot be listed
      */
     private long inProgressTempCount() throws IOException {
-        try (var entries = Files.list(tempDir)) {
-            return entries.filter(p -> p.getFileName().toString().contains(".inprogress")).count();
+        // P4-SEC-01 relocates each in-progress temp into a private 0700 per-instance staging directory
+        // (<parent>/.carddemo-inprogress-<id>/), which a successful run removes. Walk recursively so
+        // this genuinely verifies both the temps and their staging directories are gone.
+        try (var entries = Files.walk(tempDir)) {
+            return entries.filter(p -> p.getFileName().toString().endsWith(".inprogress")).count();
         }
     }
 

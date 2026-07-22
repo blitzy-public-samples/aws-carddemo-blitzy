@@ -68,6 +68,20 @@ public class COUSR02Form {
     private String errmsg;
 
     /**
+     * Server-computed autofocus hint (QA finding P5-08). Carries the field the
+     * cursor should land on when the screen is (re-)displayed, mirroring the
+     * COBOL {@code MOVE -1 TO USRIDINL / FNAMEL / LNAMEL / PASSWDL / USRTYPEL}
+     * attribute-length cursor moves in {@code COUSR02C}. The value is the
+     * {@code th:field} name of the target entry field
+     * ({@code usridin}/{@code fname}/{@code lname}/{@code passwd}/{@code usrtype}),
+     * or {@code null} when no explicit cursor is requested (e.g. the successful
+     * update, which the COBOL leaves without a cursor move). It is an
+     * output-only rendering hint set by the controller from the service's
+     * {@code CursorField} and is never a bound BMS data field.
+     */
+    private String focusField;
+
+    /**
      * Single-use confirmation nonce (review finding F12). No BMS origin: this hidden field carries
      * the server-armed token that binds a PF5/PF3 save to the user the server fetched and displayed,
      * so a tampered re-post cannot re-aim the save at a different {@code usridin} or replay it.
@@ -304,6 +318,24 @@ public class COUSR02Form {
      */
     public void setErrmsg(String errmsg) {
         this.errmsg = errmsg;
+    }
+
+    /**
+     * Returns the server-computed autofocus hint (QA finding P5-08).
+     *
+     * @return the target field's {@code th:field} name, or {@code null} for none
+     */
+    public String getFocusField() {
+        return focusField;
+    }
+
+    /**
+     * Sets the server-computed autofocus hint (QA finding P5-08).
+     *
+     * @param focusField the target field's {@code th:field} name, or {@code null}
+     */
+    public void setFocusField(String focusField) {
+        this.focusField = focusField;
     }
 
     /**

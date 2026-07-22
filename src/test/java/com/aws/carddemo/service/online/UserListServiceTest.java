@@ -24,6 +24,7 @@ import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.EnumSource;
 import org.junit.jupiter.params.provider.NullSource;
 import org.junit.jupiter.params.provider.ValueSource;
+import org.mockito.ArgumentCaptor;
 import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
@@ -412,6 +413,41 @@ class UserListServiceTest {
 
         verify(userSecurityRepository).findByUsrIdGreaterThanEqualOrderByUsrIdAsc(anyString(),
                 any(Limit.class));
+        verifyNoInteractions(context);
+    }
+
+    /**
+     * Finding P13-INPUT-01: a browse filter carrying an embedded NUL (U+0000, COBOL LOW-VALUES) is
+     * treated exactly like a blank/low-values filter &mdash; the browse starts from the top of the
+     * file &mdash; and, crucially, the raw NUL-bearing string is never forwarded to the repository as
+     * a start key. A start position cannot be NUL-truncated into a different identity, so treating it
+     * as low-values is the faithful, safe behaviour; it also guarantees a value PostgreSQL cannot
+     * store (SQLSTATE 22021) never reaches a query argument. The captured lower-bound key must contain
+     * no NUL.
+     */
+    @Test
+    void processEnterKey_withEmbeddedNulFilter_browsesFromTopAndNeverForwardsNulKey() {
+        stubForwardWindows(usersUpTo(12));
+        COUSR00Form form = emptyForm();
+        form.setUsridin("A\u0000B");
+
+        UserListResult result = service.processEnterKey(form, context);
+
+        // Behaves like a blank filter: first page from the top, exactly ten ordered rows.
+        assertThat(result.isRedirect()).isFalse();
+        assertThat(result.rows())
+                .extracting(UserRow::userId)
+                .containsExactly("USER0001", "USER0002", "USER0003", "USER0004", "USER0005",
+                        "USER0006", "USER0007", "USER0008", "USER0009", "USER0010");
+        assertThat(result.pageNumber()).isEqualTo(1);
+        assertThat(result.error()).isFalse();
+
+        // The raw NUL-bearing filter must never be handed to the query as a start key.
+        ArgumentCaptor<String> startKey = ArgumentCaptor.forClass(String.class);
+        verify(userSecurityRepository).findByUsrIdGreaterThanEqualOrderByUsrIdAsc(startKey.capture(),
+                any(Limit.class));
+        assertThat(startKey.getValue()).doesNotContain("\u0000");
+        assertThat(startKey.getValue().isBlank()).isTrue();
         verifyNoInteractions(context);
     }
 
@@ -844,4 +880,3 @@ class UserListServiceTest {
         verify(context).markEnter();
     }
 }
-

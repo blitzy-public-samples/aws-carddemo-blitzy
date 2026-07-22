@@ -109,6 +109,31 @@ class GlobalExceptionHandlerTest {
                 case "spring-resource" -> throw new org.springframework.dao.DataAccessResourceFailureException("resource failure");
                 case "spring-tx-cannot-create" -> throw new org.springframework.transaction.CannotCreateTransactionException("Could not open JPA EntityManager for transaction");
                 case "spring-generic"  -> throw new org.springframework.dao.QueryTimeoutException("query timeout");
+                // Uncategorized data-access failure wrapping a driver SQLException with SQLSTATE 08006
+                // (connection_failure) - the abrupt-connection-loss shape of Hibernate's JpaSystemException
+                // that reaches the catch-all handler (finding P4-ERR-01).
+                case "conn-loss-08" -> throw new org.springframework.jdbc.UncategorizedSQLException(
+                        "read", "SELECT 1",
+                        new java.sql.SQLException("connection failure", "08006"));
+                // Uncategorized data-access failure wrapping SQLSTATE 57P01 (admin_shutdown).
+                case "conn-loss-57p01" -> throw new org.springframework.jdbc.UncategorizedSQLException(
+                        "read", "SELECT 1",
+                        new java.sql.SQLException("terminating connection due to administrator command", "57P01"));
+                // Data-integrity violation whose real cause is SQLSTATE 22021 (character_not_in_repertoire,
+                // e.g. an embedded NUL) - must NOT be misclassified as a duplicate 409 (finding P13-INPUT-01).
+                case "integrity-nul-22021" -> throw new org.springframework.dao.DataIntegrityViolationException(
+                        "invalid byte sequence",
+                        new java.sql.SQLException("invalid byte sequence for encoding UTF8: 0x00", "22021"));
+                // Transaction-completion failures (the UnexpectedRollbackException escape, finding
+                // P13-INPUT-01): classified by the wrapped SQLSTATE - 22021 -> 400, 08006 -> 503, none -> 500.
+                case "tx-rollback-nul-22021" -> throw new org.springframework.transaction.UnexpectedRollbackException(
+                        "Transaction silently rolled back because it has been marked as rollback-only",
+                        new java.sql.SQLException("invalid byte sequence for encoding UTF8: 0x00", "22021"));
+                case "tx-rollback-conn-08" -> throw new org.springframework.transaction.UnexpectedRollbackException(
+                        "Transaction rolled back",
+                        new java.sql.SQLException("connection failure", "08006"));
+                case "tx-rollback-plain" -> throw new org.springframework.transaction.UnexpectedRollbackException(
+                        "Transaction silently rolled back");
                 default -> throw new IllegalArgumentException("unknown kind: " + kind);
             }
         }
@@ -321,6 +346,109 @@ class GlobalExceptionHandlerTest {
     @Test
     void springGenericDataAccess_bridgesTo500() throws Exception {
         mockMvc.perform(get("/boom/spring-generic"))
+                .andExpect(status().isInternalServerError())
+                .andExpect(view().name("error"))
+                .andExpect(model().attributeExists("errorMessage"));
+    }
+
+    // ------------------------------------------------------------------------------------------
+    // SQLSTATE-driven classification (findings P4-ERR-01, P13-INPUT-01).
+    // ------------------------------------------------------------------------------------------
+
+    /**
+     * Regression guard for finding P4-ERR-01: an uncategorized {@code DataAccessException} whose
+     * driver cause carries SQLSTATE {@code 08006} (connection_failure) &mdash; the shape of Hibernate's
+     * {@code JpaSystemException} when an already-established pooled connection is dropped abruptly
+     * &mdash; is classified as resource-unavailable and renders the error view with HTTP
+     * {@code 503 Service Unavailable}, matching the orderly {@code DataAccessResourceFailureException}
+     * path rather than falling through to a generic {@code 500}.
+     *
+     * @throws Exception if the mock request cannot be performed
+     */
+    @Test
+    void connectionLoss08_bridgesTo503() throws Exception {
+        mockMvc.perform(get("/boom/conn-loss-08"))
+                .andExpect(status().isServiceUnavailable())
+                .andExpect(view().name("error"))
+                .andExpect(model().attributeExists("errorMessage"));
+    }
+
+    /**
+     * Companion to {@link #connectionLoss08_bridgesTo503()}: a PostgreSQL operator-intervention
+     * shutdown (SQLSTATE {@code 57P01} admin_shutdown) wrapped in an uncategorized
+     * {@code DataAccessException} is likewise mapped to HTTP {@code 503 Service Unavailable}
+     * (finding P4-ERR-01).
+     *
+     * @throws Exception if the mock request cannot be performed
+     */
+    @Test
+    void adminShutdown57P01_bridgesTo503() throws Exception {
+        mockMvc.perform(get("/boom/conn-loss-57p01"))
+                .andExpect(status().isServiceUnavailable())
+                .andExpect(view().name("error"))
+                .andExpect(model().attributeExists("errorMessage"));
+    }
+
+    /**
+     * Regression guard for finding P13-INPUT-01: a {@code DataIntegrityViolationException} whose real
+     * cause is SQLSTATE {@code 22021} (character_not_in_repertoire &mdash; e.g. an embedded NUL) is
+     * classified as malformed input and renders the error view with HTTP {@code 400 Bad Request},
+     * <strong>not</strong> the misleading duplicate-key {@code 409 Conflict} the blanket
+     * data-integrity mapping would otherwise produce. No FILE STATUS is set (this is not a mapped
+     * VSAM/CICS status), so the {@code fileStatus} attribute is absent.
+     *
+     * @throws Exception if the mock request cannot be performed
+     */
+    @Test
+    void integrityNul22021_bridgesTo400_notDuplicate() throws Exception {
+        mockMvc.perform(get("/boom/integrity-nul-22021"))
+                .andExpect(status().isBadRequest())
+                .andExpect(view().name("error"))
+                .andExpect(model().attributeExists("errorMessage"))
+                .andExpect(model().attributeDoesNotExist("fileStatus"));
+    }
+
+    /**
+     * Regression guard for finding P13-INPUT-01 (the {@code UnexpectedRollbackException} escape): a
+     * transaction-completion failure whose cause is SQLSTATE {@code 22021} is classified as malformed
+     * input and renders HTTP {@code 400 Bad Request} rather than escaping as a bare
+     * {@code 500 Internal Server Error}.
+     *
+     * @throws Exception if the mock request cannot be performed
+     */
+    @Test
+    void txRollbackNul22021_bridgesTo400() throws Exception {
+        mockMvc.perform(get("/boom/tx-rollback-nul-22021"))
+                .andExpect(status().isBadRequest())
+                .andExpect(view().name("error"))
+                .andExpect(model().attributeExists("errorMessage"));
+    }
+
+    /**
+     * Companion to {@link #txRollbackNul22021_bridgesTo400()}: a transaction-completion failure whose
+     * cause is a connection-loss SQLSTATE ({@code 08006}) is mapped to HTTP {@code 503 Service
+     * Unavailable} (finding P13-INPUT-01 / P4-ERR-01).
+     *
+     * @throws Exception if the mock request cannot be performed
+     */
+    @Test
+    void txRollbackConnectionLoss_bridgesTo503() throws Exception {
+        mockMvc.perform(get("/boom/tx-rollback-conn-08"))
+                .andExpect(status().isServiceUnavailable())
+                .andExpect(view().name("error"))
+                .andExpect(model().attributeExists("errorMessage"));
+    }
+
+    /**
+     * A transaction-completion failure with no discoverable SQLSTATE falls back to a sanitized HTTP
+     * {@code 500 Internal Server Error} &mdash; still a controlled error-view render, never an
+     * unhandled container stack trace (finding P13-INPUT-01).
+     *
+     * @throws Exception if the mock request cannot be performed
+     */
+    @Test
+    void txRollbackNoSqlState_bridgesTo500() throws Exception {
+        mockMvc.perform(get("/boom/tx-rollback-plain"))
                 .andExpect(status().isInternalServerError())
                 .andExpect(view().name("error"))
                 .andExpect(model().attributeExists("errorMessage"));

@@ -27,7 +27,7 @@ graph TD
         BMS["17 BMS Maps<br/>COSGN00, COMEN01, COACTVW ..."]
     end
     subgraph APP["Application Tier - CICS Region"]
-        ONL["18 online CICS programs<br/>pseudo-conversational<br/>COSGN00C, COACTVWC ..."]
+        ONL["17 online COBOL programs (+ CDV1/COCRDSEC, CSD-only)<br/>pseudo-conversational<br/>COSGN00C, COACTVWC ..."]
         CA["COMMAREA COCOM01Y<br/>session state"]
     end
     subgraph BATCH["Batch Tier - JES2 / JCL"]
@@ -53,19 +53,19 @@ graph TD
     %% Tiers: Presentation (3270/BMS), Application (CICS online), Batch (JES2/JCL), Data (VSAM/sequential).
 ```
 
-**Legend — Diagram 1.** Solid arrows = runtime data / control flow; dashed arrows = security / authorization. **Tiers:** Presentation (3270 terminal + 17 BMS maps), Application (18 online CICS programs, pseudo-conversational via the `COCOM01Y` COMMAREA), Batch (29 JCL jobs + 2 PROCs driving 10 batch COBOL programs), and Data (VSAM KSDS + sequential files such as `DALYTRAN`/`DALYREJS`).
+**Legend — Diagram 1.** Solid arrows = runtime data / control flow; dashed arrows = security / authorization. **Tiers:** Presentation (3270 terminal + 17 BMS maps), Application (17 online COBOL programs with `.cbl` sources, plus the `CDV1`/`COCRDSEC` card-detail security transaction defined in `CARDDEMO.CSD` only — no COBOL source — for 18 online CICS transaction ids in total, all pseudo-conversational via the `COCOM01Y` COMMAREA), Batch (29 JCL jobs + 2 PROCs driving 10 batch COBOL programs), and Data (VSAM KSDS + sequential files such as `DALYTRAN`/`DALYREJS`).
 
 ---
 
 ## Diagram 2 — After: Java 25 + Spring Boot Layered Architecture (Target State)
 
-The target is an idiomatic layered Spring Boot application in the **same repository**: a **Spring MVC** web tier (one controller route per CICS transaction id + Thymeleaf views preserving the BMS contract), a **service** tier (one `@Service` per program, methods mirroring COBOL paragraphs, with `CardDemoContext` replacing the COMMAREA), a **Spring Batch** tier (chunk-oriented jobs), and a **persistence** tier (Spring Data JPA repositories over PostgreSQL with Flyway, plus flat-file readers/writers). **Spring Security** and **Observability** are cross-cutting concerns.
+The target is an idiomatic layered Spring Boot application in the **same repository**: a **Spring MVC** web tier (35 request-handler methods — 18 `@GetMapping` render/redirect + 17 `@PostMapping` submit — across 9 controllers covering the 18 CICS transaction ids; 17 have migrated routes and `CDV1`/`COCRDSEC` is intentionally unrouted, plus Thymeleaf views preserving the BMS contract), a **service** tier (one `@Service` per program, methods mirroring COBOL paragraphs, with `CardDemoContext` replacing the COMMAREA), a **Spring Batch** tier (chunk-oriented jobs), and a **persistence** tier (Spring Data JPA repositories over PostgreSQL with Flyway, plus flat-file readers/writers). **Spring Security** and **Observability** are cross-cutting concerns.
 
 ```mermaid
 graph TD
     subgraph WEB["Web Tier - Spring MVC"]
         BR["Browser"]
-        CTRL["Controllers<br/>1 route per CICS tran id<br/>SignonController, AccountController ..."]
+        CTRL["Controllers (9)<br/>35 handlers: 18 GET + 17 POST<br/>for 18 CICS tran ids (17 routed)<br/>SignonController, AccountController ..."]
         TPL["Thymeleaf Templates<br/>preserve BMS field/label/PF-key contract"]
     end
     subgraph SVC["Service Tier"]
@@ -78,7 +78,7 @@ graph TD
     subgraph REPO["Persistence Tier"]
         REPOS["Spring Data JPA Repositories<br/>1 per VSAM file"]
         PG["PostgreSQL 18.x<br/>Flyway-managed schema + seed"]
-        FILES["FlatFileItemReader/Writer<br/>DALYTRAN / DALYREJS layouts preserved"]
+        FILES["Custom fixed-block I/O<br/>FixedLengthItemReader (350B slicing) +<br/>FixedBlockLineAggregator writer<br/>DALYTRAN / DALYREJS layouts preserved"]
     end
     SECX["Spring Security<br/>UserDetailsService + ROLE_ADMIN/ROLE_USER"]
     OBS["Observability<br/>Actuator + Micrometer Tracing + Prometheus"]
@@ -115,7 +115,7 @@ Each z/OS tier maps deterministically to a Spring Boot layer. The full construct
 | `SORT`/`MERGE` steps | Java `Comparator` / SQL `ORDER BY` (identical key semantics) | `COMBTRAN` `SORT FIELDS=(TRAN-ID,A)` → order by `tranId` |
 | VSAM KSDS files (Data) | Spring Data JPA repositories + PostgreSQL tables via Flyway (Persistence) | `ACCTDAT` → `AccountRepository` + `account` table |
 | VSAM alternate indexes | Secondary DB indexes + Spring Data derived queries | `CARDAIX` → `findByCardAcctId` |
-| Sequential files `DALYTRAN` / `DALYREJS` (Data) | `FlatFileItemReader` / `FlatFileItemWriter` (byte layout preserved) | `DALYTRAN` (350B) → `FlatFileItemReader<DailyTransaction>` |
+| Sequential files `DALYTRAN` / `DALYREJS` (Data) | Custom fixed-block components — `FixedLengthItemReader` (undelimited byte-slicing) for input + `FlatFileItemWriter` driven by a custom `FixedBlockLineAggregator` for output — **not** the stock line-delimited `FlatFileItemReader` (byte layout preserved) | `DALYTRAN` (350B) → `FixedLengthItemReader<DailyTransaction>`; `DALYREJS` (430B) → `FixedBlockLineAggregator`-backed writer |
 | `FILE STATUS` / CICS `EIBRESP` codes | Typed exception hierarchy + `@ControllerAdvice` / skip-reject policy | `23`/`NOTFND` → `RecordNotFoundException` |
 | RACF + application-level signon (Security) | Spring Security `UserDetailsService` + `ROLE_ADMIN`/`ROLE_USER` | `USRSEC` → `CardDemoUserDetailsService` |
 | *(operational / non-functional)* | Observability: Actuator health/readiness + Micrometer Tracing + Prometheus metrics | new **non-functional** capability (not a business feature) |

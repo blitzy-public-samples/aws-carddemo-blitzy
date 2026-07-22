@@ -152,21 +152,54 @@ evidence for the UI, error-rendering, deck-layout and responsive findings
 (#25, #28, #38, #47, #53, #54, #56). They join the 2 screenshots already tracked at the
 checkpoint, for 17 in the final state.
 
-## 6. Final Committed Scope (projected; closed in the commit phase)
+## 6. Final Committed Scope (regenerated at each delivery commit)
+
+This figure is **commit-dependent and regenerable** — it is not a frozen literal. It is
+recomputed at every delivery commit from a single `git diff` against the pre-migration
+baseline `93ebec71`, counting every committed changed path (including the committed
+evidence screenshots); because it is a commit-to-commit diff, uncommitted scratch never
+appears (see the metric-definition note below).
 
 | Segment | Operations |
 |---------|-----------:|
-| Checkpoint operations (indices 0–433) | 434 |
-| Post-review source/test/deck/doc additions (§5.1) | 22 |
-| Post-review evidence screenshots (§5.2) | 15 |
-| **Final committed operations (projected)** | **471** |
+| Checkpoint operations at `04392b21` (indices 0–433) | 434 |
+| Post-review additions committed since checkpoint (34 source/test/doc + 15 evidence screenshots) | +49 |
+| **Committed operations at HEAD `38c90637`** (incl. 17 committed evidence screenshots) | **483** |
+| QA-remediation source additions (this delivery: `InputSafety.java`, `static/js/bms-pfkeys.js`, `SignonMetricsTest.java`) | +3 |
+| **Projected final committed operations (source/test/deck/doc)** | **≈486** |
 
-Build output (`target/`) and the transient `META-INF/` compile artifact are **excluded**
-from the commit and therefore from this inventory. The final figure is re-verifiable
-after commit with:
+> **Metric definition.** An *operation* is one committed changed path reported by
+> `git diff --name-status 93ebec71 <ref>` (Add / Modify / Rename), counting the 148
+> `legacy/**` `R100` renames as operations, **plus** the single `app/` directory
+> deletion — which git records as those relocations (`R100`) rather than a separate `D`
+> row, so it is added as **+1** exactly as at the checkpoint (§3: 433 committed changed
+> paths `+ 1` = 434). At HEAD `38c90637` the same command reports **482** committed
+> changed paths (333 `A` + 148 `R100` + 1 `M`), so operations `= 482 + 1 = 483`.
+> The `333 A` **includes the 17 committed evidence screenshots** under
+> `blitzy/screenshots/` (2 tracked at the checkpoint + 15 added in remediation, §5.2);
+> these are committed assets and are counted, consistent with the checkpoint's own 434
+> counting its 2 screenshots (§3 asset tally). Because the figure is a *commit-to-commit*
+> diff, anything **not committed** — build output (`target/`), the transient `META-INF/`
+> compile artifact, `blitzy/screen_recordings`, and the `.qa-runtime` scratch — never
+> appears and needs no explicit exclusion. Modifications to already-counted files do
+> **not** add operations (the 64 working-tree modifications in this delivery all touch
+> already-counted paths; only the 3 net-new source files add operations).
+
+The authoritative final figure is re-verifiable after commit with the exact command
+below. Because it is a *commit-to-commit* diff, only committed paths appear, so no scratch
+exclusion is required (uncommitted `target/`, `META-INF/`, `blitzy/screen_recordings`, and
+`.qa-runtime` never show up):
 
 ```bash
-git diff --name-status 93ebec71 HEAD | wc -l    # final changed paths (+1 for app/ deletion)
+# Committed changed paths at the delivery HEAD:
+git diff --name-status 93ebec71 HEAD | wc -l          # 482 at 38c90637
+# Operations = committed changed paths + 1 (the app/ directory deletion git records
+# as R100 relocations rather than a separate D row):  482 + 1 = 483.
+#
+# Optional defensive exclusion of build output (a literal TAB, since GNU `grep -E`
+# does NOT interpret \t) — a no-op on a clean commit-to-commit diff:
+git diff --name-status 93ebec71 HEAD \
+  | awk -F'\t' '$NF !~ /^(target\/|.*\/META-INF\/)/' | wc -l
 ```
 
 ## 7. Scope / Count Synchronization

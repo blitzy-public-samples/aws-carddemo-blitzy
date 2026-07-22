@@ -296,6 +296,15 @@ public class ReportController {
     public String showReport(@ModelAttribute(MODEL_ATTR_FORM) CORPT00Form form) {
         // COBOL MAIN-PARA first display: no AID pressed; the service entry point handles first-entry
         // detection and the empty first-display initialization.
+        //
+        // Finding P5-05: a GET of the CR00 route is the web equivalent of a fresh CICS transaction
+        // start (COBOL EIBCALEN = 0), so re-seat CDEMO-PGM-ENTER before delegating. The
+        // CardDemoContext is session-scoped and long-lived (unlike a per-start CICS COMMAREA), so
+        // without this a reused session that arrives here still in the re-enter state would drive
+        // the service's re-entry branch with a null AID (WHEN OTHER) and surface a stale "invalid
+        // key" line before the operator ever interacts. markEnter() touches only pgmContext (never
+        // the initialized flag), so the cold/unauthenticated first-entry sign-on bounce is preserved.
+        context.markEnter();
         return handleInteraction(null, form);
     }
 
