@@ -101,7 +101,8 @@ const PAGE_TITLE = 'Delete User';
 const MSG_EMPTY_USER_ID = 'User ID can NOT be empty...';
 
 /** Confirm hint shown once a user is loaded (page `MSG_CONFIRM_HINT`). */
-const MSG_CONFIRM_HINT = 'Press Delete to remove this user, or Cancel to abort.';
+// QA M1: hint copy aligned to the on-page "Back" button (was "Cancel").
+const MSG_CONFIRM_HINT = 'Press Delete to remove this user, or Back to abort.';
 
 /** Not-found message on a 404 fetch (page `MSG_USER_NOT_FOUND`). */
 const MSG_USER_NOT_FOUND = 'User ID NOT found...';

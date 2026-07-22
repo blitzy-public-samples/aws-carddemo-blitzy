@@ -111,6 +111,18 @@ MSG_COULD_NOT_LOCK = "Could not lock record for update"                      # C
 MSG_RECORD_CHANGED = "Record changed by some one else. Please review"        # COCRDUPC L208
 MSG_UPDATE_FAILED = "Update of record failed"                                # COCRDUPC L210
 
+# ---------------------------------------------------------------------------
+# Account-id edit labels/messages for the by-account card view/update (QA C1).
+# The modern UI navigates to a card by its (unmasked) OWNING ACCOUNT id rather
+# than by the PAN, because the list masks card_num (AAP 0.7.8) and a masked PAN
+# can never be a valid key. These mirror the COACTVWC 2210-EDIT-ACCOUNT edits
+# (identical wording to account_service) so account-id validation is consistent
+# across the app; the not-found case reuses the verbatim COCRDSLC card message.
+# ---------------------------------------------------------------------------
+ACCT_ID_FIELD_LABEL = "Account number"
+MSG_ACCT_NUM_NOT_PROVIDED = "Account number not provided"                    # COACTVWC 2210
+MSG_ACCT_NUM_INVALID = "Account number must be a non zero 11 digit number"   # COACTVWC 2210
+
 __all__ = ["CardListParams", "CardService"]
 
 
@@ -128,6 +140,13 @@ class CardListParams(PaginationParams):
             restricted to that account's cards (the legacy CARD-ACCT-ID
             alternate-index path in COCRDLIC 9500-FILTER-RECORDS). ``None``
             browses across all accounts.
+        card_num: Optional exact card-number filter (the COCRDLIC card-number
+            search anchor CC-CARD-NUM). A 16-digit PAN identifies at most one
+            card, so when supplied the browse returns that single card as a
+            one-row page (subject to any ``acct_id`` filter and role scoping),
+            or an empty page when no such card exists. ``None`` applies no
+            card-number filter. Exposed as the ``?card_num=`` query parameter
+            so the COCRDLI card-number search field is functional (QA C3).
         start_card_num: Optional keyset anchor for page-forward browsing. When
             supplied, the browse resumes at the first card number greater than
             or equal to it, mirroring the legacy ``STARTBR ... GTEQ`` position
@@ -135,6 +154,7 @@ class CardListParams(PaginationParams):
     """
 
     acct_id: str | None = None
+    card_num: str | None = None
     start_card_num: str | None = None
 
 
@@ -224,11 +244,19 @@ class CardService:
         """
         pageSize = self._ResolvePageSize(params.page_size)
         pageNumber = params.page
-        acctId = getattr(params, "acct_id", None)
+        acctId = self._NormalizeFilter(getattr(params, "acct_id", None))
+        cardNum = self._NormalizeFilter(getattr(params, "card_num", None))
         if self._IsRegularUnscoped(currentUser, acctId):
             # Non-admin without an account context: COCRDLIC never lists all
             # cards for a regular user (header L4-7), so the browse is empty.
             return self._BuildPage([], pageNumber, pageSize, 0)
+        if cardNum is not None:
+            # Exact card-number search anchor (COCRDLIC CC-CARD-NUM). A 16-digit
+            # PAN identifies at most one card, so the browse returns that single
+            # card as a one-row page when it also satisfies any account filter,
+            # else an empty page. This makes the COCRDLI card-number search
+            # field functional rather than a silent no-op (QA C3).
+            return await self._ListByCardNum(session, cardNum, acctId, params)
         # Authoritative grand total for a truthful envelope: COCRDLIC browses
         # the whole file, so the modern list reports the real matching-row
         # count (scoped to the account when one is supplied) instead of a
@@ -259,6 +287,74 @@ class CardService:
         pageRows = fetchedRows[startIndex : startIndex + pageSize]
         pageItems = [self._BuildSummary(card) for card in pageRows]
         return self._BuildPage(pageItems, pageNumber, pageSize, totalItems)
+
+    @staticmethod
+    def _NormalizeFilter(rawFilter: str | None) -> str | None:
+        """Collapse a blank browse filter to ``None`` (no filter).
+
+        A search ``TextField`` that the operator left empty arrives as an empty
+        (or whitespace-only) query-string value; treating that as ``None``
+        means "no filter" rather than "match the empty string", so an untouched
+        search box browses normally (QA C3). A non-blank value is stripped of
+        surrounding whitespace and returned unchanged.
+
+        Args:
+            rawFilter: The raw filter value from the browse params (``acct_id``
+                or ``card_num``), possibly ``None`` or blank.
+
+        Returns:
+            The stripped filter value, or ``None`` when it was absent or blank.
+        """
+        if rawFilter is None:
+            return None
+        strippedFilter = rawFilter.strip()
+        if not strippedFilter:
+            return None
+        return strippedFilter
+
+    async def _ListByCardNum(
+        self,
+        session: AsyncSession,
+        cardNum: str,
+        acctId: str | None,
+        params: PaginationParams | CardListParams,
+    ) -> PaginatedResponse[CardSummary]:
+        """Return the single-card page for an exact card-number search (C3).
+
+        A 16-digit PAN is a primary key, so the COCRDLIC card-number search
+        anchor matches at most one card. This performs the keyed read and, when
+        the row exists AND satisfies any concurrent ``acct_id`` filter, returns
+        it as an authoritative one-row page (``total_items == 1``); otherwise it
+        returns a truthful empty page. The lookup is a parameterised
+        keyed read (injection-safe, Ochs security rule); an unparsable or
+        non-matching search term simply yields no rows rather than an error, so
+        the search box degrades gracefully. This method is READ-ONLY.
+
+        Args:
+            session: Active async unit-of-work session.
+            cardNum: The already-normalized (non-blank) card-number search term.
+            acctId: An optional concurrent account filter the card must also
+                satisfy; ``None`` applies no account constraint.
+            params: The browse window supplying ``page`` / ``page_size`` (the
+                page size is clamped to the F-004 seven-row cap).
+
+        Returns:
+            A :class:`~app.schemas.common.PaginatedResponse` carrying the single
+            matching :class:`~app.schemas.CardSummary` (masked, no CVV) on the
+            first page, or an empty page when nothing matches.
+        """
+        pageNumber = params.page
+        pageSize = self._ResolvePageSize(params.page_size)
+        cardRecord = await self.cardRepository.GetByCardNum(session, cardNum)
+        if cardRecord is None or (
+            acctId is not None and cardRecord.acct_id != acctId
+        ):
+            return self._BuildPage([], pageNumber, pageSize, 0)
+        # The single match lives on page one; any later page is empty even
+        # though the authoritative total remains one (truthful envelope).
+        pageRows = [cardRecord] if pageNumber == MIN_PAGE else []
+        pageItems = [self._BuildSummary(card) for card in pageRows]
+        return self._BuildPage(pageItems, pageNumber, pageSize, 1)
 
     @staticmethod
     def _IsRegularUnscoped(
@@ -401,6 +497,51 @@ class CardService:
         return CardRead.model_validate(cardRecord)
 
     # ------------------------------------------------------------------ #
+    # METHOD 2b -- card view BY OWNING ACCOUNT (COCRDSLC via CARD-ACCT-ID #
+    # alternate index). READ-ONLY. Added for QA C1: the list masks        #
+    # card_num, so the UI cannot navigate by PAN; it navigates by the     #
+    # unmasked acct_id instead, and this resolves that account to its     #
+    # card server-side without ever exposing the full PAN in the URL.     #
+    # ------------------------------------------------------------------ #
+    async def GetCardByAccount(self, session: AsyncSession, acctId: str) -> CardRead:
+        """Return one card's detail by its OWNING ACCOUNT id (QA C1).
+
+        The modern UI reaches card detail by the (unmasked) account id shown in
+        the card-list grid rather than by the masked PAN, which can never be a
+        valid key (AAP 0.7.8). This edits the account id exactly as COACTVWC
+        ``2210-EDIT-ACCOUNT`` did (blank rejected, then the non-zero 11-digit
+        edit), resolves the account to its card through the ``CARD-ACCT-ID``
+        alternate index (:meth:`CardRepository.GetByAcctId`), and surfaces the
+        verbatim COCRDSLC not-found message when the account owns no card. The
+        response is a :class:`~app.schemas.card.CardRead`, so ``card_num`` is
+        masked and ``cvv_cd`` is never serialized. This is a pure read: it never
+        opens a write or commits.
+
+        Args:
+            session: The active async database session (unit of work).
+            acctId: The 11-digit owning-account id from
+                ``GET /cards/by-account/{acctId}``.
+
+        Returns:
+            The masked, cvv-free :class:`~app.schemas.card.CardRead` detail of
+            the account's card.
+
+        Raises:
+            DomainValidationError: When ``acctId`` is blank
+                (``'Account number not provided'``) or not a non-zero 11-digit
+                number (``'Account number must be a non zero 11 digit number'``).
+            NotFoundError: When the account owns no card
+                (``'Did not find cards for this search condition'``,
+                COCRDSLC L154).
+        """
+        normalizedAcctId = self._ValidateAcctId(acctId)
+        cardRecord = await self.cardRepository.GetByAcctId(session, normalizedAcctId)
+        if cardRecord is None:
+            raise NotFoundError(MSG_CARD_NOT_FOUND)
+        # CardRead masks card_num and omits cvv_cd via its schema (AAP 0.7.8).
+        return CardRead.model_validate(cardRecord)
+
+    # ------------------------------------------------------------------ #
     # METHOD 3 -- card update (COCRDUPC, tx CCUP). Optimistic before-     #
     # image check (AAP 0.7.4). Service owns the unit-of-work / commit.    #
     # ------------------------------------------------------------------ #
@@ -477,6 +618,65 @@ class CardService:
         return CardRead.model_validate(cardRecord)
 
     # ------------------------------------------------------------------ #
+    # METHOD 3b -- card update BY OWNING ACCOUNT (COCRDUPC via the        #
+    # CARD-ACCT-ID alternate index). Added for QA C1: the by-account      #
+    # detail view returns a MASKED card_num, so the client cannot address #
+    # the PUT by PAN. This resolves the account to its real PAN           #
+    # server-side and delegates to the PAN-keyed update, reusing every    #
+    # field edit, the optimistic before-image check, and the commit.      #
+    # ------------------------------------------------------------------ #
+    async def UpdateCardByAccount(
+        self,
+        session: AsyncSession,
+        acctId: str,
+        cardUpdate: CardUpdate,
+    ) -> CardRead:
+        """Update a card's editable fields addressed BY OWNING ACCOUNT (QA C1).
+
+        Because the by-account detail view (:meth:`GetCardByAccount`) returns a
+        MASKED ``card_num``, the client has no real PAN to address a
+        PAN-keyed ``PUT /cards/{cardNum}`` with. This method accepts the
+        unmasked account id instead: it edits the account id
+        (``2210-EDIT-ACCOUNT``), resolves the account to its real card number
+        through the ``CARD-ACCT-ID`` alternate index
+        (:meth:`CardRepository.GetByAcctId`) entirely server-side (the full PAN
+        never leaves the service), and then DELEGATES to :meth:`UpdateCard` so
+        the legacy field edits, the optimistic before-image concurrency check
+        (AAP 0.7.4), and the unit-of-work commit are reused verbatim rather than
+        duplicated (Minimal Change Clause / DRY). The service owns the commit.
+
+        Args:
+            session: The active async database session (unit of work).
+            acctId: The 11-digit owning-account id from
+                ``PUT /cards/by-account/{acctId}``.
+            cardUpdate: The validated new field values (editable fields only:
+                embossed name, expiration date, active status -- never
+                ``card_num``, ``acct_id``, or the CVV).
+
+        Returns:
+            The masked, cvv-free :class:`~app.schemas.card.CardRead` reflecting
+            the committed row.
+
+        Raises:
+            DomainValidationError: On a blank/invalid account id, a failed field
+                edit, or a no-change condition (verbatim legacy messages).
+            NotFoundError: When the account owns no card
+                (``'Did not find cards for this search condition'``).
+            OptimisticLockError: When the before-image check detects a
+                concurrent modification.
+            ConflictError: When the re-read or the commit fails.
+        """
+        normalizedAcctId = self._ValidateAcctId(acctId)
+        cardRecord = await self.cardRepository.GetByAcctId(session, normalizedAcctId)
+        if cardRecord is None:
+            raise NotFoundError(MSG_CARD_NOT_FOUND)
+        # Delegate to the PAN-keyed update with the REAL (unmasked) card number
+        # resolved above; UpdateCard re-loads the row for its before-image
+        # check, so passing the key (not the ORM row) keeps the two paths
+        # behaviourally identical.
+        return await self.UpdateCard(session, cardRecord.card_num, cardUpdate)
+
+    # ------------------------------------------------------------------ #
     # Shared card-number edit (COCRDSLC/COCRDUPC 1000-EDIT-INPUTS).       #
     # ------------------------------------------------------------------ #
     @staticmethod
@@ -506,6 +706,55 @@ class CardService:
         if not editResult.isValid:
             raise DomainValidationError(MSG_CARD_NUM_INVALID)
         return normalizedCardNum
+
+    # ------------------------------------------------------------------ #
+    # Shared account-id edit for the by-account view/update (QA C1).      #
+    # Mirrors COACTVWC 2210-EDIT-ACCOUNT so account-id validation is      #
+    # identical to account_service (blank -> non-zero 11-digit numeric).  #
+    # ------------------------------------------------------------------ #
+    def _ValidateAcctId(self, acctId: str) -> str:
+        """Edit and normalize the owning-account id (blank -> non-zero 11-digit).
+
+        The validator is used only to DETECT validity; the raised message is the
+        verbatim legacy operator text (identical to ``account_service``), not the
+        validator's generic wording.
+
+        Args:
+            acctId: The raw account-id key from the request path.
+
+        Returns:
+            The stripped, validated non-zero 11-digit account id.
+
+        Raises:
+            DomainValidationError: Blank (``'Account number not provided'``) or
+                not a non-zero 11-digit number
+                (``'Account number must be a non zero 11 digit number'``).
+        """
+        if acctId is None or not str(acctId).strip():
+            raise DomainValidationError(MSG_ACCT_NUM_NOT_PROVIDED)
+        normalizedAcctId = str(acctId).strip()
+        editResult = validators.ValidateNumericId(
+            ACCT_ID_FIELD_LABEL, normalizedAcctId, validators.ACCT_ID_LENGTH,
+        )
+        if not editResult.isValid or self._IsAllZeros(normalizedAcctId):
+            raise DomainValidationError(MSG_ACCT_NUM_INVALID)
+        return normalizedAcctId
+
+    @staticmethod
+    def _IsAllZeros(numericText: str) -> bool:
+        """Return True when every character of ``numericText`` is ``'0'``.
+
+        Ports the COACTVWC all-zeroes rejection so an account id of all zeroes
+        fails the non-zero edit exactly as the legacy screen (and
+        ``account_service``) do.
+
+        Args:
+            numericText: The already-stripped numeric string to test.
+
+        Returns:
+            True when the string is non-empty and consists solely of ``'0'``.
+        """
+        return len(numericText) > 0 and set(numericText) == {"0"}
 
     # ------------------------------------------------------------------ #
     # Field edits (COCRDUPC 1230/1240/1250/1260-EDIT-*).                  #

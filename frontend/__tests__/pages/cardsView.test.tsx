@@ -62,7 +62,9 @@ jest.mock('@/lib/apiClient', () => ({
     CardsApi: {
         ListCards: jest.fn(),
         GetCard: jest.fn(),
+        GetCardByAccount: jest.fn(),
         UpdateCard: jest.fn(),
+        UpdateCardByAccount: jest.fn(),
     },
 }));
 
@@ -111,15 +113,20 @@ const MASKED_CARD_DISPLAY =
     MASK_GLYPH.repeat(DEFAULT_CARD_NUM.length - VISIBLE_CARD_DIGITS) +
     DEFAULT_CARD_NUM.slice(-VISIBLE_CARD_DIGITS);
 
-/** Route the Edit button pushes (with the current cardNum, URL-encoded). */
+/**
+ * Route the Edit button pushes: the update screen keyed on the UNMASKED
+ * owning-account id (QA C1), URL-encoded. A masked PAN is never placed in a URL.
+ */
 const CARD_UPDATE_TARGET =
-    '/cards/update?cardNum=' + encodeURIComponent(DEFAULT_CARD_NUM);
+    '/cards/update?acctId=' + encodeURIComponent(DEFAULT_ACCT_ID);
 
 /** Route the Back button pushes (the card-list screen, PF3-exit equivalent). */
 const CARDS_LIST_TARGET = '/cards';
 
-/** Validation prompt the page shows when no cardNum query param is present. */
-const MISSING_CARD_MESSAGE = 'No card number was provided.';
+/** Validation prompt the page shows when no acctId query param is present. */
+const MISSING_ACCT_MESSAGE =
+    'No account number provided. Select a card from the list or enter an ' +
+    'account number to view its card.';
 
 /** Human-readable message carried by the simulated GetCard failure. */
 const API_ERROR_MESSAGE = 'Card not found';
@@ -152,13 +159,15 @@ function MakeCardRead(overrides?: Partial<CardRead>): CardRead {
     return { ...baseCard, ...overrides };
 }
 
-/** Typed accessor for the mocked GetCard spy (avoids repeated casts). */
-const GetCardMock = jest.mocked(CardsApi.GetCard);
+/** Typed accessor for the mocked GetCardByAccount spy (avoids repeated casts). */
+const GetCardByAccountMock = jest.mocked(CardsApi.GetCardByAccount);
 
 beforeEach(() => {
-    // Reset the search params to the happy-path cardNum before every test; the
-    // router/GetCard spies are cleared automatically by the global clearMocks.
-    mockSearchParams = new URLSearchParams({ cardNum: DEFAULT_CARD_NUM });
+    // QA C1: the page keys the card on its UNMASKED owning-account id read from
+    // the `acctId` query param (a masked PAN can never be a valid card key).
+    // Reset the search params to the happy-path acctId before every test; the
+    // router / GetCardByAccount spies are cleared automatically by clearMocks.
+    mockSearchParams = new URLSearchParams({ acctId: DEFAULT_ACCT_ID });
 });
 
 describe('CardsViewPage', () => {
@@ -166,13 +175,13 @@ describe('CardsViewPage', () => {
     /* 1. Fetch by cardNum on mount.                                         */
     /* --------------------------------------------------------------------- */
 
-    it('fetches the card by cardNum on mount and renders its detail fields', async () => {
-        GetCardMock.mockResolvedValueOnce(MakeCardRead());
+    it('fetches the card by owning-account id on mount and renders its detail fields (C1)', async () => {
+        GetCardByAccountMock.mockResolvedValueOnce(MakeCardRead());
 
         RenderWithProviders(<CardsViewPage />);
 
         await waitFor(() =>
-            expect(GetCardMock).toHaveBeenCalledWith(DEFAULT_CARD_NUM),
+            expect(GetCardByAccountMock).toHaveBeenCalledWith(DEFAULT_ACCT_ID),
         );
 
         // The page header renders regardless; the business fields render once
@@ -182,7 +191,7 @@ describe('CardsViewPage', () => {
         ).toBeInTheDocument();
         expect(await screen.findByText(DEFAULT_EMBOSSED_NAME)).toBeInTheDocument();
         expect(screen.getByText(DEFAULT_ACCT_ID)).toBeInTheDocument();
-        expect(GetCardMock).toHaveBeenCalledTimes(1);
+        expect(GetCardByAccountMock).toHaveBeenCalledTimes(1);
     });
 
     /* --------------------------------------------------------------------- */
@@ -190,7 +199,7 @@ describe('CardsViewPage', () => {
     /* --------------------------------------------------------------------- */
 
     it('masks the card number so the full PAN is never rendered', async () => {
-        GetCardMock.mockResolvedValueOnce(MakeCardRead());
+        GetCardByAccountMock.mockResolvedValueOnce(MakeCardRead());
 
         RenderWithProviders(<CardsViewPage />);
 
@@ -206,7 +215,7 @@ describe('CardsViewPage', () => {
     /* --------------------------------------------------------------------- */
 
     it('NEVER renders the card security code (cvv)', async () => {
-        GetCardMock.mockResolvedValueOnce(MakeCardRead());
+        GetCardByAccountMock.mockResolvedValueOnce(MakeCardRead());
 
         RenderWithProviders(<CardsViewPage />);
 
@@ -231,7 +240,7 @@ describe('CardsViewPage', () => {
     /* --------------------------------------------------------------------- */
 
     it('renders an "Active" status chip when active_status is Y', async () => {
-        GetCardMock.mockResolvedValueOnce(
+        GetCardByAccountMock.mockResolvedValueOnce(
             MakeCardRead({ active_status: ACTIVE_STATUS_ACTIVE }),
         );
 
@@ -241,7 +250,7 @@ describe('CardsViewPage', () => {
     });
 
     it('renders an "Inactive" status chip when active_status is N', async () => {
-        GetCardMock.mockResolvedValueOnce(
+        GetCardByAccountMock.mockResolvedValueOnce(
             MakeCardRead({ active_status: ACTIVE_STATUS_INACTIVE }),
         );
 
@@ -257,7 +266,7 @@ describe('CardsViewPage', () => {
     /* --------------------------------------------------------------------- */
 
     it('formats the expiration date as MM/YYYY rather than the raw ISO value', async () => {
-        GetCardMock.mockResolvedValueOnce(MakeCardRead());
+        GetCardByAccountMock.mockResolvedValueOnce(MakeCardRead());
 
         RenderWithProviders(<CardsViewPage />);
 
@@ -276,8 +285,8 @@ describe('CardsViewPage', () => {
     /* 6. Edit navigates to the update screen with an encoded cardNum.       */
     /* --------------------------------------------------------------------- */
 
-    it('navigates to the card-update screen with an encoded cardNum on Edit', async () => {
-        GetCardMock.mockResolvedValueOnce(MakeCardRead());
+    it('navigates to the card-update screen with the encoded owning-account id on Edit (C1)', async () => {
+        GetCardByAccountMock.mockResolvedValueOnce(MakeCardRead());
         const user = SetupUser();
 
         RenderWithProviders(<CardsViewPage />);
@@ -294,7 +303,7 @@ describe('CardsViewPage', () => {
     /* --------------------------------------------------------------------- */
 
     it('navigates back to the card list on Back', async () => {
-        GetCardMock.mockResolvedValueOnce(MakeCardRead());
+        GetCardByAccountMock.mockResolvedValueOnce(MakeCardRead());
         const user = SetupUser();
 
         RenderWithProviders(<CardsViewPage />);
@@ -309,14 +318,14 @@ describe('CardsViewPage', () => {
     /* 8. Missing cardNum — no fetch, a validation prompt is shown.          */
     /* --------------------------------------------------------------------- */
 
-    it('does not fetch and shows a prompt when the cardNum param is missing', async () => {
+    it('does not fetch and shows a prompt when the acctId param is missing', async () => {
         // Override the happy-path default with an empty query string.
         mockSearchParams = new URLSearchParams();
 
         RenderWithProviders(<CardsViewPage />);
 
-        expect(await screen.findByText(MISSING_CARD_MESSAGE)).toBeInTheDocument();
-        expect(GetCardMock).not.toHaveBeenCalled();
+        expect(await screen.findByText(MISSING_ACCT_MESSAGE)).toBeInTheDocument();
+        expect(GetCardByAccountMock).not.toHaveBeenCalled();
     });
 
     /* --------------------------------------------------------------------- */
@@ -324,7 +333,7 @@ describe('CardsViewPage', () => {
     /* --------------------------------------------------------------------- */
 
     it('surfaces an error alert when the card fetch fails', async () => {
-        GetCardMock.mockRejectedValueOnce(
+        GetCardByAccountMock.mockRejectedValueOnce(
             new ApiError({
                 status: NOT_FOUND_STATUS,
                 message: API_ERROR_MESSAGE,

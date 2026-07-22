@@ -89,7 +89,11 @@ const BUTTON_CANCEL = 'Cancel';
 const ACCT_OR_CARD_REQUIRED_ERROR = 'Account or Card Number must be entered...';
 const TYPE_CD_EMPTY_ERROR = 'Type CD can NOT be empty...';
 const AMOUNT_EMPTY_ERROR = 'Amount can NOT be empty...';
-const AMOUNT_FORMAT_ERROR = 'Amount should be in format -99999999.99';
+// QA C4: the amount edit was relaxed to the PIC S9(09)V99 data contract
+// (signed, up to 9 digits, up to 2 decimals); the message copied verbatim from
+// the page describes that corrected, ergonomic rule (no longer fixed-width).
+const AMOUNT_FORMAT_ERROR =
+    'Amount must be a number with up to 9 digits and up to 2 decimals (e.g. -12345.67).';
 const ORIG_DATE_FORMAT_ERROR = 'Orig Date should be in format YYYY-MM-DD';
 
 /** A valid zero-padded 11-digit account id (string preserves leading zeros). */
@@ -145,9 +149,10 @@ type TestUser = ReturnType<typeof SetupUser>;
 
 /**
  * Build a valid add-transaction body. Every field satisfies the page's client
- * regexes (numeric `/^\d+$/`, amount `/^[+-]\d{8}\.\d{2}$/`, date
- * `/^\d{4}-\d{2}-\d{2}$/`); the account id is supplied and the card left blank,
- * exercising the account-side of the account-OR-card key rule.
+ * regexes (numeric `/^\d+$/`, amount `/^[+-]?\d{1,9}(\.\d{1,2})?$/` per the
+ * relaxed QA C4 rule, date `/^\d{4}-\d{2}-\d{2}$/`); the account id is supplied
+ * and the card left blank, exercising the account-side of the account-OR-card
+ * key rule.
  *
  * @param overrides - Partial fields that replace any default.
  * @returns A fully valid `TransactionCreate`.
@@ -233,7 +238,9 @@ async function FillTransactionForm(
 ): Promise<void> {
     for (const [fieldName, label] of FIELD_LABELS) {
         const fieldValue = values[fieldName];
-        if (fieldValue === '') {
+        // acct_id / card_num are optional (undefined when omitted); an empty or
+        // absent value means "leave this field untouched" for key-rule cases.
+        if (fieldValue === undefined || fieldValue === '') {
             continue;
         }
         const input = screen.getByLabelText(label);
@@ -342,8 +349,13 @@ describe('TransactionsAddPage', () => {
         it('blocks submit on an invalid amount', async () => {
             const user = RenderAddPage();
 
-            // '100' is non-empty but fails the signed fixed-width money format.
-            await FillTransactionForm(user, MakeTransactionCreate({ tran_amt: '100' }));
+            // '100.999' is non-empty but has three decimals, exceeding the two
+            // fractional digits of the S9(09)V99 contract (QA C4 relaxed the
+            // regex but still caps the scale at 2).
+            await FillTransactionForm(
+                user,
+                MakeTransactionCreate({ tran_amt: '100.999' }),
+            );
             await user.click(screen.getByRole('button', { name: BUTTON_ADD }));
 
             expect(
@@ -393,6 +405,62 @@ describe('TransactionsAddPage', () => {
     });
 
     // ----------------------------------------------------------------------
+    // 3b. QA C5 — empty key fields are OMITTED from the POST body, not sent
+    //     as "" (which the backend digit validator would reject).
+    // ----------------------------------------------------------------------
+
+    describe('payload normalization (QA C5)', () => {
+        it('omits the blank card number on an account-only add', async () => {
+            const user = RenderAddPage();
+            jest.mocked(TransactionsApi.AddTransaction).mockResolvedValueOnce(
+                MakeTransactionRead(),
+            );
+
+            // Default fixture supplies the account id and leaves the card blank.
+            await FillTransactionForm(user, MakeTransactionCreate());
+            const dialog = await OpenConfirmDialog(user);
+            await user.click(
+                within(dialog).getByRole('button', { name: BUTTON_ADD }),
+            );
+
+            await waitFor(() =>
+                expect(TransactionsApi.AddTransaction).toHaveBeenCalledTimes(1),
+            );
+            const postedPayload = jest.mocked(TransactionsApi.AddTransaction)
+                .mock.calls[0][0];
+            expect(postedPayload.acct_id).toBe(VALID_ACCT_ID);
+            // The blank card number must be omitted (undefined), never "".
+            expect(postedPayload.card_num).toBeUndefined();
+        });
+
+        it('omits the blank account id on a card-only add', async () => {
+            const user = RenderAddPage();
+            jest.mocked(TransactionsApi.AddTransaction).mockResolvedValueOnce(
+                MakeTransactionRead(),
+            );
+
+            await FillTransactionForm(
+                user,
+                MakeTransactionCreate({ acct_id: '', card_num: VALID_CARD_NUM }),
+            );
+            const dialog = await OpenConfirmDialog(user);
+            await user.click(
+                within(dialog).getByRole('button', { name: BUTTON_ADD }),
+            );
+
+            await waitFor(() =>
+                expect(TransactionsApi.AddTransaction).toHaveBeenCalledTimes(1),
+            );
+            const postedPayload = jest.mocked(TransactionsApi.AddTransaction)
+                .mock.calls[0][0];
+            expect(postedPayload.card_num).toBe(VALID_CARD_NUM);
+            // The blank account id must be omitted (undefined), never "".
+            expect(postedPayload.acct_id).toBeUndefined();
+        });
+    });
+
+
+    // ----------------------------------------------------------------------
     // 4. Confirm-dialog gate — AddTransaction only fires AFTER confirm
     // ----------------------------------------------------------------------
 
@@ -423,7 +491,11 @@ describe('TransactionsAddPage', () => {
 
             await waitFor(() =>
                 expect(TransactionsApi.AddTransaction).toHaveBeenCalledWith(
-                    expect.objectContaining(MakeTransactionCreate()),
+                    // C5: the blank card number is normalized to `undefined`
+                    // (omitted from the body) while the account id passes through.
+                    expect.objectContaining(
+                        MakeTransactionCreate({ card_num: undefined }),
+                    ),
                 ),
             );
             expect(TransactionsApi.AddTransaction).toHaveBeenCalledTimes(1);
@@ -558,20 +630,22 @@ describe('TransactionsAddPage', () => {
             ).not.toBeInTheDocument();
         });
 
-        it('rejects an amount missing the sign and fixed width', async () => {
+        it('accepts a natural unsigned amount like 100.00 (QA C4)', async () => {
             const user = RenderAddPage();
 
+            // C4 regression guard: the legacy fixed-width edit rejected a natural
+            // '100.00' (only '-00000100.00' passed). The relaxed rule accepts it,
+            // so the form must advance to the confirm gate with no format error.
             await FillTransactionForm(
                 user,
                 MakeTransactionCreate({ tran_amt: '100.00' }),
             );
             await user.click(screen.getByRole('button', { name: BUTTON_ADD }));
 
+            expect(await screen.findByRole('dialog')).toBeInTheDocument();
             expect(
-                await screen.findByText(AMOUNT_FORMAT_ERROR),
-            ).toBeInTheDocument();
-            expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
-            expect(TransactionsApi.AddTransaction).not.toHaveBeenCalled();
+                screen.queryByText(AMOUNT_FORMAT_ERROR),
+            ).not.toBeInTheDocument();
         });
 
         it('rejects a non-ISO orig date', async () => {

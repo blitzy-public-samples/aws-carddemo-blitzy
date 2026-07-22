@@ -6,6 +6,21 @@
  * field on any type - CARD-CVV-CD is never persisted to a response nor returned.
  */
 
+import type { PaginationParams } from './common';
+
+/**
+ * Card-list browse parameters (COCRDLI). Extends the pagination window with the
+ * two optional search filters the card-list screen exposes. Mirrors the backend
+ * `CardListParams` (backend/app/services/card_service.py). Both filters are
+ * optional; a blank/omitted value applies no filter (QA C3).
+ */
+export interface CardListParams extends PaginationParams {
+    /** Optional owning-account filter (COCRDLI "Account ID" search box). */
+    acct_id?: string;
+    /** Optional exact card-number filter (COCRDLI "Card Number" search box). */
+    card_num?: string;
+}
+
 /** Card read model. card_num max length 16 (masked); acct_id 11. */
 export interface CardRead {
     card_num: string;         // X(16) - MASKED (last-4)

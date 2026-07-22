@@ -103,6 +103,9 @@ const MASKED_CARD_NUMBER = '************1111';
 /** Embossed name carried by the default {@link MakeCardSummary} fixture. */
 const DEFAULT_EMBOSSED_NAME = 'TEST CARDHOLDER';
 
+/** Unmasked owning-account id used to assert C1 row-click navigation. */
+const ROW_ACCT_ID = '00000000011';
+
 /** Empty-state message the page passes to DataTable (overrides its default). */
 const EMPTY_CARDS_MESSAGE = 'No cards found.';
 
@@ -252,10 +255,18 @@ describe('CardsPage', () => {
         expect(CARD_SUMMARY_HAS_NO_CVV).toBe(true);
     });
 
-    it('navigates to the card detail route with an encoded card number on row click', async () => {
+    it('navigates to the card detail route with the unmasked account id on row click (C1)', async () => {
         const user = SetupUser();
+        // QA C1: the list masks `card_num` (AAP 0.7.8), so a masked PAN can never
+        // be a valid card key. Row-click must therefore navigate by the row's
+        // UNMASKED owning-account id (the full PAN never appears in a URL).
         ListCardsMock().mockResolvedValueOnce(
-            BuildCardPage([MakeCardSummary({ card_num: RAW_CARD_NUMBER })]),
+            BuildCardPage([
+                MakeCardSummary({
+                    card_num: RAW_CARD_NUMBER,
+                    acct_id: ROW_ACCT_ID,
+                }),
+            ]),
         );
 
         RenderWithProviders(<CardsPage />);
@@ -264,7 +275,7 @@ describe('CardsPage', () => {
         await user.click(maskedCell);
 
         expect(mockPush).toHaveBeenCalledWith(
-            `/cards/view?cardNum=${encodeURIComponent(RAW_CARD_NUMBER)}`,
+            `/cards/view?acctId=${encodeURIComponent(ROW_ACCT_ID)}`,
         );
     });
 
@@ -331,14 +342,17 @@ describe('CardsPage', () => {
 
         await user.click(screen.getByRole('button', { name: 'Search' }));
 
-        // The real page keeps filters as client state and, on Search, refetches
-        // page 1 with only { page, page_size } — it does not forward the filter
-        // values to ListCards. Assert the observable refetch contract.
+        // QA C3: on Search the page refetches page 1 AND forwards the entered
+        // filter values to ListCards as `acct_id` / `card_num` (the legacy
+        // ACCTSID / CARDSID lookups). Assert both the reset-to-page-1 contract
+        // and that the non-empty filters are actually forwarded.
         await waitFor(() => expect(ListCardsMock()).toHaveBeenCalledTimes(2));
         expect(ListCardsMock()).toHaveBeenLastCalledWith(
             expect.objectContaining({
                 page: 1,
                 page_size: EXPECTED_PAGE_SIZE,
+                acct_id: '123',
+                card_num: '4567',
             }),
         );
     });

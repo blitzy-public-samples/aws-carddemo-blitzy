@@ -63,7 +63,10 @@ const HTTP_NOT_FOUND = 404;
 const MSG_EMPTY_USER_ID = 'User ID can NOT be empty...';
 
 /** Confirm hint shown once a user is loaded (modern PF5-delete equivalent). */
-const MSG_CONFIRM_HINT = 'Press Delete to remove this user, or Cancel to abort.';
+// QA M1: the abort control on this page is the "Back" button (COUSR03 F3=Back);
+// the hint previously said "Cancel", which matches only the modal dialog's
+// button, not the on-page control. Align the copy to the visible "Back" button.
+const MSG_CONFIRM_HINT = 'Press Delete to remove this user, or Back to abort.';
 
 /** Not-found message when the account/user READ returns no record. */
 const MSG_USER_NOT_FOUND = 'User ID NOT found...';

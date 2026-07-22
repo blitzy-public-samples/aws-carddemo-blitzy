@@ -79,14 +79,16 @@ const HTTP_CONFLICT = 409;
 const HTTP_BAD_REQUEST = 400;
 
 /**
- * AccountUpdate carries exactly the 9 body keys the backend schema permits
- * (extra="forbid"): active_status, credit_limit, cash_credit_limit, curr_bal,
- * curr_cyc_credit, curr_cyc_debit, expiration_date, reissue_date, group_id.
- * `acct_id` is a PATH param (never a body key); `open_date` and the customer
- * `addr_zip` are read-only/derived and must NOT be sent (sending them yields
- * HTTP 422 extra_forbidden — QA issue #11).
+ * AccountUpdate carries exactly the 10 body keys the backend schema permits
+ * (extra="forbid"): the 9 editable fields — active_status, credit_limit,
+ * cash_credit_limit, curr_bal, curr_cyc_credit, curr_cyc_debit, expiration_date,
+ * reissue_date, group_id — PLUS the REQUIRED `before_image` optimistic-lock echo
+ * (QA finding C2: the backend declares `before_image` mandatory, so a payload
+ * omitting it fails every save with HTTP 422). `acct_id` is a PATH param (never a
+ * body key); `open_date` and the customer `addr_zip` are read-only/derived and
+ * must NOT be sent (sending them yields HTTP 422 extra_forbidden — QA issue #11).
  */
-const ACCOUNT_UPDATE_KEY_COUNT = 9;
+const ACCOUNT_UPDATE_KEY_COUNT = 10;
 
 /* ------------------------------------------------------------------------- */
 /* Fixture factories (PascalCase per Ochs; single optional overrides object). */
@@ -282,7 +284,7 @@ describe('AccountsUpdatePage', () => {
         });
 
         // The PATH param carries the id; the body must NOT repeat it, and it must
-        // contain exactly the 9 AccountUpdate keys.
+        // contain exactly the 10 AccountUpdate keys (9 editable + before_image).
         const submittedPayload = (AccountsApi.UpdateAccount as jest.Mock).mock
             .calls[0][1] as AccountUpdate;
         expect(submittedPayload).not.toHaveProperty('acct_id');
@@ -291,6 +293,26 @@ describe('AccountsUpdatePage', () => {
         expect(submittedPayload).not.toHaveProperty('open_date');
         expect(submittedPayload).not.toHaveProperty('addr_zip');
         expect(Object.keys(submittedPayload)).toHaveLength(ACCOUNT_UPDATE_KEY_COUNT);
+
+        // QA finding C2: the payload MUST carry the required `before_image`
+        // optimistic-lock echo (previously absent -> HTTP 422 on every save), and
+        // it must hold the PRE-EDIT snapshot the operator loaded — NOT the live
+        // edit. `credit_limit` was edited to '2000.00', yet the before-image must
+        // still echo the loaded '1000.00'; that pre-edit image is exactly what the
+        // backend compares field-for-field against the freshly-locked row to detect
+        // a concurrent modification (COACTUPC 9700, AAP §0.7.4).
+        expect(submittedPayload).toHaveProperty('before_image');
+        expect(submittedPayload.before_image).toEqual({
+            active_status: 'Y',
+            curr_bal: '1500.00',
+            credit_limit: '1000.00',
+            cash_credit_limit: '500.00',
+            curr_cyc_credit: '250.00',
+            curr_cyc_debit: '75.00',
+            expiration_date: '2027-01-31',
+            reissue_date: '2024-06-01',
+            group_id: 'GROUP001',
+        });
 
         expect(await screen.findByText(SAVE_SUCCESS_MESSAGE)).toBeInTheDocument();
     });

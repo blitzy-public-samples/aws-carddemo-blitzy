@@ -38,6 +38,7 @@ import type {
     MenuResponse,
     AccountDetail,
     AccountUpdate,
+    CardListParams,
     CardRead,
     CardSummary,
     CardUpdate,
@@ -371,6 +372,29 @@ function BuildListQuery(
 }
 
 /**
+ * Builds the card-list query: the pagination window plus the optional COCRDLI
+ * search filters (`acct_id`, `card_num`). A filter is included ONLY when it is a
+ * non-empty (trimmed) string, so an untouched search box sends no filter and
+ * the browse is unfiltered -- this is the wiring that makes the card-list search
+ * controls functional (QA C3). Trimming here mirrors the backend's blank-filter
+ * normalization and keeps the request URL clean.
+ */
+function BuildCardListQuery(
+    params?: Partial<CardListParams>,
+): Record<string, string | number> {
+    const query: Record<string, string | number> = BuildListQuery(params);
+    const acctId = params?.acct_id?.trim();
+    if (acctId) {
+        query.acct_id = acctId;
+    }
+    const cardNum = params?.card_num?.trim();
+    if (cardNum) {
+        query.card_num = cardNum;
+    }
+    return query;
+}
+
+/**
  * Builds the transaction-report query. `report_type` is passed straight through
  * from the request (axios serializes the enum's string value); `confirm` is
  * included only when present. `format` selects the output representation.
@@ -477,13 +501,17 @@ export const AccountsApi = {
  * COCRDLI + COCRDSL + COCRDUP.bms (CICS tx CCLI / CCDL / CCUP).
  */
 export const CardsApi = {
-    /** Lists cards, <= DEFAULT_PAGE_SIZE (7) rows/page (F-004). GET /cards. */
+    /**
+     * Lists cards, <= DEFAULT_PAGE_SIZE (7) rows/page (F-004). GET /cards.
+     * Accepts the optional COCRDLI search filters (`acct_id`, `card_num`); a
+     * blank/omitted filter is not sent, so the browse is unfiltered (QA C3).
+     */
     async ListCards(
-        params?: Partial<PaginationParams>,
+        params?: Partial<CardListParams>,
     ): Promise<PaginatedResponse<CardSummary>> {
         const response = await apiClient.get<PaginatedResponse<CardSummary>>(
             '/cards',
-            { params: BuildListQuery(params) },
+            { params: BuildCardListQuery(params) },
         );
         return response.data;
     },
@@ -496,10 +524,41 @@ export const CardsApi = {
         return response.data;
     },
 
+    /**
+     * Fetches one card by its OWNING ACCOUNT id. GET /cards/by-account/{acctId}.
+     * The card-list grid masks `card_num` (AAP 0.7.8), so the UI navigates to
+     * card detail by the unmasked account id and the backend resolves the
+     * account to its card server-side -- the fix for the C1 masked-PAN dead-end.
+     */
+    async GetCardByAccount(acctId: string): Promise<CardRead> {
+        const response = await apiClient.get<CardRead>(
+            `/cards/by-account/${encodeURIComponent(acctId)}`,
+        );
+        return response.data;
+    },
+
     /** Updates a card. PUT /cards/{cardNum}. */
     async UpdateCard(cardNum: string, cardUpdate: CardUpdate): Promise<CardRead> {
         const response = await apiClient.put<CardRead>(
             `/cards/${encodeURIComponent(cardNum)}`,
+            cardUpdate,
+        );
+        return response.data;
+    },
+
+    /**
+     * Updates a card addressed by its OWNING ACCOUNT id.
+     * PUT /cards/by-account/{acctId}. The companion of {@link GetCardByAccount}:
+     * because the by-account detail returns a MASKED `card_num`, the client has
+     * no real PAN to call the PAN-keyed update with, so it submits by account id
+     * and the backend resolves the real card server-side (QA C1).
+     */
+    async UpdateCardByAccount(
+        acctId: string,
+        cardUpdate: CardUpdate,
+    ): Promise<CardRead> {
+        const response = await apiClient.put<CardRead>(
+            `/cards/by-account/${encodeURIComponent(acctId)}`,
             cardUpdate,
         );
         return response.data;

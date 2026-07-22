@@ -12,8 +12,13 @@ See tech spec 0.5.1, 0.7.7, 0.8.1.
 The service owns the single sign-on business flow. It reproduces the COSGN00C
 PROCESS-ENTER-KEY and READ-USER-SEC-FILE paragraphs exactly (Minimal Change
 Clause 0.8.1): the field-presence edits, the FUNCTION UPPER-CASE of the entered
-user id and password, the USRSEC lookup, and the four verbatim failure messages
-in the legacy precedence. Data access is delegated to
+user id and password, the USRSEC lookup, and the legacy failure precedence. The
+two blank-field edits keep their verbatim COSGN00C messages, but the
+unknown-user and wrong-password paths now surface a single generic
+"invalid credentials" message (QA Issue C8: the divergent 401 bodies leaked
+which user ids exist; AAP 0.1.1 makes closing that oracle mandatory, which
+under D1 overrides verbatim faithfulness for those two branches). Data access
+is delegated to
 :class:`app.repositories.UserRepository` and password verification/token minting
 to :mod:`app.core.security`; the sign-on is a READ-ONLY unit of work and never
 commits. A plaintext password is never stored, logged, echoed, or returned.
@@ -52,6 +57,21 @@ MSG_ENTER_PASSWORD = "Please enter Password ..."        # COSGN00C L125
 MSG_USER_NOT_FOUND = "User not found. Try again ..."    # COSGN00C L249 (READ RESP 13)
 MSG_WRONG_PASSWORD = "Wrong Password. Try again ..."    # COSGN00C L242 (password mismatch)
 MSG_UNABLE_TO_VERIFY = "Unable to verify the User ..."  # COSGN00C L254 (READ RESP other)
+
+# Single, generic sign-on failure message surfaced to the CALLER for both the
+# unknown-user and the wrong-password paths (QA Issue C8: user enumeration).
+# The two legacy messages above (MSG_USER_NOT_FOUND / MSG_WRONG_PASSWORD)
+# distinguished "no such user id" from "bad password" in the 401 body, giving an
+# attacker an oracle to enumerate valid user ids. AAP 0.1.1 makes the security
+# uplift mandatory and the authoritative QA report classifies the leak as MAJOR,
+# so under the D1 precedence rule the security requirement overrides the Minimal
+# Change Clause's verbatim-message faithfulness for these two branches. The
+# legacy literals are retained ONLY as the server-side diagnostic log strings
+# (see Login below), emitted at INFO level -- routine auth failures are not
+# warnings -- so operators who enable INFO keep the exact reason in the logs
+# while the attacker-visible response reveals only that the credentials were
+# invalid.
+MSG_INVALID_CREDENTIALS = "Invalid user ID or password. Try again ..."
 
 # Field labels handed to the shared mandatory-field edit. Only the edit's boolean
 # result is consumed; the wording surfaced to the caller is always the verbatim
@@ -99,9 +119,12 @@ class AuthService:
     ) -> LoginResponse:
         """Authenticate a sign-on request and return the caller's identity.
 
-        Ports the COSGN00C PROCESS-ENTER-KEY + READ-USER-SEC-FILE flow. The four
-        failure paths are raised in the legacy precedence: empty user id, then
-        empty password, then user-not-found, then wrong-password.
+        Ports the COSGN00C PROCESS-ENTER-KEY + READ-USER-SEC-FILE flow. The
+        failure paths are evaluated in the legacy precedence: empty user id, then
+        empty password, then user-not-found, then wrong-password. The two blank
+        edits raise their verbatim messages; the unknown-user and wrong-password
+        paths raise ONE shared generic message (QA Issue C8) so the 401 response
+        cannot be used to tell an unknown user id apart from a bad password.
 
         Args:
             session: Active async unit-of-work session (READ-ONLY; never committed).
@@ -127,12 +150,21 @@ class AuthService:
         userRecord = await self._LoadUser(session, normalizedUserId)  # READ-USER-SEC-FILE
         if userRecord is None:
             # READ RESP 13 (NOTFND): user id not on the USRSEC file (COSGN00C L249).
-            raise AuthenticationError(MSG_USER_NOT_FOUND)
+            # C8: log the specific reason server-side at INFO -- the user id is a
+            # lookup key, never a secret -- so operators keep the exact diagnostic,
+            # then surface the generic message so the 401 body cannot be used to
+            # enumerate which user ids exist.
+            _LOGGER.info("%s (user id: %s)", MSG_USER_NOT_FOUND, normalizedUserId)
+            raise AuthenticationError(MSG_INVALID_CREDENTIALS)
         # Replaces the plaintext compare IF SEC-USR-PWD = WS-USER-PWD (COSGN00C L223).
         passwordMatches = VerifyPassword(submittedPassword, userRecord.password_hash)
         if not passwordMatches:
             # Password mismatch on an existing user (COSGN00C L242).
-            raise AuthenticationError(MSG_WRONG_PASSWORD)
+            # C8: return the SAME generic 401 as the unknown-user path above; the
+            # specific reason is logged server-side only (never the submitted
+            # password) so the response is indistinguishable between the two.
+            _LOGGER.info("%s (user id: %s)", MSG_WRONG_PASSWORD, normalizedUserId)
+            raise AuthenticationError(MSG_INVALID_CREDENTIALS)
         return self._BuildResponse(userRecord)  # success (COSGN00C L226-238)
 
     def _CheckRequiredFields(self, loginRequest: LoginRequest) -> None:

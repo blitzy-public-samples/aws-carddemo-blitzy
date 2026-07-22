@@ -32,8 +32,13 @@ import type { TransactionCreate } from '@/types';
 /** Screen heading (BMS COTRN02 title line "Add Transaction"). */
 const PAGE_TITLE = 'Add Transaction';
 
-/** Amount format hint shown beneath the amount field (BMS row 15). */
-const AMOUNT_FORMAT_HINT = '(-99999999.99)';
+/**
+ * Amount format hint shown beneath the amount field. Updated for the MD3
+ * redesign (QA finding C4): shows a natural signed-decimal example instead of
+ * the legacy fixed-width `-99999999.99` 3270 template, matching the relaxed
+ * {@link AMOUNT_PATTERN} that accepts ergonomic input such as `10.00`.
+ */
+const AMOUNT_FORMAT_HINT = '(e.g. -12345.67)';
 
 /** ISO date format hint shown beneath each date field (BMS row 15). */
 const DATE_FORMAT_HINT = '(YYYY-MM-DD)';
@@ -58,7 +63,14 @@ const CATEGORY_CD_NUMERIC_ERROR = 'Category CD must be Numeric...';
 const SOURCE_EMPTY_ERROR = 'Source can NOT be empty...';
 const DESCRIPTION_EMPTY_ERROR = 'Description can NOT be empty...';
 const AMOUNT_EMPTY_ERROR = 'Amount can NOT be empty...';
-const AMOUNT_FORMAT_ERROR = 'Amount should be in format -99999999.99';
+/*
+ * Amount-format message updated for the MD3 redesign (QA finding C4): describes
+ * the relaxed AMOUNT_PATTERN (signed, up to 9 digits, up to 2 decimals) so the
+ * guidance matches what is actually accepted; the legacy fixed-width wording
+ * "-99999999.99" would misdescribe the corrected, ergonomic input rule.
+ */
+const AMOUNT_FORMAT_ERROR =
+    'Amount must be a number with up to 9 digits and up to 2 decimals (e.g. -12345.67).';
 const ORIG_DATE_EMPTY_ERROR = 'Orig Date can NOT be empty...';
 const ORIG_DATE_FORMAT_ERROR = 'Orig Date should be in format YYYY-MM-DD';
 const PROC_DATE_EMPTY_ERROR = 'Proc Date can NOT be empty...';
@@ -86,8 +98,23 @@ const EMPTY_TRANSACTION_FORM: TransactionCreate = {
 /** Unsigned integer digits (COBOL IS NUMERIC edit). */
 const NUMERIC_PATTERN = /^\d+$/;
 
-/** Signed fixed money format -99999999.99: sign, 8 int digits, dot, 2 frac. */
-const AMOUNT_PATTERN = /^[+-]\d{8}\.\d{2}$/;
+/**
+ * Signed money amount matching the TRAN-AMT data contract (PIC S9(09)V99):
+ * an optional sign, 1-9 integer digits, and an optional 1-2 digit fraction —
+ * e.g. `10.00`, `10`, `-500.25`, `+12.3` (QA finding C4).
+ *
+ * The legacy COTRN02C screen edit (COTRN02C.cbl L340-347) demanded the fixed
+ * 12-column 3270 layout `sign + 8 digits + '.' + 2 digits` (so only
+ * `-00000010.00` passed and a natural `10.00` was rejected). That fixed-width
+ * requirement is a terminal-era artifact of the 3270 field, not a data rule:
+ * the legacy itself parses the value with `FUNCTION NUMVAL-C` (lenient), and
+ * the authoritative server edit (`decimal_utils.ToDecimal`, exact Decimal, no
+ * sign required) accepts ergonomic input like `12.34`. Per the Material Design 3
+ * redesign (AAP §0.3, Goal 3) this client check is UX fidelity only and must not
+ * be STRICTER than the server; the PIC S9(09)V99 data contract (<=9 integer +
+ * 2 fractional digits) is preserved exactly.
+ */
+const AMOUNT_PATTERN = /^[+-]?\d{1,9}(\.\d{1,2})?$/;
 
 /** ISO calendar date format YYYY-MM-DD. */
 const DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
@@ -156,8 +183,8 @@ const REQUIRED_FIELD_RULES: readonly RequiredRule[] = [
  * @param errors - The shared error map populated in place.
  */
 function ValidateKeyFields(form: TransactionCreate, errors: Record<string, string>): void {
-    const accountId = form.acct_id.trim();
-    const cardNumber = form.card_num.trim();
+    const accountId = (form.acct_id ?? '').trim();
+    const cardNumber = (form.card_num ?? '').trim();
     if (accountId !== '' && !NUMERIC_PATTERN.test(accountId)) {
         errors.acct_id = ACCOUNT_ID_NUMERIC_ERROR;
     }
@@ -178,7 +205,7 @@ function ValidateKeyFields(form: TransactionCreate, errors: Record<string, strin
  */
 function ValidateRequiredFields(form: TransactionCreate, errors: Record<string, string>): void {
     for (const rule of REQUIRED_FIELD_RULES) {
-        const fieldValue = form[rule.field].trim();
+        const fieldValue = (form[rule.field] ?? '').trim();
         if (fieldValue === '') {
             errors[rule.field] = rule.emptyError;
         } else if (rule.numericError && !NUMERIC_PATTERN.test(fieldValue)) {
@@ -215,6 +242,30 @@ function ValidateAmountAndDates(form: TransactionCreate, errors: Record<string, 
         errors.proc_ts = PROC_DATE_FORMAT_ERROR;
     }
 }
+
+/**
+ * Builds the POST body from the form, normalizing the account/card key pair
+ * (QA finding C5). The backend declares `acct_id` and `card_num` as
+ * `Optional[str]` and enforces the COTRN02 "(or)" rule (at least one). Its
+ * digit validator passes only `None` for an absent key — an empty string ""
+ * FAILS the edit — so an account-only or card-only add must OMIT the unused
+ * key rather than send a blank. Non-empty values are trimmed so stray spaces
+ * from the terminal-style fields never reach the server.
+ *
+ * @param form - The current form values.
+ * @returns The request payload with empty key fields omitted.
+ */
+function BuildTransactionPayload(form: TransactionCreate): TransactionCreate {
+    const accountId = (form.acct_id ?? '').trim();
+    const cardNumber = (form.card_num ?? '').trim();
+    const payload: TransactionCreate = {
+        ...form,
+        acct_id: accountId === '' ? undefined : accountId,
+        card_num: cardNumber === '' ? undefined : cardNumber,
+    };
+    return payload;
+}
+
 
 /**
  * Add-Transaction page. Renders the redesigned MD3 data-entry form, runs
@@ -270,7 +321,7 @@ export default function TransactionsAddPage() {
         setIsSubmitting(true);
         try {
             const createdTransaction =
-                await TransactionsApi.AddTransaction(transactionForm);
+                await TransactionsApi.AddTransaction(BuildTransactionPayload(transactionForm));
             setAlertSeverity('success');
             setAlertContent(
                 `${SUCCESS_MESSAGE} Your Tran ID is ${createdTransaction.tran_id}.`,
@@ -323,7 +374,7 @@ export default function TransactionsAddPage() {
                     <FormField
                         name="acct_id"
                         label="Enter Acct #:"
-                        value={transactionForm.acct_id}
+                        value={transactionForm.acct_id ?? ''}
                         onChange={HandleFieldChange}
                         maxLength={11}
                         error={Boolean(fieldErrors.acct_id)}
@@ -335,7 +386,7 @@ export default function TransactionsAddPage() {
                     <FormField
                         name="card_num"
                         label="Card #:"
-                        value={transactionForm.card_num}
+                        value={transactionForm.card_num ?? ''}
                         onChange={HandleFieldChange}
                         maxLength={16}
                         error={Boolean(fieldErrors.card_num)}
@@ -349,7 +400,7 @@ export default function TransactionsAddPage() {
                             <FormField
                                 name={field.name}
                                 label={field.label}
-                                value={transactionForm[field.name]}
+                                value={transactionForm[field.name] ?? ''}
                                 onChange={HandleFieldChange}
                                 maxLength={field.maxLength}
                                 error={Boolean(fieldErrors[field.name])}

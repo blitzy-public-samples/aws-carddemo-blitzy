@@ -41,7 +41,7 @@ each re-exported name as used, so linters do not flag the imports as unused
 from app.services.auth_service import AuthService
 from app.services.menu_service import MenuService
 from app.services.account_service import AccountService
-from app.services.card_service import CardService
+from app.services.card_service import CardListParams, CardService
 from app.services.transaction_service import TransactionService
 from app.services.billpay_service import BillPayService
 from app.services.report_service import ReportService
@@ -51,6 +51,7 @@ __all__ = [
     "AuthService",
     "MenuService",
     "AccountService",
+    "CardListParams",
     "CardService",
     "TransactionService",
     "BillPayService",

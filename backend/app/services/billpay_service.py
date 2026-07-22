@@ -107,7 +107,14 @@ VALID_CONFIRM_VALUES = (CONFIRM_YES, CONFIRM_NO)
 # wrote for an online bill payment, for traceability and downstream parity.
 # ---------------------------------------------------------------------------
 PAYMENT_TRAN_TYPE = "02"                      # MOVE '02' TO TRAN-TYPE-CD          [L220]
-PAYMENT_TRAN_CATEGORY = "2"                   # MOVE 2 TO TRAN-CAT-CD              [L221]
+# TRAN-CAT-CD is CVTRA04Y TRAN-CATEGORY-CD PIC 9(04): a 4-digit zoned-numeric
+# field, so the legacy `MOVE 2 TO TRAN-CAT-CD` (L221) stores the value
+# zero-padded to its full width -- "0002", not the single character "2". The
+# posted TransactionRead schema (and the transaction browse + reports readers)
+# require exactly 4 digits, so the padded literal is the faithful, contract-
+# correct value; an unpadded "2" fails TransactionRead validation and silently
+# poisons the transaction tail page and every report covering the payment.
+PAYMENT_TRAN_CATEGORY = "0002"                # MOVE 2 TO TRAN-CAT-CD (PIC 9(04))  [L221]
 PAYMENT_TRAN_SOURCE = "POS TERM"              # MOVE 'POS TERM' TO TRAN-SOURCE     [L222]
 PAYMENT_TRAN_DESC = "BILL PAYMENT - ONLINE"   # MOVE '...' TO TRAN-DESC            [L223]
 PAYMENT_MERCHANT_ID = "999999999"             # MOVE 999999999 TO TRAN-MERCHANT-ID [L226]

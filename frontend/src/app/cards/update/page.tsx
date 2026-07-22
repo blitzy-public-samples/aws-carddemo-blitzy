@@ -8,16 +8,23 @@
  *
  * The legacy 3270 screen loaded one credit card by its account/card key and let
  * an operator edit exactly three fields (name-on-card, active status, expiry).
- * This client component reproduces that behavior over the modern REST API:
- * it reads the (masked) card identifier from the query string, loads the card
- * via `CardsApi.GetCard`, and submits a minimal `CardUpdate` payload via
- * `CardsApi.UpdateCard`. Identity/role are carried by the session cookie the
- * apiClient sends automatically — there is no CICS COMMAREA to propagate.
+ * This client component reproduces that behavior over the modern REST API.
+ *
+ * QA C1: the card LIST masks `card_num` (AAP 0.7.8), so a masked PAN can never
+ * be a valid card key. This screen therefore keys the card on its UNMASKED
+ * owning-account id read from the `acctId` query string: it loads the card via
+ * `CardsApi.GetCardByAccount` and submits the minimal `CardUpdate` via
+ * `CardsApi.UpdateCardByAccount` (the backend resolves the account to its real
+ * card server-side; the full PAN never appears in a URL). An account-id
+ * key-capture picker (mirroring /accounts/update) lets a card always be reached
+ * manually. Identity/role are carried by the session cookie the apiClient sends
+ * automatically — there is no CICS COMMAREA to propagate.
  *
  * @packageDocumentation
  */
 
 import { useState, useEffect, useCallback, Suspense } from 'react';
+import type { ReactNode } from 'react';
 import { useSearchParams, useRouter } from 'next/navigation';
 import {
     Box,
@@ -82,22 +89,35 @@ const MASK_CHARACTER = '*';
 /** HTTP status used to detect a "card not found" response on load. */
 const HTTP_NOT_FOUND = 404;
 
+/** Query-string key carrying the UNMASKED owning-account id (`?acctId=`). */
+const ACCT_ID_QUERY_PARAM = 'acctId';
+
+/** Route of this update screen; used to navigate the account-id picker. */
+const CARDS_UPDATE_ROUTE = '/cards/update';
+
 /** Route of the card-list screen (COCRDLI), used as the null-identifier fallback. */
 const CARDS_LIST_ROUTE = '/cards';
 
 /** Heading text, mirroring the legacy COCRDUP title INITIAL literal. */
 const PAGE_TITLE = 'Update Credit Card Details';
 
-/** Shown (via the alert) when the page is reached without a `cardNum` query parameter. */
-const NO_CARD_NUMBER_MESSAGE =
-    'No card number supplied. Return to the card list to select a card.';
+/** Label for the account-id picker input (BMS ACCTSID field). */
+const ACCT_ID_PICKER_LABEL = 'Account Number';
+
+/** Label for the picker's load button (maps the legacy ENTER lookup). */
+const LOAD_BUTTON_LABEL = 'LOAD';
+
+/** Shown (via the alert) when the page is reached without an `acctId` param. */
+const NO_ACCT_ID_MESSAGE =
+    'No account number supplied. Return to the card list to select a card.';
 
 /** Complementary inline guidance shown in the body of the null-identifier guard. */
-const NO_CARD_NUMBER_HINT =
-    'Select a card from the card list to update its details.';
+const NO_ACCT_ID_HINT =
+    'Select a card from the card list, or enter an account number above, to ' +
+    'update its card details.';
 
-/** Shown when the backend reports the requested card does not exist. */
-const CARD_NOT_FOUND_MESSAGE = 'The requested card could not be found.';
+/** Shown when the backend reports the account owns no card. */
+const CARD_NOT_FOUND_MESSAGE = 'No card could be found for this account.';
 
 /** Fallback shown when the card details fail to load. */
 const LOAD_FAILED_MESSAGE = 'Unable to load the card details. Please try again.';
@@ -175,14 +195,15 @@ function BuildInitialFormData(card: CardRead): CardUpdate {
 }
 
 /**
- * Builds the card-detail route for a given (masked) identifier, encoding the
- * identifier for safe inclusion in the query string.
+ * Builds the card-detail route for a given owning-account id, encoding the id
+ * for safe inclusion in the query string. The detail/update screens are keyed on
+ * the account id (not the masked PAN) per QA C1.
  *
- * @param cardNumber - The masked card identifier.
- * @returns The `/cards/view?cardNum=...` route string.
+ * @param accountId - The unmasked owning-account id.
+ * @returns The `/cards/view?acctId=...` route string.
  */
-function BuildCardViewRoute(cardNumber: string): string {
-    return `/cards/view?cardNum=${encodeURIComponent(cardNumber)}`;
+function BuildCardViewRoute(accountId: string): string {
+    return `/cards/view?${ACCT_ID_QUERY_PARAM}=${encodeURIComponent(accountId)}`;
 }
 
 /**
@@ -242,14 +263,16 @@ function ResolveError(err: unknown, fallbackMessage: string): ErrorResponse | st
 /* ------------------------------------------------------------------------- */
 
 /**
- * Renders and drives the Card Update form. Reads the masked card identifier
- * from the `cardNum` query parameter, loads the card, and submits edits.
+ * Renders and drives the Card Update form. Reads the UNMASKED owning-account id
+ * from the `acctId` query parameter, loads the account's card, and submits edits
+ * addressed by that account id (QA C1). An account-id key-capture picker lets a
+ * card be reached manually.
  *
  * @returns The card-update form element.
  */
 function CardsUpdateContent() {
     const searchParams = useSearchParams();
-    const cardNumber = searchParams.get('cardNum');
+    const accountId = searchParams.get(ACCT_ID_QUERY_PARAM) ?? '';
     const router = useRouter();
 
     const [formData, setFormData] = useState<CardUpdate>({
@@ -264,22 +287,29 @@ function CardsUpdateContent() {
     const [errorState, setErrorState] = useState<ErrorResponse | string | null>(null);
     const [isErrorOpen, setIsErrorOpen] = useState<boolean>(false);
     const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
+    // Controlled value of the account-id picker input. Seeded from (and kept in
+    // sync with) the `?acctId=` query param so a loaded card shows its account id
+    // in the picker, while still allowing the user to type a new one.
+    const [pickerValue, setPickerValue] = useState<string>(accountId);
+
+    useEffect(() => {
+        setPickerValue(accountId);
+    }, [accountId]);
 
     /**
-     * Loads the card identified by the query string and seeds the form. Uses a
-     * specific `IsApiError` branch to surface a "not found" message on 404.
+     * Loads the card owned by the query-string account id and seeds the form.
+     * Uses a specific `IsApiError` branch to surface a "not found" message on
+     * 404. Memoized on `accountId` for the effect below.
      */
     const LoadCard = useCallback(async (): Promise<void> => {
-        if (!cardNumber) {
-            setErrorState(NO_CARD_NUMBER_MESSAGE);
-            setIsErrorOpen(true);
+        if (!accountId) {
             return;
         }
         setIsLoading(true);
         setIsErrorOpen(false);
         setErrorState(null);
         try {
-            const card = await CardsApi.GetCard(cardNumber);
+            const card = await CardsApi.GetCardByAccount(accountId);
             setFormData(BuildInitialFormData(card));
             setAcctId(card.acct_id ?? '');
             setCardNumberDisplay(MaskCardNumber(card.card_num));
@@ -293,11 +323,38 @@ function CardsUpdateContent() {
         } finally {
             setIsLoading(false);
         }
-    }, [cardNumber]);
+    }, [accountId]);
 
     useEffect(() => {
         void LoadCard();
     }, [LoadCard]);
+
+    /**
+     * Updates the picker input value. Signature matches {@link FormField}'s
+     * `onChange(name, value)` contract.
+     *
+     * @param _name - The originating field name (unused; single-field picker).
+     * @param value - The new account-id input value.
+     */
+    const HandlePickerChange = (_name: string, value: string): void => {
+        setPickerValue(value);
+    };
+
+    /**
+     * Navigates to `/cards/update?acctId=<entered id>`. The query-param change
+     * re-drives {@link LoadCard} through the `useSearchParams` effect. An empty
+     * entry is ignored (mirrors the legacy empty-id guard).
+     */
+    const HandleLoadClick = (): void => {
+        const trimmedId = pickerValue.trim();
+        if (trimmedId === '') {
+            return;
+        }
+        const target =
+            `${CARDS_UPDATE_ROUTE}?${ACCT_ID_QUERY_PARAM}=` +
+            `${encodeURIComponent(trimmedId)}`;
+        router.push(target);
+    };
 
     /**
      * Updates one field immutably and clears any prior error for that field.
@@ -320,12 +377,12 @@ function CardsUpdateContent() {
 
     /**
      * Validates the form and, when valid, submits the minimal `CardUpdate`
-     * payload. On success navigates to the card-detail view; on failure routes
-     * the specific error to the alert.
+     * payload addressed by the owning-account id. On success navigates to the
+     * card-detail view; on failure routes the specific error to the alert.
      */
     const HandleSubmit = async (): Promise<void> => {
-        if (!cardNumber) {
-            setErrorState(NO_CARD_NUMBER_MESSAGE);
+        if (!accountId) {
+            setErrorState(NO_ACCT_ID_MESSAGE);
             setIsErrorOpen(true);
             return;
         }
@@ -346,8 +403,8 @@ function CardsUpdateContent() {
                 expiration_date: formData.expiration_date,
                 active_status: formData.active_status,
             };
-            await CardsApi.UpdateCard(cardNumber, cardUpdate);
-            router.push(BuildCardViewRoute(cardNumber));
+            await CardsApi.UpdateCardByAccount(accountId, cardUpdate);
+            router.push(BuildCardViewRoute(accountId));
         } catch (err) {
             setErrorState(ResolveError(err, UPDATE_FAILED_MESSAGE));
             setIsErrorOpen(true);
@@ -358,8 +415,8 @@ function CardsUpdateContent() {
 
     /** Returns to the card detail view (or the card list when id is absent). */
     const HandleCancel = (): void => {
-        if (cardNumber) {
-            router.push(BuildCardViewRoute(cardNumber));
+        if (accountId) {
+            router.push(BuildCardViewRoute(accountId));
         } else {
             router.push(CARDS_LIST_ROUTE);
         }
@@ -370,16 +427,47 @@ function CardsUpdateContent() {
         setIsErrorOpen(false);
     };
 
+    /**
+     * The account-id key-capture picker, rendered on every state so a card can
+     * always be reached manually (QA C1 fallback).
+     */
+    const pickerRow: ReactNode = (
+        <Stack
+            direction={{ xs: 'column', sm: 'row' }}
+            spacing={2}
+            sx={{ mb: 3, alignItems: { sm: 'flex-start' } }}
+        >
+            <FormField
+                name={ACCT_ID_QUERY_PARAM}
+                label={ACCT_ID_PICKER_LABEL}
+                value={pickerValue}
+                onChange={HandlePickerChange}
+                maxLength={ACCT_ID_LENGTH}
+                required
+                autoFocus
+            />
+            <Button
+                variant="contained"
+                onClick={HandleLoadClick}
+                disabled={isLoading || isSubmitting}
+            >
+                {LOAD_BUTTON_LABEL}
+            </Button>
+        </Stack>
+    );
+
     // No identifier: surface the guard message and offer a way back — never
-    // render editable fields without a card to edit.
-    if (!cardNumber) {
+    // render editable fields without a card to edit. The picker is still shown
+    // so an account can be entered manually.
+    if (!accountId) {
         return (
             <Container maxWidth="sm" sx={{ py: 4 }}>
                 <Card>
                     <CardHeader title={PAGE_TITLE} />
                     <CardContent>
+                        {pickerRow}
                         <Typography variant="body1" color="text.secondary">
-                            {NO_CARD_NUMBER_HINT}
+                            {NO_ACCT_ID_HINT}
                         </Typography>
                     </CardContent>
                     <CardActions sx={{ justifyContent: 'flex-end', px: 2, pb: 2 }}>
@@ -402,6 +490,7 @@ function CardsUpdateContent() {
             <Card>
                 <CardHeader title={PAGE_TITLE} />
                 <CardContent>
+                    {pickerRow}
                     {isLoading ? (
                         <Box
                             sx={{
@@ -520,4 +609,3 @@ export default function CardsUpdatePage() {
         </Suspense>
     );
 }
-

@@ -18,7 +18,7 @@
  * current balance (legacy COBIL00C sets TRAN-AMT = ACCT-CURR-BAL, balance -> 0).
  */
 
-import { useState } from 'react';
+import { useState, useRef } from 'react';
 import {
     Box,
     Stack,
@@ -87,6 +87,14 @@ function BillPayPage() {
     const [successMessage, setSuccessMessage] = useState<string | null>(null);
     const [isLoading, setIsLoading] = useState<boolean>(false);
 
+    // M6: synchronous in-flight guard for the payment POST. React state
+    // (`isLoading`) updates asynchronously, so several same-tick clicks on the
+    // confirm button can all pass the `disabled`/`loading` check before the
+    // first re-render and each fire a POST. This ref flips synchronously on the
+    // first invocation and blocks every re-entrant call until the request
+    // settles, guaranteeing exactly one payment request per confirmation.
+    const isPaymentInFlightRef = useRef<boolean>(false);
+
     /**
      * Updates the account id and clears any stale lookup result so a new id
      * never shows a previous account's balance. The signature matches
@@ -145,7 +153,18 @@ function BillPayPage() {
      * the server to pay the FULL balance (legacy TRAN-AMT = ACCT-CURR-BAL).
      */
     async function HandleConfirm(): Promise<void> {
+        // M6: block re-entrant submissions synchronously, before React can
+        // re-render the loading/disabled state. The first click flips the ref
+        // and proceeds; any same-tick or in-flight follow-up click returns here.
+        if (isPaymentInFlightRef.current) {
+            return;
+        }
+        isPaymentInFlightRef.current = true;
         setIsLoading(true);
+        // M5: clear any prior success message on each new submit so a subsequent
+        // failure (for example the zero-balance 422 on an immediate re-pay) never
+        // renders its error next to a stale green success message.
+        setSuccessMessage(null);
         const billPayRequest: BillPayRequest = {
             acct_id: accountId,
             confirm: CONFIRM_YES,
@@ -161,6 +180,7 @@ function BillPayPage() {
             setErrorOpen(true);
         } finally {
             setIsLoading(false);
+            isPaymentInFlightRef.current = false;
         }
     }
 

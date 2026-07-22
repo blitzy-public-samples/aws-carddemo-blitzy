@@ -36,7 +36,12 @@ import {
 } from '@mui/material';
 
 import { AccountsApi, IsApiError } from '@/lib/apiClient';
-import type { AccountDetail, AccountUpdate, CustomerRead } from '@/types';
+import type {
+    AccountBeforeImage,
+    AccountDetail,
+    AccountUpdate,
+    CustomerRead,
+} from '@/types';
 import { FormField } from '@/components/FormField';
 import { ErrorAlert } from '@/components/ErrorAlert';
 
@@ -98,19 +103,57 @@ const STATUS_OPTIONS = [
 ];
 
 /**
+ * Snapshots the optimistic-lock before-image from a fetched `AccountDetail`.
+ *
+ * Captures the editable-field values exactly as the operator last read them
+ * (pre-edit), which the backend re-reads under `SELECT ... FOR UPDATE` and
+ * compares field-for-field to detect a concurrent modification (COACTUPC
+ * `9700-CHECK-CHANGE-IN-REC`, AAP §0.7.4). Building it from `detail` (never from
+ * the live `formValues`) is what makes the check meaningful: it is the image the
+ * client fetched, not the image the client is about to write. Monetary fields
+ * stay Decimal strings and dates stay ISO strings, so an echoed `"194.00"`
+ * compares equal to the stored `NUMERIC(12,2)` value.
+ *
+ * @param detail - The account record from `GET /accounts/{acctId}`.
+ * @returns The before-image echo for the optimistic-lock compare.
+ */
+function BuildBeforeImage(detail: AccountDetail): AccountBeforeImage {
+    return {
+        active_status: detail.active_status,
+        curr_bal: detail.curr_bal,
+        credit_limit: detail.credit_limit,
+        cash_credit_limit: detail.cash_credit_limit,
+        curr_cyc_credit: detail.curr_cyc_credit,
+        curr_cyc_debit: detail.curr_cyc_debit,
+        expiration_date: detail.expiration_date,
+        reissue_date: detail.reissue_date,
+        group_id: detail.group_id,
+    };
+}
+
+/**
  * Builds the editable `AccountUpdate` payload from a fetched `AccountDetail`.
  *
- * Only the nine keys the backend `AccountUpdate` schema accepts (extra="forbid")
- * are included. `open_date` is immutable account metadata (shown read-only), and
- * the customer `addr_zip` belongs to the read-only customer panel; both are
+ * Includes the editable keys the backend `AccountUpdate` schema accepts plus the
+ * REQUIRED `before_image` optimistic-lock token (QA finding C2: the backend
+ * declares `before_image` mandatory, so a payload that omits it fails every save
+ * with HTTP 422). `open_date` is immutable account metadata (shown read-only),
+ * and the customer `addr_zip` belongs to the read-only customer panel; both are
  * intentionally excluded so PUT /accounts/{acctId} does not reject the request
  * with HTTP 422 (extra_forbidden), which the legacy COACTUP screen never did.
  *
+ * The `before_image` is seeded from the same fetched `detail` and is a control
+ * field, not an edited value: `HandleChange` only ever writes the top-level
+ * editable keys (`active_status`, `credit_limit`, ...), never `before_image`, so
+ * the pre-edit snapshot rides through every edit untouched until the next
+ * successful load/save re-seeds it from the server's response.
+ *
  * @param detail - The account + customer record from `GET /accounts/{acctId}`.
- * @returns The initial editable account payload (only `AccountUpdate` keys).
+ * @returns The initial editable account payload, including `before_image`.
  */
 function BuildInitialUpdate(detail: AccountDetail): AccountUpdate {
     return {
+        before_image: BuildBeforeImage(detail),
         active_status: detail.active_status,
         credit_limit: detail.credit_limit,
         cash_credit_limit: detail.cash_credit_limit,

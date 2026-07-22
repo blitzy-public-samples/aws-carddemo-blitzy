@@ -44,8 +44,12 @@ export interface TransactionSummary {
 
 /** Add-transaction payload (COTRN02). tran_desc max 60 on create. */
 export interface TransactionCreate {
-    acct_id: string;         // 9(11) - target account
-    card_num: string;        // X(16)
+    // acct_id / card_num are OPTIONAL, mirroring the backend `Optional[str]`
+    // (schemas/transaction.py): the COTRN02 "(or)" rule requires at least one of
+    // the two, and an unused key must be OMITTED (not sent as an empty string,
+    // which the backend digit validator rejects — QA finding C5).
+    acct_id?: string;        // 9(11) - target account (optional)
+    card_num?: string;       // X(16) (optional)
     tran_type_cd: string;    // X(2)
     tran_cat_cd: string;     // 9(4)
     tran_source: string;     // X(10)

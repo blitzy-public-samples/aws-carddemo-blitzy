@@ -16,7 +16,7 @@
  * columns, the current page envelope, and the page-change / row-click callbacks.
  */
 
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { useRouter } from 'next/navigation';
 
 import Box from '@mui/material/Box';
@@ -28,9 +28,9 @@ import CircularProgress from '@mui/material/CircularProgress';
 
 import { DEFAULT_PAGE_SIZE } from '@/types';
 import type {
+    CardListParams,
     CardSummary,
     PaginatedResponse,
-    PaginationParams,
     ErrorResponse,
 } from '@/types';
 import { DataTable } from '@/components/DataTable';
@@ -198,6 +198,16 @@ export default function CardsPage() {
     const [accountIdFilter, setAccountIdFilter] = useState<string>('');
     const [cardIdFilter, setCardIdFilter] = useState<string>('');
 
+    // Live mirrors of the two filter values (QA C3). `LoadCards` is intentionally
+    // memoized on [pageNumber] only, so it must NOT close over the filter STATE
+    // (that would either send a stale value or force a refetch on every
+    // keystroke). Reading the current filter from a ref lets the stable callback
+    // see the latest value without becoming a dependency. The refs are updated
+    // synchronously in the same handlers that update the state, so they are
+    // always current -- including on the same-tick Search/Clear refetch paths.
+    const accountIdFilterRef = useRef<string>('');
+    const cardIdFilterRef = useRef<string>('');
+
     /**
      * Fetches the current page of cards, capped at ROWS_PER_PAGE (F-004). On
      * failure the caught value is routed to the ErrorAlert, which performs the
@@ -209,9 +219,15 @@ export default function CardsPage() {
         setIsErrorOpen(false);
         setErrorState(null);
         try {
-            const params: Partial<PaginationParams> = {
+            // Read the CURRENT filter values from the refs (see the ref
+            // declarations above) so the search boxes actually narrow the browse
+            // (QA C3). Blank values are trimmed away by the apiClient query
+            // builder, so an untouched search box sends no filter.
+            const params: Partial<CardListParams> = {
                 page: pageNumber,
                 page_size: ROWS_PER_PAGE,
+                acct_id: accountIdFilterRef.current,
+                card_num: cardIdFilterRef.current,
             };
             const response = await CardsApi.ListCards(params);
             setPageData(response);
@@ -239,16 +255,19 @@ export default function CardsPage() {
     }
 
     /**
-     * Navigates to the card detail page using the query-string contract shared
-     * with the (static) /cards/view and /cards/update routes. `row.card_num` is
-     * masked; it is passed as-is because backend GET /cards/{cardNum} owns
-     * identifier resolution. Never unmasks; never references a security code.
+     * Navigates to the card detail page keyed by the row's UNMASKED owning
+     * ACCOUNT id (QA C1). The grid displays `card_num` MASKED (AAP 0.7.8), so a
+     * masked value can never be a valid card key -- navigating by it produced the
+     * C1 dead-end (masked PAN -> 422). The account id is not sensitive and
+     * uniquely identifies the card (1:1), so the detail/update pages load the
+     * card via GET /cards/by-account/{acctId}. Never unmasks; never references a
+     * security code.
      *
      * @param row - The clicked card row.
      */
     function HandleRowClick(row: CardSummary): void {
-        const cardNumber = row.card_num;
-        router.push(`/cards/view?cardNum=${encodeURIComponent(cardNumber)}`);
+        const accountId = row.acct_id;
+        router.push(`/cards/view?acctId=${encodeURIComponent(accountId)}`);
     }
 
     /**
@@ -260,8 +279,12 @@ export default function CardsPage() {
     function HandleFilterChange(name: string, value: string): void {
         if (name === ACCOUNT_FILTER_NAME) {
             setAccountIdFilter(value);
+            // Keep the ref in lock-step with the state so the stable LoadCards
+            // callback reads the latest value (QA C3).
+            accountIdFilterRef.current = value;
         } else if (name === CARD_FILTER_NAME) {
             setCardIdFilter(value);
+            cardIdFilterRef.current = value;
         }
     }
 
@@ -285,6 +308,13 @@ export default function CardsPage() {
     function HandleClear(): void {
         setAccountIdFilter('');
         setCardIdFilter('');
+        // Clear the refs synchronously too: HandleClear may call LoadCards in
+        // this SAME tick (page-1 path), before any state-sync effect could run,
+        // so the refs -- not the pending state -- are what LoadCards will read
+        // (QA C3). Without this the cleared search would still send the old
+        // filter value.
+        accountIdFilterRef.current = '';
+        cardIdFilterRef.current = '';
         if (pageNumber === 1) {
             void LoadCards();
         } else {

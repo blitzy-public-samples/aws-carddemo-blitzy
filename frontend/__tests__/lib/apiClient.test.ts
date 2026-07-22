@@ -574,7 +574,22 @@ describe('AccountsApi', () => {
     });
 
     it('UpdateAccount -> PUT /accounts/{id} with the update body', async () => {
+        // QA finding C2: the backend `AccountUpdate` schema declares `before_image`
+        // as REQUIRED (the optimistic-lock echo of the last-read editable fields).
+        // A realistic payload therefore carries it alongside the edited fields; the
+        // apiClient must forward the body verbatim (before_image included).
         const accountUpdate: AccountUpdate = {
+            before_image: {
+                active_status: 'Y',
+                curr_bal: '1000.00',
+                credit_limit: '5000.00',
+                cash_credit_limit: '1000.00',
+                curr_cyc_credit: '0.00',
+                curr_cyc_debit: '0.00',
+                expiration_date: '2030-01-01',
+                reissue_date: '2025-01-01',
+                group_id: 'DEFAULT',
+            },
             active_status: 'Y',
             credit_limit: '6000.00',
             cash_credit_limit: '1500.00',
