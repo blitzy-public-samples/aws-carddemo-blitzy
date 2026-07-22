@@ -55,9 +55,11 @@ Schema ownership:
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass, field
+import os
+from dataclasses import dataclass
 from datetime import date, datetime
 from decimal import Decimal
+from pathlib import Path
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -115,17 +117,57 @@ DALYTRAN_FILLER_WIDTH = 20  # FILLER                 PIC X(20)
 # reference used by the account-expiration check.
 DATE_TEXT_LENGTH = 10
 
+# ---------------------------------------------------------------------------
+# Protected reject sink (DALYREJS equivalent). AAP 0.7.3 / QA finding #28.
+#
+# The legacy CBTRN02C writes each 430-byte reject record to the DALYREJS dataset
+# (POSTTRAN.jcl: DISP=(NEW,CATLG,DELETE), RECFM=F, LRECL=430) and DISPLAYs only
+# the reject COUNT -- the raw-record DISPLAY at CBTRN02C.cbl:449 is commented out.
+# We reproduce that: reject rows (which carry the full, unmasked card number as
+# part of the raw record image, for reconciliation) are written ONCE to a
+# protected on-disk sink and NEVER returned in memory, echoed to stdout, or
+# logged. Callers receive only counters and the opaque sink path.
+#
+# The sink file is created 0600 (owner read/write only) inside a 0700 directory
+# (owner-only), so the reconciliation image with its PANs is not world/group
+# readable. Each 430-character record is written on its own line.
+# ---------------------------------------------------------------------------
+REJECT_DIR_MODE = 0o700
+REJECT_FILE_MODE = 0o600
+
+# Default reject-sink directory: ``<repo>/out/posting_rejects`` (this file is
+# ``<repo>/batch/jobs/post_transactions.py`` -> three parents up is ``<repo>``),
+# mirroring the CLI's ``<repo>/out`` output convention. The CLI exposes it as the
+# ``--reject-dir`` default; the job falls back to it when ``rejectDir`` is None.
+DEFAULT_REJECT_DIR = (
+    Path(__file__).resolve().parent.parent.parent / "out" / "posting_rejects"
+)
+
+# Filename stem for a reject generation. A run-date (or run timestamp when no
+# date is supplied) suffix preserves the legacy GDG generation-relative naming
+# (AAP 0.7.5) without clobbering evidence from unrelated runs.
+REJECT_FILE_PREFIX = "dalyrejs"
+
 
 @dataclass
 class PostingResult:
     """Aggregate outcome of one :func:`PostTransactions` run.
 
-    Groups the four return values into a single object so the public entry point
-    keeps a small parameter/return surface (Ochs Rule: prefer one object over
-    many loose values). The three counters mirror the legacy
-    ``WS-TRANSACTION-COUNT`` / ``WS-REJECT-COUNT`` display totals; a run with a
-    non-zero :attr:`transactionsRejected` corresponds to the legacy
-    ``RETURN-CODE = 4`` (the CLI surfaces that, this module does not exit).
+    Groups the return values into a single object so the public entry point keeps
+    a small return surface (Ochs Rule: prefer one object over many loose values).
+    The three counters mirror the legacy ``WS-TRANSACTION-COUNT`` /
+    ``WS-REJECT-COUNT`` display totals; a run with a non-zero
+    :attr:`transactionsRejected` corresponds to the legacy ``RETURN-CODE = 4``
+    (the CLI surfaces that as process exit code 4; this module does not exit).
+
+    Security (QA finding #28): this object carries ONLY non-sensitive summary
+    data -- three integer counters and an opaque filesystem path. It deliberately
+    does NOT hold the raw 430-byte reject records, because those are the
+    unmasked daily-transaction record images (they contain the full card number).
+    The rows are written once to a protected sink (:func:`_WriteRejectSink`); the
+    path in :attr:`rejectFilePath` names that sink but reveals no cardholder data.
+    Both :meth:`__str__` and the dataclass ``__repr__`` are therefore safe to
+    echo to stdout and to log.
 
     Attributes:
         transactionsProcessed: Total daily (``PENDING``) transactions read and
@@ -135,20 +177,41 @@ class PostingResult:
         transactionsRejected: Count of transactions that failed validation (or
             the defensive code-109 account-update guard) and produced a reject
             record (legacy ``WS-REJECT-COUNT``).
-        rejectRows: The fixed-width reject records, one 430-character string per
-            rejected transaction, laid out exactly like the legacy 430-byte
-            ``DALYREJS`` record (``REJECT-TRAN-DATA`` X(350) + ``VALIDATION-TRAILER``
-            X(80)). The caller (CLI / orchestration) is responsible for writing
-            these to a ``DALYREJS``-equivalent sink.
+        rejectFilePath: Absolute path to the protected ``DALYREJS``-equivalent
+            sink file the reject records were written to, or ``None`` when the run
+            produced no rejects (no file is created). This is opaque metadata (a
+            path only) -- it contains no cardholder data.
     """
 
     transactionsProcessed: int = 0
     transactionsPosted: int = 0
     transactionsRejected: int = 0
-    rejectRows: list[str] = field(default_factory=list)
+    rejectFilePath: str | None = None
+
+    def __str__(self) -> str:
+        """Render a safe one-line summary (counters + opaque sink path only).
+
+        Never includes any reject-record content, so it is safe for CLI output
+        and logging (QA finding #28).
+
+        Returns:
+            A single line of the form
+            ``processed=N posted=N rejected=N reject_file=<path|none>``.
+        """
+        sinkLabel = self.rejectFilePath if self.rejectFilePath else "(none)"
+        return (
+            f"processed={self.transactionsProcessed} "
+            f"posted={self.transactionsPosted} "
+            f"rejected={self.transactionsRejected} "
+            f"reject_file={sinkLabel}"
+        )
 
 
-def PostTransactions(session: Session, runDate: date | None = None) -> PostingResult:
+def PostTransactions(
+    session: Session,
+    runDate: date | None = None,
+    rejectDir: Path | None = None,
+) -> PostingResult:
     """Post every pending daily transaction (Python port of ``CBTRN02C``).
 
     Reproduces the legacy driver loop verbatim: read each unposted daily
@@ -164,16 +227,29 @@ def PostTransactions(session: Session, runDate: date | None = None) -> PostingRe
     re-run naturally skips rows already promoted to ``POSTED`` on a prior run,
     making the job idempotent and re-runnable (AAP 0.7.6).
 
+    Reject handling (QA finding #28): the 430-byte reject records carry the raw,
+    unmasked daily-transaction image (including the full card number), so they
+    are written ONCE to a protected on-disk sink (the ``DALYREJS`` equivalent;
+    see :func:`_WriteRejectSink`) and are never returned in memory, echoed, or
+    logged. Only the reject count and the opaque sink path are surfaced on the
+    returned :class:`PostingResult`, faithful to the legacy program, which writes
+    rejects to the DALYREJS dataset and DISPLAYs only the count.
+
     Args:
         session: An already-open synchronous SQLAlchemy session (from
             ``batch.db.GetSyncSession``). Not committed or closed here.
         runDate: Optional business date. When supplied it pins the ``proc_ts``
-            date component for reproducible re-runs; when ``None`` the current
-            timestamp is used, matching the legacy default.
+            date component for reproducible re-runs (and names the reject sink
+            generation); when ``None`` the current timestamp is used, matching the
+            legacy default.
+        rejectDir: Directory that receives the protected reject sink file. When
+            ``None`` it defaults to :data:`DEFAULT_REJECT_DIR`. The directory is
+            created 0700 and the sink file 0600 (owner-only) on demand, and only
+            when at least one transaction is rejected.
 
     Returns:
         A :class:`PostingResult` with the processed/posted/rejected counters and
-        the list of fixed-width reject records produced this run.
+        the opaque path to the reject sink (``None`` when there were no rejects).
     """
     LOGGER.info(START_MESSAGE)
     result = PostingResult()
@@ -189,6 +265,10 @@ def PostTransactions(session: Session, runDate: date | None = None) -> PostingRe
     )
     pendingTransactions = session.scalars(statement).all()
 
+    # Reject records are accumulated in a LOCAL list (never on the returned
+    # result) and flushed once to the protected sink below, so the PANs they
+    # contain never enter the object graph the CLI/orchestration echoes or logs.
+    rejectRows: list[str] = []
     for dailyTran in pendingTransactions:
         result.transactionsProcessed += 1
         failReason, failDescription = _ValidateTran(session, dailyTran)
@@ -200,8 +280,18 @@ def PostTransactions(session: Session, runDate: date | None = None) -> PostingRe
             result.transactionsPosted += 1
         else:
             rejectRow = _BuildRejectRow(dailyTran, failReason, failDescription)
-            result.rejectRows.append(rejectRow)
+            rejectRows.append(rejectRow)
             result.transactionsRejected += 1
+
+    # Legacy 0300-DALYREJS-OPEN / 2500-WRITE-REJECT-REC / 9300-DALYREJS-CLOSE:
+    # write the reject generation exactly once, to a protected sink, only when
+    # there are rejects (no empty generation is created).
+    if rejectRows:
+        result.rejectFilePath = _WriteRejectSink(
+            rejectDir if rejectDir is not None else DEFAULT_REJECT_DIR,
+            runDate,
+            rejectRows,
+        )
 
     LOGGER.info(
         "END OF EXECUTION OF PROGRAM CBTRN02C -- processed=%d posted=%d rejected=%d",
@@ -210,6 +300,60 @@ def PostTransactions(session: Session, runDate: date | None = None) -> PostingRe
         result.transactionsRejected,
     )
     return result
+
+
+def _WriteRejectSink(
+    rejectDir: Path, runDate: date | None, rejectRows: list[str]
+) -> str:
+    """Write reject records once to a protected ``DALYREJS``-equivalent sink.
+
+    Reproduces the legacy DALYREJS dataset write (POSTTRAN.jcl: RECFM=F,
+    LRECL=430). The directory is created owner-only (0700) and the sink file
+    owner-only (0600) so the raw record images -- which carry the unmasked card
+    number for reconciliation -- are not readable by other users (QA finding
+    #28). Each record is length-normalized to exactly ``REJECT_RECORD_LENGTH``
+    (430) characters and written on its own line. Nothing is logged here.
+
+    Args:
+        rejectDir: Destination directory (created 0700 if missing).
+        runDate: Optional business date used to name the generation.
+        rejectRows: The 430-character reject records to persist.
+
+    Returns:
+        The absolute path of the written sink file, as a string.
+    """
+    rejectDir.mkdir(parents=True, exist_ok=True)
+    os.chmod(rejectDir, REJECT_DIR_MODE)
+    sinkPath = rejectDir / _ResolveRejectFilename(runDate)
+    fileDescriptor = os.open(
+        sinkPath, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, REJECT_FILE_MODE
+    )
+    with os.fdopen(fileDescriptor, "w", encoding="utf-8") as sinkFile:
+        os.fchmod(fileDescriptor, REJECT_FILE_MODE)
+        for rejectRow in rejectRows:
+            normalizedRow = rejectRow.ljust(REJECT_RECORD_LENGTH)[:REJECT_RECORD_LENGTH]
+            sinkFile.write(normalizedRow + "\n")
+    return str(sinkPath)
+
+
+def _ResolveRejectFilename(runDate: date | None) -> str:
+    """Build the reject-sink filename for this run (generation-relative).
+
+    Uses the business ``runDate`` when supplied (one generation per date, so a
+    same-date re-run regenerates the same file), otherwise a full run timestamp
+    (a unique generation per run). Mirrors the legacy GDG ``DALYREJS(+1)`` naming
+    (AAP 0.7.5).
+
+    Args:
+        runDate: Optional business date.
+
+    Returns:
+        A filename such as ``dalyrejs_20240115.txt`` (dated) or
+        ``dalyrejs_20240115_142530.txt`` (timestamped when no date is supplied).
+    """
+    if runDate is not None:
+        return f"{REJECT_FILE_PREFIX}_{runDate:%Y%m%d}.txt"
+    return f"{REJECT_FILE_PREFIX}_{datetime.now():%Y%m%d_%H%M%S}.txt"
 
 
 def _ResolvePostingTimestamp(runDate: date | None) -> datetime:

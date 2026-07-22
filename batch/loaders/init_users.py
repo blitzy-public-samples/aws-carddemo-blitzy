@@ -65,7 +65,18 @@ from sqlalchemy.dialects.postgresql import insert as PgInsert
 from sqlalchemy.orm import Session
 
 from app.models.user import User
-from app.core.security import HashPassword
+
+# NOTE: ``app.core.security.HashPassword`` is imported lazily inside
+# ``_ParseUserRecord`` (not at module load). Importing ``app.core.security`` at
+# module scope would instantiate the backend ``app.core.config.settings``
+# singleton, which fails fast when the backend-only ``SECRET_KEY`` is unset --
+# re-coupling the entire batch package (and therefore ``python -m batch.cli
+# --help``) to an environment variable that is irrelevant to batch data
+# processing (QA finding #60). Deferring the import keeps the batch CLI and all
+# non-user-seed jobs/loaders importable and runnable with only
+# ``SYNC_DATABASE_URL``; the backend security module is loaded only when user
+# rows are actually hashed. The single hashing implementation is still reused
+# (not duplicated), preserving parity with the login service.
 
 __all__ = ["InitializeUsers"]
 
@@ -164,6 +175,11 @@ def _ParseUserRecord(record: str) -> dict[str, str]:
         model columns: ``user_id``, ``first_name``, ``last_name``,
         ``password_hash`` (the bcrypt digest), and ``user_type``.
     """
+    # Lazy import (see module-level note): loading app.core.security here rather
+    # than at module scope keeps the batch CLI free of the backend SECRET_KEY
+    # requirement until a password is actually hashed (QA finding #60).
+    from app.core.security import HashPassword
+
     plainPassword = record[PASSWORD_SLICE].strip()
     return {
         "user_id": record[USER_ID_SLICE].strip(),

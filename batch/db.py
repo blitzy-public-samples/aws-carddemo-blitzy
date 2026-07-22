@@ -22,19 +22,22 @@ It is the **synchronous counterpart** to the backend's async
 ``AsyncSessionLocal``). The split is intentional: the batch chain runs as a
 plain synchronous CLI process, so it uses the blocking ``psycopg2`` driver and a
 classic :class:`~sqlalchemy.orm.Session`, while the FastAPI request path stays
-fully async. The backend reserves ``settings.SYNC_DATABASE_URL`` for exactly this
-purpose (Alembic migrations and the batch loaders), and ``backend/.env.example``
-documents it as the psycopg2 URL for batch.
+fully async. The ``SYNC_DATABASE_URL`` environment variable is reserved for
+exactly this purpose (Alembic migrations and the batch loaders), and
+``backend/.env.example`` documents it as the psycopg2 URL for batch.
 
 Configuration is environment-driven (Ochs Rule #3 — no hardcoded secrets): the
-connection string is read from :data:`app.core.config.settings.SYNC_DATABASE_URL`
-and never hardcoded here. Engine construction is lazy with respect to the
-network — importing this module builds the engine and session factory but does
-**not** open a database connection, so lightweight contexts (``python -m
-py_compile``, unit tests, ``--help`` on the CLI) can import ``batch.db`` without
-a live PostgreSQL server. The only import-time requirement is that the
-environment variables ``settings`` needs (notably ``SECRET_KEY``, which has no
-default) are present.
+connection string is read from
+:data:`batch.config.batchSettings.SYNC_DATABASE_URL` and never hardcoded here.
+The batch package owns its own settings model (:mod:`batch.config`) rather than
+importing the backend :data:`app.core.config.settings` singleton, so a batch
+command launched from the repository root as ``python -m batch.cli`` needs ONLY
+``SYNC_DATABASE_URL`` — it does **not** require the backend-only ``SECRET_KEY``
+(QA finding #60). Engine construction is lazy with respect to the network —
+importing this module builds the engine and session factory but does **not**
+open a database connection, so lightweight contexts (``python -m py_compile``,
+unit tests, ``--help`` on the CLI) can import ``batch.db`` without a live
+PostgreSQL server.
 
 Transaction-ownership contract:
     Callers own the transaction boundary via ``with GetSyncSession() as
@@ -67,16 +70,16 @@ from contextlib import contextmanager
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session, sessionmaker
 
-from app.core.config import settings
+from batch.config import batchSettings
 
 __all__ = ["ENGINE", "SessionLocal", "GetSyncSession"]
 
 
 # Module-level synchronous engine, created exactly once at import time.
 #
-# * ``settings.SYNC_DATABASE_URL`` is the psycopg2 URL (e.g.
+# * ``batchSettings.SYNC_DATABASE_URL`` is the psycopg2 URL (e.g.
 #   ``postgresql+psycopg2://user:pass@host:5432/carddemo``). We intentionally use
-#   the SYNC url, never ``settings.DATABASE_URL`` (that asyncpg URL is owned by
+#   the SYNC url, never an asyncpg ``DATABASE_URL`` (that async URL is owned by
 #   the backend's async engine). It is a pydantic ``SecretStr`` (so the embedded
 #   credentials never render in cleartext), so the raw URL is read with
 #   ``.get_secret_value()`` before it reaches ``create_engine`` — consistent with
@@ -85,13 +88,13 @@ __all__ = ["ENGINE", "SessionLocal", "GetSyncSession"]
 #   a pooled connection, guarding against stale/dropped connections across the
 #   long-running batch chain.
 # * ``future=True`` selects SQLAlchemy 2.0 style semantics.
-# * ``echo`` is intentionally NOT hardcoded: ``settings`` exposes no SQL-echo
+# * ``echo`` is intentionally NOT hardcoded: ``batchSettings`` exposes no SQL-echo
 #   flag, so echo is omitted (Ochs Rule #3 — no hardcoded configuration).
 # * ``create_engine`` is lazy: it validates the URL and prepares the connection
 #   pool but does not open a socket, so importing this module never requires a
 #   live database.
 ENGINE = create_engine(
-    settings.SYNC_DATABASE_URL.get_secret_value(),
+    batchSettings.SYNC_DATABASE_URL.get_secret_value(),
     pool_pre_ping=True,
     future=True,
 )

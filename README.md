@@ -166,8 +166,13 @@ Install the following before building. Exact pins live in
 - **PostgreSQL 17** — the target datastore (VSAM replacement).
 - **Docker + Docker Compose** — for the one-command development environment.
 
-> **Note on the batch CLI.** The batch package additionally uses **Typer**
-> (0.15.x). Typer is a `batch/` dependency, not a backend service dependency.
+> **Note on the batch CLI.** The batch package is an installable distribution
+> (`carddemo-batch`, see [`batch/pyproject.toml`](batch/pyproject.toml)) that
+> additionally uses **Typer** (0.15.1) on top of **Click** (pinned to **8.1.8**).
+> Typer and Click are `batch/` dependencies, not backend service dependencies.
+> Click is pinned explicitly because Typer 0.15.1 is incompatible with Click
+> ≥ 8.2 (which changed `Parameter.make_metavar()` and crashes `--help`); 8.1.8 is
+> the verified compatible release and still satisfies uvicorn's `click>=7.0`.
 
 ---
 
@@ -315,12 +320,28 @@ lives.
 
 ### Batch
 
-From the repository root, with the batch package importable and `DATABASE_URL`
-set, explore the command-line interface:
+Install the batch package alongside the backend it imports (one command, from
+the repository root). This registers the `carddemo-batch` console script and
+makes `python -m batch.cli` runnable from anywhere:
 
 ```bash
-python -m batch.cli --help
+pip install -e ./backend -e ./batch
 ```
+
+The batch CLI needs only `SYNC_DATABASE_URL` (read from `backend/.env` by
+`batch/config.py`); it does **not** require the backend-only `SECRET_KEY`.
+Explore the command-line interface either way:
+
+```bash
+python -m batch.cli --help      # module form
+carddemo-batch --help           # installed console-script form (equivalent)
+```
+
+> The batch package imports the backend `app` tree, so the backend must be
+> importable. `pip install -e ./backend -e ./batch` handles this; if you have
+> not installed the packages, running `python -m batch.cli` from the repository
+> root also works via a bundled path shim (`batch/__init__.py`) that puts the
+> sibling `backend/` directory on `sys.path`.
 
 ---
 
@@ -331,8 +352,9 @@ cross-reference, transactions, transaction-category balances, disclosure groups,
 transaction types, transaction categories) with primary keys, unique constraints,
 secondary indexes, and foreign keys.
 
-1. Ensure PostgreSQL 17 is reachable via `DATABASE_URL` (see
-   [Configuration](#configuration)).
+1. Ensure PostgreSQL 17 is reachable via `SYNC_DATABASE_URL` — Alembic and the
+   batch loaders use the sync (psycopg2) DSN, while the app runtime uses the
+   async `DATABASE_URL` (see [Configuration](#configuration)).
 2. Apply migrations with Alembic:
 
    ```bash

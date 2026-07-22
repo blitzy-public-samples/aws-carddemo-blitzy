@@ -205,6 +205,9 @@ class ChainResult:
         for stepIndex, (jobName, stepValue) in enumerate(
             self.stepResults, start=1
         ):
+            # Each stepValue renders only a safe summary: the POSTTRAN step's
+            # PostingResult exposes counts and an opaque reject-sink path, never
+            # reject-record content (QA finding #28).
             summaryLines.append(f"  {stepIndex:>2}. {jobName} -> {stepValue}")
         return "\n".join(summaryLines)
 
@@ -365,6 +368,8 @@ def _RunStep(step: ChainStep, context: ChainContext,
     except (SQLAlchemyError, OSError, ValueError) as stepError:
         LOGGER.error("STEP %s FAILED: %s", step.jobName, stepError)
         raise BatchChainError(step.jobName, stepError) from stepError
+    # str(stepValue) here renders only a safe summary -- the POSTTRAN step's
+    # PostingResult never exposes reject-record content/PANs (QA finding #28).
     LOGGER.info("END STEP %s -> %s", step.jobName, stepValue)
     return stepValue
 

@@ -55,7 +55,11 @@ from batch.db import GetSyncSession
 from batch.orchestration.batch_chain import RunBatchChain, SeedAll
 
 # Batch jobs (1:1 with the legacy CB* COBOL programs).
-from batch.jobs.post_transactions import PostTransactions
+from batch.jobs.post_transactions import (
+    DEFAULT_REJECT_DIR,
+    PostingResult,
+    PostTransactions,
+)
 from batch.jobs.interest_calc import CalculateInterest
 from batch.jobs.statement_gen import GenerateStatements
 from batch.jobs.print_account import PrintAccounts
@@ -94,6 +98,12 @@ DEFAULT_OUTPUT_DIR: Path = Path(__file__).resolve().parent.parent / "out"
 
 # Environment variable that overrides the default (INFO) logging level.
 LOG_LEVEL_ENV_VAR: str = "BATCH_LOG_LEVEL"
+
+# Process exit code emitted when transaction posting produced at least one
+# reject. Mirrors the legacy CBTRN02C ``MOVE 4 TO RETURN-CODE`` when
+# WS-REJECT-COUNT > 0 (QA finding #56), so downstream job schedulers see the same
+# non-zero return code the mainframe chain raised.
+REJECT_EXIT_CODE: int = 4
 
 LOGGER = logging.getLogger("batch.cli")
 
@@ -163,12 +173,26 @@ def PostTransactionsCommand(
     runDate: Optional[str] = typer.Option(
         None, "--run-date", help="Business run date (YYYY-MM-DD)."
     ),
+    rejectDir: Path = typer.Option(
+        DEFAULT_REJECT_DIR, "--reject-dir", file_okay=False,
+        help="Directory for the protected 430-byte reject sink (created 0700).",
+    ),
 ) -> None:
-    """Post daily transactions (legacy CBTRN02C / POSTTRAN.jcl)."""
+    """Post daily transactions (legacy CBTRN02C / POSTTRAN.jcl).
+
+    Echoes only a safe summary (counts plus the opaque reject-sink path) -- the
+    raw reject records, which contain unmasked card numbers, are written only to
+    the protected sink and are never printed or logged (QA finding #28). Exits
+    with code 4 when any transaction was rejected, mirroring the legacy
+    ``RETURN-CODE = 4`` (QA finding #56).
+    """
     parsedDate = _ParseRunDate(runDate)
     with GetSyncSession() as session:
-        result = PostTransactions(session, runDate=parsedDate)
+        result = PostTransactions(session, runDate=parsedDate, rejectDir=rejectDir)
+    # ``result`` renders a safe summary (counts + sink path); no PAN is emitted.
     typer.echo(f"post-transactions complete: {result}")
+    if result.transactionsRejected > 0:
+        raise typer.Exit(code=REJECT_EXIT_CODE)
 
 
 @jobApp.command("interest-calc")
@@ -422,9 +446,19 @@ def RunAllCommand(
     """
     parsedDate = _ParseRunDate(runDate)
     result = RunBatchChain(runDate=parsedDate, dataDir=dataDir)
+    rejectedTotal = 0
     for stepName, stepValue in result.stepResults:
+        # Each stepValue renders only a safe summary; a PostingResult never
+        # exposes reject-record content (QA finding #28).
         typer.echo(f"  {stepName}: {stepValue}")
+        if isinstance(stepValue, PostingResult):
+            rejectedTotal += stepValue.transactionsRejected
     typer.echo(f"run-all complete: {len(result.completedSteps)} steps")
+    # Aggregate the posting return code across the chain: if any POSTTRAN step
+    # rejected a transaction, surface the legacy RETURN-CODE = 4 (QA finding #56).
+    if rejectedTotal > 0:
+        typer.echo(f"posting rejected {rejectedTotal} transaction(s)")
+        raise typer.Exit(code=REJECT_EXIT_CODE)
 
 
 @app.command("seed-all")
