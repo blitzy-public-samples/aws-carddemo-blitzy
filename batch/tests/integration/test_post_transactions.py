@@ -70,7 +70,7 @@ from pathlib import Path
 import pytest
 from sqlalchemy.exc import OperationalError, ProgrammingError
 
-from app.models import STATUS_PENDING, STATUS_POSTED, TranCategoryBalance
+from app.models import STATUS_POSTED, STATUS_REJECTED, TranCategoryBalance
 from batch.jobs.post_transactions import PostTransactions
 
 # --------------------------------------------------------------------------- #
@@ -346,7 +346,9 @@ def test_reject_code_100_invalid_card(db_session, record_builder, parse_reject_r
     assert rejectRow.description.strip() == EXPECTED_POSTING_CODES[100]
 
     db_session.expire_all()
-    assert transaction.status == STATUS_PENDING  # a reject is never posted
+    # A reject is never posted and is marked terminally REJECTED so a re-run
+    # excludes it from the PENDING driving query (AAP 0.7.6; QA finding F-6).
+    assert transaction.status == STATUS_REJECTED
 
 
 def test_reject_code_102_overlimit(db_session, record_builder, parse_reject_row, tmp_path):
@@ -376,7 +378,7 @@ def test_reject_code_102_overlimit(db_session, record_builder, parse_reject_row,
 
     db_session.expire_all()
     assert account.curr_bal == Decimal("0.00")   # unchanged -- reject not posted
-    assert transaction.status == STATUS_PENDING
+    assert transaction.status == STATUS_REJECTED  # terminal (F-6): not re-attempted
 
 
 def test_reject_code_103_after_expiration(db_session, record_builder, parse_reject_row, tmp_path):
@@ -513,7 +515,9 @@ def test_reject_code_101_account_not_found(
     assert rejectRow.description.strip() == EXPECTED_POSTING_CODES[101]
 
     db_session.expire_all()
-    assert transaction.status == STATUS_PENDING  # a reject is never posted
+    # A reject is never posted and is marked terminally REJECTED so a re-run
+    # excludes it from the PENDING driving query (AAP 0.7.6; QA finding F-6).
+    assert transaction.status == STATUS_REJECTED
 
 
 def test_idempotent_rerun_no_double_post(db_session, record_builder, tmp_path):
@@ -545,3 +549,41 @@ def test_idempotent_rerun_no_double_post(db_session, record_builder, tmp_path):
 
     db_session.expire_all()
     assert account.curr_bal == balanceAfterFirst  # no double-post
+
+
+def test_rejected_row_not_reattempted_on_rerun(db_session, record_builder, tmp_path):
+    # Reconciles AAP 0.7.6 / QA finding F-6: a rejected daily row is marked
+    # terminally REJECTED, so a second posting run excludes it from the PENDING
+    # driving query and never re-attempts it. Previously the row stayed PENDING
+    # and was reprocessed on every re-run, so a changed account state on a later
+    # run could post a row that was rejected earlier -- breaking chain
+    # idempotency. Uses the code-102 over-limit reject (tempBal 500 > limit 100).
+    account, transaction = _BuildPostableGraph(
+        record_builder,
+        accountOverrides={
+            "credit_limit": Decimal("100.00"),
+            "curr_cyc_credit": Decimal("0.00"),
+            "curr_cyc_debit": Decimal("0.00"),
+            "curr_bal": Decimal("0.00"),
+            "expiration_date": FUTURE_EXPIRATION,
+        },
+        tranOverrides={"tran_amt": Decimal("500.00")},
+    )
+
+    firstRun = PostTransactions(db_session, rejectDir=tmp_path)
+    assert firstRun.transactionsProcessed == 1
+    assert firstRun.transactionsPosted == 0
+    assert firstRun.transactionsRejected == 1
+    db_session.expire_all()
+    assert transaction.status == STATUS_REJECTED  # terminal after first run
+    assert account.curr_bal == Decimal("0.00")    # a reject posts nothing
+
+    secondRun = PostTransactions(db_session, rejectDir=tmp_path)
+    # The terminal REJECTED row is excluded from the PENDING driving query, so
+    # the re-run processes nothing and re-attempts no reject.
+    assert secondRun.transactionsProcessed == 0
+    assert secondRun.transactionsPosted == 0
+    assert secondRun.transactionsRejected == 0
+    db_session.expire_all()
+    assert transaction.status == STATUS_REJECTED  # still terminal
+    assert account.curr_bal == Decimal("0.00")    # still unchanged

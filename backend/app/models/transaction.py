@@ -46,9 +46,15 @@ from app.db.base import Base
 
 # Staging-lifecycle values for :attr:`Transaction.status` (Ochs ALL_UPPERCASE
 # constants). POSTED rows are the CVTRA05Y ledger; PENDING rows are the CVTRA06Y
-# daily transactions awaiting posting by CBTRN02C.
+# daily transactions awaiting posting by CBTRN02C. REJECTED is a terminal status
+# for a daily row that CBTRN02C failed to post (a data reject, reason 100-103 or
+# a 109 update failure): like POSTED it is terminal, so a rejected row is never
+# re-attempted when the posting job is re-run, which keeps the batch chain's
+# posting layer idempotent (AAP 0.7.6; QA finding F-6). REJECTED is 8 characters
+# and fits the String(10) status column.
 STATUS_PENDING = "PENDING"
 STATUS_POSTED = "POSTED"
+STATUS_REJECTED = "REJECTED"
 
 
 class Transaction(Base):
@@ -122,4 +128,4 @@ class Transaction(Base):
     card: Mapped["Card"] = relationship(back_populates="transactions")  # noqa: F821
 
 
-__all__ = ["Transaction", "STATUS_PENDING", "STATUS_POSTED"]
+__all__ = ["Transaction", "STATUS_PENDING", "STATUS_POSTED", "STATUS_REJECTED"]

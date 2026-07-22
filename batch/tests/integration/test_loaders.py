@@ -328,3 +328,81 @@ def test_loader_idempotency(db_session, data_dir):
     # The second run upserts the same primary keys, so no duplicate rows are
     # appended -- the table still holds exactly the seed count.
     assert _CountRows(db_session, TransactionType) == EXPECTED_TRAN_TYPE_COUNT
+
+
+def test_load_accounts_preserves_ledger_balances_on_rerun(db_session, data_dir):
+    # F-6 (idempotent chain rerun, AAP 0.7.6): a second LoadAccounts must NOT
+    # reset the ledger-owned running balances that the posting and interest jobs
+    # mutate after the seed load. The loader excludes LEDGER_OWNED_COLUMNS
+    # (curr_bal, curr_cyc_credit, curr_cyc_debit) from its ON CONFLICT update set
+    # while still refreshing every STATIC column from the seed. Reconciles
+    # LoadAccounts <-> app/data/ASCII/acctdata.txt (CVACT01Y).
+    MUTATED_CURR_BAL = Decimal("99999.99")     # sentinel != seed 194.00
+    MUTATED_CYC_CREDIT = Decimal("1234.56")    # sentinel != seed 0.00
+    MUTATED_CYC_DEBIT = Decimal("789.01")      # sentinel != seed 0.00
+    DRIFTED_ACTIVE_STATUS = "N"                # static col: seed value is "Y"
+
+    firstCount = LoadAccounts(db_session, data_dir)
+    assert firstCount == EXPECTED_ACCOUNT_COUNT
+
+    # Simulate posting/interest having moved the ledger since the seed load, and
+    # drift a STATIC column so the refresh half of the contract is also proven.
+    account = db_session.get(Account, "00000000001")
+    assert account.curr_bal == Decimal("194.00")     # seed baseline
+    assert account.active_status == "Y"              # seed baseline
+    account.curr_bal = MUTATED_CURR_BAL
+    account.curr_cyc_credit = MUTATED_CYC_CREDIT
+    account.curr_cyc_debit = MUTATED_CYC_DEBIT
+    account.active_status = DRIFTED_ACTIVE_STATUS
+    db_session.flush()
+
+    secondCount = LoadAccounts(db_session, data_dir)
+    assert secondCount == EXPECTED_ACCOUNT_COUNT
+    # No duplicate rows: the re-run upserts the same 50 primary keys.
+    assert _CountRows(db_session, Account) == EXPECTED_ACCOUNT_COUNT
+
+    # The loader's Core upsert bypasses the ORM identity map, so force a fresh
+    # read from the database before asserting the post-rerun state.
+    db_session.expire_all()
+    reloaded = db_session.get(Account, "00000000001")
+
+    # Ledger-owned columns are PRESERVED (never reset to the seed values) ...
+    assert reloaded.curr_bal == MUTATED_CURR_BAL
+    assert reloaded.curr_cyc_credit == MUTATED_CYC_CREDIT
+    assert reloaded.curr_cyc_debit == MUTATED_CYC_DEBIT
+    assert isinstance(reloaded.curr_bal, Decimal)
+    # ... while every STATIC column is still refreshed back to the seed value.
+    assert reloaded.active_status == "Y"
+    assert reloaded.credit_limit == Decimal("2020.00")
+
+
+def test_load_tran_category_balances_preserve_balance_on_rerun(db_session, data_dir):
+    # F-6 (idempotent chain rerun, AAP 0.7.6): a second
+    # LoadTranCategoryBalances must NOT reset the ledger-owned ``balance`` that
+    # the posting job accrues after the seed load. ``balance`` is the ONLY
+    # non-key column, so excluding it (LEDGER_OWNED_COLUMNS) makes the upsert
+    # fall through to ON CONFLICT DO NOTHING, leaving the existing row untouched.
+    # Reconciles LoadTranCategoryBalances <-> app/data/ASCII/tcatbal.txt
+    # (CVTRA01Y).
+    MUTATED_BALANCE = Decimal("4242.42")       # sentinel != seed 0.00
+
+    firstCount = LoadTranCategoryBalances(db_session, data_dir)
+    assert firstCount == EXPECTED_TCATBAL_COUNT
+
+    # Simulate posting having accrued a category balance since the seed load.
+    balanceRow = _GetTranCategoryBalance(db_session, "00000000001", "01", "0001")
+    assert balanceRow.balance == Decimal("0.00")     # seed baseline
+    balanceRow.balance = MUTATED_BALANCE
+    db_session.flush()
+
+    secondCount = LoadTranCategoryBalances(db_session, data_dir)
+    assert secondCount == EXPECTED_TCATBAL_COUNT
+    # No duplicate rows: the re-run upserts the same 50 composite keys.
+    assert _CountRows(db_session, TranCategoryBalance) == EXPECTED_TCATBAL_COUNT
+
+    # Force a fresh read past the ORM identity map, then confirm the accrued
+    # balance survived the re-load unchanged (never reset to the seed 0.00).
+    db_session.expire_all()
+    reloaded = _GetTranCategoryBalance(db_session, "00000000001", "01", "0001")
+    assert reloaded.balance == MUTATED_BALANCE
+    assert isinstance(reloaded.balance, Decimal)

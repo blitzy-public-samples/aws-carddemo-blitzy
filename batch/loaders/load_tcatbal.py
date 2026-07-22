@@ -89,6 +89,16 @@ TRAN_TYPE_CD_SLICE = slice(11, 13)
 TRAN_CAT_CD_SLICE = slice(13, 17)
 BALANCE_SLICE = slice(17, 28)
 
+# Ledger-owned column that the posting job MUTATES after seeding: CBTRN02C /
+# batch.jobs.post_transactions._UpdateTcatbal adds each posted daily amount to
+# ``balance``. That running total belongs to the ledger, not the static seed, so
+# the loader's INSERT ... ON CONFLICT must NEVER reset it on a re-load; doing so
+# would wipe posted category balances and break batch-chain idempotency (AAP
+# 0.7.6; QA finding F-6). ``balance`` is the ONLY non-key column, so excluding it
+# leaves no refreshable columns and the upsert falls through to
+# ``on_conflict_do_nothing`` (a first-time insert still seeds it from the file).
+LEDGER_OWNED_COLUMNS = ("balance",)
+
 
 # ---------------------------------------------------------------------------
 # Private helpers (module-internal; not part of the public API)
@@ -140,8 +150,13 @@ def _UpsertRows(session: Session, rows: list[dict[str, str | Decimal]]) -> int:
 
     Emits a single PostgreSQL ``INSERT ... ON CONFLICT`` statement whose
     conflict target is the table's composite primary key (derived from the ORM
-    model, never hardcoded). Existing rows have their non-key columns refreshed
-    so re-running the loader converges to the seed values.
+    model, never hardcoded). On a key collision, non-key columns are refreshed
+    from the seed EXCEPT the ledger-owned running ``balance``
+    (:data:`LEDGER_OWNED_COLUMNS`), which the posting job mutates and which the
+    loader must never reset (AAP 0.7.6; QA finding F-6). Because ``balance`` is
+    the only non-key column, excluding it leaves nothing to refresh, so an
+    existing row is left untouched (``on_conflict_do_nothing``); a first-time
+    insert still seeds ``balance`` from the file.
 
     Args:
         session: An open synchronous session. The caller owns the transaction;
@@ -156,10 +171,13 @@ def _UpsertRows(session: Session, rows: list[dict[str, str | Decimal]]) -> int:
     balanceTable = TranCategoryBalance.__table__
     primaryKeyColumns = [column.name for column in balanceTable.primary_key.columns]
     insertStatement = PostgresInsert(balanceTable).values(rows)
+    # Refresh non-key columns on conflict EXCEPT the ledger-owned balance, which
+    # the loader must never reset (see LEDGER_OWNED_COLUMNS).
     updatableColumns = {
         column.name: insertStatement.excluded[column.name]
         for column in balanceTable.columns
         if column.name not in primaryKeyColumns
+        and column.name not in LEDGER_OWNED_COLUMNS
     }
     if updatableColumns:
         upsertStatement = insertStatement.on_conflict_do_update(

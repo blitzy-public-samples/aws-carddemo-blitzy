@@ -60,7 +60,12 @@ from app.models.card_xref import CardXref
 from app.models.customer import Customer
 from app.models.disclosure_group import DisclosureGroup
 from app.models.tran_category_balance import TranCategoryBalance
-from app.models.transaction import STATUS_PENDING, STATUS_POSTED, Transaction
+from app.models.transaction import (
+    STATUS_PENDING,
+    STATUS_POSTED,
+    STATUS_REJECTED,
+    Transaction,
+)
 from app.models.transaction_category import TransactionCategory
 from app.models.transaction_type import TransactionType
 from app.models.user import User
@@ -84,4 +89,5 @@ __all__ = [
     "User",
     "STATUS_PENDING",
     "STATUS_POSTED",
+    "STATUS_REJECTED",
 ]

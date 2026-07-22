@@ -117,6 +117,20 @@ ADDR_ZIP_SLICE = slice(102, 112)
 GROUP_ID_SLICE = slice(112, 122)
 # FILLER PIC X(178) at [122:300] is intentionally dropped (record padding only).
 
+# Ledger-owned account columns that the batch chain MUTATES after seeding: the
+# posting job (CBTRN02C / batch.jobs.post_transactions._UpdateAccount) adds each
+# daily amount to curr_bal and to curr_cyc_credit/curr_cyc_debit, and the
+# interest job (CBACT04C / batch.jobs.interest_calc) further increases curr_bal.
+# These running balances belong to the ledger, not to the static seed, so the
+# loader's INSERT ... ON CONFLICT must NEVER reset them on a re-load; doing so
+# would wipe posted balances and break batch-chain idempotency (AAP 0.7.6; QA
+# finding F-6). Static account attributes (active_status, credit_limit,
+# cash_credit_limit, the dates, addr_zip, group_id) are safe to refresh and are
+# therefore NOT excluded. credit_limit/cash_credit_limit are static account
+# terms set at account setup -- posting/interest never mutate them -- so they
+# remain refreshable despite also being monetary.
+LEDGER_OWNED_COLUMNS = ("curr_bal", "curr_cyc_credit", "curr_cyc_debit")
+
 
 # ---------------------------------------------------------------------------
 # Private helpers (module-internal; not part of the public API).
@@ -259,8 +273,13 @@ def _UpsertRows(session: Session, rows: list) -> int:
 
     The conflict target is the ``accounts`` primary key, derived generically from
     ``Account.__table__.primary_key.columns`` (``acct_id``). On a key collision,
-    every non-primary-key column is overwritten with the incoming value, so
-    re-running the loader converges the table to the seed contents (idempotent).
+    every non-primary-key column EXCEPT the ledger-owned running balances
+    (:data:`LEDGER_OWNED_COLUMNS`) is refreshed from the incoming seed value.
+    The running balances (``curr_bal``, ``curr_cyc_credit``, ``curr_cyc_debit``)
+    are deliberately left untouched on a re-load: they are mutated by the posting
+    and interest jobs, and resetting them to the seed would erase posted activity
+    and break batch-chain idempotency (AAP 0.7.6; QA finding F-6). A first-time
+    insert still populates them from the seed, so a fresh load is unchanged.
     The statement is executed within the caller's transaction; this function
     never commits, rolls back, or issues DDL.
 
@@ -276,15 +295,26 @@ def _UpsertRows(session: Session, rows: list) -> int:
     primaryKeyNames = [column.name for column in Account.__table__.primary_key.columns]
     insertBuilder = _ResolveInsertBuilder(session)
     insertStatement = insertBuilder(Account).values(rows)
+    # Refresh every non-key column on conflict EXCEPT the ledger-owned running
+    # balances, which the loader must never reset (see LEDGER_OWNED_COLUMNS).
     assignableColumns = {
         column.name: insertStatement.excluded[column.name]
         for column in Account.__table__.columns
         if column.name not in primaryKeyNames
+        and column.name not in LEDGER_OWNED_COLUMNS
     }
-    conflictStatement = insertStatement.on_conflict_do_update(
-        index_elements=primaryKeyNames,
-        set_=assignableColumns,
-    )
+    if assignableColumns:
+        conflictStatement = insertStatement.on_conflict_do_update(
+            index_elements=primaryKeyNames,
+            set_=assignableColumns,
+        )
+    else:
+        # No refreshable columns remain (defensive: accounts always has static
+        # columns, so this branch is not reached today). Keep the existing row
+        # untouched rather than resetting the ledger-owned balances.
+        conflictStatement = insertStatement.on_conflict_do_nothing(
+            index_elements=primaryKeyNames,
+        )
     session.execute(conflictStatement)
     return len(rows)
 

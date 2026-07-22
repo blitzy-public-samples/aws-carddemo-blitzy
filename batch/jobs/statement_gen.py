@@ -29,6 +29,13 @@ exactly -- only the rendering format changes. One statement is produced per
 cross-reference row, exactly as ``1000-MAINLINE`` looped once per ``CARDXREF``
 record, and the transaction summary is ordered by transaction id.
 
+Posted-only inclusion (AAP 0.7.5): the statement reflects the POSTED transaction
+master only. Legacy ``CBSTM03A`` read the VSAM ``TRANSACT`` (posted ledger)
+dataset; daily/PENDING staging rows and validation-REJECTED rows were never
+statemented. The per-card transaction browse therefore filters on
+``status == STATUS_POSTED`` so unposted or rejected transactions never appear on
+a customer statement nor inflate the ``Total EXP`` accumulation.
+
 Numeric fidelity (AAP section 0.7.1): all monetary values -- the per-transaction
 amount, the account current balance, and the accumulated statement total -- flow
 through :class:`decimal.Decimal`. Floating point is never used, because binary
@@ -84,7 +91,9 @@ from app.models.account import Account
 from app.models.card import Card
 from app.models.card_xref import CardXref
 from app.models.customer import Customer
-from app.models.transaction import Transaction
+from app.models.transaction import STATUS_POSTED, Transaction
+
+from batch.jobs.output_safety import AtomicWritePath, SafeCsvWriter
 
 __all__ = ["GenerateStatements", "StatementResult"]
 
@@ -554,9 +563,13 @@ def _WriteStatementCsv(context: _StatementContext) -> Path:
     csvPath = context.outputDir / _BuildStatementFilename(context, ".csv")
     rows = _BuildStatementRows(context)
     try:
-        with csvPath.open("w", encoding="utf-8", newline="") as csvFile:
-            writer = csv.writer(csvFile)
-            writer.writerows(rows)
+        # Publish atomically (F-4): a mid-write failure leaves no partial file at
+        # csvPath. Every cell is neutralized against CSV formula injection (F-3,
+        # CWE-1236) while exact numeric amounts pass through unchanged.
+        with AtomicWritePath(csvPath) as stagingPath:
+            with stagingPath.open("w", encoding="utf-8", newline="") as csvFile:
+                writer = SafeCsvWriter(csv.writer(csvFile))
+                writer.writerows(rows)
     except OSError as fileError:
         LOGGER.error("Failed writing CSV statement %s: %s", csvPath, fileError)
         raise
@@ -587,17 +600,22 @@ def _WriteStatementPdf(context: _StatementContext) -> Path:
     pdfPath = context.outputDir / _BuildStatementFilename(context, ".pdf")
     pageHeight = letter[1]
     try:
-        pdfCanvas = canvas.Canvas(str(pdfPath), pagesize=letter)
-        pdfCanvas.setFont(PDF_FONT_NAME, PDF_FONT_SIZE)
-        yPosition = pageHeight - PDF_MARGIN_POINTS
-        for row in _BuildStatementRows(context):
-            if yPosition <= PDF_MARGIN_POINTS:
-                pdfCanvas.showPage()
-                pdfCanvas.setFont(PDF_FONT_NAME, PDF_FONT_SIZE)
-                yPosition = pageHeight - PDF_MARGIN_POINTS
-            pdfCanvas.drawString(PDF_MARGIN_POINTS, yPosition, _RenderRowText(row))
-            yPosition -= PDF_LINE_HEIGHT_POINTS
-        pdfCanvas.save()
+        # Publish atomically (F-4): reportlab renders to a temporary sibling path
+        # that is promoted onto pdfPath only after a clean save, so an interrupted
+        # render never leaves a truncated PDF at the final path. (Formula-injection
+        # neutralization is a CSV concern only; PDF text is not spreadsheet-parsed.)
+        with AtomicWritePath(pdfPath) as stagingPath:
+            pdfCanvas = canvas.Canvas(str(stagingPath), pagesize=letter)
+            pdfCanvas.setFont(PDF_FONT_NAME, PDF_FONT_SIZE)
+            yPosition = pageHeight - PDF_MARGIN_POINTS
+            for row in _BuildStatementRows(context):
+                if yPosition <= PDF_MARGIN_POINTS:
+                    pdfCanvas.showPage()
+                    pdfCanvas.setFont(PDF_FONT_NAME, PDF_FONT_SIZE)
+                    yPosition = pageHeight - PDF_MARGIN_POINTS
+                pdfCanvas.drawString(PDF_MARGIN_POINTS, yPosition, _RenderRowText(row))
+                yPosition -= PDF_LINE_HEIGHT_POINTS
+            pdfCanvas.save()
     except OSError as fileError:
         LOGGER.error("Failed writing PDF statement %s: %s", pdfPath, fileError)
         raise
@@ -620,6 +638,11 @@ def _BuildStatementContext(
     customer or account is logged and rendered as blanks rather than aborting
     the whole run (the legacy program abended instead).
 
+    The transaction browse includes ONLY ``STATUS_POSTED`` rows (AAP 0.7.5): like
+    the legacy read of the posted ``TRANSACT`` master, PENDING daily rows and
+    validation-REJECTED rows are excluded, so the returned ``statementTotal`` sums
+    posted amounts only.
+
     Args:
         session: The open, caller-owned SQLAlchemy session.
         outputDir: The resolved statement output directory.
@@ -637,10 +660,16 @@ def _BuildStatementContext(
         LOGGER.warning("Customer %s not found for card %s", xref.cust_id, maskedCard)
     if account is None:
         LOGGER.warning("Account %s not found for card %s", xref.acct_id, maskedCard)
-    trans = list(                                       # 4000-TRNXFILE-GET
+    # 4000-TRNXFILE-GET: read the POSTED transaction master ONLY. Legacy CBSTM03A
+    # statements the VSAM TRANSACT master (posted ledger); daily/PENDING rows and
+    # validation-REJECTED rows are never statemented (AAP 0.7.5). Filtering on
+    # STATUS_POSTED keeps unposted/rejected transactions off the customer-facing
+    # statement and out of the Total EXP accumulation.
+    trans = list(
         session.execute(
             select(Transaction)
             .where(Transaction.card_num == xref.xref_card_num)
+            .where(Transaction.status == STATUS_POSTED)
             .order_by(Transaction.tran_id)
         )
         .scalars()

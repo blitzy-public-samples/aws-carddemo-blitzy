@@ -33,9 +33,11 @@ ALL_UPPERCASE. Every test carries a comment citing the COBOL program
 (``CBSTM03A`` / ``CBSTM03B``) or ``CREASTMT.JCL`` it reconciles against.
 """
 
+import csv
 from decimal import Decimal
 from pathlib import Path
 
+from app.models import STATUS_PENDING, STATUS_POSTED
 from batch.jobs.statement_gen import GenerateStatements
 
 # --------------------------------------------------------------------------- #
@@ -82,7 +84,12 @@ def _BuildStatementCard(recordBuilder, spec):
             :class:`~decimal.Decimal` account balance), ``cvv_cd`` (staged only to
             prove the card verification value is never emitted), ``ssn`` (staged
             only to prove the SSN is never emitted in full), and ``tranSpecs`` (a
-            list of ``{"tran_id": str, "tran_amt": Decimal}`` mappings).
+            list of ``{"tran_id": str, "tran_amt": Decimal}`` mappings, each with
+            an optional ``status`` key). Because the statement job includes only
+            POSTED transactions (AAP 0.7.5), ``tranSpecs`` default to
+            ``STATUS_POSTED`` when no ``status`` is given, so staged transactions
+            appear on the statement unless a test deliberately stages a non-posted
+            status to assert its exclusion.
 
     Returns:
         A ``(xref, builtTransactions)`` tuple: the inserted cross-reference row
@@ -104,10 +111,21 @@ def _BuildStatementCard(recordBuilder, spec):
     xref = recordBuilder.BuildXref(spec["card_num"], spec["cust_id"], spec["acct_id"])
     builtTransactions = []
     for tranSpec in spec.get("tranSpecs", []):
+        # Default to POSTED so staged transactions are statemented (AAP 0.7.5);
+        # a test asserting exclusion passes an explicit non-posted status. Any
+        # additional tranSpec keys (for example ``tran_desc``) are forwarded as
+        # column overrides so a test can stage attacker-controlled free text.
+        tranOverrides = {
+            key: value
+            for key, value in tranSpec.items()
+            if key not in ("tran_id", "tran_amt")
+        }
+        tranOverrides.setdefault("status", STATUS_POSTED)
         builtTransaction = recordBuilder.BuildPendingTransaction(
             tranSpec["tran_id"],
             spec["card_num"],
             tranSpec["tran_amt"],
+            overrides=tranOverrides,
         )
         builtTransactions.append(builtTransaction)
     return xref, builtTransactions
@@ -252,3 +270,68 @@ def test_no_card_xref_yields_no_statements(db_session, tmp_path):
     assert result.csvPaths == []
     assert result.pdfPaths == []
     assert result.totalAmount == Decimal("0")
+
+
+def test_statement_excludes_non_posted_transactions(db_session, record_builder, tmp_path):
+    # Reconciles CBSTM03A posted-master read + AAP 0.7.5: statements include ONLY
+    # POSTED transactions. A PENDING daily row and a validation-REJECTED row must
+    # never appear on a customer statement nor inflate Total EXP (QA finding F-1:
+    # 1 POSTED +100.00 and 1 PENDING +50.00 must total 100.00, never 150.00).
+    _BuildStatementCard(
+        record_builder,
+        {
+            "acct_id": ACCT_ONE,
+            "card_num": CARD_ONE,
+            "cust_id": CUST_ONE,
+            "tranSpecs": [
+                {"tran_id": TRAN_ID_ONE, "tran_amt": Decimal("100.00"), "status": STATUS_POSTED},
+                {"tran_id": TRAN_ID_TWO, "tran_amt": Decimal("50.00"), "status": STATUS_PENDING},
+                # A non-posted, non-pending status (the terminal REJECTED status)
+                # is likewise excluded: the filter is strictly ``== POSTED``.
+                {"tran_id": TRAN_ID_THREE, "tran_amt": Decimal("30.00"), "status": "REJECTED"},
+            ],
+        },
+    )
+    result = GenerateStatements(db_session, tmp_path)
+    # Total EXP reflects the POSTED amount only (100.00), not 100+50+30 = 180.00.
+    assert result.totalAmount == Decimal("100.00")
+    assert isinstance(result.totalAmount, Decimal)
+    csvText = Path(result.csvPaths[0]).read_text()
+    assert TRAN_ID_ONE in csvText          # POSTED -> statemented
+    assert TRAN_ID_TWO not in csvText      # PENDING -> excluded
+    assert TRAN_ID_THREE not in csvText    # REJECTED -> excluded
+
+
+def test_statement_csv_neutralizes_formula_injection_and_preserves_amount(
+    db_session, record_builder, tmp_path
+):
+    # QA finding F-3 (CWE-1236): a transaction description that begins with a
+    # spreadsheet formula trigger (here "=1+2") must be written as inert text
+    # (apostrophe-prefixed), while the negative monetary amount "-919.00" (a real
+    # seed credit) must be preserved unchanged as an exact Decimal (AAP 0.7.1).
+    _BuildStatementCard(
+        record_builder,
+        {
+            "acct_id": ACCT_ONE,
+            "card_num": CARD_ONE,
+            "cust_id": CUST_ONE,
+            "tranSpecs": [
+                {
+                    "tran_id": TRAN_ID_ONE,
+                    "tran_amt": Decimal("-919.00"),
+                    "tran_desc": "=1+2",
+                },
+            ],
+        },
+    )
+    result = GenerateStatements(db_session, tmp_path)
+    csvText = Path(result.csvPaths[0]).read_text()
+    allCells = [cell for row in csv.reader(csvText.splitlines()) for cell in row]
+    # The formula-leading description is neutralized, not left live.
+    assert "'=1+2" in allCells
+    assert "=1+2" not in allCells
+    # The negative amount is a numeric literal and is preserved byte-for-byte
+    # (never neutralized to "'-919.00"), and the statement total stays exact.
+    assert "-919.00" in allCells
+    assert "'-919.00" not in allCells
+    assert result.totalAmount == Decimal("-919.00")

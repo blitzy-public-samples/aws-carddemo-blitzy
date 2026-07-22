@@ -37,8 +37,12 @@ Transaction ownership:
     already-open synchronous :class:`~sqlalchemy.orm.Session` (from
     ``batch.db.GetSyncSession``) and NEVER calls ``commit`` or ``close`` -- it
     only ``flush``es. Giving each run its own caller-owned transaction preserves
-    idempotency: on re-run, rows already promoted to ``POSTED`` are skipped
-    because the driving query filters on ``PENDING`` (AAP 0.7.6).
+    idempotency: on re-run, the driving query filters on ``PENDING``, so every
+    row from a prior run is skipped -- both rows already promoted to ``POSTED``
+    and rows marked terminally ``REJECTED`` (a data reject, reason 100-103 or a
+    109 update failure). Marking rejects ``REJECTED`` rather than leaving them
+    ``PENDING`` is what makes a re-run never re-attempt a previously rejected row
+    (AAP 0.7.6; QA finding F-6).
 
 Numeric fidelity (AAP 0.7.1):
     Every monetary value is an exact :class:`decimal.Decimal`; floating point is
@@ -71,7 +75,7 @@ from app.core.exceptions import (
     FormatValidationTrailer,
     PostingRejectCode,
 )
-from app.models import STATUS_PENDING, STATUS_POSTED
+from app.models import STATUS_PENDING, STATUS_POSTED, STATUS_REJECTED
 from app.models.account import Account
 from app.models.card_xref import CardXref
 from app.models.tran_category_balance import TranCategoryBalance
@@ -223,9 +227,11 @@ def PostTransactions(
     propagate to the caller, which owns rollback.
 
     The caller owns the transaction: this function never commits or closes the
-    session, only flushes. Because the driving query filters on ``PENDING``, a
-    re-run naturally skips rows already promoted to ``POSTED`` on a prior run,
-    making the job idempotent and re-runnable (AAP 0.7.6).
+    session, only flushes. Because the driving query filters on ``PENDING`` and
+    every processed row reaches a terminal status (``POSTED`` on a successful
+    post, ``REJECTED`` on a data reject), a re-run skips every row handled on a
+    prior run, making the job idempotent and re-runnable (AAP 0.7.6; QA finding
+    F-6). A rejected row is therefore never re-attempted.
 
     Reject handling (QA finding #28): the 430-byte reject records carry the raw,
     unmasked daily-transaction image (including the full card number), so they
@@ -279,9 +285,22 @@ def PostTransactions(
         if failReason == NO_FAILURE:
             result.transactionsPosted += 1
         else:
+            # Build the 430-byte reject record FIRST, from the daily row exactly
+            # as it stands, so the 350-byte DALYTRAN image stays byte-identical to
+            # the pre-change golden-master output (the reject image never includes
+            # the synthetic status column).
             rejectRow = _BuildRejectRow(dailyTran, failReason, failDescription)
             rejectRows.append(rejectRow)
             result.transactionsRejected += 1
+            # Then mark the daily row terminally REJECTED. Like POSTED, REJECTED is
+            # terminal, so the PENDING driving query excludes it on a re-run and a
+            # rejected row is never re-attempted -- keeping the posting layer
+            # idempotent (AAP 0.7.6; QA finding F-6). This mirrors the success
+            # path's PENDING -> POSTED flip and is flushed here; the caller owns
+            # the commit. For a code-109 reject, _PostTransaction posts nothing
+            # before returning, so no account or category balance was mutated.
+            dailyTran.status = STATUS_REJECTED
+            session.flush()
 
     # Legacy 0300-DALYREJS-OPEN / 2500-WRITE-REJECT-REC / 9300-DALYREJS-CLOSE:
     # write the reject generation exactly once, to a protected sink, only when

@@ -29,10 +29,19 @@ Design (declarative, DRY, Ochs-compliant):
 
 Transaction boundary:
     Each step opens and owns exactly one transaction (one commit boundary per
-    step), mirroring the legacy per-JCL-step semantics and keeping the whole
-    chain idempotent and re-runnable -- a failed step rolls back only its own
-    work. Entry functions never commit or close; :func:`batch.db.GetSyncSession`
-    does that for them.
+    step), mirroring the legacy per-JCL-step semantics: a failed step rolls back
+    only its own work. Entry functions never commit or close;
+    :func:`batch.db.GetSyncSession` does that for them.
+
+Re-runnability (AAP 0.7.6; QA finding F-6):
+    The posting/balance layer is re-runnable without corruption -- the loaders
+    preserve ledger-owned running balances (they never reset ``curr_bal``, the
+    cycle totals, or the ``tran_category_balance`` balance on a re-load), and the
+    posting job marks rejects terminally (``REJECTED``) so no daily row is posted
+    twice or re-attempted. Interest, by contrast, RE-ACCRUES on every run by
+    design (AAP 0.7.2 / F-5, faithful to CBACT04C), so a full-chain re-run is NOT
+    a pure no-op; reseed a fresh database via :func:`SeedAll` for reconcilable
+    golden-master output.
 
 Public API:
     * :func:`RunBatchChain` -- run the full 17-step chain in legacy order.
@@ -256,9 +265,16 @@ CHAIN_STEPS = (
 # loads XREFFILE before CUSTFILE, yet card_xref has an FK to customers, so on a
 # FRESH/EMPTY database the chain order would violate that FK. RunBatchChain must
 # preserve the legacy order exactly (it is contractual and assumes an ALREADY
-# SEEDED database -- the loaders are idempotent ON CONFLICT upserts, so re-running
-# the chain on seeded data is safe). SeedAll (FK-safe order below) is the correct
-# entry point for bootstrapping a fresh database.
+# SEEDED database). The loaders are idempotent ON CONFLICT upserts that refresh
+# static columns but PRESERVE ledger-owned running balances (accounts
+# curr_bal/curr_cyc_credit/curr_cyc_debit and tcatbal balance), and the posting
+# job marks rejects terminally (REJECTED) so they are never re-attempted; the
+# posting/balance layer is therefore safe to re-run without double-counting or
+# balance resets (AAP 0.7.6; QA finding F-6). Interest, however, RE-ACCRUES on
+# every run by design (AAP 0.7.2 / F-5, faithful to CBACT04C fresh-generation
+# semantics), so a full-chain re-run is NOT a pure no-op -- reseed via SeedAll
+# for reconcilable golden-master results. SeedAll (FK-safe order below) is the
+# correct entry point for bootstrapping a fresh database.
 SEED_STEPS = (
     ChainStep("disclosure_group", StepKind.WITH_DATA_DIR, LoadDisclosureGroups,
               "Seed disclosure groups"),
@@ -394,9 +410,19 @@ def RunBatchChain(runDate=None, dataDir=None, outputDir=None,
 
     Note:
         This preserves the contractual legacy order, which loads XREFFILE before
-        CUSTFILE. It therefore assumes an ALREADY-SEEDED database (the loaders are
-        idempotent upserts, so re-running is safe). To bootstrap a FRESH database,
-        call :func:`SeedAll` first (foreign-key-safe order).
+        CUSTFILE. It therefore assumes an ALREADY-SEEDED database. To bootstrap a
+        FRESH database, call :func:`SeedAll` first (foreign-key-safe order).
+
+        Re-running the chain on a seeded database does not corrupt the
+        posting/balance layer: the loaders refresh only static columns and
+        PRESERVE ledger-owned running balances (they never reset ``curr_bal``,
+        the cycle totals, or the ``tran_category_balance`` balance), and the
+        posting job marks rejects terminally so no daily row is posted twice or
+        re-attempted (AAP 0.7.6; QA finding F-6). It is NOT, however, a pure
+        no-op: interest RE-ACCRUES on every run by design (AAP 0.7.2 / F-5,
+        faithful to CBACT04C). For reconcilable golden-master output, run the
+        chain once against a freshly seeded database rather than re-running it in
+        place.
 
     Args:
         runDate: Optional run date passed straight through to POSTTRAN/INTCALC.
@@ -437,8 +463,13 @@ def SeedAll(dataDir=None, sessionFactory=GetSyncSession) -> None:
     (disclosure_group -> customers -> accounts -> cards -> card_xref ->
     transaction_type -> transaction_category -> tran_category_balance ->
     transactions -> users) so no foreign-key constraint is violated. Each loader
-    runs in its own transaction and the loaders are idempotent, so seeding is
-    re-runnable.
+    runs in its own transaction. The loaders are idempotent ON CONFLICT upserts,
+    so re-running SeedAll never errors or duplicates rows; on a FRESH/EMPTY
+    database every row is a first-time insert, so ledger-owned running balances
+    are populated from the seed. Note that re-running SeedAll on an
+    already-mutated database refreshes static columns but deliberately does NOT
+    reset ledger-owned running balances back to the seed (they are ledger-owned;
+    AAP 0.7.6, QA finding F-6); recreate the schema first for a clean reset.
 
     Args:
         dataDir: Optional data directory for the loaders; ``None`` uses defaults.

@@ -78,6 +78,8 @@ from app.models.card_xref import CardXref
 from app.models.transaction_type import TransactionType
 from app.models.transaction_category import TransactionCategory
 
+from batch.jobs.output_safety import AtomicWritePath, SafeCsvWriter
+
 # Module logger. Named for this module so batch log configuration can target it.
 LOGGER = logging.getLogger(__name__)
 
@@ -519,9 +521,15 @@ def ReportTransactionDetail(
         reportDirectory = Path(outputDir)
         reportDirectory.mkdir(parents=True, exist_ok=True)
         reportPath = reportDirectory / REPORT_FILE_NAME
-        with reportPath.open("w", newline="", encoding="utf-8") as reportFile:
-            writer = csv.writer(reportFile)
-            detailLineCount = _RunReport(session, writer, dateRange)
+        # Neutralize CSV formula injection (F-3, CWE-1236) and publish atomically
+        # (F-4): every free-text cell that could be read as a spreadsheet formula
+        # is prefixed with an apostrophe while exact Decimal amounts pass through
+        # unchanged, and the report is staged to a temporary sibling and promoted
+        # onto reportPath only on clean completion (no partial file on failure).
+        with AtomicWritePath(reportPath) as stagingPath:
+            with stagingPath.open("w", newline="", encoding="utf-8") as reportFile:
+                writer = SafeCsvWriter(csv.writer(reportFile))
+                detailLineCount = _RunReport(session, writer, dateRange)
         LOGGER.info("Report written to %s: %d detail line(s)", reportPath, detailLineCount)
     LOGGER.info("END OF EXECUTION OF PROGRAM CBTRN03C")
     return detailLineCount

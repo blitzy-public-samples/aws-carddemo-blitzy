@@ -60,6 +60,8 @@ from sqlalchemy.orm import Session
 
 from app.models.transaction import Transaction
 
+from batch.jobs.output_safety import AtomicWritePath, SafeCsvWriter
+
 # Module logger. Configuration (handlers, level, formatting) is owned by the CLI
 # / orchestration entrypoint, not hardcoded here (Ochs Rule #3).
 LOGGER = logging.getLogger(__name__)
@@ -255,11 +257,15 @@ def _WriteBackupCsv(backupPath: Path, transactions: list[Transaction]) -> int:
         OSError: If the backup file cannot be opened or written.
     """
     try:
-        with backupPath.open("w", encoding=FILE_ENCODING, newline="") as backupFile:
-            csvWriter = csv.writer(backupFile)
-            csvWriter.writerow(CSV_HEADER)
-            for transaction in transactions:
-                csvWriter.writerow(_BuildBackupRow(transaction))
+        # Publish atomically (F-4): a mid-write failure leaves no partial file at
+        # backupPath. Every cell is neutralized against CSV formula injection
+        # (F-3, CWE-1236) while exact Decimal amounts pass through unchanged.
+        with AtomicWritePath(backupPath) as stagingPath:
+            with stagingPath.open("w", encoding=FILE_ENCODING, newline="") as backupFile:
+                csvWriter = SafeCsvWriter(csv.writer(backupFile))
+                csvWriter.writerow(CSV_HEADER)
+                for transaction in transactions:
+                    csvWriter.writerow(_BuildBackupRow(transaction))
     except OSError:
         LOGGER.exception("Failed writing transaction backup to %s", backupPath)
         raise
