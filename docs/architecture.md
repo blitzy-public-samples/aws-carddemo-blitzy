@@ -106,7 +106,7 @@ manifest change in [`../backend/requirements.txt`](../backend/requirements.txt),
 | Frontend | axios | 1.x | HTTP client (`src/lib/apiClient.ts`) |
 | Frontend | TypeScript | 5.x | Static typing |
 | Database | PostgreSQL | 17 | Relational datastore (VSAM replacement) |
-| Tooling | Docker + Docker Compose | current | Services `db`, `backend`, `frontend`; network `carddemo-net`; volume `carddemo_pgdata` |
+| Tooling | Docker + Compose | current | `db`/`backend`/`frontend`; net `carddemo-net`; vol `carddemo_pgdata` |
 
 ## 3. Backend Architecture
 
@@ -120,9 +120,9 @@ api/v1 routers  ->  services  ->  repositories  ->  models / schemas  ->  core
 
 Endpoints stay **thin**: a router validates input, calls exactly one service
 method, and shapes the response. Business logic lives in the **service** layer
-(one service per legacy online program), and all database access lives in the
-**repository** layer (one repository per former VSAM file), so the datastore can
-change without touching business rules.
+(one service per feature area, each porting the related online program(s)), and
+all database access lives in the **repository** layer (one repository per former
+VSAM file), so the datastore can change without touching business rules.
 
 **Composition root.** The application is assembled by the `create_application()`
 factory in [`../backend/app/main.py`](../backend/app/main.py). The factory reads
@@ -200,8 +200,10 @@ The frontend is organized as follows:
   `auth.ts` (client-side auth helpers).
 - `src/types/` — TypeScript interfaces derived from the backend schemas.
 
-For the complete BMS-map → route mapping, see
-[`./traceability.md`](./traceability.md).
+The per-route → BMS-map correspondence is recorded in each page component's
+header comment (which names its originating BMS map and COBOL program); the
+high-level artifact mapping is summarized in
+[§7 Migration Mapping](#7-migration-mapping) below.
 
 ## 5. Batch Architecture
 
@@ -228,9 +230,12 @@ python -m batch.cli run-all
 The batch package uses a **synchronous** SQLAlchemy engine defined in
 [`../batch/db.py`](../batch/db.py) (psycopg2, reading `SYNC_DATABASE_URL`),
 distinct from the backend's async engine, because the batch chain runs as a
-plain synchronous process. Each job receives an open `Session` and is written to
-be transactional and idempotent, so a re-run reconciles to the same result. The
+plain synchronous process. Each job receives an open `Session` and runs inside a
+caller-owned transaction (the job itself performs no `commit`/`rollback`). The
 batch code reuses the backend `app` package for ORM models and shared utilities.
+Re-run behavior is per-job and is not uniformly monetarily neutral — for
+example, `interest-calc` re-accrues interest on a repeat run — so consult the
+per-job detail below rather than assuming universal idempotency.
 
 For the exact chain order and per-job semantics, see
 [`./batch.md`](./batch.md).
@@ -260,14 +265,15 @@ real credentials or hardcoded anywhere.
 ## 7. Migration Mapping
 
 Each legacy artifact class maps to a specific modern construct under the Minimal
-Change Clause. This table captures the high-level mapping; see
-[`./traceability.md`](./traceability.md) for the file-by-file detail.
+Change Clause. This table captures the high-level mapping; the file-by-file
+detail is recorded in each modern module's header comment, which names its
+originating COBOL program, copybook, or BMS map.
 
 | Legacy (mainframe) | Modern (target) | Notes |
 | :----------------- | :-------------- | :---- |
 | CICS online programs `CO*C` (17) | FastAPI router + service + repository cluster | 1 program → 1 module cluster |
 | BMS mapsets `CO*` (17) | Next.js/MUI page components | 1 map → 1 component |
-| Batch COBOL `CBACT*`/`CBCUS01C`/`CBTRN*`/`CBSTM03A`–`B` (10) | Python `batch/jobs/*.py` | 1 program → 1 job module |
+| Batch COBOL `CBACT*`/`CBCUS01C`/`CBTRN*`/`CBSTM03A`–`B` (10) | Python `batch/jobs/*.py` | 1 program → 1 job |
 | Copybooks `app/cpy/*.cpy` (28) | SQLAlchemy models + Pydantic schemas / shared DTOs | Record layouts → ORM + DTO |
 | VSAM KSDS + sequential datasets | PostgreSQL tables + Alembic migrations | Record layout → DDL; AIX → index |
 | CICS COMMAREA (`COCOM01Y`) | Session / JWT claims via `Depends(...)` | Stateless identity + role |
@@ -288,9 +294,10 @@ The backend applies a small, consistent set of patterns:
   (`ACCTDAT` → `account_repo`, `CARDDAT` → `card_repo`, and so on). VSAM
   `READ`/`STARTBR`/`READNEXT`/`REWRITE` verbs become SQLAlchemy
   `select`/`insert`/`update`.
-- **Service layer** — one service per COBOL online program, holding the ported
-  business rules (posting reject codes, available-credit and interest formulas)
-  1:1 with the original PROCEDURE DIVISION logic.
+- **Service layer** — one service per feature area, each porting the related
+  online program(s) (for example `account_service` ← `COACTVWC` + `COACTUPC`),
+  holding the ported business rules (posting reject codes, available-credit and
+  interest formulas) from the original PROCEDURE DIVISION logic.
 - **Dependency injection** — `get_db` supplies an async session, and
   `get_current_user` / `require_admin` supply the authenticated identity and the
   admin gate.
@@ -299,9 +306,12 @@ The backend applies a small, consistent set of patterns:
 - **DTO / Pydantic validation** — request and response schemas mirror the
   copybook field lengths and numeric ranges, porting the BMS and PROCEDURE
   DIVISION edits into schema validators.
-- **Unit of work / per-request transaction** — one session per request; a
-  `SELECT ... FOR UPDATE` row lock replaces the `COACTUPC`
-  READ-UPDATE → REWRITE optimistic-lock cycle.
+- **Unit of work / per-request transaction** — one session per request owns the
+  read/modify/write cycle. `account_service` reproduces the `COACTUPC`
+  READ-UPDATE → REWRITE cycle with a `SELECT ... FOR UPDATE` row lock plus a
+  before-image comparison; `card_service` reproduces `COCRDUPC` optimistically
+  with a re-read and before-image comparison (the card repository has no locking
+  read). No persisted `version`/`updated_at` column is added (AAP §0.7.4).
 - **Factory pattern** — a report-type factory (monthly/yearly/custom) and a
   statement-format factory (CSV/PDF).
 - **Typed configuration** — `pydantic-settings` loads all values from the
@@ -320,13 +330,17 @@ legacy system:
   semantics.
 - **Referential integrity.** Relationships implicit in the VSAM cross-reference
   file (`CARDXREF`) become explicit PostgreSQL foreign-key constraints.
-- **Optimistic locking and concurrency.** CICS/VSAM record-level locking is
-  replaced by database row locking (`SELECT ... FOR UPDATE`) so concurrent
-  account updates cannot lose writes, exactly as the legacy enclave
-  serialization prevented.
-- **Golden-master parity.** Modern outputs reconcile field-for-field against the
-  legacy output for the [`../app/data`](../app/data) sample, so the migration is
-  verifiably behavior-preserving.
+- **Concurrency control.** CICS/VSAM record-level locking is reproduced per
+  resource. `account_service` serializes concurrent account updates with a
+  `SELECT ... FOR UPDATE` row lock plus a before-image comparison (the `COACTUPC`
+  9700 check); `card_service` uses an optimistic re-read and before-image
+  comparison for `COCRDUPC`. No persisted `version`/`updated_at` token is stored
+  (AAP §0.7.4 permits the pessimistic lock), so client-staleness detection relies
+  on the client echoing the before-image it fetched.
+- **Golden-master parity.** Golden-master parity — modern outputs reconciling
+  field-for-field against the legacy output for the
+  [`../app/data`](../app/data) sample — is the migration's correctness goal,
+  verified by the golden-master test suite as that suite is completed.
 
 ## 10. Configuration
 
@@ -376,7 +390,6 @@ API origin points at `localhost`, not at the internal `backend` service name.
 - [`./api-reference.md`](./api-reference.md) — REST endpoint contract.
 - [`./data-model.md`](./data-model.md) — tables, keys, and numeric precision.
 - [`./batch.md`](./batch.md) — batch chain order and per-job detail.
-- [`./traceability.md`](./traceability.md) — legacy artifact → modern file map.
 - [`../README.md`](../README.md) — project setup, quick start, and build steps.
 
 The [`../diagrams/`](../diagrams) and [`../samples/`](../samples) directories
