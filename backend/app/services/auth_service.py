@@ -19,6 +19,8 @@ to :mod:`app.core.security`; the sign-on is a READ-ONLY unit of work and never
 commits. A plaintext password is never stored, logged, echoed, or returned.
 """
 
+import logging
+
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -31,6 +33,14 @@ from app.schemas import LoginRequest, LoginResponse
 from app.utils import validators
 
 __all__ = ["AuthService"]
+
+# Module logger for the signon flow. Only non-sensitive context is ever logged
+# (the user id, which is a lookup key -- never the password). It exists so that
+# the modern equivalent of the COSGN00C ``WHEN OTHER`` read branch records WHY a
+# USRSEC read failed at ERROR (QA finding F6) before the failure is surfaced to
+# the caller as the verbatim "Unable to verify the User ..." 401, which by itself
+# is indistinguishable from a wrong password in the logs.
+_LOGGER = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # Verbatim WS-MESSAGE literals from COSGN00C (ALL_UPPERCASE constants, Ochs Rule
@@ -155,11 +165,17 @@ class AuthService:
         Ports READ-USER-SEC-FILE (COSGN00C L210-221): a found record is returned
         and a NOTFND maps to ``None`` (the repository contract). An unexpected
         database failure is the modern equivalent of the ``WHEN OTHER`` read branch
-        (COSGN00C L253-257): only the specific
-        :class:`sqlalchemy.exc.SQLAlchemyError` is caught (never a bare except),
-        the original error is chained for diagnostics, and it is re-raised as the
+        (COSGN00C L253-257): the two specific, named categories such a failure
+        takes are caught (never a bare except) -- a
+        :class:`sqlalchemy.exc.SQLAlchemyError` (for example the ``ProgrammingError``
+        raised when the ``users`` relation does not exist against a pre-migration,
+        empty-schema database) and an :class:`OSError` (the connect-phase socket
+        failures SQLAlchemy does not wrap, such as ``socket.gaierror`` when the
+        database host cannot be resolved). The real cause is logged at ERROR with
+        non-sensitive context and chained for diagnostics, then re-raised as the
         verbatim "Unable to verify the User ..." authentication failure rather than
-        being swallowed.
+        being swallowed -- so an infrastructure outage surfaces as the legacy
+        parity 401, never an unhandled 500.
 
         Args:
             session: Active async unit-of-work session.
@@ -173,7 +189,19 @@ class AuthService:
         """
         try:
             return await self.userRepository.GetByUserId(session, normalizedUserId)
-        except SQLAlchemyError as readError:
+        except (SQLAlchemyError, OSError) as readError:
+            # Modern WHEN-OTHER branch (COSGN00C L253-257): record the real cause
+            # at ERROR with non-sensitive context (user id only, never the
+            # password) so an operator can tell an infrastructure failure apart
+            # from a routine bad-password 401, then re-raise the verbatim
+            # "Unable to verify the User ..." 401 to preserve legacy parity. Both
+            # a SQLAlchemyError (empty-schema query failure) and an OSError
+            # (host-unreachable connect failure) map here.
+            _LOGGER.error(
+                "USRSEC read failed for user id '%s'; unable to verify credentials: %s",
+                normalizedUserId,
+                readError,
+            )
             raise AuthenticationError(MSG_UNABLE_TO_VERIFY) from readError
 
     def _BuildResponse(self, userRecord: User) -> LoginResponse:

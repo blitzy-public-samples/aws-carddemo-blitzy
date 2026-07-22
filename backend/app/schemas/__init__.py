@@ -71,6 +71,7 @@ from app.schemas.customer import (
 # Account master record (``app/cpy/CVACT01Y.cpy``) -- programs COACTVWC/COACTUPC.
 from app.schemas.account import (
     AccountBase,
+    AccountBeforeImage,
     AccountDetail,
     AccountRead,
     AccountUpdate,
@@ -163,6 +164,7 @@ __all__ = [
     # account
     "AccountBase",
     "AccountRead",
+    "AccountBeforeImage",
     "AccountUpdate",
     "AccountDetail",
     # card

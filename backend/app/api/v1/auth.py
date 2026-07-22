@@ -31,7 +31,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.config import settings
 from app.core.dependencies import get_db
 from app.core.security import CreateAccessToken
-from app.schemas import LoginRequest, LoginResponse
+from app.schemas import LoginRequest, LoginResponse, MessageResponse
 from app.services import AuthService
 
 # ---------------------------------------------------------------------------
@@ -53,6 +53,16 @@ SESSION_COOKIE_SAMESITE = "lax"
 # session cookie is marked Secure (HTTPS-only); in development it is not, so the
 # cookie still works over plain-HTTP localhost.
 DEVELOPMENT_ENVIRONMENT = "development"
+
+# Path attribute the session cookie is scoped to. It must be identical on
+# set_cookie (login) and delete_cookie (logout): a browser only removes a cookie
+# when the delete directive's path (and SameSite/Secure) match those used to set
+# it, so the value is named once here and reused by both handlers.
+SESSION_COOKIE_PATH = "/"
+
+# Confirmation text returned by POST /logout. Kept as a named constant (Ochs
+# no-magic-strings) rather than an inline literal in the handler.
+LOGOUT_MESSAGE = "Signed out successfully."
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
@@ -109,9 +119,57 @@ async def Login(
             samesite=SESSION_COOKIE_SAMESITE,
             secure=settings.ENVIRONMENT != DEVELOPMENT_ENVIRONMENT,
             max_age=settings.ACCESS_TOKEN_EXPIRE_MINUTES * 60,
+            path=SESSION_COOKIE_PATH,
         )
         return loginResponse
     # JWT alternative: AuthService already populated access_token / token_type
     # on loginResponse, so the bearer token travels in the response body and no
     # session cookie is set here.
     return loginResponse
+
+
+@router.post(
+    "/logout",
+    response_model=MessageResponse,
+    status_code=status.HTTP_200_OK,
+)
+async def Logout(response: Response) -> MessageResponse:
+    """Sign out the caller by invalidating the session cookie (COSGN00C exit).
+
+    Authentication is stateless: identity is carried by the signed token in the
+    HTTP-only ``settings.SESSION_COOKIE_NAME`` cookie, so "logging out" means
+    instructing the browser to delete that cookie. Once cleared, subsequent
+    requests carry no credential and the ``get_current_user`` dependency rejects
+    them with HTTP 401 -- which is exactly the session-invalidation the legacy
+    CICS sign-off (clearing the COMMAREA identity) provided.
+
+    This endpoint deliberately takes NO authentication dependency: logout must
+    succeed (be idempotent) even when the token is already missing or expired,
+    so calling it is always safe and never itself returns 401.
+
+    The delete directive repeats the login cookie's ``path``, ``samesite`` and
+    ``secure`` attributes verbatim; a browser only removes a cookie when these
+    match the ones used to set it, so a mismatch would silently leave the cookie
+    (and thus the session) in place.
+
+    Args:
+        response: The outgoing response, used to emit the cookie-deletion
+            ``Set-Cookie`` header.
+
+    Returns:
+        A ``MessageResponse`` confirming sign-out. The confirmation is returned
+        regardless of whether a session cookie was actually present, preserving
+        idempotency.
+    """
+    # Only the session baseline sets a cookie, so only it needs to clear one.
+    # Under the JWT alternative there is no server-set cookie to remove (the
+    # client discards its bearer token), so this is a no-op body.
+    if settings.AUTH_MODE == SESSION_AUTH_MODE:
+        response.delete_cookie(
+            key=settings.SESSION_COOKIE_NAME,
+            path=SESSION_COOKIE_PATH,
+            samesite=SESSION_COOKIE_SAMESITE,
+            secure=settings.ENVIRONMENT != DEVELOPMENT_ENVIRONMENT,
+            httponly=True,
+        )
+    return MessageResponse(message=LOGOUT_MESSAGE)

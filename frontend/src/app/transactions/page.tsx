@@ -84,7 +84,7 @@ function MaskCardNumber(cardNumber: string): string {
  * @param originTimestamp - The transaction origination timestamp string.
  * @returns The leading date portion, or an empty string when unavailable.
  */
-function FormatTransactionDate(originTimestamp: string): string {
+function FormatTransactionDate(originTimestamp: string | null): string {
     if (!originTimestamp) {
         return '';
     }

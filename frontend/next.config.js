@@ -11,14 +11,16 @@ const nextConfig = {
     // value MUST remain 'standalone' for the container image to work.
     output: 'standalone',
 
-    eslint: {
-        // This project intentionally ships no ESLint configuration, so ESLint is
-        // skipped during `next build` to prevent a build-time prompt/failure.
-        // TypeScript type-checking is deliberately left enabled (we do NOT set
-        // `typescript.ignoreBuildErrors`), so `next build` still fails on type
-        // errors - only lint is bypassed here.
-        ignoreDuringBuilds: true,
-    },
+    // NOTE (QA #6): The `eslint` config key is intentionally omitted. Next.js 16
+    // removed the built-in ESLint-during-build integration, so an `eslint` key
+    // here is an unrecognized option and logs a deprecation warning on every
+    // build/start ("`eslint` configuration in next.config.js is no longer
+    // supported"). Because Next 16 no longer runs ESLint during `next build`,
+    // dropping the key does NOT re-enable a lint step or introduce a build
+    // prompt/failure. Linting, when desired, is run separately via the project's
+    // lint script / `.eslintrc`. TypeScript type-checking remains fully enabled
+    // (we do NOT set `typescript.ignoreBuildErrors`), so `next build` still fails
+    // on type errors.
 };
 
 module.exports = nextConfig;

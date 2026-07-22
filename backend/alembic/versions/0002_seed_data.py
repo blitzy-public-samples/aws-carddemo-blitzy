@@ -68,44 +68,99 @@ USRSEC_FILENAME = "AWS.M2.CARDDEMO.USRSEC.PS"
 ENV_ASCII_DIR = "CARDDEMO_ASCII_DIR"
 ENV_EBCDIC_DIR = "CARDDEMO_EBCDIC_DIR"
 
-# Repository root resolved from this file's location. The file lives at
-# backend/alembic/versions/0002_seed_data.py, so parents[3] is the repo root:
-# versions (0) -> alembic (1) -> backend (2) -> repo root (3).
+# Repository-root data location resolved from this file's location. The file
+# lives at backend/alembic/versions/0002_seed_data.py, so parents[3] is the repo
+# root on a host checkout: versions (0) -> alembic (1) -> backend (2) -> root (3).
 REPO_ROOT = Path(__file__).resolve().parents[3]
 DEFAULT_ASCII_DIR = REPO_ROOT / "app" / "data" / "ASCII"
 DEFAULT_EBCDIC_DIR = REPO_ROOT / "app" / "data" / "EBCDIC"
 
+# In-container data location. The backend image's WORKDIR is /app, and the root
+# docker-compose.yml mounts the repository's app/data at /app/data (read-only)
+# and points CARDDEMO_ASCII_DIR / CARDDEMO_EBCDIC_DIR at it. This is listed as an
+# explicit resolution candidate so a containerized `alembic upgrade head` never
+# depends on this file's depth below the repo root -- the root cause of QA
+# finding F3, where parents[3] resolved to "/" inside the ./backend image and the
+# repo-root app/data was absent, so 0002 aborted and (transactional DDL) rolled
+# 0001 back too, leaving zero tables.
+CONTAINER_DATA_DIR = Path("/app/data")
+CONTAINER_ASCII_DIR = CONTAINER_DATA_DIR / "ASCII"
+CONTAINER_EBCDIC_DIR = CONTAINER_DATA_DIR / "EBCDIC"
 
-def LocateAsciiDir() -> Path:
-    """Resolve the ASCII seed directory, honoring the optional env override.
+
+def _ResolveSeedDir(envVar: str, candidateDirs: list[Path], label: str) -> Path:
+    """Resolve a seed-data directory from an env override or known candidates.
+
+    Resolution order (QA finding F3 -- the documented containerized migration must
+    not depend on this file's depth below the repository root):
+
+      1. If ``envVar`` is set it is authoritative: the directory it names is
+         returned when it exists, and a clear error is raised when it does not (a
+         misconfigured override must fail loudly rather than silently fall back).
+      2. Otherwise the first EXISTING path in ``candidateDirs`` is returned. The
+         candidate order covers both the host layout (repo-root ``app/data``) and
+         the container layout (``/app/data`` mounted by docker-compose).
+      3. If nothing resolves, the raised error lists every path that was tried so
+         a first-time operator can see exactly where the data was expected.
+
+    Args:
+        envVar: Name of the optional environment override (for example
+            ``CARDDEMO_ASCII_DIR``).
+        candidateDirs: Ordered fallback directories to probe when no override is
+            set; the first that exists wins.
+        label: Human-readable dataset label used in the error message
+            (``"ASCII"`` or ``"EBCDIC"``).
 
     Returns:
-        The directory holding the app/data/ASCII/*.txt datasets.
+        The resolved, existing seed-data directory.
 
     Raises:
-        RuntimeError: If the resolved directory does not exist.
+        RuntimeError: If the override is set but its directory is missing, or if
+            none of the candidate directories exist.
     """
-    overrideValue = os.environ.get(ENV_ASCII_DIR)
-    asciiDir = Path(overrideValue) if overrideValue else DEFAULT_ASCII_DIR
-    if not asciiDir.is_dir():
-        raise RuntimeError(f"ASCII seed directory not found: {asciiDir}")
-    return asciiDir
+    overrideValue = os.environ.get(envVar)
+    if overrideValue:
+        overrideDir = Path(overrideValue)
+        if overrideDir.is_dir():
+            return overrideDir
+        raise RuntimeError(
+            f"{label} seed directory from {envVar} not found: {overrideDir}"
+        )
+    for candidateDir in candidateDirs:
+        if candidateDir.is_dir():
+            return candidateDir
+    triedPaths = ", ".join(str(candidateDir) for candidateDir in candidateDirs)
+    raise RuntimeError(
+        f"{label} seed directory not found (set {envVar} or provide one of: {triedPaths})"
+    )
+
+
+def LocateAsciiDir() -> Path:
+    """Resolve the ASCII seed directory (env override or known candidates).
+
+    Returns:
+        The directory holding the app/data/ASCII/*.txt datasets, resolved via
+        :func:`_ResolveSeedDir` from :data:`ENV_ASCII_DIR`, then
+        :data:`DEFAULT_ASCII_DIR` (host), then :data:`CONTAINER_ASCII_DIR`.
+
+    Raises:
+        RuntimeError: If the override is set but missing, or no candidate exists.
+    """
+    return _ResolveSeedDir(ENV_ASCII_DIR, [DEFAULT_ASCII_DIR, CONTAINER_ASCII_DIR], "ASCII")
 
 
 def LocateEbcdicDir() -> Path:
-    """Resolve the EBCDIC seed directory, honoring the optional env override.
+    """Resolve the EBCDIC seed directory (env override or known candidates).
 
     Returns:
-        The directory holding the EBCDIC-only USRSEC dataset.
+        The directory holding the EBCDIC-only USRSEC dataset, resolved via
+        :func:`_ResolveSeedDir` from :data:`ENV_EBCDIC_DIR`, then
+        :data:`DEFAULT_EBCDIC_DIR` (host), then :data:`CONTAINER_EBCDIC_DIR`.
 
     Raises:
-        RuntimeError: If the resolved directory does not exist.
+        RuntimeError: If the override is set but missing, or no candidate exists.
     """
-    overrideValue = os.environ.get(ENV_EBCDIC_DIR)
-    ebcdicDir = Path(overrideValue) if overrideValue else DEFAULT_EBCDIC_DIR
-    if not ebcdicDir.is_dir():
-        raise RuntimeError(f"EBCDIC seed directory not found: {ebcdicDir}")
-    return ebcdicDir
+    return _ResolveSeedDir(ENV_EBCDIC_DIR, [DEFAULT_EBCDIC_DIR, CONTAINER_EBCDIC_DIR], "EBCDIC")
 
 
 # ---------------------------------------------------------------------------

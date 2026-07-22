@@ -377,27 +377,31 @@ class AccountService:
 
     @staticmethod
     def _ExtractBeforeImage(accountUpdate: AccountUpdate) -> dict | None:
-        """Return the client-echoed before-image, or ``None`` when unavailable.
+        """Return the client-echoed before-image of the editable fields.
 
-        Forward-compatible with a future ``AccountUpdate`` that echoes the values
-        the client fetched (the COBOL ACUP-OLD before-image). The verified DTO
-        (``extra='forbid'``) carries only new values, so this returns ``None``
-        and the ``SELECT ... FOR UPDATE`` lock provides the §0.7.4 serialization
-        (see :meth:`_CheckBeforeImage`). When a before-image IS supplied, the
-        exact COBOL 9700 compare runs against it.
+        Implements the client side of the COACTUPC optimistic-lock contract
+        (AAP §0.7.4). ``AccountUpdate.before_image`` is a *required* nested echo
+        of the values the caller last read; this projects it onto
+        :data:`EDITABLE_ACCOUNT_FIELDS`, keeping only the fields the client
+        actually supplied (``model_fields_set``). The five monetary fields and
+        ``active_status`` are required on the before-image and therefore always
+        present -- anchoring the lost-update check -- while the two dates and
+        ``group_id`` are optional and are included only when echoed, so an
+        unsent nullable field never manufactures a false conflict in
+        :meth:`_CheckBeforeImage`.
 
         Args:
-            accountUpdate: The partial-update payload.
+            accountUpdate: The partial-update payload (carries ``before_image``).
 
         Returns:
-            A before-image mapping of editable fields, or ``None``.
+            A before-image mapping of the echoed editable fields.
         """
-        beforeImageSource = getattr(accountUpdate, "before_image", None)
-        if beforeImageSource is None:
-            return None
+        beforeImageSource = accountUpdate.before_image
+        submittedBeforeFields = beforeImageSource.model_fields_set
         return {
-            fieldName: getattr(beforeImageSource, fieldName, None)
+            fieldName: getattr(beforeImageSource, fieldName)
             for fieldName in EDITABLE_ACCOUNT_FIELDS
+            if fieldName in submittedBeforeFields
         }
 
     @staticmethod

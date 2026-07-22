@@ -654,15 +654,15 @@ class TransactionCreate(RequestBase):
         max_length=TRAN_CAT_CD_LENGTH,
         description="Transaction category code (TCATCDI 9(04)); 4 digits.",
     )
-    # TRNSRCI X(10) -> transaction source channel (optional).
-    tran_source: Optional[str] = Field(
-        default=None,
+    # TRNSRCI X(10) -> transaction source channel (required at runtime).
+    tran_source: str = Field(
+        ...,
         max_length=TRAN_SOURCE_MAX_LENGTH,
         description="Transaction source channel (TRNSRCI X(10)).",
     )
     # TDESCI X(60) -> add-screen description width (narrower than the record).
-    tran_desc: Optional[str] = Field(
-        default=None,
+    tran_desc: str = Field(
+        ...,
         max_length=TRAN_DESC_SCREEN_MAX_LENGTH,
         description=(
             "Transaction description (TDESCI X(60)); capped at 60 on the add "
@@ -677,38 +677,38 @@ class TransactionCreate(RequestBase):
             "NUMERIC(11,2) Decimal; floating point is rejected."
         ),
     )
-    # MIDI X(09) -> merchant identifier (optional; 9 digits).
-    merchant_id: Optional[str] = Field(
-        default=None,
+    # MIDI X(09) -> merchant identifier (required; 9 digits).
+    merchant_id: str = Field(
+        ...,
         max_length=MERCHANT_ID_LENGTH,
-        description="Merchant identifier (MIDI 9(09)); 9 digits when given.",
+        description="Merchant identifier (MIDI 9(09)); 9 digits.",
     )
     # MNAMEI X(30) on screen; accept up to the record width (50).
-    merchant_name: Optional[str] = Field(
-        default=None,
+    merchant_name: str = Field(
+        ...,
         max_length=MERCHANT_NAME_MAX_LENGTH,
         description="Merchant name (MNAMEI; accepted up to record width 50).",
     )
     # MCITYI X(25) on screen; accept up to the record width (50).
-    merchant_city: Optional[str] = Field(
-        default=None,
+    merchant_city: str = Field(
+        ...,
         max_length=MERCHANT_CITY_MAX_LENGTH,
         description="Merchant city (MCITYI; accepted up to record width 50).",
     )
-    # MZIPI X(10) -> merchant postal code (optional).
-    merchant_zip: Optional[str] = Field(
-        default=None,
+    # MZIPI X(10) -> merchant postal code (required at runtime).
+    merchant_zip: str = Field(
+        ...,
         max_length=MERCHANT_ZIP_MAX_LENGTH,
         description="Merchant postal code (MZIPI X(10)).",
     )
     # TORIGDTI X(10) date -> normalized to a datetime (accepts date/datetime).
-    orig_ts: Optional[datetime] = Field(
-        default=None,
+    orig_ts: datetime = Field(
+        ...,
         description="Original transaction date/timestamp (TORIGDTI X(10) date).",
     )
     # TPROCDTI X(10) date -> normalized to a datetime (accepts date/datetime).
-    proc_ts: Optional[datetime] = Field(
-        default=None,
+    proc_ts: datetime = Field(
+        ...,
         description="Processing date/timestamp (TPROCDTI X(10) date).",
     )
 

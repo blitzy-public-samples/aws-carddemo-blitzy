@@ -180,6 +180,15 @@ export function ErrorAlert(props: ErrorAlertProps) {
 
     const normalized = NormalizeError(props.error);
 
+    // QA #4: some backend error shapes (FastAPI's `{ detail: "<msg>" }`) put the
+    // same text in both `message` and `detail`. The primary line already shows
+    // `message`, so a `detail` identical to it would render the SAME text twice.
+    // Show the secondary detail line only when it adds information beyond the
+    // primary message. (The apiClient now also suppresses this at the source; this
+    // is a defense-in-depth guard for any error shape reaching the component.)
+    const showDetail =
+        Boolean(normalized.detail) && normalized.detail !== normalized.message;
+
     /**
      * Bridges the `Snackbar` close signature to `props.onClose`, IGNORING the
      * click-away reason so an incidental click cannot dismiss the message.
@@ -214,7 +223,7 @@ export function ErrorAlert(props: ErrorAlertProps) {
                             ? `[${normalized.code}] ${normalized.message}`
                             : normalized.message}
                     </Typography>
-                    {normalized.detail ? (
+                    {showDetail ? (
                         <Typography variant="caption" component="div" sx={{ mt: 0.5 }}>
                             {normalized.detail}
                         </Typography>

@@ -38,7 +38,7 @@
 // --- Phase A: mock `@/lib/apiClient` with an explicit factory (hoisted) ------
 jest.mock('@/lib/apiClient', () => ({
     __esModule: true,
-    AuthApi: { Login: jest.fn() },
+    AuthApi: { Login: jest.fn(), Logout: jest.fn() },
     ClearStoredAuth: jest.fn(),
     SESSION_USER_STORAGE_KEY: 'carddemo_user',
     ACCESS_TOKEN_STORAGE_KEY: 'carddemo_access_token',
@@ -60,6 +60,7 @@ import { MakeCurrentUser, MakeAdminUser } from '../testUtils';
 /* --------------------------------------------------------------------------- */
 
 const mockAuthLogin = jest.mocked(AuthApi.Login);
+const mockAuthLogout = jest.mocked(AuthApi.Logout);
 const mockClearStoredAuth = jest.mocked(ClearStoredAuth);
 
 /**
@@ -184,17 +185,39 @@ describe('Login', () => {
 });
 
 describe('Logout', () => {
-    it('delegates client teardown to ClearStoredAuth and redirects to /signon', () => {
+    it('invalidates the server session, tears down client state, and redirects to /signon', async () => {
         localStorage.setItem(
             SESSION_USER_STORAGE_KEY,
             JSON.stringify(MakeCurrentUser()),
         );
+        mockAuthLogout.mockResolvedValueOnce({ message: 'Signed out successfully.' });
         const locationStub = StubLocation('/menu');
 
-        Logout();
+        await Logout();
 
+        // QA #17: logout MUST hit the backend so the HTTP-only session cookie is
+        // cleared server-side; without this the cookie would remain valid and the
+        // next authenticated request would still succeed.
+        expect(mockAuthLogout).toHaveBeenCalledTimes(1);
         // Collaboration only: ClearStoredAuth is a mock here, so it does NOT
         // clear jsdom storage -- the real clearing is covered by apiClient.test.ts.
+        expect(mockClearStoredAuth).toHaveBeenCalledTimes(1);
+        expect(locationStub.href).toBe('/signon');
+    });
+
+    it('still tears down and redirects when the backend logout call fails (best-effort)', async () => {
+        localStorage.setItem(
+            SESSION_USER_STORAGE_KEY,
+            JSON.stringify(MakeCurrentUser()),
+        );
+        // A transient backend/network failure must NOT trap the user in the SPA:
+        // local teardown + redirect proceed regardless.
+        mockAuthLogout.mockRejectedValueOnce(new Error('network down'));
+        const locationStub = StubLocation('/menu');
+
+        await Logout();
+
+        expect(mockAuthLogout).toHaveBeenCalledTimes(1);
         expect(mockClearStoredAuth).toHaveBeenCalledTimes(1);
         expect(locationStub.href).toBe('/signon');
     });

@@ -25,7 +25,7 @@ from decimal import Decimal, InvalidOperation
 from typing import Optional
 
 from sqlalchemy import func, select
-from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 # Posting-reject exceptions: app.core.exceptions exposes BOTH a Design A family
@@ -39,10 +39,15 @@ from sqlalchemy.ext.asyncio import AsyncSession
 #   OverlimitTransactionError-> 102 "OVERLIMIT TRANSACTION"
 #   AccountExpiredError      -> 103 "TRANSACTION RECEIVED AFTER ACCT EXPIRATION"
 #   AccountUpdateFailedError -> 109 "ACCOUNT RECORD NOT FOUND"
+# ConflictError (-> HTTP 409) is NOT a posting reject: it signals a concurrency
+# conflict -- specifically an exhausted retry when concurrent adds race for the
+# same generated TRAN-ID primary key (a hazard CICS/VSAM record locking hid on
+# the mainframe but which a relational insert must handle explicitly).
 from app.core.exceptions import (
     AccountExpiredError,
     AccountNotFoundError,
     AccountUpdateFailedError,
+    ConflictError,
     DomainValidationError,
     InvalidCardNumberError,
     NotFoundError,
@@ -76,6 +81,17 @@ TRAN_TYPE_CD_LENGTH = 2          # TRAN-TYPE-CD PIC X(02) (numeric on the screen
 TRAN_CAT_CD_LENGTH = 4           # TRAN-CAT-CD PIC 9(04).
 MERCHANT_ID_LENGTH = 9           # TRAN-MERCHANT-ID PIC 9(09).
 TRAN_ID_PAD_WIDTH = 16           # TRAN-ID PIC X(16); next id is zero-padded to 16.
+# Concurrency guard for TRAN-ID assignment. The legacy id is MAX(tran_id)+1;
+# under concurrent adds two requests can read the same maximum and generate the
+# same successor, colliding on the primary key. On the mainframe CICS/VSAM
+# record locking serialized these writes, so no retry existed. Here each losing
+# insert rolls back and retries with a freshly re-read maximum, bounded by this
+# cap so a persistent fault can never loop forever (exhaustion -> HTTP 409).
+MAX_ID_GENERATION_RETRIES = 10
+# Client message when TRAN-ID assignment cannot succeed within the retry cap.
+# This has no legacy counterpart (the mainframe never surfaced this race), so it
+# is a plain, non-sensitive advisory rather than a ported verbatim screen text.
+MSG_TRAN_ID_CONFLICT = "Unable to assign a unique transaction id; please retry."
 
 # ---------------------------------------------------------------------------
 # Verbatim on-screen messages, ported character-for-character from the legacy
@@ -295,6 +311,8 @@ class TransactionService:
             OverlimitTransactionError: Posting code 102 (over the credit limit).
             AccountExpiredError: Posting code 103 (received after expiration).
             AccountUpdateFailedError: Posting code 109 (account update failed).
+            ConflictError: HTTP 409 -- concurrent adds raced for the same
+                generated TRAN-ID and the bounded retry cap was exhausted.
         """
         # Step 1 -- VALIDATE-INPUT-KEY-FIELDS: resolve the card + account keys.
         cardNum, acctId = await self._ResolveCardAndAccount(session, transactionCreate)
@@ -303,21 +321,41 @@ class TransactionService:
         # Step 3 -- CBTRN02C posting validation (codes 100/101, then 102/103).
         account = await self._LoadAccountForPosting(session, cardNum)
         self._RunPostingValidation(account, tranAmt, transactionCreate.orig_ts)
-        # Steps 4 + 5 -- insert the transaction and post the balances atomically.
-        try:
-            transaction = await self._InsertNewTransaction(
-                session, cardNum, tranAmt, transactionCreate
-            )
-            await self._PostToAccount(session, acctId, tranAmt)
-            await session.commit()
-        except (SQLAlchemyError, AccountUpdateFailedError):
-            # Either write failing voids the whole unit-of-work: roll back and
-            # re-raise so no partial (transaction-without-posting) state leaks.
-            await session.rollback()
-            raise
-        # commit expires ORM attributes; refresh before serializing the response.
-        await session.refresh(transaction)
-        return TransactionRead.model_validate(transaction)
+        # Steps 4 + 5 -- insert the transaction and post the balances atomically,
+        # retrying only the TRAN-ID primary-key race. Each attempt regenerates
+        # the id from a freshly re-read MAX(tran_id) (a concurrent winner's row
+        # is now visible) and re-locks the account (SELECT ... FOR UPDATE) before
+        # adjusting balances, so a retry can never lose an update. The bound
+        # (MAX_ID_GENERATION_RETRIES) guarantees termination; exhaustion surfaces
+        # as an HTTP 409 conflict rather than an unhandled 500.
+        for attempt in range(1, MAX_ID_GENERATION_RETRIES + 1):
+            try:
+                transaction = await self._InsertNewTransaction(
+                    session, cardNum, tranAmt, transactionCreate
+                )
+                await self._PostToAccount(session, acctId, tranAmt)
+                await session.commit()
+            except IntegrityError:
+                # A concurrent add committed the same generated TRAN-ID first,
+                # colliding on the primary key. Roll back and retry with a newly
+                # recomputed id; give up (409) only when the cap is reached.
+                await session.rollback()
+                if attempt >= MAX_ID_GENERATION_RETRIES:
+                    raise ConflictError(MSG_TRAN_ID_CONFLICT) from None
+                continue
+            except (SQLAlchemyError, AccountUpdateFailedError):
+                # Any other write failure voids the whole unit-of-work: roll back
+                # and re-raise so no partial (transaction-without-posting) state
+                # leaks. IntegrityError is handled above, so this never retries.
+                await session.rollback()
+                raise
+            # Success: commit expired the ORM attributes; refresh before
+            # serializing, then return the newly posted transaction.
+            await session.refresh(transaction)
+            return TransactionRead.model_validate(transaction)
+        # Unreachable: the loop returns on success or raises on exhaustion. Kept
+        # so the function has a total return path for static analysis.
+        raise ConflictError(MSG_TRAN_ID_CONFLICT)
 
     # -----------------------------------------------------------------------
     # Key-field resolution (COTRN02C VALIDATE-INPUT-KEY-FIELDS)

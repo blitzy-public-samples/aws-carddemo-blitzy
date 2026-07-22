@@ -20,8 +20,8 @@
  * reload-and-retry message, distinct from ordinary validation / not-found errors.
  */
 
-import { useState } from 'react';
-import { useRouter } from 'next/navigation';
+import { useState, useEffect, useCallback, Suspense } from 'react';
+import { useSearchParams, useRouter } from 'next/navigation';
 
 import {
     Box,
@@ -99,8 +99,12 @@ const STATUS_OPTIONS = [
 
 /**
  * Builds the editable `AccountUpdate` payload from a fetched `AccountDetail`.
- * `addr_zip` is round-tripped unchanged — COACTUP's `9700-CHECK-CHANGE-IN-REC`
- * does not edit the account-level zip, so it is preserved, not user-edited.
+ *
+ * Only the nine keys the backend `AccountUpdate` schema accepts (extra="forbid")
+ * are included. `open_date` is immutable account metadata (shown read-only), and
+ * the customer `addr_zip` belongs to the read-only customer panel; both are
+ * intentionally excluded so PUT /accounts/{acctId} does not reject the request
+ * with HTTP 422 (extra_forbidden), which the legacy COACTUP screen never did.
  *
  * @param detail - The account + customer record from `GET /accounts/{acctId}`.
  * @returns The initial editable account payload (only `AccountUpdate` keys).
@@ -113,26 +117,36 @@ function BuildInitialUpdate(detail: AccountDetail): AccountUpdate {
         curr_bal: detail.curr_bal,
         curr_cyc_credit: detail.curr_cyc_credit,
         curr_cyc_debit: detail.curr_cyc_debit,
-        open_date: detail.open_date,
         expiration_date: detail.expiration_date,
         reissue_date: detail.reissue_date,
-        addr_zip: detail.addr_zip,
         group_id: detail.group_id,
     };
 }
 
 /**
- * Account Update page — default export for the `/accounts/update` route.
+ * Account Update inner content — owns all state, data flow, and JSX.
+ *
+ * Separated from the default export so `useSearchParams` runs inside a
+ * `<Suspense>` boundary, as required by the Next.js 16 App Router (a bare
+ * `useSearchParams` call triggers a client-side-rendering bailout that would
+ * otherwise fail `next build`).
  *
  * Client component: it uses React state, event handlers, and client-side API
  * calls, so it must run in the browser (`'use client'`). Providers
  * (`ThemeProvider` / `CssBaseline` / `AppShell`) are supplied by the root
  * `src/app/layout.tsx`; this page never renders them.
  */
-export default function AccountsUpdatePage() {
+function AccountsUpdateContent() {
     const router = useRouter();
+    const searchParams = useSearchParams();
+    /**
+     * Optional deep-link account id. When present (e.g. `/accounts/update?acctId=…`,
+     * the destination of the read-only view's "Update" action), the account is
+     * loaded automatically on mount, mirroring `/cards/update`.
+     */
+    const initialAcctId = searchParams.get('acctId') ?? '';
 
-    const [acctId, setAcctId] = useState('');
+    const [acctId, setAcctId] = useState(initialAcctId);
     const [accountDetail, setAccountDetail] = useState<AccountDetail | null>(null);
     const [formValues, setFormValues] = useState<AccountUpdate | null>(null);
     const [isLoading, setIsLoading] = useState(false);
@@ -205,13 +219,22 @@ export default function AccountsUpdatePage() {
     }
 
     /**
-     * Loads the account plus its owning customer for the keyed account id and
+     * Loads the account plus its owning customer for the supplied account id and
      * seeds the editable form. Mirrors the legacy COACTUP account-id fetch.
+     *
+     * Wrapped in `useCallback` with an empty dependency list (it references only
+     * stable state setters and the module-level `BuildInitialUpdate`) so its
+     * identity is stable across renders; this lets the auto-load effect below key
+     * on it without re-running on every render. Error surfacing is inlined here
+     * (rather than via `ShowError`) precisely to keep that dependency list empty.
+     *
+     * @param rawId - The account id to load (from the key field or `?acctId=`).
      */
-    async function HandleLoad(): Promise<void> {
-        const trimmedId = acctId.trim();
+    const LoadAccount = useCallback(async (rawId: string): Promise<void> => {
+        const trimmedId = rawId.trim();
         if (trimmedId === '') {
-            ShowError(MISSING_ACCT_ID_MESSAGE);
+            setAlertError(MISSING_ACCT_ID_MESSAGE);
+            setAlertOpen(true);
             return;
         }
         setIsLoading(true);
@@ -224,10 +247,31 @@ export default function AccountsUpdatePage() {
         } catch (err) {
             // Specific handling: render the ApiError (e.g. 404 -> not found) as-is
             // and keep formValues / isLoaded unchanged so the operator can retry.
-            ShowError(err);
+            setAlertError(err);
+            setAlertOpen(true);
         } finally {
             setIsLoading(false);
         }
+    }, []);
+
+    /**
+     * Auto-loads the account when the page is reached with an `?acctId=` query
+     * parameter (the read-only view's "Update" deep link). Keyed on the stable
+     * `LoadAccount` and the query value, so it runs once per distinct account id
+     * and never loops. Manual entry (no query param) leaves this a no-op.
+     */
+    useEffect(() => {
+        if (initialAcctId.trim() !== '') {
+            void LoadAccount(initialAcctId);
+        }
+    }, [initialAcctId, LoadAccount]);
+
+    /**
+     * Loads the account currently keyed into the account-id field. Thin wrapper
+     * over {@link LoadAccount} for the Load button and the Enter shortcut.
+     */
+    function HandleLoad(): void {
+        void LoadAccount(acctId);
     }
 
     /**
@@ -251,7 +295,7 @@ export default function AccountsUpdatePage() {
                 // then re-fetch so the operator reviews the latest values.
                 setAlertError(CONFLICT_MESSAGE);
                 setAlertOpen(true);
-                await HandleLoad();
+                await LoadAccount(acctId.trim());
                 return;
             }
             // Any other error (400/422 validation, 404 not found, network) as-is.
@@ -288,7 +332,7 @@ export default function AccountsUpdatePage() {
     function HandleShortcut(key: string): void {
         if (key === 'Enter') {
             if (!isLoaded) {
-                void HandleLoad();
+                HandleLoad();
             } else {
                 void HandleSubmit();
             }
@@ -331,9 +375,7 @@ export default function AccountsUpdatePage() {
                             <Button
                                 variant="contained"
                                 color="primary"
-                                onClick={() => {
-                                    void HandleLoad();
-                                }}
+                                onClick={HandleLoad}
                                 disabled={isLoading || isLoaded}
                             >
                                 Load
@@ -363,12 +405,19 @@ export default function AccountsUpdatePage() {
                                     maxLength={STATUS_LENGTH}
                                     required
                                 />
+                                {/*
+                                  * Opened date is immutable account metadata: shown
+                                  * read-only from the fetched record and never part of
+                                  * the mutable payload (the backend AccountUpdate schema
+                                  * forbids `open_date`; sending it returns HTTP 422).
+                                  */}
                                 <FormField
                                     name="open_date"
                                     label="Opened"
                                     type="date"
-                                    value={formValues.open_date ?? ''}
-                                    onChange={HandleChange}
+                                    value={accountDetail?.open_date ?? ''}
+                                    onChange={HandleReadOnlyChange}
+                                    readOnly
                                 />
                                 <FormField
                                     name="credit_limit"
@@ -635,5 +684,32 @@ export default function AccountsUpdatePage() {
                 severity="success"
             />
         </Container>
+    );
+}
+
+/* ------------------------------------------------------------------------- */
+/* Default export — thin Suspense wrapper (Next.js 16 App Router).           */
+/* ------------------------------------------------------------------------- */
+
+/**
+ * Account Update page — default export for the `/accounts/update` route.
+ *
+ * Wraps {@link AccountsUpdateContent} in a `<Suspense>` boundary because
+ * `useSearchParams` (used to support the `?acctId=` deep link) triggers a
+ * client-side-rendering bailout that would otherwise fail `next build`.
+ *
+ * @returns The Suspense-wrapped account-update page.
+ */
+export default function AccountsUpdatePage() {
+    return (
+        <Suspense
+            fallback={
+                <Box sx={{ display: 'flex', justifyContent: 'center', py: 4 }}>
+                    <CircularProgress />
+                </Box>
+            }
+        >
+            <AccountsUpdateContent />
+        </Suspense>
     );
 }

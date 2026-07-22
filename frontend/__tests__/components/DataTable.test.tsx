@@ -390,13 +390,21 @@ describe('DataTable', () => {
             expect(screen.getByText('No cards on file.')).toBeInTheDocument();
         });
 
-        it('shows a loading indicator and hides data rows while loading', () => {
-            renderCardTable({
+        it('shows skeleton rows (aria-busy) and hides data rows while loading', () => {
+            const { container } = renderCardTable({
                 items: makeCardRows(3),
                 loading: true,
             });
 
-            expect(screen.getByRole('progressbar')).toBeInTheDocument();
+            // The region announces the busy state to assistive tech, and the body
+            // is filled with skeleton placeholders instead of a short spinner row
+            // so the table reserves its full height (QA #16 CLS fix).
+            const region = screen.getByRole('region');
+            expect(region).toHaveAttribute('aria-busy', 'true');
+            expect(
+                container.querySelectorAll('.MuiSkeleton-root').length,
+            ).toBeGreaterThan(0);
+
             // Loading takes precedence over data: no card values are rendered.
             expect(
                 screen.queryByText('************3456'),

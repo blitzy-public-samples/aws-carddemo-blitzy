@@ -55,32 +55,45 @@ WORKDIR /app
 # -----------------------------------------------------------------------------
 
 # -----------------------------------------------------------------------------
+# Least privilege (Ochs Rule #3): create the dedicated non-root runtime user
+# BEFORE copying any source, so every COPY below assigns ownership inline via
+# `--chown`. Creating the user first is precisely what lets us DROP a separate
+# `RUN chown -R appuser:appuser /app` step: that recursive chown previously
+# rewrote the whole /app tree into a SECOND image layer, duplicating the COPY
+# layer (~150 MB) for no runtime benefit (QA finding F1). With `--chown` the
+# ownership is set as part of the single copy, so the source exists exactly once
+# in the image. pip still installs as root (it writes to the system
+# site-packages under /usr/local); appuser only needs read/execute on those
+# packages at runtime, which the default permissions already grant.
+# -----------------------------------------------------------------------------
+RUN useradd --create-home --uid 1000 appuser
+
+# -----------------------------------------------------------------------------
 # Dependency layer (cache-friendly): copy ONLY the manifest and install first,
 # BEFORE the application source. Application code changes then do not invalidate
-# this (slow) pip layer, so rebuilds reuse the cached dependencies.
+# this (slow) pip layer, so rebuilds reuse the cached dependencies. Installed as
+# root into the system site-packages and read by appuser at runtime.
 # -----------------------------------------------------------------------------
-COPY requirements.txt .
+COPY --chown=appuser:appuser requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 # -----------------------------------------------------------------------------
 # Application source. Copies the backend build context (app/, alembic/,
-# alembic.ini, pyproject.toml, ...) into /app. After this:
+# alembic.ini, pyproject.toml, ...) into /app with appuser ownership applied
+# inline by `--chown`. After this:
 #   * `app.main:app` resolves (source at /app/app/main.py), and
 #   * `alembic` is runnable from /app (where alembic.ini lives).
 #
-# A .dockerignore (optional; not created by this file's scope) SHOULD exclude
-# .env, __pycache__/, .venv/, and test caches from the build context so they
-# never land in the image. The build succeeds whether or not it is present.
+# The build context is trimmed by `backend/.dockerignore` (QA findings F1/F2):
+# it excludes the host virtual environment (.venv/), byte-code and tool caches
+# (__pycache__/, .ruff_cache/, .pytest_cache/), the test suite (tests/), and any
+# secret .env file — so none of them ever enter an image layer. Excluding every
+# `.env*` structurally prevents a build-context secret from being baked into the
+# image (Ochs Rule #3: configuration arrives from the runtime environment).
 # -----------------------------------------------------------------------------
-COPY . .
+COPY --chown=appuser:appuser . .
 
-# -----------------------------------------------------------------------------
-# Least privilege (Ochs Rule #3): create and switch to a dedicated non-root
-# user for runtime. This MUST come after the root-only installs and COPYs; we
-# hand ownership of /app to the new user so the app can read its own source.
-# -----------------------------------------------------------------------------
-RUN useradd --create-home --uid 1000 appuser \
-    && chown -R appuser:appuser /app
+# Switch to the non-root user for the remainder of the build and for runtime.
 USER appuser
 
 # Documented service port (compose publishes ${BACKEND_HOST_PORT:-8000}:8000).

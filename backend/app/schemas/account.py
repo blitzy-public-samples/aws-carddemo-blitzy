@@ -55,6 +55,7 @@ from app.utils import date_utils, decimal_utils, validators
 __all__ = [
     "AccountBase",
     "AccountRead",
+    "AccountBeforeImage",
     "AccountUpdate",
     "AccountDetail",
 ]
@@ -455,6 +456,123 @@ class AccountRead(OrmBase):
 
 
 
+class AccountBeforeImage(RequestBase):
+    """Client-echoed before-image of the editable account fields (``COACTUP``).
+
+    Reproduces the ``COACTUPC`` optimistic-lock contract (AAP section 0.7.4): the
+    3270 maintenance screen always carried the record image the operator had
+    originally read, and the program re-read the row and compared it
+    field-for-field before the ``REWRITE``, rejecting the update when another
+    unit-of-work had changed the record in the interim. The ORM model
+    deliberately carries no ``version``/``updated_at`` column (Minimal Change
+    Clause), so the client supplies that prior image here instead -- the values
+    it last read for the editable account fields.
+    ``app.services.account_service`` re-reads the ``SELECT ... FOR UPDATE`` locked
+    row and compares each supplied field; any difference is a concurrent
+    modification and is rejected with HTTP 409.
+
+    The five monetary fields and ``active_status`` are required because they are
+    always present on a read account and anchor the lost-update check; the two
+    dates and ``group_id`` are optional (they may be null on the record) and are
+    compared only when supplied. Money values are echoed as strings/Decimals --
+    never floats -- and are coerced with the same exact-decimal rule as every
+    other account money field (AAP section 0.7.1), so an echoed ``"194.00"``
+    compares equal to the stored ``NUMERIC(12,2)`` value.
+    """
+
+    active_status: str = Field(
+        ...,
+        max_length=ACTIVE_STATUS_MAX_LENGTH,
+        description="Last-read account active status (ACCT-ACTIVE-STATUS PIC X(01)); 'Y' or 'N'.",
+    )
+    curr_bal: Decimal = Field(
+        ...,
+        max_digits=MONEY_MAX_DIGITS,
+        decimal_places=MONEY_DECIMAL_PLACES,
+        description="Last-read current balance (ACCT-CURR-BAL PIC S9(10)V99); NUMERIC(12,2) exact Decimal.",
+    )
+    credit_limit: Decimal = Field(
+        ...,
+        max_digits=MONEY_MAX_DIGITS,
+        decimal_places=MONEY_DECIMAL_PLACES,
+        description="Last-read total credit limit (ACCT-CREDIT-LIMIT PIC S9(10)V99); NUMERIC(12,2) exact Decimal.",
+    )
+    cash_credit_limit: Decimal = Field(
+        ...,
+        max_digits=MONEY_MAX_DIGITS,
+        decimal_places=MONEY_DECIMAL_PLACES,
+        description=(
+            "Last-read cash-advance sub-limit (ACCT-CASH-CREDIT-LIMIT PIC S9(10)V99); "
+            "NUMERIC(12,2) exact Decimal."
+        ),
+    )
+    curr_cyc_credit: Decimal = Field(
+        ...,
+        max_digits=MONEY_MAX_DIGITS,
+        decimal_places=MONEY_DECIMAL_PLACES,
+        description=(
+            "Last-read current-cycle credits (ACCT-CURR-CYC-CREDIT PIC S9(10)V99); "
+            "NUMERIC(12,2) exact Decimal."
+        ),
+    )
+    curr_cyc_debit: Decimal = Field(
+        ...,
+        max_digits=MONEY_MAX_DIGITS,
+        decimal_places=MONEY_DECIMAL_PLACES,
+        description=(
+            "Last-read current-cycle debits (ACCT-CURR-CYC-DEBIT PIC S9(10)V99); "
+            "NUMERIC(12,2) exact Decimal."
+        ),
+    )
+    expiration_date: Optional[date] = Field(
+        default=None,
+        description=(
+            "Last-read account expiration date (ACCT-EXPIRAION-DATE PIC X(10), "
+            "copybook typo corrected) as an ISO date; compared only when supplied."
+        ),
+    )
+    reissue_date: Optional[date] = Field(
+        default=None,
+        description=(
+            "Last-read account reissue date (ACCT-REISSUE-DATE PIC X(10)) as an ISO "
+            "date; compared only when supplied."
+        ),
+    )
+    group_id: Optional[str] = Field(
+        default=None,
+        max_length=GROUP_ID_MAX_LENGTH,
+        description=(
+            "Last-read disclosure group id (ACCT-GROUP-ID PIC X(10)); compared only "
+            "when supplied."
+        ),
+    )
+
+    @field_validator("active_status")
+    @classmethod
+    def ValidateActiveStatus(cls, value: str) -> str:
+        """Validate the echoed ``active_status`` is ``'Y'`` or ``'N'``."""
+        return _ValidateActiveStatus(value)
+
+    @field_validator(
+        "curr_bal",
+        "credit_limit",
+        "cash_credit_limit",
+        "curr_cyc_credit",
+        "curr_cyc_debit",
+        mode="before",
+    )
+    @classmethod
+    def CoerceMoney(cls, value: object) -> object:
+        """Coerce an echoed money field to an exact ``Decimal`` and reject float."""
+        return _CoerceMoneyValue(value)
+
+    @field_validator("expiration_date", "reissue_date", mode="before")
+    @classmethod
+    def ParseDates(cls, value: object) -> Optional[date]:
+        """Validate/parse an echoed legacy X(10) date field into a native ``date``."""
+        return _ParseAccountDate(value)
+
+
 class AccountUpdate(RequestBase):
     """Partial-update payload for the ``COACTUP`` account-maintenance screen.
 
@@ -473,9 +591,25 @@ class AccountUpdate(RequestBase):
     The optimistic-lock semantics of the legacy READ-for-UPDATE -> REWRITE cycle
     (AAP section 0.7.4) are enforced in ``app.services.account_service`` with a
     ``SELECT ... FOR UPDATE`` transaction. The ORM model exposes no
-    ``version``/``updated_at`` column (Minimal Change Clause), so there is no
-    concurrency token to echo back here.
+    ``version``/``updated_at`` column (Minimal Change Clause), so the prior
+    record image is supplied by the client instead: ``before_image`` is a
+    *required* echo of the editable fields the caller last read, and the service
+    compares it field-for-field against the freshly locked row before applying
+    the change. Any divergence means another unit-of-work modified the record in
+    the interim and the update is rejected with HTTP 409 -- reproducing the
+    ``COACTUPC`` lost-update guard exactly.
     """
+
+    before_image: AccountBeforeImage = Field(
+        ...,
+        description=(
+            "Required optimistic-lock token: the editable-field image the caller "
+            "last read (see :class:`AccountBeforeImage`). Compared field-for-field "
+            "against the locked row; any mismatch is a concurrent-modification "
+            "conflict (HTTP 409). This is a control field, not an edited value, so "
+            "it is excluded from the set of fields written to the record."
+        ),
+    )
 
     active_status: Optional[str] = Field(
         default=None,

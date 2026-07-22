@@ -29,7 +29,13 @@ export type AccountDetail = AccountRead & {
     customer: CustomerRead;
 };
 
-/** Editable fields for the account-update screen (COACTUP). */
+/**
+ * Editable fields for the account-update screen (COACTUP).
+ * Mirrors the backend `AccountUpdate` schema exactly (extra="forbid"): only the
+ * nine fields below are accepted by PUT /accounts/{acctId}. `open_date` and the
+ * customer `addr_zip` are read-only/derived on this screen and are intentionally
+ * excluded from the mutable payload (sending them yields HTTP 422 extra_forbidden).
+ */
 export interface AccountUpdate {
     active_status: string;
     credit_limit: string;
@@ -37,9 +43,7 @@ export interface AccountUpdate {
     curr_bal?: string;
     curr_cyc_credit?: string;
     curr_cyc_debit?: string;
-    open_date?: string;
     expiration_date: string;
     reissue_date: string;
-    addr_zip?: string;
     group_id: string;
 }

@@ -73,7 +73,7 @@ jest.mock('@/lib/apiClient', () => ({
 }));
 
 import AccountsViewPage from '@/app/accounts/view/page';
-import { RenderWithProviders, screen, waitFor } from '../testUtils';
+import { RenderWithProviders, screen, waitFor, SetupUser } from '../testUtils';
 import { AccountsApi, ApiError } from '@/lib/apiClient';
 import type { AccountDetail } from '@/types';
 
@@ -273,7 +273,7 @@ describe('AccountsViewPage', () => {
         expect(screen.queryByText('Active')).not.toBeInTheDocument();
     });
 
-    it('renders read-only content with no editable inputs', async () => {
+    it('renders read-only detail content with only the account-id picker editable', async () => {
         mockGetAccount.mockResolvedValueOnce(MakeAccountDetail());
 
         RenderWithProviders(<AccountsViewPage />);
@@ -281,7 +281,15 @@ describe('AccountsViewPage', () => {
         // Wait for the load to complete so the assertion reflects the loaded UI.
         await screen.findByText(EXPECTED_ACCT_ID);
 
-        expect(screen.queryAllByRole('textbox')).toHaveLength(0);
+        // QA #12: the account-id picker is the ONLY editable input on the page.
+        // The loaded account/customer detail is rendered as read-only Typography
+        // (never inputs), so exactly one textbox — the picker — exists, and there
+        // are no numeric (spinbutton) inputs.
+        const textboxes = screen.queryAllByRole('textbox');
+        expect(textboxes).toHaveLength(1);
+        expect(
+            screen.getByRole('textbox', { name: /account number/i }),
+        ).toBeInTheDocument();
         expect(screen.queryAllByRole('spinbutton')).toHaveLength(0);
     });
 
@@ -292,6 +300,31 @@ describe('AccountsViewPage', () => {
         RenderWithProviders(<AccountsViewPage />);
 
         expect(await screen.findByText(MISSING_ACCT_MESSAGE)).toBeInTheDocument();
+        expect(mockGetAccount).not.toHaveBeenCalled();
+    });
+
+    it('navigates to ?acctId= when an id is entered in the picker and LOAD is clicked (QA #12)', async () => {
+        // Start from the picker-only state (no acctId supplied) so the page is
+        // NOT a dead-end: the user can type an id and load it.
+        mockSearchParams = new URLSearchParams();
+        const user = SetupUser();
+
+        RenderWithProviders(<AccountsViewPage />);
+
+        // The friendly prompt is shown, but now beside an actionable picker.
+        expect(await screen.findByText(MISSING_ACCT_MESSAGE)).toBeInTheDocument();
+
+        await user.type(
+            screen.getByRole('textbox', { name: /account number/i }),
+            EXPECTED_ACCT_ID,
+        );
+        await user.click(screen.getByRole('button', { name: /load/i }));
+
+        // The picker drives a shareable query-param navigation (which then
+        // re-runs the existing fetch effect); it does not fetch imperatively.
+        expect(mockPush).toHaveBeenCalledWith(
+            `/accounts/view?acctId=${EXPECTED_ACCT_ID}`,
+        );
         expect(mockGetAccount).not.toHaveBeenCalled();
     });
 

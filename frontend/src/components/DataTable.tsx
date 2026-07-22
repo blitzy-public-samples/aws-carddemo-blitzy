@@ -53,7 +53,7 @@ import {
     Paper,
     Box,
     Typography,
-    CircularProgress,
+    Skeleton,
 } from '@mui/material';
 import { DEFAULT_PAGE_SIZE } from '@/types';
 import type { PaginatedResponse } from '@/types';
@@ -218,12 +218,25 @@ export function DataTable<T>(props: DataTableProps<T>) {
     // Body has three mutually exclusive states: loading, empty, and populated.
     let bodyContent: ReactNode;
     if (loading) {
-        bodyContent = (
-            <TableRow>
-                <TableCell colSpan={columns.length} align="center">
-                    <CircularProgress aria-label="Loading records" />
-                </TableCell>
-            </TableRow>
+        // Render a full page of skeleton rows (one per eventual data row) so the
+        // table occupies the SAME height while loading as when populated. This
+        // eliminates the layout shift (QA #16 CLS) that a single short spinner
+        // row caused when it was swapped for the full result set, and it avoids
+        // the CircularProgress non-composited stroke animation that was the
+        // dominant CLS culprit. Skeleton's pulse animation is compositor-driven.
+        bodyContent = Array.from({ length: ROWS_PER_PAGE }).map(
+            (_unused, rowIndex) => (
+                <TableRow key={`skeleton-${rowIndex}`} aria-hidden="true">
+                    {columns.map((column) => (
+                        <TableCell
+                            key={column.key}
+                            align={column.align ?? 'left'}
+                        >
+                            <Skeleton variant="text" />
+                        </TableCell>
+                    ))}
+                </TableRow>
+            ),
         );
     } else if (items.length === 0) {
         bodyContent = (
@@ -256,9 +269,41 @@ export function DataTable<T>(props: DataTableProps<T>) {
             tabIndex={0}
             role="region"
             aria-label={`Records table, up to ${ROWS_PER_PAGE} rows per page`}
+            aria-busy={loading}
+            // width:100% + minWidth:0 keep the region within its (flex) parent so
+            // the TableContainer below — not the page — owns any horizontal scroll
+            // on narrow viewports (QA #2).
+            sx={{ width: '100%', minWidth: 0 }}
         >
-            <TableContainer component={Paper}>
-                <Table>
+            <TableContainer
+                component={Paper}
+                // overflowX:auto scrolls wide tables internally (QA #2). minHeight
+                // reserves a FULL page of vertical space — a 57px header plus seven
+                // 64px rows (ROWS_PER_PAGE) — via the 8px spacing scale, so the
+                // container (and everything below it, e.g. Pagination) keeps the
+                // same height across the empty / loading / populated / partial-page
+                // states. This eliminates the async-load layout shift (QA #16 CLS).
+                sx={{
+                    width: '100%',
+                    overflowX: 'auto',
+                    minHeight: (theme) => theme.spacing(64),
+                }}
+            >
+                <Table
+                    // Fixed body-row height keeps every row (skeleton, data, or
+                    // empty message) at the SAME vertical position, so swapping
+                    // skeletons for data never nudges rows (QA #16). Header cells
+                    // never wrap, so the head stays one line (57px) and the body
+                    // does not shift up/down when column widths change on load.
+                    sx={{
+                        '& tbody .MuiTableRow-root': {
+                            height: (theme) => theme.spacing(8),
+                        },
+                        '& thead .MuiTableCell-head': {
+                            whiteSpace: 'nowrap',
+                        },
+                    }}
+                >
                     <TableHead>
                         <TableRow>
                             {columns.map((column) => (

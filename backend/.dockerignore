@@ -1,0 +1,72 @@
+# =============================================================================
+# CardDemo — Backend build-context exclusions (Docker).
+#
+# This file trims the `./backend` build context that `backend/Dockerfile`
+# copies with `COPY --chown=appuser:appuser . .`. Everything matched here is
+# NEVER sent to the Docker daemon and therefore can never land in an image
+# layer. Two QA findings drive this file:
+#
+#   * F1 (image bloat): without exclusions, `COPY . .` baked the host virtual
+#     environment (.venv/, ~162 MB and broken — its interpreter symlinks to the
+#     host), byte-code/tool caches (__pycache__/, .ruff_cache/, .pytest_cache/),
+#     and the full test suite (tests/) into the production image.
+#   * F2 (latent secret-in-image): the documented dev workflow copies
+#     `backend/.env.example` to `backend/.env`; excluding every `.env*` file
+#     structurally guarantees a real secret file can never be copied into an
+#     image layer (Ochs Rule #3 — secrets come from the runtime environment).
+#
+# Only production-runtime inputs (requirements.txt, app/, alembic/, alembic.ini,
+# pyproject.toml) remain in the context.
+# =============================================================================
+
+# --- Python virtual environments (never used at runtime; broken host symlinks)
+.venv/
+venv/
+env/
+ENV/
+.python-version
+
+# --- Byte-code and interpreter caches (regenerated; PYTHONDONTWRITEBYTECODE=1)
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+
+# --- Test suite and test/tooling caches (not part of the runtime image)
+tests/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+.coverage.*
+htmlcov/
+
+# --- Secret / environment files (F2: never bake a secret into the image).
+#     `.env.example` is intentionally excluded too — the image needs no template.
+.env
+.env.*
+*.env
+
+# --- Packaging / build artifacts (rebuilt; not runtime inputs)
+build/
+dist/
+*.egg-info/
+.eggs/
+
+# --- Version control and Docker meta (the image needs neither)
+.git/
+.gitignore
+.dockerignore
+Dockerfile
+
+# --- OS / editor cruft
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+.idea/
+.vscode/
+
+# --- Logs and ad-hoc validation scratch files
+*.log
+blitzy_adhoc_test_*

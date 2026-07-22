@@ -128,8 +128,15 @@ VSAM file), so the datastore can change without touching business rules.
 factory in [`../backend/app/main.py`](../backend/app/main.py). The factory reads
 environment-driven settings, attaches an async `lifespan` context manager,
 configures CORS middleware, mounts the v1 routers under
-`settings.API_V1_PREFIX` (`/api/v1`), registers domain-exception handlers, and
-adds a dependency-free `/health` probe. The `lifespan` does minimal startup work
+`settings.API_V1_PREFIX` (`/api/v1`), registers domain-exception handlers
+(including a request-validation handler that redacts sensitive submitted values
+such as passwords from 422 responses), installs a PAN-masking log filter so full
+card numbers never reach the access log, and adds two health probes: a
+dependency-free `/health` **liveness** probe (the process is up) and a
+`/health/ready` **readiness** probe that runs a trivial `SELECT 1` and returns
+200 only when PostgreSQL is reachable (503 otherwise) so orchestrators can gate
+dependent services on a genuinely ready backend. The `lifespan` does minimal
+startup work
 (the async engine connects lazily and the schema is owned by Alembic, never
 created at boot) and calls `engine.dispose()` on shutdown to release the
 connection pool cleanly. The module exports a single ASGI object, `app`, built

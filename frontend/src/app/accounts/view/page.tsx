@@ -30,9 +30,10 @@
 
 import { Suspense, useCallback, useEffect, useState } from 'react';
 import type { ReactElement, ReactNode } from 'react';
-import { useSearchParams } from 'next/navigation';
+import { useRouter, useSearchParams } from 'next/navigation';
 import {
     Box,
+    Button,
     Card,
     CardContent,
     CardHeader,
@@ -46,6 +47,8 @@ import {
 
 import { AccountsApi, IsApiError } from '@/lib/apiClient';
 import { ErrorAlert } from '@/components/ErrorAlert';
+import { FormField } from '@/components/FormField';
+import { FormatMoney } from '@/lib/format';
 import type { AccountDetail, AccountRead, CustomerRead } from '@/types';
 
 /* ------------------------------------------------------------------------- */
@@ -55,11 +58,23 @@ import type { AccountDetail, AccountRead, CustomerRead } from '@/types';
 /** Query-string key carrying the 11-digit account id (`?acctId=00000000123`). */
 const ACCT_ID_QUERY_PARAM = 'acctId';
 
+/** Route path for this page; used to navigate the account-id picker. */
+const ACCOUNTS_VIEW_PATH = '/accounts/view';
+
+/** Page heading (legacy 3270 title "View Account", COACTVW). */
+const PAGE_TITLE = 'View Account';
+
+/** Label for the account-id picker input (BMS ACCTSID field). */
+const ACCT_ID_PICKER_LABEL = 'Account Number';
+
+/** Maximum account-id length; ACCT-ID PIC 9(11) -> VARCHAR(11). */
+const ACCT_ID_MAX_LENGTH = 11;
+
+/** Label for the picker's load button (maps the legacy ENTER lookup). */
+const LOAD_BUTTON_LABEL = 'LOAD';
+
 /** Number of trailing SSN characters left visible after masking. */
 const SSN_VISIBLE_DIGITS = 4;
-
-/** Display-only currency prefix; the underlying value stays a verbatim string. */
-const CURRENCY_PREFIX = '$';
 
 /** Masked prefix rendered ahead of an SSN's visible last digits. */
 const SSN_MASK_PREFIX = '\u2022\u2022\u2022-\u2022\u2022-';
@@ -107,18 +122,6 @@ function MaskSsn(ssn: string): string {
     }
     const lastDigits = ssn.slice(-SSN_VISIBLE_DIGITS);
     return `${SSN_MASK_PREFIX}${lastDigits}`;
-}
-
-/**
- * Formats a monetary amount for display by prefixing the currency symbol. The
- * value is a Decimal string rendered VERBATIM — never parsed to a number
- * (floating-point rounding is a compliance failure, AAP §0.7.1).
- *
- * @param value - The raw Decimal amount as a string (for example `"1000.00"`).
- * @returns The prefixed display string (for example `"$1000.00"`).
- */
-function FormatMoney(value: string): string {
-    return `${CURRENCY_PREFIX}${value}`;
 }
 
 /**
@@ -303,6 +306,7 @@ function LoadingFallback(): ReactElement {
  * @returns The account-view page content.
  */
 function AccountsViewContent(): ReactElement {
+    const router = useRouter();
     const searchParams = useSearchParams();
     const acctId = searchParams.get(ACCT_ID_QUERY_PARAM) ?? '';
 
@@ -310,6 +314,14 @@ function AccountsViewContent(): ReactElement {
     const [isLoading, setIsLoading] = useState<boolean>(false);
     const [errorState, setErrorState] = useState<unknown>(null);
     const [isErrorOpen, setIsErrorOpen] = useState<boolean>(false);
+    // Controlled value of the account-id picker input. Seeded from (and kept in
+    // sync with) the `?acctId=` query param so a bookmarked/loaded account shows
+    // its id in the picker, while still allowing the user to type a new one.
+    const [pickerValue, setPickerValue] = useState<string>(acctId);
+
+    useEffect(() => {
+        setPickerValue(acctId);
+    }, [acctId]);
 
     /**
      * Loads the account by id. Guards against an empty id, sets loading state,
@@ -351,6 +363,34 @@ function AccountsViewContent(): ReactElement {
         setIsErrorOpen(false);
     };
 
+    /**
+     * Updates the picker input value. Signature matches
+     * {@link FormField}'s `onChange(name, value)` contract.
+     *
+     * @param _name - The originating field name (unused; single-field picker).
+     * @param value - The new account-id input value.
+     */
+    const HandlePickerChange = (_name: string, value: string): void => {
+        setPickerValue(value);
+    };
+
+    /**
+     * Navigates to `/accounts/view?acctId=<entered id>`. The query-param change
+     * re-drives {@link HandleLoad} through the existing `useSearchParams` effect,
+     * so the URL stays shareable/bookmarkable. An empty entry is ignored (mirrors
+     * the legacy empty-id guard) rather than clearing the current view.
+     */
+    const HandleLoadClick = (): void => {
+        const trimmedId = pickerValue.trim();
+        if (trimmedId === '') {
+            return;
+        }
+        const target =
+            `${ACCOUNTS_VIEW_PATH}?${ACCT_ID_QUERY_PARAM}=` +
+            `${encodeURIComponent(trimmedId)}`;
+        router.push(target);
+    };
+
     // Body has four mutually exclusive states: missing id, loading, loaded, and
     // not-found (the API error path usually pre-empts the last one).
     let bodyContent: ReactNode;
@@ -377,7 +417,34 @@ function AccountsViewContent(): ReactElement {
 
     return (
         <Container maxWidth="lg" sx={{ py: 3 }}>
-            {bodyContent}
+            <Stack spacing={3}>
+                <Typography variant="h5" component="h1">
+                    {PAGE_TITLE}
+                </Typography>
+                <Stack
+                    direction={{ xs: 'column', sm: 'row' }}
+                    spacing={2}
+                    sx={{ alignItems: { sm: 'flex-start' } }}
+                >
+                    <FormField
+                        name={ACCT_ID_QUERY_PARAM}
+                        label={ACCT_ID_PICKER_LABEL}
+                        value={pickerValue}
+                        onChange={HandlePickerChange}
+                        maxLength={ACCT_ID_MAX_LENGTH}
+                        required
+                        autoFocus
+                    />
+                    <Button
+                        variant="contained"
+                        onClick={HandleLoadClick}
+                        disabled={isLoading}
+                    >
+                        {LOAD_BUTTON_LABEL}
+                    </Button>
+                </Stack>
+                {bodyContent}
+            </Stack>
             <ErrorAlert
                 open={isErrorOpen}
                 onClose={HandleErrorClose}

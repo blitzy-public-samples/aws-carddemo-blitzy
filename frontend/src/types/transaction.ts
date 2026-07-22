@@ -21,8 +21,12 @@ export interface TransactionRead {
     merchant_city: string;   // X(50)
     merchant_zip: string;    // X(10)
     card_num: string;        // X(16) - MASKED
-    orig_ts: string;         // ISO datetime
-    proc_ts: string;         // ISO datetime
+    // orig_ts / proc_ts mirror backend TransactionRead.orig_ts / proc_ts which
+    // are Optional[datetime]; proc_ts is null until a daily transaction is posted
+    // (CVTRA05Y.TRAN-PROC-TS is only stamped at posting time). Must be nullable
+    // so the detail screen never assumes a value is present.
+    orig_ts: string | null;  // ISO datetime, null when not yet available
+    proc_ts: string | null;  // ISO datetime, null until posted
 }
 
 /** Lightweight transaction row for the list screen (COTRN00). */
@@ -33,7 +37,9 @@ export interface TransactionSummary {
     tran_cat_cd: string;
     tran_amt: string;
     tran_source: string;
-    orig_ts: string;
+    // Mirrors backend TransactionSummary.orig_ts (Optional[datetime]); nullable
+    // so the browse grid's date column never assumes a value is present.
+    orig_ts: string | null;
 }
 
 /** Add-transaction payload (COTRN02). tran_desc max 60 on create. */

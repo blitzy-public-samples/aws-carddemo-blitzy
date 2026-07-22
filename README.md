@@ -310,13 +310,13 @@ http://localhost:8000/docs.
 ```bash
 cd frontend
 npm install
-cp .env.local.example .env.local   # NEXT_PUBLIC_API_BASE_URL points at the backend
+cp .env.local.example .env.local   # NEXT_PUBLIC_API_URL points at the backend origin
 npm run dev
 ```
 
-The web app is served at http://localhost:3000. `NEXT_PUBLIC_API_BASE_URL`
-(default `http://localhost:8000/api/v1`) tells the browser where the backend API
-lives.
+The web app is served at http://localhost:3000. `NEXT_PUBLIC_API_URL`
+(default `http://localhost:8000`) tells the browser the backend ORIGIN; the
+axios client (`src/lib/apiClient.ts`) appends `/api/v1` to it.
 
 ### Batch
 
@@ -355,17 +355,32 @@ secondary indexes, and foreign keys.
 1. Ensure PostgreSQL 17 is reachable via `SYNC_DATABASE_URL` — Alembic and the
    batch loaders use the sync (psycopg2) DSN, while the app runtime uses the
    async `DATABASE_URL` (see [Configuration](#configuration)).
-2. Apply migrations with Alembic:
+2. Apply migrations with Alembic. Use **either** the host command **or** the
+   containerized command below — both apply the same two migrations:
+
+   **Host (local development):** run from `backend/`, where the sibling
+   repo-root `app/data` is on disk and resolved automatically:
 
    ```bash
    cd backend
    alembic upgrade head
    ```
 
+   **Docker Compose (containerized):** the `backend` service mounts `app/data`
+   read-only and sets `CARDDEMO_ASCII_DIR` / `CARDDEMO_EBCDIC_DIR`, so `run`
+   inherits both and seeds all 10 tables with no extra flags:
+
+   ```bash
+   docker compose --profile full run --rm backend alembic upgrade head
+   ```
+
    - `0001_initial_schema` creates the 10 tables plus their PK / UNIQUE / index
      definitions.
    - `0002_seed_data` seeds reference and sample data sourced from
-     `app/data/ASCII/*.txt`.
+     `app/data/ASCII/*.txt` (and the EBCDIC-only `USRSEC` user dataset). The seed
+     loader locates the data via `CARDDEMO_ASCII_DIR` / `CARDDEMO_EBCDIC_DIR`
+     when set, else the repo-root `app/data`, else the container mount at
+     `/app/data`.
 
 3. Alternatively (or to reload individual datasets), run the batch loaders under
    [`batch/loaders/`](batch/loaders). They load accounts, cards, customers, the
@@ -503,8 +518,7 @@ Key frontend variables:
 
 | Variable | Purpose |
 | :------- | :------ |
-| `NEXT_PUBLIC_API_BASE_URL` | Browser-facing backend API base URL (default `http://localhost:8000/api/v1`) |
-| `BACKEND_INTERNAL_URL` | Server-side backend URL for Next.js rewrites (the `backend` service in Docker) |
+| `NEXT_PUBLIC_API_URL` | Browser-facing backend ORIGIN, no path (default `http://localhost:8000`); the axios client appends `/api/v1` |
 
 > **Never print or commit a real secret.** Generate strong values locally, e.g.
 > `python -c "import secrets; print(secrets.token_urlsafe(48))"`, and keep them in

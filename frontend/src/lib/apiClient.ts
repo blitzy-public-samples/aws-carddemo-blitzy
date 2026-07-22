@@ -34,6 +34,7 @@ import { DEFAULT_PAGE_SIZE } from '@/types';
 import type {
     LoginRequest,
     LoginResponse,
+    MessageResponse,
     MenuResponse,
     AccountDetail,
     AccountUpdate,
@@ -77,6 +78,13 @@ const SIGNON_ROUTE = '/signon';
  * triggering a redirect loop.
  */
 const AUTH_LOGIN_PATH = '/auth/login';
+
+/**
+ * Logout endpoint path. `POST`ing here instructs the backend to clear the
+ * HTTP-only session cookie (the only way JS can trigger removal of a cookie it
+ * cannot itself read/delete). Kept as a named constant (no magic string).
+ */
+const AUTH_LOGOUT_PATH = '/auth/logout';
 
 /**
  * localStorage key under which `auth.ts` persists the non-sensitive CurrentUser
@@ -217,8 +225,13 @@ function NormalizeAxiosError(error: AxiosError<ErrorResponse>): ApiError {
     const message = ExtractErrorMessage(error);
     const code =
         IsRecord(data) && typeof data.code === 'string' ? data.code : undefined;
-    const detail =
+    const rawDetail =
         IsRecord(data) && typeof data.detail === 'string' ? data.detail : undefined;
+    // QA #4: FastAPI's default error body is `{ detail: "<msg>" }`, and
+    // ExtractErrorMessage already surfaced that string as `message`. Carrying the
+    // identical string again as `detail` makes ErrorAlert render the same text
+    // twice, so keep `detail` only when it adds information beyond `message`.
+    const detail = rawDetail === message ? undefined : rawDetail;
     return new ApiError({ status, message, code, detail });
 }
 
@@ -393,6 +406,20 @@ export const AuthApi = {
             AUTH_LOGIN_PATH,
             credentials,
         );
+        return response.data;
+    },
+
+    /**
+     * Signs the current user out. POST /auth/logout (HTTP 200). The session
+     * baseline stores identity in an HTTP-only cookie that JS can neither read
+     * nor delete, so genuine sign-out requires this server round-trip: the
+     * backend responds with a cookie-deletion `Set-Cookie` header, after which
+     * the browser sends no credential and protected calls return 401. The
+     * endpoint is unauthenticated and idempotent, so it is safe to call even
+     * when the session is already gone.
+     */
+    async Logout(): Promise<MessageResponse> {
+        const response = await apiClient.post<MessageResponse>(AUTH_LOGOUT_PATH);
         return response.data;
     },
 };

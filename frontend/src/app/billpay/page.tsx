@@ -34,6 +34,7 @@ import { FormField } from '@/components/FormField';
 import { ConfirmDialog } from '@/components/ConfirmDialog';
 import { ErrorAlert } from '@/components/ErrorAlert';
 import { BillPayApi } from '@/lib/apiClient';
+import { FormatMoney } from '@/lib/format';
 import type { BillPayRequest, BillPayResponse } from '@/types';
 
 /* ------------------------------------------------------------------------- */
@@ -205,13 +206,13 @@ function BillPayPage() {
                         <CardContent>
                             <Stack spacing={1}>
                                 <Typography variant="body1">
-                                    Current Balance: {billPayInfo.curr_bal}
+                                    Current Balance: {FormatMoney(billPayInfo.curr_bal)}
                                 </Typography>
                                 <Typography variant="body1">
-                                    Credit Limit: {billPayInfo.credit_limit}
+                                    Credit Limit: {FormatMoney(billPayInfo.credit_limit)}
                                 </Typography>
                                 <Typography variant="body1">
-                                    Available Credit: {billPayInfo.available_credit}
+                                    Available Credit: {FormatMoney(billPayInfo.available_credit)}
                                 </Typography>
                             </Stack>
                         </CardContent>
@@ -241,7 +242,8 @@ function BillPayPage() {
                 title={CONFIRM_DIALOG_TITLE}
                 message={
                     billPayInfo
-                        ? `Do you want to pay your balance of ${billPayInfo.curr_bal} now?`
+                        ? `Do you want to pay your balance of ` +
+                          `${FormatMoney(billPayInfo.curr_bal)} now?`
                         : 'Do you want to pay your balance now?'
                 }
                 confirmLabel={PAY_BUTTON_LABEL}

@@ -134,6 +134,27 @@ const NAV_ITEMS: NavItem[] = [
     { label: 'Users', path: '/users', icon: <People />, adminOnly: true },
 ];
 
+/**
+ * Returns the top-level "route family" of a path — its first path segment with a
+ * leading slash (e.g. `/accounts/view` and `/accounts/update` both yield
+ * `/accounts`; `/cards` yields `/cards`). The side-nav highlight is computed by
+ * comparing families rather than exact paths so that a destination's sibling
+ * sub-routes (view / update / add / delete) keep the same nav item selected
+ * (QA issue #8: `/accounts/update` previously highlighted nothing because the
+ * "Accounts" item links to `/accounts/view`). Every `NAV_ITEMS` entry has a
+ * DISTINCT first segment, so families never collide.
+ *
+ * @param path - An absolute route path (e.g. from `usePathname()`).
+ * @returns The `/`-prefixed first segment, or `/` for the root.
+ */
+function GetRouteFamily(path: string): string {
+    const segments = path.split('/').filter(Boolean);
+    if (segments.length === 0) {
+        return '/';
+    }
+    return `/${segments[0]}`;
+}
+
 /* ------------------------------------------------------------------------- */
 /* Props (single typed object — Ochs ≤4-parameter rule).                     */
 /* ------------------------------------------------------------------------- */
@@ -230,11 +251,15 @@ export function AppShell(props: AppShellProps) {
     }
 
     /**
-     * Logs the current user out. Delegates to `@/lib/auth` `Logout`, which clears
-     * the mirrored client identity and hard-redirects to `/signon`.
+     * Logs the current user out. Delegates to `@/lib/auth` `Logout`, which now
+     * asks the backend to invalidate the HTTP-only session cookie (QA #17) before
+     * clearing the mirrored client identity and hard-redirecting to `/signon`.
+     * `Logout` is async; its promise is intentionally not awaited here (the DOM
+     * `onClick` handler is synchronous) — teardown and the redirect run inside
+     * `Logout` itself, so `void` marks the fire-and-forget call explicitly.
      */
     function HandleLogout(): void {
-        Logout();
+        void Logout();
     }
 
     /**
@@ -265,15 +290,24 @@ export function AppShell(props: AppShellProps) {
                 <Box sx={{ overflow: 'auto' }}>
                     <List>
                         {visibleItems.map((item, index) => {
+                            // Highlight by route family so sibling sub-routes keep
+                            // the same item selected (QA #8): e.g. /accounts/update
+                            // matches the "Accounts" item linked to /accounts/view.
                             const isActive =
-                                pathname === item.path ||
-                                pathname.startsWith(`${item.path}/`);
+                                GetRouteFamily(pathname) ===
+                                GetRouteFamily(item.path);
                             const needsDivider =
                                 item.adminOnly &&
                                 (index === 0 || !visibleItems[index - 1].adminOnly);
                             return (
                                 <Fragment key={item.path}>
-                                    {needsDivider ? <Divider /> : null}
+                                    {/*
+                                     * QA #13: a bare <Divider> renders an <hr>,
+                                     * which is invalid as a direct child of the
+                                     * <List>'s <ul>. `component="li"` makes it a
+                                     * valid list item (role="separator" preserved).
+                                     */}
+                                    {needsDivider ? <Divider component="li" /> : null}
                                     <ListItem disablePadding>
                                         <ListItemButton
                                             component={Link}
@@ -297,13 +331,20 @@ export function AppShell(props: AppShellProps) {
     }
 
     // Pre-auth bypass: never wrap the signon page, and (once mounted) never wrap a
-    // page for a visitor with no client identity — render the bare children so the
-    // login flow and any redirect happen without shell chrome. This stays
+    // page for a visitor with no client identity — render the children WITHOUT the
+    // shell chrome so the login flow and any redirect happen bare. This stays
     // hydration-safe: during SSR and the first client render `isMounted` is false,
     // so the branch matches on both sides; the identity-based switch only happens
     // AFTER mount via the effect above.
+    //
+    // QA #15: the children are still wrapped in a `<main>` landmark so every page
+    // (including /signon) exposes exactly one main region for assistive tech. The
+    // wrapper is layout-neutral (a block element filling its parent), so the
+    // centered signon form is unaffected. The authenticated branch below renders
+    // its own single `<main>`, and these two branches are mutually exclusive, so
+    // there is never more than one main landmark.
     if (pathname === SIGNON_ROUTE || (isMounted && !currentUser)) {
-        return <>{props.children}</>;
+        return <Box component="main">{props.children}</Box>;
     }
 
     return (
@@ -334,7 +375,19 @@ export function AppShell(props: AppShellProps) {
                     <Box sx={{ flexGrow: 1 }} />
                     {currentUser ? (
                         <>
-                            <Typography variant="body2" sx={{ mr: 2 }}>
+                            {/*
+                             * QA #7: on narrow viewports the identity label
+                             * crowded/overlapped the Logout button. `noWrap`
+                             * keeps it to a single line (ellipsizing if long),
+                             * and it is hidden below `sm` so the brand + Logout
+                             * never collide on small screens (the role is still
+                             * conveyed by the menu the user sees).
+                             */}
+                            <Typography
+                                variant="body2"
+                                noWrap
+                                sx={{ mr: 2, display: { xs: 'none', sm: 'block' } }}
+                            >
                                 {identityLabel}
                             </Typography>
                             <Button
@@ -382,7 +435,18 @@ export function AppShell(props: AppShellProps) {
                     {RenderNavList()}
                 </Drawer>
             </Box>
-            <Box component="main" sx={{ flexGrow: 1, p: 3 }}>
+            {/*
+             * `minWidth: 0` lets this flex item shrink below its content's
+             * intrinsic width (flex items default to `min-width: auto`). Without
+             * it, wide children such as the shared DataTable force the whole page
+             * to overflow horizontally on narrow viewports; with it, those
+             * children scroll internally instead (QA #2 systemic fix). `maxWidth`
+             * clamps the column to the available flex space.
+             */}
+            <Box
+                component="main"
+                sx={{ flexGrow: 1, minWidth: 0, maxWidth: '100%', p: 3 }}
+            >
                 <Toolbar />
                 {props.children}
             </Box>

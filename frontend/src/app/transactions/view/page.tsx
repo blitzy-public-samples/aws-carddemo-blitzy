@@ -41,6 +41,14 @@ const VISIBLE_CARD_DIGITS = 4;
 /** Length of the date-only prefix (YYYY-MM-DD) sliced from a 26-char timestamp. */
 const DATE_ONLY_LENGTH = 10;
 
+/**
+ * Placeholder shown for a date field when the underlying timestamp is null or
+ * empty. `proc_ts` is null until a daily transaction is posted (CVTRA05Y —
+ * TRAN-PROC-TS is only stamped at posting time), so the detail screen must
+ * render a neutral em-dash rather than crash on a missing value.
+ */
+const DATE_UNAVAILABLE_PLACEHOLDER = '\u2014';
+
 /** Maximum accepted Tran ID length — COTRN01.CPY TRNIDINI PIC X(16). */
 const TRAN_ID_MAX_LENGTH = 16;
 
@@ -76,10 +84,19 @@ function MaskCardNumber(cardNumber: string): string {
  * TRAN-PROC-TS values are moved into 10-char screen fields, truncating to the
  * `YYYY-MM-DD` date portion (COTRN01C detail mapping; COTRN01.CPY X(10) fields).
  *
- * @param timestamp - The full ISO timestamp string.
- * @returns The leading `YYYY-MM-DD` date, or the input if shorter than 10 chars.
+ * A null, undefined, or empty timestamp yields {@link DATE_UNAVAILABLE_PLACEHOLDER}
+ * (an em-dash) — `proc_ts` is null until a transaction is posted, so this guard
+ * prevents a runtime `Cannot read properties of null` crash on the detail screen.
+ *
+ * @param timestamp - The full ISO timestamp string, or null/undefined when
+ *   the value is not yet available.
+ * @returns The leading `YYYY-MM-DD` date, the placeholder when unavailable, or
+ *   the input verbatim if shorter than 10 chars.
  */
-function FormatDateOnly(timestamp: string): string {
+function FormatDateOnly(timestamp: string | null | undefined): string {
+    if (!timestamp) {
+        return DATE_UNAVAILABLE_PLACEHOLDER;
+    }
     if (timestamp.length < DATE_ONLY_LENGTH) {
         return timestamp;
     }

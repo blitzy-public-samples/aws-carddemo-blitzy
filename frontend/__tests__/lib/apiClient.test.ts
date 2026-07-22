@@ -303,7 +303,7 @@ describe('response interceptor / error normalization', () => {
         expect(apiError.detail).toBe('more info');
     });
 
-    it('uses the FastAPI { detail: string } shape as the message', async () => {
+    it('uses the FastAPI { detail: string } shape as the message and does not duplicate it as detail', async () => {
         const apiError = await ExpectApiErrorRejection(
             responseOnRejected(
                 MakeAxiosError({ status: 404, data: { detail: 'Not found' }, url: '/x' }),
@@ -311,7 +311,10 @@ describe('response interceptor / error normalization', () => {
         );
         expect(apiError.status).toBe(404);
         expect(apiError.message).toBe('Not found');
-        expect(apiError.detail).toBe('Not found');
+        // QA #4: the FastAPI `{ detail: "<msg>" }` string is surfaced as `message`;
+        // it must NOT also be carried as `detail`, or ErrorAlert would render the
+        // same text twice. `detail` adds information only when it differs.
+        expect(apiError.detail).toBeUndefined();
     });
 
     it('joins the FastAPI 422 { detail: [...] } msg fields into the message', async () => {

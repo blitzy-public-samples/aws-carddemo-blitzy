@@ -32,7 +32,11 @@
 #     docker compose --profile full up -d --build
 #
 # Apply database migrations once the backend image is built. Migrations are kept
-# OUT of image startup so container boot stays idempotent and side-effect free:
+# OUT of image startup so container boot stays idempotent and side-effect free.
+# The backend service mounts the repository's app/data read-only and sets
+# CARDDEMO_ASCII_DIR / CARDDEMO_EBCDIC_DIR (see the backend service below), so
+# `run --rm` inherits both and this command seeds all 10 tables with NO extra
+# flags or volume mounts required (QA finding F3):
 #
 #     docker compose --profile full run --rm backend alembic upgrade head
 #
@@ -126,10 +130,46 @@ services:
       SECRET_KEY: ${SECRET_KEY:-dev-only-insecure-secret-key-change-me-please-32plus}
       ENVIRONMENT: ${ENVIRONMENT:-development}
       BACKEND_CORS_ORIGINS: http://localhost:${FRONTEND_HOST_PORT:-3000}
+      # Seed-data locations consumed by `alembic upgrade head` (migration
+      # 0002_seed_data.py). They point the seed loader explicitly at the
+      # read-only app/data mount declared below so the DOCUMENTED containerized
+      # migration command works with no extra flags (QA finding F3). On a host
+      # checkout the loader instead falls back to the repo-root app/data, so
+      # these overrides are container-only and harmless elsewhere.
+      CARDDEMO_ASCII_DIR: /app/data/ASCII
+      CARDDEMO_EBCDIC_DIR: /app/data/EBCDIC
+    # Mount the repository's legacy reference datasets read-only so the Alembic
+    # seed migration can read app/data/ASCII/*.txt and the EBCDIC USRSEC dataset.
+    # The backend build context is ./backend, so the repo-root app/data is NOT in
+    # the image; this run-time mount supplies it for
+    # `docker compose --profile full run --rm backend alembic upgrade head`
+    # WITHOUT baking reference data into the image (preserves the F1 image
+    # hygiene fix). It is read-only and is unused by the running API, which reads
+    # only from the database.
+    volumes:
+      - ./app/data:/app/data:ro
     # Publish the ASGI port. The image CMD already runs
     # `uvicorn app.main:app --host 0.0.0.0 --port 8000`, so no `command:` here.
     ports:
       - "${BACKEND_HOST_PORT:-8000}:8000"
+    # Readiness gate (QA finding F5). Polls the /health/ready probe, which runs a
+    # `SELECT 1` against PostgreSQL and returns 200 only when the database is
+    # reachable (503 otherwise). The python:3.13-slim base has no curl, so the
+    # check uses the stdlib urllib client: urlopen() raises on any non-2xx status
+    # (a 503 -> HTTPError -> non-zero exit -> "unhealthy"), so the service reports
+    # healthy only once it can genuinely serve. The frontend gates on this below.
+    # 127.0.0.1 (not `localhost`) forces IPv4 to match uvicorn's 0.0.0.0 bind and
+    # avoids any IPv6-first (::1) resolution mismatch.
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - import urllib.request; urllib.request.urlopen("http://127.0.0.1:8000/health/ready", timeout=3)
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
     networks:
       - carddemo-net
     profiles:
@@ -151,9 +191,12 @@ services:
       # localhost:${BACKEND_HOST_PORT}, NOT the compose-internal `backend` host.
       args:
         NEXT_PUBLIC_API_URL: http://localhost:${BACKEND_HOST_PORT:-8000}
-    # Start after the backend (simple ordering; the browser calls the API).
+    # Start only after the backend is HEALTHY (QA finding F5), not merely
+    # created: the SPA is useless until the API can serve, so gate on the
+    # backend's /health/ready-backed healthcheck rather than plain ordering.
     depends_on:
-      - backend
+      backend:
+        condition: service_healthy
     # Mirrors the build arg at runtime for any server-side read; the operative
     # value for client code is the build arg above. Origin only, no /api/v1.
     environment:
@@ -162,6 +205,26 @@ services:
     # (standalone output) bound to 0.0.0.0:3000, so no `command:` here.
     ports:
       - "${FRONTEND_HOST_PORT:-3000}:3000"
+    # Liveness/readiness gate for the SPA (QA finding F5). The node:22-alpine base
+    # ships BusyBox wget (no curl); `-O /dev/null` discards the body and wget
+    # exits non-zero on any HTTP error status. It probes /signon (a real 200 page)
+    # rather than `/`, because `/` now issues a redirect to /signon (F4) and a
+    # bare probe should assert a concrete served page. The host is 127.0.0.1, NOT
+    # `localhost`: BusyBox wget resolves `localhost` to IPv6 ::1 first, but the
+    # Next.js standalone server binds IPv4 0.0.0.0 (HOSTNAME=0.0.0.0), so a
+    # `localhost` probe hits ::1:3000 and is refused. 127.0.0.1 forces IPv4.
+    healthcheck:
+      test:
+        - CMD
+        - wget
+        - -q
+        - -O
+        - /dev/null
+        - http://127.0.0.1:3000/signon
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
     networks:
       - carddemo-net
     profiles:

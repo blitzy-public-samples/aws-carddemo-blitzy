@@ -78,8 +78,15 @@ const GENERIC_ERROR_MESSAGE = 'Account update failed validation.';
 const HTTP_CONFLICT = 409;
 const HTTP_BAD_REQUEST = 400;
 
-/** AccountUpdate carries exactly 11 body keys — acct_id is a PATH param, never a body key. */
-const ACCOUNT_UPDATE_KEY_COUNT = 11;
+/**
+ * AccountUpdate carries exactly the 9 body keys the backend schema permits
+ * (extra="forbid"): active_status, credit_limit, cash_credit_limit, curr_bal,
+ * curr_cyc_credit, curr_cyc_debit, expiration_date, reissue_date, group_id.
+ * `acct_id` is a PATH param (never a body key); `open_date` and the customer
+ * `addr_zip` are read-only/derived and must NOT be sent (sending them yields
+ * HTTP 422 extra_forbidden — QA issue #11).
+ */
+const ACCOUNT_UPDATE_KEY_COUNT = 9;
 
 /* ------------------------------------------------------------------------- */
 /* Fixture factories (PascalCase per Ochs; single optional overrides object). */
@@ -238,7 +245,7 @@ describe('AccountsUpdatePage', () => {
     });
 
     // ----------------------------------------------------------------------
-    // 3. Successful save (200): body carries the 11 AccountUpdate keys, NO acct_id.
+    // 3. Successful save (200): body carries the 9 AccountUpdate keys, NO acct_id.
     // ----------------------------------------------------------------------
 
     it('saves edits and shows the success banner with no acct_id in the body', async () => {
@@ -275,13 +282,68 @@ describe('AccountsUpdatePage', () => {
         });
 
         // The PATH param carries the id; the body must NOT repeat it, and it must
-        // contain exactly the 11 AccountUpdate keys.
+        // contain exactly the 9 AccountUpdate keys.
         const submittedPayload = (AccountsApi.UpdateAccount as jest.Mock).mock
             .calls[0][1] as AccountUpdate;
         expect(submittedPayload).not.toHaveProperty('acct_id');
+        // QA issue #11: open_date and addr_zip are forbidden by the backend schema
+        // and must never be sent (their presence previously caused a 422 on save).
+        expect(submittedPayload).not.toHaveProperty('open_date');
+        expect(submittedPayload).not.toHaveProperty('addr_zip');
         expect(Object.keys(submittedPayload)).toHaveLength(ACCOUNT_UPDATE_KEY_COUNT);
 
         expect(await screen.findByText(SAVE_SUCCESS_MESSAGE)).toBeInTheDocument();
+    });
+
+    // ----------------------------------------------------------------------
+    // 3b. QA #11 — the "Opened" (open_date) field is read-only, sourced from the
+    //     fetched record, and never enters the mutable payload.
+    // ----------------------------------------------------------------------
+
+    it('renders open_date read-only and omits it from the save payload', async () => {
+        const user = SetupUser();
+        (AccountsApi.GetAccount as jest.Mock).mockResolvedValueOnce(
+            MakeAccountDetail(),
+        );
+        (AccountsApi.UpdateAccount as jest.Mock).mockResolvedValueOnce(
+            MakeAccountDetail(),
+        );
+        RenderWithProviders(<AccountsUpdatePage />);
+        await TypeAndLoad(user);
+
+        // "Opened" is display-only context: it carries the DOM `readonly` attribute
+        // and shows the fetched open_date; it is NOT an editable account field.
+        const openedInput = screen.getByLabelText('Opened');
+        expect(openedInput).toHaveAttribute('readonly');
+        expect(openedInput).toHaveValue('2020-01-15');
+
+        await user.click(screen.getByRole('button', { name: 'Save' }));
+
+        await waitFor(() => {
+            expect(AccountsApi.UpdateAccount).toHaveBeenCalledTimes(1);
+        });
+        const submittedPayload = (AccountsApi.UpdateAccount as jest.Mock).mock
+            .calls[0][1] as AccountUpdate;
+        expect(submittedPayload).not.toHaveProperty('open_date');
+    });
+
+    // ----------------------------------------------------------------------
+    // 3c. QA #9 — arriving with ?acctId= auto-loads the account on mount
+    //     (no manual Load click), mirroring /cards/update.
+    // ----------------------------------------------------------------------
+
+    it('auto-loads the account when reached with an ?acctId= query parameter', async () => {
+        mockSearchParams = new URLSearchParams(`acctId=${TYPED_ACCT_ID}`);
+        (AccountsApi.GetAccount as jest.Mock).mockResolvedValueOnce(
+            MakeAccountDetail(),
+        );
+        RenderWithProviders(<AccountsUpdatePage />);
+
+        // No Load click: the editable form appears purely from the deep link.
+        await waitFor(() => {
+            expect(AccountsApi.GetAccount).toHaveBeenCalledWith(TYPED_ACCT_ID);
+        });
+        expect(await screen.findByLabelText(/Credit Limit/)).toHaveValue('1000.00');
     });
 
     // ----------------------------------------------------------------------

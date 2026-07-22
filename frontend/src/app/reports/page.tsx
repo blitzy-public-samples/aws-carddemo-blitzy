@@ -534,7 +534,19 @@ export default function ReportsPage() {
                         disabled={!isCustom}
                         required={isCustom}
                     />
-                    <Stack direction="row" spacing={2} sx={{ alignItems: 'center' }}>
+                    {/*
+                      * Action row. On narrow viewports (xs) the three action
+                      * buttons stack vertically so they never force horizontal
+                      * page overflow (QA #3 — reports button row no-wrap at
+                      * 375px). From the `sm` breakpoint up they sit in a row,
+                      * and `flexWrap: 'wrap'` lets them wrap onto a second line
+                      * rather than overflow if the container is narrow.
+                      */}
+                    <Stack
+                        direction={{ xs: 'column', sm: 'row' }}
+                        spacing={2}
+                        sx={{ alignItems: 'center', flexWrap: 'wrap' }}
+                    >
                         <Button
                             variant="contained"
                             color="primary"

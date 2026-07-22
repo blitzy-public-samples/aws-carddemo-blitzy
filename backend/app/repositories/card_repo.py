@@ -24,7 +24,7 @@ schema/service/serialization concerns handled outside this layer.
 
 from __future__ import annotations
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.card import Card
@@ -154,6 +154,35 @@ class CardRepository:
             stmt = stmt.where(Card.card_num >= startCardNum)
         result = await session.execute(stmt)
         return list(result.scalars().all())
+
+    async def CountCards(
+        self,
+        session: AsyncSession,
+        acctId: str | None = None,
+    ) -> int:
+        """Count the cards visible to a browse, optionally scoped to an account.
+
+        Supplies the exact total-row count that ``card_service`` needs to build
+        a truthful paginated envelope (``total_items`` / ``total_pages`` /
+        ``has_next``), replacing the fabricated estimate the look-ahead probe
+        produced. When ``acctId`` is supplied the count is scoped to that
+        account (matching the COCRDLIC ``9500-FILTER-RECORDS`` account filter);
+        otherwise every card row is counted. The count rides the same indexed
+        ``acct_id`` predicate as :meth:`ListByAcctId`, so it stays cheap.
+
+        Args:
+            session: The active async database session.
+            acctId: When provided, count only the cards for this account id
+                (indexed alternate key). ``None`` counts across all accounts.
+
+        Returns:
+            The total number of matching card rows (zero when none match).
+        """
+        stmt = select(func.count()).select_from(Card)
+        if acctId is not None:
+            stmt = stmt.where(Card.acct_id == acctId)
+        result = await session.execute(stmt)
+        return int(result.scalar_one())
 
     async def Update(
         self,

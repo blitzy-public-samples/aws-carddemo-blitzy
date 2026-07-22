@@ -152,16 +152,37 @@ export async function Login(credentials: LoginRequest): Promise<CurrentUser> {
 }
 
 /**
- * Logs the user out on the client and returns them to the signon screen.
+ * Logs the user out end-to-end and returns them to the signon screen.
  *
- * Clears the mirrored identity and any bearer token via {@link ClearStoredAuth}
- * (sharing the exact keys the 401 interceptor clears), then performs a hard
- * redirect to `/signon`. There is intentionally no backend logout endpoint in
- * scope: server-side session invalidation relies on cookie expiry (`max_age`),
- * so this helper is purely client-side state teardown plus navigation. The
- * redirect is guarded for SSR.
+ * The authoritative session is the HTTP-only `carddemo_session` cookie, which
+ * JavaScript can neither read nor delete; clearing only the mirrored
+ * `localStorage` identity would therefore leave the cookie valid, so the very
+ * next authenticated request would still succeed (QA issue #17). This helper
+ * first asks the backend to invalidate the session via `AuthApi.Logout()`,
+ * which responds with a cookie-deletion header so the browser drops the cookie;
+ * afterwards protected calls carry no credential and return HTTP 401.
+ *
+ * The backend call is best-effort: it is wrapped so that a transient network or
+ * server error still lets local teardown and the redirect proceed (a user must
+ * always be able to sign out of the SPA). After the round-trip the mirrored
+ * identity and any bearer token are cleared via {@link ClearStoredAuth} (the
+ * exact keys the 401 interceptor clears), then a hard redirect to `/signon` is
+ * performed (SSR-guarded).
+ *
+ * @returns A promise that resolves once teardown has completed and the redirect
+ *   has been issued.
  */
-export function Logout(): void {
+export async function Logout(): Promise<void> {
+    try {
+        // Ask the backend to clear the HTTP-only session cookie. Catch a
+        // SPECIFIC failure surface (any rejection from the logout round-trip)
+        // so sign-out is never blocked by a transient backend/network problem;
+        // this is deliberate best-effort teardown, not a swallowed bug.
+        await AuthApi.Logout();
+    } catch {
+        // Intentionally ignored: local teardown + redirect below must still run
+        // so the user is always signed out of the SPA.
+    }
     ClearStoredAuth();
     if (typeof window !== 'undefined') {
         window.location.href = '/signon';

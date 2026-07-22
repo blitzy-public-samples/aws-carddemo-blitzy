@@ -187,14 +187,15 @@ class CardService:
     ) -> PaginatedResponse[CardSummary]:
         """List cards for one screen page, at most seven rows (COCRDLIC, F-004).
 
-        Reproduces the COCRDLIC forward browse. To decide whether a following
-        page exists -- the legacy 'NO MORE RECORDS TO SHOW' signal
-        (COCRDLIC L1239), detected there by reading ``WS-MAX-SCREEN-LINES + 1``
-        rows (COCRDLIC L1285) -- this method probes with ``limit = page_size + 1``
-        and reports ``has_next`` from whether that extra row came back. The page
-        size is clamped to :data:`MAX_SCREEN_LINES` (7) so a page can never
-        exceed the F-004 limit regardless of the requested size. This method is
-        READ-ONLY and never commits.
+        Reproduces the COCRDLIC forward browse with a truthful paginated
+        envelope: an authoritative ``COUNT(*)`` supplies ``total_items`` (scoped
+        to ``acct_id`` when one is given) and the ordered rows are sliced by a
+        ``(page - 1) * page_size`` offset, so every card is reachable by walking
+        the pages in sequence and ``total_items`` / ``total_pages`` / ``has_next``
+        are exact rather than a look-ahead estimate. The page size is clamped to
+        :data:`MAX_SCREEN_LINES` (7) so a page can never exceed the F-004 limit
+        regardless of the requested size. This method is READ-ONLY and never
+        commits.
 
         Role-based scoping (COCRDLIC header L4-7): an administrator
         (``user_type == ADMIN_USER_TYPE``) browses ALL cards, honouring the
@@ -210,8 +211,9 @@ class CardService:
             session: Active async unit-of-work session.
             params: Browse inputs. A :class:`CardListParams` (or plain
                 :class:`~app.schemas.common.PaginationParams`) carrying the
-                optional ``acct_id`` filter, the optional ``start_card_num``
-                keyset anchor, and the ``page`` / ``page_size`` window.
+                optional ``acct_id`` filter and the ``page`` / ``page_size``
+                offset window. (``start_card_num`` is accepted for backward
+                compatibility but the offset browse does not consult it.)
             currentUser: The authenticated user whose role drives the scoping
                 described above; ``None`` disables role scoping.
 
@@ -223,33 +225,40 @@ class CardService:
         pageSize = self._ResolvePageSize(params.page_size)
         pageNumber = params.page
         acctId = getattr(params, "acct_id", None)
-        startCardNum = getattr(params, "start_card_num", None)
         if self._IsRegularUnscoped(currentUser, acctId):
             # Non-admin without an account context: COCRDLIC never lists all
             # cards for a regular user (header L4-7), so the browse is empty.
-            return self._BuildPage([], pageNumber, pageSize, False)
-        probeLimit = pageSize + 1
-        if acctId is not None and startCardNum is None:
-            # First page of an account browse: the account-scoped read (legacy
-            # CARD-ACCT-ID alternate index) is sufficient and exercises the
-            # dedicated repository contract.
+            return self._BuildPage([], pageNumber, pageSize, 0)
+        # Authoritative grand total for a truthful envelope: COCRDLIC browses
+        # the whole file, so the modern list reports the real matching-row
+        # count (scoped to the account when one is supplied) instead of a
+        # look-ahead estimate.
+        totalItems = await self.cardRepository.CountCards(session, acctId=acctId)
+        # Offset window: fetch the ordered rows up to and including this page,
+        # then slice out the requested page. ``card_num`` ordering is stable, so
+        # every row is reachable by walking the pages in sequence. Card volumes
+        # are small (one account, or the whole modest file), so materialising
+        # ``pageNumber * pageSize`` ordered rows stays inexpensive.
+        fetchLimit = pageNumber * pageSize
+        if acctId is not None:
+            # Account-scoped browse via the CARD-ACCT-ID alternate index.
             fetchedRows = await self.cardRepository.ListByAcctId(
                 session,
                 acctId,
-                limit=probeLimit,
+                limit=fetchLimit,
             )
         else:
-            # General keyset browse (optional account filter + GTEQ start key).
+            # Unscoped browse across every account (admin / internal caller).
             fetchedRows = await self.cardRepository.ListCards(
                 session,
-                acctId=acctId,
-                startCardNum=startCardNum,
-                limit=probeLimit,
+                acctId=None,
+                startCardNum=None,
+                limit=fetchLimit,
             )
-        moreRows = len(fetchedRows) > pageSize
-        pageRows = fetchedRows[:pageSize]
+        startIndex = (pageNumber - MIN_PAGE) * pageSize
+        pageRows = fetchedRows[startIndex : startIndex + pageSize]
         pageItems = [self._BuildSummary(card) for card in pageRows]
-        return self._BuildPage(pageItems, pageNumber, pageSize, moreRows)
+        return self._BuildPage(pageItems, pageNumber, pageSize, totalItems)
 
     @staticmethod
     def _IsRegularUnscoped(
@@ -322,30 +331,26 @@ class CardService:
         pageItems: list[CardSummary],
         pageNumber: int,
         pageSize: int,
-        moreRows: bool,
+        totalItems: int,
     ) -> PaginatedResponse[CardSummary]:
-        """Assemble the paginated browse envelope with an authoritative probe.
+        """Assemble the paginated browse envelope from an authoritative total.
 
-        ``has_next`` is taken directly from the ``page_size + 1`` probe
-        (``moreRows``), reproducing the keyset 'NO MORE RECORDS TO SHOW' signal
-        exactly. A keyset browse has no grand total, so ``total_items`` /
-        ``total_pages`` are reported as a monotonic lower bound that is exact on
-        the final page: full prior pages, plus this page's rows, plus one when a
-        further page is known to exist. Integer arithmetic only (no floating
-        point, AAP 0.7.1).
+        ``total_items`` is the exact ``COUNT(*)`` of matching card rows, so
+        ``total_pages`` (a ceiling division) and ``has_next`` (whether a page
+        follows this one) are precise rather than a look-ahead estimate. A page
+        requested beyond the last one yields an empty ``items`` list while still
+        reporting the true totals. Integer arithmetic only (no floating point,
+        AAP 0.7.1).
 
         Args:
-            pageItems: The masked summaries for this page (already capped).
+            pageItems: The masked summaries for this page (already sliced).
             pageNumber: The 1-based page ordinal being returned.
             pageSize: The effective (clamped) page size.
-            moreRows: True when the probe returned an extra row (a next page
-                exists).
+            totalItems: The authoritative total count of matching card rows.
 
         Returns:
             A fully populated :class:`~app.schemas.common.PaginatedResponse`.
         """
-        itemsBefore = (pageNumber - MIN_PAGE) * pageSize
-        totalItems = itemsBefore + len(pageItems) + (1 if moreRows else 0)
         totalPages = (totalItems + pageSize - 1) // pageSize if totalItems > 0 else 0
         return PaginatedResponse[CardSummary](
             items=pageItems,
@@ -353,7 +358,7 @@ class CardService:
             page_size=pageSize,
             total_items=totalItems,
             total_pages=totalPages,
-            has_next=moreRows,
+            has_next=pageNumber < totalPages,
             has_previous=pageNumber > MIN_PAGE,
         )
 

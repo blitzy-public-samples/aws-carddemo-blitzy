@@ -251,10 +251,12 @@ describe('BillPayPage', () => {
             expect(mockGetBillPayInfo).toHaveBeenCalledWith(DEFAULT_ACCT_ID);
             expect(mockGetBillPayInfo).toHaveBeenCalledTimes(1);
 
-            // All three server money fields render on their labelled lines.
-            expect(screen.getByText('Current Balance: 1200.00')).toBeInTheDocument();
-            expect(screen.getByText('Credit Limit: 5000.00')).toBeInTheDocument();
-            expect(screen.getByText('Available Credit: 3800.00')).toBeInTheDocument();
+            // All three server money fields render on their labelled lines,
+            // each prefixed with the shared currency symbol (QA #10 — consistent
+            // with the account-view screen). The amount itself stays verbatim.
+            expect(screen.getByText('Current Balance: $1200.00')).toBeInTheDocument();
+            expect(screen.getByText('Credit Limit: $5000.00')).toBeInTheDocument();
+            expect(screen.getByText('Available Credit: $3800.00')).toBeInTheDocument();
 
             // Pay Balance is enabled once balances are loaded.
             expect(
@@ -270,13 +272,15 @@ describe('BillPayPage', () => {
             // would yield '3800.00'. The UI must show the raw server value.
             await RenderAndLookup(MakeBillPayResponse({ available_credit: '3800.5' }));
 
-            expect(screen.getByText('Available Credit: 3800.5')).toBeInTheDocument();
+            // The currency symbol is a display prefix only; the amount is the raw
+            // server string (no toFixed / rounding / padding — AAP §0.7.1).
+            expect(screen.getByText('Available Credit: $3800.5')).toBeInTheDocument();
             // Neither a reformatted nor a client-computed value may appear.
             expect(
-                screen.queryByText('Available Credit: 3800.50'),
+                screen.queryByText('Available Credit: $3800.50'),
             ).not.toBeInTheDocument();
             expect(
-                screen.queryByText('Available Credit: 3800.00'),
+                screen.queryByText('Available Credit: $3800.00'),
             ).not.toBeInTheDocument();
         });
 
@@ -285,10 +289,10 @@ describe('BillPayPage', () => {
             // server authoritatively returns 9999.99. The UI must trust the server.
             await RenderAndLookup(MakeBillPayResponse({ available_credit: '9999.99' }));
 
-            expect(screen.getByText('Available Credit: 9999.99')).toBeInTheDocument();
+            expect(screen.getByText('Available Credit: $9999.99')).toBeInTheDocument();
             // The naive client subtraction result must NOT be rendered anywhere.
             expect(
-                screen.queryByText('Available Credit: 3800.00'),
+                screen.queryByText('Available Credit: $3800.00'),
             ).not.toBeInTheDocument();
         });
     });
@@ -343,8 +347,8 @@ describe('BillPayPage', () => {
 
             // A success message and the server-updated balances render.
             expect(await screen.findByText(SUCCESS_MESSAGE)).toBeInTheDocument();
-            expect(screen.getByText('Current Balance: 0.00')).toBeInTheDocument();
-            expect(screen.getByText('Available Credit: 5000.00')).toBeInTheDocument();
+            expect(screen.getByText('Current Balance: $0.00')).toBeInTheDocument();
+            expect(screen.getByText('Available Credit: $5000.00')).toBeInTheDocument();
 
             // The dialog closes after a successful payment.
             await waitFor(() =>

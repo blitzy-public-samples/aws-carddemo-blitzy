@@ -293,6 +293,25 @@ describe('TransactionsViewPage', () => {
             expect(screen.queryByText(FIXTURE_ORIG_TS)).not.toBeInTheDocument();
             expect(screen.queryByText(FIXTURE_PROC_TS)).not.toBeInTheDocument();
         });
+
+        // Regression (QA #1 CRITICAL): proc_ts is null until a transaction is
+        // posted. The detail screen must render an em-dash placeholder instead of
+        // crashing with "Cannot read properties of null (reading 'length')".
+        it('renders an em-dash placeholder for a null proc_ts without crashing', async () => {
+            mockGetTransaction.mockResolvedValueOnce(
+                MakeTransactionRead({ proc_ts: null }),
+            );
+
+            RenderWithProviders(<TransactionsViewPage />);
+
+            // The detail still loads and the Orig Date still renders.
+            expect(await screen.findByText(DETAIL_CARD_TITLE)).toBeInTheDocument();
+            expect(screen.getByText(EXPECTED_ORIG_DATE)).toBeInTheDocument();
+
+            // Proc Date shows the em-dash placeholder (\u2014), and no date is shown.
+            expect(screen.getByText('\u2014')).toBeInTheDocument();
+            expect(screen.queryByText(EXPECTED_PROC_DATE)).not.toBeInTheDocument();
+        });
     });
 
     /* ----------------------------------------------------------------------- */
