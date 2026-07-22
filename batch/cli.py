@@ -41,18 +41,21 @@ from __future__ import annotations
 
 import logging
 import os
+import sys
 from datetime import date
 from pathlib import Path
 from typing import Optional
 
 import typer
+from sqlalchemy.exc import SQLAlchemyError
 
 # --- Batch module public contract (imports restricted to the batch package) ---
-# Transactional session factory (owns commit/rollback per unit of work).
-from batch.db import GetSyncSession
+# Transactional session factory (owns commit/rollback per unit of work) and the
+# shared concise-error formatter (strips SQLAlchemy's SQL/parameter dump).
+from batch.db import FormatConciseError, GetSyncSession
 
-# Whole-chain orchestration.
-from batch.orchestration.batch_chain import RunBatchChain, SeedAll
+# Whole-chain orchestration (BatchChainError carries the failing legacy job name).
+from batch.orchestration.batch_chain import BatchChainError, RunBatchChain, SeedAll
 
 # Batch jobs (1:1 with the legacy CB* COBOL programs).
 from batch.jobs.post_transactions import (
@@ -111,19 +114,27 @@ LOGGER = logging.getLogger("batch.cli")
 # --------------------------------------------------------------------------- #
 # Typer application objects and command groups.
 # --------------------------------------------------------------------------- #
+# ``pretty_exceptions_enable=False`` suppresses Typer's multi-hundred-line Rich
+# traceback for uncaught runtime errors; the module entrypoint (see ``__main__``
+# below) catches the specific batch exceptions and emits one clean stderr line
+# with exit code 1 instead (QA Finding D). Parameter-level errors continue to
+# render Typer's own concise usage message and exit 2.
 app = typer.Typer(
     help="CardDemo batch CLI -- Python reimplementation of the legacy COBOL/JCL batch chain.",
     no_args_is_help=True,
+    pretty_exceptions_enable=False,
 )
 
 jobApp = typer.Typer(
     help="Individual batch jobs (1:1 with legacy CB* COBOL programs).",
     no_args_is_help=True,
+    pretty_exceptions_enable=False,
 )
 
 loadApp = typer.Typer(
     help="Data loaders (1:1 with legacy IDCAMS load jobs).",
     no_args_is_help=True,
+    pretty_exceptions_enable=False,
 )
 
 app.add_typer(jobApp, name="job")
@@ -435,6 +446,11 @@ def RunAllCommand(
         DEFAULT_DATA_DIR, "--data-dir", exists=True, file_okay=False,
         help="Directory containing ASCII seed files.",
     ),
+    outputDir: Path = typer.Option(
+        DEFAULT_OUTPUT_DIR, "--output-dir", file_okay=False,
+        help="Destination for chain artifacts (backups/statements); "
+             "the default is the gitignored out/ directory.",
+    ),
 ) -> None:
     """Run the full batch chain in legacy README order.
 
@@ -443,9 +459,13 @@ def RunAllCommand(
     DISCGRP -> TCATBALF -> TRANTYPE -> DUSRSECJ -> POSTTRAN -> INTCALC ->
     TRANBKP -> COMBTRAN -> CREASTMT -> TRANIDX -> OPENFIL). Assumes an
     already-seeded database; run ``seed-all`` first to bootstrap a fresh one.
+
+    The backup (TRANBKP) and statement (CREASTMT) steps write their artifacts
+    under ``--output-dir`` (default: the gitignored ``out/`` directory), so a
+    full run never leaves untracked files in the working tree (QA Finding E).
     """
     parsedDate = _ParseRunDate(runDate)
-    result = RunBatchChain(runDate=parsedDate, dataDir=dataDir)
+    result = RunBatchChain(runDate=parsedDate, dataDir=dataDir, outputDir=outputDir)
     rejectedTotal = 0
     for stepName, stepValue in result.stepResults:
         # Each stepValue renders only a safe summary; a PostingResult never
@@ -490,5 +510,34 @@ def Main(
     _ConfigureLogging(verbose)
 
 
+def _RunCli() -> None:
+    """Run the Typer app, reporting runtime failures as a clean stderr message.
+
+    Typer/Click raise :class:`SystemExit` for their normal terminations (help
+    exits 0; parameter errors exit 2 after Click prints its own concise usage
+    message). Those propagate untouched, so those surfaces keep their existing
+    behavior. Only the batch *runtime* exceptions are intercepted here, per the
+    Ochs Rule's specific-exception requirement (never a catch-all):
+
+    * :class:`~batch.orchestration.batch_chain.BatchChainError` -- a chain step
+      failed (carries the failing legacy job name);
+    * :class:`~sqlalchemy.exc.SQLAlchemyError` -- database/connection failure;
+    * :class:`OSError` -- artifact file I/O failure (for example the output dir);
+    * :class:`ValueError` -- record/field validation failure.
+
+    Each is emitted as a concise ``ERROR: <message>`` diagnostic with exit code 1
+    and no Rich traceback (QA Finding D). The message cannot leak credentials:
+    the database URL is a :class:`~pydantic.SecretStr` and psycopg2 masks the
+    password in its own error text; :func:`batch.db.FormatConciseError`
+    additionally strips the bound-parameter dump so seed values such as card
+    numbers never surface.
+    """
+    try:
+        app()
+    except (BatchChainError, SQLAlchemyError, OSError, ValueError) as cliError:
+        typer.echo(f"ERROR: {FormatConciseError(cliError)}", err=True)
+        sys.exit(1)
+
+
 if __name__ == "__main__":
-    app()
+    _RunCli()

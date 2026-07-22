@@ -64,6 +64,7 @@ Example:
         # transaction is committed here, exactly once, on clean exit
 """
 
+import os
 from collections.abc import Iterator
 from contextlib import contextmanager
 
@@ -72,7 +73,41 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from batch.config import batchSettings
 
-__all__ = ["ENGINE", "SessionLocal", "GetSyncSession"]
+__all__ = ["ENGINE", "SessionLocal", "GetSyncSession", "FormatConciseError"]
+
+
+# SQLAlchemy appends the offending statement and every bound parameter to its
+# exception text (``\n[SQL: ...]\n[parameters: {...}]``). That dump is stripped
+# from batch error output so failures stay concise and never echo bound values
+# such as card numbers (QA Finding D; AAP 0.7.8 masking intent).
+SQL_DETAIL_MARKER: str = "\n[SQL:"
+
+
+def FormatConciseError(batchError: BaseException) -> str:
+    """Return a concise, single-diagnostic string for a batch runtime error.
+
+    SQLAlchemy's ``str(error)`` appends the full offending statement and every
+    bound parameter. That dump is stripped here so a logged or user-facing
+    failure retains only the core driver diagnostic (a connection failure, or a
+    constraint violation and its ``DETAIL`` line, and so on) -- keeping error
+    output specific, atomic, and free of bound values such as card numbers.
+    Errors without the marker (for example a plain ``ValueError``) are returned
+    unchanged. This is the single error-formatting seam shared by the CLI
+    entrypoint (``batch.cli``) and the orchestration chain
+    (``batch.orchestration.batch_chain``).
+
+    Args:
+        batchError: The batch runtime exception to format.
+
+    Returns:
+        The error text up to (but excluding) the ``[SQL: ...]`` dump, with
+        surrounding whitespace stripped.
+    """
+    message = str(batchError)
+    markerIndex = message.find(SQL_DETAIL_MARKER)
+    if markerIndex != -1:
+        message = message[:markerIndex]
+    return message.strip()
 
 
 # Module-level synchronous engine, created exactly once at import time.
@@ -122,6 +157,67 @@ SessionLocal = sessionmaker(
 )
 
 
+# --------------------------------------------------------------------------- #
+# Optional test-database safety guard (QA Finding C).
+# --------------------------------------------------------------------------- #
+# The batch loaders and jobs issue mutating SQL (idempotent upserts and account
+# balance updates). They are datastore-agnostic -- they act on whatever database
+# ``settings.SYNC_DATABASE_URL`` points at -- so an operator who mis-points that
+# URL could mutate an unintended database. This guard lets a caller OPT IN to a
+# defensive check that refuses to run unless the target database name is a
+# dedicated test database. It is env-driven (Ochs Rule #3 -- no hardcoded
+# configuration) and DISABLED by default, so production and development runs are
+# completely unaffected (no behavior change); only when explicitly enabled does
+# it change behavior.
+REQUIRE_TEST_DB_ENV_VAR = "BATCH_REQUIRE_TEST_DB"
+
+# String values (case-insensitive, surrounding whitespace ignored) that turn the
+# guard ON. Any other value -- including unset -- leaves the guard OFF.
+GUARD_TRUTHY_VALUES = frozenset({"1", "true", "yes", "on"})
+
+# Suffix that marks a database name as a dedicated (non-production) test database.
+TEST_DB_NAME_SUFFIX = "_test"
+
+
+def _IsTestDbGuardEnabled() -> bool:
+    """Return whether the test-database guard has been opted in via the environment.
+
+    Reads :data:`REQUIRE_TEST_DB_ENV_VAR`; the guard is enabled only when its
+    value is one of :data:`GUARD_TRUTHY_VALUES`. Absent or any other value leaves
+    the guard disabled, preserving the default (production-safe) behavior.
+
+    Returns:
+        ``True`` when the guard is enabled, otherwise ``False``.
+    """
+    rawValue = os.environ.get(REQUIRE_TEST_DB_ENV_VAR, "")
+    return rawValue.strip().lower() in GUARD_TRUTHY_VALUES
+
+
+def _AssertTestDatabase() -> None:
+    """Refuse to proceed against a non-test database when the guard is enabled.
+
+    When :data:`REQUIRE_TEST_DB_ENV_VAR` is truthy, the configured database name
+    (read from the engine URL) must end with :data:`TEST_DB_NAME_SUFFIX`; if it
+    does not, a specific :class:`ValueError` is raised BEFORE any session is
+    opened -- so no mutating statement can reach a database that was not
+    explicitly designated for testing. When the guard is disabled this is a
+    no-op. A specific exception is raised, never a catch-all (Ochs Rule #5).
+
+    Raises:
+        ValueError: If the guard is enabled and the target database name does not
+            end with :data:`TEST_DB_NAME_SUFFIX`.
+    """
+    if not _IsTestDbGuardEnabled():
+        return
+    databaseName = ENGINE.url.database or ""
+    if not databaseName.endswith(TEST_DB_NAME_SUFFIX):
+        raise ValueError(
+            f"{REQUIRE_TEST_DB_ENV_VAR} is enabled but the target database "
+            f"'{databaseName}' is not a test database (its name must end with "
+            f"'{TEST_DB_NAME_SUFFIX}'). Refusing to run to protect non-test data."
+        )
+
+
 @contextmanager
 def GetSyncSession() -> Iterator[Session]:
     """Yield a transactional synchronous ``Session`` as a unit of work.
@@ -141,6 +237,10 @@ def GetSyncSession() -> Iterator[Session]:
         Session: An open, transaction-scoped SQLAlchemy ORM session.
 
     Raises:
+        ValueError: If the optional test-database guard is enabled
+            (:data:`REQUIRE_TEST_DB_ENV_VAR`) and the target database is not a
+            test database. This is checked BEFORE the session opens, so no
+            statement runs (see :func:`_AssertTestDatabase`).
         Exception: Re-raises, unchanged, whatever the caller's block raised.
             The broad ``except Exception`` below is the one justified broad guard
             in this codebase: it does not swallow the error — it performs a
@@ -154,6 +254,10 @@ def GetSyncSession() -> Iterator[Session]:
         ...     session.execute(text("SELECT 1")).scalar()
         1
     """
+    # Optional opt-in safety check (no-op unless BATCH_REQUIRE_TEST_DB is set):
+    # refuse to open a unit of work against a non-test database, before any
+    # session or statement exists (QA Finding C).
+    _AssertTestDatabase()
     session = SessionLocal()
     try:
         yield session

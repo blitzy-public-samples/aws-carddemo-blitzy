@@ -60,7 +60,7 @@ from sqlalchemy import text
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
-from batch.db import GetSyncSession
+from batch.db import FormatConciseError, GetSyncSession
 from batch.jobs.backup_tran import BackupTransactions
 from batch.jobs.combine_tran import CombineTransactions
 from batch.jobs.interest_calc import CalculateInterest
@@ -283,19 +283,23 @@ SEED_STEPS = (
 )
 
 
-def _CoerceDataDir(dataDir):
-    """Return ``dataDir`` as a ``Path``, or ``None`` so loaders use their default.
+def _CoerceOptionalPath(pathValue):
+    """Return ``pathValue`` as a ``Path``, or ``None`` to defer to a default.
+
+    Shared by the ``dataDir`` (loader source) and ``outputDir`` (artifact
+    destination) run-scoped parameters: both are optional and, when omitted,
+    defer to a downstream default rather than a value hardcoded here (Ochs
+    Rule #3).
 
     Args:
-        dataDir: A path-like value or ``None``.
+        pathValue: A path-like value or ``None``.
 
     Returns:
-        A :class:`pathlib.Path`, or ``None`` when ``dataDir`` is ``None``. No data
-        path is hardcoded here (Ochs Rule #3); ``None`` defers to each loader.
+        A :class:`pathlib.Path`, or ``None`` when ``pathValue`` is ``None``.
     """
-    if dataDir is None:
+    if pathValue is None:
         return None
-    return Path(dataDir)
+    return Path(pathValue)
 
 
 def _InvokeStepAction(step: ChainStep, session: Session,
@@ -366,7 +370,11 @@ def _RunStep(step: ChainStep, context: ChainContext,
         with sessionFactory() as session:
             stepValue = _InvokeStepAction(step, session, context)
     except (SQLAlchemyError, OSError, ValueError) as stepError:
-        LOGGER.error("STEP %s FAILED: %s", step.jobName, stepError)
+        # Log a concise diagnostic (FormatConciseError strips SQLAlchemy's
+        # SQL/parameter dump) so the failure stays specific and never echoes
+        # bound values such as card numbers (QA Finding D; AAP 0.7.8 masking).
+        LOGGER.error("STEP %s FAILED: %s", step.jobName,
+                     FormatConciseError(stepError))
         raise BatchChainError(step.jobName, stepError) from stepError
     # str(stepValue) here renders only a safe summary -- the POSTTRAN step's
     # PostingResult never exposes reject-record content/PANs (QA finding #28).
@@ -374,14 +382,15 @@ def _RunStep(step: ChainStep, context: ChainContext,
     return stepValue
 
 
-def RunBatchChain(runDate=None, dataDir=None,
+def RunBatchChain(runDate=None, dataDir=None, outputDir=None,
                   sessionFactory=GetSyncSession) -> ChainResult:
     """Run the full CardDemo batch chain in the exact legacy README order.
 
     Executes all 17 steps of :data:`CHAIN_STEPS` in order, each inside its own
     transaction. The first exception aborts the chain (steps after a failure do
     not run). ``runDate`` is threaded, unchanged, to POSTTRAN/INTCALC; ``dataDir``
-    is threaded to the loaders (or ``None`` to use their defaults).
+    is threaded to the loaders (or ``None`` to use their defaults); ``outputDir``
+    is threaded to the artifact-producing steps (TRANBKP/CREASTMT).
 
     Note:
         This preserves the contractual legacy order, which loads XREFFILE before
@@ -392,6 +401,10 @@ def RunBatchChain(runDate=None, dataDir=None,
     Args:
         runDate: Optional run date passed straight through to POSTTRAN/INTCALC.
         dataDir: Optional data directory for the loaders; ``None`` uses defaults.
+        outputDir: Optional destination directory for the backup (TRANBKP) and
+            statement (CREASTMT) artifacts. When ``None``, each producing job
+            falls back to its own gitignored default under ``out/`` so the chain
+            never spills untracked files into the working tree (QA Finding E).
         sessionFactory: Transactional session context-manager factory; defaults
             to :func:`batch.db.GetSyncSession`. Injectable for tests.
 
@@ -401,7 +414,11 @@ def RunBatchChain(runDate=None, dataDir=None,
     Raises:
         BatchChainError: If any step fails; ``.stepName`` names the failing job.
     """
-    context = ChainContext(runDate=runDate, dataDir=_CoerceDataDir(dataDir))
+    context = ChainContext(
+        runDate=runDate,
+        dataDir=_CoerceOptionalPath(dataDir),
+        outputDir=_CoerceOptionalPath(outputDir),
+    )
     result = ChainResult()
     LOGGER.info("START OF BATCH CHAIN (%d steps)", len(CHAIN_STEPS))
     for step in CHAIN_STEPS:
@@ -431,7 +448,7 @@ def SeedAll(dataDir=None, sessionFactory=GetSyncSession) -> None:
     Raises:
         BatchChainError: If any loader fails; ``.stepName`` names the failing step.
     """
-    context = ChainContext(dataDir=_CoerceDataDir(dataDir))
+    context = ChainContext(dataDir=_CoerceOptionalPath(dataDir))
     LOGGER.info("START OF SEED-ALL (%d loaders)", len(SEED_STEPS))
     for step in SEED_STEPS:
         _RunStep(step, context, sessionFactory)

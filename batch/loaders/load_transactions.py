@@ -20,11 +20,14 @@ Load ordering
 
 Staging semantics (AAP 0.7.5)
     The daily seed represents transactions that have **not yet been posted**.
-    Every row is therefore inserted with ``status = STATUS_PENDING`` -- the
-    ``transactions`` table defaults to ``POSTED`` (it is fundamentally the
+    Every brand-new row is therefore inserted with ``status = STATUS_PENDING``
+    -- the ``transactions`` table defaults to ``POSTED`` (it is fundamentally the
     posted ledger), so the pending state is set explicitly here. The batch
     posting job (``CBTRN02C`` -> ``batch/jobs/post_transactions.py``) later
-    promotes these rows to ``POSTED``.
+    promotes these rows to ``POSTED``. On a re-run, the upsert **preserves** the
+    posting state of rows that already exist (see the idempotency note below), so
+    a row the posting job has already promoted is never reset back to
+    ``PENDING`` (QA Finding F).
 
 Numeric and timestamp fidelity (AAP 0.7.1)
     ``tran_amt`` originates from ``PIC S9(09)V99`` -- a signed *zoned-decimal*
@@ -43,8 +46,11 @@ Transaction ownership
     :class:`~sqlalchemy.orm.Session` so the orchestrator or CLI can compose
     several loaders into one atomic transaction. The load is idempotent: rows
     are upserted with an ``ON CONFLICT (tran_id) DO UPDATE`` so re-running the
-    loader refreshes existing rows rather than failing on duplicate keys. The
-    loader never issues DDL -- the schema is owned by Alembic.
+    loader refreshes existing rows rather than failing on duplicate keys -- but
+    the posting-state columns (``status``, ``proc_ts`` in
+    :data:`CONFLICT_PRESERVED_COLUMNS`) are excluded from that update, so a
+    re-run never un-posts an already-posted transaction. The loader never issues
+    DDL -- the schema is owned by Alembic.
 """
 
 from __future__ import annotations
@@ -86,6 +92,18 @@ MERCHANT_ZIP_SLICE = slice(252, 262)  # DALYTRAN-MERCHANT-ZIP PIC X(10)
 CARD_NUM_SLICE = slice(262, 278)  # DALYTRAN-CARD-NUM     PIC X(16)  -> FK cards
 ORIG_TS_SLICE = slice(278, 304)  # DALYTRAN-ORIG-TS      PIC X(26)
 PROC_TS_SLICE = slice(304, 330)  # DALYTRAN-PROC-TS      PIC X(26)
+
+# --- Upsert conflict policy (AAP 0.7.5 / 0.7.6; QA Finding F) -----------------
+# Posting-state columns that record where a transaction sits in the
+# PENDING -> POSTED lifecycle. The INSERT path still sets them for brand-new
+# daily rows (every fresh row enters as STATUS_PENDING with a NULL proc_ts), but
+# they are DELIBERATELY excluded from the ON CONFLICT update set: once the
+# posting job (CBTRN02C -> batch/jobs/post_transactions.py) has promoted a row to
+# POSTED and stamped its proc_ts, re-running this daily loader must NOT reset it
+# back to PENDING / NULL. This keeps the loader coherent with the seed migration
+# (which loads the posted ledger as POSTED) and strengthens the idempotency
+# guarantee -- a re-run never un-posts an already-posted transaction.
+CONFLICT_PRESERVED_COLUMNS = ("status", "proc_ts")
 
 __all__ = ["LoadTransactions"]
 
@@ -170,11 +188,16 @@ def _UpsertRows(session: Session, rows: list[dict]) -> int:
     """Bulk-upsert transaction rows on the ``tran_id`` primary key.
 
     Builds a single PostgreSQL ``INSERT ... ON CONFLICT (tran_id) DO UPDATE``
-    statement so the load is idempotent: existing rows have all non-primary-key
-    columns (including ``status``) refreshed from the incoming values, and new
-    rows are inserted. The primary-key column set is derived from the ORM
-    table metadata rather than hardcoded. The statement is executed through the
-    caller's session; no transaction control happens here.
+    statement so the load is idempotent. New rows are inserted with every column
+    (including the ``status``/``proc_ts`` posting-state fields set by the row
+    builder). For rows that already exist, the update refreshes the data columns
+    but **preserves** the posting-state columns in
+    :data:`CONFLICT_PRESERVED_COLUMNS`: an already-``POSTED`` transaction is never
+    reset to ``PENDING`` (nor its ``proc_ts`` nulled) by a loader re-run, keeping
+    this loader coherent with the seed migration's posted ledger (QA Finding F).
+    The primary-key column set is derived from the ORM table metadata rather than
+    hardcoded. The statement is executed through the caller's session; no
+    transaction control happens here.
 
     Args:
         session: The caller-owned SQLAlchemy session.
@@ -188,10 +211,13 @@ def _UpsertRows(session: Session, rows: list[dict]) -> int:
     targetTable = Transaction.__table__
     primaryKeyNames = [column.name for column in targetTable.primary_key.columns]
     insertStatement = insert(targetTable).values(rows)
+    # Refresh every data column on conflict, but exclude the primary key and the
+    # posting-state columns so a re-run never un-posts an already-posted row.
     updatedColumns = {
         column.name: insertStatement.excluded[column.name]
         for column in targetTable.columns
         if column.name not in primaryKeyNames
+        and column.name not in CONFLICT_PRESERVED_COLUMNS
     }
     upsertStatement = insertStatement.on_conflict_do_update(
         index_elements=primaryKeyNames,
@@ -206,9 +232,12 @@ def LoadTransactions(session: Session, dataDir: Optional[Path] = None) -> int:
 
     Reads the fixed-width ``dailytran.txt`` seed (``CVTRA06Y`` layout), decodes
     every record into ``transactions`` column values, and idempotently upserts
-    them on ``tran_id``. Every row is marked :data:`STATUS_PENDING` to preserve
-    the legacy daily-staging semantics. The caller owns the transaction: this
-    function performs no ``commit`` or ``rollback`` and issues no DDL.
+    them on ``tran_id``. Every **new** row is marked :data:`STATUS_PENDING` to
+    preserve the legacy daily-staging semantics; on a re-run the posting state of
+    rows that already exist is preserved (see :func:`_UpsertRows`), so an
+    already-posted transaction is never reset to pending. The caller owns the
+    transaction: this function performs no ``commit`` or ``rollback`` and issues
+    no DDL.
 
     Args:
         session: An open, caller-owned SQLAlchemy :class:`~sqlalchemy.orm.Session`.

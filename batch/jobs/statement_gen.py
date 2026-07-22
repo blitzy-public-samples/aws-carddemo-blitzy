@@ -148,8 +148,11 @@ CARD_LAST_DIGITS_FALLBACK = "0000"
 # --- Default output location ---------------------------------------------------
 # Runtime artifact directory, relative to the repository root. It replaces the
 # legacy JCL STMTFILE/HTMLFILE DD datasets. The generated statement files are
-# runtime output (not source) and are created on demand.
-DEFAULT_OUTPUT_DIR_PARTS = ("batch", "output", "statements")
+# runtime output (not source) and are created on demand. The leading ``out``
+# segment places the default under the gitignored ``out/`` tree so an
+# unqualified run (for example from ``run-all``) never spills untracked files
+# into the working tree (QA Finding E).
+DEFAULT_OUTPUT_DIR_PARTS = ("out", "statements")
 
 
 # --- PDF layout constants ------------------------------------------------------
@@ -341,9 +344,9 @@ def _ResolveOutputDir(outputDir: str | Path | None) -> Path:
 
     Args:
         outputDir: An explicit target directory (``str`` or
-            :class:`~pathlib.Path`), or ``None`` to use the repository default
-            ``batch/output/statements``. The default is derived from this
-            module's location so it is independent of the current working
+            :class:`~pathlib.Path`), or ``None`` to use the repository's
+            gitignored default ``out/statements``. The default is derived from
+            this module's location so it is independent of the current working
             directory.
 
     Returns:
@@ -675,7 +678,7 @@ def GenerateStatements(
     Args:
         session: An open, caller-owned SQLAlchemy :class:`~sqlalchemy.orm.Session`.
         outputDir: Optional directory to write statements into. When ``None``
-            the repository default ``batch/output/statements`` is used and
+            the repository's gitignored default ``out/statements`` is used and
             created if missing.
 
     Returns:

@@ -78,8 +78,11 @@ GENERATION_PADDING = 4
 
 # Default backup location, relative to the repository root, used when the caller
 # does not pass an explicit ``outputDir``. Kept as path segments so the platform
-# separator is applied by ``Path.joinpath``.
-DEFAULT_BACKUP_SUBDIR = ("backups", "transactions")
+# separator is applied by ``Path.joinpath``. The leading ``out`` segment places
+# the default under the gitignored ``out/`` tree so an unqualified backup (for
+# example from ``run-all``) never spills untracked files into the working tree
+# (QA Finding E).
+DEFAULT_BACKUP_SUBDIR = ("out", "backups", "transactions")
 
 # Text encoding for the CSV backup. UTF-8 is the modern default; the stored
 # values are ordinary text decoded at load time from the ASCII/EBCDIC seeds.
@@ -118,8 +121,9 @@ def _ResolveOutputDir(outputDir: str | Path | None) -> Path:
 
     When the caller passes an explicit location it is honored verbatim (after
     normalization to :class:`~pathlib.Path`). Otherwise the job defaults to the
-    repository's ``backups/transactions`` tree, located relative to this module
-    so the default is stable regardless of the process working directory.
+    repository's gitignored ``out/backups/transactions`` tree, located relative
+    to this module so the default is stable regardless of the process working
+    directory and never leaves untracked files in the working tree.
 
     Args:
         outputDir: An explicit output directory (``str`` or ``Path``), or
