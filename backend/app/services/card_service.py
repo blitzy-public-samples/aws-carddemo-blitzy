@@ -65,6 +65,7 @@ from app.utils import date_utils, validators
 
 if TYPE_CHECKING:  # Imported for type hints only; no runtime dependency needed.
     from app.models.card import Card
+    from app.models.user import User
 
 # ---------------------------------------------------------------------------
 # Field labels fed to the shared validators (kept identical to the labels the
@@ -84,6 +85,12 @@ MAX_MONTH = 12
 # Lowest page ordinal (mirrors app.schemas.common.MIN_PAGE); used to derive
 # ``has_previous`` for the browse envelope.
 MIN_PAGE = 1
+
+# Role code for an administrator -- a faithful port of the COCOM01Y
+# CDEMO-USER-TYPE 88-level ``CDEMO-USRTYP-ADMIN VALUE 'A'``. COCRDLIC (header
+# L4-7) lists every card for an admin but confines a regular user to the cards
+# of the account carried in their session context.
+ADMIN_USER_TYPE = "A"
 
 # ---------------------------------------------------------------------------
 # Verbatim operator messages (VALUE literals lifted character-for-character from
@@ -176,6 +183,7 @@ class CardService:
         self,
         session: AsyncSession,
         params: PaginationParams | CardListParams,
+        currentUser: "User | None" = None,
     ) -> PaginatedResponse[CardSummary]:
         """List cards for one screen page, at most seven rows (COCRDLIC, F-004).
 
@@ -188,12 +196,24 @@ class CardService:
         exceed the F-004 limit regardless of the requested size. This method is
         READ-ONLY and never commits.
 
+        Role-based scoping (COCRDLIC header L4-7): an administrator
+        (``user_type == ADMIN_USER_TYPE``) browses ALL cards, honouring the
+        optional ``acct_id`` filter when one is supplied; a regular user is
+        confined to the cards of the account in their session context. Because
+        the legacy program always carried a COMMAREA account for a non-admin, a
+        regular user who supplies no account anchor is never shown all cards --
+        the browse returns an empty page instead. ``currentUser`` is optional
+        and defaults to ``None`` (no scoping), preserving the original unscoped
+        behaviour for internal / administrative callers and existing tests.
+
         Args:
             session: Active async unit-of-work session.
             params: Browse inputs. A :class:`CardListParams` (or plain
                 :class:`~app.schemas.common.PaginationParams`) carrying the
                 optional ``acct_id`` filter, the optional ``start_card_num``
                 keyset anchor, and the ``page`` / ``page_size`` window.
+            currentUser: The authenticated user whose role drives the scoping
+                described above; ``None`` disables role scoping.
 
         Returns:
             A :class:`~app.schemas.common.PaginatedResponse` of
@@ -204,6 +224,10 @@ class CardService:
         pageNumber = params.page
         acctId = getattr(params, "acct_id", None)
         startCardNum = getattr(params, "start_card_num", None)
+        if self._IsRegularUnscoped(currentUser, acctId):
+            # Non-admin without an account context: COCRDLIC never lists all
+            # cards for a regular user (header L4-7), so the browse is empty.
+            return self._BuildPage([], pageNumber, pageSize, False)
         probeLimit = pageSize + 1
         if acctId is not None and startCardNum is None:
             # First page of an account browse: the account-scoped read (legacy
@@ -226,6 +250,35 @@ class CardService:
         pageRows = fetchedRows[:pageSize]
         pageItems = [self._BuildSummary(card) for card in pageRows]
         return self._BuildPage(pageItems, pageNumber, pageSize, moreRows)
+
+    @staticmethod
+    def _IsRegularUnscoped(
+        currentUser: "User | None",
+        acctId: str | None,
+    ) -> bool:
+        """Return True when a non-admin user browses without an account scope.
+
+        Ports the COCRDLIC role gate (header L4-7). An administrator
+        (``user_type == ADMIN_USER_TYPE``) is never restricted, and a ``None``
+        ``currentUser`` disables scoping entirely (internal callers). For a
+        regular user the browse must be confined to an account: when no
+        ``acctId`` anchor is present the legacy program would still be scoped to
+        its COMMAREA account rather than list everything, so the modern browse
+        yields nothing.
+
+        Args:
+            currentUser: The authenticated user, or ``None`` to disable scoping.
+            acctId: The owning-account anchor resolved from the browse params.
+
+        Returns:
+            True only when ``currentUser`` is a non-admin and ``acctId`` is
+            ``None`` (an unscoped regular browse); False otherwise.
+        """
+        if currentUser is None:
+            return False
+        if getattr(currentUser, "user_type", None) == ADMIN_USER_TYPE:
+            return False
+        return acctId is None
 
     @staticmethod
     def _ResolvePageSize(pageSize: int) -> int:

@@ -62,7 +62,7 @@ from app.models.tran_category_balance import TranCategoryBalance
 from app.models.disclosure_group import DisclosureGroup
 from app.models.account import Account
 from app.models.card_xref import CardXref
-from app.models.transaction import Transaction
+from app.models.transaction import STATUS_POSTED, Transaction
 from app.utils.decimal_utils import TruncateToCents
 
 __all__ = ["CalculateInterest", "InterestResult"]
@@ -326,9 +326,12 @@ def _BuildInterestTransaction(
         card_num=state.cardNum,  # MOVE XREF-CARD-NUM TO TRAN-CARD-NUM
         orig_ts=postingTimestamp,  # MOVE DB2-FORMAT-TS TO TRAN-ORIG-TS
         proc_ts=postingTimestamp,  # MOVE DB2-FORMAT-TS TO TRAN-PROC-TS
-        # status: left to the model default 'POSTED' (a posted/system
-        # transaction). It is deliberately NOT set to PENDING, so the posting
-        # job never re-picks this interest row.
+        # status set explicitly to POSTED (identical to the model default) so the
+        # idempotent upsert in _WriteInterestTransaction carries a deterministic
+        # value on BOTH the insert and the update path. This is a posted/system
+        # transaction, deliberately NOT PENDING, so the posting job never
+        # re-picks this interest row.
+        status=STATUS_POSTED,
     )
 
 
@@ -341,9 +344,21 @@ def _WriteInterestTransaction(
 
     Reproduces CBACT04C ``1300-B-WRITE-TX``: it increments the run-global
     six-digit transaction-id suffix (``ADD 1 TO WS-TRANID-SUFFIX``), builds the
-    interest ``Transaction``, and writes it (``WRITE FD-TRANFILE-REC``). The
-    caller owns the transaction boundary, so this flushes -- to surface any
-    constraint error immediately -- but never commits.
+    interest ``Transaction``, and writes it (``WRITE FD-TRANFILE-REC``).
+
+    The write is an idempotent insert-or-update on the ``tran_id`` primary key
+    (``session.merge``) rather than a plain insert. The legacy program wrote each
+    run's interest postings to a FRESH output generation (``OPEN OUTPUT
+    TRANSACT-FILE`` -> ``SYSTRAN(+1)`` GDG in app/jcl/INTCALC.jcl), so a re-run
+    never collided on the mainframe. The modern schema has a single
+    ``transactions`` table, so an upsert is the faithful equivalent: it keeps the
+    whole batch chain re-runnable (AAP 0.7.6, matching the loaders' ON CONFLICT
+    upserts), so a second chain run updates the interest row in place instead of
+    raising a duplicate-key error. Re-running still re-accrues interest onto the
+    account balance in :func:`_UpdateAccount` (a plain, collision-free UPDATE),
+    which is the expected re-run behavior. The caller owns the transaction
+    boundary, so this flushes -- to surface any constraint error immediately --
+    but never commits.
 
     Args:
         session: The caller-owned SQLAlchemy session (never committed here).
@@ -353,7 +368,7 @@ def _WriteInterestTransaction(
     """
     state.tranIdSuffix += 1  # ADD 1 TO WS-TRANID-SUFFIX (run-global; never reset per account)
     interestTran = _BuildInterestTransaction(state, monthlyInterest)
-    session.add(interestTran)  # WRITE FD-TRANFILE-REC FROM TRAN-RECORD
+    session.merge(interestTran)  # WRITE FD-TRANFILE-REC (idempotent upsert on tran_id)
     session.flush()  # surface constraint errors now; caller owns commit/rollback
     state.result.interestTransactionsWritten += 1
     state.result.totalInterest += monthlyInterest
@@ -436,9 +451,12 @@ def CalculateInterest(session: Session, runDate: date | None = None) -> Interest
     :class:`~sqlalchemy.orm.Session` is supplied (typically from
     ``batch.db.GetSyncSession``) and this function performs no ``commit`` or
     ``rollback`` and issues no DDL. It is re-runnable within the caller's
-    transaction; because a re-run would post interest a second time, the batch
-    chain runs it exactly once per cycle (its transaction boundary and chain
-    ordering guarantee run-level idempotency).
+    transaction: the interest transactions are written with an idempotent upsert
+    on ``tran_id`` (see :func:`_WriteInterestTransaction`), so a second run
+    updates those rows in place rather than raising a duplicate-key error and the
+    batch chain stays re-runnable (AAP 0.7.6). A re-run does re-accrue interest
+    onto each account balance (a plain, collision-free UPDATE in
+    :func:`_UpdateAccount`), so monetary state is intentionally not re-run-stable.
 
     Args:
         session: An open, caller-owned SQLAlchemy session (never committed here).
