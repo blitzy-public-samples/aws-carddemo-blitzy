@@ -94,10 +94,10 @@ manifest change in [`../backend/requirements.txt`](../backend/requirements.txt),
 | Backend | reportlab + Jinja2 | current | PDF/HTML statements and reports (CSV via stdlib `csv`) |
 | Backend | pytest + pytest-asyncio + httpx | current | Unit, integration, and golden-master tests |
 | Batch | Python | 3.13 | Batch CLI runtime |
-| Batch | Typer (on `click`) | 0.15.x | Batch CLI entrypoint (`python -m batch.cli`) |
+| Batch | Typer (on `click`) | 0.27.x | Batch CLI entrypoint (`python -m batch.cli`) |
 | Batch | SQLAlchemy + psycopg2 | 2.0.36 / 2.9.x | Synchronous batch engine (reuses the backend `app` package) |
 | Frontend | Node.js | 20+ LTS | Frontend runtime |
-| Frontend | Next.js | 16.2.7 | React framework, App Router |
+| Frontend | Next.js | 16.2.11 | React framework, App Router |
 | Frontend | React + React DOM | 19.2.7 | UI runtime |
 | Frontend | @mui/material | 9.2.0 | Material UI component library |
 | Frontend | @mui/material-nextjs | 9.1.1 | MUI SSR integration for the App Router |
@@ -380,6 +380,8 @@ shown are the non-sensitive local-development defaults from the templates; treat
 | `ACCESS_TOKEN_EXPIRE_MINUTES` | Session/token lifetime in minutes | `60` |
 | `SESSION_COOKIE_NAME` | Server-side session cookie name | `carddemo_session` |
 | `BCRYPT_ROUNDS` | bcrypt work factor (cost) | `12` |
+| `LOGIN_MAX_ATTEMPTS` | Failed sign-ons per (user id, client IP) before lockout | `5` |
+| `LOGIN_LOCKOUT_SECONDS` | Lockout window after `LOGIN_MAX_ATTEMPTS` failures | `900` |
 | `BACKEND_CORS_ORIGINS` | Allowed CORS origins (includes the frontend origin) | `http://localhost:3000` |
 
 Generate a strong signing key for `SECRET_KEY` with:

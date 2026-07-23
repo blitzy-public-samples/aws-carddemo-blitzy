@@ -26,6 +26,7 @@ import {
     screen,
     waitFor,
     within,
+    fireEvent,
     SetupUser,
     MakeAdminUser,
     MakeCurrentUser,
@@ -414,5 +415,52 @@ describe('UsersDeletePage', () => {
         expect(screen.queryByText(/password/i)).not.toBeInTheDocument();
         expect(screen.queryByText(/secret/i)).not.toBeInTheDocument();
         expect(document.querySelector('input[type="password"]')).toBeNull();
+    });
+
+    // ----------------------------------------------------------------------
+    // 10. Keyboard-shortcut scoping (QA M-28) — the window-level Enter shortcut
+    // must STAND DOWN when a focused interactive control already owns Enter, so
+    // it never duplicates the fetch.
+    // ----------------------------------------------------------------------
+
+    it('does not re-fetch when Enter fires on a focused button (M-28)', async () => {
+        ArmAdmin();
+        mockSearchParams = new URLSearchParams({ userId: SAMPLE_USER_ID });
+        getUserMock.mockResolvedValue(MakeFetchedUser());
+
+        RenderPage();
+
+        // The deep-link auto-fetch runs exactly once.
+        await waitFor(() => {
+            expect(getUserMock).toHaveBeenCalledTimes(1);
+        });
+
+        // Enter pressed while the "Back" button is focused: the window shortcut
+        // reads event.target (the button), recognizes it as an interactive
+        // control that owns Enter, and stands down — so NO second fetch fires.
+        const backButton = screen.getByRole('button', { name: 'Back' });
+        fireEvent.keyDown(backButton, { key: 'Enter' });
+
+        expect(getUserMock).toHaveBeenCalledTimes(1);
+    });
+
+    it('still fetches when Enter fires outside an interactive control (M-28)', async () => {
+        ArmAdmin();
+        const user = SetupUser();
+        getUserMock.mockResolvedValue(MakeFetchedUser());
+
+        RenderPage();
+
+        // Type an id into the free-text field and press Enter on that input.
+        // A text input does NOT own the screen Enter shortcut, so the legacy
+        // "type an id, press Enter to load" behavior is preserved. Typing via
+        // user-event flushes React updates so the window listener closes over
+        // the latest id before Enter is dispatched.
+        const idInput = await screen.findByLabelText(/user id/i);
+        await user.type(idInput, `${SAMPLE_USER_ID}{Enter}`);
+
+        await waitFor(() => {
+            expect(getUserMock).toHaveBeenCalledWith(SAMPLE_USER_ID);
+        });
     });
 });

@@ -121,7 +121,11 @@ async def SeedAccountGraph(session, acctId=SEED_ACCT_ID, custId=SEED_CUST_ID,
         expiration_date=date(2027, 1, 1),
         reissue_date=date(2024, 1, 1),
         addr_zip="12345",
-        group_id="DEFAULT",
+        # group_id left NULL to mirror the golden-master seed quirk (every
+        # ACCT-GROUP-ID is blank; interest-calc falls back to DEFAULT). The
+        # value is incidental to this test and NULL is exempt from the M-16
+        # accounts.group_id foreign key.
+        group_id=None,
     )
     customer = Customer(
         cust_id=custId,
@@ -143,7 +147,6 @@ async def SeedAccountGraph(session, acctId=SEED_ACCT_ID, custId=SEED_CUST_ID,
     card = Card(
         card_num=cardNum,
         acct_id=acctId,
-        cvv_cd="123",
         embossed_name="JANE DOE",
         expiration_date=date(2027, 1, 1),
         active_status="Y",

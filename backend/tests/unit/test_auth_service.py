@@ -15,15 +15,21 @@ uplift:
     (``'User not found. Try again ...'``, L249) and a password mismatch
     (``'Wrong Password. Try again ...'``, L242). The order-proving tests below
     assert each message with exact string equality.
-2.  **User id and password uppercasing.** The legacy flow applies
-    ``FUNCTION UPPER-CASE`` to *both* the entered user id and the entered
-    password (L132-136) before the USRSEC lookup and the credential compare. The
-    Phase C tests prove the service still does this by signing on with a
-    lowercase id / password and observing success against the uppercase seed.
+2.  **User id uppercasing; password case preserved (M-01).** The legacy flow
+    applied ``FUNCTION UPPER-CASE`` to BOTH the entered user id and the entered
+    password (L132-136). The user id fold is preserved (it is the uppercase
+    USRSEC/VSAM key), and the Phase C ``test_login_user_id_is_uppercased`` proves
+    a lowercase id still resolves the uppercase seed row. The PASSWORD fold is
+    NOT reproduced: it destroyed credential entropy, and AAP 0.1.1 makes the
+    uplift mandatory (QA finding M-01), so under the D1 precedence rule the
+    password is verified over its EXACT bytes. ``test_login_password_is_case_sensitive``
+    proves a lowercase password now fails, and ``test_login_exact_case_password_succeeds``
+    proves the exact-case password still authenticates.
 3.  **bcrypt verification replacing the plaintext compare.** The legacy
     ``IF SEC-USR-PWD = WS-USER-PWD`` (L223) is now
-    :func:`app.core.security.VerifyPassword`; a wrong password therefore fails
-    the same way, surfacing the verbatim ``'Wrong Password. Try again ...'``.
+    :func:`app.core.security.VerifyPassword`; a wrong password fails and, per QA
+    Issue C8, surfaces the SAME generic ``'Invalid user ID or password ...'`` as
+    an unknown user id so the 401 body cannot be used to enumerate user ids.
 
 Construction note (why :func:`BuildLoginRequest` exists):
     :class:`~app.schemas.auth.LoginRequest` enforces its own field edits at
@@ -84,7 +90,8 @@ MSG_INVALID_CREDENTIALS = "Invalid user ID or password. Try again ..."
 # Documented seed-only sample identities (README golden-master values). They are
 # test inputs only and are never treated as real credentials. The password is
 # the literal "PASSWORD" (already uppercase), which lets the Phase C tests prove
-# uppercasing by signing on with the lowercase "password".
+# password CASE-SENSITIVITY (M-01): the lowercase "password" must be rejected
+# while the exact-case "PASSWORD" is accepted.
 SEED_ADMIN_USER_ID = "ADMIN001"
 SEED_REGULAR_USER_ID = "USER0001"
 SEED_PASSWORD = "PASSWORD"
@@ -248,7 +255,12 @@ async def test_login_regular_success(db_session, regular_user):
 
 
 # ===========================================================================
-# Phase C -- FUNCTION UPPER-CASE of both credentials (COSGN00C L132-136).
+# Phase C -- credential case handling. The user id is still FUNCTION UPPER-CASE'd
+# (COSGN00C L132-134, the uppercase USRSEC/VSAM key), but the password is NOT:
+# it is verified over its EXACT bytes (QA finding M-01). The legacy password
+# case-fold (COSGN00C L135-136) destroyed credential entropy, and AAP 0.1.1
+# makes the security uplift mandatory, so under D1 precedence the entropy-
+# preserving behavior governs.
 # ===========================================================================
 
 
@@ -257,7 +269,9 @@ async def test_login_user_id_is_uppercased(db_session, admin_user):
 
     Signing on as ``admin001`` resolves the uppercase-keyed ``ADMIN001`` seed
     row, and the response echoes the stored uppercase id -- proving the service
-    applied ``FUNCTION UPPER-CASE`` to the user id (COSGN00C L132-134).
+    applied ``FUNCTION UPPER-CASE`` to the user id (COSGN00C L132-134). This
+    key-normalization behavior is preserved (only the PASSWORD case-fold was
+    removed, see the case-sensitivity test below).
     """
     service = AuthService()
     req = BuildLoginRequest("admin001", SEED_PASSWORD)
@@ -265,16 +279,34 @@ async def test_login_user_id_is_uppercased(db_session, admin_user):
     assert response.user_id == SEED_ADMIN_USER_ID
 
 
-async def test_login_password_is_uppercased(db_session, admin_user):
-    """A lowercase password is uppercased before bcrypt verification.
+async def test_login_password_is_case_sensitive(db_session, admin_user):
+    """The password is verified over its EXACT bytes, never upper-cased (M-01).
 
     The seed hash is of the uppercase ``PASSWORD``; signing on with the
-    lowercase ``password`` succeeds only because the service uppercases it first
-    (COSGN00C L135-136) -- had it not, bcrypt verification would fail and raise
-    the wrong-password error instead.
+    lowercase ``password`` must FAIL, because the service no longer applies the
+    legacy ``FUNCTION UPPER-CASE`` to the password (COSGN00C L135-136). That
+    case-fold collapsed every case variant of a password onto one hash,
+    destroying credential entropy; AAP 0.1.1 makes closing that mandatory (QA
+    finding M-01), so under the D1 precedence rule the case-preserving behavior
+    governs. The failure surfaces the SAME generic anti-enumeration message as
+    any other bad credential (QA Issue C8), never a distinct "wrong password".
     """
     service = AuthService()
     req = BuildLoginRequest(SEED_ADMIN_USER_ID, "password")
+    with pytest.raises(AuthenticationError) as excInfo:
+        await service.Login(db_session, req)
+    assert MessageOf(excInfo.value) == MSG_INVALID_CREDENTIALS
+
+
+async def test_login_exact_case_password_succeeds(db_session, admin_user):
+    """The exact-case password verifies successfully (M-01 positive control).
+
+    Companion to the case-sensitivity test: the seed password ``PASSWORD`` (the
+    exact stored case) authenticates, confirming the case-sensitive check
+    accepts the correct credential rather than rejecting everything.
+    """
+    service = AuthService()
+    req = BuildLoginRequest(SEED_ADMIN_USER_ID, SEED_PASSWORD)
     response = await service.Login(db_session, req)
     assert response.user_id == SEED_ADMIN_USER_ID
     assert response.user_type == ADMIN_USER_TYPE

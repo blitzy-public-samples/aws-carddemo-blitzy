@@ -53,6 +53,7 @@ import sys
 from collections.abc import Callable, Iterator
 from contextlib import AbstractContextManager, contextmanager
 from pathlib import Path
+from urllib.parse import urlsplit
 
 # --------------------------------------------------------------------------- #
 # Phase 1 -- sys.path bootstrap.
@@ -95,8 +96,65 @@ TEST_DATABASE_URL = os.environ.get(
     "TEST_DATABASE_URL",
     "postgresql+psycopg2://carddemo:carddemo@localhost:5432/carddemo_test",
 )
-os.environ["SYNC_DATABASE_URL"] = TEST_DATABASE_URL
 os.environ.setdefault("ENVIRONMENT", "test")
+
+
+# Token a resolved database name MUST contain to be accepted as disposable.
+TEST_DATABASE_NAME_TOKEN = "test"
+
+
+def _AssertDisposableTestDatabase(testDatabaseUrl: str) -> None:
+    """Fail closed unless ``testDatabaseUrl`` is an unmistakably disposable test DB.
+
+    Mirrors the backend conftest guard (QA finding C-01 -- CRITICAL). The batch
+    integration suite creates/drops the schema and, via
+    :func:`RelaxForeignKeys`, can toggle table triggers, so its target database
+    MUST be provably disposable and the resolution MUST fail closed. This check
+    runs at import time, before any engine binds. It (1) requires
+    ``ENVIRONMENT=test``, (2) requires the database NAME to contain ``test``, and
+    (3) forbids the target from coinciding with the application ``DATABASE_URL``
+    database. Only the non-secret database identity is named in errors.
+
+    Args:
+        testDatabaseUrl: The resolved TEST database URL to validate.
+
+    Raises:
+        RuntimeError: If any safety rule is violated.
+    """
+    environment = os.environ.get("ENVIRONMENT", "").strip().lower()
+    if environment != "test":
+        raise RuntimeError(
+            "Refusing to run the destructive batch test suite: ENVIRONMENT must "
+            f"be 'test' (got {environment!r}). Set ENVIRONMENT=test explicitly."
+        )
+    parsed = urlsplit(testDatabaseUrl)
+    dbName = parsed.path.lstrip("/")
+    if TEST_DATABASE_NAME_TOKEN not in dbName.lower():
+        raise RuntimeError(
+            "Refusing to run the destructive batch test suite against database "
+            f"{dbName!r}: the target database name must contain "
+            f"{TEST_DATABASE_NAME_TOKEN!r} to prove it is disposable. Set "
+            "TEST_DATABASE_URL to an isolated *_test* database."
+        )
+    applicationDatabaseUrl = os.environ.get("DATABASE_URL", "").strip()
+    if applicationDatabaseUrl:
+        appParsed = urlsplit(applicationDatabaseUrl)
+        appIdentity = (appParsed.hostname or "", appParsed.port, appParsed.path.lstrip("/"))
+        thisIdentity = (parsed.hostname or "", parsed.port, dbName)
+        if thisIdentity == appIdentity:
+            raise RuntimeError(
+                "Refusing to run the destructive batch test suite: "
+                f"TEST_DATABASE_URL targets the same database ({dbName!r}) as the "
+                "application DATABASE_URL. Use a separate disposable test database."
+            )
+
+
+# Fail closed BEFORE the hard SYNC_DATABASE_URL override binds any engine.
+_AssertDisposableTestDatabase(TEST_DATABASE_URL)
+
+# HARD override (not ``setdefault``): ``batch.db.ENGINE`` must never risk binding
+# to the real ``carddemo`` database and dropping its tables.
+os.environ["SYNC_DATABASE_URL"] = TEST_DATABASE_URL
 
 # --------------------------------------------------------------------------- #
 # Phase 3 -- imports (only AFTER the path + environment bootstrap above).

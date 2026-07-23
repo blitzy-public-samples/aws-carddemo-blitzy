@@ -24,6 +24,30 @@ relative generation ``TRANSACT.BKUP(+1)``. The destructive half of the legacy jo
 (DELETE the VSAM cluster, then DEFINE an empty replacement) is deliberately not
 reproduced -- see the module header and AAP 0.7.5 / 0.7.6.
 
+Non-restorable snapshot semantics (QA finding M-14)
+    This artifact is an operational, human-readable *snapshot report*, NOT a
+    byte-for-byte restore source. Two deliberate divergences from the legacy
+    VSAM REPRO make that explicit and are, together, self-consistent:
+
+    * The PAN (``card_num``) is MASKED to its last four digits (AAP 0.7.8), so
+      the file cannot reconstruct the full card number and therefore cannot be
+      replayed to recreate the source ``transactions`` rows verbatim.
+    * The legacy REPRO's restore purpose is structurally obsolete here. The
+      legacy DELETE/DEFINE steps that emptied and recreated the VSAM cluster --
+      the only reason a restore was ever needed -- are intentionally omitted in
+      this port (Alembic owns the relational schema; this job never empties or
+      drops the table). Because the source is never destroyed, there is nothing
+      to restore FROM this file, so a restorable (unmasked/tokenized) backup
+      would trade a real sensitive-data exposure for a capability the port does
+      not use.
+
+    The snapshot is consequently exempt from byte-for-byte golden-master parity
+    with the legacy REPRO output (no legacy backup dataset ships in ``app/data``
+    to reconcile against); its guarantees are instead field-level content parity
+    with the live table (every row present, exact ``Decimal`` amounts, masked
+    PAN, no CVV/SSN) and never mutating the source -- all asserted by the
+    integration tests.
+
 Generation semantics
     Each run allocates the next monotonically increasing generation number by
     scanning the output directory for existing ``transact_bkup_*.csv`` files and
@@ -282,6 +306,14 @@ def BackupTransactions(session: Session, outputDir: str | Path | None = None) ->
     ``close``); the caller owns the transaction and the schema is owned by
     Alembic. The snapshot is ordered deterministically by ``tran_id`` so backups
     are reproducible and comparable across runs.
+
+    This produces a MASKED, NON-RESTORABLE operational snapshot report, not a
+    restore source: the ``card_num`` is written masked to its last four digits
+    (AAP 0.7.8) and the CVV/full SSN are never present, so the file cannot
+    recreate the source rows verbatim. That is intentional and safe here because
+    the port never empties the source table (the legacy DELETE/DEFINE steps are
+    omitted), so no restore is ever required (QA finding M-14; see the module
+    docstring).
 
     Args:
         session: An open, caller-owned SQLAlchemy

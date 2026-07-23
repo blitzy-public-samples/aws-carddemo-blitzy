@@ -30,7 +30,13 @@ import re
 from functools import lru_cache
 from typing import Annotated, Literal
 
-from pydantic import Field, SecretStr, ValidationError, field_validator
+from pydantic import (
+    Field,
+    SecretStr,
+    ValidationError,
+    field_validator,
+    model_validator,
+)
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 # ---------------------------------------------------------------------------
@@ -55,6 +61,26 @@ MAXIMUM_BCRYPT_ROUNDS = 15
 # (letters, digits, dots, hyphens) + optional ``:port``, and nothing else (no
 # path, query, or trailing slash). Rejects bare values such as ``not-a-url``.
 CORS_ORIGIN_PATTERN = re.compile(r"^https?://[A-Za-z0-9.\-]+(:\d+)?$")
+
+# Lower bound for the login lockout threshold (QA finding M-01). At least one
+# failed attempt must be permitted before a lockout could ever trigger, so a
+# value below 1 would lock out the very first attempt (including a legitimate
+# typo) and is rejected. The default (below) is well above this floor.
+MINIMUM_LOGIN_MAX_ATTEMPTS = 1
+
+# Lower bound for the lockout duration in seconds (QA finding M-01). A
+# non-positive window would make a "lockout" expire instantly (no throttle at
+# all), so the duration must be strictly positive.
+MINIMUM_LOGIN_LOCKOUT_SECONDS = 1
+
+# Environments treated as unmistakable local development/test profiles, in which
+# the built-in ``DATABASE_URL`` / ``SYNC_DATABASE_URL`` convenience default
+# (localhost throwaway credentials) is permitted. Any OTHER value of
+# ``ENVIRONMENT`` -- notably "staging"/"production" -- is treated as a real
+# deployment that MUST supply its own database URLs explicitly, so a shipped
+# credential default can never silently reach a deployed system (QA finding
+# M-25). Compared case-insensitively against the stripped ``ENVIRONMENT`` value.
+LOCAL_PROFILE_ENVIRONMENTS = frozenset({"development", "test"})
 
 
 class Settings(BaseSettings):
@@ -121,6 +147,14 @@ class Settings(BaseSettings):
     # Typed as SecretStr so the embedded credentials never render in cleartext
     # through repr()/str()/model_dump() (logging, debug tracebacks, error
     # reporting). Consumers read the URL with ``.get_secret_value()``.
+    #
+    # The defaults below carry ONLY throwaway local docker credentials and exist
+    # purely for the local-development/test profile so a fresh checkout runs
+    # against the compose ``postgres:17`` service with no extra config. Outside
+    # that profile they are NEVER used as a silent fallback: the
+    # ``RequireExplicitDatabaseUrls`` model validator fails startup closed when a
+    # non-local ``ENVIRONMENT`` leaves either URL at its built-in default (QA
+    # finding M-25).
     DATABASE_URL: SecretStr = SecretStr(
         "postgresql+asyncpg://carddemo:carddemo@localhost:5432/carddemo"
     )
@@ -150,6 +184,23 @@ class Settings(BaseSettings):
         default=12,
         ge=MINIMUM_BCRYPT_ROUNDS,
         le=MAXIMUM_BCRYPT_ROUNDS,
+    )
+    # --- Login throttling (consumed by app/core/rate_limiter.py via the auth
+    # router). QA finding M-01: the legacy sign-on and the initial port applied
+    # no rate limit, so an attacker could try passwords without bound (twelve
+    # bad logins produced only 401s). LOGIN_MAX_ATTEMPTS consecutive failures for
+    # a given (user id, client IP) pair lock further attempts for
+    # LOGIN_LOCKOUT_SECONDS, after which the window resets; a success clears the
+    # counter immediately. Both are bounded so a misconfiguration cannot disable
+    # the throttle (max attempts < 1) or make a lockout instantly expire
+    # (duration < 1s). Values are environment-tunable and never hardcoded.
+    LOGIN_MAX_ATTEMPTS: int = Field(
+        default=5,
+        ge=MINIMUM_LOGIN_MAX_ATTEMPTS,
+    )
+    LOGIN_LOCKOUT_SECONDS: int = Field(
+        default=900,
+        ge=MINIMUM_LOGIN_LOCKOUT_SECONDS,
     )
 
     # --- CORS (consumed by app/main.py -> CORSMiddleware) ---
@@ -229,6 +280,45 @@ class Settings(BaseSettings):
                 f"{MINIMUM_SECRET_KEY_LENGTH} characters"
             )
         return rawValue
+
+    @model_validator(mode="after")
+    def RequireExplicitDatabaseUrls(self) -> "Settings":
+        """Fail closed when a real deployment omits its database URLs.
+
+        The built-in ``DATABASE_URL`` / ``SYNC_DATABASE_URL`` defaults carry only
+        throwaway local docker credentials and exist purely as a
+        local-development/test convenience. Silently falling back to them in a
+        real deployment would let a production process connect to a wrong (or
+        attacker-controlled) ``localhost`` database, so outside an unmistakable
+        local profile (:data:`LOCAL_PROFILE_ENVIRONMENTS`) both URLs MUST be
+        supplied explicitly by the environment (QA finding M-25). The guard
+        inspects ``model_fields_set`` -- the fields the environment actually
+        populated -- so a value still at its built-in default (never explicitly
+        set) is what trips it. No URL value is included in the error, so a
+        startup traceback can never leak a credential.
+
+        Returns:
+            The validated settings instance, unchanged.
+
+        Raises:
+            ValueError: If ``ENVIRONMENT`` is not a local profile and either
+                database URL was left at its built-in default.
+        """
+        normalizedEnvironment = self.ENVIRONMENT.strip().lower()
+        if normalizedEnvironment in LOCAL_PROFILE_ENVIRONMENTS:
+            return self
+        missingFields = [
+            fieldName
+            for fieldName in ("DATABASE_URL", "SYNC_DATABASE_URL")
+            if fieldName not in self.model_fields_set
+        ]
+        if missingFields:
+            raise ValueError(
+                f"{', '.join(missingFields)} must be set explicitly when "
+                f"ENVIRONMENT={self.ENVIRONMENT!r} (the built-in local default "
+                "is not used outside a development/test profile)"
+            )
+        return self
 
 
 def _BuildSettings() -> Settings:

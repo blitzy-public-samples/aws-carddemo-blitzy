@@ -1,21 +1,29 @@
-# Unit tests for app.core.log_masking (QA finding F8 — PAN log leak).
+# Unit tests for app.core.log_masking (QA findings F8 and M-06 — log leaks).
 # Traceability: the QA runtime checkpoint found that GET/PUT /cards/{cardNum}
 #   logged the full 16-digit Primary Account Number (PAN) via the uvicorn access
-#   log, because the card number is a URL path segment. These tests encode the
-#   masking contract that closes that leak WITHOUT changing the REST path
+#   log, because the card number is a URL path segment (F8). QA finding M-06 then
+#   established that the first filter masked only the message/args on only the
+#   access + root loggers, leaving the exception traceback (exc_info/exc_text),
+#   stack info, structured extras, the sqlalchemy.engine log and the other
+#   uvicorn loggers unmasked. These tests encode the comprehensive masking
+#   contract that closes every one of those leaks WITHOUT changing the REST path
 #   (AAP §0.5.5 keeps /cards/{cardNum}) and consistent with the response-body
 #   masking of the card schemas (AAP §0.7.8): a PAN (a 13-19 digit run, ISO/IEC
 #   7812) is rendered with only its last four digits, while shorter identifiers
 #   that legitimately appear in URLs — the 11-digit acct_id and 9-digit cust_id —
-#   are left intact.
+#   are left intact; and a structured extra whose KEY names a secret is redacted
+#   wholesale.
 #
 # Ochs naming (AAP 0.8.2 / 0.8.3): snake_case test-function names (the pytest
 # discovery contract) and file name; camelCase local variables; ALL_UPPERCASE
 # module-level constants; 4-space indentation; one asserted behavior per test.
 
 import logging
+import sys
 
 from app.core.log_masking import (
+    REDACTED_PLACEHOLDER,
+    TARGET_LOGGER_NAMES,
     InstallPanMaskingFilter,
     MaskPansInText,
     PanMaskingFilter,
@@ -177,3 +185,179 @@ def test_installed_filter_masks_emitted_access_record() -> None:
         accessLogger.removeHandler(captureHandler)
         accessLogger.filters = originalFilters
         accessLogger.setLevel(originalLevel)
+
+
+# --------------------------------------------------------------------------- #
+# QA finding M-06 — coverage of exception traceback, stack info, and           #
+# structured extras, and installation across every server log path.           #
+# --------------------------------------------------------------------------- #
+
+
+def _MakeRecord(**overrides: object) -> logging.LogRecord:
+    """Build a minimal INFO LogRecord, applying any field overrides.
+
+    Args:
+        overrides: LogRecord constructor keyword overrides (for example
+            ``msg``, ``args``, ``exc_info``).
+
+    Returns:
+        A ready-to-filter :class:`logging.LogRecord`.
+    """
+    recordArguments: dict[str, object] = {
+        "name": "sqlalchemy.engine",
+        "level": logging.ERROR,
+        "pathname": __file__,
+        "lineno": 1,
+        "msg": "record",
+        "args": (),
+        "exc_info": None,
+    }
+    recordArguments.update(overrides)
+    return logging.LogRecord(**recordArguments)
+
+
+def _MakePanValueError() -> tuple:
+    """Return an ``exc_info`` tuple for an exception whose message embeds a PAN.
+
+    Returns:
+        The three-tuple ``(type, value, traceback)`` produced by raising and
+        catching a :class:`ValueError` that names :data:`SAMPLE_PAN` — modelling
+        a driver traceback whose bound-parameter tail leaks the card number.
+    """
+    try:
+        raise ValueError(f"insert failed for parameters ({SAMPLE_PAN},)")
+    except ValueError:
+        return sys.exc_info()
+
+
+def test_filter_masks_pan_in_exception_traceback() -> None:
+    """A PAN embedded in exc_info is masked into the record's exc_text."""
+    maskingFilter = PanMaskingFilter()
+    logRecord = _MakeRecord(msg="database error", exc_info=_MakePanValueError())
+    assert maskingFilter.filter(logRecord) is True
+    assert logRecord.exc_text is not None
+    assert SAMPLE_PAN not in logRecord.exc_text
+    assert SAMPLE_PAN_MASKED in logRecord.exc_text
+
+
+def test_filter_masks_pan_in_cached_exception_text() -> None:
+    """An already-cached exc_text carrying a PAN is masked in place."""
+    maskingFilter = PanMaskingFilter()
+    logRecord = _MakeRecord(msg="database error")
+    logRecord.exc_text = f"Traceback ... parameters: ({SAMPLE_PAN},)"
+    assert maskingFilter.filter(logRecord) is True
+    assert SAMPLE_PAN not in logRecord.exc_text
+    assert SAMPLE_PAN_MASKED in logRecord.exc_text
+
+
+def test_filter_masks_pan_in_stack_info() -> None:
+    """A PAN embedded in an explicit stack_info string is masked in place."""
+    maskingFilter = PanMaskingFilter()
+    logRecord = _MakeRecord(msg="stack captured")
+    logRecord.stack_info = f"Stack (most recent call last):\n  card={SAMPLE_PAN}"
+    assert maskingFilter.filter(logRecord) is True
+    assert SAMPLE_PAN not in logRecord.stack_info
+    assert SAMPLE_PAN_MASKED in logRecord.stack_info
+
+
+def test_filter_masks_pan_in_structured_extra_string_value() -> None:
+    """A PAN in a structured-extra string value is masked in place."""
+    maskingFilter = PanMaskingFilter()
+    logRecord = _MakeRecord(msg="card viewed")
+    # A structured extra set via logger.info(..., extra={"request_path": ...}).
+    logRecord.request_path = f"/api/v1/cards/{SAMPLE_PAN}"
+    assert maskingFilter.filter(logRecord) is True
+    assert SAMPLE_PAN not in logRecord.request_path
+    assert SAMPLE_PAN_MASKED in logRecord.request_path
+
+
+def test_filter_redacts_sensitive_extra_key_wholesale() -> None:
+    """A structured extra whose key names a secret is redacted wholesale.
+
+    A password/token does not match the numeric PAN pattern, so it must be
+    redacted by KEY rather than masked by value.
+    """
+    maskingFilter = PanMaskingFilter()
+    logRecord = _MakeRecord(msg="login attempt")
+    logRecord.password = "S3cr3tCase!"
+    logRecord.access_token = "eyJhbGciOiJIUzI1NiJ9.payload.signature"
+    assert maskingFilter.filter(logRecord) is True
+    assert logRecord.password == REDACTED_PLACEHOLDER
+    assert logRecord.access_token == REDACTED_PLACEHOLDER
+
+
+def test_filter_preserves_non_sensitive_non_string_extra() -> None:
+    """A non-sensitive, non-string structured extra is left untouched."""
+    maskingFilter = PanMaskingFilter()
+    logRecord = _MakeRecord(msg="page rendered")
+    logRecord.row_count = 7
+    assert maskingFilter.filter(logRecord) is True
+    assert logRecord.row_count == 7
+
+
+def test_filter_does_not_corrupt_reserved_record_fields() -> None:
+    """Reserved LogRecord fields (name, levelname, ...) are never altered."""
+    maskingFilter = PanMaskingFilter()
+    logRecord = _MakeRecord(name="uvicorn.error", msg="no pan here")
+    originalName = logRecord.name
+    originalLevelName = logRecord.levelname
+    assert maskingFilter.filter(logRecord) is True
+    assert logRecord.name == originalName
+    assert logRecord.levelname == originalLevelName
+
+
+def test_install_attaches_filter_to_every_target_logger_and_last_resort() -> None:
+    """Install attaches the filter to all target loggers and lastResort."""
+    savedFilters = {
+        loggerName: list(logging.getLogger(loggerName).filters)
+        for loggerName in TARGET_LOGGER_NAMES
+    }
+    savedLastResortFilters = list(logging.lastResort.filters) if logging.lastResort else []
+    try:
+        InstallPanMaskingFilter()
+        for loggerName in TARGET_LOGGER_NAMES:
+            targetLogger = logging.getLogger(loggerName)
+            assert any(
+                isinstance(attachedFilter, PanMaskingFilter)
+                for attachedFilter in targetLogger.filters
+            ), f"filter missing on logger {loggerName!r}"
+        assert logging.lastResort is not None
+        assert any(
+            isinstance(attachedFilter, PanMaskingFilter)
+            for attachedFilter in logging.lastResort.filters
+        ), "filter missing on logging.lastResort"
+    finally:
+        for loggerName, filterList in savedFilters.items():
+            logging.getLogger(loggerName).filters = filterList
+        if logging.lastResort is not None:
+            logging.lastResort.filters = savedLastResortFilters
+
+
+def test_installed_filter_masks_exception_traceback_on_error_logger() -> None:
+    """End to end: an exception logged on uvicorn.error has its PAN masked."""
+    errorLogger = logging.getLogger("uvicorn.error")
+    capturedExcText: list[str] = []
+
+    class _ExcCaptureHandler(logging.Handler):
+        def emit(self, record: logging.LogRecord) -> None:
+            # format() populates/uses the (already masked) exc_text.
+            capturedExcText.append(self.format(record))
+
+    captureHandler = _ExcCaptureHandler()
+    originalFilters = list(errorLogger.filters)
+    originalLevel = errorLogger.level
+    try:
+        errorLogger.addHandler(captureHandler)
+        errorLogger.setLevel(logging.ERROR)
+        InstallPanMaskingFilter()
+        try:
+            raise ValueError(f"bound parameters ({SAMPLE_PAN},)")
+        except ValueError:
+            errorLogger.exception("insert failed")
+        assert capturedExcText, "expected an error record to be captured"
+        assert SAMPLE_PAN not in capturedExcText[-1]
+        assert SAMPLE_PAN_MASKED in capturedExcText[-1]
+    finally:
+        errorLogger.removeHandler(captureHandler)
+        errorLogger.filters = originalFilters
+        errorLogger.setLevel(originalLevel)

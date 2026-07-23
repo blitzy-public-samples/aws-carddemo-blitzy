@@ -33,7 +33,7 @@
 import type { Metadata } from 'next';
 import type { ReactNode } from 'react';
 
-// Subpath is version-matched to Next.js 16 (repo pins next@16.2.7); the installed
+// Subpath is version-matched to Next.js 16 (repo pins next@16.2.11); the installed
 // @mui/material-nextjs@9.1.1 exposes v13–v16 subpaths, all re-exporting the same
 // AppRouterCacheProvider ("use v1X-appRouter with Next.js v1X" per MUI docs).
 import { AppRouterCacheProvider } from '@mui/material-nextjs/v16-appRouter';

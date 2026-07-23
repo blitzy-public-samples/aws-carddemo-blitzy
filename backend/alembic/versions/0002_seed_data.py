@@ -470,15 +470,16 @@ def ParseCards(asciiDir: Path) -> list[dict]:
     """Parse cards rows from carddata.txt (CVACT02Y / CARDDATA).
 
     Layout (reclen 150): card_num X(16), acct_id 9(11), cvv_cd 9(3),
-    embossed_name X(50), expiration_date X(10), active_status X(1). cvv_cd is
-    SENSITIVE (stored only; never serialized in any response).
+    embossed_name X(50), expiration_date X(10), active_status X(1). The 3-byte
+    CVV slice [27:30] is DELIBERATELY SKIPPED and never seeded (QA finding C-03,
+    AAP 0.7.8): the CVV must never be persisted, so no cvv column is populated.
     """
     records = ReadRecords(asciiDir, "carddata.txt")
     return [
         {
             "card_num": RequiredText(r[0:16]),
             "acct_id": RequiredText(r[16:27]),
-            "cvv_cd": RequiredText(r[27:30]),
+            # r[27:30] is the source CVV slice -- intentionally NOT read/seeded.
             "embossed_name": RequiredText(r[30:80]),
             "expiration_date": ParseOptionalDate(r[80:90]),
             "active_status": RequiredText(r[90:91]),
@@ -643,7 +644,7 @@ def CardColumns() -> list:
     return [
         sa.column("card_num", sa.String(16)),
         sa.column("acct_id", sa.String(11)),
-        sa.column("cvv_cd", sa.String(3)),
+        # cvv_cd intentionally absent (QA finding C-03, AAP 0.7.8): never seeded.
         sa.column("embossed_name", sa.String(50)),
         sa.column("expiration_date", sa.Date()),
         sa.column("active_status", sa.CHAR(1)),

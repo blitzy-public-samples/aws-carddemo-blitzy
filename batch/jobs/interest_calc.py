@@ -163,6 +163,11 @@ class _InterestRunState:
             first group begins.
         cardNum: The current account's cross-reference card number
             (``XREF-CARD-NUM``), or ``None`` when no cross-reference exists.
+        alreadyAccrued: ``True`` when interest for the current account has ALREADY
+            been accrued for this run's period (a prior run posted the interest
+            transaction), so the account's compute/write and balance accrual are
+            skipped to keep a re-run idempotent (QA finding M-12). Reset for every
+            control-break group in :func:`_BeginAccount`.
     """
 
     result: InterestResult
@@ -171,6 +176,7 @@ class _InterestRunState:
     totalInterest: Decimal = Decimal("0")
     account: Account | None = None
     cardNum: str | None = None
+    alreadyAccrued: bool = False
 
 
 # ---------------------------------------------------------------------------
@@ -268,10 +274,20 @@ def _BeginAccount(
             ('ACCOUNT NOT FOUND'); it never fires for well-formed seed data.
     """
     state.totalInterest = Decimal("0")  # MOVE 0 TO WS-TOTAL-INT
-    account = session.get(Account, row.acct_id)  # 1100-GET-ACCT-DATA
+    # 1100-GET-ACCT-DATA: load the account under a row lock (SELECT ... FOR
+    # UPDATE). Locking FIRST -- before the already-accrued probe below -- is what
+    # makes concurrent interest runs safe: a second run blocks here until the
+    # first commits, then observes the first run's committed interest transaction
+    # and skips re-accrual, so the balance is never double-accrued (QA finding
+    # M-12; AAP 0.7.4). The lock is held until the caller commits/rolls back.
+    account = session.get(Account, row.acct_id, with_for_update=True)
     if account is None:
         raise LookupError(f"Account not found for interest calc: {row.acct_id}")
     state.account = account
+    # Idempotency ledger: has this account already been accrued for this period?
+    # Probed AFTER acquiring the account lock so a concurrent run sees the other
+    # run's committed interest transaction (QA finding M-12).
+    state.alreadyAccrued = _InterestAlreadyAccrued(session, state.datePrefix, account.acct_id)
     # 1110-GET-XREF-DATA: read the cross-reference by account id (VSAM AIX path)
     # and capture XREF-CARD-NUM. The prompt tolerates a missing cross-reference
     # by leaving the card number unset.
@@ -281,6 +297,64 @@ def _BeginAccount(
         .first()
     )
     state.cardNum = xref.xref_card_num if xref else None
+
+
+def _InterestAlreadyAccrued(session: Session, datePrefix: str, acctId: str) -> bool:
+    """Report whether this account's interest is already posted for the period.
+
+    Implements the interest idempotency ledger (QA finding M-12). An interest
+    run for one account in one period leaves a deterministic fingerprint: a
+    POSTED transaction of type :data:`INTEREST_TRAN_TYPE_CD` / category
+    :data:`INTEREST_TRAN_CAT_CD`, whose description is
+    ``INTEREST_DESC_PREFIX + acctId`` and whose 16-character id begins with the
+    run's 10-character ``datePrefix``. When such a row already exists the account
+    has been accrued for this period, so the caller skips re-computing interest
+    and re-adding it to the balance -- making a re-run of the same period a
+    no-op for monetary state while a genuinely new period (a different
+    ``datePrefix``) still accrues normally.
+
+    Args:
+        session: The caller-owned SQLAlchemy session.
+        datePrefix: The run's 10-character tran-id date prefix.
+        acctId: The account id whose prior accrual is being probed.
+
+    Returns:
+        ``True`` if an interest transaction for this account+period already
+        exists; ``False`` otherwise.
+    """
+    statement = (
+        select(Transaction.tran_id)
+        .where(
+            Transaction.tran_type_cd == INTEREST_TRAN_TYPE_CD,
+            Transaction.tran_cat_cd == INTEREST_TRAN_CAT_CD,
+            Transaction.tran_desc == INTEREST_DESC_PREFIX + str(acctId),
+            Transaction.tran_id.startswith(datePrefix),
+            Transaction.status == STATUS_POSTED,
+        )
+        .limit(1)
+    )
+    return session.execute(statement).first() is not None
+
+
+def _FinalizeAccount(session: Session, state: _InterestRunState) -> None:
+    """Finalize the current control-break account, honoring idempotency.
+
+    When the account was already accrued for this period
+    (:attr:`_InterestRunState.alreadyAccrued`), this is a re-run and the whole
+    finalize is a no-op: the balance is not re-accrued, the cycle counters are
+    left as the prior run set them, and the account is not re-counted (QA finding
+    M-12). Otherwise the accumulated interest is applied and the counters are
+    zeroed (CBACT04C ``1050-UPDATE-ACCOUNT``) and the account is counted as
+    processed.
+
+    Args:
+        session: The caller-owned SQLAlchemy session (never committed here).
+        state: The run state whose current account is being finalized.
+    """
+    if state.alreadyAccrued:
+        return
+    _UpdateAccount(session, state.account, state.totalInterest)
+    state.result.accountsProcessed += 1
 
 
 def _BuildInterestTransaction(
@@ -354,11 +428,13 @@ def _WriteInterestTransaction(
     ``transactions`` table, so an upsert is the faithful equivalent: it keeps the
     whole batch chain re-runnable (AAP 0.7.6, matching the loaders' ON CONFLICT
     upserts), so a second chain run updates the interest row in place instead of
-    raising a duplicate-key error. Re-running still re-accrues interest onto the
-    account balance in :func:`_UpdateAccount` (a plain, collision-free UPDATE),
-    which is the expected re-run behavior. The caller owns the transaction
-    boundary, so this flushes -- to surface any constraint error immediately --
-    but never commits.
+    raising a duplicate-key error. This write is only reached on a genuine
+    accrual: :func:`CalculateInterest` skips the compute/write entirely when the
+    account was already accrued for this period (QA finding M-12), so a
+    same-period re-run neither writes duplicate interest nor re-accretes the
+    balance in :func:`_UpdateAccount`. The caller owns the transaction boundary,
+    so this flushes -- to surface any constraint error immediately -- but never
+    commits.
 
     Args:
         session: The caller-owned SQLAlchemy session (never committed here).
@@ -450,13 +526,17 @@ def CalculateInterest(session: Session, runDate: date | None = None) -> Interest
     The caller owns the unit of work: an already-open synchronous
     :class:`~sqlalchemy.orm.Session` is supplied (typically from
     ``batch.db.GetSyncSession``) and this function performs no ``commit`` or
-    ``rollback`` and issues no DDL. It is re-runnable within the caller's
-    transaction: the interest transactions are written with an idempotent upsert
-    on ``tran_id`` (see :func:`_WriteInterestTransaction`), so a second run
-    updates those rows in place rather than raising a duplicate-key error and the
-    batch chain stays re-runnable (AAP 0.7.6). A re-run does re-accrue interest
-    onto each account balance (a plain, collision-free UPDATE in
-    :func:`_UpdateAccount`), so monetary state is intentionally not re-run-stable.
+    ``rollback`` and issues no DDL. It is fully idempotent per period (QA finding
+    M-12): before an account is accrued, :func:`_InterestAlreadyAccrued` probes
+    for an existing POSTED interest transaction for that account and run-date
+    prefix; if one exists the account's compute/write and balance accrual are
+    skipped, so re-running the SAME period neither writes duplicate interest
+    transactions nor re-accretes the balance (monetary state is re-run-stable). A
+    genuinely new period (a different run-date prefix) accrues normally. Each
+    account is loaded under a ``SELECT ... FOR UPDATE`` row lock, so two
+    concurrent runs serialize per account and the second observes the first's
+    committed interest before deciding to skip -- never double-accruing
+    (AAP 0.7.4, 0.7.6).
 
     Args:
         session: An open, caller-owned SQLAlchemy session (never committed here).
@@ -490,20 +570,22 @@ def CalculateInterest(session: Session, runDate: date | None = None) -> Interest
     for row in rows:
         if row.acct_id != previousAcctId:
             if previousAcctId is not None:
-                # Control break: finalise the PREVIOUS account (1050-UPDATE-ACCOUNT).
-                _UpdateAccount(session, state.account, state.totalInterest)
-                result.accountsProcessed += 1
+                # Control break: finalise the PREVIOUS account (1050-UPDATE-ACCOUNT),
+                # skipping the accrual when it was already applied this period.
+                _FinalizeAccount(session, state)
             _BeginAccount(session, state, row)
             previousAcctId = row.acct_id
+        # Skip the per-category compute entirely on a same-period re-run so no
+        # duplicate interest transaction is written and the accumulator stays 0
+        # (QA finding M-12); the rate==0 legacy guard is preserved.
         interestRate = _LookupRate(session, state.account, row)
-        if interestRate != 0:
+        if not state.alreadyAccrued and interestRate != 0:
             _ComputeInterest(session, state, row, interestRate)
             _ComputeFees()
 
     if previousAcctId is not None:
         # End of input: finalise the LAST account so its group is not lost.
-        _UpdateAccount(session, state.account, state.totalInterest)
-        result.accountsProcessed += 1
+        _FinalizeAccount(session, state)
 
     LOGGER.info("END OF EXECUTION OF PROGRAM CBACT04C")
     return result

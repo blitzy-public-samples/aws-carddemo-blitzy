@@ -18,10 +18,12 @@ COBOL PROCEDURE DIVISION logic.
 
 from __future__ import annotations
 
-from sqlalchemy import func, select
+from datetime import date
+
+from sqlalchemy import Date, cast, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.transaction import Transaction
+from app.models.transaction import STATUS_POSTED, Transaction
 
 # Default browse page size. The legacy COTRN00C transaction-list screen showed
 # roughly ten rows per 3270 page; the modern service layer chooses the actual
@@ -86,6 +88,60 @@ class TransactionRepository:
         stmt = select(Transaction).order_by(Transaction.tran_id).limit(limit)
         if startTranId is not None:
             stmt = stmt.where(Transaction.tran_id >= startTranId)
+        result = await session.execute(stmt)
+        return list(result.scalars().all())
+
+    async def ListPostedInDateRange(
+        self,
+        session: AsyncSession,
+        startDate: date,
+        endDate: date,
+        limit: int,
+    ) -> list[Transaction]:
+        """Return POSTED transactions whose effective date is within the range.
+
+        Scopes the CORPT00C transaction report to the posted ledger over a date
+        window, pushing both predicates into SQL so the service never fetches
+        the whole table into memory:
+
+        * ``status == POSTED`` -- excludes PENDING daily-staging rows and
+          REJECTED rows, matching the legacy report that read only the posted
+          ``TRANSACT`` ledger (the daily/pending rows live in the staging
+          lifecycle, AAP 0.7.5).
+        * ``COALESCE(proc_ts, orig_ts)::date`` BETWEEN ``startDate`` and
+          ``endDate`` (inclusive) -- the effective-date selection ported from
+          the legacy TRAN-PROC-DT window. ``proc_ts`` is preferred and
+          ``orig_ts`` is the fallback, mirroring the service's effective-date
+          rule. The cast to ``DATE`` resolves under the session time zone
+          (UTC in every deployment here), so it agrees with the Python
+          ``datetime.date()`` the service uses as its inclusive-window backstop.
+
+        Rows are ordered by ``tran_id`` for a stable, deterministic result and
+        bounded by ``limit`` so a pathological range cannot materialize an
+        unbounded number of rows (M-08). Every predicate is a parameterized
+        expression construct (never string SQL), so the query is injection-safe.
+
+        Args:
+            session: Active async database session.
+            startDate: Inclusive lower bound of the effective-date window.
+            endDate: Inclusive upper bound of the effective-date window.
+            limit: Maximum number of rows to return (safety bound).
+
+        Returns:
+            The matching POSTED transactions ordered by ``tran_id``, at most
+            ``limit`` rows.
+        """
+        effectiveDate = cast(
+            func.coalesce(Transaction.proc_ts, Transaction.orig_ts), Date
+        )
+        stmt = (
+            select(Transaction)
+            .where(Transaction.status == STATUS_POSTED)
+            .where(effectiveDate >= startDate)
+            .where(effectiveDate <= endDate)
+            .order_by(Transaction.tran_id)
+            .limit(limit)
+        )
         result = await session.execute(stmt)
         return list(result.scalars().all())
 

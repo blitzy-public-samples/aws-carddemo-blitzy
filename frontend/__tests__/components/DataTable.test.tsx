@@ -20,6 +20,7 @@ import {
     userEvent,
     MakePaginatedResponse,
 } from '../testUtils';
+import { axe } from 'jest-axe';
 import { DataTable } from '@/components/DataTable';
 import type { ColumnDef } from '@/components/DataTable';
 import type { PaginatedResponse } from '@/types';
@@ -409,6 +410,111 @@ describe('DataTable', () => {
             expect(
                 screen.queryByText('************3456'),
             ).not.toBeInTheDocument();
+        });
+    });
+
+    // ----------------------------------------------------------------------
+    // Accessibility — keyboard-operable selectable rows (QA M-27) and the
+    // automated axe gate (QA M-30). The legacy COCRDLI/COTRN00 "select a row"
+    // action was mouse-only in the SPA; it must now be fully keyboard operable.
+    // ----------------------------------------------------------------------
+    describe('accessibility', () => {
+        it('makes selectable rows focusable with an accessible name (M-27)', () => {
+            const onRowClick = jest.fn();
+            renderCardTable({ items: makeCardRows(2), onRowClick });
+
+            const bodyRows = getBodyRows();
+            for (const row of bodyRows) {
+                // Each selectable row is a tab stop and exposes an accessible
+                // name so a screen-reader user knows the row is actionable.
+                expect(row).toHaveAttribute('tabindex', '0');
+                expect(row).toHaveAttribute('aria-label');
+            }
+            // Default label derives from the row key (the masked card number).
+            expect(
+                screen.getByRole('row', { name: /Select record .*3456/ }),
+            ).toBeInTheDocument();
+        });
+
+        it('does not make rows focusable when not selectable (M-27)', () => {
+            renderCardTable({ items: makeCardRows(2) });
+
+            for (const row of getBodyRows()) {
+                expect(row).not.toHaveAttribute('tabindex');
+                expect(row).not.toHaveAttribute('aria-label');
+            }
+        });
+
+        it('activates a selectable row on Enter (M-27)', async () => {
+            const user = userEvent.setup();
+            const rows = makeCardRows(2);
+            const onRowClick = jest.fn();
+            renderCardTable({ items: rows, onRowClick });
+
+            const firstRow = getBodyRows()[0];
+            firstRow.focus();
+            expect(firstRow).toHaveFocus();
+            await user.keyboard('{Enter}');
+
+            expect(onRowClick).toHaveBeenCalledTimes(1);
+            expect(onRowClick).toHaveBeenCalledWith(rows[0]);
+        });
+
+        it('activates a selectable row on Space (M-27)', async () => {
+            const user = userEvent.setup();
+            const rows = makeCardRows(2);
+            const onRowClick = jest.fn();
+            renderCardTable({ items: rows, onRowClick });
+
+            const secondRow = getBodyRows()[1];
+            secondRow.focus();
+            await user.keyboard('[Space]');
+
+            expect(onRowClick).toHaveBeenCalledTimes(1);
+            expect(onRowClick).toHaveBeenCalledWith(rows[1]);
+        });
+
+        it('uses getRowLabel for the row accessible name when provided (M-27)', () => {
+            const onRowClick = jest.fn();
+            RenderWithProviders(
+                <DataTable<CardRow>
+                    columns={CARD_COLUMNS}
+                    data={MakePaginatedResponse<CardRow>(makeCardRows(1))}
+                    getRowKey={GET_ROW_KEY}
+                    onPageChange={jest.fn()}
+                    onRowClick={onRowClick}
+                    getRowLabel={(row) => `View card ${row.card_num}`}
+                />,
+            );
+
+            expect(
+                screen.getByRole('row', { name: 'View card ************3456' }),
+            ).toBeInTheDocument();
+        });
+
+        it('has no axe violations for a populated selectable grid (M-30)', async () => {
+            const { container } = renderCardTable({
+                items: makeCardRows(3),
+                onRowClick: jest.fn(),
+                dataOverrides: {
+                    page: 1,
+                    total_items: 6,
+                    total_pages: 2,
+                    has_next: true,
+                    has_previous: false,
+                },
+            });
+
+            expect(await axe(container)).toHaveNoViolations();
+        });
+
+        it('has no axe violations in the empty state (M-30)', async () => {
+            const { container } = renderCardTable({
+                items: [],
+                dataOverrides: { total_items: 0, total_pages: 0 },
+            });
+
+            expect(await axe(container)).toHaveNoViolations();
         });
     });
 });

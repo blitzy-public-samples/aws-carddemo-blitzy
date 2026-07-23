@@ -33,6 +33,18 @@ contains no ``try`` / ``except`` block.
 
 In-code identifiers follow the Ochs Rule (PascalCase methods, camelCase locals);
 the module/file name stays snake_case (AAP 0.8.3).
+
+Authorization model (AAP 0.4.4 / 0.8.1 -- role-based, NOT per-user ownership):
+authorization here is OPERATOR/ROLE-based, preserved faithfully from the legacy
+system. The security record ``CSUSR01Y`` binds an operator only to a type
+('A'/'U'), never to a set of accounts/customers, so every caller is
+authenticated (``get_current_user``) and admin-only surfaces are gated on
+``user_type == 'A'`` (``require_admin``) exactly as AAP 0.4.4 requires, WITHOUT
+per-user resource-ownership filtering. Adding a user->account ownership binding
+would invent a relation absent from the copybooks and the frozen AAP, breaking
+the Minimal Change Clause (AAP 0.8.1); a review finding requesting IDOR-style
+ownership scoping is therefore declined on AAP grounds (documented decision --
+see ``app.api.v1.cards`` and the resolution report).
 """
 
 from fastapi import APIRouter, Depends, status

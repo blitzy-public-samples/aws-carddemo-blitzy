@@ -64,14 +64,30 @@ functions and injects fixtures by matching argument names.
 from __future__ import annotations
 
 import datetime
+from contextlib import contextmanager
 from decimal import Decimal
 from pathlib import Path
 
 import pytest
+from sqlalchemy import delete
 from sqlalchemy.exc import OperationalError, ProgrammingError
 
-from app.models import STATUS_POSTED, STATUS_REJECTED, TranCategoryBalance
-from batch.jobs.post_transactions import PostTransactions
+from app.models import (
+    Account,
+    AccountGroup,
+    Card,
+    STATUS_PENDING,
+    STATUS_POSTED,
+    STATUS_REJECTED,
+    TranCategoryBalance,
+    Transaction,
+)
+from batch import db as batch_db
+from batch.jobs.post_transactions import (
+    PostTransactions,
+    _ClaimPendingTransactions,
+    _PostTransaction,
+)
 
 # --------------------------------------------------------------------------- #
 # Module constants (Ochs ALL_UPPERCASE).
@@ -97,6 +113,9 @@ REJECT_DESC_START = 354
 # widths match the ORM columns: ``card_num``/``tran_id`` are ``VARCHAR(16)``.
 GRAPH_CARD_NUM = "4111111111111111"
 GRAPH_TRAN_ID = "TRAN000000000001"
+# A second stable tran id used by multi-reject scenarios (for example the M-13
+# fixed-record byte-exactness test), so a run can stage more than one reject.
+SECOND_TRAN_ID = "TRAN000000000002"
 
 # Default posted amount for scenarios whose reason under test is independent of
 # the amount (an exact ``Decimal``; never float).
@@ -170,6 +189,27 @@ def _GetCategoryBalance(session, acctId, tranTypeCd, tranCatCd):
     return session.get(TranCategoryBalance, (acctId, tranTypeCd, tranCatCd))
 
 
+def _ReadRejectSinkBytes(postingResult):
+    """Return the RAW bytes of the protected reject sink (or ``b""`` if none).
+
+    Reads the sink verbatim -- no text decoding, no newline handling -- so a test
+    can assert the exact physical geometry of the fixed-record dataset (RECFM=F,
+    LRECL=430). This is the byte-level ground truth behind :func:`_ReadRejectRows`
+    and is what makes QA finding M-13 observable: a stray per-record delimiter
+    would make the file length ``N*431`` instead of ``N*430``.
+
+    Args:
+        postingResult: The :class:`PostingResult` returned by the job.
+
+    Returns:
+        The full sink contents as ``bytes`` (``b""`` when no sink was written).
+    """
+    sinkPath = postingResult.rejectFilePath
+    if sinkPath is None:
+        return b""
+    return Path(sinkPath).read_bytes()
+
+
 def _ReadRejectRows(postingResult):
     """Read the protected reject sink and return its fixed-width 430-byte rows.
 
@@ -177,10 +217,13 @@ def _ReadRejectRows(postingResult):
     owner-only sink (the ``DALYREJS`` equivalent; QA finding #28) and exposes only
     the path on ``postingResult.rejectFilePath`` -- it never returns the raw,
     unmasked reject images in memory. This golden-master helper reads that sink
-    back and returns each 430-character reject record, so a test can reconcile the
-    reason code, description and byte layout against CBTRN02C. Splitting on line
-    boundaries strips only the record separator, preserving each record's
-    space-padded 430-character content exactly.
+    back as RAW BYTES and slices it into exact :data:`REJECT_ROW_LENGTH`-byte
+    records -- deliberately NOT via ``str.splitlines()``, which would silently
+    absorb a stray per-record delimiter and hide the M-13 physical defect. The
+    sink is a fixed-record (RECFM=F, LRECL=430) dataset with NO delimiter, so its
+    total length must be an exact multiple of 430; this helper asserts that
+    invariant, then decodes each 430-byte slice from the single-byte record
+    encoding to a 430-character string for field-level golden-master assertions.
 
     Args:
         postingResult: The :class:`PostingResult` returned by the job.
@@ -189,10 +232,116 @@ def _ReadRejectRows(postingResult):
         The ``list`` of 430-character reject records (empty when the run produced
         no rejects, in which case no sink file is created).
     """
-    sinkPath = postingResult.rejectFilePath
-    if sinkPath is None:
+    sinkBytes = _ReadRejectSinkBytes(postingResult)
+    if not sinkBytes:
         return []
-    return Path(sinkPath).read_text(encoding="utf-8").splitlines()
+    assert len(sinkBytes) % REJECT_ROW_LENGTH == 0, (
+        f"reject sink must be a whole number of {REJECT_ROW_LENGTH}-byte records "
+        f"(RECFM=F, LRECL=430), got {len(sinkBytes)} bytes"
+    )
+    rows = []
+    for offset in range(0, len(sinkBytes), REJECT_ROW_LENGTH):
+        recordBytes = sinkBytes[offset:offset + REJECT_ROW_LENGTH]
+        rows.append(recordBytes.decode("ascii"))
+    return rows
+
+
+# Distinct committed-fixture keys for the concurrency test (kept well away from
+# the rolled-back per-test graph's keys so the surgical cleanup below can never
+# touch another test's data).
+CONCURRENCY_GROUP_ID = "ZZCONCUR01"
+CONCURRENCY_ACCT_ID = "99000000001"
+CONCURRENCY_CARD_NUM = "4999000000000001"
+CONCURRENCY_TRAN_IDS = ("CONCURRENT000001", "CONCURRENT000002")
+
+
+@contextmanager
+def _CommittedPendingGraph():
+    """Yield two INDEPENDENT sessions over a COMMITTED two-row PENDING graph.
+
+    Cross-connection row locking (``SELECT ... FOR UPDATE SKIP LOCKED``) can only
+    be exercised against data that is visible to more than one transaction, so
+    this helper deliberately steps OUTSIDE the rolled-back ``db_session`` recipe:
+    it seeds a minimal ``account_group -> account -> card -> 2 PENDING
+    transactions`` graph on its OWN connection and COMMITS it, then yields two
+    independent :class:`~sqlalchemy.orm.Session` objects (``sessionA``,
+    ``sessionB``) on two separate connections. On exit it rolls back both
+    sessions and surgically DELETEs exactly the rows it committed (in reverse
+    foreign-key order) on a dedicated cleanup connection, so the committed
+    fixture never leaks into another test. The keys are unique constants held far
+    from any rolled-back graph's keys.
+
+    Yields:
+        A ``(sessionA, sessionB)`` tuple of independent, committed-data sessions.
+    """
+    seedSession = batch_db.SessionLocal()
+    try:
+        seedSession.add(AccountGroup(group_id=CONCURRENCY_GROUP_ID))
+        seedSession.add(
+            Account(
+                acct_id=CONCURRENCY_ACCT_ID,
+                active_status="Y",
+                curr_bal=Decimal("0.00"),
+                credit_limit=Decimal("5000.00"),
+                cash_credit_limit=Decimal("2000.00"),
+                curr_cyc_credit=Decimal("0.00"),
+                curr_cyc_debit=Decimal("0.00"),
+                group_id=CONCURRENCY_GROUP_ID,
+            )
+        )
+        seedSession.add(
+            Card(
+                card_num=CONCURRENCY_CARD_NUM,
+                acct_id=CONCURRENCY_ACCT_ID,
+                embossed_name="TEST CARDHOLDER",
+                active_status="Y",
+            )
+        )
+        for tranId in CONCURRENCY_TRAN_IDS:
+            seedSession.add(
+                Transaction(
+                    tran_id=tranId,
+                    tran_type_cd="01",
+                    tran_cat_cd="0001",
+                    tran_amt=Decimal("100.00"),
+                    card_num=CONCURRENCY_CARD_NUM,
+                    status=STATUS_PENDING,
+                )
+            )
+        seedSession.commit()
+    finally:
+        seedSession.close()
+
+    sessionA = batch_db.SessionLocal()
+    sessionB = batch_db.SessionLocal()
+    try:
+        yield sessionA, sessionB
+    finally:
+        sessionA.rollback()
+        sessionB.rollback()
+        sessionA.close()
+        sessionB.close()
+        cleanupSession = batch_db.SessionLocal()
+        try:
+            cleanupSession.execute(
+                delete(Transaction).where(
+                    Transaction.tran_id.in_(CONCURRENCY_TRAN_IDS)
+                )
+            )
+            cleanupSession.execute(
+                delete(Card).where(Card.card_num == CONCURRENCY_CARD_NUM)
+            )
+            cleanupSession.execute(
+                delete(Account).where(Account.acct_id == CONCURRENCY_ACCT_ID)
+            )
+            cleanupSession.execute(
+                delete(AccountGroup).where(
+                    AccountGroup.group_id == CONCURRENCY_GROUP_ID
+                )
+            )
+            cleanupSession.commit()
+        finally:
+            cleanupSession.close()
 
 
 # --------------------------------------------------------------------------- #
@@ -461,6 +610,40 @@ def test_reject_row_layout_is_430_bytes(db_session, record_builder, tmp_path):
     assert len(rejectRow[0:REJECT_REASON_START]) == 350
 
 
+def test_reject_sink_is_fixed_430_byte_records_no_delimiter(
+    db_session, record_builder, tmp_path
+):
+    # QA finding M-13: the DALYREJS sink is a fixed-record dataset (RECFM=F,
+    # LRECL=430) whose records are concatenated with NO delimiter. The physical
+    # artifact must therefore be EXACTLY N*430 bytes; the pre-fix defect appended
+    # a newline per record, making it N*431 -- a defect that ``str.splitlines()``
+    # silently hid. This asserts the RAW byte geometry directly. Two invalid-card
+    # (code 100) rejects are staged (a card with NO CardXref), so the sink holds
+    # exactly two fixed records.
+    account = record_builder.BuildAccount()
+    record_builder.BuildCard(GRAPH_CARD_NUM, account.acct_id)
+    record_builder.BuildPendingTransaction(
+        GRAPH_TRAN_ID, GRAPH_CARD_NUM, Decimal("100.00")
+    )
+    record_builder.BuildPendingTransaction(
+        SECOND_TRAN_ID, GRAPH_CARD_NUM, Decimal("200.00")
+    )
+
+    result = PostTransactions(db_session, rejectDir=tmp_path)
+    assert result.transactionsRejected == 2
+
+    sinkBytes = _ReadRejectSinkBytes(result)
+    # Exactly two 430-byte records = 860 bytes: no trailing or interstitial
+    # delimiter of any kind.
+    assert len(sinkBytes) == 2 * REJECT_ROW_LENGTH
+    assert b"\n" not in sinkBytes
+    assert b"\r" not in sinkBytes
+    # And the raw stream slices cleanly into two full 430-character records.
+    rejectRows = _ReadRejectRows(result)
+    assert len(rejectRows) == 2
+    assert all(len(rejectRow) == REJECT_ROW_LENGTH for rejectRow in rejectRows)
+
+
 # --------------------------------------------------------------------------- #
 # 10-12: catalog parity, best-effort code 101, and idempotent re-run.
 # --------------------------------------------------------------------------- #
@@ -518,6 +701,80 @@ def test_reject_code_101_account_not_found(
     # A reject is never posted and is marked terminally REJECTED so a re-run
     # excludes it from the PENDING driving query (AAP 0.7.6; QA finding F-6).
     assert transaction.status == STATUS_REJECTED
+
+
+def test_reject_code_109_account_update_failure(
+    db_session, record_builder, relax_foreign_keys
+):
+    # Reconciles CBTRN02C 2800-UPDATE-ACCOUNT-REC (app/cbl/CBTRN02C.cbl L556-558):
+    # the defensive REWRITE ... INVALID KEY guard that rejects with code 109
+    # "ACCOUNT RECORD NOT FOUND" when the owning account cannot be resolved at
+    # POST time and posts NOTHING.
+    #
+    # Code 109 is reached in production ONLY through the post-time account
+    # re-resolution in _PostTransaction; it is structurally UNREACHABLE through
+    # the public PostTransactions entry point, because _ValidateTran's
+    # 1500-B-LOOKUP-ACCT would first catch a missing account as reject 101 and
+    # short-circuit, so the row never reaches the post step. This test therefore
+    # drives the REAL production _PostTransaction DIRECTLY on the genuine
+    # resolved-xref / missing-account seam -- a lower-level integration test the
+    # M-19 finding explicitly permits -- exercising the true 109 mapping without
+    # weakening any constraint or disabling FK enforcement on the posting path.
+    #
+    # Notably, the SAME dangling-xref seed drives reject 101 through the
+    # validation path (test_reject_code_101_account_not_found) and reject 109
+    # through the post path (here), proving 101 and 109 are DISTINCT reason codes
+    # reached by DISTINCT production paths even though both carry the verbatim
+    # text "ACCOUNT RECORD NOT FOUND" (AAP 0.7.3 + code-109 discovery).
+    #
+    # The dangling xref is seeded exactly as the 101 test does: card_xref.acct_id
+    # carries a hard FK, so its triggers are relaxed inside a SAVEPOINT; a
+    # privilege failure (DISABLE TRIGGER needs table ownership / superuser)
+    # rolls the SAVEPOINT back and skips rather than poisoning the session.
+    customer = record_builder.BuildCustomer()
+    account = record_builder.BuildAccount()
+    record_builder.BuildCard(GRAPH_CARD_NUM, account.acct_id)
+    transaction = record_builder.BuildPendingTransaction(
+        GRAPH_TRAN_ID, GRAPH_CARD_NUM, DEFAULT_TRAN_AMT
+    )
+    # Capture the transaction's type/category codes now (while loaded) so the
+    # "nothing posted" tcatbal probe below is self-consistent with whatever the
+    # builder staged, without hardcoding conftest defaults that could drift.
+    tranTypeCd = transaction.tran_type_cd
+    tranCatCd = transaction.tran_cat_cd
+
+    savepoint = db_session.begin_nested()
+    try:
+        with relax_foreign_keys(db_session, "card_xref"):
+            # Resolved-but-dangling xref: it exists (so _PostTransaction's xref
+            # lookup succeeds) yet points at an account that does not exist (so
+            # the subsequent account lookup misses -> the code-109 guard trips).
+            record_builder.BuildXref(GRAPH_CARD_NUM, customer.cust_id, DANGLING_ACCT_ID)
+    except (ProgrammingError, OperationalError):
+        savepoint.rollback()
+        pytest.skip("DISABLE TRIGGER requires table ownership/superuser")
+
+    # The posting timestamp is only stamped by 2900-WRITE-TRANSACTION-FILE, which
+    # is never reached on the 109 path, so its value is immaterial here; a fixed
+    # timestamp keeps the call deterministic.
+    postingTimestamp = datetime.datetime(2023, 6, 1, 12, 0, 0)
+    reasonCode, description = _PostTransaction(
+        db_session, transaction, postingTimestamp
+    )
+
+    # The genuine 109 mapping: reject code 109 with the verbatim COBOL text.
+    assert reasonCode == 109
+    assert description.strip() == EXPECTED_POSTING_CODES[109]
+
+    # Nothing is posted: the guard returns before 2700/2800/2900, so no
+    # category-balance row was created under the dangling account and the daily
+    # row stays PENDING (the orchestrator -- not _PostTransaction -- flips status).
+    assert (
+        _GetCategoryBalance(db_session, DANGLING_ACCT_ID, tranTypeCd, tranCatCd)
+        is None
+    )
+    db_session.expire_all()
+    assert transaction.status == STATUS_PENDING
 
 
 def test_idempotent_rerun_no_double_post(db_session, record_builder, tmp_path):
@@ -587,3 +844,31 @@ def test_rejected_row_not_reattempted_on_rerun(db_session, record_builder, tmp_p
     db_session.expire_all()
     assert transaction.status == STATUS_REJECTED  # still terminal
     assert account.curr_bal == Decimal("0.00")    # still unchanged
+
+
+def test_concurrent_posting_runs_claim_disjoint_rows():
+    # QA finding M-12: two concurrent posting runs must claim DISJOINT PENDING
+    # rows and never double-process one. This is a DETERMINISTIC lock-barrier
+    # proof (no threads): SELECT ... FOR UPDATE SKIP LOCKED is non-blocking, so
+    # once run A claims and locks every PENDING row inside its still-open
+    # transaction, run B's IDENTICAL production claim (_ClaimPendingTransactions)
+    # skips those locked rows and gets nothing. The final step releases A's locks
+    # and re-claims on B to prove B's empty claim was caused by A's locks (not an
+    # empty or mis-seeded table) -- i.e. the assertion is non-vacuous.
+    with _CommittedPendingGraph() as (sessionA, sessionB):
+        claimedA = _ClaimPendingTransactions(sessionA)
+        idsA = {tran.tran_id for tran in claimedA}
+        assert idsA == set(CONCURRENCY_TRAN_IDS)  # A claims and locks both rows
+
+        # B runs concurrently while A still holds its locks: SKIP LOCKED yields
+        # the DISJOINT (here empty) remainder -- no row is claimed twice.
+        claimedB = _ClaimPendingTransactions(sessionB)
+        idsB = {tran.tran_id for tran in claimedB}
+        assert idsB == set()
+        assert idsA.isdisjoint(idsB)
+
+        # Non-vacuity: release A's locks, then B can now claim the very same rows,
+        # proving B's earlier empty claim was due to A's locks, not missing data.
+        sessionA.rollback()
+        reclaimedB = _ClaimPendingTransactions(sessionB)
+        assert {tran.tran_id for tran in reclaimedB} == set(CONCURRENCY_TRAN_IDS)

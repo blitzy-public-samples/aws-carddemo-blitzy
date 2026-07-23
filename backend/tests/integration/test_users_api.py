@@ -519,4 +519,3 @@ async def test_users_never_leak_password(admin_client: AsyncClient) -> None:
     assert detailResponse.status_code == HTTP_OK
     AssertNoPasswordKeys(detailResponse.json())
     assert "password" not in detailResponse.text.lower()
-

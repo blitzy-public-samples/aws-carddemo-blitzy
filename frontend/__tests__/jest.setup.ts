@@ -10,6 +10,14 @@
 // toHaveValue, toBeDisabled, toHaveAttribute, toHaveTextContent, ...).
 import '@testing-library/jest-dom';
 
+// Register the jest-axe accessibility matcher (`toHaveNoViolations`) globally so
+// every component/page spec can assert `expect(await axe(container))
+// .toHaveNoViolations()` as an automated WCAG gate (QA M-30). axe-core runs in
+// jsdom; the layout-dependent color-contrast check cannot compute here and is
+// covered instead by the browser-level Lighthouse accessibility audit.
+import { toHaveNoViolations } from 'jest-axe';
+expect.extend(toHaveNoViolations);
+
 // ---------------------------------------------------------------------------
 // window.matchMedia
 // ---------------------------------------------------------------------------

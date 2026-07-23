@@ -44,6 +44,7 @@ PRECISE HTTP status (200) rather than a loose "not an error" check.
 """
 
 from httpx import AsyncClient
+from sqlalchemy import text
 
 from app.core.config import settings
 
@@ -349,3 +350,65 @@ async def test_regular_client_card_masking(
         assert "cvv_cd" not in cardItem
         assert "cvv" not in cardItem
     AssertNoForbiddenKeys(body)
+
+
+# ===========================================================================
+# Storage-layer guarantee (QA finding C-03, AAP 0.7.8).
+#
+# The response-body tests above prove the CVV never LEAVES the service. This
+# final test proves the stronger, root-cause guarantee: the CVV is never STORED
+# in the first place. The test schema is built from ``Base.metadata`` (the ORM
+# models) via the session-scoped ``_create_schema`` fixture, so inspecting the
+# live ``cards`` table columns is a direct assertion about the ``Card`` model:
+# if anyone re-declares a ``cvv_cd`` column on the model, this test fails.
+# ===========================================================================
+
+CARDS_TABLE_NAME = "cards"
+CVV_COLUMN_NAME = "cvv_cd"
+# A minimal set of columns that MUST remain on the cards table, so this test
+# fails loudly if the table itself is missing (rather than passing vacuously
+# because "cvv_cd" is absent from an empty/nonexistent column set).
+REQUIRED_CARD_COLUMNS = ("card_num", "acct_id", "embossed_name", "active_status")
+
+# information_schema query returning every column name of a given table in the
+# connection's current database/schema. Parameterized to avoid any injection.
+CARD_COLUMNS_QUERY = text(
+    "SELECT column_name FROM information_schema.columns "
+    "WHERE table_name = :tableName"
+)
+
+
+async def test_cards_table_persists_no_cvv_column(db_session) -> None:
+    """The physical ``cards`` table has no ``cvv_cd`` column (never persisted).
+
+    This is the storage-layer counterpart to the response-masking tests: it
+    proves CVV protection at its root cause (the data is never written), not
+    merely that it is filtered out of responses. Because the test database
+    schema is generated from the ORM ``Base.metadata``, the presence/absence of
+    the column is a faithful reflection of the ``Card`` model definition.
+
+    Args:
+        db_session: Isolated async session bound to the freshly created schema.
+    """
+    result = await db_session.execute(
+        CARD_COLUMNS_QUERY, {"tableName": CARDS_TABLE_NAME}
+    )
+    columnNames = {row[0] for row in result.all()}
+
+    # The table must actually exist (guards against a vacuous pass).
+    for requiredColumn in REQUIRED_CARD_COLUMNS:
+        assert requiredColumn in columnNames, (
+            f"expected column {requiredColumn!r} missing from {CARDS_TABLE_NAME}; "
+            f"present columns: {sorted(columnNames)}"
+        )
+
+    # The sensitive CVV column must NOT exist under any spelling.
+    assert CVV_COLUMN_NAME not in columnNames, (
+        f"sensitive column {CVV_COLUMN_NAME!r} must never be persisted on "
+        f"{CARDS_TABLE_NAME} (C-03, AAP 0.7.8); present columns: "
+        f"{sorted(columnNames)}"
+    )
+    assert "cvv" not in columnNames, (
+        f"no CVV column may exist on {CARDS_TABLE_NAME} under any spelling; "
+        f"present columns: {sorted(columnNames)}"
+    )

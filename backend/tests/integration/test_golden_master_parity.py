@@ -52,7 +52,9 @@ pytest resolves fixtures by name.
 
 from __future__ import annotations
 
+import codecs
 from decimal import ROUND_DOWN, Decimal
+from pathlib import Path
 
 import pytest
 from sqlalchemy import func, select
@@ -66,12 +68,13 @@ from app.core.exceptions import (
     OverlimitTransactionError,
 )
 from app.models.account import Account
+from app.models.account_group import AccountGroup
 from app.models.card import Card
 from app.models.card_xref import CardXref
 from app.models.customer import Customer
 from app.models.disclosure_group import DisclosureGroup
 from app.models.transaction import Transaction
-from app.utils.decimal_utils import TruncateToCents
+from app.utils.decimal_utils import DecodeZonedDecimal, TruncateToCents
 
 # ===========================================================================
 # Golden-master constants -- VERIFIED by direct inspection of the legacy
@@ -126,6 +129,37 @@ EXPECTED_TRANSACTION_COUNT = 0                      # daily-tran NOT seeded
 NONEXISTENT_ACCT_ID = "99999999999"
 NONEXISTENT_CARD_NUM = "9999999999999999"
 NONEXISTENT_TRAN_ID = "9999999999999999"
+# Account-group FK (M-16) fixtures: a bogus group with no account_groups parent,
+# and a valid group to prove the constraint accepts a real reference.
+NONEXISTENT_GROUP_ID = "NOSUCHGRP"
+FK_TEST_GROUP_ID = "FKTESTGRP"
+FK_TEST_ACCT_ID = "88888888888"
+
+
+def _BuildFkTestAccount(acctId: str, groupId: str | None) -> Account:
+    """Build an FK-test account with every NOT NULL column populated.
+
+    A minimal but complete :class:`~app.models.account.Account` (all required
+    monetary columns set to exact ``Decimal`` zeros) used purely to exercise the
+    M-16 ``accounts.group_id`` foreign key with a chosen ``groupId``.
+
+    Args:
+        acctId: The account id (primary key) to assign.
+        groupId: The group id to place on ``group_id`` (may be None).
+
+    Returns:
+        An unsaved ``Account`` instance ready to add to a session.
+    """
+    return Account(
+        acct_id=acctId,
+        active_status="Y",
+        curr_bal=Decimal("0.00"),
+        credit_limit=Decimal("0.00"),
+        cash_credit_limit=Decimal("0.00"),
+        curr_cyc_credit=Decimal("0.00"),
+        curr_cyc_debit=Decimal("0.00"),
+        group_id=groupId,
+    )
 
 
 # ===========================================================================
@@ -156,6 +190,153 @@ def MonthlyInterest(balance: Decimal, rate: Decimal) -> Decimal:
     """
     rawInterest = balance * rate / Decimal(1200)
     return rawInterest.quantize(Decimal("0.01"), rounding=ROUND_DOWN)
+
+
+# ===========================================================================
+# INDEPENDENT legacy-layout oracle (QA finding M-17). This block deliberately
+# does NOT reuse app.utils.decimal_utils: it re-derives the signed zoned-decimal
+# overpunch from ORDERED code-point strings and plain integer arithmetic -- a
+# structurally different implementation from production's lookup dicts + string
+# splicing. Comparing the two therefore catches a defect in EITHER direction
+# instead of validating the production decoder against a copy of itself, and it
+# exercises the negative authoritative overpunch (}/J-R) that the ASCII account
+# rows (all-positive) never reach. The USRSEC EBCDIC seed is likewise decoded
+# independently with the standard-library ``cp037`` codec so the golden suite
+# covers the EBCDIC users it previously omitted.
+# ===========================================================================
+
+# Repository-root-relative golden-master data locations. This test file lives at
+# ``backend/tests/integration/`` so ``parents[3]`` is the repository root under
+# which the legacy (REFERENCE-only) ``app/data`` tree resides.
+_REPO_ROOT = Path(__file__).resolve().parents[3]
+_ASCII_DATA_DIR = _REPO_ROOT / "app" / "data" / "ASCII"
+_EBCDIC_USRSEC_PATH = (
+    _REPO_ROOT / "app" / "data" / "EBCDIC" / "AWS.M2.CARDDEMO.USRSEC.PS"
+)
+_EBCDIC_CODEC = "cp037"
+
+# USRSEC record layout (app/cpy/CSUSR01Y.cpy, SEC-USER-DATA, RECLN 80).
+_USER_RECORD_LENGTH = 80
+_USER_ID_SLICE = slice(0, 8)
+_USER_TYPE_SLICE = slice(56, 57)
+
+# dailytran.txt (app/cpy/CVTRA06Y.cpy, 350-byte DALYTRAN-RECORD): the signed
+# ``DALYTRAN-AMT PIC S9(09)V99`` field occupies bytes [132:143]. This is the one
+# ASCII seed file that carries NEGATIVE authoritative overpunch terminators, so
+# it is the independent oracle's negative-overpunch source.
+_DAILYTRAN_ROW_LENGTH = 350
+_DAILYTRAN_AMT_SLICE = slice(132, 143)
+
+# acctdata.txt (app/cpy/CVACT01Y.cpy, 300-byte ACCOUNT-RECORD): the five
+# ``PIC S9(10)V99`` money fields and their byte offsets (verified against the
+# conftest loader map). Used to prove the SEEDED (production-decoded) DB values
+# equal an INDEPENDENT decode of the same raw bytes.
+_ACCTDATA_ROW_LENGTH = 300
+_ACCT_ID_SLICE = slice(0, 11)
+_ACCT_MONEY_SLICES = {
+    "curr_bal": slice(12, 24),
+    "credit_limit": slice(24, 36),
+    "cash_credit_limit": slice(36, 48),
+    "curr_cyc_credit": slice(78, 90),
+    "curr_cyc_debit": slice(90, 102),
+}
+
+# Implied fractional digits for every CardDemo money / rate field (COBOL ``V99``).
+_MONEY_SCALE = 2
+
+# Independent overpunch alphabets as ORDERED strings (index == encoded digit),
+# NOT dict literals -- so they cannot be a copy-paste of production's maps.
+_POSITIVE_OVERPUNCH = "{ABCDEFGHI"   # index 0..9 -> '{', 'A'..'I' (sign +)
+_NEGATIVE_OVERPUNCH = "}JKLMNOPQR"   # index 0..9 -> '}', 'J'..'R' (sign -)
+
+# Expected USRSEC seed identities, decoded INDEPENDENTLY from the EBCDIC dataset
+# (5 admins user_type 'A', 5 regular user_type 'U'); SEED-ONLY per the README,
+# never real credentials.
+_EXPECTED_USER_TYPES = {
+    "ADMIN001": "A", "ADMIN002": "A", "ADMIN003": "A", "ADMIN004": "A",
+    "ADMIN005": "A", "USER0001": "U", "USER0002": "U", "USER0003": "U",
+    "USER0004": "U", "USER0005": "U",
+}
+
+
+def IndependentDecodeZoned(rawValue: str, scale: int) -> Decimal:
+    """Independently decode a signed zoned-decimal DISPLAY field to ``Decimal``.
+
+    Re-implements the legacy overpunch convention from first principles: the
+    final byte both carries the low-order digit and encodes the sign (``{``/``A``
+    -``I`` positive; ``}``/``J``-``R`` negative). The digit is recovered by its
+    INDEX into an ordered alphabet and the value assembled with plain integer
+    arithmetic and :meth:`decimal.Decimal.scaleb`, so this oracle shares no code
+    with :func:`app.utils.decimal_utils.DecodeZonedDecimal`.
+
+    Args:
+        rawValue: The raw fixed-width field exactly as stored, e.g. ``"0000009190}"``.
+        scale: The number of implied fractional digits (``2`` for money).
+
+    Returns:
+        The decoded value as an exact :class:`decimal.Decimal`.
+
+    Raises:
+        ValueError: If the final byte is not a legal overpunch/digit, or the
+            remaining payload is non-numeric.
+    """
+    lastByte = rawValue[-1]
+    if lastByte in _POSITIVE_OVERPUNCH:
+        signIsNegative = False
+        finalDigit = _POSITIVE_OVERPUNCH.index(lastByte)
+    elif lastByte in _NEGATIVE_OVERPUNCH:
+        signIsNegative = True
+        finalDigit = _NEGATIVE_OVERPUNCH.index(lastByte)
+    elif lastByte.isdigit():
+        signIsNegative = False
+        finalDigit = int(lastByte)
+    else:
+        raise ValueError(f"Illegal zoned-decimal overpunch byte: {lastByte!r}")
+    allDigits = rawValue[:-1] + str(finalDigit)
+    if not allDigits.isdigit():
+        raise ValueError(f"Non-numeric zoned-decimal payload: {rawValue!r}")
+    unsignedValue = int(allDigits)
+    signedValue = -unsignedValue if signIsNegative else unsignedValue
+    if scale == 0:
+        return Decimal(signedValue)
+    return Decimal(signedValue).scaleb(-scale)
+
+
+def _ReadRawRows(fileName: str, rowLength: int) -> list[str]:
+    """Read a golden-master ASCII file into its fixed-width rows (no decoding).
+
+    Args:
+        fileName: Base name inside ``app/data/ASCII`` (e.g. ``"acctdata.txt"``).
+        rowLength: The fixed record length used to slice rows, so a stray
+            trailing newline can never shift a field offset.
+
+    Returns:
+        The list of ``rowLength``-character rows, in file order.
+    """
+    rawText = (_ASCII_DATA_DIR / fileName).read_text(encoding="latin-1")
+    rows = []
+    for line in rawText.splitlines():
+        if line.strip() == "":
+            continue
+        rows.append(line[:rowLength])
+    return rows
+
+
+def _ReadUsrsecRecords() -> list[str]:
+    """Independently decode the EBCDIC USRSEC seed into fixed 80-char records.
+
+    Uses the standard-library single-byte IBM codec ``cp037`` (independent of the
+    production ``init_users`` loader) and slices on the copybook record length.
+
+    Returns:
+        The list of 80-character decoded user records, in file order.
+    """
+    rawBytes = _EBCDIC_USRSEC_PATH.read_bytes()
+    decodedText = codecs.decode(rawBytes, _EBCDIC_CODEC)
+    return [
+        decodedText[offset:offset + _USER_RECORD_LENGTH]
+        for offset in range(0, len(decodedText), _USER_RECORD_LENGTH)
+    ]
 
 
 # ===========================================================================
@@ -287,7 +468,6 @@ async def test_fk_enforced_missing_parent_card(seed_data, db_session):
     orphanCard = Card(
         card_num=NONEXISTENT_CARD_NUM,
         acct_id=NONEXISTENT_ACCT_ID,
-        cvv_cd="000",
         embossed_name="FK ENFORCEMENT TEST",
         active_status="N",
     )
@@ -315,6 +495,62 @@ async def test_fk_enforced_missing_parent_transaction(seed_data, db_session):
     db_session.add(orphanTransaction)
     with pytest.raises(IntegrityError):
         await db_session.flush()
+    await db_session.rollback()
+
+
+async def test_fk_enforced_missing_account_group(db_session):
+    """Inserting an account with an unknown ``group_id`` raises ``IntegrityError``.
+
+    Proves the AAP-mandated ``accounts.group_id -> account_groups.group_id``
+    relationship (AAP §0.5.1, §0.8.1; QA finding M-16) is an ENFORCED foreign
+    key: flushing an account whose group has no ``account_groups`` parent row is
+    rejected by PostgreSQL. No ``account_groups`` row is seeded for
+    ``NONEXISTENT_GROUP_ID``, so the reference is dangling. The session is rolled
+    back afterwards so its transaction is clean for teardown.
+    """
+    orphanAccount = _BuildFkTestAccount(FK_TEST_ACCT_ID, NONEXISTENT_GROUP_ID)
+    db_session.add(orphanAccount)
+    with pytest.raises(IntegrityError):
+        await db_session.flush()
+    await db_session.rollback()
+
+
+async def test_account_group_fk_accepts_valid_group(db_session):
+    """An account referencing an existing ``account_groups`` row is accepted.
+
+    The complement of :func:`test_fk_enforced_missing_account_group`: once the
+    parent ``account_groups`` row exists, an account referencing it flushes
+    cleanly. This proves the M-16 foreign key accepts valid references (it is not
+    merely rejecting everything). The session is rolled back for teardown.
+    """
+    db_session.add(AccountGroup(group_id=FK_TEST_GROUP_ID))
+    await db_session.flush()
+
+    validAccount = _BuildFkTestAccount(FK_TEST_ACCT_ID, FK_TEST_GROUP_ID)
+    db_session.add(validAccount)
+    await db_session.flush()
+
+    persisted = await db_session.get(Account, FK_TEST_ACCT_ID)
+    assert persisted is not None
+    assert persisted.group_id == FK_TEST_GROUP_ID
+    await db_session.rollback()
+
+
+async def test_account_group_fk_allows_null(db_session):
+    """An account with a NULL ``group_id`` is accepted (mirrors the seed quirk).
+
+    Every golden-master account carries a blank ``ACCT-GROUP-ID`` (loaded as
+    NULL), and NULLs are exempt from the foreign-key check. This confirms the
+    M-16 constraint does not force a group on the byte-faithful seed data. The
+    session is rolled back for teardown.
+    """
+    nullGroupAccount = _BuildFkTestAccount(FK_TEST_ACCT_ID, None)
+    db_session.add(nullGroupAccount)
+    await db_session.flush()
+
+    persisted = await db_session.get(Account, FK_TEST_ACCT_ID)
+    assert persisted is not None
+    assert persisted.group_id is None
     await db_session.rollback()
 
 
@@ -454,3 +690,108 @@ def test_posting_reason_codes_and_texts():
     # 101 vs 109: identical description text, but DISTINCT reason codes.
     assert accountNotFound.code != accountUpdateFailed.code
     assert accountNotFound.description == accountUpdateFailed.description
+
+
+# ===========================================================================
+# Phase 7 -- INDEPENDENT-ORACLE de-circularization (QA finding M-17).
+# ===========================================================================
+
+
+def test_independent_oracle_agrees_with_production_zoned_decimal():
+    # QA M-17: prove the production DecodeZonedDecimal agrees with a genuinely
+    # INDEPENDENT decoder (code-point arithmetic, no shared code) across positive
+    # AND negative authoritative overpunch. A curated set spans zero, the positive
+    # digit alphabet, and the negative digit alphabet -- so the two implementations
+    # cross-validate instead of the oracle validating production against itself.
+    curatedFields = [
+        "00000001940{",   # +194.00
+        "0000009190}",    # -919.00 (negative overpunch, all digits present)
+        "0000000000{",    # +0.00
+        "0000000123A",    # +12.31 (A == +1 low digit)
+        "0000000129I",    # +12.99 (I == +9 low digit)
+        "0000000121J",    # -12.11 (J == -1 low digit)
+        "0000000129R",    # -12.99 (R == -9 low digit)
+    ]
+    for rawField in curatedFields:
+        productionValue = DecodeZonedDecimal(rawField, _MONEY_SCALE)
+        independentValue = IndependentDecodeZoned(rawField, _MONEY_SCALE)
+        assert isinstance(productionValue, Decimal)
+        assert isinstance(independentValue, Decimal)
+        assert productionValue == independentValue, rawField
+
+
+def test_independent_oracle_negative_overpunch_exhaustive():
+    # QA M-17: the previously-omitted negative authoritative overpunch. Every
+    # negative terminator '}' and 'J'..'R' must decode to the exact negative
+    # low-order digit, and production must agree byte-for-byte. Scale 0 isolates
+    # the sign+digit mapping from the implied decimal point.
+    for expectedDigit, terminator in enumerate(_NEGATIVE_OVERPUNCH):
+        rawField = "000" + terminator
+        independentValue = IndependentDecodeZoned(rawField, 0)
+        # '}' encodes -0, which equals 0; 'J'..'R' encode -1..-9.
+        assert independentValue == Decimal(-expectedDigit)
+        assert DecodeZonedDecimal(rawField, 0) == independentValue
+    # And the positive alphabet stays positive (guards against a sign flip).
+    for expectedDigit, terminator in enumerate(_POSITIVE_OVERPUNCH):
+        rawField = "000" + terminator
+        assert IndependentDecodeZoned(rawField, 0) == Decimal(expectedDigit)
+
+
+async def test_seeded_accounts_match_independent_oracle(seed_data, db_session):
+    # QA M-17: de-circularize the money-field pipeline end to end. The DB was
+    # seeded through the PRODUCTION decoder; here every seeded account's five
+    # monetary columns are compared against an INDEPENDENT decode of the very same
+    # raw acctdata.txt bytes. Agreement across all 50 rows proves the production
+    # load path is correct against a reference that shares none of its code.
+    rawRows = _ReadRawRows("acctdata.txt", _ACCTDATA_ROW_LENGTH)
+    assert len(rawRows) == EXPECTED_ACCOUNT_COUNT
+    for rawRow in rawRows:
+        acctId = rawRow[_ACCT_ID_SLICE].strip()
+        seededAccount = await db_session.scalar(
+            select(Account).where(Account.acct_id == acctId)
+        )
+        assert seededAccount is not None, acctId
+        for columnName, fieldSlice in _ACCT_MONEY_SLICES.items():
+            independentValue = IndependentDecodeZoned(
+                rawRow[fieldSlice], _MONEY_SCALE
+            )
+            seededValue = getattr(seededAccount, columnName)
+            assert isinstance(seededValue, Decimal)
+            assert seededValue == independentValue, (acctId, columnName)
+
+
+def test_dailytran_negative_overpunch_independent_vs_production():
+    # QA M-17: the ASCII account rows are all-positive, so negative overpunch is
+    # exercised HERE against dailytran.txt, whose signed DALYTRAN-AMT carries the
+    # full '}'/'J'..'R' negative alphabet. Every row's amount is decoded by BOTH
+    # implementations and asserted equal; the test also PROVES it is non-vacuous
+    # by requiring that a meaningful number of the decoded amounts are negative.
+    rawRows = _ReadRawRows("dailytran.txt", _DAILYTRAN_ROW_LENGTH)
+    assert len(rawRows) > 0
+    negativeCount = 0
+    for rawRow in rawRows:
+        rawAmount = rawRow[_DAILYTRAN_AMT_SLICE]
+        productionValue = DecodeZonedDecimal(rawAmount, _MONEY_SCALE)
+        independentValue = IndependentDecodeZoned(rawAmount, _MONEY_SCALE)
+        assert productionValue == independentValue, rawAmount
+        if independentValue < 0:
+            negativeCount += 1
+    # dailytran.txt carries 50 negative-overpunch amounts (}=6, J..R=44); require
+    # a healthy floor so a future data/loader change cannot silently drop them.
+    assert negativeCount >= 40
+
+
+def test_ebcdic_users_independent_layout_and_identities():
+    # QA M-17: the golden suite previously OMITTED the EBCDIC users entirely. The
+    # USRSEC seed is EBCDIC-only, so it is decoded INDEPENDENTLY here with the
+    # stdlib cp037 codec and sliced per CSUSR01Y. All ten seed operators and their
+    # user_type roles ('A' admin / 'U' regular) must be present exactly.
+    userRecords = _ReadUsrsecRecords()
+    assert len(userRecords) == len(_EXPECTED_USER_TYPES)
+    decodedTypes = {}
+    for userRecord in userRecords:
+        assert len(userRecord) == _USER_RECORD_LENGTH
+        userId = userRecord[_USER_ID_SLICE].strip()
+        userType = userRecord[_USER_TYPE_SLICE]
+        decodedTypes[userId] = userType
+    assert decodedTypes == _EXPECTED_USER_TYPES

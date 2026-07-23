@@ -5,14 +5,22 @@
 # this module on every ``alembic upgrade`` / ``downgrade`` / ``revision`` command
 # to wire the application's SQLAlchemy metadata and database URL into Alembic.
 #
-# Two design points are load-bearing:
+# Three design points are load-bearing:
 #   1. NO HARDCODED SECRET/DSN (Ochs Rule #3): ``alembic.ini``'s ``sqlalchemy.url``
 #      is intentionally EMPTY. The connection URL is injected at runtime from
 #      ``app.core.config.settings.DATABASE_URL`` (a pydantic SecretStr, read via
 #      ``.get_secret_value()``), so no credential ever lives in a tracked file.
 #   2. ``import app.models`` is MANDATORY: importing the models package registers
-#      all 10 ORM tables on ``Base.metadata`` as a side effect, so
+#      all 11 ORM tables on ``Base.metadata`` as a side effect, so
 #      ``target_metadata = Base.metadata`` sees every table for autogenerate.
+#   3. NAMING EXCEPTION (Ochs Rule 0.8.2 / 0.8.3): the module-level hook functions
+#      ``run_migrations_offline``, ``run_migrations_online``, and their shared
+#      helper ``do_run_migrations`` are kept snake_case as an intentional,
+#      documented exception to the Ochs PascalCase-methods rule. These are the
+#      Alembic framework contract -- ``alembic`` invokes ``run_migrations_offline``
+#      / ``run_migrations_online`` by name as the env.py entry points, and the
+#      async template calls ``do_run_migrations`` via ``connection.run_sync(...)``
+#      -- so their names are framework-mandated, not free choices (AAP 0.8.3).
 #
 # Execution driver: the async (asyncpg) engine, per the AAP mandate. Online
 # migrations build an AsyncEngine and run the synchronous migration routine
@@ -30,7 +38,7 @@ from alembic import context
 
 from app.core.config import settings
 from app.db.base import Base
-import app.models  # noqa: F401 - side effect: registers all 10 tables on Base.metadata
+import app.models  # noqa: F401 - side effect: registers all 11 tables on Base.metadata
 
 # Alembic Config object -- provides access to the values within ``alembic.ini``
 # (the ``[alembic]`` section plus the logging configuration sections).
@@ -51,7 +59,7 @@ if config.config_file_name is not None:
     fileConfig(config.config_file_name)
 
 # Target metadata for 'autogenerate' support. ``Base.metadata`` is populated with
-# all 10 CardDemo tables thanks to the mandatory ``import app.models`` above, and
+# all 11 CardDemo tables thanks to the mandatory ``import app.models`` above, and
 # it carries the deterministic constraint-naming convention defined in
 # ``app.db.base``, so generated migrations use stable pk_/fk_/ix_/uq_/ck_ names.
 target_metadata = Base.metadata

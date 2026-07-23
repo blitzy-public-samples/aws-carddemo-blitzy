@@ -202,8 +202,10 @@ function BuildAccountCells(account: AccountRead): ReactElement[] {
  * Builds the ordered list of customer field cells (labels verbatim from
  * `COACTVW.bms`). SSN is masked; the FICO score (the only numeric field) is
  * stringified; optional name/address/phone lines render only when non-empty.
- * The legacy "City" screen field has no DTO counterpart and is intentionally
- * omitted (`CustomerRead` has no `addr_city`).
+ * Legacy fidelity note: `COACTVWC.cbl` moves `CUST-ADDR-LINE-3` into the
+ * screen's `ACSCITY` field, which `COACTVW.bms` labels "City". The third
+ * address line (`addr_line_3`) is therefore rendered under the "City" label
+ * to preserve the exact legacy screen mapping.
  *
  * @param customer - The customer read model.
  * @returns The customer field cells in screen order.
@@ -225,7 +227,9 @@ function BuildCustomerCells(customer: CustomerRead): ReactElement[] {
         cells.push(RenderField('Address 2', customer.addr_line_2));
     }
     if (customer.addr_line_3) {
-        cells.push(RenderField('Address 3', customer.addr_line_3));
+        // Legacy `COACTVWC.cbl` maps CUST-ADDR-LINE-3 -> ACSCITY ("City" on
+        // `COACTVW.bms`); preserve that label rather than "Address 3".
+        cells.push(RenderField('City', customer.addr_line_3));
     }
     cells.push(RenderField('State', customer.addr_state_cd));
     cells.push(RenderField('Zip', customer.addr_zip));

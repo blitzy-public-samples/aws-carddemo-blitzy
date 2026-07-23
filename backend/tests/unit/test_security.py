@@ -218,3 +218,136 @@ def test_expired_token_raises_authentication_error():
         pytest.skip("negative expiry not supported")
     with pytest.raises(AuthenticationError):
         DecodeAccessToken(expiredToken)
+
+
+# ===========================================================================
+# Phase E -- JWT decode hardening (QA finding M-23). The PyJWT >= 2.13.0 uplift
+# is accompanied by explicit adversarial coverage: malformed structures,
+# critical-header / algorithm-confusion attacks, forged signatures, and
+# oversized tokens must ALL be rejected as the domain AuthenticationError --
+# never accepted, never surfaced as a bare/raw error, and never an unbounded
+# hang on hostile input. These tests forge tokens directly with PyJWT and by
+# hand; none of them require (or reveal) the real signing key.
+# ===========================================================================
+import base64  # noqa: E402  (stdlib; used only by the Phase E token forgers)
+import json  # noqa: E402  (stdlib; used only by the Phase E token forgers)
+
+import jwt  # noqa: E402  (PyJWT; used to forge the adversarial tokens below)
+
+# A signing key deliberately DIFFERENT from ``settings.SECRET_KEY``. Forging a
+# validly-structured token with it proves signature verification is enforced.
+# It is padded to >= 64 bytes so that forging an HS512 token below (SHA-512)
+# does not itself trip PyJWT 2.13.0's RFC 7518 InsecureKeyLengthWarning -- the
+# test's intent is the algorithm-allow-list rejection, not a key-length signal.
+FORGER_WRONG_KEY = (
+    "attacker-controlled-key-not-the-server-secret-padded-to-64-bytes+"
+)
+
+# An HMAC algorithm OUTSIDE the decoder's single-entry allow-list (HS256). A
+# token advertising it must be refused by the allow-list (algorithm confusion).
+DISALLOWED_ALGORITHM = "HS512"
+
+# ~2 MB of padding for the oversized-token denial-of-service-resistance check.
+OVERSIZED_PAD_BYTES = 2_000_000
+
+# Structurally invalid token strings covering empty/whitespace input, wrong
+# segment counts (JWT requires exactly three dot-separated segments), and
+# non-base64 garbage. Each must be rejected as AuthenticationError.
+MALFORMED_TOKENS = [
+    "",
+    "   ",
+    "not-a-jwt",
+    "only.two",
+    "a.b.c.d",
+    "!!!.@@@.###",
+    "eyJhbGciOiJIUzI1NiJ9..",
+]
+
+
+def _Base64UrlSegment(rawBytes):
+    """Return the unpadded base64url text of ``rawBytes`` (JWT segment form)."""
+    return base64.urlsafe_b64encode(rawBytes).rstrip(b"=").decode("ascii")
+
+
+def _ForgeNoneAlgorithmToken(subject, userType):
+    """Forge an unsigned ``alg=none`` token (the classic signature-strip attack).
+
+    Builds ``header.payload.`` with an empty signature segment by hand so the
+    test never depends on any library's willingness to emit "none". A decoder
+    that allow-lists only HS256 MUST reject it rather than trusting the claims.
+    """
+    header = {"alg": "none", "typ": "JWT"}
+    payload = {SUBJECT_CLAIM: subject, USER_TYPE_CLAIM: userType}
+    headerSegment = _Base64UrlSegment(json.dumps(header).encode("utf-8"))
+    payloadSegment = _Base64UrlSegment(json.dumps(payload).encode("utf-8"))
+    return f"{headerSegment}.{payloadSegment}."
+
+
+@pytest.mark.parametrize("malformedToken", MALFORMED_TOKENS)
+def test_malformed_token_raises_authentication_error(malformedToken):
+    """Structurally invalid tokens are all rejected as AuthenticationError.
+
+    Covers empty/whitespace input, wrong segment counts, and non-base64 garbage.
+    Every shape must be translated from the raw ``jwt.InvalidTokenError`` into
+    the domain :class:`AuthenticationError` (M-23 malformed-token hardening).
+    """
+    with pytest.raises(AuthenticationError):
+        DecodeAccessToken(malformedToken)
+
+
+def test_alg_none_unsigned_token_rejected():
+    """An ``alg=none`` unsigned token is rejected (signature-strip attack, M-23).
+
+    The decoder allow-lists only ``settings.ALGORITHM`` (HS256), so an attacker
+    who strips the signature and advertises ``alg=none`` must not be able to
+    smuggle forged ``sub`` / ``user_type`` claims past verification.
+    """
+    forgedToken = _ForgeNoneAlgorithmToken(ADMIN_USER_ID, ADMIN_USER_TYPE)
+    with pytest.raises(AuthenticationError):
+        DecodeAccessToken(forgedToken)
+
+
+def test_disallowed_algorithm_token_rejected():
+    """A token advertising a non-allow-listed algorithm is rejected (M-23).
+
+    Even a well-formed HMAC token is refused when its header ``alg`` (here
+    HS512) falls outside the decoder's single-entry allow-list, so an attacker
+    cannot switch/downgrade the verification algorithm (algorithm confusion).
+    """
+    forgedToken = jwt.encode(
+        {SUBJECT_CLAIM: ADMIN_USER_ID, USER_TYPE_CLAIM: ADMIN_USER_TYPE},
+        FORGER_WRONG_KEY,
+        algorithm=DISALLOWED_ALGORITHM,
+    )
+    with pytest.raises(AuthenticationError):
+        DecodeAccessToken(forgedToken)
+
+
+def test_wrong_key_signature_rejected():
+    """An HS256 token signed with the wrong key is rejected (M-23).
+
+    Proves signature verification is actually enforced: forging the correct
+    algorithm but the wrong key yields ``InvalidSignatureError``, which the
+    module translates into the domain :class:`AuthenticationError`.
+    """
+    forgedToken = jwt.encode(
+        {SUBJECT_CLAIM: ADMIN_USER_ID, USER_TYPE_CLAIM: ADMIN_USER_TYPE},
+        FORGER_WRONG_KEY,
+        algorithm="HS256",
+    )
+    with pytest.raises(AuthenticationError):
+        DecodeAccessToken(forgedToken)
+
+
+def test_oversized_token_rejected_without_hanging():
+    """A multi-megabyte corrupted token is rejected quickly, not processed (M-23).
+
+    Appending ~2 MB of padding to a valid token corrupts it while making it
+    enormous. Decoding must fail fast as AuthenticationError; the test returning
+    at all proves the decode path does not hang or exhaust resources on a large
+    hostile input (denial-of-service resistance).
+    """
+    validToken = CreateAccessToken(ADMIN_USER_ID, ADMIN_USER_TYPE)
+    oversizedToken = validToken + ("A" * OVERSIZED_PAD_BYTES)
+    with pytest.raises(AuthenticationError):
+        DecodeAccessToken(oversizedToken)

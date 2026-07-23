@@ -10,10 +10,15 @@ compare (IF SEC-USR-PWD = WS-USER-PWD) is replaced by bcrypt hash verification.
 See tech spec 0.5.1, 0.7.7, 0.8.1.
 
 The service owns the single sign-on business flow. It reproduces the COSGN00C
-PROCESS-ENTER-KEY and READ-USER-SEC-FILE paragraphs exactly (Minimal Change
+PROCESS-ENTER-KEY and READ-USER-SEC-FILE paragraphs (Minimal Change
 Clause 0.8.1): the field-presence edits, the FUNCTION UPPER-CASE of the entered
-user id and password, the USRSEC lookup, and the legacy failure precedence. The
-two blank-field edits keep their verbatim COSGN00C messages, but the
+user id (the uppercase USRSEC/VSAM key), the USRSEC lookup, and the legacy
+failure precedence. The password is verified over its EXACT bytes and is NOT
+upper-cased -- the legacy password case-fold (COSGN00C L135-136) destroys
+credential entropy, and AAP 0.1.1 makes the password-security uplift mandatory
+(faithfully copying the insecure legacy handling is "unacceptable"), so under
+the D1 precedence rule the entropy-preserving behavior governs (QA finding
+M-01). The two blank-field edits keep their verbatim COSGN00C messages, but the
 unknown-user and wrong-password paths now surface a single generic
 "invalid credentials" message (QA Issue C8: the divergent 401 bodies leaked
 which user ids exist; AAP 0.1.1 makes closing that oracle mandatory, which
@@ -26,13 +31,16 @@ commits. A plaintext password is never stored, logged, echoed, or returned.
 
 import logging
 
+from sqlalchemy import update
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
 from app.core.exceptions import AuthenticationError, DomainValidationError
 from app.core.security import (
+    SUBJECT_CLAIM,
     CreateAccessToken,
+    DecodeAccessToken,
     VerifyPassword,
     VerifyPasswordDummy,
 )
@@ -94,12 +102,18 @@ BEARER_TOKEN_TYPE = "bearer"   # OAuth2 token scheme reported in JWT mode
 class AuthService:
     """Sign-on business logic, ported 1:1 from CICS program COSGN00C (CC00).
 
-    Reproduces the COSGN00C sign-on flow exactly (Minimal Change Clause 0.8.1):
-    the field-presence edits, the uppercasing of the entered user id and password
-    (FUNCTION UPPER-CASE), the USRSEC lookup, and the four failure messages, in
-    the legacy precedence. The single mandatory security uplift is that the
-    plaintext compare ``IF SEC-USR-PWD = WS-USER-PWD`` (COSGN00C L223) becomes a
-    bcrypt hash verification via :func:`app.core.security.VerifyPassword`.
+    Reproduces the COSGN00C sign-on flow (Minimal Change Clause 0.8.1):
+    the field-presence edits, the uppercasing of the entered user id
+    (FUNCTION UPPER-CASE -- the uppercase USRSEC key), the USRSEC lookup, and the
+    four failure messages, in the legacy precedence. Two mandatory security
+    uplifts diverge from a byte-for-byte port, both under AAP 0.1.1 (which makes
+    faithfully copying the insecure legacy credential handling "unacceptable")
+    and the D1 precedence rule: (1) the plaintext compare
+    ``IF SEC-USR-PWD = WS-USER-PWD`` (COSGN00C L223) becomes a bcrypt hash
+    verification via :func:`app.core.security.VerifyPassword`, and (2) the
+    password is verified over its EXACT bytes -- the legacy password
+    FUNCTION UPPER-CASE (COSGN00C L135-136) is NOT reproduced because it destroys
+    credential entropy (QA finding M-01).
 
     Identity and role (``CDEMO-USER-ID`` / ``CDEMO-USER-TYPE``) that the mainframe
     carried forward in the ``COCOM01Y`` COMMAREA are returned in the response
@@ -146,11 +160,23 @@ class AuthService:
                 not match (L242), or the USRSEC read fails unexpectedly (L254).
         """
         self._CheckRequiredFields(loginRequest)  # COSGN00C L119-129 (presence edits)
-        # FUNCTION UPPER-CASE both fields (COSGN00C L132-136): the user id is the
-        # uppercase USRSEC key, and the password is uppercased to match the legacy
-        # case-insensitive credential policy the seed loader hashes against.
+        # The user id is FUNCTION UPPER-CASE'd (COSGN00C L132-134) because it is
+        # the uppercase USRSEC/VSAM key -- that normalization is a key-lookup
+        # concern and is preserved. The PASSWORD, however, is verified over its
+        # EXACT bytes and is NEVER upper-cased (QA finding M-01). The legacy
+        # program applied FUNCTION UPPER-CASE to the password too (COSGN00C
+        # L135-136), but that case-fold destroys password entropy (it collapses
+        # every case variant of a password onto one hash). AAP 0.1.1 makes the
+        # password-security uplift mandatory and explicitly rules that faithfully
+        # copying the insecure legacy credential handling is "unacceptable", so
+        # under the D1 precedence rule the entropy-preserving behavior governs
+        # here; it is AAP-aligned, not a Minimal-Change deviation. The seed
+        # loader (init_users.py) and the admin create/update paths hash the exact
+        # bytes for the same reason, so a case-sensitive password set anywhere
+        # verifies identically at sign-on. (The canonical seed password
+        # "PASSWORD" is already all-uppercase, so seed sign-on is unaffected.)
         normalizedUserId = loginRequest.user_id.strip().upper()
-        submittedPassword = loginRequest.password.upper()
+        submittedPassword = loginRequest.password
         userRecord = await self._LoadUser(session, normalizedUserId)  # READ-USER-SEC-FILE
         if userRecord is None:
             # READ RESP 13 (NOTFND): user id not on the USRSEC file (COSGN00C L249).
@@ -177,6 +203,54 @@ class AuthService:
             _LOGGER.info("%s (user id: %s)", MSG_WRONG_PASSWORD, normalizedUserId)
             raise AuthenticationError(MSG_INVALID_CREDENTIALS)
         return self._BuildResponse(userRecord)  # success (COSGN00C L226-238)
+
+    async def RevokeSession(
+        self, session: AsyncSession, rawToken: str | None
+    ) -> None:
+        """Revoke every token outstanding for a token's subject (logout, M-02).
+
+        Server-side counterpart to the client cookie deletion performed by the
+        ``POST /auth/logout`` router. Where sign-off on the mainframe cleared the
+        CICS COMMAREA so the terminal session could no longer act, the modern
+        stateless equivalent advances the subject's ``session_version`` so that
+        every previously issued token -- whose ``sver`` claim froze the prior
+        generation -- is rejected by :func:`get_current_user`. This closes the
+        M-02 gap where a captured pre-logout cookie stayed valid because logout
+        only deleted the client copy.
+
+        The operation is deliberately best-effort and idempotent so logout never
+        itself fails (the router takes no auth dependency): a missing token, or a
+        token that no longer decodes (already expired/tampered), simply revokes
+        nothing and returns. The version bump is issued as a single atomic
+        ``UPDATE ... SET session_version = session_version + 1`` so concurrent
+        logouts or a simultaneous privilege change cannot lose an increment via a
+        read-modify-write race; a subject that matches no row updates nothing.
+
+        Unlike :meth:`Login` (a read-only unit of work), this method mutates and
+        commits its own change.
+
+        Args:
+            session: Active async unit-of-work session.
+            rawToken: The signed token carried by the request (session cookie or
+                bearer header), or ``None`` when the caller presented none.
+        """
+        if not rawToken:
+            return
+        try:
+            tokenClaims = DecodeAccessToken(rawToken)
+        except AuthenticationError:
+            # Already invalid/expired -> there is no live session to revoke;
+            # keep logout idempotent by returning without touching any row.
+            return
+        subject = tokenClaims.get(SUBJECT_CLAIM)
+        if not subject:
+            return
+        await session.execute(
+            update(User)
+            .where(User.user_id == subject)
+            .values(session_version=User.session_version + 1)
+        )
+        await session.commit()
 
     def _CheckRequiredFields(self, loginRequest: LoginRequest) -> None:
         """Reproduce the COSGN00C field-presence edits in legacy precedence.
@@ -268,11 +342,18 @@ class AuthService:
         accessToken = None
         tokenType = None
         if settings.AUTH_MODE == JWT_AUTH_MODE:
+            # M-02: embed the user's current session generation as the token's
+            # ``sver`` claim so the bearer token is revocable server-side
+            # (get_current_user rejects it once session_version advances).
             accessToken = CreateAccessToken(
                 subject=userRecord.user_id,
                 userType=userRecord.user_type,
+                sessionVersion=userRecord.session_version,
             )
             tokenType = BEARER_TOKEN_TYPE
+        # session_version is carried on the response (excluded from the JSON
+        # body) so the session-baseline router can mint the same ``sver`` claim
+        # when it sets the cookie; it is unused in JWT mode (token already made).
         return LoginResponse(
             user_id=userRecord.user_id,
             first_name=userRecord.first_name,
@@ -280,4 +361,5 @@ class AuthService:
             user_type=userRecord.user_type,
             access_token=accessToken,
             token_type=tokenType,
+            session_version=userRecord.session_version,
         )

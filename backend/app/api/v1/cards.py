@@ -39,6 +39,29 @@ service raises -- :class:`~app.core.exceptions.NotFoundError` (404),
 caught here; they bubble to the application-wide exception handlers registered
 in ``app.main``.
 
+Authorization model (AAP 0.4.4 / 0.8.1 -- role-based, NOT per-user ownership):
+CardDemo authorization is OPERATOR/ROLE-based, preserved faithfully from the
+legacy system. The legacy security record ``CSUSR01Y`` (``app/cpy/CSUSR01Y.cpy``)
+carries only an operator id, name, password, and a one-character type
+(``SEC-USR-TYPE`` 'A'/'U') -- it has NO account or customer field, so no operator
+is bound to a subset of accounts or cards. The ported model therefore
+authenticates every caller (``get_current_user``) and gates admin-only surfaces
+on ``user_type == 'A'`` (``require_admin``), exactly as AAP 0.4.4 specifies
+("role-based rendering ... enforced on both client and server"); it deliberately
+does NOT add per-user resource-ownership filtering. Introducing a
+user->account/customer ownership binding would invent a relation absent from both
+the copybooks and the frozen AAP, breaking the Minimal Change Clause (AAP 0.8.1).
+A review finding requesting IDOR-style per-user ownership scoping is thus declined
+on AAP grounds and preserved as this documented decision (see resolution report).
+
+PAN-keyed routes (AAP 0.5.5 REST contract): ``GET``/``PUT /cards/{cardNum}`` are
+mandated by the frozen AAP endpoint list (CCDL/CCUP), so they are retained rather
+than removed. Their PAN exposure is mitigated within the AAP: the card number is
+masked to its last four digits in every response (see above), scrubbed from logs
+by the application PAN-masking log filter (AAP 0.7.8), and an account-scoped
+alternative that keeps the PAN out of the URL -- ``GET``/``PUT
+/cards/by-account/{acctId}`` -- is additionally provided.
+
 Ochs conventions (AAP 0.8.2 / 0.8.3): handler names are PascalCase
 (``ListCards``, ``GetCard``, ``UpdateCard``); local variables are camelCase
 (``cardUpdate``, ``currentUser``); indentation is four spaces; each handler

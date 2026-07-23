@@ -45,11 +45,12 @@ variables, and ALL_UPPERCASE module constants; 4-space indentation throughout.
 """
 
 import importlib
+from dataclasses import dataclass
 from datetime import date, datetime
 from decimal import Decimal
 
 import pytest
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy.exc import SQLAlchemyError
 
 from app.core.exceptions import DomainValidationError, NotFoundError
 from app.models import Account, Card, CardXref, Customer, Transaction
@@ -186,27 +187,18 @@ def MessageOf(error):
 # FK-satisfying order Account -> Customer -> Card -> CardXref (SQLAlchemy's unit
 # of work topologically orders the INSERTs from a single add_all + flush).
 # ---------------------------------------------------------------------------
-async def SeedPostingGraph(
-    session,
-    acctId="00000000030",
-    custId="000000030",
-    cardNum="4000000000000030",
-    creditLimit=Decimal("5000.00"),
-    cycCredit=Decimal("0.00"),
-    cycDebit=Decimal("0.00"),
-    currBal=Decimal("1000.00"),
-    expirationDate=date(2030, 1, 1),
-):
-    """Seed a fully referential Account/Customer/Card/CardXref posting graph.
+@dataclass(frozen=True)
+class PostingGraphSpec:
+    """Typed scenario object for :func:`SeedPostingGraph` (Ochs N-02).
 
-    Populates every NOT-NULL column verified against the real ORM models so the
-    row set flushes cleanly under PostgreSQL foreign-key enforcement. The
-    monetary and cycle fields are exact :class:`~decimal.Decimal` values so the
-    CBTRN02C over-limit arithmetic (``curr_cyc_credit - curr_cyc_debit + amt``
-    versus ``credit_limit``) is reproduced precisely by the caller's scenario.
+    Groups the eight Account/Customer/Card attributes that the CBTRN02C posting
+    edits depend on into a single value object, so the seeding helper takes only
+    ``(session, spec)`` -- keeping it within the Ochs four-parameter limit
+    (0.8.2). Every field defaults to the canonical happy-path scenario; a test
+    overrides only the fields its scenario cares about, e.g.
+    ``PostingGraphSpec(creditLimit=Decimal("100.00"))``.
 
-    Args:
-        session: The active async database session (``db_session`` fixture).
+    Attributes:
         acctId: 11-character account id (primary key, zeros preserved).
         custId: 9-character customer id.
         cardNum: 16-character card number (cross-reference + posting key).
@@ -215,43 +207,92 @@ async def SeedPostingGraph(
         cycDebit: Current-cycle debit total used by the over-limit edit.
         currBal: Current balance the posting update increments.
         expirationDate: Account expiration date used by the expiry edit (code 103).
+    """
+
+    acctId: str = "00000000030"
+    custId: str = "000000030"
+    cardNum: str = "4000000000000030"
+    creditLimit: Decimal = Decimal("5000.00")
+    cycCredit: Decimal = Decimal("0.00")
+    cycDebit: Decimal = Decimal("0.00")
+    currBal: Decimal = Decimal("1000.00")
+    expirationDate: date = date(2030, 1, 1)
+
+
+@dataclass(frozen=True)
+class TransactionSpec:
+    """Typed scenario object for :func:`SeedTransaction` (Ochs N-02).
+
+    Groups the posted-transaction attributes into one value object so the
+    seeding helper takes only ``(session, spec)`` (Ochs four-parameter limit,
+    0.8.2). ``tranId`` and ``cardNum`` are required; the code/amount fields
+    default to the canonical seed values.
+
+    Attributes:
+        tranId: The 16-character transaction id (primary key).
+        cardNum: The owning 16-character card number (foreign key).
+        tranAmt: The exact :class:`~decimal.Decimal` transaction amount.
+        tranTypeCd: The 2-character transaction type code (numeric).
+        tranCatCd: The 4-digit transaction category code.
+    """
+
+    tranId: str
+    cardNum: str
+    tranAmt: Decimal = Decimal("5.00")
+    tranTypeCd: str = "01"
+    tranCatCd: str = "0005"
+
+
+async def SeedPostingGraph(session, spec=None):
+    """Seed a fully referential Account/Customer/Card/CardXref posting graph.
+
+    Populates every NOT-NULL column verified against the real ORM models so the
+    row set flushes cleanly under PostgreSQL foreign-key enforcement. The
+    monetary and cycle fields are exact :class:`~decimal.Decimal` values (taken
+    from ``spec``) so the CBTRN02C over-limit arithmetic
+    (``curr_cyc_credit - curr_cyc_debit + amt`` versus ``credit_limit``) is
+    reproduced precisely by the caller's scenario.
+
+    Args:
+        session: The active async database session (``db_session`` fixture).
+        spec: The :class:`PostingGraphSpec` scenario; ``None`` uses the
+            canonical happy-path defaults.
 
     Returns:
         A ``(acctId, cardNum)`` tuple for the seeded account and card.
     """
+    spec = spec or PostingGraphSpec()
     account = Account(
-        acct_id=acctId, active_status="Y", curr_bal=currBal,
-        credit_limit=creditLimit, cash_credit_limit=Decimal("1000.00"),
-        curr_cyc_credit=cycCredit, curr_cyc_debit=cycDebit,
-        open_date=date(2020, 1, 1), expiration_date=expirationDate,
-        reissue_date=date(2024, 1, 1), addr_zip="12345", group_id="DEFAULT",
+        acct_id=spec.acctId, active_status="Y", curr_bal=spec.currBal,
+        credit_limit=spec.creditLimit, cash_credit_limit=Decimal("1000.00"),
+        curr_cyc_credit=spec.cycCredit, curr_cyc_debit=spec.cycDebit,
+        open_date=date(2020, 1, 1), expiration_date=spec.expirationDate,
+        reissue_date=date(2024, 1, 1), addr_zip="12345",
+        # group_id NULL: mirrors the seed quirk and is incidental here; NULL is
+        # exempt from the M-16 accounts.group_id foreign key.
+        group_id=None,
     )
     customer = Customer(
-        cust_id=custId, first_name="JANE", last_name="DOE",
+        cust_id=spec.custId, first_name="JANE", last_name="DOE",
         addr_line_1="1 MAIN ST", addr_state_cd="CA", addr_country_cd="USA",
         addr_zip="12345", phone_num_1="1234567890", ssn="123456789",
         govt_issued_id="DL123", date_of_birth=date(1980, 5, 5),
         pri_card_holder_ind="Y", fico_credit_score=750,
     )
     card = Card(
-        card_num=cardNum, acct_id=acctId, cvv_cd="123",
-        embossed_name="JANE DOE", expiration_date=expirationDate,
+        card_num=spec.cardNum, acct_id=spec.acctId,
+        embossed_name="JANE DOE", expiration_date=spec.expirationDate,
         active_status="Y",
     )
-    xref = CardXref(xref_card_num=cardNum, cust_id=custId, acct_id=acctId)
+    xref = CardXref(
+        xref_card_num=spec.cardNum, cust_id=spec.custId, acct_id=spec.acctId,
+    )
     session.add_all([account, customer, card, xref])
     await session.flush()
-    return acctId, cardNum
+    return spec.acctId, spec.cardNum
 
 
-async def SeedTransaction(
-    session,
-    tranId,
-    cardNum,
-    tranAmt=Decimal("5.00"),
-    tranTypeCd="01",
-    tranCatCd="0005",
-):
+async def SeedTransaction(session, spec):
     """Insert one posted ``Transaction`` row on an already-seeded card.
 
     The ``card_num`` foreign key must reference a card seeded by
@@ -260,21 +301,18 @@ async def SeedTransaction(
 
     Args:
         session: The active async database session.
-        tranId: The 16-character transaction id (primary key).
-        cardNum: The owning 16-character card number (foreign key).
-        tranAmt: The exact :class:`~decimal.Decimal` transaction amount.
-        tranTypeCd: The 2-character transaction type code (numeric).
-        tranCatCd: The 4-digit transaction category code.
+        spec: The :class:`TransactionSpec` describing the row to insert.
 
     Returns:
         The inserted (session-attached) :class:`~app.models.transaction.Transaction`.
     """
     transaction = Transaction(
-        tran_id=tranId, tran_type_cd=tranTypeCd, tran_cat_cd=tranCatCd,
-        tran_source="POS", tran_desc="SEED TRANSACTION", tran_amt=tranAmt,
+        tran_id=spec.tranId, tran_type_cd=spec.tranTypeCd,
+        tran_cat_cd=spec.tranCatCd, tran_source="POS",
+        tran_desc="SEED TRANSACTION", tran_amt=spec.tranAmt,
         merchant_id="000000001", merchant_name="SEED MERCHANT",
         merchant_city="SEED CITY", merchant_zip="12345",
-        card_num=cardNum, orig_ts=DEFAULT_ORIG_TS, proc_ts=DEFAULT_PROC_TS,
+        card_num=spec.cardNum, orig_ts=DEFAULT_ORIG_TS, proc_ts=DEFAULT_PROC_TS,
     )
     session.add(transaction)
     await session.flush()
@@ -315,6 +353,86 @@ def BuildTransactionCreate(cardNum, tranAmt, origTs=DEFAULT_ORIG_TS, procTs=DEFA
     )
 
 
+# ---------------------------------------------------------------------------
+# Fault-seam repositories (M-19). Reject codes 101 and 109 guard runtime
+# "record vanished" conditions -- the VSAM ``INVALID KEY`` branches of
+# ``1500-B-LOOKUP-ACCT`` (101) and ``2800-UPDATE-ACCOUNT-REC`` (109) -- that
+# fire when a cross-reference resolves but its account row is gone, or when the
+# account disappears between the validation read and the balance rewrite.
+# PostgreSQL foreign keys make those orphan states UNSEEDABLE as data, and
+# DISABLING the keys to fake them would reintroduce the C-01 hazard and make the
+# whole suite untrustworthy. Instead these stubs inject the exact repository
+# return the COBOL ``INVALID KEY`` branch observes -- a missing row (``None``) or
+# a database error -- so the REAL production methods (``_LoadAccountForPosting``
+# / ``_PostToAccount``) execute their genuine runtime mappings deterministically.
+# No database is touched, so the tests using them are pure units.
+# ---------------------------------------------------------------------------
+class _StubXrefRepository:
+    """Cross-ref repository stand-in returning a fixed record for the posting read."""
+
+    def __init__(self, xrefRecord):
+        self._xrefRecord = xrefRecord
+
+    async def GetByCardNum(self, session, cardNum):
+        """Return the pre-set cross-reference record (or ``None`` -> code 100)."""
+        return self._xrefRecord
+
+
+class _StubAccountRepository:
+    """Account repository stand-in driving the 101 and 109 INVALID-KEY branches.
+
+    ``GetByAcctId`` feeds the code-101 validation read (``None`` -> 101);
+    ``GetForUpdate`` feeds the code-109 balance-update read (``None`` for a
+    vanished account, or ``forUpdateError`` raised to simulate a rewrite
+    failure); ``Update`` records that the successful rewrite path ran.
+    """
+
+    def __init__(self, getResult=None, forUpdateResult=None, forUpdateError=None):
+        self._getResult = getResult
+        self._forUpdateResult = forUpdateResult
+        self._forUpdateError = forUpdateError
+        self.updateCalled = False
+
+    async def GetByAcctId(self, session, acctId):
+        """Return the pre-set validation-read result (``None`` drives code 101)."""
+        return self._getResult
+
+    async def GetForUpdate(self, session, acctId):
+        """Return/raise the pre-set balance-update result (drives code 109)."""
+        if self._forUpdateError is not None:
+            raise self._forUpdateError
+        return self._forUpdateResult
+
+    async def Update(self, session, account):
+        """Record that the (successful) balance-rewrite path ran."""
+        self.updateCalled = True
+
+
+def BuildInMemoryAccount(creditLimit, cycCredit, cycDebit, expirationDate):
+    """Build a detached in-memory ``Account`` for pure-unit posting-edit tests.
+
+    Only the fields the CBTRN02C over-limit and expiration edits read are set;
+    the object is never added to a session, so no database is required. This
+    keeps the ``_RunPostingValidation`` precedence tests pure (no PostgreSQL).
+
+    Args:
+        creditLimit: Credit limit for the over-limit edit (code 102).
+        cycCredit: Current-cycle credit total (over-limit running total).
+        cycDebit: Current-cycle debit total (over-limit running total).
+        expirationDate: Account expiration date for the expiry edit (code 103).
+
+    Returns:
+        A detached :class:`~app.models.account.Account`.
+    """
+    return Account(
+        acct_id="00000000099",
+        credit_limit=creditLimit,
+        curr_cyc_credit=cycCredit,
+        curr_cyc_debit=cycDebit,
+        expiration_date=expirationDate,
+    )
+
+
 # ===========================================================================
 # Phase A -- posting reject codes (CBTRN02C 1500-VALIDATE-TRAN / 2800-UPDATE).
 # ===========================================================================
@@ -346,10 +464,12 @@ async def test_add_transaction_overlimit_raises_102(db_session):
     """
     _acctId, cardNum = await SeedPostingGraph(
         db_session,
-        creditLimit=Decimal("100.00"),
-        cycCredit=Decimal("0.00"),
-        cycDebit=Decimal("0.00"),
-        expirationDate=date(2030, 1, 1),
+        PostingGraphSpec(
+            creditLimit=Decimal("100.00"),
+            cycCredit=Decimal("0.00"),
+            cycDebit=Decimal("0.00"),
+            expirationDate=date(2030, 1, 1),
+        ),
     )
     service = TransactionService()
     create = BuildTransactionCreate(cardNum, Decimal("200.00"))
@@ -367,8 +487,10 @@ async def test_add_transaction_after_expiration_raises_103(db_session):
     """
     _acctId, cardNum = await SeedPostingGraph(
         db_session,
-        creditLimit=Decimal("999999.00"),
-        expirationDate=date(2000, 1, 1),
+        PostingGraphSpec(
+            creditLimit=Decimal("999999.00"),
+            expirationDate=date(2000, 1, 1),
+        ),
     )
     service = TransactionService()
     create = BuildTransactionCreate(
@@ -381,31 +503,135 @@ async def test_add_transaction_after_expiration_raises_103(db_session):
     )
 
 
-async def test_add_transaction_account_not_found_raises_101(db_session):
-    """An orphan cross-reference raises code 101 -- defensive under FK enforcement.
+async def test_load_account_for_posting_account_absent_raises_101():
+    """Reject 101 executes at runtime when a resolved cross-ref has no account.
 
-    Reject 101 requires a card cross-reference that resolves while its account is
-    absent (the ``1500-B-LOOKUP-ACCT`` read-not-found). Under PostgreSQL foreign
-    keys such an orphan row cannot be seeded, so the flush raises
-    ``IntegrityError`` and the scenario is skipped (the code-101 contract is
-    still pinned structurally in ``tests/unit/test_exceptions.py``). If foreign
-    keys are not enforced, the posting lookup is driven directly and must reject.
+    ``1500-B-LOOKUP-ACCT``'s ``READ ACCOUNT-FILE ... INVALID KEY`` (code 101)
+    fires when a card cross-reference resolves but its account row is gone (a
+    concurrent delete / race). PostgreSQL foreign keys make that orphan state
+    UNSEEDABLE as data, and disabling the keys to fake it would reintroduce the
+    C-01 hazard. A fault-seam account repository therefore returns ``None`` for
+    the account read while the cross-reference resolves, so the REAL
+    ``_LoadAccountForPosting`` runs its genuine code-101 branch -- no constraint
+    is weakened and no database is touched. Distinct from code 109 despite the
+    identical description (AAP 0.7.3).
     """
-    orphanXref = CardXref(
-        xref_card_num=UNKNOWN_CARD_NUM, cust_id="999999999", acct_id="99999999999"
-    )
-    db_session.add(orphanXref)
-    try:
-        await db_session.flush()
-    except IntegrityError:
-        await db_session.rollback()
-        pytest.skip(
-            "FK enforcement prevents orphan xref; code 101 covered in test_exceptions"
-        )
     service = TransactionService()
+    service.xrefRepository = _StubXrefRepository(
+        CardXref(xref_card_num=UNKNOWN_CARD_NUM, cust_id="000000099",
+                 acct_id="00000000099")
+    )
+    service.accountRepository = _StubAccountRepository(getResult=None)
     with pytest.raises(PostingErrorClasses()) as raised:
-        await service._LoadAccountForPosting(db_session, UNKNOWN_CARD_NUM)
+        await service._LoadAccountForPosting(None, UNKNOWN_CARD_NUM)
     AssertPostingCode(raised.value, 101, "ACCOUNT RECORD NOT FOUND")
+
+
+async def test_load_account_for_posting_unknown_xref_raises_100():
+    """Reject 100 executes at runtime when the posting cross-ref read misses.
+
+    ``1500-A-LOOKUP-XREF``'s ``READ XREF-FILE ... INVALID KEY`` (code 100) fires
+    when the posting re-read finds no cross-reference for the card. A fault-seam
+    cross-ref repository returns ``None`` so the REAL ``_LoadAccountForPosting``
+    runs its genuine code-100 branch (a pure-unit companion to the DB-backed
+    ``test_add_transaction_unknown_card_raises_100``).
+    """
+    service = TransactionService()
+    service.xrefRepository = _StubXrefRepository(None)
+    service.accountRepository = _StubAccountRepository(getResult=None)
+    with pytest.raises(PostingErrorClasses()) as raised:
+        await service._LoadAccountForPosting(None, UNKNOWN_CARD_NUM)
+    AssertPostingCode(raised.value, 100, "INVALID CARD NUMBER FOUND")
+
+
+async def test_post_to_account_vanished_account_raises_109():
+    """Reject 109 executes at runtime when the balance-update read finds nothing.
+
+    ``2800-UPDATE-ACCOUNT-REC``'s ``REWRITE ... INVALID KEY`` (code 109) fires
+    when the account read-for-update returns nothing -- the row was deleted after
+    validation. A fault-seam repository returns ``None`` from ``GetForUpdate`` so
+    the REAL ``_PostToAccount`` raises its genuine code-109 mapping. Distinct
+    from code 101 despite the identical description text (AAP 0.7.3).
+    """
+    service = TransactionService()
+    service.accountRepository = _StubAccountRepository(forUpdateResult=None)
+    with pytest.raises(PostingErrorClasses()) as raised:
+        await service._PostToAccount(None, "00000000099", Decimal("10.00"))
+    AssertPostingCode(raised.value, 109, "ACCOUNT RECORD NOT FOUND")
+
+
+async def test_post_to_account_update_error_raises_109():
+    """Reject 109 maps a database error during the balance rewrite, chaining it.
+
+    Any ``SQLAlchemyError`` from the read-for-update / update is the modern
+    equivalent of the legacy ``REWRITE ... INVALID KEY`` and must surface as code
+    109 with the failing error preserved as ``__cause__`` (no bare re-raise, no
+    swallowed error).
+    """
+    service = TransactionService()
+    updateError = SQLAlchemyError("simulated rewrite failure")
+    service.accountRepository = _StubAccountRepository(forUpdateError=updateError)
+    with pytest.raises(PostingErrorClasses()) as raised:
+        await service._PostToAccount(None, "00000000099", Decimal("10.00"))
+    AssertPostingCode(raised.value, 109, "ACCOUNT RECORD NOT FOUND")
+    assert raised.value.__cause__ is updateError
+
+
+def test_run_posting_validation_overlimit_only_raises_102():
+    """Over-limit but NOT expired -> code 102 (the over-limit edit still fires).
+
+    Confirms the code-102 branch stays reachable after the precedence reorder
+    that makes 103 win when both edits fail (see the precedence test below).
+    """
+    service = TransactionService()
+    account = BuildInMemoryAccount(
+        creditLimit=Decimal("100.00"), cycCredit=Decimal("0.00"),
+        cycDebit=Decimal("0.00"), expirationDate=date(2030, 1, 1),
+    )
+    with pytest.raises(PostingErrorClasses()) as raised:
+        service._RunPostingValidation(account, Decimal("200.00"), DEFAULT_ORIG_TS)
+    AssertPostingCode(raised.value, 102, "OVERLIMIT TRANSACTION")
+
+
+def test_run_posting_validation_expired_only_raises_103():
+    """Expired but within the credit limit -> code 103."""
+    service = TransactionService()
+    account = BuildInMemoryAccount(
+        creditLimit=Decimal("999999.00"), cycCredit=Decimal("0.00"),
+        cycDebit=Decimal("0.00"), expirationDate=date(2000, 1, 1),
+    )
+    with pytest.raises(PostingErrorClasses()) as raised:
+        service._RunPostingValidation(
+            account, Decimal("10.00"), datetime(2020, 1, 1, 0, 0, 0)
+        )
+    AssertPostingCode(
+        raised.value, 103, "TRANSACTION RECEIVED AFTER ACCT EXPIRATION"
+    )
+
+
+def test_run_posting_validation_overlimit_and_expired_prefers_103():
+    """BOTH over-limit AND expired -> code 103 wins (CBTRN02C last-write-wins).
+
+    ``1500-B-LOOKUP-ACCT`` sets reason 102 then, in a SEPARATE sequential ``IF``,
+    sets reason 103 -- the second ``MOVE`` overwrites the first, so a posting that
+    is simultaneously over-limit and past expiration is rejected as 103, not 102
+    (AAP 0.8.1 exact-parity). This pins that precedence on the online add path's
+    ``_RunPostingValidation`` and keeps it reconcilable with the batch job's
+    ``_CheckAccountLimits``. The scenario is over-limit (limit 100, amount 200)
+    AND expired (expired 2000, original date 2020).
+    """
+    service = TransactionService()
+    account = BuildInMemoryAccount(
+        creditLimit=Decimal("100.00"), cycCredit=Decimal("0.00"),
+        cycDebit=Decimal("0.00"), expirationDate=date(2000, 1, 1),
+    )
+    with pytest.raises(PostingErrorClasses()) as raised:
+        service._RunPostingValidation(
+            account, Decimal("200.00"), datetime(2020, 1, 1, 0, 0, 0)
+        )
+    AssertPostingCode(
+        raised.value, 103, "TRANSACTION RECEIVED AFTER ACCT EXPIRATION"
+    )
 
 
 def test_posting_code_109_distinct_from_101():
@@ -440,7 +666,7 @@ async def test_add_transaction_success_generates_zero_filled_tran_id(db_session)
     (COTRN02C STARTBR/READPREV + ADD 1), i.e. ``0000000000000006``.
     """
     _acctId, cardNum = await SeedPostingGraph(db_session)
-    await SeedTransaction(db_session, "0000000000000005", cardNum)
+    await SeedTransaction(db_session, TransactionSpec("0000000000000005", cardNum))
     service = TransactionService()
     create = BuildTransactionCreate(cardNum, Decimal("50.00"))
     result = await service.AddTransaction(db_session, create)
@@ -471,7 +697,8 @@ async def test_add_transaction_updates_balance(db_session):
     asserted as exact :class:`~decimal.Decimal` values.
     """
     acctId, cardNum = await SeedPostingGraph(
-        db_session, currBal=Decimal("1000.00"), cycCredit=Decimal("0.00")
+        db_session,
+        PostingGraphSpec(currBal=Decimal("1000.00"), cycCredit=Decimal("0.00")),
     )
     service = TransactionService()
     create = BuildTransactionCreate(cardNum, Decimal("50.00"))
@@ -506,8 +733,12 @@ async def test_list_transactions_returns_summaries(db_session):
     ``tran_amt``.
     """
     _acctId, cardNum = await SeedPostingGraph(db_session)
-    await SeedTransaction(db_session, "0000000000000005", cardNum, tranAmt=Decimal("5.00"))
-    await SeedTransaction(db_session, "0000000000000006", cardNum, tranAmt=Decimal("6.50"))
+    await SeedTransaction(
+        db_session, TransactionSpec("0000000000000005", cardNum, tranAmt=Decimal("5.00")),
+    )
+    await SeedTransaction(
+        db_session, TransactionSpec("0000000000000006", cardNum, tranAmt=Decimal("6.50")),
+    )
     service = TransactionService()
     result = await service.ListTransactions(
         db_session, PaginationParams(page=1, page_size=7)
@@ -526,7 +757,9 @@ async def test_get_transaction_found(db_session):
     :class:`~decimal.Decimal`.
     """
     _acctId, cardNum = await SeedPostingGraph(db_session)
-    await SeedTransaction(db_session, "0000000000000005", cardNum, tranAmt=Decimal("5.00"))
+    await SeedTransaction(
+        db_session, TransactionSpec("0000000000000005", cardNum, tranAmt=Decimal("5.00")),
+    )
     service = TransactionService()
     tran = await service.GetTransaction(db_session, "0000000000000005")
     assert tran.tran_id == "0000000000000005"
@@ -555,4 +788,3 @@ async def test_get_transaction_absent_raises_not_found(db_session):
     with pytest.raises(NotFoundError) as raised:
         await service.GetTransaction(db_session, "0000000000000999")
     assert MessageOf(raised.value) == "Transaction ID NOT found..."
-

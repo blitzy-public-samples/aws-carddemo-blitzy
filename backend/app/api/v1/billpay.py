@@ -44,6 +44,18 @@ snake_case; the route-handler methods are PascalCase (``GetBillPayInfo``,
 ``currentUser``, ``acctId``); module constants are ALL_UPPERCASE. The ``router``
 object and the injected dependency callables (``get_db``, ``get_current_user``)
 keep their framework / AAP-contract names.
+
+Authorization model (AAP 0.4.4 / 0.8.1 -- role-based, NOT per-user ownership):
+authorization here is OPERATOR/ROLE-based, preserved faithfully from the legacy
+system. The security record ``CSUSR01Y`` binds an operator only to a type
+('A'/'U'), never to a set of accounts/customers, so every caller is
+authenticated (``get_current_user``) and admin-only surfaces are gated on
+``user_type == 'A'`` (``require_admin``) exactly as AAP 0.4.4 requires, WITHOUT
+per-user resource-ownership filtering. Adding a user->account ownership binding
+would invent a relation absent from the copybooks and the frozen AAP, breaking
+the Minimal Change Clause (AAP 0.8.1); a review finding requesting IDOR-style
+ownership scoping is therefore declined on AAP grounds (documented decision --
+see ``app.api.v1.cards`` and the resolution report).
 """
 
 # Ported from CICS online program COBIL00C (app/cbl/COBIL00C.cbl), tx CB00,
@@ -131,8 +143,10 @@ async def PayBill(
     :class:`~app.schemas.billpay.BillPayRequest` DTO and is not repeated here.
 
     Args:
-        billPayRequest: The validated bill-payment request DTO (account id,
-            confirmation flag, and the optional explicit payment amount).
+        billPayRequest: The validated bill-payment request DTO (account id and
+            confirmation flag only). COBIL00C pays the full current balance, so
+            there is no partial-payment field; unexpected fields (for example a
+            ``payment_amount``) are rejected with HTTP 422 (``extra="forbid"``).
         session: The request-scoped async database session (injected by
             :func:`app.core.dependencies.get_db`).
         currentUser: The authenticated user (injected by

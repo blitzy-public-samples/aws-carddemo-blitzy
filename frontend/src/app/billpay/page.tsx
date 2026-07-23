@@ -14,8 +14,9 @@
  *
  * The two-step Look Up -> Pay Balance (Confirm) flow is the Material Design 3
  * redesign of the single 3270 screen's ENTER-then-confirm interaction. On
- * confirmation the request omits payment_amount, so the server pays the FULL
- * current balance (legacy COBIL00C sets TRAN-AMT = ACCT-CURR-BAL, balance -> 0).
+ * confirmation the request carries only acct_id + confirm, so the server pays
+ * the FULL current balance (legacy COBIL00C sets TRAN-AMT = ACCT-CURR-BAL,
+ * balance -> 0).
  */
 
 import { useState, useRef } from 'react';
@@ -149,8 +150,9 @@ function BillPayPage() {
     }
 
     /**
-     * Performs the payment on confirmation. Omitting payment_amount instructs
-     * the server to pay the FULL balance (legacy TRAN-AMT = ACCT-CURR-BAL).
+     * Performs the payment on confirmation. The request carries only acct_id +
+     * confirm; the server always pays the FULL balance (legacy TRAN-AMT =
+     * ACCT-CURR-BAL).
      */
     async function HandleConfirm(): Promise<void> {
         // M6: block re-entrant submissions synchronously, before React can

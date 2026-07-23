@@ -22,11 +22,13 @@
 
 # CLI framework (batch/cli.py). Kept out of the backend runtime set on purpose
 # (see backend/requirements.txt), so it is declared here where it is used.
-typer==0.15.1
+typer==0.27.0
 
-# Typer's underlying command engine. PINNED EXPLICITLY (QA finding #55): Typer
-# 0.15.1 uses the pre-8.2 `Parameter.make_metavar()` signature, so Click >= 8.2
-# raises TypeError and crashes `--help` rendering. 8.1.8 is the newest 8.1.x
-# release compatible with Typer 0.15.1 and satisfies uvicorn's `click>=7.0`
-# constraint (no conflict with the backend).
-click==8.1.8
+# Typer's underlying command engine. Upgraded as a COORDINATED PAIR with Typer
+# (QA finding N-04): Click 8.1.8 carried a vulnerable `click.edit` and is below
+# the >= 8.3.3 security floor. Click >= 8.2 changed the
+# `Parameter.make_metavar()` signature that crashed Typer 0.15.1's `--help`
+# (former finding #55), so Click cannot be bumped alone; Typer 0.27.0 uses the
+# new signature and renders `--help` cleanly with Click 8.4.2, which also
+# satisfies uvicorn's `click>=7.0` constraint (no conflict with the backend).
+click==8.4.2

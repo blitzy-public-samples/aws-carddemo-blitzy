@@ -235,3 +235,51 @@ def test_secrets_are_not_rendered_in_cleartext(tmp_path):
     assert "canarydbpw" not in renderedOutput
     # The masked placeholder proves the SecretStr wrapper is engaged.
     assert "**********" in completed.stdout
+
+
+# ---------------------------------------------------------------------------
+# CONFIG-7 (QA finding M-25) -- outside a local development/test profile the
+# database URLs must be supplied explicitly; the built-in localhost default
+# must never act as a silent production fallback.
+# ---------------------------------------------------------------------------
+
+# A sync counterpart to CANARY_DATABASE_URL for the explicit-production case.
+CANARY_SYNC_DATABASE_URL = "postgresql+psycopg2://dbuser:canarydbpw@db:5432/db"
+
+
+def test_production_requires_explicit_database_urls(tmp_path):
+    # ENVIRONMENT=production with a valid key but NO explicit DB URLs must fail
+    # closed rather than silently using the local carddemo:carddemo default.
+    completed = _RunConfigProbe(
+        {"ENVIRONMENT": "production", "SECRET_KEY": VALID_SECRET_KEY},
+        IMPORT_PROBE,
+        tmp_path,
+    )
+    assert completed.returncode != 0
+    assert "DATABASE_URL" in completed.stderr
+
+
+def test_production_accepts_explicit_database_urls(tmp_path):
+    # With both URLs supplied explicitly, a production configuration is valid.
+    completed = _RunConfigProbe(
+        {
+            "ENVIRONMENT": "production",
+            "SECRET_KEY": VALID_SECRET_KEY,
+            "DATABASE_URL": CANARY_DATABASE_URL,
+            "SYNC_DATABASE_URL": CANARY_SYNC_DATABASE_URL,
+        },
+        IMPORT_PROBE,
+        tmp_path,
+    )
+    assert completed.returncode == 0
+
+
+def test_development_allows_default_database_urls(tmp_path):
+    # The local development profile keeps the turnkey convenience default so a
+    # fresh checkout runs against docker-compose with no extra configuration.
+    completed = _RunConfigProbe(
+        {"ENVIRONMENT": "development", "SECRET_KEY": VALID_SECRET_KEY},
+        IMPORT_PROBE,
+        tmp_path,
+    )
+    assert completed.returncode == 0

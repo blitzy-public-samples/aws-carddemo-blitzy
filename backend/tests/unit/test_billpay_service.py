@@ -30,11 +30,14 @@ module-level constants are ALL_UPPERCASE with underscores.
 """
 
 import importlib
+from datetime import date
 from decimal import Decimal
 
 import pytest
 from pydantic import ValidationError
 from sqlalchemy import select
+from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.core.exceptions import DomainValidationError, NotFoundError
 from app.models import Account, Card, CardXref, Customer, Transaction
@@ -123,7 +126,6 @@ async def SeedBillPayGraph(session, currBal, creditLimit):
     card = Card(
         card_num=CARD_NUM,
         acct_id=ACCT_ID,
-        cvv_cd="123",
         embossed_name="JOHN DOE",
         active_status="Y",
     )
@@ -185,9 +187,7 @@ async def test_paybill_empty_acct_raises_validation(db_session):
     ``model_construct`` bypasses the schema to exercise the SERVICE-level empty
     guard (COBIL00C L159-161), which is what this suite targets.
     """
-    request = BillPayRequest.model_construct(
-        acct_id="", confirm="Y", payment_amount=None
-    )
+    request = BillPayRequest.model_construct(acct_id="", confirm="Y")
     service = BillPayService()
 
     with pytest.raises(DomainValidationError) as excInfo:
@@ -314,3 +314,177 @@ def test_payment_constants():
     assert billpayModule.PAYMENT_TRAN_TYPE == "02"
     assert billpayModule.PAYMENT_TRAN_DESC == "BILL PAYMENT - ONLINE"
     assert billpayModule.PAYMENT_MERCHANT_NAME == "BILL PAYMENT"
+
+
+# ===========================================================================
+# Phase F -- M-09 billpay contract: no partial-payment field, inherent
+# replay/rollback safety, and the explicit no-expiration-gate policy.
+# ===========================================================================
+
+
+def test_billpay_request_rejects_payment_amount():
+    """BillPayRequest forbids a ``payment_amount`` (legacy pay-in-full, M-09).
+
+    COBIL00 has only two unprotected inputs -- the account id and the
+    confirmation flag -- and always pays the FULL current balance, so the
+    request DTO carries no partial-payment field. Because ``RequestBase`` sets
+    ``extra="forbid"``, a client that still submits ``payment_amount`` is
+    rejected at the schema boundary (surfacing as HTTP 422) rather than having
+    the value silently accepted and ignored -- the accepted-but-ignored contract
+    defect QA finding M-09 flagged. The field is also asserted absent from the
+    model so a partial-payment feature cannot be reintroduced unnoticed.
+    """
+    with pytest.raises(ValidationError) as excInfo:
+        BillPayRequest(acct_id=ACCT_ID, confirm="Y", payment_amount="50.00")
+
+    errorText = str(excInfo.value).lower()
+    assert "payment_amount" in errorText
+    assert (
+        "extra" in errorText
+        or "forbid" in errorText
+        or "not permitted" in errorText
+    )
+    assert "payment_amount" not in BillPayRequest.model_fields
+
+
+async def test_paybill_replay_two_sessions_rejected(test_engine, db_session):
+    """A committed pay-in-full is not double-applied by an independent replay.
+
+    Proves the pay-in-full contract is inherently idempotent WITHOUT any client
+    idempotency key (M-09): session A pays the full balance and commits (the
+    balance is zeroed); an INDEPENDENT session B -- its own connection, so it
+    genuinely re-reads committed state rather than sharing an identity map --
+    then replays the identical confirmed request and is rejected by the verbatim
+    ``MSG_NOTHING_TO_PAY`` guard. Exactly one payment transaction exists and the
+    balance is exactly zero: the duplicate never drives it negative.
+
+    The ``db_session`` fixture is requested only so its truncate teardown cleans
+    the tables afterward; the test itself operates entirely through independent
+    sessions bound to the shared ``test_engine`` so the two ``PayBill`` calls do
+    not share a session. The seed is committed on its own session first so no
+    seed-time row lock survives to block session A's ``SELECT ... FOR UPDATE``.
+
+    Args:
+        test_engine: The function-scoped async engine fixture (independent
+            sessions are opened against it).
+        db_session: Requested only for its truncate teardown (never used
+            directly, so it holds no locks that could block the FOR UPDATE read).
+    """
+    sessionMaker = async_sessionmaker(
+        bind=test_engine,
+        class_=AsyncSession,
+        expire_on_commit=False,
+        autoflush=False,
+    )
+
+    # Seed on an independent session and COMMIT so no seed lock survives.
+    async with sessionMaker() as seedSession:
+        await SeedBillPayGraph(
+            seedSession,
+            currBal=Decimal("250.00"),
+            creditLimit=Decimal("5000.00"),
+        )
+        await seedSession.commit()
+
+    request = BillPayRequest(acct_id=ACCT_ID, confirm="Y")
+    service = BillPayService()
+
+    # Session A: pay in full (the service owns and performs the commit).
+    async with sessionMaker() as sessionA:
+        firstResponse = await service.PayBill(sessionA, request)
+    assert firstResponse.payment_amount == Decimal("250.00")
+    assert firstResponse.tran_id is not None
+
+    # Session B (independent): replay the identical request -> nothing to pay.
+    async with sessionMaker() as sessionB:
+        with pytest.raises(DomainValidationError) as excInfo:
+            await service.PayBill(sessionB, request)
+    assert MessageOf(excInfo.value) == billpayModule.MSG_NOTHING_TO_PAY
+
+    # Exactly ONE payment transaction, and the balance is exactly zero.
+    async with sessionMaker() as verifySession:
+        postedRows = await verifySession.execute(
+            select(Transaction).where(Transaction.card_num == CARD_NUM)
+        )
+        assert len(postedRows.scalars().all()) == 1
+        settledAccount = await verifySession.get(Account, ACCT_ID)
+        assert settledAccount.curr_bal == Decimal("0.00")
+
+
+async def test_paybill_rollback_on_insert_failure(db_session, monkeypatch):
+    """A failed transaction insert rolls back: no payment persisted, balance intact.
+
+    Forces the ``WRITE-TRANSACT-FILE`` step to fail -- the legacy DUPKEY /
+    INVALID KEY write condition -- by patching the transaction repository's
+    ``Insert`` to raise a :class:`sqlalchemy.exc.SQLAlchemyError`. ``PayBill``
+    must roll the unit of work back, re-raise the verbatim
+    ``MSG_UNABLE_ADD_TRAN`` validation error, leave the balance UNCHANGED, and
+    persist no transaction, so a partial payment can never be recorded (M-09).
+    The seed is committed first so the service's rollback cannot wipe it.
+
+    Args:
+        db_session: The async session shared by the seed, the service call, and
+            the post-condition verification.
+        monkeypatch: pytest fixture used to inject the failing ``Insert``.
+    """
+    await SeedBillPayGraph(
+        db_session,
+        currBal=Decimal("300.00"),
+        creditLimit=Decimal("5000.00"),
+    )
+    await db_session.commit()
+
+    service = BillPayService()
+
+    async def _FailingInsert(session, transaction):
+        """Simulate the legacy DUPKEY / INVALID KEY write failure."""
+        raise SQLAlchemyError("simulated transaction write failure")
+
+    monkeypatch.setattr(service.transactionRepository, "Insert", _FailingInsert)
+
+    request = BillPayRequest(acct_id=ACCT_ID, confirm="Y")
+    with pytest.raises(DomainValidationError) as excInfo:
+        await service.PayBill(db_session, request)
+    assert MessageOf(excInfo.value) == billpayModule.MSG_UNABLE_ADD_TRAN
+
+    # The balance is UNCHANGED and no payment transaction was persisted.
+    refreshedAccount = await db_session.get(Account, ACCT_ID)
+    assert refreshedAccount.curr_bal == Decimal("300.00")
+    postedRows = await db_session.execute(
+        select(Transaction).where(Transaction.card_num == CARD_NUM)
+    )
+    assert postedRows.scalars().first() is None
+
+
+async def test_paybill_posts_despite_expired_card(db_session):
+    """Bill payment posts regardless of card expiration (no 103 gate in COBIL00C).
+
+    The expiration gate (batch posting reject code 103, ``CBTRN02C``) does NOT
+    exist in the online bill-pay program, so a confirmed payment on an account
+    whose card expired in the past still posts and zeroes the balance (Minimal
+    Change Clause, AAP 0.8.1). This pins the explicit "bill-pay does not gate on
+    expiration" policy (M-09) so a reviewer does not mistake its absence for an
+    omission and add an unfaithful expiry check.
+
+    Args:
+        db_session: The async session used to seed, run the payment, and verify.
+    """
+    await SeedBillPayGraph(
+        db_session,
+        currBal=Decimal("120.00"),
+        creditLimit=Decimal("5000.00"),
+    )
+    # Force the seeded card's expiration date into the past.
+    seededCard = await db_session.get(Card, CARD_NUM)
+    seededCard.expiration_date = date(2000, 1, 1)
+    await db_session.flush()
+
+    request = BillPayRequest(acct_id=ACCT_ID, confirm="Y")
+    service = BillPayService()
+
+    response = await service.PayBill(db_session, request)
+
+    assert response.payment_amount == Decimal("120.00")
+    assert response.tran_id is not None
+    refreshedAccount = await db_session.get(Account, ACCT_ID)
+    assert refreshedAccount.curr_bal == Decimal("0.00")

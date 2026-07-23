@@ -222,14 +222,34 @@ class BillPayService:
         method returns the F-006 figures with the "confirm to pay" prompt and
         posts nothing.
 
+        Replay / concurrency safety (no extra idempotency key is required): the
+        account is read under ``SELECT ... FOR UPDATE`` (:meth:`GetForUpdate`),
+        so two concurrent pay-in-full requests for the same account are
+        serialized by the row lock. Because the amount paid is always the
+        *current* balance and the balance is zeroed in the same committed unit
+        of work, a replay that arrives after a payment has committed re-reads a
+        zero balance and is rejected by the "nothing to pay" guard below. The
+        balance therefore converges to zero and can never be driven negative by
+        a duplicate submission -- the pay-in-full contract is inherently
+        idempotent, exactly as the legacy ``IF ACCT-CURR-BAL <= ZEROS`` edit
+        (COBIL00C L198) made it.
+
+        Expiration policy (explicit, Minimal Change Clause): the online
+        bill-payment program performs NO account/card expiration check -- it
+        posts the payment regardless of the expiration date. The expiration gate
+        (reject code 103) exists only in the BATCH posting validator ``CBTRN02C``
+        (AAP 0.7.3), never in COBIL00C, so this method deliberately does not gate
+        on expiration.
+
         Args:
             session: Active async unit-of-work session; :meth:`PayBill` owns the
                 ``commit()`` / ``rollback()`` for the confirmed-payment path.
             billPayRequest: The validated request DTO carrying ``acct_id`` and
-                the ``confirm`` flag. The optional ``payment_amount`` field is
-                intentionally NOT used for the amount: COBIL00C pays the entire
-                current balance (Minimal Change Clause), so the amount is always
-                the full ``curr_bal``.
+                the ``confirm`` flag only. COBIL00C pays the entire current
+                balance (Minimal Change Clause), so the paid amount is always
+                the full ``curr_bal``; the request DTO deliberately exposes no
+                partial-payment field (``BillPayRequest`` forbids extras, so a
+                client that still sends one is rejected with HTTP 422).
 
         Returns:
             A :class:`~app.schemas.billpay.BillPayResponse`. For a confirmed

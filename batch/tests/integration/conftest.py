@@ -63,6 +63,7 @@ from sqlalchemy.orm import Session
 
 from app.models import (
     Account,
+    AccountGroup,
     Card,
     CardXref,
     Customer,
@@ -89,7 +90,6 @@ REJECT_DATA_WIDTH = 350
 REJECT_REASON_WIDTH = 4
 REJECT_DESC_WIDTH = 76
 
-DEFAULT_CVV = "123"
 DEFAULT_EMBOSSED_NAME = "TEST CARDHOLDER"
 DEFAULT_ACTIVE_STATUS = "Y"
 DEFAULT_EXPIRATION_DATE = date(2030, 1, 1)
@@ -190,6 +190,27 @@ class RecordBuilder:
         self.session.flush()
         return row
 
+    def _EnsureAccountGroup(self, groupId: str | None) -> None:
+        """Get-or-create the ``account_groups`` parent for ``groupId``.
+
+        The M-16 foreign key ``accounts.group_id -> account_groups.group_id``
+        requires that any NON-NULL account group id already exist in the parent
+        registry. Interest-calc scenarios legitimately stage accounts whose group
+        has no disclosure rows (for example ``MISSINGGRP``, exercising the
+        CBACT04C DEFAULT fallback for missing RATES) -- such a group is still a
+        valid ACCOUNT group, so it belongs in the registry. This inserts the
+        parent row only when it is both non-null and not already present, keeping
+        every ``BuildAccount`` call FK-valid without changing any scenario intent.
+
+        Args:
+            groupId: The account's group id (post-override), or None.
+        """
+        if groupId is None:
+            return
+        if self.session.get(AccountGroup, groupId) is None:
+            self.session.add(AccountGroup(group_id=groupId))
+            self.session.flush()
+
     def BuildCustomer(self, custId: str = "000000009", overrides: dict | None = None) -> Customer:
         """Insert a customer master row (``customers``) and return it."""
         values = {
@@ -222,6 +243,9 @@ class RecordBuilder:
         }
         if overrides:
             values.update(overrides)
+        # Satisfy the M-16 accounts.group_id -> account_groups.group_id FK: make
+        # sure the (post-override) group id exists in the parent registry first.
+        self._EnsureAccountGroup(values.get("group_id"))
         return self._Persist(Account(**values))
 
     def BuildCard(self, cardNum: str, acctId: str, overrides: dict | None = None) -> Card:
@@ -229,7 +253,6 @@ class RecordBuilder:
         values = {
             "card_num": cardNum,
             "acct_id": acctId,
-            "cvv_cd": DEFAULT_CVV,
             "embossed_name": DEFAULT_EMBOSSED_NAME,
             "active_status": DEFAULT_ACTIVE_STATUS,
             "expiration_date": DEFAULT_EXPIRATION_DATE,
@@ -397,6 +420,19 @@ def RelaxForeignKeys(session: Session, tableName: str) -> Iterator[None]:
     Yields:
         None. The wrapped block runs with the table's triggers disabled.
     """
+    # Defense-in-depth (QA finding C-01): re-verify at RUNTIME -- immediately
+    # before issuing the privileged DISABLE TRIGGER DDL -- that the live
+    # connection is bound to an unmistakably disposable test database. The
+    # import-time guard in ``batch/tests/conftest.py`` already fails closed, but
+    # this second, connection-level check ensures trigger disabling can NEVER run
+    # against a database whose name does not contain ``test`` even if a fixture
+    # were somehow rebound. A mismatch raises before any trigger is touched.
+    liveDatabaseName = session.execute(text("SELECT current_database()")).scalar_one()
+    if "test" not in str(liveDatabaseName).lower():
+        raise RuntimeError(
+            "Refusing to DISABLE TRIGGER: the live database "
+            f"{liveDatabaseName!r} is not an unmistakable test database."
+        )
     session.execute(text(f"ALTER TABLE {tableName} DISABLE TRIGGER ALL"))
     try:
         yield

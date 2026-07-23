@@ -45,7 +45,7 @@ from configuration parsing.
 from functools import lru_cache
 from pathlib import Path
 
-from pydantic import SecretStr
+from pydantic import SecretStr, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 # ---------------------------------------------------------------------------
@@ -67,6 +67,14 @@ _BACKEND_ENV_FILE = Path(__file__).resolve().parent.parent / "backend" / ".env"
 _DEFAULT_SYNC_DATABASE_URL = (
     "postgresql+psycopg2://carddemo:carddemo@localhost:5432/carddemo"
 )
+
+# Environments treated as unmistakable local development/test profiles, in which
+# the ``_DEFAULT_SYNC_DATABASE_URL`` convenience default is permitted. Any OTHER
+# value of ``ENVIRONMENT`` -- notably "staging"/"production" -- is treated as a
+# real deployment that MUST supply its own ``SYNC_DATABASE_URL`` explicitly, so
+# a shipped credential default can never silently reach a deployed batch run (QA
+# finding M-25). Mirrors ``app.core.config.LOCAL_PROFILE_ENVIRONMENTS``.
+LOCAL_PROFILE_ENVIRONMENTS = frozenset({"development", "test"})
 
 
 class BatchSettings(BaseSettings):
@@ -97,7 +105,48 @@ class BatchSettings(BaseSettings):
         extra="ignore",
     )
 
+    # Deployment environment name (``development``/``test``/``staging``/
+    # ``production``). Read from the same ``ENVIRONMENT`` variable the backend
+    # uses; defaults to the local ``development`` profile. It gates the
+    # fail-closed database-URL guard below (QA finding M-25) and is otherwise
+    # unused by batch processing. The attribute name is intentionally
+    # ``UPPER_SNAKE_CASE`` (external env-var contract), the same documented Ochs
+    # exception as ``SYNC_DATABASE_URL``.
+    ENVIRONMENT: str = "development"
+
     SYNC_DATABASE_URL: SecretStr = SecretStr(_DEFAULT_SYNC_DATABASE_URL)
+
+    @model_validator(mode="after")
+    def RequireExplicitSyncDatabaseUrl(self) -> "BatchSettings":
+        """Fail closed when a real deployment omits the batch database URL.
+
+        The built-in ``_DEFAULT_SYNC_DATABASE_URL`` carries only throwaway local
+        docker credentials and exists purely as a local-development/test
+        convenience. Silently falling back to it in a real deployment would let a
+        batch job connect to a wrong ``localhost`` database, so outside an
+        unmistakable local profile (:data:`LOCAL_PROFILE_ENVIRONMENTS`) the URL
+        MUST be supplied explicitly by the environment (QA finding M-25). The
+        guard inspects ``model_fields_set`` so a value still at its built-in
+        default (never explicitly set) is what trips it; no URL value is included
+        in the error, so a traceback can never leak a credential.
+
+        Returns:
+            The validated settings instance, unchanged.
+
+        Raises:
+            ValueError: If ``ENVIRONMENT`` is not a local profile and
+                ``SYNC_DATABASE_URL`` was left at its built-in default.
+        """
+        normalizedEnvironment = self.ENVIRONMENT.strip().lower()
+        if normalizedEnvironment in LOCAL_PROFILE_ENVIRONMENTS:
+            return self
+        if "SYNC_DATABASE_URL" not in self.model_fields_set:
+            raise ValueError(
+                "SYNC_DATABASE_URL must be set explicitly when "
+                f"ENVIRONMENT={self.ENVIRONMENT!r} (the built-in local default "
+                "is not used outside a development/test profile)"
+            )
+        return self
 
 
 @lru_cache(maxsize=1)

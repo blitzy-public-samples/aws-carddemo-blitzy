@@ -24,15 +24,17 @@ Two properties of the legacy artifact drive the implementation:
 2.  **Plaintext password must be hashed.** The legacy record stores an 8-byte
     plaintext password (``SEC-USR-PWD PIC X(08)``). Persisting plaintext is
     unacceptable in the target (AAP 0.1.1 / 0.7.7 and the Ochs "no hardcoding
-    secrets" rule), so every decoded password is UPPERCASED (matching the
-    sign-on credential policy -- ``auth_service.Login`` uppercases the submitted
-    password per ``FUNCTION UPPER-CASE`` COSGN00C L135-136 -- and the
-    admin-create path) and then run through
+    secrets" rule), so every decoded password is hashed over its EXACT
+    (whitespace-stripped) bytes through
     :func:`~app.core.security.HashPassword`; only the resulting bcrypt
-    ``password_hash`` is written (QA finding F2). This keeps every
-    credential-write path consistent with the single sign-on read path, so no
-    seeded account can be silently locked out by a lowercase letter in its
-    password. The plaintext value is never stored, logged, or returned. The seed
+    ``password_hash`` is written. The legacy ``FUNCTION UPPER-CASE`` password
+    fold (COSGN00C L135-136) is deliberately NOT applied because it destroys
+    credential entropy (QA finding M-01); the sign-on read path
+    (``auth_service.Login``) and the admin create/update paths also hash/verify
+    the exact bytes, so every credential-write path stays consistent with the
+    single sign-on read path. This is a no-op for the all-uppercase legacy seed
+    password ("PASSWORD"), so seed sign-on is unaffected. The plaintext value is
+    never stored, logged, or returned. The seed
     credentials are non-production values used solely to populate a demo
     database.
 
@@ -186,15 +188,15 @@ def _ParseUserRecord(record: str) -> dict[str, str]:
     # requirement until a password is actually hashed (QA finding #60).
     from app.core.security import HashPassword
 
-    # F2: uppercase the plaintext before hashing so the seeded credential matches
-    # the sign-on policy -- auth_service.Login always uppercases the submitted
-    # password (FUNCTION UPPER-CASE, COSGN00C L135-136) before verifying, and the
-    # admin-create path (user_admin_service) does the same. This is a no-op for
-    # the all-uppercase legacy seed password ("PASSWORD") but keeps every
-    # credential-write path (seed, admin-create, admin-update) consistent with
-    # the single sign-on read path, so no seeded account can be silently locked
-    # out by a lowercase letter in its password.
-    plainPassword = record[PASSWORD_SLICE].strip().upper()
+    # M-01: hash the EXACT (whitespace-stripped) plaintext bytes -- the legacy
+    # FUNCTION UPPER-CASE password fold (COSGN00C L135-136) is deliberately NOT
+    # applied because it destroys credential entropy. The sign-on read path
+    # (auth_service.Login) and the admin create/update paths all hash/verify the
+    # exact bytes, so every credential-write path stays consistent with the
+    # single sign-on read path. This is a no-op for the all-uppercase legacy seed
+    # password ("PASSWORD"), so seed sign-on is unaffected, while any future
+    # mixed-case seed retains its full case entropy (QA finding M-01).
+    plainPassword = record[PASSWORD_SLICE].strip()
     return {
         "user_id": record[USER_ID_SLICE].strip(),
         "first_name": record[FIRST_NAME_SLICE].strip(),

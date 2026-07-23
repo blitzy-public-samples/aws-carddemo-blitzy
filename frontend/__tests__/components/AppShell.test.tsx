@@ -54,6 +54,7 @@ import {
     MakeCurrentUser,
     MakeAdminUser,
 } from '../testUtils';
+import type { ReactElement } from 'react';
 import { AppShell } from '@/components/AppShell';
 import { GetCurrentUser, IsAdmin, Logout } from '@/lib/auth';
 import { usePathname, useRouter } from 'next/navigation';
@@ -323,5 +324,43 @@ describe('AppShell', () => {
         await user.keyboard('{Escape}');
 
         expect(back).toHaveBeenCalledTimes(1);
+    });
+
+    it('stands down when a descendant already handled Escape (single owner, M-28)', async () => {
+        const user = userEvent.setup();
+        const back = jest.fn();
+        mockUseRouter.mockReturnValue(MakeRouterMock({ back }));
+
+        // A descendant that OWNS Escape for its own context calls
+        // preventDefault. The shell is the single global fallback owner and must
+        // stand down so Escape is not handled twice (QA M-28 double navigation).
+        function EscapeOwner(): ReactElement {
+            return (
+                <button
+                    type="button"
+                    onKeyDown={(event) => {
+                        if (event.key === 'Escape') {
+                            event.preventDefault();
+                        }
+                    }}
+                >
+                    Owns Escape
+                </button>
+            );
+        }
+
+        RenderWithProviders(
+            <AppShell>
+                <EscapeOwner />
+            </AppShell>,
+        );
+
+        const owner = screen.getByRole('button', { name: 'Owns Escape' });
+        await act(async () => {
+            owner.focus();
+        });
+        await user.keyboard('{Escape}');
+
+        expect(back).not.toHaveBeenCalled();
     });
 });

@@ -225,7 +225,12 @@ Cookie: carddemo_session=<token>
   "menu_title": "Main Menu",
   "user_type": "U",
   "menu_options": [
-    { "option_number": 1, "option_name": "Account View", "program_name": "COACTVWC", "user_type": "U" }
+    {
+      "option_number": 1,
+      "option_name": "Account View",
+      "program_name": "COACTVWC",
+      "user_type": "U"
+    }
   ]
 }
 ```
@@ -289,7 +294,7 @@ Cookie: carddemo_session=<token>
   "curr_cyc_credit": "300.00",
   "curr_cyc_debit": "150.00",
   "addr_zip": "20171",
-  "group_id": "STANDARD",
+  "group_id": null,
   "customer": {
     "cust_id": "000000011",
     "first_name": "Jane",
@@ -380,7 +385,12 @@ is masked. `cvv` is never included.
 ```json
 {
   "items": [
-    { "card_num": "************5740", "acct_id": "00000000011", "active_status": "Y", "embossed_name": "JANE DOE" }
+    {
+      "card_num": "************5740",
+      "acct_id": "00000000011",
+      "active_status": "Y",
+      "embossed_name": "JANE DOE"
+    }
   ],
   "page": 1,
   "page_size": 7,
@@ -620,9 +630,13 @@ downloadable **CSV** or **PDF** (the single authorized behavior-adjacent change)
 | `confirm` | string | no | Optional confirmation flag (`Y`/`N`). |
 | `format` | string | no | Output format: `json` (default), `csv`, or `pdf`. |
 
-```http
-GET /api/v1/reports/transactions?report_type=Monthly&start_date=2026-05-01&end_date=2026-05-31
-Cookie: carddemo_session=<token>
+Request a monthly report as JSON (the default format). Set the base URL and
+date range as shell variables so no command line exceeds the recommended width:
+
+```bash
+BASE="http://localhost:8000/api/v1/reports/transactions"
+RANGE="report_type=Monthly&start_date=2026-05-01&end_date=2026-05-31"
+curl "$BASE?$RANGE" --cookie "carddemo_session=<token>"
 ```
 
 **Response** (`ReportResponse`, `200 OK`) when `format=json`: the echoed report
@@ -655,11 +669,13 @@ totals. Every amount and total is a decimal string.
 
 To download the report instead, request `format=csv` or `format=pdf`. The
 response is a file attachment (`Content-Disposition: attachment`) with media
-type `text/csv` or `application/pdf`:
+type `text/csv` or `application/pdf`. Reuse the same base URL and date range and
+add the `format` parameter (`-OJ` keeps the server-provided filename):
 
 ```bash
-curl -OJ "http://localhost:8000/api/v1/reports/transactions?report_type=Monthly&start_date=2026-05-01&end_date=2026-05-31&format=pdf" \
-  --cookie "carddemo_session=<token>"
+BASE="http://localhost:8000/api/v1/reports/transactions"
+RANGE="report_type=Monthly&start_date=2026-05-01&end_date=2026-05-31"
+curl -OJ "$BASE?$RANGE&format=pdf" --cookie "carddemo_session=<token>"
 ```
 
 | Status | Meaning |
@@ -715,8 +731,12 @@ Make a bill payment against an account. Ports the pay side of `COBIL00C`
 | Field | Type | Required | Description |
 | :---- | :--- | :------- | :---------- |
 | `acct_id` | string(11) | yes | Account to pay. |
-| `confirm` | string | yes | Confirmation flag (legacy `CONFIRMI`). |
-| `payment_amount` | decimal string | no | Explicit amount (> 0). When omitted, the full current balance is paid. |
+| `confirm` | string | yes | Confirmation flag (legacy `CONFIRMI`); `'Y'` to pay, `'N'` to decline. |
+
+`COBIL00C` pays the **full current balance** and has no partial-payment field,
+so the request body accepts only `acct_id` and `confirm`. Any additional field
+(for example a `payment_amount`) is rejected with `422 Unprocessable Entity`
+(the request schema sets `extra="forbid"`).
 
 ```http
 POST /api/v1/billpay
@@ -750,7 +770,7 @@ amount applied, and the posted payment transaction id.
 | `200 OK` | Payment applied. |
 | `401 Unauthorized` | No valid session or token. |
 | `404 Not Found` | No account exists for `acct_id`. |
-| `422 Unprocessable Entity` | Request body fails schema validation (for example, a non-positive `payment_amount`). |
+| `422 Unprocessable Entity` | Request body fails schema validation (for example, a malformed `acct_id`, an invalid `confirm` flag, or an unexpected field such as `payment_amount`). |
 
 ### User Administration
 
@@ -777,7 +797,12 @@ Cookie: carddemo_session=<token>
 ```json
 {
   "items": [
-    { "user_id": "ADMIN001", "first_name": "Admin", "last_name": "User", "user_type": "A" }
+    {
+      "user_id": "ADMIN001",
+      "first_name": "Admin",
+      "last_name": "User",
+      "user_type": "A"
+    }
   ],
   "page": 1,
   "page_size": 7,

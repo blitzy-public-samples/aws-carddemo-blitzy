@@ -36,12 +36,16 @@ Design and security constraints (Ochs Rule):
       no bare ``except`` is ever used.
     * ``HashPassword`` and ``VerifyPassword`` are pure over their inputs — they
       hash/verify the exact bytes handed to them and never apply any
-      normalization (such as the legacy uppercasing). The policy decision of
-      whether to normalize a credential before hashing belongs to the seed
-      loader (``batch/loaders/init_users.py``) and the login service
-      (``app/services/auth_service.py``); see :func:`NormalizeUserId` for the
-      one normalization helper this module does expose (for the user id, which
-      is the uppercase VSAM key — never for the password).
+      normalization (in particular, never the legacy password uppercasing). The
+      password is hashed and verified over its EXACT bytes on every path — the
+      seed loader (``batch/loaders/init_users.py``), the admin create/update
+      paths (``app/services/user_admin_service.py``), and the login service
+      (``app/services/auth_service.py``) — so credential case entropy is fully
+      preserved (QA finding M-01; the legacy ``FUNCTION UPPER-CASE`` password
+      fold at COSGN00C L135-136 is intentionally not reproduced). See
+      :func:`NormalizeUserId` for the one normalization helper this module does
+      expose (for the user id, which is the uppercase VSAM key — never for the
+      password).
     * Plaintext passwords are never logged, stored, or returned.
 
 This module performs no I/O: it opens no database connection and constructs no
@@ -66,6 +70,9 @@ __all__ = [
     "CreateSessionToken",
     "DecodeAccessToken",
     "NormalizeUserId",
+    "SUBJECT_CLAIM",
+    "USER_TYPE_CLAIM",
+    "SESSION_VERSION_CLAIM",
 ]
 
 # ---------------------------------------------------------------------------
@@ -76,6 +83,11 @@ SUBJECT_CLAIM = "sub"           # standard JWT subject = CDEMO-USER-ID
 USER_TYPE_CLAIM = "user_type"   # role claim carrying legacy CDEMO-USER-TYPE ('A'/'U')
 ISSUED_AT_CLAIM = "iat"         # standard JWT issued-at
 EXPIRATION_CLAIM = "exp"        # standard JWT expiration
+# Session-generation claim (M-02): the user's ``session_version`` at mint time.
+# get_current_user rejects a token whose ``sver`` no longer matches the stored
+# value, so incrementing session_version (logout / role or password change)
+# revokes every outstanding token for that user.
+SESSION_VERSION_CLAIM = "sver"
 
 # Human-readable error surfaced when a token is missing, expired, tampered
 # with, or otherwise undecodable. Kept generic on purpose: it must not reveal
@@ -126,8 +138,9 @@ def VerifyPassword(plainPassword: str, passwordHash: str) -> bool:
     ``passwordHash`` and compared in constant time by passlib.
 
     The function is pure over its inputs — it applies no normalization (the
-    legacy uppercasing is intentionally *not* performed here; that policy is
-    owned by the seed loader and the login service). A wrong password yields
+    legacy password uppercasing is intentionally *not* performed here or on any
+    other path; the password is hashed/verified over its exact bytes everywhere,
+    preserving case entropy per QA finding M-01). A wrong password yields
     ``False`` rather than an exception.
 
     Args:
@@ -195,6 +208,7 @@ def NormalizeUserId(userId: str) -> str:
 def CreateAccessToken(
     subject: str,
     userType: str,
+    sessionVersion: int | None = None,
     expiresMinutes: int | None = None,
 ) -> str:
     """Create a signed access token carrying identity and role claims.
@@ -205,6 +219,13 @@ def CreateAccessToken(
     standard ``iat`` and ``exp`` claims. It is signed with ``settings.SECRET_KEY``
     using ``settings.ALGORITHM`` (never a hardcoded key).
 
+    When ``sessionVersion`` is supplied it is embedded as the ``sver`` claim
+    (M-02): ``get_current_user`` compares that claim against the user's current
+    ``session_version`` and rejects the token when they differ, so the token can
+    be revoked server-side by incrementing the stored generation (logout, or a
+    role/password change). All app sign-on paths supply it; it is optional only
+    so low-level decode/claim unit tests can mint a bare token.
+
     The same signed token serves both auth modes (AAP 0.8.4): it is stored in
     the ``settings.SESSION_COOKIE_NAME`` cookie under the ``session`` baseline or
     returned as a bearer token under ``jwt``.
@@ -213,6 +234,8 @@ def CreateAccessToken(
         subject: The user id to record as the token subject (``sub``).
         userType: The legacy user-type / role code ('A' or 'U') recorded as the
             ``user_type`` claim.
+        sessionVersion: The user's current session generation, embedded as the
+            ``sver`` claim when not ``None`` (the server-side revocation anchor).
         expiresMinutes: Optional token lifetime in minutes. When ``None``, the
             configured ``settings.ACCESS_TOKEN_EXPIRE_MINUTES`` is used.
 
@@ -232,6 +255,8 @@ def CreateAccessToken(
         ISSUED_AT_CLAIM: issuedAt,
         EXPIRATION_CLAIM: expireAt,
     }
+    if sessionVersion is not None:
+        tokenPayload[SESSION_VERSION_CLAIM] = sessionVersion
     encodedToken = jwt.encode(
         tokenPayload,
         settings.SECRET_KEY.get_secret_value(),
@@ -243,6 +268,7 @@ def CreateAccessToken(
 def CreateSessionToken(
     subject: str,
     userType: str,
+    sessionVersion: int | None = None,
     expiresMinutes: int | None = None,
 ) -> str:
     """Create the signed token used by the session baseline.
@@ -257,13 +283,21 @@ def CreateSessionToken(
     Args:
         subject: The user id to record as the token subject (``sub``).
         userType: The legacy user-type / role code ('A' or 'U').
+        sessionVersion: The user's current session generation, embedded as the
+            ``sver`` claim when not ``None`` (M-02 revocation anchor). Forwarded
+            verbatim to :func:`CreateAccessToken`.
         expiresMinutes: Optional lifetime in minutes; defaults to
             ``settings.ACCESS_TOKEN_EXPIRE_MINUTES``.
 
     Returns:
         The encoded, signed token as a ``str``.
     """
-    return CreateAccessToken(subject, userType, expiresMinutes)
+    return CreateAccessToken(
+        subject,
+        userType,
+        sessionVersion=sessionVersion,
+        expiresMinutes=expiresMinutes,
+    )
 
 
 def DecodeAccessToken(token: str) -> dict:

@@ -15,13 +15,13 @@ Record layout (COBOL ``CVACT02Y`` ``CARD-RECORD``, fixed record length 150)::
 
     CARD-NUM            PIC X(16)   -> card_num        [0:16]   (primary key)
     CARD-ACCT-ID        PIC 9(11)   -> acct_id         [16:27]  (FK -> accounts)
-    CARD-CVV-CD         PIC 9(03)   -> cvv_cd          [27:30]  (sensitive)
+    CARD-CVV-CD         PIC 9(03)   -> (NOT persisted) [27:30]  (dropped, C-03)
     CARD-EMBOSSED-NAME  PIC X(50)   -> embossed_name   [30:80]
     CARD-EXPIRAION-DATE PIC X(10)   -> expiration_date [80:90]  (DATE, nullable)
     CARD-ACTIVE-STATUS  PIC X(01)   -> active_status   [90:91]
     FILLER              PIC X(59)   -> dropped         [91:150]
 
-Numeric-looking key fields (``card_num``, ``acct_id``, ``cvv_cd``) are loaded as
+Numeric-looking key fields (``card_num``, ``acct_id``) are loaded as
 stripped **strings**, never integers, so that the leading zeros carried by the
 legacy zoned-decimal display fields survive the migration verbatim (AAP 0.1.2
 type-mapping rule; ``acct_id`` in the seed is always zero-padded to 11 digits).
@@ -40,8 +40,10 @@ Schema ownership: this module never issues DDL. The ``cards`` table is created
 and owned exclusively by the Alembic migrations
 (``backend/alembic/versions/*``); the loader only writes rows.
 
-Security (AAP 0.7.8): ``cvv_cd`` is sensitive. This module never logs or prints
-any field value -- most importantly never the CVV or the full card number.
+Security (AAP 0.7.8; QA finding C-03): the card verification value
+(``CARD-CVV-CD``) is NEVER persisted -- the target ``cards`` table has no CVV
+column, so the source slice is read past and dropped. This module also never
+logs or prints any field value -- most importantly never the full card number.
 
 Public API:
     * :func:`LoadCards` -- read the seed dataset and upsert every row, returning
@@ -71,7 +73,9 @@ FILE_ENCODING = "latin-1"
 
 CARD_NUM_SLICE = slice(0, 16)
 ACCT_ID_SLICE = slice(16, 27)
-CVV_CD_SLICE = slice(27, 30)
+# record[27:30] is the source CARD-CVV-CD slice. It is documented here for
+# fixed-width layout parity ONLY and is intentionally never sliced/persisted
+# (QA finding C-03, AAP 0.7.8): no CVV is retained anywhere in the target.
 EMBOSSED_NAME_SLICE = slice(30, 80)
 EXPIRATION_DATE_SLICE = slice(80, 90)
 ACTIVE_STATUS_SLICE = slice(90, 91)
@@ -109,21 +113,25 @@ def _ParseCardRecord(record: str) -> dict[str, object]:
     """Map one fixed-width CARD-RECORD to ``cards`` column values.
 
     Field boundaries follow COBOL copybook ``CVACT02Y`` exactly. The numeric-key
-    fields (``card_num``, ``acct_id``, ``cvv_cd``) are kept as stripped strings
-    so leading zeros are preserved; they are deliberately NOT converted to
-    integers. The trailing ``FILLER`` is ignored.
+    fields (``card_num``, ``acct_id``) are kept as stripped strings so leading
+    zeros are preserved; they are deliberately NOT converted to integers. The
+    source CVV slice and the trailing ``FILLER`` are ignored.
+
+    The card verification value (``CARD-CVV-CD``) is DELIBERATELY NOT LOADED
+    (QA finding C-03, AAP 0.7.8): the target ``cards`` table has no CVV column,
+    so the 3-byte source slice is read past and never persisted.
 
     Args:
         record: A single 150-character fixed-width card record.
 
     Returns:
-        A dict keyed by the real ``cards`` column names, ready to be bulk-upserted
-        (note the CVV maps to column ``cvv_cd``, not ``cvv``).
+        A dict keyed by the real ``cards`` column names, ready to be bulk-upserted.
     """
     return {
         "card_num": record[CARD_NUM_SLICE].strip(),
         "acct_id": record[ACCT_ID_SLICE].strip(),
-        "cvv_cd": record[CVV_CD_SLICE].strip(),
+        # CVV_CD_SLICE (record[27:30]) is intentionally NOT read: no CVV is
+        # persisted to the cards table (QA finding C-03, AAP 0.7.8).
         "embossed_name": record[EMBOSSED_NAME_SLICE].strip(),
         "expiration_date": _OptionalDate(record[EXPIRATION_DATE_SLICE]),
         "active_status": record[ACTIVE_STATUS_SLICE].strip(),

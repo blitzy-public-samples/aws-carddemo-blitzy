@@ -31,12 +31,26 @@ Security note:
     characters to hold a bcrypt/argon2 digest. Hashing and verification live in
     ``app.core.security``; this model only persists the already-hashed value and
     never stores, accepts, or returns a plaintext password.
+
+    ``session_version`` is a second security-infrastructure column with no
+    CSUSR01Y source field. AAP 0.1.1 authorizes reconstructing session/identity
+    semantics statelessly, and it is the mechanism (QA finding M-02) by which a
+    session can be revoked server-side: each minted token embeds the current
+    generation, and incrementing the column invalidates every token that carried
+    the old one. It is never returned on a response DTO.
 """
 
-from sqlalchemy import CHAR, String
+from sqlalchemy import CHAR, Integer, String
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.base import Base
+
+# Initial session generation assigned to every user (M-02). Stored as an
+# ALL_UPPERCASE constant (Ochs Rule) and used as the column's default and
+# server_default so seeded/loaded rows (which never supply it) start at
+# generation 1. Incremented server-side on logout and on a role/password change
+# to revoke any token that embedded an older generation.
+INITIAL_SESSION_VERSION = 1
 
 
 class User(Base):
@@ -65,7 +79,23 @@ class User(Base):
     # SEC-USR-TYPE PIC X(01): role flag -- 'A' = administrator, 'U' = regular user.
     user_type: Mapped[str] = mapped_column(CHAR(1))
 
+    # SECURITY INFRASTRUCTURE (M-02): server-side session generation counter. It
+    # has no CSUSR01Y source field -- it is the second mandatory security-uplift
+    # column (alongside password_hash) that AAP 0.1.1 authorizes to reconstruct
+    # session/identity semantics statelessly. Every minted session/JWT embeds the
+    # user's current session_version in its ``sver`` claim; get_current_user
+    # rejects a token whose claim no longer matches this value. Incrementing it
+    # (logout, or a role/password change) therefore REVOKES every outstanding
+    # token for the user. NOT NULL with a server_default of 1 so rows created by
+    # the seed loader/migration -- which never supply it -- start at generation 1.
+    session_version: Mapped[int] = mapped_column(
+        Integer,
+        nullable=False,
+        default=INITIAL_SESSION_VERSION,
+        server_default=str(INITIAL_SESSION_VERSION),
+    )
+
     # SEC-USR-FILLER PIC X(23): dropped -- legacy record padding to 80 bytes, no target column.
 
 
-__all__ = ["User"]
+__all__ = ["User", "INITIAL_SESSION_VERSION"]

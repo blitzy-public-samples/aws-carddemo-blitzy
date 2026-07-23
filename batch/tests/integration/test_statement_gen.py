@@ -21,10 +21,15 @@ asynchronous machinery.
 
 Monetary assertions use exact :class:`decimal.Decimal` values only -- never
 floating point -- so cent-level parity with the legacy COBOL numeric fields is
-preserved (AAP 0.7.1). PDF output is asserted only by existence and by its
-``.pdf`` extension; all textual content (bank header, account id, card masking)
-is asserted against the human-readable CSV, because the PDF binary is
-intentionally not parsed.
+preserved (AAP 0.7.1). PDF output is asserted on its actual RENDERED CONTENT
+(QA finding M-15): a dependency-free extractor (:func:`ExtractPdfText`) decodes
+the ReportLab content streams -- ASCII85 then Flate, then the ``(text) Tj`` /
+``[...] TJ`` text-showing operators -- so the PDF's bank header, account id,
+transaction rows, and totals are verified to be genuinely present, and the full
+PAN, CVV, and full SSN are verified genuinely absent, from the PDF bytes
+themselves rather than being inferred from the sibling CSV. The extractor uses
+only the Python standard library (``re`` / ``base64`` / ``zlib``) because no
+third-party PDF parser is installable in the offline build environment.
 
 Naming follows the Ochs Rule with the documented pytest exception: test
 functions are snake_case (pytest discovers them by name), the module-level
@@ -33,7 +38,10 @@ ALL_UPPERCASE. Every test carries a comment citing the COBOL program
 (``CBSTM03A`` / ``CBSTM03B``) or ``CREASTMT.JCL`` it reconciles against.
 """
 
+import base64
 import csv
+import re
+import zlib
 from decimal import Decimal
 from pathlib import Path
 
@@ -52,7 +60,7 @@ CARD_ONE_LAST4 = "7065"
 CARD_TWO = "0500024453765740"
 CUST_ONE = "000000001"
 CUST_TWO = "000000002"
-SAMPLE_CVV = "747"                # must never appear in any statement output
+SAMPLE_CVV = "747"                # structurally never stored (C-03); asserted absent
 SAMPLE_SSN = "123456789"          # must never appear in full in any statement output
 BANK_NAME = "Bank of XYZ"
 BANK_ADDRESS_LINE = "410 Terry Ave N"
@@ -81,9 +89,10 @@ def _BuildStatementCard(recordBuilder, spec):
             session (the ``record_builder`` fixture).
         spec: A mapping describing the card graph. Required keys: ``acct_id``,
             ``card_num``, ``cust_id``. Optional keys: ``curr_bal`` (the exact
-            :class:`~decimal.Decimal` account balance), ``cvv_cd`` (staged only to
-            prove the card verification value is never emitted), ``ssn`` (staged
-            only to prove the SSN is never emitted in full), and ``tranSpecs`` (a
+            :class:`~decimal.Decimal` account balance), ``cvv_cd`` (ignored: CVV
+            is never persisted (C-03) and is asserted absent from output),
+            ``ssn`` (staged only to prove the SSN is never emitted in full), and
+            ``tranSpecs`` (a
             list of ``{"tran_id": str, "tran_amt": Decimal}`` mappings, each with
             an optional ``status`` key). Because the statement job includes only
             POSTED transactions (AAP 0.7.5), ``tranSpecs`` default to
@@ -104,10 +113,10 @@ def _BuildStatementCard(recordBuilder, spec):
     if "curr_bal" in spec:
         accountOverrides["curr_bal"] = spec["curr_bal"]
     recordBuilder.BuildAccount(overrides=accountOverrides)
-    cardOverrides = {}
-    if "cvv_cd" in spec:
-        cardOverrides["cvv_cd"] = spec["cvv_cd"]
-    recordBuilder.BuildCard(spec["card_num"], spec["acct_id"], overrides=cardOverrides or None)
+    # CVV is never persisted (C-03, AAP 0.7.8): cards carry no cvv column, so no
+    # per-card CVV override is possible. Any ``spec["cvv_cd"]`` is intentionally
+    # ignored here and asserted absent from statement output below.
+    recordBuilder.BuildCard(spec["card_num"], spec["acct_id"])
     xref = recordBuilder.BuildXref(spec["card_num"], spec["cust_id"], spec["acct_id"])
     builtTransactions = []
     for tranSpec in spec.get("tranSpecs", []):
@@ -129,6 +138,73 @@ def _BuildStatementCard(recordBuilder, spec):
         )
         builtTransactions.append(builtTransaction)
     return xref, builtTransactions
+
+
+# --------------------------------------------------------------------------- #
+# Dependency-free PDF text extractor (QA finding M-15). PascalCase helper.
+# --------------------------------------------------------------------------- #
+# ReportLab writes each statement line via canvas.drawString(...), which emits a
+# ``(text) Tj`` text-showing operator inside a content stream compressed with the
+# default filter chain ``[ /ASCII85Decode /FlateDecode ]``. The stream body ends
+# with the ASCII85 EOD marker ``~>`` immediately followed by ``endstream`` (no
+# separating newline). To assert the PDF's real rendered content WITHOUT a
+# third-party PDF library (none is installable offline), the extractor below
+# decodes each stream (ASCII85 -> Flate) and pulls the literal strings out of the
+# ``Tj`` / ``TJ`` operators. Only the standard library is used.
+_PDF_STREAM_PATTERN = re.compile(rb"stream\r?\n(.*?)endstream", re.DOTALL)
+_PDF_TJ_PATTERN = re.compile(r"\(((?:[^()\\]|\\.)*)\)\s*Tj")
+_PDF_TJ_ARRAY_PATTERN = re.compile(r"\[(.*?)\]\s*TJ", re.DOTALL)
+_PDF_ARRAY_LITERAL_PATTERN = re.compile(r"\(((?:[^()\\]|\\.)*)\)")
+_ASCII85_EOD_MARKER = b"~>"
+
+
+def _UnescapePdfLiteral(literal):
+    """Undo the PDF string-literal escapes the extractor cares about.
+
+    Args:
+        literal: The raw bytes-string body captured between ``(`` and ``)``.
+
+    Returns:
+        The literal with escaped parentheses and backslashes restored.
+    """
+    return literal.replace(r"\(", "(").replace(r"\)", ")").replace(r"\\", "\\")
+
+
+def ExtractPdfText(pdfBytes):
+    """Extract the visible text of a ReportLab-generated PDF using only stdlib.
+
+    Each content stream is located, its ASCII85 + Flate encoding reversed, and
+    the string literals shown by the ``Tj`` and ``TJ`` operators concatenated in
+    render order. This lets tests assert on the PDF's ACTUAL rendered content
+    (QA finding M-15) without any third-party PDF parser.
+
+    Args:
+        pdfBytes: The raw bytes of a PDF file produced by the statement job.
+
+    Returns:
+        A single newline-joined string of every text run rendered in the PDF.
+    """
+    renderedRuns = []
+    for streamMatch in _PDF_STREAM_PATTERN.finditer(pdfBytes):
+        payload = streamMatch.group(1).strip()
+        if payload.endswith(_ASCII85_EOD_MARKER):
+            payload = payload[: -len(_ASCII85_EOD_MARKER)]
+        try:
+            ascii85Decoded = base64.a85decode(payload, adobe=False)
+        except ValueError:
+            # Not an ASCII85 stream (for example a raw font program); skip it.
+            continue
+        try:
+            streamBody = zlib.decompress(ascii85Decoded)
+        except zlib.error:
+            streamBody = ascii85Decoded
+        content = streamBody.decode("latin-1")
+        for tjMatch in _PDF_TJ_PATTERN.finditer(content):
+            renderedRuns.append(_UnescapePdfLiteral(tjMatch.group(1)))
+        for arrayMatch in _PDF_TJ_ARRAY_PATTERN.finditer(content):
+            for literalMatch in _PDF_ARRAY_LITERAL_PATTERN.finditer(arrayMatch.group(1)):
+                renderedRuns.append(_UnescapePdfLiteral(literalMatch.group(1)))
+    return "\n".join(renderedRuns)
 
 
 # --------------------------------------------------------------------------- #
@@ -232,7 +308,6 @@ def test_statement_masks_card_and_hides_cvv_ssn(db_session, record_builder, tmp_
             "acct_id": ACCT_ONE,
             "card_num": CARD_ONE,
             "cust_id": CUST_ONE,
-            "cvv_cd": SAMPLE_CVV,
             "ssn": SAMPLE_SSN,
             "tranSpecs": [{"tran_id": TRAN_ID_ONE, "tran_amt": Decimal("100.00")}],
         },
@@ -335,3 +410,63 @@ def test_statement_csv_neutralizes_formula_injection_and_preserves_amount(
     assert "-919.00" in allCells
     assert "'-919.00" not in allCells
     assert result.totalAmount == Decimal("-919.00")
+
+
+def test_statement_pdf_renders_header_account_and_transactions(
+    db_session, record_builder, tmp_path
+):
+    # QA finding M-15: the PDF is evidenced by its ACTUAL rendered content, not by
+    # existence + extension alone. Decode the ReportLab content streams and assert
+    # the bank header block (CBSTM03B), the Basic Details account id, the posted
+    # transaction id, its exact Decimal amount, and the statement total are all
+    # genuinely present in the PDF bytes -- the same facts the CSV test asserts,
+    # now proven in the PDF itself.
+    _BuildStatementCard(
+        record_builder,
+        {
+            "acct_id": ACCT_ONE,
+            "card_num": CARD_ONE,
+            "cust_id": CUST_ONE,
+            "curr_bal": Decimal("194.00"),
+            "tranSpecs": [{"tran_id": TRAN_ID_ONE, "tran_amt": Decimal("100.00")}],
+        },
+    )
+    result = GenerateStatements(db_session, tmp_path)
+    pdfText = ExtractPdfText(Path(result.pdfPaths[0]).read_bytes())
+    # The extractor recovered real text (guards against a silently empty PDF).
+    assert pdfText.strip() != ""
+    assert BANK_NAME in pdfText
+    assert BANK_ADDRESS_LINE in pdfText
+    assert BANK_CITY_LINE in pdfText
+    assert ACCT_ONE in pdfText
+    assert TRAN_ID_ONE in pdfText
+    assert "100.00" in pdfText          # exact Decimal amount rendered in the PDF
+    # The masked PAN (last four only) is what the PDF shows.
+    assert CARD_ONE_LAST4 in pdfText
+
+
+def test_statement_pdf_excludes_full_pan_cvv_and_ssn(
+    db_session, record_builder, tmp_path
+):
+    # QA finding M-15 + AAP 0.7.8: prove the sensitive-data guarantees hold in the
+    # PDF binary itself, not merely in the CSV. Stage a customer SSN, decode the
+    # rendered PDF text, and assert the full PAN, a representative CVV literal, and
+    # the full SSN are all absent -- while the masked last-four remains, confirming
+    # a real (non-empty) statement was rendered.
+    _BuildStatementCard(
+        record_builder,
+        {
+            "acct_id": ACCT_ONE,
+            "card_num": CARD_ONE,
+            "cust_id": CUST_ONE,
+            "ssn": SAMPLE_SSN,
+            "tranSpecs": [{"tran_id": TRAN_ID_ONE, "tran_amt": Decimal("100.00")}],
+        },
+    )
+    result = GenerateStatements(db_session, tmp_path)
+    pdfText = ExtractPdfText(Path(result.pdfPaths[0]).read_bytes())
+    assert pdfText.strip() != ""       # a real statement was rendered (non-vacuous)
+    assert CARD_ONE not in pdfText     # full PAN never rendered
+    assert SAMPLE_CVV not in pdfText   # CVV never rendered (structurally absent, C-03)
+    assert SAMPLE_SSN not in pdfText   # full SSN never rendered
+    assert CARD_ONE_LAST4 in pdfText   # masked last-four IS rendered

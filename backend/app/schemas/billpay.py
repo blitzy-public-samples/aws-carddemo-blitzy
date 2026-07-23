@@ -142,13 +142,16 @@ class BillPayRequest(RequestBase):
     Ochs Rule.
 
     The classic COBIL00 screen pays the FULL current balance and has no
-    partial-payment field. ``payment_amount`` is therefore an optional modern
-    extension: when it is omitted (``None``) the service pays the full
-    outstanding balance exactly as the legacy program did; when it is supplied
-    the service applies that partial amount instead. Because it is a new field
-    (with no legacy analogue), it is guarded with ``gt=0`` -- a non-positive
-    payment is meaningless -- without altering the preserved full-balance
-    default behavior.
+    partial-payment field: its only unprotected inputs are the account id
+    (``ACTIDINI PIC X(11)``) and the confirmation flag (``CONFIRMI PIC X(01)``).
+    This DTO mirrors that contract exactly (Minimal Change Clause, AAP section
+    0.8.1) and therefore carries NO ``payment_amount`` field -- the service
+    always pays the full outstanding balance (``MOVE ACCT-CURR-BAL TO TRAN-AMT``
+    in COBIL00C ``PROCESS-ENTER-KEY``). Because :class:`RequestBase` sets
+    ``extra="forbid"``, a client that submits a ``payment_amount`` (or any other
+    unexpected field) is rejected with an HTTP 422 rather than having the value
+    silently accepted and ignored -- the honest-contract posture the Ochs Rule's
+    input-sanitization directive requires.
 
     Attributes:
         acct_id: Account identifier (legacy ``ACTIDINI PIC X(11)`` over
@@ -156,9 +159,6 @@ class BillPayRequest(RequestBase):
         confirm: Confirmation flag (legacy ``CONFIRMI PIC X(01)``); the
             uppercase literal ``'Y'`` or ``'N'`` only, matching the legacy
             88-level ``FLG-YES-NO-ISVALID``.
-        payment_amount: Optional explicit payment amount as an exact
-            ``NUMERIC(12,2)`` :class:`decimal.Decimal`. ``None`` (the default)
-            means "pay the full current balance" (classic COBIL00 behavior).
     """
 
     acct_id: str = Field(
@@ -173,17 +173,6 @@ class BillPayRequest(RequestBase):
         ...,
         max_length=CONFIRM_MAX_LENGTH,
         description=("Payment confirmation flag (CONFIRMI PIC X(01)); 'Y' to confirm the payment or 'N' to decline."),
-    )
-    payment_amount: Optional[Decimal] = Field(
-        default=None,
-        gt=0,
-        max_digits=MONEY_MAX_DIGITS,
-        decimal_places=MONEY_DECIMAL_PLACES,
-        description=(
-            "Optional explicit payment amount as NUMERIC(12,2); omit to pay the "
-            "full current balance (classic COBIL00 behavior). Must be positive "
-            "when supplied."
-        ),
     )
 
     @field_validator("acct_id")
@@ -238,29 +227,6 @@ class BillPayRequest(RequestBase):
         if not result.isValid:
             raise ValueError(result.message)
         return rawValue
-
-    @field_validator("payment_amount", mode="before")
-    @classmethod
-    def CoerceMoney(cls, value: object) -> object:
-        """Coerce ``payment_amount`` to an exact ``Decimal`` and reject float.
-
-        Runs before Pydantic's own numeric handling so a supplied amount is
-        parsed through :func:`app.utils.decimal_utils.ToDecimal` (rejecting
-        ``float``/``bool``); ``None`` passes through so the "pay full balance"
-        default is preserved. The ``gt=0`` and ``NUMERIC(12,2)`` field
-        constraints are then applied by Pydantic to the resulting ``Decimal``.
-
-        Args:
-            value: The raw ``payment_amount`` input, or ``None``.
-
-        Returns:
-            A :class:`decimal.Decimal` for a supplied amount, or ``None``.
-
-        Raises:
-            ValueError: If a supplied value is a ``float``/``bool`` or an
-                unparseable string.
-        """
-        return _CoerceMoneyValue(value)
 
 
 class BillPayResponse(OrmBase):

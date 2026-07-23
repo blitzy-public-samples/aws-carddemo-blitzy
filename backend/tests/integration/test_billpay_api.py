@@ -45,6 +45,7 @@ from decimal import Decimal
 
 import pytest
 from httpx import AsyncClient
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
@@ -420,3 +421,78 @@ async def test_available_credit_uses_f006_formula(
     availableCredit = ToDecimal(responseBody["available_credit"])
     assert availableCredit == computedAvailable
     assert availableCredit == EXPECTED_AVAILABLE
+
+
+# ===========================================================================
+# Phase 6 -- M-09 contract: no partial-payment field; replay is rejected.
+# ===========================================================================
+
+
+@pytest.mark.asyncio
+async def test_paybill_rejects_payment_amount_field(
+    admin_client: AsyncClient,
+    seed_data: None,
+) -> None:
+    """POSTing a ``payment_amount`` is rejected at the API boundary (M-09).
+
+    COBIL00C pays the FULL current balance and has no partial-payment field, so
+    the request schema (``extra="forbid"``) rejects any ``payment_amount``
+    rather than silently accepting and ignoring it. The rejection is a 400/422
+    validation status and identifies the offending field.
+
+    Args:
+        admin_client: The authenticated (admin) httpx ASGI client.
+        seed_data: Golden-master seeder (present per the AAP fixture list).
+    """
+    payload = {"acct_id": SEED_ACCT_ID, "confirm": "Y", "payment_amount": "50.00"}
+
+    response = await admin_client.post(BILLPAY_URL, json=payload)
+
+    assert response.status_code in VALIDATION_ERROR_STATUSES
+    assert "payment_amount" in str(response.json()).lower()
+
+
+@pytest.mark.asyncio
+async def test_paybill_replay_rejected(
+    admin_client: AsyncClient,
+    seed_data: None,
+    db_session: AsyncSession,
+) -> None:
+    """A replayed confirmed payment is rejected: the balance is paid only once.
+
+    Reproduces the COBIL00C replay guard end-to-end (M-09): the first confirmed
+    POST pays the full balance (HTTP 200, balance -> 0.00); an immediate,
+    identical POST re-reads the now-zero balance and is rejected with the
+    verbatim "nothing to pay" message and a 400/422 status. Exactly ONE new
+    transaction is posted across the two submissions (measured as the id delta,
+    so it is robust to whatever the golden-master seed already loaded) and the
+    balance is exactly zero -- the pay-in-full contract is inherently
+    idempotent, so a duplicate submission can never drive the balance negative.
+
+    Args:
+        admin_client: The authenticated (admin) httpx ASGI client.
+        seed_data: Golden-master seeder (account + card cross-reference).
+        db_session: The shared async session used to measure the posted-
+            transaction delta and confirm the settled balance directly.
+    """
+    payload = {"acct_id": SEED_ACCT_ID, "confirm": "Y"}
+
+    # Baseline set of transaction ids before any payment is posted.
+    beforeRows = await db_session.execute(select(Transaction.tran_id))
+    beforeIds = set(beforeRows.scalars().all())
+
+    firstResponse = await admin_client.post(BILLPAY_URL, json=payload)
+    assert firstResponse.status_code == HTTP_OK
+    assert ToDecimal(firstResponse.json()["curr_bal"]) == ZERO_BALANCE
+
+    secondResponse = await admin_client.post(BILLPAY_URL, json=payload)
+    assert secondResponse.status_code in VALIDATION_ERROR_STATUSES
+    assert "nothing to pay" in str(secondResponse.json()).lower()
+
+    # Exactly ONE payment transaction was posted despite two submissions, and
+    # the balance settled at zero (never driven negative by the duplicate).
+    afterRows = await db_session.execute(select(Transaction.tran_id))
+    newIds = set(afterRows.scalars().all()) - beforeIds
+    assert len(newIds) == 1
+    settledAccount = await db_session.get(Account, SEED_ACCT_ID)
+    assert ToDecimal(settledAccount.curr_bal) == ZERO_BALANCE

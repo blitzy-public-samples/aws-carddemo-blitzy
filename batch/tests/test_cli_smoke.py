@@ -1,14 +1,15 @@
 # Smoke test for the CardDemo batch CLI help/usage surfaces.
 #
-# Regression guard for QA Finding B: ``typer 0.15.1`` paired with an unpinned
-# ``click >= 8.2`` crashed EVERY ``--help``/usage rendering with
-# ``TypeError: Parameter.make_metavar() missing 1 required positional argument:
-# 'ctx'``. The batch manifest (``batch/requirements.txt``) pins the verified
-# compatible pair ``typer==0.15.1`` with ``click==8.1.8`` (the newest pre-8.2
-# click that matches typer 0.15.1's ``make_metavar`` call), so every help
-# surface must render cleanly. This test re-runs the exact reproduction commands
-# from the finding as subprocesses (``python -m batch.cli ... --help``) and
-# asserts they exit 0 with no traceback and no ``make_metavar`` error.
+# Regression guard for the Typer/Click ``--help`` rendering contract. Historically
+# ``typer 0.15.1`` paired with ``click >= 8.2`` crashed EVERY ``--help``/usage
+# rendering with ``TypeError: Parameter.make_metavar() missing 1 required
+# positional argument: 'ctx'`` (former finding B / #55). The batch manifest now
+# pins the UPGRADED compatible pair ``typer==0.27.0`` with ``click==8.4.2`` (QA
+# finding N-04: Click 8.1.8 carried a vulnerable ``click.edit`` and is below the
+# >= 8.3.3 security floor; Typer 0.27.0 uses the post-8.2 ``make_metavar``
+# signature), so every help surface must still render cleanly. This test re-runs
+# the exact reproduction commands as subprocesses (``python -m batch.cli ...
+# --help``) and asserts they exit 0 with no traceback and no ``make_metavar`` error.
 """Subprocess smoke test asserting every batch CLI help surface renders cleanly.
 
 The CLI is exercised through ``python -m batch.cli`` -- the documented operator

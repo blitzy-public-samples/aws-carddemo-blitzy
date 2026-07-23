@@ -83,6 +83,7 @@ import os
 from collections.abc import AsyncGenerator, Iterator
 from datetime import date
 from pathlib import Path
+from urllib.parse import urlsplit
 
 import pytest
 import pytest_asyncio
@@ -111,19 +112,107 @@ from sqlalchemy.ext.asyncio import (
 os.environ.setdefault("SECRET_KEY", "testing-secret-key-not-for-production")
 os.environ.setdefault("ENVIRONMENT", "test")
 
-# TEST database URL, taken from the environment (never hardcoded credentials).
-# Preference order: an explicit TEST_DATABASE_URL, then the app's DATABASE_URL,
-# then a local ``carddemo_test`` default that matches the docker-compose
-# ``postgres:17`` service. The async (asyncpg) driver is required for the async
-# engine below. Parallel CI clones override TEST_DATABASE_URL to point at an
-# isolated database so concurrent test sessions never share schema/state.
-TEST_DATABASE_URL = os.environ.get(
-    "TEST_DATABASE_URL",
-    os.environ.get(
-        "DATABASE_URL",
-        "postgresql+asyncpg://carddemo:carddemo@localhost:5432/carddemo_test",
-    ),
+# ---------------------------------------------------------------------------
+# TEST-DATABASE SAFETY (QA finding C-01 -- CRITICAL). The whole suite runs
+# DESTRUCTIVE DDL/DML against its target database: it DROPs and CREATEs the
+# schema (``_create_schema``), ``TRUNCATE ... CASCADE``s every table after each
+# test, and (in the batch integration conftest) can toggle table triggers.
+# Pointing that at a shared or production database would irrecoverably destroy
+# data, so the target MUST be an unmistakably disposable test database and the
+# resolution MUST fail closed.
+#
+# The mandatory rules enforced by ``_AssertDisposableTestDatabase`` below:
+#   1. ``ENVIRONMENT`` must be exactly ``test`` (case-insensitive).
+#   2. The test URL is resolved from ``TEST_DATABASE_URL`` only, with a local
+#      ``carddemo_test`` default that matches the docker-compose ``postgres:17``
+#      service. It is NEVER derived from the application's ``DATABASE_URL`` --
+#      the destructive fallback that made C-01 dangerous is removed entirely.
+#   3. The resolved database NAME must be unmistakably a test database (it must
+#      contain the token ``test``); an arbitrary name is rejected.
+#   4. If the application ``DATABASE_URL`` is also set, the test target must not
+#      be the SAME (host, port, database) as the application database, so a
+#      misconfigured environment can never truncate the app's own database.
+# Any violation raises ``RuntimeError`` before a single connection is opened.
+# Parallel CI clones override ``TEST_DATABASE_URL`` to point at an isolated
+# ``*_test*`` database so concurrent sessions never share schema/state.
+# ---------------------------------------------------------------------------
+
+# Token that a resolved database name MUST contain to be accepted as disposable.
+TEST_DATABASE_NAME_TOKEN = "test"
+
+# Safe, unmistakably-disposable local default (matches docker-compose). This is a
+# test database name, never the application's ``carddemo`` database, and it does
+# NOT read the application ``DATABASE_URL``.
+DEFAULT_TEST_DATABASE_URL = (
+    "postgresql+asyncpg://carddemo:carddemo@localhost:5432/carddemo_test"
 )
+
+
+def _ExtractDatabaseIdentity(databaseUrl: str) -> tuple[str, str, str]:
+    """Return the ``(host, port, dbname)`` identity of a SQLAlchemy URL.
+
+    Only the non-secret connection-identity parts are extracted; the username
+    and password are deliberately ignored so they never appear in any error
+    message this module raises.
+
+    Args:
+        databaseUrl: The SQLAlchemy database URL to inspect.
+
+    Returns:
+        A ``(host, port, dbname)`` tuple; missing parts are empty strings.
+    """
+    parsed = urlsplit(databaseUrl)
+    host = parsed.hostname or ""
+    port = str(parsed.port) if parsed.port is not None else ""
+    dbName = parsed.path.lstrip("/")
+    return (host, port, dbName)
+
+
+def _AssertDisposableTestDatabase(testDatabaseUrl: str) -> None:
+    """Fail closed unless ``testDatabaseUrl`` is an unmistakably disposable test DB.
+
+    Enforces the four C-01 safety rules documented above. The check runs at
+    import time, before any engine is created, so an unsafe configuration aborts
+    collection instead of destroying data. Error messages name only the
+    non-secret database identity (never credentials).
+
+    Args:
+        testDatabaseUrl: The resolved TEST database URL to validate.
+
+    Raises:
+        RuntimeError: If ``ENVIRONMENT`` is not ``test``, the database name does
+            not look like a disposable test database, or the target coincides
+            with the application ``DATABASE_URL`` database.
+    """
+    environment = os.environ.get("ENVIRONMENT", "").strip().lower()
+    if environment != "test":
+        raise RuntimeError(
+            "Refusing to run the destructive test suite: ENVIRONMENT must be "
+            f"'test' (got {environment!r}). Set ENVIRONMENT=test explicitly."
+        )
+    host, port, dbName = _ExtractDatabaseIdentity(testDatabaseUrl)
+    if TEST_DATABASE_NAME_TOKEN not in dbName.lower():
+        raise RuntimeError(
+            "Refusing to run the destructive test suite against database "
+            f"{dbName!r}: the target database name must contain "
+            f"{TEST_DATABASE_NAME_TOKEN!r} to prove it is disposable. Set "
+            "TEST_DATABASE_URL to an isolated *_test* database."
+        )
+    applicationDatabaseUrl = os.environ.get("DATABASE_URL", "").strip()
+    if applicationDatabaseUrl:
+        if (host, port, dbName) == _ExtractDatabaseIdentity(applicationDatabaseUrl):
+            raise RuntimeError(
+                "Refusing to run the destructive test suite: TEST_DATABASE_URL "
+                f"targets the same database ({dbName!r} on {host}:{port}) as the "
+                "application DATABASE_URL. Point TEST_DATABASE_URL at a separate "
+                "disposable test database."
+            )
+
+
+# Resolve the TEST database URL from TEST_DATABASE_URL only (never DATABASE_URL),
+# then fail closed unless it is provably a disposable test database.
+TEST_DATABASE_URL = os.environ.get("TEST_DATABASE_URL", DEFAULT_TEST_DATABASE_URL)
+_AssertDisposableTestDatabase(TEST_DATABASE_URL)
 
 # Synchronous (psycopg2) counterpart of the same TEST database, used only by the
 # session-scoped schema fixture. Deriving it from TEST_DATABASE_URL keeps the two
@@ -138,12 +227,17 @@ TEST_SYNC_DATABASE_URL = TEST_DATABASE_URL.replace("+asyncpg", "+psycopg2")
 # ``Base.metadata`` -- so it must precede any ``Base.metadata.create_all`` call
 # (hence the additional F401 suppression: the bare package import is deliberate,
 # not dead code).
-import app.models  # noqa: E402,F401  (side effect: registers all 10 tables)
+import app.models  # noqa: E402,F401  (side effect: registers all 11 tables)
+from app.core.config import settings  # noqa: E402
 from app.core.dependencies import (  # noqa: E402
     ADMIN_USER_TYPE,
     REGULAR_USER_TYPE,
     get_current_user,
     get_db,
+)
+from app.core.rate_limiter import (  # noqa: E402
+    DefaultClock,
+    loginRateLimiter,
 )
 from app.core.security import HashPassword  # noqa: E402
 from app.db.base import Base  # noqa: E402
@@ -151,6 +245,7 @@ from app.main import app  # noqa: E402
 from app.models import (  # noqa: E402
     STATUS_PENDING,
     Account,
+    AccountGroup,
     Card,
     CardXref,
     Customer,
@@ -208,7 +303,7 @@ SEED_PASSWORD = "PASSWORD"
 #     reissue_date[68:78] curr_cyc_credit[78:90] curr_cyc_debit[90:102]
 #     addr_zip[102:112] group_id[112:122]  (FILLER[122:300] dropped)
 #   carddata.txt  (150 bytes/row, 50 rows) -- app/cpy/CVACT02Y.cpy:
-#     card_num[0:16] acct_id[16:27] cvv_cd[27:30] embossed_name[30:80]
+#     card_num[0:16] acct_id[16:27] (cvv[27:30] NOT loaded, C-03) embossed_name[30:80]
 #     expiration_date[80:90] active_status[90:91]  (FILLER[91:150] dropped)
 #   cardxref.txt  (36 bytes/row, 50 rows) -- app/cpy/CVACT03Y.cpy (the ASCII file
 #     OMITS the trailing FILLER X(14), so rows are 36 not 50 bytes):
@@ -374,6 +469,9 @@ def LoadCardRows() -> list[dict]:
 
     Dict keys match the :class:`app.models.card.Card` columns. ``expiration_date``
     is nullable; the embossed name is right-trimmed of its fixed-width padding.
+    The source CVV slice ``line[27:30]`` is DELIBERATELY SKIPPED (QA finding
+    C-03, AAP 0.7.8): the ``cards`` table has no CVV column, so no CVV is
+    produced by this loader.
     """
     cardRows = []
     for line in ReadFixtureLines("carddata.txt"):
@@ -381,7 +479,7 @@ def LoadCardRows() -> list[dict]:
             {
                 "card_num": line[0:16],
                 "acct_id": line[16:27],
-                "cvv_cd": line[27:30],
+                # line[27:30] is the source CVV slice -- intentionally not loaded.
                 "embossed_name": CleanOptionalText(line[30:80]),
                 "expiration_date": ParseOptionalDate(line[80:90]),
                 "active_status": line[90:91],
@@ -443,6 +541,24 @@ def LoadCustomerRows() -> list[dict]:
             }
         )
     return customerRows
+
+
+def LoadAccountGroupRows() -> list[dict]:
+    """Distinct account-group identifiers for the ``account_groups`` registry.
+
+    Derived from the disclosure-group seed so the registry is exactly the set of
+    groups the golden-master dataset defines (``A000000000``, ``DEFAULT``,
+    ``ZEROAPR``). The value is stripped to match how ``accounts.group_id`` stores
+    a group reference, so the M-16 foreign key resolves for any account assigned
+    a disclosure-known group. Dict keys match
+    :class:`app.models.account_group.AccountGroup`.
+    """
+    seenGroupIds = []
+    for disclosureRow in LoadDisclosureGroupRows():
+        groupId = disclosureRow["group_id"].strip()
+        if groupId and groupId not in seenGroupIds:
+            seenGroupIds.append(groupId)
+    return [{"group_id": groupId} for groupId in seenGroupIds]
 
 
 def LoadDisclosureGroupRows() -> list[dict]:
@@ -572,12 +688,18 @@ def LoadDailyTranRows() -> list[dict]:
 # ===========================================================================
 
 
-@pytest.fixture(scope="session", autouse=True)
+@pytest.fixture(scope="session")
 def _create_schema() -> Iterator[None]:
     """Create the full CardDemo schema once per session, then drop it.
 
-    Runs synchronously (psycopg2) and ``autouse`` so every test -- unit or
-    integration -- observes the ten tables without having to request a fixture.
+    Runs synchronously (psycopg2) once per session. It is NO LONGER ``autouse``
+    (QA finding M-21): it is now pulled in ONLY by :func:`test_engine`, so a pure
+    unit test that never requests a database-backed fixture never triggers schema
+    DDL and therefore does not require a running PostgreSQL. Any DB-backed test
+    reaches this fixture transitively (``client``/``admin_client``/seed fixtures
+    -> ``db_session`` -> ``test_engine`` -> ``_create_schema``), so the eleven
+    tables are still created exactly once before the first DB use.
+
     Because ``import app.models`` at module import time registered all mapped
     classes on ``Base.metadata``, a single ``create_all`` builds every table with
     the deterministic constraint names from the shared naming convention. The
@@ -597,14 +719,21 @@ def _create_schema() -> Iterator[None]:
 
 
 @pytest_asyncio.fixture
-async def test_engine() -> AsyncGenerator[AsyncEngine, None]:
+async def test_engine(_create_schema) -> AsyncGenerator[AsyncEngine, None]:
     """Yield a disposable async SQLAlchemy engine bound to the TEST database.
 
     Function-scoped by design (see the section header): each test receives a
     fresh asyncpg engine that is created and disposed within that test's own
-    event loop, avoiding cross-loop errors. The schema itself is created once per
-    session by the synchronous ``_create_schema`` fixture, so this engine only
-    opens connections -- it never issues DDL.
+    event loop, avoiding cross-loop errors. It depends on ``_create_schema`` so
+    the eleven tables exist before any connection is opened; because that
+    dependency is declared here (rather than being ``autouse``), requesting a
+    database-backed fixture is what triggers schema creation -- pure unit tests
+    that never reach this engine never touch PostgreSQL (QA finding M-21). This
+    engine only opens connections; it never issues DDL itself.
+
+    Args:
+        _create_schema: The session-scoped schema setup/teardown barrier, pulled
+            in here so DB-backed tests always observe the created schema.
 
     Yields:
         The async engine bound to ``TEST_DATABASE_URL``.
@@ -615,6 +744,35 @@ async def test_engine() -> AsyncGenerator[AsyncEngine, None]:
     finally:
         await engine.dispose()
 
+
+
+# ===========================================================================
+# Per-test isolation: login rate limiter reset (autouse).
+#
+# The login throttle (app/core/rate_limiter.py, QA finding M-01) is a process-
+# wide singleton that counts consecutive failed sign-ons per (user id, client
+# IP). Because the httpx ASGITransport gives every test the same sentinel client
+# host, failures from one test would otherwise accumulate against the next and
+# could trip a spurious 429. This autouse fixture resets the limiter -- and
+# restores its default (monotonic) clock in case a test injected a fake one --
+# BEFORE every test so throttle state never leaks across tests.
+# ===========================================================================
+
+
+@pytest.fixture(autouse=True)
+def reset_login_rate_limiter():
+    """Reset the process-wide login throttle before each test (M-01 isolation).
+
+    Yields control to the test after clearing all accumulated attempt state and
+    restoring the default clock, guaranteeing each test observes a pristine
+    limiter regardless of failed-login activity in earlier tests.
+
+    Yields:
+        None. The fixture performs setup only; no value is needed by tests.
+    """
+    loginRateLimiter.Reset()
+    loginRateLimiter.SetClock(DefaultClock)
+    yield
 
 
 # ===========================================================================
@@ -826,6 +984,153 @@ async def regular_client(
 
 
 # ===========================================================================
+# Real-login (end-to-end authentication) helpers + fixtures (QA finding M-20).
+#
+# The admin_client / regular_client fixtures above inject identity through a
+# get_current_user dependency OVERRIDE, which is convenient for narrow
+# authorization checks but BYPASSES the production auth chain -- cookie/bearer
+# parsing (ResolveRequestToken), token decode + claims extraction
+# (DecodeAccessToken), and the M-02 session-version (sver) revocation check.
+# The helpers below perform a REAL ``POST /auth/login`` and chain the ISSUED
+# credential into subsequent protected resource requests, so tests can prove the
+# genuine token/claims path works end to end (M-20). Dependency overrides remain
+# reserved for narrow unit-style checks.
+#
+# Cookie transport note: under the session baseline (AAP 0.8.4) login sets an
+# HTTP-only cookie that is ``Secure`` whenever ENVIRONMENT != "development"
+# (tests run as "test"), and httpx will NOT resend a Secure cookie from its jar
+# over the in-process ``http://test`` transport. The issued token is therefore
+# read from the login RESPONSE (``response.cookies`` exposes Set-Cookie even for
+# a Secure cookie) and replayed as an explicit ``Cookie`` request header, which
+# Starlette parses into ``request.cookies`` exactly as a browser on HTTPS would
+# present it -- so the real get_current_user / CSRF middleware see it unchanged.
+# ===========================================================================
+
+# Login endpoint path, assembled from settings so the /api/v1 prefix is never
+# hardcoded. Reuses the seed identities/password already defined above.
+REAL_LOGIN_PATH = f"{settings.API_V1_PREFIX}/auth/login"
+
+
+async def _PerformRealLogin(
+    httpClient: AsyncClient, userId: str, password: str
+) -> str:
+    """Sign on through the REAL login endpoint and return the issued token.
+
+    Posts the credentials to ``POST /auth/login``, asserts an HTTP 200, and
+    extracts the signed session token from the response ``Set-Cookie`` (exposed
+    on ``response.cookies`` even when the cookie is ``Secure``). This is the
+    genuine credential the server issued -- no token is minted in the test.
+
+    Args:
+        httpClient: The ASGI client whose ``get_db`` override shares the session
+            the seeded user was flushed into (so the login handler can find it).
+        userId: The user id to authenticate.
+        password: The plaintext password to authenticate with (seed-only).
+
+    Returns:
+        The signed session-token string carried by the session cookie.
+    """
+    response = await httpClient.post(
+        REAL_LOGIN_PATH, json={"user_id": userId, "password": password}
+    )
+    assert response.status_code == 200, (
+        f"real login for {userId!r} failed: {response.status_code} {response.text}"
+    )
+    issuedToken = response.cookies.get(settings.SESSION_COOKIE_NAME)
+    assert issuedToken is not None, "login did not set the session cookie"
+    return issuedToken
+
+
+def _CookieAuthHeaders(token: str, origin: str | None = None) -> dict[str, str]:
+    """Build request headers that replay an ISSUED session token as a cookie.
+
+    The token is presented in a raw ``Cookie`` header (not httpx's per-request
+    ``cookies=`` argument) so it round-trips over the in-process ``http://test``
+    transport despite being a ``Secure`` cookie. An optional ``origin`` adds the
+    ``Origin`` header required by the CSRF middleware on cookie-authenticated
+    state-changing (unsafe) requests.
+
+    Args:
+        token: The issued session token to present.
+        origin: Optional allow-listed origin for CSRF-guarded mutations.
+
+    Returns:
+        The headers dict to pass as ``headers=`` on a protected request.
+    """
+    headers = {"Cookie": f"{settings.SESSION_COOKIE_NAME}={token}"}
+    if origin is not None:
+        headers["Origin"] = origin
+    return headers
+
+
+@pytest_asyncio.fixture
+async def real_login(client):
+    """Return an async callable that performs a REAL login and returns headers.
+
+    The callable ``login(userId, password, origin=None)`` signs on through the
+    live ``POST /auth/login`` endpoint on the shared ``client`` and returns
+    cookie-auth headers carrying the ISSUED token, ready to pass as ``headers=``
+    on a protected resource request. Because it exercises the true credential
+    path, requests made with these headers run the real get_current_user chain
+    (token parse + decode + claims + M-02 sver check) rather than an override
+    (M-20).
+
+    Args:
+        client: The base (unauthenticated) ASGI client whose get_db override is
+            wired to the per-test session.
+
+    Returns:
+        An async callable ``(userId, password, origin=None) -> dict[str, str]``.
+    """
+    async def _login(
+        userId: str, password: str, origin: str | None = None
+    ) -> dict[str, str]:
+        token = await _PerformRealLogin(client, userId, password)
+        return _CookieAuthHeaders(token, origin)
+
+    return _login
+
+
+@pytest_asyncio.fixture
+async def admin_auth_headers(client, admin_user) -> dict[str, str]:
+    """Cookie-auth headers carrying a REAL token issued to the seeded admin.
+
+    Signs ``ADMIN001`` on through the live login endpoint and returns headers
+    that authenticate subsequent protected requests as that administrator via
+    the genuine credential path (M-20).
+
+    Args:
+        client: The base ASGI client (shared per-test session).
+        admin_user: The seeded administrator identity (``ADMIN001``).
+
+    Returns:
+        Cookie-auth headers for the seeded administrator.
+    """
+    token = await _PerformRealLogin(client, SEED_ADMIN_USER_ID, SEED_PASSWORD)
+    return _CookieAuthHeaders(token)
+
+
+@pytest_asyncio.fixture
+async def regular_auth_headers(client, regular_user) -> dict[str, str]:
+    """Cookie-auth headers carrying a REAL token issued to the seeded user.
+
+    Signs ``USER0001`` on through the live login endpoint and returns headers
+    that authenticate subsequent protected requests as that regular user via the
+    genuine credential path (M-20).
+
+    Args:
+        client: The base ASGI client (shared per-test session).
+        regular_user: The seeded regular identity (``USER0001``).
+
+    Returns:
+        Cookie-auth headers for the seeded regular user.
+    """
+    token = await _PerformRealLogin(client, SEED_REGULAR_USER_ID, SEED_PASSWORD)
+    return _CookieAuthHeaders(token)
+
+
+
+# ===========================================================================
 # Golden-master seed fixtures.
 #
 # These populate ``db_session`` with rows parsed from ``app/data/ASCII`` in
@@ -842,10 +1147,13 @@ async def regular_client(
 async def seed_reference_data(db_session) -> AsyncGenerator[None, None]:
     """Populate the standalone reference tables from the golden-master data.
 
-    Loads transaction types, transaction categories, disclosure groups and
-    per-category balances. None of these tables carry foreign keys, so their
-    insertion order is unconstrained. Rows are flushed into ``db_session`` and
-    are wiped by that fixture's truncate teardown.
+    Loads the account-group registry, transaction types, transaction
+    categories, disclosure groups and per-category balances. The
+    ``account_groups`` registry (M-16 parent of ``accounts.group_id``) is seeded
+    first so any account subsequently assigned a disclosure-known group resolves
+    its foreign key; the remaining reference tables carry no foreign keys, so
+    their order is unconstrained. Rows are flushed into ``db_session`` and are
+    wiped by that fixture's truncate teardown.
 
     Args:
         db_session: The isolated async session the rows are added to.
@@ -853,6 +1161,7 @@ async def seed_reference_data(db_session) -> AsyncGenerator[None, None]:
     Yields:
         None -- a setup barrier; tests read the data back through ``db_session``.
     """
+    db_session.add_all([AccountGroup(**row) for row in LoadAccountGroupRows()])
     db_session.add_all([TransactionType(**row) for row in LoadTranTypeRows()])
     db_session.add_all(
         [TransactionCategory(**row) for row in LoadTranCategoryRows()]

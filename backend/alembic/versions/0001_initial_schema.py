@@ -169,15 +169,15 @@ def upgrade() -> None:
     )
 
     # --- Table 8: cards (<- CVACT02Y / CARDDATA KSDS, KEYLEN 16 @ RKP 0; AIX AXRKP 16)
-    # First FK-bearing table: acct_id -> accounts.acct_id. cvv_cd is SENSITIVE
-    # (stored only; never serialized in any response). The secondary index on
-    # acct_id is the relational form of the CARDDATA alternate index and powers
-    # the card-list-by-account screen COCRDLIC (CCLI).
+    # First FK-bearing table: acct_id -> accounts.acct_id. The legacy CARD-CVV-CD
+    # is DELIBERATELY NOT CREATED (QA finding C-03, AAP 0.7.8): the CVV must never
+    # be retained, so no column exists for it. The secondary index on acct_id is
+    # the relational form of the CARDDATA alternate index and powers the
+    # card-list-by-account screen COCRDLIC (CCLI).
     op.create_table(
         "cards",
         sa.Column("card_num", sa.String(16), nullable=False),
         sa.Column("acct_id", sa.String(11), nullable=False),
-        sa.Column("cvv_cd", sa.String(3), nullable=False),
         sa.Column("embossed_name", sa.String(50), nullable=False),
         sa.Column("expiration_date", sa.Date(), nullable=True),
         sa.Column("active_status", sa.CHAR(1), nullable=False),

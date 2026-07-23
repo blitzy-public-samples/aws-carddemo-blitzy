@@ -28,12 +28,16 @@ password hashing lives in ``app.core.security`` (the legacy 8-character
 plaintext ``SEC-USR-PWD`` is uplifted to a bcrypt hash and is never stored or
 returned).
 
-Authorization (F-002): all user maintenance is admin-only. The router-level
-dependency ``Depends(require_admin)`` gates EVERY route in this module on the
-ported role rule ``user_type == 'A'`` (legacy COMMAREA ``CDEMO-USRTYP-ADMIN``),
-returning HTTP 403 for a regular user. ``require_admin`` itself re-derives the
-caller identity per request (the stateless successor to COMMAREA propagation),
-so the handlers need no explicit identity parameter of their own.
+Authorization (F-002; QA finding M-04): all user maintenance is admin-only. The
+router-level dependency ``Depends(require_admin)`` gates EVERY route in this
+module on the ported role rule ``user_type == 'A'`` (legacy COMMAREA
+``CDEMO-USRTYP-ADMIN``), returning HTTP 403 for a regular user. ``require_admin``
+re-derives the caller identity per request (the stateless successor to COMMAREA
+propagation) and RETURNS the acting administrator; each handler now captures that
+identity (``currentUser: User = Depends(require_admin)``) and passes it to the
+service as the mandatory actor. The service re-checks the admin role in depth and
+enforces the self-action policy (an administrator may not delete or demote its
+own account), so authorization no longer depends on the router gate alone.
 
 Sensitive data (AAP 0.7.8): responses are typed with
 :class:`~app.schemas.UserRead` and :class:`~app.schemas.UserSummary`, neither of
@@ -70,10 +74,12 @@ from fastapi import APIRouter, Depends, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 # ``require_admin`` transitively resolves the caller identity (it depends on
-# ``get_current_user``) and enforces ``user_type == 'A'``, so the handlers need
-# no separate identity dependency; only these two providers are imported and
-# both are used below.
+# ``get_current_user``), enforces ``user_type == 'A'``, and RETURNS the acting
+# administrator, which each handler captures and forwards to the service as the
+# mandatory actor (M-04). The ORM ``User`` is imported solely to type that actor
+# parameter (it is the type ``require_admin`` returns).
 from app.core.dependencies import get_db, require_admin
+from app.models.user import User
 from app.schemas import (
     PaginatedResponse,
     PaginationParams,
@@ -103,6 +109,7 @@ router = APIRouter(
 async def ListUsers(
     session: AsyncSession = Depends(get_db),
     params: PaginationParams = Depends(),
+    currentUser: User = Depends(require_admin),
 ) -> PaginatedResponse[UserSummary]:
     """List security users for the admin browse screen (COUSR00C, CU00).
 
@@ -114,11 +121,13 @@ async def ListUsers(
     Args:
         session: The request-scoped async database session (from ``get_db``).
         params: The ``page`` / ``page_size`` query parameters.
+        currentUser: The acting administrator (from ``require_admin``), passed to
+            the service as the mandatory actor for the in-depth admin re-check.
 
     Returns:
         A :class:`~app.schemas.PaginatedResponse` page of ``UserSummary`` rows.
     """
-    return await UserAdminService().ListUsers(session, params)
+    return await UserAdminService().ListUsers(session, params, currentUser)
 
 
 @router.post(
@@ -129,6 +138,7 @@ async def ListUsers(
 async def AddUser(
     userCreate: UserCreate,
     session: AsyncSession = Depends(get_db),
+    currentUser: User = Depends(require_admin),
 ) -> UserRead:
     """Add a new regular/admin user (COUSR01C, CU01).
 
@@ -141,17 +151,20 @@ async def AddUser(
     Args:
         userCreate: The add-user request body (id, names, password, type).
         session: The request-scoped async database session (from ``get_db``).
+        currentUser: The acting administrator (from ``require_admin``), passed to
+            the service as the mandatory actor for the in-depth admin re-check.
 
     Returns:
         The created user as a password-free :class:`~app.schemas.UserRead`.
     """
-    return await UserAdminService().AddUser(session, userCreate)
+    return await UserAdminService().AddUser(session, userCreate, currentUser)
 
 
 @router.get("/{userId}", response_model=UserRead)
 async def GetUser(
     userId: str,
     session: AsyncSession = Depends(get_db),
+    currentUser: User = Depends(require_admin),
 ) -> UserRead:
     """Read a single security user by id.
 
@@ -162,11 +175,13 @@ async def GetUser(
     Args:
         userId: The user id path parameter (``SEC-USR-ID``, VARCHAR(8)).
         session: The request-scoped async database session (from ``get_db``).
+        currentUser: The acting administrator (from ``require_admin``), passed to
+            the service as the mandatory actor for the in-depth admin re-check.
 
     Returns:
         The matching user as a password-free :class:`~app.schemas.UserRead`.
     """
-    return await UserAdminService().GetUser(session, userId)
+    return await UserAdminService().GetUser(session, userId, currentUser)
 
 
 @router.put("/{userId}", response_model=UserRead)
@@ -174,6 +189,7 @@ async def UpdateUser(
     userId: str,
     userUpdate: UserUpdate,
     session: AsyncSession = Depends(get_db),
+    currentUser: User = Depends(require_admin),
 ) -> UserRead:
     """Update an existing security user (COUSR02C, CU02).
 
@@ -181,23 +197,31 @@ async def UpdateUser(
     validates the fields, requires an actual change ("Please modify to update"),
     re-hashes the password only when a new one is supplied, then persists and
     commits. A missing user surfaces as
-    :class:`~app.core.exceptions.NotFoundError` (HTTP 404).
+    :class:`~app.core.exceptions.NotFoundError` (HTTP 404). An attempt by the
+    acting administrator to strip its own admin role is rejected with HTTP 409
+    (the service self-demotion guard, M-04).
 
     Args:
         userId: The immutable user id path parameter (``SEC-USR-ID``).
         userUpdate: The update request body (names, type, optional password).
         session: The request-scoped async database session (from ``get_db``).
+        currentUser: The acting administrator (from ``require_admin``), passed to
+            the service as the mandatory actor for the in-depth admin re-check
+            and the self-demotion guard.
 
     Returns:
         The updated user as a password-free :class:`~app.schemas.UserRead`.
     """
-    return await UserAdminService().UpdateUser(session, userId, userUpdate)
+    return await UserAdminService().UpdateUser(
+        session, userId, userUpdate, currentUser
+    )
 
 
 @router.delete("/{userId}", status_code=status.HTTP_204_NO_CONTENT)
 async def DeleteUser(
     userId: str,
     session: AsyncSession = Depends(get_db),
+    currentUser: User = Depends(require_admin),
 ) -> None:
     """Delete a security user by id (COUSR03C, CU03).
 
@@ -205,14 +229,19 @@ async def DeleteUser(
     reads the record (missing -> :class:`~app.core.exceptions.NotFoundError`,
     HTTP 404), then deletes and commits. The service's confirmation message is
     intentionally discarded here: this endpoint returns HTTP 204 No Content with
-    an empty body, so no ``response_model`` is declared.
+    an empty body, so no ``response_model`` is declared. An attempt by the acting
+    administrator to delete its own account is rejected with HTTP 409 (the
+    service self-delete guard, M-04).
 
     Args:
         userId: The user id path parameter (``SEC-USR-ID``, VARCHAR(8)).
         session: The request-scoped async database session (from ``get_db``).
+        currentUser: The acting administrator (from ``require_admin``), passed to
+            the service as the mandatory actor for the in-depth admin re-check
+            and the self-delete guard.
 
     Returns:
         ``None`` -- serialized as an empty HTTP 204 No Content response.
     """
-    await UserAdminService().DeleteUser(session, userId)
+    await UserAdminService().DeleteUser(session, userId, currentUser)
     return None

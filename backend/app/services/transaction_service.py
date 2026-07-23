@@ -611,7 +611,12 @@ class TransactionService:
         and rejects when the credit limit is below it. This is DISTINCT from the
         bill-payment "available credit = credit limit - current balance"
         (F-006) rule and must not be conflated. Expiration rejects when the
-        account expiration date precedes the transaction's original date. All
+        account expiration date precedes the transaction's original date. The
+        two edits are the two SEQUENTIAL COBOL ``IF``s that both write
+        ``WS-VALIDATION-FAIL-REASON``; when BOTH fail the expiration assignment
+        (103) OVERWRITES the over-limit assignment (102), so code 103 takes
+        precedence (last-write-wins). This precedence matches the batch posting
+        job (``batch/jobs/post_transactions.py`` ``_CheckAccountLimits``). All
         arithmetic is :class:`~decimal.Decimal` (never ``float``).
 
         Args:
@@ -620,18 +625,37 @@ class TransactionService:
             origTs: The transaction's original timestamp (``datetime``).
 
         Raises:
-            OverlimitTransactionError: Code 102 -- over the credit limit.
-            AccountExpiredError: Code 103 -- received after expiration.
+            AccountExpiredError: Code 103 -- received after expiration; takes
+                precedence over 102 when the posting is both over-limit and
+                expired (last-write-wins parity with CBTRN02C).
+            OverlimitTransactionError: Code 102 -- over the credit limit (raised
+                only when the posting is not also expired).
         """
+        # CBTRN02C 1500-B-LOOKUP-ACCT runs the over-limit edit then the
+        # expiration edit as two SEQUENTIAL `IF`s writing the SAME
+        # WS-VALIDATION-FAIL-REASON, so a posting that is BOTH over-limit AND
+        # expired ends with reason 103 (the expiration MOVE overwrites the 102
+        # MOVE -- last-write-wins). Both predicates are therefore evaluated up
+        # front and expiration is checked FIRST here, so 103 wins over 102 for a
+        # doubly-failing posting, matching the mainframe and the batch job.
+        # Over-limit uses WS-TEMP-BAL = curr_cyc_credit - curr_cyc_debit + amt.
+        isOverlimit = account.credit_limit < (
+            account.curr_cyc_credit - account.curr_cyc_debit + tranAmt
+        )
+        # A missing origTs or expiration date cannot expire the transaction, so
+        # it is treated as not expired (CBTRN02C L415-421).
+        isExpired = (
+            origTs is not None
+            and account.expiration_date is not None
+            and account.expiration_date < origTs.date()
+        )
+        # Code 103 -- received after expiration. Checked before 102 so it takes
+        # precedence when both edits fail (last-write-wins parity).
+        if isExpired:
+            raise AccountExpiredError()  # code 103
         # Code 102 -- over-limit (CBTRN02C L406-414).
-        tempBal = account.curr_cyc_credit - account.curr_cyc_debit + tranAmt
-        if account.credit_limit < tempBal:
+        if isOverlimit:
             raise OverlimitTransactionError()  # code 102 "OVERLIMIT TRANSACTION"
-        # Code 103 -- received after expiration (CBTRN02C L415-421). A missing
-        # expiration date cannot expire the transaction, so it passes.
-        if origTs is not None and account.expiration_date is not None:
-            if account.expiration_date < origTs.date():
-                raise AccountExpiredError()  # code 103
 
     # -----------------------------------------------------------------------
     # ADD-TRANSACTION insert (COTRN02C) + 2800-UPDATE-ACCOUNT-REC (code 109)

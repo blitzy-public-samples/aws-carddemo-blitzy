@@ -26,6 +26,7 @@ import { FormField } from '@/components/FormField';
 import { ErrorAlert } from '@/components/ErrorAlert';
 import { UsersApi, IsApiError } from '@/lib/apiClient';
 import { IsAdmin } from '@/lib/auth';
+import { ShouldSuppressActivationShortcut } from '@/lib/keyboard';
 import type { UserRead, UserUpdate } from '@/types';
 
 /* ------------------------------------------------------------------------- */
@@ -337,6 +338,12 @@ function UsersUpdateContent() {
      */
     function HandleKeyDown(event: KeyboardEvent<HTMLDivElement>): void {
         if (event.key === 'Enter') {
+            // Let a focused button/link/select own Enter; only the screen-level
+            // fetch shortcut runs when Enter fires outside an interactive
+            // control, so activation is never duplicated (QA M-28).
+            if (ShouldSuppressActivationShortcut(event.key, event.target)) {
+                return;
+            }
             event.preventDefault();
             HandleFetch();
             return;

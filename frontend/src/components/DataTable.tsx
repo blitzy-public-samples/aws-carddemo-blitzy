@@ -124,6 +124,18 @@ export interface DataTableProps<T> {
     getRowKey: (row: T) => string;
     /** Optional row-selection handler (COCRDLI / COTRN00 "select a row"). */
     onRowClick?: (row: T) => void;
+    /**
+     * Optional accessible name for a selectable row, used only when
+     * `onRowClick` is supplied. A keyboard/screen-reader user needs to know what
+     * activating the row does, so each selectable row is exposed as a button
+     * with this label. When omitted, a generic `"Select record {rowKey}"` label
+     * is derived from {@link DataTableProps.getRowKey}. Supply a domain label
+     * (for example `"View card ****1234"`) for clearer narration.
+     *
+     * @param row - The row the label describes.
+     * @returns The accessible name announced for that row's select action.
+     */
+    getRowLabel?: (row: T) => string;
     /** Message shown when the page has no rows; defaults to `'No records found.'`. */
     emptyMessage?: string;
     /** When true, the body shows a progress indicator instead of rows. */
@@ -162,7 +174,23 @@ export interface DataTableProps<T> {
  */
 export function DataTable<T>(props: DataTableProps<T>) {
     const { columns, data, onPageChange, getRowKey, onRowClick } = props;
-    const { emptyMessage = DEFAULT_EMPTY_MESSAGE, loading = false } = props;
+    const { getRowLabel, emptyMessage = DEFAULT_EMPTY_MESSAGE } = props;
+    const { loading = false } = props;
+
+    /**
+     * Resolves the accessible name announced for a selectable row's activation:
+     * the caller-supplied {@link DataTableProps.getRowLabel} when present,
+     * otherwise a generic label derived from the row key.
+     *
+     * @param row - The row being labelled.
+     * @returns The accessible name for the row's select action.
+     */
+    function ResolveRowLabel(row: T): string {
+        if (getRowLabel) {
+            return getRowLabel(row);
+        }
+        return `Select record ${getRowKey(row)}`;
+    }
 
     // Pagination facts are read verbatim from the snake_case wire contract; they
     // are the backend's field names (do NOT rename to camelCase).
@@ -247,20 +275,70 @@ export function DataTable<T>(props: DataTableProps<T>) {
             </TableRow>
         );
     } else {
-        bodyContent = items.map((row) => (
-            <TableRow
-                key={getRowKey(row)}
-                hover
-                onClick={onRowClick ? () => onRowClick(row) : undefined}
-                sx={onRowClick ? { cursor: 'pointer' } : undefined}
-            >
-                {columns.map((column) => (
-                    <TableCell key={column.key} align={column.align ?? 'left'}>
-                        {RenderCellValue(column, row)}
-                    </TableCell>
-                ))}
-            </TableRow>
-        ));
+        bodyContent = items.map((row) => {
+            // A row is selectable only when the caller supplied `onRowClick`.
+            // Selectable rows must be operable by KEYBOARD as well as mouse
+            // (QA M-27): they become a focusable tab stop with an accessible
+            // name, activate on Enter/Space, and show a visible focus ring.
+            // Row semantics (role="row") are preserved so the contained cells
+            // keep a valid parent — activation is layered on, not replaced.
+            const isSelectable = Boolean(onRowClick);
+
+            /**
+             * Activates the row from the keyboard: Enter or Space invokes the
+             * same selection callback as a click. Space is `preventDefault`ed so
+             * it selects the row instead of scrolling the region. Other keys are
+             * ignored so PF7/PF8 paging and normal focus movement are unaffected.
+             *
+             * @param event - The keyboard event from the focused row.
+             */
+            function HandleRowKeyDown(
+                event: KeyboardEvent<HTMLTableRowElement>,
+            ): void {
+                if (!onRowClick) {
+                    return;
+                }
+                if (event.key === 'Enter' || event.key === ' ') {
+                    event.preventDefault();
+                    onRowClick(row);
+                }
+            }
+
+            return (
+                <TableRow
+                    key={getRowKey(row)}
+                    hover
+                    onClick={onRowClick ? () => onRowClick(row) : undefined}
+                    onKeyDown={isSelectable ? HandleRowKeyDown : undefined}
+                    tabIndex={isSelectable ? 0 : undefined}
+                    aria-label={isSelectable ? ResolveRowLabel(row) : undefined}
+                    sx={
+                        isSelectable
+                            ? {
+                                  cursor: 'pointer',
+                                  // Visible keyboard focus indicator (WCAG
+                                  // 2.4.7) drawn with a theme token, inset so it
+                                  // is not clipped by the TableContainer.
+                                  '&:focus-visible': {
+                                      outline: (theme) =>
+                                          `2px solid ${theme.palette.primary.main}`,
+                                      outlineOffset: '-2px',
+                                  },
+                              }
+                            : undefined
+                    }
+                >
+                    {columns.map((column) => (
+                        <TableCell
+                            key={column.key}
+                            align={column.align ?? 'left'}
+                        >
+                            {RenderCellValue(column, row)}
+                        </TableCell>
+                    ))}
+                </TableRow>
+            );
+        });
     }
 
     return (

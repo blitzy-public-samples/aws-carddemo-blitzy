@@ -51,14 +51,23 @@ exception the shared fixtures make for their own snake_case names.
 
 from __future__ import annotations
 
+import asyncio
+from datetime import date
 from decimal import Decimal
 
+import pytest
 from httpx import AsyncClient
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.core.config import settings
+from app.core.exceptions import OptimisticLockError
 from app.models.account import Account
+from app.models.card import Card
+from app.models.card_xref import CardXref
 from app.models.customer import Customer
+from app.repositories.account_repo import AccountRepository
+from app.schemas.account import AccountBeforeImage, AccountUpdate
+from app.services.account_service import AccountService
 
 # ---------------------------------------------------------------------------
 # Module constants (ALL_UPPERCASE per the Ochs Rule §0.8.2).
@@ -103,13 +112,37 @@ EXPECTED_ACTIVE_STATUS = "Y"
 # rejected by the schema's money coercion).
 NEW_BALANCE = "250.00"
 
-# A concurrent, out-of-band balance used to invalidate the client's before-image
-# in the optimistic-lock conflict test.
-CONFLICTING_BALANCE = Decimal("777.00")
+# ---------------------------------------------------------------------------
+# Independent-session lost-update fixture (QA findings M-10 + M-11).
+#
+# The shared ``seed_data`` fixture only FLUSHES rows into the per-test
+# ``db_session`` (never commits), so they are invisible to any OTHER connection.
+# Proving a genuine lost-update therefore requires an account COMMITTED on its
+# own connection so two independent sessions can both read the same before-image
+# and contend for it. The COACTUPC update path resolves + locks the owning
+# customer through the card cross-reference, so the minimal committed graph is
+# customer + account + card + card_xref. These identifiers sit outside the
+# golden-master seed set so they never collide with it.
+# ---------------------------------------------------------------------------
+CONFLICT_ACCT_ID = "00000000099"
+CONFLICT_CUST_ID = "000000099"
+CONFLICT_CARD_NUM = "4111111111110099"
+CONFLICT_ORIGINAL_BAL = Decimal("100.00")
+CONFLICT_WINNER_BAL = Decimal("500.00")
+CONFLICT_LOSER_BAL = Decimal("900.00")
+CONFLICT_CREDIT_LIMIT = Decimal("5000.00")
+CONFLICT_CASH_LIMIT = Decimal("1000.00")
+CONFLICT_ZERO = Decimal("0.00")
+CONFLICT_CARD_EXPIRY = date(2027, 8, 31)
+
+# Grace period allowing the blocked FOR UPDATE task to reach the database and
+# park on the row lock before the test asserts it has not completed. The task is
+# genuinely blocked at the database, so it stays pending regardless of this
+# value; the wait only lets the event loop schedule it up to the lock.
+LOCK_WAIT_SECONDS = 0.25
 
 # Precise HTTP status codes asserted by the tests (never a broad "not 2xx").
 HTTP_OK = 200
-HTTP_BAD_REQUEST = 400
 HTTP_UNAUTHORIZED = 401
 HTTP_NOT_FOUND = 404
 HTTP_CONFLICT = 409
@@ -173,6 +206,86 @@ def BuildBeforeImage(responseBody: dict) -> dict:
     for moneyField in BEFORE_IMAGE_MONEY_FIELDS:
         beforeImage[moneyField] = str(responseBody[moneyField])
     return beforeImage
+
+
+def BuildConflictBeforeImage() -> AccountBeforeImage:
+    """Build the client before-image echoing the seeded ORIGINAL account values.
+
+    Both the winner and the loser transactions submit THIS same before-image,
+    exactly reproducing two clients that each read the account while it still
+    held its original values. The winner commits first (its before-image still
+    matches), so the loser's identical before-image is then stale and its update
+    is rejected -- proving the COACTUPC 9700 lost-update guard (AAP §0.7.4).
+
+    Returns:
+        An :class:`~app.schemas.account.AccountBeforeImage` carrying the six
+        required members (``active_status`` plus the five monetary fields) set
+        to the seeded ORIGINAL values.
+    """
+    return AccountBeforeImage(
+        active_status=EXPECTED_ACTIVE_STATUS,
+        curr_bal=CONFLICT_ORIGINAL_BAL,
+        credit_limit=CONFLICT_CREDIT_LIMIT,
+        cash_credit_limit=CONFLICT_CASH_LIMIT,
+        curr_cyc_credit=CONFLICT_ZERO,
+        curr_cyc_debit=CONFLICT_ZERO,
+    )
+
+
+async def SeedConflictAccountCommitted(sessionMaker: async_sessionmaker) -> None:
+    """Commit the account-update RI chain (customer+account+card+xref) independently.
+
+    COMMITS (not the flush-only ``seed_data``) so the row is visible to the two
+    independent sessions that then contend for it, which is the crux of proving a
+    genuine lost-update (QA finding M-11). The COACTUPC update path resolves the
+    owning customer through the card cross-reference and locks it, so all four
+    parents/children are required. ``group_id`` is left NULL so no disclosure
+    group parent is needed. The ``db_session`` fixture's ``TRUNCATE ... CASCADE``
+    teardown removes these committed rows after the test.
+
+    Args:
+        sessionMaker: An ``async_sessionmaker`` bound to the test engine.
+    """
+    async with sessionMaker() as seedSession:
+        seedSession.add(
+            Customer(
+                cust_id=CONFLICT_CUST_ID,
+                first_name="CONFLICT",
+                last_name="OWNER",
+                addr_line_1="1 TEST WAY",
+            )
+        )
+        seedSession.add(
+            Account(
+                acct_id=CONFLICT_ACCT_ID,
+                active_status=EXPECTED_ACTIVE_STATUS,
+                curr_bal=CONFLICT_ORIGINAL_BAL,
+                credit_limit=CONFLICT_CREDIT_LIMIT,
+                cash_credit_limit=CONFLICT_CASH_LIMIT,
+                curr_cyc_credit=CONFLICT_ZERO,
+                curr_cyc_debit=CONFLICT_ZERO,
+                group_id=None,
+            )
+        )
+        await seedSession.flush()
+        seedSession.add(
+            Card(
+                card_num=CONFLICT_CARD_NUM,
+                acct_id=CONFLICT_ACCT_ID,
+                embossed_name="CONFLICT OWNER",
+                expiration_date=CONFLICT_CARD_EXPIRY,
+                active_status=EXPECTED_ACTIVE_STATUS,
+            )
+        )
+        await seedSession.flush()
+        seedSession.add(
+            CardXref(
+                xref_card_num=CONFLICT_CARD_NUM,
+                cust_id=CONFLICT_CUST_ID,
+                acct_id=CONFLICT_ACCT_ID,
+            )
+        )
+        await seedSession.commit()
 
 
 # ===========================================================================
@@ -289,16 +402,14 @@ async def test_get_account_invalid_id_format(admin_client: AsyncClient) -> None:
 
     The service validates the account filter (COACTVWC 2210-EDIT-ACCOUNT)
     BEFORE any lookup, so a non-numeric id raises ``DomainValidationError``,
-    which the application maps to HTTP 422. A 400 or 404 is also accepted so the
-    test documents -- without over-fitting -- that a malformed id never
-    succeeds.
+    which the application maps to HTTP 422 (asserted exactly).
 
     Args:
         admin_client: Authenticated (admin) httpx ASGI client.
     """
     resp = await admin_client.get(f"{ACCOUNTS_URL}/{INVALID_ACCT_ID}")
 
-    assert resp.status_code in {HTTP_BAD_REQUEST, HTTP_UNPROCESSABLE, HTTP_NOT_FOUND}
+    assert resp.status_code == HTTP_UNPROCESSABLE
 
 
 # ===========================================================================
@@ -339,47 +450,149 @@ async def test_update_account_success(
     assert ToDecimal(responseBody["cash_credit_limit"]) == EXPECTED_CASH_LIMIT
 
 
-async def test_update_account_optimistic_conflict(
-    admin_client: AsyncClient,
-    seed_data: None,
+async def test_update_account_lost_update_prevented_independent_sessions(
+    test_engine,
     db_session: AsyncSession,
 ) -> None:
-    """A stale before-image is rejected with HTTP 409 (COACTUPC lost-update).
+    """Two INDEPENDENT clients submit the SAME before-image; one wins, one 409s.
 
-    Simulates the COACTUPC 9700 concurrent-modification guard (AAP §0.7.4):
-    (a) the client reads the account and captures its before-image; (b) another
-    unit of work changes the row out-of-band -- committed on the shared session
-    so the service's ``SELECT ... FOR UPDATE`` locking read observes the new
-    value; (c) the client submits an update carrying the now-STALE before-image.
-    The service detects the divergence and raises ``OptimisticLockError``, which
-    maps to HTTP 409 with the verbatim COACTUPC message.
+    Genuine lost-update reproduction (QA findings M-10 + M-11). It replaces the
+    prior test, which mutated the SHARED ``db_session`` (the same connection the
+    request handler used) and so did not prove independent behavior. Here the
+    account is COMMITTED on its own connection and two GENUINELY independent
+    ``AsyncSession``s (each its own connection and transaction) drive the full
+    ``AccountService.UpdateAccount`` COACTUPC flow:
+
+    * The WINNER submits the ORIGINAL before-image; because the row still holds
+      its original values, the before-image check passes and it COMMITS
+      ``CONFLICT_WINNER_BAL`` under the ``SELECT ... FOR UPDATE`` lock.
+    * The LOSER, on a SEPARATE session, submits the SAME before-image (exactly
+      what a second client that read the account at the same time would echo).
+      Its locked re-read now observes the WINNER's committed balance, so the
+      before-image check (COACTUPC 9700) raises ``OptimisticLockError`` and the
+      write is rejected -- the WINNER's change is NOT lost.
+
+    Asserts one winner, one explicit conflict, and the final committed state
+    (exactly the winner's balance), directly against real PostgreSQL row locks.
 
     Args:
-        admin_client: Authenticated (admin) httpx ASGI client.
-        seed_data: Golden-master seed loaded from ``app/data/ASCII``.
-        db_session: Shared async session used to mutate the row out-of-band.
+        test_engine: Function-scoped async engine used to build two independent
+            sessions (and the same engine ``db_session`` is bound to).
+        db_session: Requested only so its ``TRUNCATE ... CASCADE`` teardown wipes
+            the committed conflict rows after the test.
     """
-    getResp = await admin_client.get(f"{ACCOUNTS_URL}/{SEED_ACCT_ID}")
-    assert getResp.status_code == HTTP_OK
-    staleBeforeImage = BuildBeforeImage(getResp.json())
-
-    # Concurrent, out-of-band modification: another writer changes the balance
-    # and commits, so the service's locked re-read sees the new value.
-    accountRow = await db_session.get(Account, SEED_ACCT_ID)
-    assert accountRow is not None
-    accountRow.curr_bal = CONFLICTING_BALANCE
-    await db_session.commit()
-
-    # The client submits its update against the value it ORIGINALLY read.
-    updatePayload = {"before_image": staleBeforeImage, "curr_bal": NEW_BALANCE}
-    putResp = await admin_client.put(
-        f"{ACCOUNTS_URL}/{SEED_ACCT_ID}",
-        json=updatePayload,
+    sessionMaker = async_sessionmaker(
+        bind=test_engine,
+        class_=AsyncSession,
+        expire_on_commit=False,
+        autoflush=False,
     )
+    await SeedConflictAccountCommitted(sessionMaker)
+    service = AccountService()
 
-    assert putResp.status_code == HTTP_CONFLICT
-    bodyText = str(putResp.json())
-    assert "Record changed by some one else" in bodyText or "changed" in bodyText.lower()
+    # WINNER: independent session; the before-image still matches the current
+    # row, so the update succeeds and COMMITS (ORIGINAL -> WINNER).
+    async with sessionMaker() as sessionWinner:
+        winnerResult = await service.UpdateAccount(
+            sessionWinner,
+            CONFLICT_ACCT_ID,
+            AccountUpdate(
+                before_image=BuildConflictBeforeImage(),
+                curr_bal=CONFLICT_WINNER_BAL,
+            ),
+        )
+        assert winnerResult.curr_bal == CONFLICT_WINNER_BAL
+
+    # LOSER: a SEPARATE independent session submits the SAME (now stale)
+    # before-image; the locked re-read observes the WINNER's committed balance,
+    # so the before-image check raises the explicit conflict.
+    async with sessionMaker() as sessionLoser:
+        with pytest.raises(OptimisticLockError):
+            await service.UpdateAccount(
+                sessionLoser,
+                CONFLICT_ACCT_ID,
+                AccountUpdate(
+                    before_image=BuildConflictBeforeImage(),
+                    curr_bal=CONFLICT_LOSER_BAL,
+                ),
+            )
+
+    # Final committed state: exactly the WINNER's balance survived; the LOSER's
+    # write was rejected (one winner, one conflict, no lost update).
+    async with sessionMaker() as verifySession:
+        finalAccount = await AccountRepository().GetByAcctId(verifySession, CONFLICT_ACCT_ID)
+        assert finalAccount is not None
+        assert finalAccount.curr_bal == CONFLICT_WINNER_BAL
+        assert finalAccount.curr_bal != CONFLICT_LOSER_BAL
+
+
+async def test_account_get_for_update_serializes_concurrent_writers(
+    test_engine,
+    db_session: AsyncSession,
+) -> None:
+    """SELECT ... FOR UPDATE blocks a second writer until the first commits (M-11).
+
+    The deterministic proof that the COACTUPC account row lock
+    (``AccountRepository.GetForUpdate`` -> ``SELECT ... FOR UPDATE``, AAP §0.7.4)
+    serializes two independent transactions, orchestrated with an explicit lock
+    barrier (a bare ``asyncio.gather`` cannot prove this: the first writer may
+    commit before the second even reads, so no contention is forced). Two
+    GENUINELY independent sessions contend for one COMMITTED account:
+
+    1. Transaction TWO reads the account first, capturing the ORIGINAL balance.
+    2. Transaction ONE acquires the row lock (``GetForUpdate``) and HOLDS it.
+    3. Transaction TWO's own ``GetForUpdate`` is launched as a task and is
+       observed to BLOCK while ONE holds the lock -- the direct evidence that
+       the lock serializes writers (a non-locking read would not block).
+    4. Transaction ONE commits its change (ORIGINAL -> WINNER) and releases the
+       lock; TWO then unblocks and observes the committed WINNER balance, NOT
+       the stale ORIGINAL it first read -- so the before-image check would reject
+       its write, preventing the lost update.
+
+    Args:
+        test_engine: Function-scoped async engine used to build two independent
+            sessions.
+        db_session: Requested only so its ``TRUNCATE ... CASCADE`` teardown wipes
+            the committed conflict rows after the test.
+    """
+    sessionMaker = async_sessionmaker(
+        bind=test_engine,
+        class_=AsyncSession,
+        expire_on_commit=False,
+        autoflush=False,
+    )
+    await SeedConflictAccountCommitted(sessionMaker)
+    repository = AccountRepository()
+
+    async with sessionMaker() as sessionOne, sessionMaker() as sessionTwo:
+        # (1) ONE acquires the account row lock FOR UPDATE and holds it (no
+        # commit yet). The seeded ORIGINAL balance is the known before-image.
+        lockedOne = await repository.GetForUpdate(sessionOne, CONFLICT_ACCT_ID)
+        assert lockedOne is not None
+        assert lockedOne.curr_bal == CONFLICT_ORIGINAL_BAL
+
+        # (2) TWO's locking read MUST block while ONE holds the lock. TWO's
+        # GetForUpdate is its FIRST read of the row, exactly as the COACTUPC
+        # update flow locks the account before reading it (so no prior
+        # identity-map entry can mask the committed value).
+        blockedTask = asyncio.create_task(
+            repository.GetForUpdate(sessionTwo, CONFLICT_ACCT_ID)
+        )
+        await asyncio.sleep(LOCK_WAIT_SECONDS)
+        assert not blockedTask.done()
+
+        # (3) ONE commits ORIGINAL -> WINNER, releasing the lock.
+        lockedOne.curr_bal = CONFLICT_WINNER_BAL
+        await repository.Update(sessionOne, lockedOne)
+        await sessionOne.commit()
+
+        # TWO now unblocks; its locked read observes the committed WINNER
+        # balance -- not the stale ORIGINAL, so a before-image echo of ORIGINAL
+        # would be rejected, preventing the lost update.
+        lockedTwo = await blockedTask
+        assert lockedTwo is not None
+        assert lockedTwo.curr_bal == CONFLICT_WINNER_BAL
+        assert lockedTwo.curr_bal != CONFLICT_ORIGINAL_BAL
 
 
 async def test_update_account_invalid_body(admin_client: AsyncClient) -> None:
@@ -387,9 +600,8 @@ async def test_update_account_invalid_body(admin_client: AsyncClient) -> None:
 
     Sends a well-formed before-image alongside an ``active_status`` of ``"X"``
     (the ported Yes/No edit accepts only ``'Y'`` or ``'N'``). The value fails the
-    Pydantic field edit before any lookup, so the API responds 422 (a 400 is
-    also accepted per the ``DomainValidationError`` mapping); the offending field
-    name appears in the error body.
+    Pydantic field edit before any lookup, so the API responds HTTP 422 (asserted
+    exactly); the offending field name appears in the error body.
 
     Args:
         admin_client: Authenticated (admin) httpx ASGI client.
@@ -410,5 +622,5 @@ async def test_update_account_invalid_body(admin_client: AsyncClient) -> None:
         json=invalidPayload,
     )
 
-    assert resp.status_code in {HTTP_BAD_REQUEST, HTTP_UNPROCESSABLE}
+    assert resp.status_code == HTTP_UNPROCESSABLE
     assert "active_status" in str(resp.json())

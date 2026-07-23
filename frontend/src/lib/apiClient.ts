@@ -516,7 +516,12 @@ export const CardsApi = {
         return response.data;
     },
 
-    /** Fetches one card. GET /cards/{cardNum}. */
+    /**
+     * Fetches one card by PAN. GET /cards/{cardNum}. Retained because the AAP
+     * REST contract mandates this endpoint (CCDL; AAP 0.5.5); the UI prefers the
+     * PAN-free {@link GetCardByAccount} because the browse grid masks `card_num`
+     * (AAP 0.7.8). Server responses mask the PAN and app logs are PAN-scrubbed.
+     */
     async GetCard(cardNum: string): Promise<CardRead> {
         const response = await apiClient.get<CardRead>(
             `/cards/${encodeURIComponent(cardNum)}`,
@@ -537,7 +542,11 @@ export const CardsApi = {
         return response.data;
     },
 
-    /** Updates a card. PUT /cards/{cardNum}. */
+    /**
+     * Updates a card by PAN. PUT /cards/{cardNum}. Retained because the AAP REST
+     * contract mandates this endpoint (CCUP; AAP 0.5.5); the UI prefers the
+     * PAN-free {@link UpdateCardByAccount}. Responses mask the PAN (AAP 0.7.8).
+     */
     async UpdateCard(cardNum: string, cardUpdate: CardUpdate): Promise<CardRead> {
         const response = await apiClient.put<CardRead>(
             `/cards/${encodeURIComponent(cardNum)}`,

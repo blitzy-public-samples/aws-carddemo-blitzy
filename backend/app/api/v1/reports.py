@@ -30,6 +30,18 @@ camelCase (``reportRequest``, ``csvText``, ``pdfBytes``), and module constants
 are ALL_UPPERCASE. The handler binds its query parameters into a single
 :class:`~app.schemas.report.ReportRequest` DTO so it stays within the Ochs
 four-parameter limit, and no secret or URL is hardcoded.
+
+Authorization model (AAP 0.4.4 / 0.8.1 -- role-based, NOT per-user ownership):
+authorization here is OPERATOR/ROLE-based, preserved faithfully from the legacy
+system. The security record ``CSUSR01Y`` binds an operator only to a type
+('A'/'U'), never to a set of accounts/customers, so every caller is
+authenticated (``get_current_user``) and admin-only surfaces are gated on
+``user_type == 'A'`` (``require_admin``) exactly as AAP 0.4.4 requires, WITHOUT
+per-user resource-ownership filtering. Adding a user->account ownership binding
+would invent a relation absent from the copybooks and the frozen AAP, breaking
+the Minimal Change Clause (AAP 0.8.1); a review finding requesting IDOR-style
+ownership or account scoping is therefore declined on AAP grounds (documented
+decision -- see ``app.api.v1.cards`` and the resolution report).
 """
 
 from enum import Enum

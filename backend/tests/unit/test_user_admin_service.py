@@ -26,14 +26,18 @@ What these tests verify (one behavior per test):
   ``DomainValidationError`` (blank field / no-op update) and ``NotFoundError``
   (absent id) are asserted explicitly -- never a bare :class:`Exception`.
 
-Scope note (admin gating). The "admin-only" restriction for these operations is
-enforced at the router layer via ``Depends(require_admin)`` (see
-``app/core/dependencies.py``), NOT inside the service methods, so these
-service-level tests call the methods directly and deliberately do not assert
-admin gating (that is covered by the router/authorization and integration
-tests). Each service method accepts an OPTIONAL ``currentUser`` that defaults to
-``None``; omitting it makes the service-level admin check a no-op, which is what
-these tests do.
+Scope note (admin gating, QA finding M-04). Admin authorization is enforced in
+TWO layers: the router dependency ``Depends(require_admin)`` (see
+``app/core/dependencies.py``) AND a mandatory in-depth re-check inside every
+service method. Each method now REQUIRES a ``currentUser`` actor (there is no
+longer an optional/``None`` default that turned the check into a no-op), so the
+happy-path tests below pass a shared administrator actor (:data:`ADMIN_ACTOR`,
+whose id is deliberately distinct from every create/update/delete target so it
+never trips the self-action guards). The defense-in-depth behavior itself is
+pinned directly here: a regular actor is rejected with ``AuthorizationError``
+(the direct-service authorization tests), an administrator may not delete or
+demote its OWN account (the self-action tests), and a duplicate-id race is mapped
+to ``ConflictError`` even when the pre-read misses (the race test).
 
 Execution model. The suite runs under ``asyncio_mode = "auto"`` (see
 ``backend/pyproject.toml``), so tests are plain ``async def`` coroutines with no
@@ -56,6 +60,7 @@ from __future__ import annotations
 import pytest
 
 from app.core.exceptions import (
+    AuthorizationError,
     ConflictError,
     DomainValidationError,
     NotFoundError,
@@ -109,11 +114,14 @@ DELETE_USER_PASSWORD = "PW123456"
 CHANGED_FIRST_NAME = "CHANGED"
 
 # ---------------------------------------------------------------------------
-# QA finding F2 (password casing): a user created with a LOWERCASE password
-# must be stored so it verifies against the uppercased form -- the write side
-# applies the same FUNCTION UPPER-CASE the sign-on path applies (COSGN00C
-# L135-136), so "created with P can sign on with P" holds. The lowercase input
-# and its uppercase equivalent are both <= 8 chars (SEC-USR-PWD X(08)).
+# QA finding M-01 (password case preservation): a user created with a LOWERCASE
+# password must be stored so it verifies against those EXACT bytes and NOT
+# against an uppercased form. The write side no longer applies the legacy
+# FUNCTION UPPER-CASE (COSGN00C L135-136) -- that fold destroyed credential
+# entropy -- so the stored hash matches the lowercase input and rejects the
+# uppercase variant, and (because sign-on is likewise case-sensitive now)
+# "created with P signs on with exactly P". The lowercase input and its
+# uppercase equivalent are both <= 8 chars (SEC-USR-PWD X(08)).
 LOWER_CASE_USER_ID = "LOWER001"
 LOWER_CASE_PASSWORD = "secret12"
 LOWER_CASE_PASSWORD_UPPER = "SECRET12"
@@ -132,6 +140,50 @@ SECOND_ADMIN_LAST_NAME = "ADMIN"
 SECOND_ADMIN_PASSWORD = "PW123456"
 ADMIN_USER_TYPE = "A"
 REGULAR_USER_TYPE = "U"
+
+# ---------------------------------------------------------------------------
+# QA finding M-04 (mandatory actor + self-action policy). The service methods
+# now REQUIRE a ``currentUser`` acting administrator. ``ADMIN_ACTOR`` is a
+# transient (never-persisted) admin identity passed to every happy-path call; it
+# is only READ for its ``user_id`` / ``user_type`` and never added to a session.
+# Its id is deliberately DISTINCT from every create/update/delete target below
+# (ADMIN001 / ADMIN002 / NEWUSER1 / DELME001 / ...), so it satisfies the admin
+# gate without ever tripping the self-delete / self-demotion guards. The
+# self-action tests construct their OWN actor whose id EQUALS the target.
+ACTING_ADMIN_ID = "ADMINACT"
+ADMIN_ACTOR = User(user_id=ACTING_ADMIN_ID, user_type=ADMIN_USER_TYPE)
+
+# A NON-admin actor for the direct-service authorization tests: passing it must
+# raise AuthorizationError before any business logic runs.
+REGULAR_ACTOR_ID = "REGACTOR"
+REGULAR_ACTOR = User(user_id=REGULAR_ACTOR_ID, user_type=REGULAR_USER_TYPE)
+
+# Verbatim self-action guard messages (defined LOCALLY so the assertions pin the
+# wording independently of the service constants). Match
+# user_admin_service.MSG_CANNOT_DELETE_SELF / MSG_CANNOT_DEMOTE_SELF.
+EXPECTED_CANNOT_DELETE_SELF = "Cannot delete your own account..."
+EXPECTED_CANNOT_DEMOTE_SELF = "Cannot remove your own administrator privileges..."
+
+# Verbatim in-depth admin-gate message. Matches user_admin_service.MSG_ADMIN_REQUIRED.
+EXPECTED_ADMIN_REQUIRED = "Administrator privileges are required to manage users."
+
+
+def AdminActor(userId):
+    """Build a transient administrator actor with the given user id.
+
+    Used by the self-action tests, which need an actor whose id EQUALS the
+    delete/demote target. The returned :class:`~app.models.user.User` is never
+    persisted or added to a session; the service reads only its ``user_id`` and
+    ``user_type``.
+
+    Args:
+        userId: The actor's user id (typically the target of the self-action).
+
+    Returns:
+        A transient admin ``User`` (``user_type='A'``).
+    """
+    return User(user_id=userId, user_type=ADMIN_USER_TYPE)
+
 
 # Pagination window and the minimum number of users the list test seeds.
 LIST_PAGE = 1
@@ -179,7 +231,7 @@ async def test_add_user_success_hashes_password(db_session):
         user_type=NEW_USER_TYPE,
     )
 
-    created = await service.AddUser(db_session, userCreate)
+    created = await service.AddUser(db_session, userCreate, currentUser=ADMIN_ACTOR)
 
     assert created.user_id == NEW_USER_ID
     createdFields = created.model_dump()
@@ -192,17 +244,18 @@ async def test_add_user_success_hashes_password(db_session):
     assert VerifyPassword(NEW_USER_PASSWORD, stored.password_hash) is True
 
 
-async def test_add_user_lowercase_password_is_uppercased(db_session):
-    """A user created with a lowercase password can sign on with it (F2).
+async def test_add_user_password_is_case_preserved(db_session):
+    """A user created with a lowercase password is stored case-exactly (M-01).
 
-    QA finding F2: the sign-on path uppercases the submitted password
-    (COSGN00C L135-136) before bcrypt verification, but the create path formerly
-    hashed the password verbatim. A user created with "secret12" was therefore
-    stored as hash("secret12") yet, at sign-on, "secret12" was uppercased to
-    "SECRET12" and never matched -- a silent, permanent lockout. The write side
-    now applies the same uppercasing, so the stored hash verifies against the
-    UPPERCASE form (what sign-on actually checks). Asserted both ways: the stored
-    hash verifies the uppercase password and NOT the raw lowercase input.
+    QA finding M-01: the write path must hash the password over its EXACT bytes,
+    NOT an uppercased form. The legacy sign-on and create paths both applied
+    ``FUNCTION UPPER-CASE`` (COSGN00C L135-136), collapsing every case variant
+    onto one hash and destroying credential entropy; AAP 0.1.1 makes closing
+    that mandatory. A user created with "secret12" is therefore stored as
+    hash("secret12"), which -- because sign-on is likewise case-sensitive now --
+    the same "secret12" verifies against, with no silent lockout. Asserted both
+    ways: the stored hash verifies the RAW lowercase input and does NOT verify
+    the uppercase variant (proving no case-fold occurred on the write side).
     """
     service = UserAdminService()
     userCreate = UserCreate(
@@ -213,14 +266,15 @@ async def test_add_user_lowercase_password_is_uppercased(db_session):
         user_type=NEW_USER_TYPE,
     )
 
-    await service.AddUser(db_session, userCreate)
+    await service.AddUser(db_session, userCreate, currentUser=ADMIN_ACTOR)
 
     stored = await db_session.get(User, LOWER_CASE_USER_ID)
     assert stored is not None
-    # What sign-on verifies (the uppercased password) must match the stored hash.
-    assert VerifyPassword(LOWER_CASE_PASSWORD_UPPER, stored.password_hash) is True
-    # The raw lowercase input is NOT what is stored (proving normalization ran).
-    assert VerifyPassword(LOWER_CASE_PASSWORD, stored.password_hash) is False
+    # The EXACT lowercase input must verify against the stored hash (case kept).
+    assert VerifyPassword(LOWER_CASE_PASSWORD, stored.password_hash) is True
+    # The uppercase variant must NOT verify (proving the write side did not fold
+    # case -- the legacy FUNCTION UPPER-CASE is gone).
+    assert VerifyPassword(LOWER_CASE_PASSWORD_UPPER, stored.password_hash) is False
 
 
 async def test_add_user_duplicate_raises_conflict(db_session, admin_user):
@@ -239,7 +293,7 @@ async def test_add_user_duplicate_raises_conflict(db_session, admin_user):
     )
 
     with pytest.raises(ConflictError) as excInfo:
-        await service.AddUser(db_session, userCreate)
+        await service.AddUser(db_session, userCreate, currentUser=ADMIN_ACTOR)
 
     assert MessageOf(excInfo.value) == EXPECTED_USER_ALREADY_EXISTS
 
@@ -264,7 +318,7 @@ async def test_add_user_missing_first_name_raises_validation(db_session):
     )
 
     with pytest.raises(DomainValidationError) as excInfo:
-        await service.AddUser(db_session, userCreate)
+        await service.AddUser(db_session, userCreate, currentUser=ADMIN_ACTOR)
 
     assert MessageOf(excInfo.value) == EXPECTED_FIRST_NAME_REQUIRED
 
@@ -279,7 +333,7 @@ async def test_get_user_found(db_session, admin_user):
     """GetUser returns the requested user as a password-free UserRead."""
     service = UserAdminService()
 
-    user = await service.GetUser(db_session, SEED_ADMIN_USER_ID)
+    user = await service.GetUser(db_session, SEED_ADMIN_USER_ID, currentUser=ADMIN_ACTOR)
 
     assert user.user_id == SEED_ADMIN_USER_ID
     userFields = user.model_dump()
@@ -292,7 +346,7 @@ async def test_get_user_empty_raises_validation(db_session):
     service = UserAdminService()
 
     with pytest.raises(DomainValidationError) as excInfo:
-        await service.GetUser(db_session, "")
+        await service.GetUser(db_session, "", currentUser=ADMIN_ACTOR)
 
     assert MessageOf(excInfo.value) == EXPECTED_USER_ID_REQUIRED
 
@@ -302,7 +356,7 @@ async def test_get_user_absent_raises_not_found(db_session):
     service = UserAdminService()
 
     with pytest.raises(NotFoundError) as excInfo:
-        await service.GetUser(db_session, ABSENT_USER_ID)
+        await service.GetUser(db_session, ABSENT_USER_ID, currentUser=ADMIN_ACTOR)
 
     assert MessageOf(excInfo.value) == EXPECTED_USER_NOT_FOUND
 
@@ -327,7 +381,7 @@ async def test_update_user_no_change_raises_validation(db_session, admin_user):
     )
 
     with pytest.raises(DomainValidationError) as excInfo:
-        await service.UpdateUser(db_session, SEED_ADMIN_USER_ID, userUpdate)
+        await service.UpdateUser(db_session, SEED_ADMIN_USER_ID, userUpdate, currentUser=ADMIN_ACTOR)
 
     assert MessageOf(excInfo.value) == EXPECTED_NO_CHANGES
 
@@ -346,7 +400,7 @@ async def test_update_user_success(db_session, admin_user):
         user_type=admin_user.user_type,
     )
 
-    updated = await service.UpdateUser(db_session, SEED_ADMIN_USER_ID, userUpdate)
+    updated = await service.UpdateUser(db_session, SEED_ADMIN_USER_ID, userUpdate, currentUser=ADMIN_ACTOR)
 
     assert updated.first_name == CHANGED_FIRST_NAME
     updatedFields = updated.model_dump()
@@ -371,7 +425,7 @@ async def test_update_demote_last_admin_raises_conflict(db_session, admin_user):
     )
 
     with pytest.raises(ConflictError) as excInfo:
-        await service.UpdateUser(db_session, SEED_ADMIN_USER_ID, userUpdate)
+        await service.UpdateUser(db_session, SEED_ADMIN_USER_ID, userUpdate, currentUser=ADMIN_ACTOR)
 
     assert MessageOf(excInfo.value) == EXPECTED_LAST_ADMIN
     # The invariant fires BEFORE persistence: ADMIN001 is still an admin.
@@ -396,6 +450,7 @@ async def test_update_demote_admin_allowed_with_second_admin(db_session, admin_u
             password=SECOND_ADMIN_PASSWORD,
             user_type=ADMIN_USER_TYPE,
         ),
+        currentUser=ADMIN_ACTOR,
     )
     userUpdate = UserUpdate(
         first_name=admin_user.first_name,
@@ -403,7 +458,7 @@ async def test_update_demote_admin_allowed_with_second_admin(db_session, admin_u
         user_type=REGULAR_USER_TYPE,
     )
 
-    updated = await service.UpdateUser(db_session, SEED_ADMIN_USER_ID, userUpdate)
+    updated = await service.UpdateUser(db_session, SEED_ADMIN_USER_ID, userUpdate, currentUser=ADMIN_ACTOR)
 
     assert updated.user_type == REGULAR_USER_TYPE
 
@@ -432,16 +487,16 @@ async def test_delete_user_success(db_session):
         password=DELETE_USER_PASSWORD,
         user_type="U",
     )
-    await service.AddUser(db_session, seedCreate)
+    await service.AddUser(db_session, seedCreate, currentUser=ADMIN_ACTOR)
 
-    result = await service.DeleteUser(db_session, DELETE_USER_ID)
+    result = await service.DeleteUser(db_session, DELETE_USER_ID, currentUser=ADMIN_ACTOR)
 
     assert result is not None
     assert DELETE_USER_ID in result.message
     assert DELETED_CONFIRMATION_FRAGMENT in result.message
 
     with pytest.raises(NotFoundError):
-        await service.GetUser(db_session, DELETE_USER_ID)
+        await service.GetUser(db_session, DELETE_USER_ID, currentUser=ADMIN_ACTOR)
 
 
 async def test_delete_user_absent_raises_not_found(db_session):
@@ -449,7 +504,7 @@ async def test_delete_user_absent_raises_not_found(db_session):
     service = UserAdminService()
 
     with pytest.raises(NotFoundError) as excInfo:
-        await service.DeleteUser(db_session, ABSENT_USER_ID)
+        await service.DeleteUser(db_session, ABSENT_USER_ID, currentUser=ADMIN_ACTOR)
 
     assert MessageOf(excInfo.value) == EXPECTED_USER_NOT_FOUND
 
@@ -465,7 +520,7 @@ async def test_delete_last_admin_raises_conflict(db_session, admin_user):
     service = UserAdminService()
 
     with pytest.raises(ConflictError) as excInfo:
-        await service.DeleteUser(db_session, SEED_ADMIN_USER_ID)
+        await service.DeleteUser(db_session, SEED_ADMIN_USER_ID, currentUser=ADMIN_ACTOR)
 
     assert MessageOf(excInfo.value) == EXPECTED_LAST_ADMIN
     # The invariant fires BEFORE deletion: ADMIN001 still exists.
@@ -490,14 +545,15 @@ async def test_delete_admin_allowed_with_second_admin(db_session, admin_user):
             password=SECOND_ADMIN_PASSWORD,
             user_type=ADMIN_USER_TYPE,
         ),
+        currentUser=ADMIN_ACTOR,
     )
 
-    result = await service.DeleteUser(db_session, SEED_ADMIN_USER_ID)
+    result = await service.DeleteUser(db_session, SEED_ADMIN_USER_ID, currentUser=ADMIN_ACTOR)
 
     assert result is not None
     assert SEED_ADMIN_USER_ID in result.message
     with pytest.raises(NotFoundError):
-        await service.GetUser(db_session, SEED_ADMIN_USER_ID)
+        await service.GetUser(db_session, SEED_ADMIN_USER_ID, currentUser=ADMIN_ACTOR)
 
 
 # ===========================================================================
@@ -517,6 +573,7 @@ async def test_list_users_returns_summaries(db_session, admin_user, regular_user
     result = await service.ListUsers(
         db_session,
         PaginationParams(page=LIST_PAGE, page_size=LIST_PAGE_SIZE),
+        currentUser=ADMIN_ACTOR,
     )
 
     assert len(result.items) >= MIN_EXPECTED_USERS
@@ -525,3 +582,268 @@ async def test_list_users_returns_summaries(db_session, admin_user, regular_user
         and "password_hash" not in item.model_dump()
         for item in result.items
     )
+
+
+# ===========================================================================
+# Phase F -- M-04 defense in depth. The router already gates these methods with
+# ``require_admin``; these tests pin the behavior the router gate alone cannot
+# evidence: (1) the MANDATORY service-level admin re-check rejects a non-admin
+# (or missing) actor that reaches the service by any other path, before any
+# business logic runs; (2) a destructive SELF-action (an admin deleting or
+# demoting its OWN account) is refused while other admins remain, yet the
+# systemic "last administrator" reason still wins when the actor is the sole
+# admin (ordering); and (3) a duplicate-id TOCTOU race (pre-read misses, insert
+# trips the unique key) still maps to the COBOL "already exist" conflict.
+# ===========================================================================
+
+
+async def test_list_users_rejects_regular_actor(db_session):
+    """A non-admin actor cannot list users -- AuthorizationError (M-04).
+
+    The service-level ``_AssertAdmin`` re-check fires before any repository read,
+    proving defense in depth independent of the router ``require_admin`` gate.
+    """
+    service = UserAdminService()
+
+    with pytest.raises(AuthorizationError) as excInfo:
+        await service.ListUsers(
+            db_session,
+            PaginationParams(page=LIST_PAGE, page_size=LIST_PAGE_SIZE),
+            currentUser=REGULAR_ACTOR,
+        )
+
+    assert MessageOf(excInfo.value) == EXPECTED_ADMIN_REQUIRED
+
+
+async def test_get_user_rejects_regular_actor(db_session):
+    """A non-admin actor cannot read a user -- AuthorizationError (M-04)."""
+    service = UserAdminService()
+
+    with pytest.raises(AuthorizationError) as excInfo:
+        await service.GetUser(
+            db_session, SEED_ADMIN_USER_ID, currentUser=REGULAR_ACTOR
+        )
+
+    assert MessageOf(excInfo.value) == EXPECTED_ADMIN_REQUIRED
+
+
+async def test_add_user_rejects_regular_actor(db_session):
+    """A non-admin actor cannot create a user, and NO row is written (M-04).
+
+    The admin re-check precedes field validation and the pre-read, so a valid
+    payload from a non-admin actor is refused before any INSERT and the target
+    id remains absent.
+    """
+    service = UserAdminService()
+    userCreate = UserCreate(
+        user_id=NEW_USER_ID,
+        first_name=NEW_USER_FIRST_NAME,
+        last_name=NEW_USER_LAST_NAME,
+        password=NEW_USER_PASSWORD,
+        user_type=NEW_USER_TYPE,
+    )
+
+    with pytest.raises(AuthorizationError) as excInfo:
+        await service.AddUser(db_session, userCreate, currentUser=REGULAR_ACTOR)
+
+    assert MessageOf(excInfo.value) == EXPECTED_ADMIN_REQUIRED
+    # The gate fired before the write: the target id was never created.
+    assert await db_session.get(User, NEW_USER_ID) is None
+
+
+async def test_update_user_rejects_regular_actor(db_session):
+    """A non-admin actor cannot update a user -- AuthorizationError (M-04)."""
+    service = UserAdminService()
+    userUpdate = UserUpdate(
+        first_name=CHANGED_FIRST_NAME,
+        last_name=NEW_USER_LAST_NAME,
+        user_type=NEW_USER_TYPE,
+    )
+
+    with pytest.raises(AuthorizationError) as excInfo:
+        await service.UpdateUser(
+            db_session, SEED_ADMIN_USER_ID, userUpdate, currentUser=REGULAR_ACTOR
+        )
+
+    assert MessageOf(excInfo.value) == EXPECTED_ADMIN_REQUIRED
+
+
+async def test_delete_user_rejects_regular_actor(db_session):
+    """A non-admin actor cannot delete a user -- AuthorizationError (M-04)."""
+    service = UserAdminService()
+
+    with pytest.raises(AuthorizationError) as excInfo:
+        await service.DeleteUser(
+            db_session, SEED_ADMIN_USER_ID, currentUser=REGULAR_ACTOR
+        )
+
+    assert MessageOf(excInfo.value) == EXPECTED_ADMIN_REQUIRED
+
+
+async def test_add_user_rejects_missing_actor(db_session):
+    """A ``None`` actor fails CLOSED -- AuthorizationError, not AttributeError (M-04).
+
+    A missing identity must be treated as unauthorized rather than crashing, so
+    the in-depth gate can never be bypassed by an absent ``currentUser``.
+    """
+    service = UserAdminService()
+    userCreate = UserCreate(
+        user_id=NEW_USER_ID,
+        first_name=NEW_USER_FIRST_NAME,
+        last_name=NEW_USER_LAST_NAME,
+        password=NEW_USER_PASSWORD,
+        user_type=NEW_USER_TYPE,
+    )
+
+    with pytest.raises(AuthorizationError) as excInfo:
+        await service.AddUser(db_session, userCreate, currentUser=None)
+
+    assert MessageOf(excInfo.value) == EXPECTED_ADMIN_REQUIRED
+    assert await db_session.get(User, NEW_USER_ID) is None
+
+
+async def test_delete_self_blocked_when_other_admin_exists(db_session, admin_user):
+    """An admin deleting its OWN account is blocked while another admin remains (M-04).
+
+    With a second administrator present the last-administrator invariant passes,
+    so the self-delete guard is what fires: the acting admin (== the delete
+    target) is refused with the self-delete conflict and its row survives.
+    """
+    service = UserAdminService()
+    # Second admin so the last-administrator invariant does NOT pre-empt.
+    await service.AddUser(
+        db_session,
+        UserCreate(
+            user_id=SECOND_ADMIN_USER_ID,
+            first_name=SECOND_ADMIN_FIRST_NAME,
+            last_name=SECOND_ADMIN_LAST_NAME,
+            password=SECOND_ADMIN_PASSWORD,
+            user_type=ADMIN_USER_TYPE,
+        ),
+        currentUser=ADMIN_ACTOR,
+    )
+
+    with pytest.raises(ConflictError) as excInfo:
+        await service.DeleteUser(
+            db_session,
+            SEED_ADMIN_USER_ID,
+            currentUser=AdminActor(SEED_ADMIN_USER_ID),
+        )
+
+    assert MessageOf(excInfo.value) == EXPECTED_CANNOT_DELETE_SELF
+    # The guard fired BEFORE deletion: ADMIN001 still exists.
+    assert await db_session.get(User, SEED_ADMIN_USER_ID) is not None
+
+
+async def test_demote_self_blocked_when_other_admin_exists(db_session, admin_user):
+    """An admin demoting its OWN role is blocked while another admin remains (M-04).
+
+    With a second administrator present the last-administrator invariant passes,
+    so the self-demotion guard is what fires when the acting admin (== the update
+    target) strips its own 'A' role; the stored role is unchanged.
+    """
+    service = UserAdminService()
+    await service.AddUser(
+        db_session,
+        UserCreate(
+            user_id=SECOND_ADMIN_USER_ID,
+            first_name=SECOND_ADMIN_FIRST_NAME,
+            last_name=SECOND_ADMIN_LAST_NAME,
+            password=SECOND_ADMIN_PASSWORD,
+            user_type=ADMIN_USER_TYPE,
+        ),
+        currentUser=ADMIN_ACTOR,
+    )
+    userUpdate = UserUpdate(
+        first_name=admin_user.first_name,
+        last_name=admin_user.last_name,
+        user_type=REGULAR_USER_TYPE,
+    )
+
+    with pytest.raises(ConflictError) as excInfo:
+        await service.UpdateUser(
+            db_session,
+            SEED_ADMIN_USER_ID,
+            userUpdate,
+            currentUser=AdminActor(SEED_ADMIN_USER_ID),
+        )
+
+    assert MessageOf(excInfo.value) == EXPECTED_CANNOT_DEMOTE_SELF
+    # The guard fired BEFORE the write: ADMIN001 is still an admin.
+    stored = await db_session.get(User, SEED_ADMIN_USER_ID)
+    assert stored.user_type == ADMIN_USER_TYPE
+
+
+async def test_self_update_keeping_admin_role_allowed(db_session, admin_user):
+    """A self-edit that KEEPS the admin role is allowed (M-04 no over-block).
+
+    The self-demotion guard fires only on a role strip; an administrator editing
+    its OWN name while remaining an admin must succeed, proving the guard never
+    over-restricts a benign self-edit.
+    """
+    service = UserAdminService()
+    userUpdate = UserUpdate(
+        first_name=CHANGED_FIRST_NAME,
+        last_name=admin_user.last_name,
+        user_type=ADMIN_USER_TYPE,
+    )
+
+    updated = await service.UpdateUser(
+        db_session,
+        SEED_ADMIN_USER_ID,
+        userUpdate,
+        currentUser=AdminActor(SEED_ADMIN_USER_ID),
+    )
+
+    assert updated.first_name == CHANGED_FIRST_NAME
+    assert updated.user_type == ADMIN_USER_TYPE
+
+
+async def test_delete_self_sole_admin_reports_last_admin(db_session, admin_user):
+    """Sole-admin self-delete reports the LAST-ADMIN reason, not self-delete (M-04 ordering).
+
+    The last-administrator invariant is checked BEFORE the self-delete guard, so
+    when the acting admin is also the only admin the systemic reason wins. This
+    pins the guard ordering documented on ``_AssertNotSelfDelete``.
+    """
+    service = UserAdminService()
+
+    with pytest.raises(ConflictError) as excInfo:
+        await service.DeleteUser(
+            db_session,
+            SEED_ADMIN_USER_ID,
+            currentUser=AdminActor(SEED_ADMIN_USER_ID),
+        )
+
+    assert MessageOf(excInfo.value) == EXPECTED_LAST_ADMIN
+
+
+async def test_add_user_duplicate_race_maps_to_conflict(db_session, monkeypatch):
+    """A duplicate-id TOCTOU race maps to the COBOL conflict, not a 500 (M-04).
+
+    Simulates the race window: the pre-read is forced to MISS (as if the id did
+    not yet exist) while the row IS already committed, so the INSERT trips the
+    unique key. The service must translate that ``IntegrityError`` into the same
+    "User ID already exist..." conflict and never create a duplicate.
+    """
+    service = UserAdminService()
+    userCreate = UserCreate(
+        user_id=NEW_USER_ID,
+        first_name=NEW_USER_FIRST_NAME,
+        last_name=NEW_USER_LAST_NAME,
+        password=NEW_USER_PASSWORD,
+        user_type=NEW_USER_TYPE,
+    )
+    # First insert commits the row through the normal (unpatched) path.
+    await service.AddUser(db_session, userCreate, currentUser=ADMIN_ACTOR)
+
+    async def _MissingPreRead(session, userId):
+        """Force the AddUser pre-read to miss, reopening the race window."""
+        return None
+
+    monkeypatch.setattr(service.userRepository, "GetByUserId", _MissingPreRead)
+
+    with pytest.raises(ConflictError) as excInfo:
+        await service.AddUser(db_session, userCreate, currentUser=ADMIN_ACTOR)
+
+    assert MessageOf(excInfo.value) == EXPECTED_USER_ALREADY_EXISTS

@@ -25,11 +25,13 @@ router is mounted, so it is never hardcoded here. The mounted login path is
 therefore ``settings.API_V1_PREFIX`` + ``/auth/login``.
 """
 
-from fastapi import APIRouter, Depends, Response, status
+from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
-from app.core.dependencies import get_db
+from app.core.dependencies import ResolveRequestToken, get_db
+from app.core.exceptions import AuthenticationError
+from app.core.rate_limiter import UNKNOWN_CLIENT_HOST, loginRateLimiter
 from app.core.security import CreateAccessToken
 from app.schemas import LoginRequest, LoginResponse, MessageResponse
 from app.services import AuthService
@@ -64,6 +66,32 @@ SESSION_COOKIE_PATH = "/"
 # no-magic-strings) rather than an inline literal in the handler.
 LOGOUT_MESSAGE = "Signed out successfully."
 
+# Generic 429 detail returned when the login throttle is engaged (QA finding
+# M-01). It is intentionally uniform and does not reveal whether the user id
+# exists or how many attempts remain, preserving the anti-enumeration posture of
+# the sign-on flow (the failure counter itself lives in app.core.rate_limiter).
+LOGIN_THROTTLED_DETAIL = "Too many failed sign-on attempts. Try again later."
+
+
+def _ResolveClientHost(request: Request) -> str:
+    """Return the request's client host, or a stable sentinel when unavailable.
+
+    Starlette populates ``request.client`` from the ASGI ``client`` scope, but
+    some transports (notably httpx's ``ASGITransport`` used in tests) leave it
+    ``None``. Falling back to :data:`~app.core.rate_limiter.UNKNOWN_CLIENT_HOST`
+    keeps the throttle key well-defined in every environment.
+
+    Args:
+        request: The incoming sign-on request.
+
+    Returns:
+        The peer host string, or the unknown-host sentinel.
+    """
+    if request.client is None:
+        return UNKNOWN_CLIENT_HOST
+    return request.client.host or UNKNOWN_CLIENT_HOST
+
+
 router = APIRouter(prefix="/auth", tags=["auth"])
 
 
@@ -74,6 +102,7 @@ router = APIRouter(prefix="/auth", tags=["auth"])
 )
 async def Login(
     loginRequest: LoginRequest,
+    request: Request,
     response: Response,
     session: AsyncSession = Depends(get_db),
 ) -> LoginResponse:
@@ -85,9 +114,19 @@ async def Login(
     the ``jwt`` alternative the service already placed a bearer token on the
     response body and no cookie is set.
 
+    Brute-force throttling (QA finding M-01): the ``(user id, client IP)`` pair
+    is checked against :data:`~app.core.rate_limiter.loginRateLimiter` BEFORE the
+    credential check. While the pair is locked out the endpoint returns a generic
+    HTTP 429 without ever verifying the password. A genuine credential failure
+    (``AuthenticationError``) registers one attempt; a blank-field edit
+    (``DomainValidationError``) does not, because it is not a password guess; a
+    success clears the pair's counter.
+
     Args:
         loginRequest: The submitted sign-on credentials (user id + password),
             validated and sanitized by the ``LoginRequest`` schema.
+        request: The incoming request, read to derive the client host for the
+            throttle key.
         response: The outgoing response, used to set the session cookie under
             the session baseline.
         session: The request-scoped async database session provided by
@@ -100,17 +139,44 @@ async def Login(
         cookie instead.
 
     Raises:
+        HTTPException: With status 429 when the ``(user id, client IP)`` pair is
+            currently locked out by the login throttle.
         AuthenticationError: If the credentials are invalid. It is intentionally
-            not caught here; ``app.main`` maps it to an HTTP 401 response.
+            not caught here (only observed to advance the throttle counter, then
+            re-raised); ``app.main`` maps it to an HTTP 401 response.
     """
-    loginResponse = await AuthService().Login(session, loginRequest)
+    # M-01 throttle: reject a locked-out (user id, client IP) pair up front so a
+    # brute-force run cannot even reach the password check.
+    throttleKey = loginRateLimiter.BuildKey(
+        loginRequest.user_id, _ResolveClientHost(request)
+    )
+    if loginRateLimiter.IsLocked(throttleKey):
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail=LOGIN_THROTTLED_DETAIL,
+        )
+    try:
+        loginResponse = await AuthService().Login(session, loginRequest)
+    except AuthenticationError:
+        # A real credential failure counts toward the lockout. A blank-field
+        # DomainValidationError is deliberately NOT caught here, so it does not
+        # advance the counter (it is a client edit, not a password guess).
+        loginRateLimiter.RegisterFailure(throttleKey)
+        raise
+    # Successful sign-on: clear any accumulated failures for this pair.
+    loginRateLimiter.RegisterSuccess(throttleKey)
     if settings.AUTH_MODE == SESSION_AUTH_MODE:
         # Session baseline: mint the signed token and set it as an HTTP-only
         # cookie. The token is deliberately NOT echoed in the response body
         # (loginResponse.access_token stays None), keeping it out of JS reach.
+        # M-02: embed the user's current session generation as the ``sver``
+        # claim (carried on loginResponse, excluded from the JSON body) so the
+        # cookie is revocable server-side -- logout and role/password changes
+        # advance session_version, which get_current_user then rejects.
         sessionToken = CreateAccessToken(
             loginResponse.user_id,
             loginResponse.user_type,
+            sessionVersion=loginResponse.session_version,
         )
         response.set_cookie(
             key=settings.SESSION_COOKIE_NAME,
@@ -133,19 +199,31 @@ async def Login(
     response_model=MessageResponse,
     status_code=status.HTTP_200_OK,
 )
-async def Logout(response: Response) -> MessageResponse:
-    """Sign out the caller by invalidating the session cookie (COSGN00C exit).
+async def Logout(
+    request: Request,
+    response: Response,
+    session: AsyncSession = Depends(get_db),
+) -> MessageResponse:
+    """Sign out the caller, revoking the session server-side (COSGN00C exit).
 
     Authentication is stateless: identity is carried by the signed token in the
-    HTTP-only ``settings.SESSION_COOKIE_NAME`` cookie, so "logging out" means
-    instructing the browser to delete that cookie. Once cleared, subsequent
-    requests carry no credential and the ``get_current_user`` dependency rejects
-    them with HTTP 401 -- which is exactly the session-invalidation the legacy
-    CICS sign-off (clearing the COMMAREA identity) provided.
+    HTTP-only ``settings.SESSION_COOKIE_NAME`` cookie (or a bearer header under
+    the JWT alternative). Logging out performs BOTH halves of a real sign-off
+    (M-02):
+
+    1. Server-side revocation -- the token's subject has its ``session_version``
+       advanced (:meth:`AuthService.RevokeSession`), so every token minted before
+       this call, whose frozen ``sver`` claim no longer matches, is rejected by
+       ``get_current_user`` on its next use. This closes the gap where a captured
+       pre-logout cookie remained valid because only the client copy was deleted.
+    2. Client-side deletion -- the browser is instructed to delete the session
+       cookie so it stops presenting the (now-revoked) credential.
 
     This endpoint deliberately takes NO authentication dependency: logout must
-    succeed (be idempotent) even when the token is already missing or expired,
-    so calling it is always safe and never itself returns 401.
+    succeed (be idempotent) even when the token is already missing or expired, so
+    calling it is always safe and never itself returns 401. Revocation is
+    best-effort for the same reason -- an absent or undecodable token revokes
+    nothing and the confirmation is still returned.
 
     The delete directive repeats the login cookie's ``path``, ``samesite`` and
     ``secure`` attributes verbatim; a browser only removes a cookie when these
@@ -153,14 +231,24 @@ async def Logout(response: Response) -> MessageResponse:
     (and thus the session) in place.
 
     Args:
+        request: The incoming request, read (never mutated) to recover the token
+            to revoke from the session cookie / bearer header.
         response: The outgoing response, used to emit the cookie-deletion
             ``Set-Cookie`` header.
+        session: The request-scoped async session provided by :func:`get_db`,
+            used to persist the ``session_version`` bump.
 
     Returns:
         A ``MessageResponse`` confirming sign-out. The confirmation is returned
-        regardless of whether a session cookie was actually present, preserving
-        idempotency.
+        regardless of whether a session cookie was actually present or the token
+        was still valid, preserving idempotency.
     """
+    # Server-side revocation first (M-02): advance the subject's session_version
+    # so the presented token -- and any sibling token for the same user -- can no
+    # longer authenticate. Best-effort/idempotent: a missing or already-invalid
+    # token revokes nothing (see AuthService.RevokeSession).
+    rawToken = ResolveRequestToken(request)
+    await AuthService().RevokeSession(session, rawToken)
     # Only the session baseline sets a cookie, so only it needs to clear one.
     # Under the JWT alternative there is no server-set cookie to remove (the
     # client discards its bearer token), so this is a no-op body.

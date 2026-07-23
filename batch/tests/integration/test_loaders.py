@@ -35,11 +35,13 @@ ever issued here.
 
 from __future__ import annotations
 
+import codecs
 from datetime import date
 from decimal import Decimal
 
 from sqlalchemy import func, select
 
+from app.core.security import VerifyPassword
 from app.models import (
     STATUS_PENDING,
     Account,
@@ -51,7 +53,9 @@ from app.models import (
     Transaction,
     TransactionCategory,
     TransactionType,
+    User,
 )
+from batch.loaders.init_users import InitializeUsers
 from batch.loaders.load_accounts import LoadAccounts
 from batch.loaders.load_cards import LoadCards
 from batch.loaders.load_customers import LoadCustomers
@@ -78,6 +82,25 @@ EXPECTED_CARD_COUNT = 50              # carddata.txt  (CVACT02Y)
 EXPECTED_CARD_XREF_COUNT = 50         # cardxref.txt  (CVACT03Y)
 EXPECTED_TCATBAL_COUNT = 50           # tcatbal.txt   (CVTRA01Y)
 EXPECTED_TRANSACTION_COUNT = 300      # dailytran.txt (CVTRA06Y)
+
+# USRSEC (EBCDIC-only) user-security seed: 10 operators = 800 bytes / 80-byte
+# CSUSR01Y SEC-USER-DATA record (init_users <- DUSRSECJ.jcl). Independent EBCDIC
+# decode constants (stdlib cp037; sliced per the copybook) so the loader is
+# checked against a reference that shares none of its parsing code (QA M-17).
+EXPECTED_USER_COUNT = 10              # AWS.M2.CARDDEMO.USRSEC.PS (10 x 80 bytes)
+USRSEC_CODEC = "cp037"
+USRSEC_RECORD_LENGTH = 80
+USRSEC_ID_SLICE = slice(0, 8)
+USRSEC_TYPE_SLICE = slice(56, 57)
+# SEED-ONLY plaintext (README); every user shares it and it must be HASHED, never
+# stored or returned in cleartext (Ochs "no hardcoded secrets" + AAP 0.7.8).
+SEED_PLAINTEXT_PASSWORD = "PASSWORD"
+# Expected operator roles decoded independently from USRSEC: 5 admins / 5 regular.
+EXPECTED_USER_TYPES = {
+    "ADMIN001": "A", "ADMIN002": "A", "ADMIN003": "A", "ADMIN004": "A",
+    "ADMIN005": "A", "USER0001": "U", "USER0002": "U", "USER0003": "U",
+    "USER0004": "U", "USER0005": "U",
+}
 
 
 # --------------------------------------------------------------------------- #
@@ -131,6 +154,28 @@ def _GetTranCategoryBalance(session, acctId, tranTypeCd, tranCatCd):
             TranCategoryBalance.tran_cat_cd == tranCatCd,
         )
     ).scalar_one()
+
+
+def _DecodeUsrsecTypes(usrsecPath) -> dict[str, str]:
+    """Independently decode the EBCDIC USRSEC seed into ``{user_id: user_type}``.
+
+    Uses the standard-library single-byte ``cp037`` codec and slices on the
+    ``CSUSR01Y`` record layout, deliberately sharing no code with the production
+    :func:`batch.loaders.init_users.InitializeUsers` loader so the loader is
+    verified against a genuinely independent reference (QA finding M-17).
+
+    Args:
+        usrsecPath: Path to the ``AWS.M2.CARDDEMO.USRSEC.PS`` EBCDIC dataset.
+
+    Returns:
+        A mapping of each decoded ``user_id`` to its one-character ``user_type``.
+    """
+    decodedText = codecs.decode(usrsecPath.read_bytes(), USRSEC_CODEC)
+    decodedTypes = {}
+    for offset in range(0, len(decodedText), USRSEC_RECORD_LENGTH):
+        record = decodedText[offset:offset + USRSEC_RECORD_LENGTH]
+        decodedTypes[record[USRSEC_ID_SLICE].strip()] = record[USRSEC_TYPE_SLICE]
+    return decodedTypes
 
 
 # --------------------------------------------------------------------------- #
@@ -247,7 +292,10 @@ def test_load_cards_count_and_values(db_session, data_dir):
     card = db_session.get(Card, "0500024453765740")
     assert card is not None
     assert card.acct_id == "00000000050"
-    assert card.cvv_cd == "747"
+    # CVV is never persisted (C-03, AAP 0.7.8): the loader must not populate a
+    # cvv column and the ORM model must not expose one, even though the source
+    # seed record carries a CVV field at columns 27-30.
+    assert not hasattr(card, "cvv_cd")
     assert card.active_status == "Y"
 
 
@@ -406,3 +454,30 @@ def test_load_tran_category_balances_preserve_balance_on_rerun(db_session, data_
     reloaded = _GetTranCategoryBalance(db_session, "00000000001", "01", "0001")
     assert reloaded.balance == MUTATED_BALANCE
     assert isinstance(reloaded.balance, Decimal)
+
+
+def test_init_users_ebcdic_count_types_and_password_hashing(db_session, usrsec_path):
+    # QA M-17: the golden suites previously OMITTED the EBCDIC USRSEC users
+    # entirely. This reconciles InitializeUsers <-> AWS.M2.CARDDEMO.USRSEC.PS
+    # (CSUSR01Y / DUSRSECJ.jcl): all ten operators load with the correct
+    # user_type roles decoded INDEPENDENTLY (stdlib cp037, own slicing), and the
+    # plaintext SEC-USR-PWD is HASHED (bcrypt round-trips) and never stored in
+    # cleartext (Ochs no-hardcoded-secrets + AAP 0.7.8).
+    rowsProcessed = InitializeUsers(db_session, usrsec_path)
+    assert rowsProcessed == EXPECTED_USER_COUNT
+    assert _CountRows(db_session, User) == EXPECTED_USER_COUNT
+
+    # Independent EBCDIC decode is the reference the loader is checked against.
+    independentTypes = _DecodeUsrsecTypes(usrsec_path)
+    assert independentTypes == EXPECTED_USER_TYPES
+
+    for userId, expectedType in independentTypes.items():
+        loadedUser = db_session.get(User, userId)
+        assert loadedUser is not None, userId
+        # Role parity with the independent decode (5 admins 'A', 5 regular 'U').
+        assert loadedUser.user_type == expectedType, userId
+        # Password is stored HASHED: bcrypt verifies the seed plaintext, but the
+        # stored value is never the plaintext itself (no cleartext leakage).
+        assert loadedUser.password_hash != SEED_PLAINTEXT_PASSWORD, userId
+        assert SEED_PLAINTEXT_PASSWORD not in loadedUser.password_hash, userId
+        assert VerifyPassword(SEED_PLAINTEXT_PASSWORD, loadedUser.password_hash), userId

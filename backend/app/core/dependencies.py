@@ -55,7 +55,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
 from app.core.exceptions import AuthenticationError
-from app.core.security import SUBJECT_CLAIM, DecodeAccessToken
+from app.core.security import (
+    SESSION_VERSION_CLAIM,
+    SUBJECT_CLAIM,
+    DecodeAccessToken,
+)
 from app.db.session import AsyncSessionLocal
 from app.models.user import User
 
@@ -98,6 +102,12 @@ BEARER_PREFIX = "Bearer "
 # ---------------------------------------------------------------------------
 NOT_AUTHENTICATED_DETAIL = "Not authenticated"
 INVALID_CREDENTIALS_DETAIL = "Could not validate credentials"
+# M-02: a token whose ``sver`` claim no longer matches the user's stored
+# session_version has been revoked (logout, or a role/password change advanced
+# the generation). It is rejected with the same generic 401 wording as any
+# other invalid credential so a revoked token is indistinguishable from a
+# tampered one to the caller.
+REVOKED_CREDENTIALS_DETAIL = "Could not validate credentials"
 ADMIN_REQUIRED_DETAIL = "Admin privileges required"
 
 
@@ -198,6 +208,14 @@ async def get_current_user(
     not match any user all resolve to HTTP 401 -- the last case mirrors the
     ``COSGN00C`` "User not found" outcome (``WS-RESP-CD = 13``).
 
+    Server-side revocation (M-02): the token carries a ``sver`` (session
+    version) claim minted from the user's ``session_version`` at sign-on. That
+    claim is compared against the row's current ``session_version``; any
+    mismatch -- or a token that predates the claim and therefore omits it --
+    is rejected with HTTP 401. Incrementing ``session_version`` (on logout or a
+    role/password change) thus invalidates every token issued beforehand,
+    reproducing the finality that CICS sign-off gave a terminal session.
+
     Args:
         request: The incoming request, carrying the session cookie / bearer
             token.
@@ -207,8 +225,9 @@ async def get_current_user(
         The authenticated :class:`~app.models.user.User` (identity + role).
 
     Raises:
-        HTTPException: With status 401 when no valid token is present or the
-            referenced user does not exist.
+        HTTPException: With status 401 when no valid token is present, the
+            referenced user does not exist, or the token's session version has
+            been revoked.
     """
     rawToken = ResolveRequestToken(request)
     if not rawToken:
@@ -222,6 +241,12 @@ async def get_current_user(
     currentUser = result.scalar_one_or_none()
     if currentUser is None:
         RaiseUnauthorized(INVALID_CREDENTIALS_DETAIL)
+    # M-02 revocation gate: the token's session generation must still match the
+    # user's stored one. A missing claim (token minted before revocation was
+    # introduced) is treated as a mismatch and rejected, failing closed.
+    tokenSessionVersion = tokenClaims.get(SESSION_VERSION_CLAIM)
+    if tokenSessionVersion != currentUser.session_version:
+        RaiseUnauthorized(REVOKED_CREDENTIALS_DETAIL)
     return currentUser
 
 

@@ -36,6 +36,7 @@ import { ErrorAlert } from '@/components/ErrorAlert';
 import { FormField } from '@/components/FormField';
 import { UsersApi, IsApiError } from '@/lib/apiClient';
 import { IsAdmin } from '@/lib/auth';
+import { ShouldSuppressActivationShortcut } from '@/lib/keyboard';
 import type { UserRead } from '@/types';
 
 /* ------------------------------------------------------------------------- */
@@ -313,10 +314,21 @@ function UsersDeleteContent() {
             return;
         }
         function HandleKeyDown(event: KeyboardEvent): void {
+            // While the confirm dialog is open it is modal and OWNS all keyboard
+            // interaction — MUI Dialog handles Escape → onCancel itself. The
+            // page-level window shortcuts must stand down so Escape is not
+            // double-handled and F-keys cannot re-trigger actions (QA M-28).
+            if (dialogOpen) {
+                return;
+            }
             if (event.key === 'Enter') {
-                if (!dialogOpen) {
-                    void HandleFetch();
+                // Let a focused button/link own Enter; only the screen-level
+                // fetch runs when Enter fires outside an interactive control,
+                // so a focused "Back"/"Clear" button is not double-activated.
+                if (ShouldSuppressActivationShortcut(event.key, event.target)) {
+                    return;
                 }
+                void HandleFetch();
             } else if (event.key === 'F5') {
                 event.preventDefault();
                 HandleOpenConfirm();
@@ -326,11 +338,10 @@ function UsersDeleteContent() {
             } else if (event.key === 'F4') {
                 event.preventDefault();
                 HandleClear();
-            } else if (event.key === 'Escape') {
-                if (dialogOpen) {
-                    HandleCancel();
-                }
             }
+            // Escape is intentionally NOT handled here: the ConfirmDialog owns it
+            // while open, and the AppShell is the single global Escape owner
+            // while the dialog is closed.
         }
         window.addEventListener('keydown', HandleKeyDown);
         return () => {
@@ -343,7 +354,6 @@ function UsersDeleteContent() {
         HandleOpenConfirm,
         HandleBack,
         HandleClear,
-        HandleCancel,
     ]);
 
     // Render nothing until the admin check runs (prevents a content flash for a

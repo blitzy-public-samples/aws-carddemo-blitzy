@@ -40,7 +40,7 @@ import io
 from dataclasses import dataclass, field
 from datetime import date, datetime
 from decimal import Decimal
-from typing import Optional
+from typing import Callable, Optional
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -57,7 +57,7 @@ from app.schemas import (
     ReportType,
     TransactionReportRow,
 )
-from app.utils import date_utils, decimal_utils
+from app.utils import csv_safety, date_utils, decimal_utils
 
 # ---------------------------------------------------------------------------
 # Report-name labels (Ochs Rule: ALL_UPPERCASE). These are the exact
@@ -80,13 +80,14 @@ REPORT_TITLE_SUFFIX = "Transaction Report"
 CONFIRM_YES = "Y"
 CONFIRM_NO = "N"
 
-# Technical batch size for the keyset walk of the transaction table. This is a
-# transport/paging concern (NOT a business rule from COBOL): TransactionRepository
-# exposes no date-range query, so the service pages ListTransactions by ascending
-# tran_id and filters each page by processing date in Python. A future
-# ListByDateRange repository method would let the service push this predicate to
-# SQL and drop the walk.
-PAGE_FETCH_SIZE = 500
+# Upper bound on the number of rows a single report may materialize. This is a
+# transport/safety concern (NOT a business rule from COBOL): the report query is
+# scoped in SQL to POSTED transactions whose effective date falls in the
+# requested range (see ``TransactionRepository.ListPostedInDateRange``), and this
+# bound caps the worst-case result set so an accidental very-wide custom range
+# can never materialize an unbounded number of rows into memory. The AAP sample
+# data is tiny; this bound only guards against a pathological range.
+MAX_REPORT_ROWS = 100000
 
 # Column headings for the CSV rendering (stdlib csv). One entry per exported
 # TransactionReportRow field, in report order.
@@ -201,17 +202,27 @@ class ReportService:
     :class:`~sqlalchemy.ext.asyncio.AsyncSession`.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, clock: Callable[[], date] = date.today) -> None:
         """Wire up the repositories this service depends on.
 
         Mirrors the legacy program's fixed set of VSAM files: ``TRANSACT``
         (transactions), ``TRANTYPE`` (type descriptions), and ``TRANCATG``
         (category descriptions). The repositories are stateless data-access
         objects; constructing them opens no connection.
+
+        Args:
+            clock: A zero-argument callable returning "today" as a ``date``. It
+                is injected only so the MONTHLY / YEARLY range builders are
+                deterministic under test (a test may pass a frozen clock such as
+                ``lambda: date(2026, 7, 21)``); production leaves the default
+                :func:`datetime.date.today`, so runtime behavior is unchanged.
+                This replaces the previous direct ``date.today()`` calls that the
+                report ranges could not be tested against a fixed date (M-08).
         """
         self.transactionRepository = TransactionRepository()
         self.transactionTypeRepository = TransactionTypeRepository()
         self.transactionCategoryRepository = TransactionCategoryRepository()
+        self._clock = clock
 
     # -----------------------------------------------------------------------
     # METHOD 1 -- report-type factory: resolve the inclusive [start, end] range
@@ -266,7 +277,7 @@ class ReportService:
         Returns:
             The first and last calendar day of the current month.
         """
-        today = date.today()
+        today = self._clock()
         lastDay = calendar.monthrange(today.year, today.month)[1]
         startDate = date(today.year, today.month, 1)
         endDate = date(today.year, today.month, lastDay)
@@ -287,7 +298,7 @@ class ReportService:
         Returns:
             January 1st and December 31st of the current year.
         """
-        currentYear = date.today().year
+        currentYear = self._clock().year
         startDate = date(currentYear, 1, 1)
         endDate = date(currentYear, 12, 31)
         return (startDate, endDate)
@@ -379,6 +390,13 @@ class ReportService:
         reportRows: list[TransactionReportRow] = []
         for transaction in transactions:
             reportRows.append(await self._BuildRow(session, transaction, lookups))
+        # Order rows by owning account (then transaction id) so the CVTRA07Y
+        # account control break groups each account's rows contiguously. This
+        # makes the account subtotal deterministic (each account forms exactly
+        # one adjacent group) instead of depending on the order rows happen to
+        # arrive in, which previously left the account total holding only the
+        # last adjacent run of the final account (M-08).
+        reportRows.sort(key=self._ControlBreakSortKey)
         pageTotal, accountTotal, grandTotal = self._AccumulateTotals(reportRows)
         return ReportResponse(
             report_type=reportRequest.report_type,
@@ -417,15 +435,23 @@ class ReportService:
     async def _FetchTransactionsInRange(
         self, session: AsyncSession, startDate: date, endDate: date
     ) -> list[Transaction]:
-        """Gather every transaction whose processing date is within the range.
+        """Gather every POSTED transaction whose effective date is in the range.
 
-        TransactionRepository exposes no date-range query, so this pages the
-        table by ascending ``tran_id`` (keyset walk, batch ``PAGE_FETCH_SIZE``)
-        and keeps rows whose effective date falls in the inclusive
+        The date range and the POSTED-status filter are pushed to SQL (see
+        :meth:`TransactionRepository.ListPostedInDateRange`), so the query
+        materializes only the posted rows whose effective date
+        (``COALESCE(proc_ts, orig_ts)``) falls in the inclusive
         ``[startDate, endDate]`` window -- the modern equivalent of the legacy
-        report's TRAN-PROC-DT selection. The keyset boundary is the last id of
-        each page; the first row of the next page (which repeats that boundary,
-        because the repository predicate is ``>=``) is dropped.
+        report's TRAN-PROC-DT selection over posted ledger rows. This replaces
+        the former full-table keyset walk that fetched every row and filtered by
+        date in Python (unbounded materialization; no status filter), and it
+        bounds the result at ``MAX_REPORT_ROWS`` (M-08).
+
+        The Python inclusive-window check (:meth:`_CollectInRange`) is retained
+        as an exact backstop: under the container's UTC session the SQL
+        ``COALESCE(...)::date`` filter and the Python ``.date()`` check agree, so
+        it removes nothing the SQL kept, but it keeps the inclusive-window rule
+        explicit and independent of the database's date-cast semantics.
 
         Args:
             session: The caller-owned async database session.
@@ -433,24 +459,13 @@ class ReportService:
             endDate: Inclusive range end.
 
         Returns:
-            The matching transactions in ascending ``tran_id`` order.
+            The matching POSTED transactions in ascending ``tran_id`` order.
         """
+        candidates = await self.transactionRepository.ListPostedInDateRange(
+            session, startDate, endDate, limit=MAX_REPORT_ROWS
+        )
         matched: list[Transaction] = []
-        lastId: Optional[str] = None
-        while True:
-            page = await self.transactionRepository.ListTransactions(
-                session, startTranId=lastId, limit=PAGE_FETCH_SIZE
-            )
-            if not page:
-                break
-            rawCount = len(page)
-            boundaryId = page[-1].tran_id
-            if lastId is not None:
-                page = [tran for tran in page if tran.tran_id != lastId]
-            self._CollectInRange(page, startDate, endDate, matched)
-            if rawCount < PAGE_FETCH_SIZE or boundaryId == lastId:
-                break
-            lastId = boundaryId
+        self._CollectInRange(candidates, startDate, endDate, matched)
         return matched
 
     def _CollectInRange(
@@ -637,17 +652,37 @@ class ReportService:
         lookups.catDescByKey[categoryKey] = catDesc
         return catDesc
 
+    def _ControlBreakSortKey(
+        self, row: TransactionReportRow
+    ) -> tuple[str, str]:
+        """Return the ``(acct_id, tran_id)`` sort key for control-break ordering.
+
+        Rows are sorted by owning account first, then transaction id, so every
+        account's rows are contiguous for the CVTRA07Y account control break
+        (and the ordering is fully deterministic for identical inputs).
+
+        Args:
+            row: The report row whose sort key is derived.
+
+        Returns:
+            A ``(acct_id, tran_id)`` tuple used as the stable sort key.
+        """
+        return (row.acct_id, row.tran_id)
+
     def _AccumulateTotals(
         self, reportRows: list[TransactionReportRow]
     ) -> tuple[Decimal, Decimal, Decimal]:
         """Accumulate the page, account, and grand totals as exact ``Decimal``.
 
         Reproduces the CVTRA07Y report control-break totals over the single
-        returned payload: the grand total sums every row; the page total equals
-        the grand total (the redesign returns all rows as one logical page); and
-        the account total is the subtotal of the final account control-break
-        group (rows are grouped by consecutive ``acct_id``, so the accumulator
-        resets on each account change and ends holding the last group's sum).
+        returned payload. The rows are pre-sorted by ``(acct_id, tran_id)`` in
+        :meth:`GenerateReport`, so each account forms exactly one contiguous
+        control-break group: the grand total sums every row; the page total
+        equals the grand total (the redesign returns all rows as one logical
+        page); and the account total is the complete subtotal of the final
+        account group (the accumulator resets on each account change and, because
+        the rows are account-ordered, ends holding that last account's full
+        subtotal deterministically rather than only its last adjacent run).
         Every running sum starts from ``Decimal('0')`` and each amount is routed
         through :func:`app.utils.decimal_utils.ToDecimal`; the finalized totals
         are truncated to cents with
@@ -655,7 +690,7 @@ class ReportService:
         used.
 
         Args:
-            reportRows: The ordered report rows to total.
+            reportRows: The account-ordered report rows to total.
 
         Returns:
             A ``(pageTotal, accountTotal, grandTotal)`` tuple of ``Decimal``.
@@ -698,7 +733,13 @@ class ReportService:
             The complete CSV document as a single ``str``.
         """
         buffer = io.StringIO()
-        writer = csv.writer(buffer)
+        # Wrap the stdlib csv.writer in the SafeCsvWriter so every emitted cell
+        # is passed through CSV formula-injection neutralization (CWE-1236):
+        # any free-text field (type/category description, source) that begins
+        # with a spreadsheet formula trigger character is prefixed with an
+        # apostrophe, while numeric amounts -- including negative values -- pass
+        # through byte-for-byte unchanged (M-07; AAP 0.7.1 exact decimals).
+        writer = csv_safety.SafeCsvWriter(csv.writer(buffer))
         writer.writerow(CSV_HEADER)
         for row in report.rows:
             writer.writerow(self._CsvDataRow(row))

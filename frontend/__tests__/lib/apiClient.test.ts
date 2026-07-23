@@ -822,7 +822,6 @@ describe('BillPayApi', () => {
         const billPayRequest: BillPayRequest = {
             acct_id: '00000000011',
             confirm: 'Y',
-            payment_amount: '100.00',
         };
         // Bill payment is an action: the backend answers 200, not a 201 creation.
         mockPost.mockResolvedValueOnce({ data: billPayResponse, status: 200 });

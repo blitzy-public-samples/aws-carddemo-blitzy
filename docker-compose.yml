@@ -111,9 +111,14 @@ services:
     # Runtime configuration read by app/core/config.py (pydantic-settings):
     #   * DATABASE_URL / SYNC_DATABASE_URL point at the compose-internal `db`
     #     hostname (NOT localhost) and carry the async / sync drivers.
-    #   * SECRET_KEY has NO default in config.py and must be >= 32 characters,
-    #     so a turnkey, OBVIOUS dev placeholder is provided here; override it
-    #     from the environment for anything shared. It is plainly not a real key.
+    #   * SECRET_KEY has NO default in config.py and must be >= 32 characters.
+    #     This file bakes in NO signing key (QA finding M-25): SECRET_KEY is
+    #     passed through from the environment and resolves to EMPTY when unset
+    #     (so the db-only `docker compose up -d db` bring-up is never blocked).
+    #     A full-stack start without an explicit key therefore FAILS CLOSED
+    #     inside config.py — ValidateSecretKey rejects a blank/short key — rather
+    #     than silently running on a shared placeholder. Provide a real key via
+    #     `export SECRET_KEY=...` or an uncommented backend/.env.
     #   * Every value is interpolated — no real secret is baked into this file.
     #
     # Prefer a real backend/.env instead? Uncomment the env_file block below
@@ -127,7 +132,7 @@ services:
     environment:
       DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-carddemo}:${POSTGRES_PASSWORD:-carddemo}@db:5432/${POSTGRES_DB:-carddemo}
       SYNC_DATABASE_URL: postgresql+psycopg2://${POSTGRES_USER:-carddemo}:${POSTGRES_PASSWORD:-carddemo}@db:5432/${POSTGRES_DB:-carddemo}
-      SECRET_KEY: ${SECRET_KEY:-dev-only-insecure-secret-key-change-me-please-32plus}
+      SECRET_KEY: ${SECRET_KEY:-}
       ENVIRONMENT: ${ENVIRONMENT:-development}
       BACKEND_CORS_ORIGINS: http://localhost:${FRONTEND_HOST_PORT:-3000}
       # Seed-data locations consumed by `alembic upgrade head` (migration

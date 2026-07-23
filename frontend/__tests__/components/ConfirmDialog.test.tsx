@@ -6,7 +6,14 @@
  * User" delete-confirm screen (app/bms/COUSR03.bms, app/cpy-bms/COUSR03.CPY).
  */
 
-import { RenderWithProviders, screen, userEvent } from '../testUtils';
+import {
+    RenderWithProviders,
+    screen,
+    userEvent,
+    act,
+    waitFor,
+} from '../testUtils';
+import { axe } from 'jest-axe';
 import { ConfirmDialog } from '@/components/ConfirmDialog';
 
 /** Benign, non-sensitive dialog heading reused across the specs. */
@@ -113,9 +120,14 @@ describe('ConfirmDialog', () => {
         const user = userEvent.setup();
         const { onCancel } = renderDialog();
 
-        // The confirm button has `autoFocus`; ensure focus is inside the
-        // dialog so the Escape keydown is dispatched within it.
-        screen.getByRole('button', { name: 'Confirm' }).focus();
+        // Ensure focus is inside the dialog so the Escape keydown is dispatched
+        // within the modal's keydown scope. The destructive dialog now autofocus
+        // Cancel (QA M-29), so target it here. The programmatic focus is wrapped
+        // in `act` because MUI ButtonBase updates focus-visible state on focus;
+        // wrapping keeps that update inside React's act() scope (QA N-07).
+        act(() => {
+            screen.getByRole('button', { name: 'Cancel' }).focus();
+        });
         await user.keyboard('{Escape}');
 
         expect(onCancel).toHaveBeenCalledTimes(1);
@@ -162,5 +174,113 @@ describe('ConfirmDialog', () => {
 
         const confirmButton = screen.getByRole('button', { name: 'Save' });
         expect(confirmButton.className).toMatch(/colorPrimary|containedPrimary/i);
+    });
+
+    // ----------------------------------------------------------------------
+    // Accessible description association (QA M-29) — `aria-describedby` must
+    // always resolve to a rendered element, including the children-only
+    // destructive-warning path used by /users/delete.
+    // ----------------------------------------------------------------------
+    describe('accessible description (M-29)', () => {
+        it('associates aria-describedby with the message when one is given', () => {
+            renderDialog({ message: SAMPLE_MESSAGE });
+
+            const dialog = screen.getByRole('dialog');
+            const describedById = dialog.getAttribute('aria-describedby');
+            expect(describedById).toBeTruthy();
+            // The referenced element exists and carries the message text.
+            const target = document.getElementById(describedById as string);
+            expect(target).not.toBeNull();
+            expect(target).toHaveTextContent(SAMPLE_MESSAGE);
+        });
+
+        it('associates aria-describedby with children when there is no message', () => {
+            renderDialog({
+                message: undefined,
+                children: 'You are about to delete USER0001.',
+            });
+
+            const dialog = screen.getByRole('dialog');
+            const describedById = dialog.getAttribute('aria-describedby');
+            // The reference must resolve to a REAL element (never a dangling id).
+            expect(describedById).toBeTruthy();
+            const target = document.getElementById(describedById as string);
+            expect(target).not.toBeNull();
+            expect(target).toHaveTextContent(
+                'You are about to delete USER0001.',
+            );
+        });
+
+        it('omits aria-describedby when neither message nor children exist', () => {
+            renderDialog({ message: undefined });
+
+            const dialog = screen.getByRole('dialog');
+            expect(dialog).not.toHaveAttribute('aria-describedby');
+        });
+    });
+
+    // ----------------------------------------------------------------------
+    // Destructive default focus (QA M-29) — a destructive dialog must place
+    // initial focus on Cancel so a stray Enter does not immediately confirm.
+    // ----------------------------------------------------------------------
+    describe('destructive default focus (M-29)', () => {
+        it('focuses Cancel (not Delete) on open for the error color', async () => {
+            renderDialog({ confirmColor: 'error', confirmLabel: 'Delete' });
+
+            await waitFor(() => {
+                expect(
+                    screen.getByRole('button', { name: 'Cancel' }),
+                ).toHaveFocus();
+            });
+            expect(
+                screen.getByRole('button', { name: 'Delete' }),
+            ).not.toHaveFocus();
+        });
+
+        it('focuses the confirm action on open for a non-destructive color', async () => {
+            renderDialog({ confirmColor: 'primary', confirmLabel: 'Save' });
+
+            await waitFor(() => {
+                expect(
+                    screen.getByRole('button', { name: 'Save' }),
+                ).toHaveFocus();
+            });
+        });
+    });
+
+    // ----------------------------------------------------------------------
+    // Automated axe gate (QA M-30) on both description paths.
+    // ----------------------------------------------------------------------
+    describe('accessibility axe gate (M-30)', () => {
+        it('has no violations on the message path', async () => {
+            const { baseElement } = RenderWithProviders(
+                <ConfirmDialog
+                    open
+                    title={DEFAULT_TITLE}
+                    message={SAMPLE_MESSAGE}
+                    onConfirm={jest.fn()}
+                    onCancel={jest.fn()}
+                />,
+            );
+
+            expect(await axe(baseElement)).toHaveNoViolations();
+        });
+
+        it('has no violations on the children-only destructive path', async () => {
+            const { baseElement } = RenderWithProviders(
+                <ConfirmDialog
+                    open
+                    title="Delete User"
+                    confirmLabel="Delete"
+                    confirmColor="error"
+                    onConfirm={jest.fn()}
+                    onCancel={jest.fn()}
+                >
+                    You are about to delete USER0001. This cannot be undone.
+                </ConfirmDialog>,
+            );
+
+            expect(await axe(baseElement)).toHaveNoViolations();
+        });
     });
 });

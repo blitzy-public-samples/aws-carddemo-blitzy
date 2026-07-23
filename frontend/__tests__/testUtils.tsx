@@ -12,7 +12,7 @@ import type { ReactElement, ReactNode } from 'react';
 import { render } from '@testing-library/react';
 import type { RenderOptions, RenderResult } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { ThemeProvider } from '@mui/material/styles';
+import { ThemeProvider, createTheme } from '@mui/material/styles';
 import theme from '@/app/theme';
 import { DEFAULT_PAGE_SIZE } from '@/types';
 import type {
@@ -57,8 +57,30 @@ const ACTIVE_STATUS_ACTIVE = 'Y';
 // ---------------------------------------------------------------------------
 
 /**
- * Render `ui` inside the real application MUI theme so specs exercise the same
- * Material Design 3 tokens (primary `#1976d2`, etc.) the app uses at runtime.
+ * Test-only theme derived from the real application theme with the MUI touch
+ * ripple globally disabled.
+ *
+ * The `TouchRipple` animation schedules asynchronous state updates AFTER an
+ * interaction settles; in jsdom those updates land outside Testing Library's
+ * `act()` scope and emit repeated `act(...)` console warnings (QA N-07).
+ * Disabling the ripple on every `ButtonBase` removes that async work at the
+ * harness level while preserving all real MD3 tokens (primary `#1976d2`, etc.),
+ * so specs still exercise the production theme.
+ */
+const TEST_THEME = createTheme(theme, {
+    components: {
+        MuiButtonBase: {
+            defaultProps: {
+                disableRipple: true,
+            },
+        },
+    },
+});
+
+/**
+ * Render `ui` inside the application MUI theme (ripple disabled for test
+ * hygiene) so specs exercise the same Material Design 3 tokens
+ * (primary `#1976d2`, etc.) the app uses at runtime.
  *
  * Only a single `ThemeProvider` wrapper is applied: `CssBaseline` is omitted (it
  * injects global styles that add noise to jsdom without benefit) and no router
@@ -75,7 +97,7 @@ export function RenderWithProviders(
     options?: Omit<RenderOptions, 'wrapper'>,
 ): RenderResult {
     function Wrapper({ children }: { children: ReactNode }): ReactElement {
-        return <ThemeProvider theme={theme}>{children}</ThemeProvider>;
+        return <ThemeProvider theme={TEST_THEME}>{children}</ThemeProvider>;
     }
 
     return render(ui, { wrapper: Wrapper, ...options });

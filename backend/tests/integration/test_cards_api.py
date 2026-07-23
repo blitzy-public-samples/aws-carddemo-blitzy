@@ -32,13 +32,21 @@ local variables are camelCase (``responseBody``, ``beforeImage``,
 
 from __future__ import annotations
 
+import asyncio
+from datetime import date
+from decimal import Decimal
+
 import pytest
 from httpx import AsyncClient
-from sqlalchemy import update
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.core.config import settings
+from app.core.exceptions import OptimisticLockError
+from app.models.account import Account
 from app.models.card import Card
+from app.repositories.card_repo import CardRepository
+from app.schemas.card import CardUpdate
+from app.services.card_service import CardService
 
 # ---------------------------------------------------------------------------
 # Module constants (ALL_UPPERCASE per the Ochs Rule 0.8.2).
@@ -82,9 +90,37 @@ MISSING_CARD_NUM = "9999999999999999"
 # 1230-EDIT-NAME edit; each differs from the seed embossed name so the update is
 # never a no-op (which the service rejects as "No change detected").
 NEW_EMBOSSED_NAME = "NEW CARDHOLDER"
-STALE_EMBOSSED_NAME = "STALE CARDHOLDER"
-OUT_OF_BAND_NAME = "OTHER CARDHOLDER"
 VALID_EMBOSSED_NAME = "VALID CARDHOLDER"
+
+# ---------------------------------------------------------------------------
+# Independent-session lost-update fixture (QA findings M-10 + M-11).
+#
+# The shared ``seed_data`` fixture only FLUSHES rows into the per-test
+# ``db_session`` (it never commits), so those rows are invisible to any OTHER
+# database connection. Proving a genuine lost-update therefore requires a card
+# that is COMMITTED on its own connection so two independent sessions can both
+# see and contend for it. A ``cards`` row's only foreign key is
+# ``cards.acct_id -> accounts.acct_id``, so the minimal committed graph is one
+# account (``group_id`` is nullable, so no ``account_groups`` parent is needed)
+# plus one card. These identifiers are deliberately outside the golden-master
+# seed set so they never collide with it.
+# ---------------------------------------------------------------------------
+CONFLICT_ACCT_ID = "00000000099"
+CONFLICT_CARD_NUM = "4111111111110099"
+CONFLICT_ORIGINAL_NAME = "ORIGINAL HOLDER"
+CONFLICT_WINNER_NAME = "WINNER HOLDER"
+CONFLICT_LOSER_NAME = "LOSER HOLDER"
+CONFLICT_CARD_EXPIRY = date(2027, 8, 31)
+CONFLICT_ACCT_CURR_BAL = Decimal("100.00")
+CONFLICT_ACCT_CREDIT_LIMIT = Decimal("5000.00")
+CONFLICT_ACCT_CASH_LIMIT = Decimal("1000.00")
+CONFLICT_ACCT_ZERO = Decimal("0.00")
+
+# Grace period allowing the blocked FOR UPDATE task to reach the database and
+# park on the row lock before the test asserts it has not completed. The task is
+# genuinely blocked at the database, so it stays pending regardless of this
+# value; the wait only lets the event loop schedule it up to the lock.
+LOCK_WAIT_SECONDS = 0.25
 
 # Query-string and body edge values exercised by the tests.
 OVERSIZED_PAGE_SIZE = 50
@@ -93,7 +129,6 @@ INVALID_ACTIVE_STATUS = "X"
 
 # Precise HTTP status codes asserted by the tests (never a broad "not 2xx").
 HTTP_OK = 200
-HTTP_BAD_REQUEST = 400
 HTTP_UNAUTHORIZED = 401
 HTTP_NOT_FOUND = 404
 HTTP_CONFLICT = 409
@@ -146,6 +181,47 @@ def BuildUpdatePayload(
         "expiration_date": expirationDate,
         "active_status": activeStatus,
     }
+
+
+async def SeedConflictCardCommitted(sessionMaker: async_sessionmaker) -> None:
+    """Commit the minimal account+card graph on an INDEPENDENT session.
+
+    Inserts one account (``CONFLICT_ACCT_ID``; ``group_id`` left NULL so no
+    disclosure-group parent is required) and one card (``CONFLICT_CARD_NUM``,
+    embossed ``CONFLICT_ORIGINAL_NAME``) and COMMITS them on their own session.
+    Committing (rather than the flush-only ``seed_data`` fixture) is what makes
+    the row visible to the two independent sessions that then contend for it,
+    which is the crux of proving a genuine lost-update (QA finding M-11). The
+    ``db_session`` fixture's ``TRUNCATE ... CASCADE`` teardown removes these
+    committed rows after the test.
+
+    Args:
+        sessionMaker: An ``async_sessionmaker`` bound to the test engine.
+    """
+    async with sessionMaker() as seedSession:
+        seedSession.add(
+            Account(
+                acct_id=CONFLICT_ACCT_ID,
+                active_status="Y",
+                curr_bal=CONFLICT_ACCT_CURR_BAL,
+                credit_limit=CONFLICT_ACCT_CREDIT_LIMIT,
+                cash_credit_limit=CONFLICT_ACCT_CASH_LIMIT,
+                curr_cyc_credit=CONFLICT_ACCT_ZERO,
+                curr_cyc_debit=CONFLICT_ACCT_ZERO,
+                group_id=None,
+            )
+        )
+        await seedSession.flush()
+        seedSession.add(
+            Card(
+                card_num=CONFLICT_CARD_NUM,
+                acct_id=CONFLICT_ACCT_ID,
+                embossed_name=CONFLICT_ORIGINAL_NAME,
+                expiration_date=CONFLICT_CARD_EXPIRY,
+                active_status="Y",
+            )
+        )
+        await seedSession.commit()
 
 
 # ===========================================================================
@@ -353,8 +429,8 @@ async def test_update_card_invalid_status(
     """An active status outside {Y, N} is rejected as a field-edit failure.
 
     The active-status flag is edited at the schema layer (COCRDUPC
-    1240-EDIT-CARDSTATUS), so an ``'X'`` fails validation and the API responds
-    with a client-error status (400 or 422) that names the offending field.
+    1240-EDIT-CARDSTATUS), so an ``'X'`` fails the Pydantic field edit and the
+    API responds HTTP 422, naming the offending field.
 
     Args:
         admin_client: Authenticated administrator client.
@@ -367,80 +443,170 @@ async def test_update_card_invalid_status(
     )
     resp = await admin_client.put(f"{CARDS_URL}/{SEED_CARD_NUM}", json=updatePayload)
 
-    assert resp.status_code in (HTTP_BAD_REQUEST, HTTP_UNPROCESSABLE_CONTENT)
+    assert resp.status_code == HTTP_UNPROCESSABLE_CONTENT
     responseText = resp.text.lower()
     assert "active_status" in responseText or "active status" in responseText
 
 
 @pytest.mark.asyncio
-async def test_update_card_optimistic_conflict(
-    admin_client: AsyncClient,
-    seed_data: None,
+async def test_update_card_lost_update_prevented_independent_sessions(
+    test_engine,
     db_session: AsyncSession,
 ) -> None:
-    """A concurrent out-of-band change makes the update fail with HTTP 409.
+    """Two INDEPENDENT transactions race; the row lock yields one winner + one conflict.
 
-    Mirrors the COCRDUPC ``9300-CHECK-CHANGE-IN-REC`` before-image mismatch.
-    ``CardService.UpdateCard`` loads the row, snapshots that as the before-image,
-    then re-reads (``session.refresh``) and compares; a divergence raises the
-    legacy "Record changed by some one else" conflict (AAP 0.7.4). To reproduce
-    it deterministically the test must recreate the exact state the legacy
-    READ-UPDATE window held:
+    Genuine lost-update reproduction (QA findings M-10 + M-11). It replaces the
+    prior test, which mutated a single SHARED session's identity map with
+    ``synchronize_session=False`` and so did not prove independent behavior.
+    Here two GENUINELY independent ``AsyncSession``s (each its own connection and
+    transaction) contend for a COMMITTED card:
 
-    * Pin the stale row in the SHARED session's identity map by loading it with
-      ``db_session.get`` and keeping a strong reference (``staleRow``). Without a
-      live reference SQLAlchemy's weakly-referenced identity map would drop the
-      row, and the service's ``GetByCardNum`` would then load a FRESH row that
-      already reflects the out-of-band change -- no before-image, no conflict.
-    * Mutate the row out-of-band on the SAME session with an ORM-Core ``update``
-      and ``synchronize_session=False`` so the pinned in-memory copy stays stale.
-      The mutation runs on ``db_session`` (not a separate connection) because the
-      seed rows are flushed-not-committed and are therefore invisible to any
-      other connection.
+    * The LOSER transaction reads the card FIRST on its own connection, so its
+      before-image is the original name -- exactly as a user who opened the
+      update screen before anyone else committed.
+    * The WINNER transaction independently runs the full ``CardService.UpdateCard``
+      and COMMITS first. Its locking re-read (``CardRepository.GetForUpdate`` ->
+      ``SELECT ... FOR UPDATE``, QA finding M-10) sees the unchanged original,
+      so its before-image check passes and it writes ``CONFLICT_WINNER_NAME``.
+    * The LOSER then runs the full update. Its before-image is the stale
+      original it read earlier; the locking re-read now observes the WINNER's
+      committed name (``populate_existing`` refreshes the identity-mapped row to
+      the true current state), so the before-image check raises
+      ``OptimisticLockError`` (COCRDUPC 9300). Its write is rejected, so the
+      WINNER's change is NOT lost.
 
-    When the PUT then runs, the handler's ``GetByCardNum`` returns the pinned
-    stale row (before-image = original name), the internal re-read observes the
-    changed name, and the service raises HTTP 409.
+    Asserts one winner, one explicit conflict, and the final committed state
+    (exactly the winner's value), directly at the service + repository layer
+    against real PostgreSQL row locks.
 
     Args:
-        admin_client: Authenticated administrator client (shares ``db_session``).
-        seed_data: Golden-master seed fixture.
-        db_session: The shared async session the request handlers also use.
+        test_engine: Function-scoped async engine used to build two independent
+            sessions (and the same engine ``db_session`` is bound to).
+        db_session: Requested only so its ``TRUNCATE ... CASCADE`` teardown wipes
+            the committed conflict rows after the test.
     """
-    getResp = await admin_client.get(f"{CARDS_URL}/{SEED_CARD_NUM}")
-    assert getResp.status_code == HTTP_OK
-    beforeImage = getResp.json()
-
-    # Pin the stale before-image row in the shared identity map so the PUT
-    # handler's re-read observes THIS object (COCRDUPC 9300 before-image).
-    staleRow = await db_session.get(Card, SEED_CARD_NUM)
-    assert staleRow is not None
-
-    # Out-of-band change on the SAME session (seed rows are flush-only and thus
-    # invisible to any other connection); synchronize_session=False leaves the
-    # pinned in-memory copy stale so the service still holds the old image.
-    await db_session.execute(
-        update(Card)
-        .where(Card.card_num == SEED_CARD_NUM)
-        .values(embossed_name=OUT_OF_BAND_NAME)
-        .execution_options(synchronize_session=False)
+    sessionMaker = async_sessionmaker(
+        bind=test_engine,
+        class_=AsyncSession,
+        expire_on_commit=False,
+        autoflush=False,
     )
+    await SeedConflictCardCommitted(sessionMaker)
+    service = CardService()
+    repository = CardRepository()
 
-    # Submit a genuine change (a new name) so the update is not a no-op; the
-    # stale before-image vs the re-read current row triggers the 409 conflict.
-    updatePayload = BuildUpdatePayload(
-        STALE_EMBOSSED_NAME,
-        beforeImage["expiration_date"],
-        beforeImage["active_status"],
+    async with sessionMaker() as sessionWinner, sessionMaker() as sessionLoser:
+        # The LOSER reads the row FIRST on its own connection (before-image =
+        # ORIGINAL). Keeping this instance in the loser session's identity map
+        # is what makes its later UpdateCard reuse the now-stale before-image.
+        loserCard = await repository.GetByCardNum(sessionLoser, CONFLICT_CARD_NUM)
+        assert loserCard is not None
+        assert loserCard.embossed_name == CONFLICT_ORIGINAL_NAME
+
+        # The WINNER independently performs the full update and COMMITS first
+        # under the SELECT ... FOR UPDATE lock (ORIGINAL -> WINNER).
+        winnerResult = await service.UpdateCard(
+            sessionWinner,
+            CONFLICT_CARD_NUM,
+            CardUpdate(
+                embossed_name=CONFLICT_WINNER_NAME,
+                expiration_date=CONFLICT_CARD_EXPIRY,
+                active_status="Y",
+            ),
+        )
+        assert winnerResult.embossed_name == CONFLICT_WINNER_NAME
+
+        # The LOSER now runs the full update. Its before-image is the stale
+        # ORIGINAL; the locking re-read observes the WINNER's committed name, so
+        # the before-image check raises the explicit conflict (no lost update).
+        with pytest.raises(OptimisticLockError):
+            await service.UpdateCard(
+                sessionLoser,
+                CONFLICT_CARD_NUM,
+                CardUpdate(
+                    embossed_name=CONFLICT_LOSER_NAME,
+                    expiration_date=CONFLICT_CARD_EXPIRY,
+                    active_status="Y",
+                ),
+            )
+
+    # Final committed state: exactly the WINNER's change survived; the LOSER's
+    # write was rejected (one winner, one conflict, no lost update).
+    async with sessionMaker() as verifySession:
+        finalCard = await CardRepository().GetByCardNum(verifySession, CONFLICT_CARD_NUM)
+        assert finalCard is not None
+        assert finalCard.embossed_name == CONFLICT_WINNER_NAME
+        assert finalCard.embossed_name != CONFLICT_LOSER_NAME
+
+
+@pytest.mark.asyncio
+async def test_card_get_for_update_serializes_concurrent_writers(
+    test_engine,
+    db_session: AsyncSession,
+) -> None:
+    """SELECT ... FOR UPDATE blocks a second writer until the first commits (M-10).
+
+    The deterministic proof that the row lock added in M-10
+    (``CardRepository.GetForUpdate`` -> ``SELECT ... FOR UPDATE``) genuinely
+    serializes two independent transactions, orchestrated with an explicit lock
+    barrier (a bare ``asyncio.gather`` cannot prove this: the first writer may
+    commit before the second even reads, so no contention is forced). Two
+    GENUINELY independent sessions contend for one COMMITTED card:
+
+    1. Transaction TWO reads the row first, capturing the ORIGINAL before-image.
+    2. Transaction ONE acquires the row lock (``GetForUpdate``) and HOLDS it.
+    3. Transaction TWO's own ``GetForUpdate`` is launched as a task and is
+       observed to BLOCK while ONE holds the lock -- the direct evidence that
+       the lock serializes writers (a non-locking read would not block).
+    4. Transaction ONE commits its change (ORIGINAL -> WINNER) and releases the
+       lock; TWO then unblocks and its ``populate_existing`` re-read observes the
+       committed WINNER, NOT the stale ORIGINAL it first read -- so the before
+       -image check would reject its write, preventing the lost update.
+
+    Args:
+        test_engine: Function-scoped async engine used to build two independent
+            sessions.
+        db_session: Requested only so its ``TRUNCATE ... CASCADE`` teardown wipes
+            the committed conflict rows after the test.
+    """
+    sessionMaker = async_sessionmaker(
+        bind=test_engine,
+        class_=AsyncSession,
+        expire_on_commit=False,
+        autoflush=False,
     )
-    putResp = await admin_client.put(f"{CARDS_URL}/{SEED_CARD_NUM}", json=updatePayload)
+    await SeedConflictCardCommitted(sessionMaker)
+    repository = CardRepository()
 
-    assert putResp.status_code == HTTP_CONFLICT
-    assert "Record changed by some one else" in str(putResp.json())
+    async with sessionMaker() as sessionOne, sessionMaker() as sessionTwo:
+        # (1) TWO captures the ORIGINAL before-image on its own connection.
+        beforeCard = await repository.GetByCardNum(sessionTwo, CONFLICT_CARD_NUM)
+        assert beforeCard is not None
+        beforeName = beforeCard.embossed_name
+        assert beforeName == CONFLICT_ORIGINAL_NAME
 
-    # Retain the pinned reference through the request so the stale identity-map
-    # row cannot be garbage-collected before the handler re-reads it.
-    assert staleRow is not None
+        # (2) ONE acquires the row lock FOR UPDATE and holds it (no commit yet).
+        lockedOne = await repository.GetForUpdate(sessionOne, CONFLICT_CARD_NUM)
+        assert lockedOne is not None
+
+        # (3) TWO's locking read MUST block while ONE holds the lock.
+        blockedTask = asyncio.create_task(
+            repository.GetForUpdate(sessionTwo, CONFLICT_CARD_NUM)
+        )
+        await asyncio.sleep(LOCK_WAIT_SECONDS)
+        assert not blockedTask.done()
+
+        # (4) ONE commits ORIGINAL -> WINNER, releasing the lock.
+        lockedOne.embossed_name = CONFLICT_WINNER_NAME
+        await repository.Update(sessionOne, lockedOne)
+        await sessionOne.commit()
+
+        # TWO now unblocks; its locked, populate_existing re-read observes the
+        # committed WINNER -- not the stale ORIGINAL it first read.
+        lockedTwo = await blockedTask
+        assert lockedTwo is not None
+        assert lockedTwo.embossed_name == CONFLICT_WINNER_NAME
+        assert lockedTwo.embossed_name != beforeName
 
 
 # ===========================================================================
@@ -470,4 +636,3 @@ async def test_regular_client_cards_scoped(
     assert len(responseBody["items"]) <= MAX_ROWS_PER_PAGE
     for item in responseBody["items"]:
         AssertCardMaskedNoCvv(item)
-

@@ -21,6 +21,7 @@
  */
 
 import { useState, useEffect, useCallback, Suspense } from 'react';
+import type { KeyboardEvent } from 'react';
 import { useSearchParams, useRouter } from 'next/navigation';
 
 import {
@@ -36,6 +37,7 @@ import {
 } from '@mui/material';
 
 import { AccountsApi, IsApiError } from '@/lib/apiClient';
+import { ShouldSuppressActivationShortcut } from '@/lib/keyboard';
 import type {
     AccountBeforeImage,
     AccountDetail,
@@ -370,10 +372,21 @@ function AccountsUpdateContent() {
      * Keyboard shortcuts mirroring the legacy PF keys: Enter processes (Load when
      * not yet loaded, otherwise Save); Escape exits.
      *
-     * @param key - The pressed key from the React keyboard event.
+     * The Enter shortcut is scoped so it does NOT fire when a focused button,
+     * link, or select already owns Enter — that previously duplicated the
+     * load/submit (QA M-28). This page is the single Escape owner: it maps
+     * Escape to "back to view" and stops propagation so the AppShell's global
+     * Escape → `router.back()` does not ALSO fire (double navigation).
+     *
+     * @param event - The React keyboard event bubbling from a focused control.
      */
-    function HandleShortcut(key: string): void {
+    function HandleShortcut(event: KeyboardEvent<HTMLDivElement>): void {
+        const { key } = event;
         if (key === 'Enter') {
+            if (ShouldSuppressActivationShortcut(key, event.target)) {
+                return;
+            }
+            event.preventDefault();
             if (!isLoaded) {
                 HandleLoad();
             } else {
@@ -382,6 +395,7 @@ function AccountsUpdateContent() {
             return;
         }
         if (key === 'Escape') {
+            event.stopPropagation();
             HandleBack();
         }
     }
@@ -391,9 +405,7 @@ function AccountsUpdateContent() {
     return (
         <Container maxWidth="md" sx={{ py: 3 }}>
             <Box
-                onKeyDown={(event) => {
-                    HandleShortcut(event.key);
-                }}
+                onKeyDown={HandleShortcut}
             >
                 <Typography variant="h5" component="h1" sx={{ mb: 2 }}>
                     Update Account
@@ -587,9 +599,14 @@ function AccountsUpdateContent() {
                                     maxLength={ADDRESS_LENGTH}
                                     readOnly
                                 />
+                                {/*
+                                    Legacy `COACTVWC.cbl` maps CUST-ADDR-LINE-3
+                                    -> ACSCITY ("City" on `COACTVW.bms`); keep
+                                    that label rather than "Address (line 3)".
+                                */}
                                 <FormField
                                     name="addr_line_3"
-                                    label="Address (line 3)"
+                                    label="City"
                                     value={customer.addr_line_3}
                                     onChange={HandleReadOnlyChange}
                                     maxLength={ADDRESS_LENGTH}

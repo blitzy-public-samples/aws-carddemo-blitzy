@@ -45,25 +45,30 @@ license = { text = "Apache-2.0" }
 #   * ``typer`` — the CLI framework for ``batch/cli.py`` (AAP §0.6.1). Kept out
 #     of the backend runtime set on purpose (see backend/pyproject.toml), so it
 #     is declared here where it is actually used.
-#   * ``click`` — Typer's underlying command engine. PINNED EXPLICITLY to 8.1.8
-#     (QA finding #55): Typer 0.15.1 calls ``Parameter.make_metavar()`` with the
-#     pre-8.2 signature, so Click >= 8.2 raises ``TypeError`` and crashes
-#     ``--help`` rendering. 8.1.8 is the newest 8.1.x release and is the last
-#     line compatible with Typer 0.15.1; it also satisfies uvicorn's
-#     ``click>=7.0`` constraint (no conflict with the backend).
+#   * ``click`` — Typer's underlying command engine. Upgraded as a COORDINATED
+#     PAIR with Typer (QA finding N-04): Click 8.1.8 carried a vulnerable
+#     ``click.edit`` and is below the >= 8.3.3 security floor. Click >= 8.2
+#     changed the ``Parameter.make_metavar()`` signature that crashed Typer
+#     0.15.1's ``--help`` rendering (former finding #55), so Click cannot be
+#     bumped alone; Typer 0.27.0 uses the new signature and renders ``--help``
+#     cleanly with Click 8.4.2. 8.4.2 also satisfies uvicorn's ``click>=7.0``
+#     constraint (no conflict with the backend).
 # -----------------------------------------------------------------------------
 dependencies = [
     "carddemo-backend==1.0.0",
-    "typer==0.15.1",
-    "click==8.1.8",
+    "typer==0.27.0",
+    "click==8.4.2",
 ]
 
 [project.optional-dependencies]
 # Test tooling for the batch parity suites (AAP §0.5.2: ``batch/tests/**``). The
 # batch chain is synchronous, so only pytest is required (no pytest-asyncio).
+# pytest >= 9.0.3 (QA finding M-24): 8.3.4 has a fixed tmpdir vulnerability and
+# these parity tests perform privileged DB operations; 9.1.1 matches the backend
+# test runner so the shared virtualenv resolves to a single pytest.
 # Install with: ``pip install -e './batch[dev]'``.
 dev = [
-    "pytest==8.3.4",
+    "pytest==9.1.1",
 ]
 
 # -----------------------------------------------------------------------------

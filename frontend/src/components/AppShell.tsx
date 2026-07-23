@@ -269,7 +269,12 @@ export function AppShell(props: AppShellProps) {
      * @param event - The React keyboard event bubbling from a focused child.
      */
     function HandleKeyDown(event: ReactKeyboardEvent<HTMLDivElement>): void {
-        if (event.key === 'Escape') {
+        // The AppShell is the SINGLE global fallback owner of the Escape = Back
+        // shortcut (legacy PF3). A page (e.g. /accounts/update) or a modal
+        // dialog that owns Escape for its own context stops propagation and/or
+        // prevents default; honor that here so Escape is never handled twice
+        // (QA M-28 double navigation).
+        if (event.key === 'Escape' && !event.defaultPrevented) {
             router.back();
         }
     }

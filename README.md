@@ -144,8 +144,8 @@ Install the following before building. Exact pins live in
 | psycopg2-binary | 2.9.x | Sync PostgreSQL driver (Alembic + loaders) |
 | passlib[bcrypt] | 1.7.x | Password hashing (bcrypt; argon2 acceptable) |
 | PyJWT | 2.x | JWT tokens (session-based auth is the baseline) |
-| reportlab + Jinja2 | 4.2.x / 3.1.x | PDF / HTML statement + report generation |
-| pytest + pytest-asyncio + httpx | 8.x / 0.25.x / 0.28.x | Unit, integration, and golden-master tests |
+| reportlab + Jinja2 | 4.5.x / 3.1.x | PDF / HTML statement + report generation |
+| pytest + pytest-asyncio + httpx | 9.x / 1.x / 0.28.x | Unit, integration, and golden-master tests |
 
 ### Frontend
 
@@ -168,11 +168,14 @@ Install the following before building. Exact pins live in
 
 > **Note on the batch CLI.** The batch package is an installable distribution
 > (`carddemo-batch`, see [`batch/pyproject.toml`](batch/pyproject.toml)) that
-> additionally uses **Typer** (0.15.1) on top of **Click** (pinned to **8.1.8**).
-> Typer and Click are `batch/` dependencies, not backend service dependencies.
-> Click is pinned explicitly because Typer 0.15.1 is incompatible with Click
-> ≥ 8.2 (which changed `Parameter.make_metavar()` and crashes `--help`); 8.1.8 is
-> the verified compatible release and still satisfies uvicorn's `click>=7.0`.
+> additionally uses **Typer** (0.27.0) on top of **Click** (8.4.2). Typer and
+> Click are `batch/` dependencies, not backend service dependencies. They were
+> upgraded as a coordinated pair (QA finding N-04): Click 8.1.8 carried a
+> vulnerable `click.edit` and sits below the ≥ 8.3.3 security floor, while Click
+> ≥ 8.2 changed `Parameter.make_metavar()` (which crashed Typer 0.15.1's
+> `--help`), so Click cannot be bumped alone. Typer 0.27.0 uses the new
+> signature and renders `--help` cleanly with Click 8.4.2, which still satisfies
+> uvicorn's `click>=7.0`.
 
 ---
 
@@ -507,11 +510,15 @@ Key backend variables:
 | `SYNC_DATABASE_URL` | Sync PostgreSQL DSN (`postgresql+psycopg2://…`) used by Alembic and loaders |
 | `SECRET_KEY` | Signing key for tokens (set a strong value; never commit it) |
 | `SESSION_SECRET` | Server-side session signing key (session auth is the baseline) |
-| `JWT_ALGORITHM` | JWT signing algorithm (default `HS256`) |
-| `ACCESS_TOKEN_EXPIRE_MINUTES` | Access-token lifetime |
+| `AUTH_MODE` | Authentication strategy: `session` (baseline) or `jwt` |
+| `ALGORITHM` | JWT signing algorithm, used when `AUTH_MODE=jwt` (default `HS256`) |
+| `ACCESS_TOKEN_EXPIRE_MINUTES` | Session / access-token lifetime in minutes |
+| `SESSION_COOKIE_NAME` | Server-side session cookie name (default `carddemo_session`) |
 | `BCRYPT_ROUNDS` | bcrypt work factor (password-hashing cost) |
+| `LOGIN_MAX_ATTEMPTS` | Consecutive failed sign-ons per (user id, client IP) before lockout (default `5`) |
+| `LOGIN_LOCKOUT_SECONDS` | Lockout window in seconds after `LOGIN_MAX_ATTEMPTS` failures (default `900`) |
 | `API_V1_PREFIX` | REST API mount prefix (default `/api/v1`) |
-| `CORS_ORIGINS` | Comma-separated list of allowed frontend origins |
+| `BACKEND_CORS_ORIGINS` | Comma-separated list of allowed frontend origins |
 | `ENVIRONMENT` | Runtime environment (e.g. `development`) |
 
 Key frontend variables:

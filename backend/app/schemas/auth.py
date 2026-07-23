@@ -103,6 +103,15 @@ VALID_USER_TYPES = frozenset({ADMIN_USER_TYPE, REGULAR_USER_TYPE})
 # ALL_UPPERCASE constant (Ochs Rule) so the literal is not repeated inline.
 DEFAULT_TOKEN_TYPE = "bearer"
 
+# Session-generation baseline (M-02). Mirrors ``app.models.user`` /
+# ``INITIAL_SESSION_VERSION``: it is duplicated locally -- with an identical
+# value -- rather than imported so this schema module stays model-independent
+# (schemas never import from app.models, matching how ADMIN_USER_TYPE is
+# duplicated to avoid a schemas -> core import). It is only the default for the
+# internal ``LoginResponse.session_version`` carrier, which is always overwritten
+# with the authenticated user's real generation at build time.
+INITIAL_SESSION_VERSION = 1
+
 # Failure wording for the user-type edit, reused by every user_type validator.
 MSG_INVALID_USER_TYPE = "User type must be 'A' (admin) or 'U' (regular user)."
 
@@ -308,6 +317,22 @@ class LoginResponse(OrmBase):
     token_type: Optional[str] = Field(
         default=None,
         description="OAuth2 token scheme ('bearer') in JWT mode; None under the session baseline.",
+    )
+    # M-02 internal carrier: the authenticated user's current session
+    # generation, sourced from ``User.session_version`` by
+    # ``AuthService._BuildResponse``. It is NEVER serialized to the JSON body
+    # (``exclude=True``) -- it exists only so the session-baseline router can
+    # read it and embed it as the token's ``sver`` claim (the revocation
+    # anchor). Serialization of a LoginResponse therefore stays identical to
+    # before this field existed; only the router reads it, in process.
+    session_version: int = Field(
+        default=INITIAL_SESSION_VERSION,
+        exclude=True,
+        description=(
+            "Internal-only session generation (M-02); excluded from the wire "
+            "contract. Carries User.session_version so the session-mode router "
+            "can mint the token's 'sver' revocation claim."
+        ),
     )
 
     @field_validator("user_type")

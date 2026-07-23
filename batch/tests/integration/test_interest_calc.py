@@ -36,13 +36,31 @@ is PascalCase, local variables are camelCase, and module constants are
 ALL_UPPERCASE.
 """
 
+from contextlib import contextmanager
+from datetime import date
 from decimal import Decimal
 
 import pytest  # noqa: F401  (conventional pytest test-module import per the file spec)
-from sqlalchemy import select
+from sqlalchemy import delete, select
+from sqlalchemy.exc import OperationalError
 
-from app.models import Account, Transaction
-from batch.jobs.interest_calc import CalculateInterest
+from app.models import (
+    Account,
+    AccountGroup,
+    Card,
+    CardXref,
+    Customer,
+    DisclosureGroup,
+    STATUS_POSTED,
+    TranCategoryBalance,
+    Transaction,
+)
+from batch import db as batch_db
+from batch.jobs.interest_calc import (
+    CalculateInterest,
+    INTEREST_TRAN_CAT_CD,
+    INTEREST_TRAN_TYPE_CD,
+)
 
 # --------------------------------------------------------------------------- #
 # Module constants (Ochs ALL_UPPERCASE). Identifier constants are text so their
@@ -77,6 +95,12 @@ INPUT_CAT_CD = "0001"
 # 'System' -- the exact legacy MOVE 'System' TO TRAN-SOURCE literal (CBACT04C
 # L482); interest is a system-generated posting.
 INTEREST_SOURCE = "System"
+
+# Fixed run date for the idempotency tests, so BOTH runs share the same 10-char
+# tran-id date prefix and the second run's ledger probe finds the first run's
+# interest transaction (QA finding M-12). A concrete date keeps the tran ids and
+# assertions deterministic regardless of the wall clock.
+RUN_DATE = date(2023, 6, 15)
 
 
 # --------------------------------------------------------------------------- #
@@ -318,3 +342,280 @@ def test_interest_control_break_processes_all_accounts(db_session, record_builde
     # Account one was finalised on the control break; account two at EOF.
     assert db_session.get(Account, ACCT_ONE).curr_bal == Decimal("201.00")
     assert db_session.get(Account, ACCT_TWO).curr_bal == Decimal("301.00")
+
+
+# --------------------------------------------------------------------------- #
+# M-12: interest idempotency (rerun + concurrency).
+# --------------------------------------------------------------------------- #
+def _CountInterestTransactions(session, acctId):
+    """Count POSTED interest transactions (type 01 / category 0005) for an account.
+
+    An interest posting is identified exactly as the idempotency ledger does: a
+    POSTED transaction of type :data:`INTEREST_TRAN_TYPE_CD` and category
+    :data:`INTEREST_TRAN_CAT_CD` whose description names the account.
+
+    Args:
+        session: The session to query.
+        acctId: The account id whose interest postings are counted.
+
+    Returns:
+        The number of matching interest transactions.
+    """
+    statement = select(Transaction).where(
+        Transaction.tran_type_cd == INTEREST_TRAN_TYPE_CD,
+        Transaction.tran_cat_cd == INTEREST_TRAN_CAT_CD,
+        Transaction.tran_desc == "Int. for a/c " + acctId,
+        Transaction.status == STATUS_POSTED,
+    )
+    return len(session.execute(statement).scalars().all())
+
+
+def test_interest_rerun_same_period_is_idempotent(db_session, record_builder):
+    # QA finding M-12: re-running interest for the SAME period must neither
+    # re-accrue the balance nor write a duplicate interest transaction. On the
+    # second run the ledger probe (_InterestAlreadyAccrued) finds the first run's
+    # POSTED interest transaction -- visible within the caller's transaction after
+    # its flush -- and skips the account entirely.
+    spec = {
+        "groupId": "TESTGRP",
+        "cardNum": CARD_ONE,
+        "custId": CUST_ONE,
+        "currBal": Decimal("200.00"),
+        "cycCredit": Decimal("50.00"),
+        "cycDebit": Decimal("30.00"),
+        "balance": Decimal("100.00"),
+        "rate": Decimal("12.00"),
+    }
+    _BuildInterestScenario(record_builder, ACCT_ONE, spec)
+
+    firstRun = CalculateInterest(db_session, runDate=RUN_DATE)
+    assert firstRun.accountsProcessed == 1
+    assert firstRun.interestTransactionsWritten == 1
+    assert firstRun.totalInterest == Decimal("1.00")  # 100.00 * 12.00 / 1200
+    db_session.expire_all()
+    account = db_session.get(Account, ACCT_ONE)
+    assert account.curr_bal == Decimal("201.00")       # 200.00 + 1.00
+    assert account.curr_cyc_credit == Decimal("0.00")
+    assert account.curr_cyc_debit == Decimal("0.00")
+    assert _CountInterestTransactions(db_session, ACCT_ONE) == 1
+
+    secondRun = CalculateInterest(db_session, runDate=RUN_DATE)
+    # Fully idempotent: no account counted, no interest written, no total.
+    assert secondRun.accountsProcessed == 0
+    assert secondRun.interestTransactionsWritten == 0
+    assert secondRun.totalInterest == Decimal("0")
+    db_session.expire_all()
+    account = db_session.get(Account, ACCT_ONE)
+    assert account.curr_bal == Decimal("201.00")       # NOT 202.00 -- not re-accrued
+    assert account.curr_cyc_credit == Decimal("0.00")
+    assert account.curr_cyc_debit == Decimal("0.00")
+    assert _CountInterestTransactions(db_session, ACCT_ONE) == 1  # no duplicate
+
+
+def test_interest_new_period_accrues_again(db_session, record_builder):
+    # Non-vacuity for the idempotency ledger: it is PERIOD-scoped, so a genuinely
+    # NEW run date (a different 10-char tran-id prefix) is NOT suppressed and
+    # accrues normally. This proves the second run of the idempotency test skips
+    # because of the ledger match, not because a second run is always suppressed.
+    spec = {
+        "groupId": "TESTGRP",
+        "cardNum": CARD_ONE,
+        "custId": CUST_ONE,
+        "currBal": Decimal("200.00"),
+        "cycCredit": Decimal("0.00"),
+        "cycDebit": Decimal("0.00"),
+        "balance": Decimal("100.00"),
+        "rate": Decimal("12.00"),
+    }
+    _BuildInterestScenario(record_builder, ACCT_ONE, spec)
+
+    CalculateInterest(db_session, runDate=RUN_DATE)          # period A
+    db_session.expire_all()
+    assert db_session.get(Account, ACCT_ONE).curr_bal == Decimal("201.00")
+
+    laterPeriod = date(2023, 7, 15)                          # period B (new prefix)
+    secondPeriodRun = CalculateInterest(db_session, runDate=laterPeriod)
+    assert secondPeriodRun.accountsProcessed == 1            # accrues again
+    assert secondPeriodRun.interestTransactionsWritten == 1
+    db_session.expire_all()
+    assert db_session.get(Account, ACCT_ONE).curr_bal == Decimal("202.00")  # 201 + 1
+    assert _CountInterestTransactions(db_session, ACCT_ONE) == 2            # one per period
+
+
+# Distinct COMMITTED-fixture keys for the concurrency test, held well away from
+# the rolled-back scenario keys so the surgical cleanup can never touch another
+# test's rows.
+CONCURRENCY_GROUP_ID = "ZZINTCON1"
+CONCURRENCY_ACCT_ID = "98000000001"
+CONCURRENCY_CARD_NUM = "4998000000000001"
+CONCURRENCY_CUST_ID = "980000001"
+
+
+@contextmanager
+def _CommittedInterestGraph():
+    """Yield two INDEPENDENT sessions over a COMMITTED interest scenario.
+
+    Cross-connection row locking (``SELECT ... FOR UPDATE``) can only be
+    exercised against committed data, so this helper steps outside the rolled-back
+    ``db_session`` recipe: it seeds a complete interest graph
+    (``account_group -> customer -> account -> card -> xref -> tran category
+    balance -> disclosure rate``) on its own connection and COMMITS it, then
+    yields two independent sessions on separate connections. On exit it rolls back
+    both sessions and surgically DELETEs exactly the rows it committed (in
+    reverse foreign-key order, including any interest transaction a run posted) on
+    a dedicated cleanup connection, so nothing leaks into another test.
+
+    Yields:
+        A ``(sessionA, sessionB)`` tuple of independent, committed-data sessions.
+    """
+    seedSession = batch_db.SessionLocal()
+    try:
+        seedSession.add(AccountGroup(group_id=CONCURRENCY_GROUP_ID))
+        seedSession.add(
+            Customer(
+                cust_id=CONCURRENCY_CUST_ID,
+                first_name="TEST",
+                last_name="CUSTOMER",
+                addr_line_1="123 TEST STREET",
+            )
+        )
+        seedSession.add(
+            Account(
+                acct_id=CONCURRENCY_ACCT_ID,
+                active_status="Y",
+                curr_bal=Decimal("200.00"),
+                credit_limit=Decimal("5000.00"),
+                cash_credit_limit=Decimal("2000.00"),
+                curr_cyc_credit=Decimal("0.00"),
+                curr_cyc_debit=Decimal("0.00"),
+                group_id=CONCURRENCY_GROUP_ID,
+            )
+        )
+        seedSession.add(
+            Card(
+                card_num=CONCURRENCY_CARD_NUM,
+                acct_id=CONCURRENCY_ACCT_ID,
+                embossed_name="TEST CARDHOLDER",
+                active_status="Y",
+            )
+        )
+        seedSession.add(
+            CardXref(
+                xref_card_num=CONCURRENCY_CARD_NUM,
+                cust_id=CONCURRENCY_CUST_ID,
+                acct_id=CONCURRENCY_ACCT_ID,
+            )
+        )
+        seedSession.add(
+            TranCategoryBalance(
+                acct_id=CONCURRENCY_ACCT_ID,
+                tran_type_cd=INPUT_TYPE_CD,
+                tran_cat_cd=INPUT_CAT_CD,
+                balance=Decimal("100.00"),
+            )
+        )
+        seedSession.add(
+            DisclosureGroup(
+                group_id=CONCURRENCY_GROUP_ID,
+                tran_type_cd=INPUT_TYPE_CD,
+                tran_cat_cd=INPUT_CAT_CD,
+                interest_rate=Decimal("12.00"),
+            )
+        )
+        seedSession.commit()
+    finally:
+        seedSession.close()
+
+    sessionA = batch_db.SessionLocal()
+    sessionB = batch_db.SessionLocal()
+    try:
+        yield sessionA, sessionB
+    finally:
+        sessionA.rollback()
+        sessionB.rollback()
+        sessionA.close()
+        sessionB.close()
+        cleanupSession = batch_db.SessionLocal()
+        try:
+            cleanupSession.execute(
+                delete(Transaction).where(
+                    Transaction.card_num == CONCURRENCY_CARD_NUM
+                )
+            )
+            cleanupSession.execute(
+                delete(DisclosureGroup).where(
+                    DisclosureGroup.group_id == CONCURRENCY_GROUP_ID
+                )
+            )
+            cleanupSession.execute(
+                delete(TranCategoryBalance).where(
+                    TranCategoryBalance.acct_id == CONCURRENCY_ACCT_ID
+                )
+            )
+            cleanupSession.execute(
+                delete(CardXref).where(
+                    CardXref.xref_card_num == CONCURRENCY_CARD_NUM
+                )
+            )
+            cleanupSession.execute(
+                delete(Card).where(Card.card_num == CONCURRENCY_CARD_NUM)
+            )
+            cleanupSession.execute(
+                delete(Account).where(Account.acct_id == CONCURRENCY_ACCT_ID)
+            )
+            cleanupSession.execute(
+                delete(Customer).where(Customer.cust_id == CONCURRENCY_CUST_ID)
+            )
+            cleanupSession.execute(
+                delete(AccountGroup).where(
+                    AccountGroup.group_id == CONCURRENCY_GROUP_ID
+                )
+            )
+            cleanupSession.commit()
+        finally:
+            cleanupSession.close()
+
+
+def test_concurrent_interest_runs_serialize_and_accrue_once():
+    # QA finding M-12: two concurrent interest runs on the same account must
+    # accrue interest EXACTLY ONCE. The per-account SELECT ... FOR UPDATE row
+    # lock serializes them: while run A holds the lock (having accrued but not yet
+    # committed), a second run cannot take the lock -- proven deterministically
+    # with a NOWAIT probe that raises rather than blocking the test. After A
+    # commits, run B takes the lock, its ledger probe finds A's committed interest
+    # and it SKIPS, so the balance is 201.00 (single accrual), never 202.00.
+    with _CommittedInterestGraph() as (sessionA, sessionB):
+        firstRun = CalculateInterest(sessionA, runDate=RUN_DATE)
+        assert firstRun.accountsProcessed == 1
+        assert firstRun.interestTransactionsWritten == 1
+        # A holds the account row lock (uncommitted). A concurrent lock attempt
+        # must fail immediately rather than silently proceeding to double-accrue.
+        lockProbe = (
+            select(Account)
+            .where(Account.acct_id == CONCURRENCY_ACCT_ID)
+            .with_for_update(nowait=True)
+        )
+        with pytest.raises(OperationalError):
+            sessionB.execute(lockProbe).first()
+        sessionB.rollback()  # clear the aborted transaction from the failed probe
+
+        # A commits: its interest transaction and accrued balance become visible.
+        sessionA.commit()
+
+        secondRun = CalculateInterest(sessionB, runDate=RUN_DATE)
+        assert secondRun.accountsProcessed == 0            # skipped: already accrued
+        assert secondRun.interestTransactionsWritten == 0
+        assert secondRun.totalInterest == Decimal("0")
+        sessionB.commit()
+
+        # Verify the COMMITTED end state on a fresh connection BEFORE the context
+        # manager's teardown surgically deletes the committed fixture rows.
+        verifySession = batch_db.SessionLocal()
+        try:
+            account = verifySession.get(Account, CONCURRENCY_ACCT_ID)
+            assert account.curr_bal == Decimal("201.00")   # accrued once, not twice
+            assert _CountInterestTransactions(
+                verifySession, CONCURRENCY_ACCT_ID
+            ) == 1
+        finally:
+            verifySession.close()

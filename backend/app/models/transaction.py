@@ -7,8 +7,8 @@
 # staging variant (same 350-byte layout, DALYTRAN- field prefix). Both layouts
 # are unified into the single ``transactions`` table and distinguished at runtime
 # by the ``status`` column (AAP 0.7.5): daily rows load as PENDING and are
-# promoted to POSTED by the batch posting job (CBTRN02C). This keeps the 10-table
-# target schema while faithfully modelling the daily-staging semantics.
+# promoted to POSTED by the batch posting job (CBTRN02C). This avoids a separate
+# daily-staging table while faithfully modelling the daily-staging semantics.
 """SQLAlchemy 2.0 ORM model for the CardDemo ``transactions`` table.
 
 This module ports the COBOL ``TRAN-RECORD`` copybook (``CVTRA05Y``) and its

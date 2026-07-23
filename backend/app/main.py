@@ -44,18 +44,20 @@ import logging
 import uuid
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
+from urllib.parse import urlsplit
 
 from fastapi import FastAPI, Request, status
 from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.openapi.utils import get_openapi
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 from fastapi.routing import APIRoute
 from pydantic import ValidationError as PydanticValidationError
 from sqlalchemy import text
 from sqlalchemy.exc import DataError, SQLAlchemyError
 from starlette.datastructures import MutableHeaders
+from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from app.core.config import settings
@@ -124,9 +126,11 @@ _DOMAIN_ERROR_STATUS: dict[type[CardDemoError], int] = {
 async def Lifespan(fastapiApp: FastAPI) -> AsyncIterator[None]:
     """Manage async startup and shutdown for the application.
 
-    Startup installs the PAN-masking log filter (QA Issue 5) across the server's
-    log handlers -- deferred to here so uvicorn's access/error handlers already
-    exist -- and is otherwise minimal: the async engine and session factory are
+    Startup installs the sensitive-data masking log filter (QA findings F8 and
+    M-06) across every server log path -- the root, uvicorn, uvicorn.error,
+    uvicorn.access and sqlalchemy.engine loggers, their handlers, and
+    ``logging.lastResort`` -- deferred to here so uvicorn's access/error handlers
+    already exist -- and is otherwise minimal: the async engine and session factory are
     already constructed lazily at import of ``app.db.session`` (no socket is
     opened until first use), and the database schema is owned by Alembic
     migrations -- it is never created here. Shutdown disposes the engine's
@@ -140,10 +144,13 @@ async def Lifespan(fastapiApp: FastAPI) -> AsyncIterator[None]:
     Yields:
         Control back to FastAPI for the lifetime of the running application.
     """
-    # Startup: install the PAN-masking log filter across the server's log
-    # handlers now that uvicorn's access/error handlers exist (QA Issue 5). This
-    # sanitizes card numbers in access logs and exception tracebacks before any
-    # handler emits them; the install is idempotent across restarts.
+    # Startup: install the sensitive-data masking log filter across the server's
+    # loggers and handlers now that uvicorn's access/error handlers exist (QA
+    # findings F8 and M-06). This masks card numbers and redacts secret-bearing
+    # structured extras on every record field -- message, args, exception
+    # traceback (exc_info/exc_text), stack_info and extras -- across the root,
+    # uvicorn, sqlalchemy.engine loggers and lastResort, before any handler emits
+    # them; the install is idempotent across restarts.
     InstallPanMaskingFilter()
     yield
     # Shutdown: release the async connection pool. A specific SQLAlchemy error
@@ -227,25 +234,185 @@ class SecurityHeadersMiddleware:
         await self.app(scope, receive, SendWithSecurityHeaders)
 
 
+# ---------------------------------------------------------------------------
+# CSRF / Origin-check policy constants (QA finding M-02).
+#
+# HTTP methods that are "safe" (read-only / non-mutating) per RFC 9110 and never
+# require a CSRF origin check: a cross-site GET/HEAD/OPTIONS cannot itself change
+# server state, and OPTIONS in particular is the CORS preflight, which must pass
+# through so the browser's real request can proceed.
+# ---------------------------------------------------------------------------
+_CSRF_SAFE_METHODS: frozenset[str] = frozenset({"GET", "HEAD", "OPTIONS", "TRACE"})
+# Session-baseline auth mode (mirrors settings.AUTH_MODE): the CSRF check applies
+# only to the cookie transport, because a bearer token in the Authorization
+# header is not attached automatically by the browser and so is not forgeable
+# cross-site the way an ambient cookie is.
+_CSRF_SESSION_AUTH_MODE = "session"
+# Request headers consulted to establish the initiating origin, in preference
+# order: the Origin header is authoritative and present on all modern cross-site
+# state-changing requests; the Referer is the fallback when Origin is absent.
+_ORIGIN_HEADER_NAME = "origin"
+_REFERER_HEADER_NAME = "referer"
+# Generic 403 body returned when the origin check fails. It intentionally does
+# not echo the offending origin (no reflection) and reads uniformly whether the
+# origin was missing or merely not allow-listed.
+_CSRF_FAILED_DETAIL = "Origin check failed"
+
+
+def _ExtractOrigin(headerValue: str | None) -> str | None:
+    """Reduce an Origin/Referer header to a bare ``scheme://host[:port]`` origin.
+
+    The Origin header is already an origin, but the Referer is a full URL
+    (``scheme://host[:port]/path?query``); both are normalized here to the
+    origin triple so they can be compared against the allow-list on equal terms.
+    A value that cannot be parsed into both a scheme and a host yields ``None``
+    (treated as "no usable origin" by the caller, which then blocks).
+
+    Args:
+        headerValue: The raw Origin or Referer header value, or ``None``.
+
+    Returns:
+        The normalized ``scheme://netloc`` origin, or ``None`` when the value is
+        absent or not a parseable absolute URL.
+    """
+    if not headerValue:
+        return None
+    parsed = urlsplit(headerValue)
+    if not parsed.scheme or not parsed.netloc:
+        return None
+    return f"{parsed.scheme}://{parsed.netloc}"
+
+
+class CsrfProtectionMiddleware(BaseHTTPMiddleware):
+    """Origin-based CSRF guard for cookie-authenticated state changes (M-02).
+
+    Closes the QA M-02 gap that no CSRF/Origin control existed for cookie
+    mutations. Under the session-cookie baseline the browser attaches the auth
+    cookie to EVERY same-site and cross-site request automatically, so a
+    malicious page could drive a state-changing call on the victim's behalf. The
+    ``SameSite=lax`` attribute on the cookie already blocks the cross-site cases
+    the browser recognizes; this middleware adds defense in depth by verifying,
+    for every unsafe cookie-authenticated request, that the initiating origin is
+    one the deployment explicitly trusts.
+
+    The check runs ONLY when all three conditions hold, so it never interferes
+    with legitimate traffic or the JWT alternative:
+
+    1. ``settings.AUTH_MODE`` is the session baseline (cookie transport); the
+       bearer-header alternative is not ambiently attached and is exempt.
+    2. The request carries the session cookie (``settings.SESSION_COOKIE_NAME``);
+       an unauthenticated request has no session to abuse.
+    3. The method is state-changing (not one of :data:`_CSRF_SAFE_METHODS`); the
+       CORS preflight ``OPTIONS`` therefore passes straight through.
+
+    When the check applies, the request's Origin (or, failing that, Referer)
+    must resolve to an origin present in ``settings.BACKEND_CORS_ORIGINS`` -- the
+    same allow-list CORS enforces. A missing/unparseable origin OR one that is
+    not allow-listed is rejected with a generic HTTP 403 that does not reflect
+    the offending value (failing closed).
+    """
+
+    async def dispatch(
+        self,
+        request: Request,
+        call_next: Callable[[Request], Awaitable[Response]],
+    ) -> Response:
+        """Reject disallowed-origin cookie mutations; pass everything else on.
+
+        Args:
+            request: The incoming request being evaluated.
+            call_next: The downstream handler to invoke when the request is
+                allowed to proceed.
+
+        Returns:
+            The downstream response when the request is safe/allowed, or a
+            generic HTTP 403 :class:`~fastapi.responses.JSONResponse` when the
+            origin check applies and fails.
+
+        Note:
+            The snake_case method name ``dispatch`` is an intentional, documented
+            exception to the Ochs PascalCase-methods rule (Ochs 0.8.2 / 0.8.3):
+            it is the Starlette ``BaseHTTPMiddleware`` framework contract -- the
+            ASGI stack invokes ``dispatch(request, call_next)`` by name -- so the
+            name is framework-mandated, not a free choice. The class's own private
+            helpers (``_RequiresOriginCheck``, ``_OriginAllowed``) remain PascalCase.
+        """
+        if self._RequiresOriginCheck(request) and not self._OriginAllowed(request):
+            return JSONResponse(
+                status_code=status.HTTP_403_FORBIDDEN,
+                content={"detail": _CSRF_FAILED_DETAIL},
+            )
+        return await call_next(request)
+
+    def _RequiresOriginCheck(self, request: Request) -> bool:
+        """Report whether this request must pass the origin check.
+
+        Args:
+            request: The incoming request.
+
+        Returns:
+            ``True`` only when the session baseline is active, a session cookie
+            is present, and the method is state-changing; ``False`` otherwise.
+        """
+        if settings.AUTH_MODE != _CSRF_SESSION_AUTH_MODE:
+            return False
+        if request.method in _CSRF_SAFE_METHODS:
+            return False
+        return settings.SESSION_COOKIE_NAME in request.cookies
+
+    def _OriginAllowed(self, request: Request) -> bool:
+        """Report whether the request's origin is on the trusted allow-list.
+
+        The Origin header is preferred; the Referer is the fallback when Origin
+        is absent. The resolved origin must match one of
+        ``settings.BACKEND_CORS_ORIGINS`` exactly (after normalization). A
+        missing or unparseable origin returns ``False`` (fail closed).
+
+        Args:
+            request: The incoming request.
+
+        Returns:
+            ``True`` when a usable origin is present and allow-listed, else
+            ``False``.
+        """
+        rawOrigin = request.headers.get(_ORIGIN_HEADER_NAME)
+        if rawOrigin is None:
+            rawOrigin = request.headers.get(_REFERER_HEADER_NAME)
+        requestOrigin = _ExtractOrigin(rawOrigin)
+        if requestOrigin is None:
+            return False
+        return requestOrigin in settings.BACKEND_CORS_ORIGINS
+
+
 def _ConfigureMiddleware(fastapiApp: FastAPI) -> None:
     """Register cross-cutting middleware on the application.
 
-    Adds Starlette's CORS middleware so the Next.js frontend -- whose origin is
-    listed in ``settings.BACKEND_CORS_ORIGINS`` (for example
-    ``http://localhost:3000``) -- may call the API with credentials.
-    ``allow_credentials`` is enabled because the session-cookie baseline
-    requires the browser to send the auth cookie cross-origin. Session/JWT
-    decoding is still performed by the ``get_current_user`` dependency, not by
-    middleware.
+    Middleware is registered inner-to-outer (Starlette treats the LAST
+    ``add_middleware`` call as the OUTERMOST layer), producing this response
+    chain from outermost to innermost: ``SecurityHeaders`` -> ``CORS`` ->
+    ``CsrfProtection`` -> routers.
 
-    :class:`SecurityHeadersMiddleware` is added last so it is the OUTERMOST
-    layer: it therefore decorates every outgoing response -- including CORS
-    preflight responses and the streaming CSV/PDF downloads -- with the security
-    headers required by QA finding F5.
+    * :class:`CsrfProtectionMiddleware` is added FIRST (innermost) so its
+      origin check for cookie mutations (QA finding M-02) runs just before the
+      router, yet its 403 response still travels back out through CORS (gaining
+      the CORS headers a browser needs to read it) and SecurityHeaders.
+    * Starlette's CORS middleware is added next so the Next.js frontend -- whose
+      origin is listed in ``settings.BACKEND_CORS_ORIGINS`` (for example
+      ``http://localhost:3000``) -- may call the API with credentials.
+      ``allow_credentials`` is enabled because the session-cookie baseline
+      requires the browser to send the auth cookie cross-origin, and CORS being
+      OUTER of CSRF means the preflight ``OPTIONS`` is answered here without ever
+      reaching the CSRF layer. Session/JWT decoding is still performed by the
+      ``get_current_user`` dependency, not by middleware.
+    * :class:`SecurityHeadersMiddleware` is added LAST so it is the OUTERMOST
+      layer: it therefore decorates every outgoing response -- including CORS
+      preflight responses, the CSRF 403, and the streaming CSV/PDF downloads --
+      with the security headers required by QA finding F5.
 
     Args:
         fastapiApp: The application instance to configure.
     """
+    fastapiApp.add_middleware(CsrfProtectionMiddleware)
     fastapiApp.add_middleware(
         CORSMiddleware,
         allow_origins=settings.BACKEND_CORS_ORIGINS,

@@ -73,10 +73,10 @@ FIRST_CARD_NUM = str(BASE_CARD_NUM)  # "4000000000000020" (the index-0 card).
 # lookup for it reproduces the legacy INVALID KEY / not-found condition.
 ABSENT_CARD_NUM = "9999999999999999"
 
-# A non-empty CVV stored on every seeded card so the cvv-protection assertions
-# are meaningful (there IS a value that could leak; the tests prove it never
-# does). This is sample test data, not a real card verification value.
-SEED_CVV_CODE = "123"
+# CVV is never persisted (C-03, AAP 0.7.8): the cards model exposes no cvv
+# column, so cvv is never constructed on seeded cards. The cvv-protection
+# assertions below therefore verify a structural guarantee (the key can never
+# appear in a serialized card response because the field does not exist).
 
 # Default number of cards the browse-cap tests seed under one account: one more
 # than the seven-row page limit, so a correctly capped page leaves a next page.
@@ -138,7 +138,10 @@ async def SeedAccountWithCards(session, acctId=SEED_ACCT_ID, cardCount=OVER_CAP_
         expiration_date=date(2027, 1, 1),
         reissue_date=date(2024, 1, 1),
         addr_zip="12345",
-        group_id="DEFAULT",
+        # group_id left NULL to mirror the golden-master seed quirk (every
+        # ACCT-GROUP-ID is blank); it is incidental to the card tests and NULL
+        # is exempt from the M-16 accounts.group_id foreign key.
+        group_id=None,
     )
     session.add(account)
     cards = []
@@ -148,7 +151,6 @@ async def SeedAccountWithCards(session, acctId=SEED_ACCT_ID, cardCount=OVER_CAP_
             Card(
                 card_num=cardNum,
                 acct_id=acctId,
-                cvv_cd=SEED_CVV_CODE,
                 embossed_name="JANE DOE",
                 expiration_date=date(2027, 1, 1),
                 active_status="Y",
@@ -220,9 +222,9 @@ def test_max_screen_lines_constant_is_seven():
 async def test_get_card_never_exposes_cvv(db_session):
     """A card detail response never carries the CVV (protects CARD-CVV-CD).
 
-    The seeded card stores a real ``cvv_cd``; the ``CardRead`` DTO returned by
-    the view declares no such field, so neither ``cvv_cd`` nor any ``cvv`` key
-    can appear in the serialized output (AAP 0.7.8).
+    The cards model exposes no ``cvv_cd`` column and the ``CardRead`` DTO
+    declares no such field, so neither ``cvv_cd`` nor any ``cvv`` key can appear
+    in the serialized output -- CVV is never persisted (C-03, AAP 0.7.8).
     """
     await SeedAccountWithCards(db_session, cardCount=1)
     service = CardService()

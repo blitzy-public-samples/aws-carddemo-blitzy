@@ -134,10 +134,21 @@ DATE_TEXT_LENGTH = 10
 #
 # The sink file is created 0600 (owner read/write only) inside a 0700 directory
 # (owner-only), so the reconciliation image with its PANs is not world/group
-# readable. Each 430-character record is written on its own line.
+# readable. The dataset is RECFM=F, LRECL=430 (POSTTRAN.jcl): fixed-length
+# records are concatenated with NO delimiter, so the physical artifact is
+# exactly N*430 bytes -- never N*431 with a trailing newline per record (QA
+# finding M-13).
 # ---------------------------------------------------------------------------
 REJECT_DIR_MODE = 0o700
 REJECT_FILE_MODE = 0o600
+
+# Single-byte encoding for the fixed-width DALYREJS record image. The 430-byte
+# record is pure single-byte text (space/zero padding, digits and the
+# zoned-decimal overpunch bytes ``{`` ``}`` ``A``-``R``), so ``ascii`` maps one
+# character to exactly one byte. Using ``ascii`` (not a permissive 8-bit
+# codec) makes any unexpected non-ASCII byte fail loud rather than silently
+# corrupt the fixed-record geometry the reconciliation reader depends on.
+REJECT_RECORD_ENCODING = "ascii"
 
 # Default reject-sink directory: ``<repo>/out/posting_rejects`` (this file is
 # ``<repo>/batch/jobs/post_transactions.py`` -> three parents up is ``<repo>``),
@@ -261,15 +272,12 @@ def PostTransactions(
     result = PostingResult()
     postingTimestamp = _ResolvePostingTimestamp(runDate)
 
-    # Drive off the PENDING daily transactions in a stable key order, mirroring
-    # the sequential DALYTRAN read. The set is materialized up front so that the
-    # in-loop status flips (PENDING -> POSTED) cannot perturb the iteration.
-    statement = (
-        select(Transaction)
-        .where(Transaction.status == STATUS_PENDING)
-        .order_by(Transaction.tran_id)
-    )
-    pendingTransactions = session.scalars(statement).all()
+    # Claim the PENDING daily transactions in a stable key order, mirroring the
+    # sequential DALYTRAN read. The set is materialized up front so that the
+    # in-loop status flips (PENDING -> POSTED) cannot perturb the iteration, and
+    # each row is claimed under a row lock so two concurrent posting runs process
+    # DISJOINT rows and never double-post (QA finding M-12).
+    pendingTransactions = _ClaimPendingTransactions(session)
 
     # Reject records are accumulated in a LOCAL list (never on the returned
     # result) and flushed once to the protected sink below, so the PANs they
@@ -321,6 +329,34 @@ def PostTransactions(
     return result
 
 
+def _ClaimPendingTransactions(session: Session) -> list[Transaction]:
+    """Atomically claim the PENDING daily transactions for this posting run.
+
+    Selects every ``PENDING`` transaction in ascending ``tran_id`` order (the
+    stable key order mirroring the legacy sequential DALYTRAN read) and locks
+    each claimed row FOR UPDATE with ``SKIP LOCKED``. Under concurrency this is
+    the batch analogue of the CICS/VSAM enclave serialization the mainframe
+    relied on: two posting runs executing against the same database each claim a
+    DISJOINT set of rows -- a row already locked by the other run is skipped
+    rather than waited on -- so no daily transaction is ever posted twice and no
+    run blocks the other (QA finding M-12; AAP 0.7.4, 0.7.6). The caller owns the
+    unit of work: the locks are held until the caller commits or rolls back.
+
+    Args:
+        session: The caller-owned synchronous session for this posting run.
+
+    Returns:
+        The claimed, row-locked PENDING transactions, ordered by ``tran_id``.
+    """
+    statement = (
+        select(Transaction)
+        .where(Transaction.status == STATUS_PENDING)
+        .order_by(Transaction.tran_id)
+        .with_for_update(skip_locked=True)
+    )
+    return list(session.scalars(statement).all())
+
+
 def _WriteRejectSink(
     rejectDir: Path, runDate: date | None, rejectRows: list[str]
 ) -> str:
@@ -330,8 +366,12 @@ def _WriteRejectSink(
     LRECL=430). The directory is created owner-only (0700) and the sink file
     owner-only (0600) so the raw record images -- which carry the unmasked card
     number for reconciliation -- are not readable by other users (QA finding
-    #28). Each record is length-normalized to exactly ``REJECT_RECORD_LENGTH``
-    (430) characters and written on its own line. Nothing is logged here.
+    #28). The file is a fixed-record dataset: each record is length-normalized to
+    exactly ``REJECT_RECORD_LENGTH`` (430) characters, encoded to exactly 430
+    single-byte characters, and the records are concatenated with NO delimiter,
+    so the physical artifact is exactly ``len(rejectRows) * 430`` bytes (QA
+    finding M-13). The sink is opened in binary mode to guarantee no newline
+    translation ever perturbs the fixed-record geometry. Nothing is logged here.
 
     Args:
         rejectDir: Destination directory (created 0700 if missing).
@@ -347,12 +387,42 @@ def _WriteRejectSink(
     fileDescriptor = os.open(
         sinkPath, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, REJECT_FILE_MODE
     )
-    with os.fdopen(fileDescriptor, "w", encoding="utf-8") as sinkFile:
+    with os.fdopen(fileDescriptor, "wb") as sinkFile:
         os.fchmod(fileDescriptor, REJECT_FILE_MODE)
         for rejectRow in rejectRows:
-            normalizedRow = rejectRow.ljust(REJECT_RECORD_LENGTH)[:REJECT_RECORD_LENGTH]
-            sinkFile.write(normalizedRow + "\n")
+            sinkFile.write(_EncodeFixedRecord(rejectRow))
     return str(sinkPath)
+
+
+def _EncodeFixedRecord(rejectRow: str) -> bytes:
+    """Encode one reject row to exactly ``REJECT_RECORD_LENGTH`` bytes.
+
+    Normalizes the row to exactly 430 characters (right-padding or truncating as
+    needed, matching the legacy fixed-record discipline) and encodes it with the
+    single-byte :data:`REJECT_RECORD_ENCODING`. Because the record image is pure
+    ASCII, one character maps to exactly one byte, so the encoded record is
+    exactly 430 bytes and no delimiter is appended. A non-ASCII character (which
+    would break the one-byte-per-character invariant and silently corrupt the
+    fixed-record layout) raises ``UnicodeEncodeError`` rather than being written.
+
+    Args:
+        rejectRow: The reject record image (nominally 430 characters).
+
+    Returns:
+        Exactly :data:`REJECT_RECORD_LENGTH` bytes with no trailing delimiter.
+
+    Raises:
+        UnicodeEncodeError: If the record contains a non-ASCII character.
+        ValueError: If the encoded record is not exactly 430 bytes.
+    """
+    normalizedRow = rejectRow.ljust(REJECT_RECORD_LENGTH)[:REJECT_RECORD_LENGTH]
+    encodedRecord = normalizedRow.encode(REJECT_RECORD_ENCODING)
+    if len(encodedRecord) != REJECT_RECORD_LENGTH:
+        raise ValueError(
+            f"reject record must encode to exactly {REJECT_RECORD_LENGTH} "
+            f"bytes, got {len(encodedRecord)}"
+        )
+    return encodedRecord
 
 
 def _ResolveRejectFilename(runDate: date | None) -> str:

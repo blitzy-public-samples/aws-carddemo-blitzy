@@ -34,27 +34,40 @@ Security (AAP 0.7.7; Ochs Rule #3 "no hardcoding secrets")
 The legacy 8-character plaintext ``SEC-USR-PWD`` is replaced by a bcrypt
 ``password_hash``: :func:`app.core.security.HashPassword` produces the digest and
 :func:`app.core.security.VerifyPassword` compares a candidate against it. Hashing
-is applied to the UPPERCASED (whitespace-stripped) plaintext, matching the
-sign-on credential policy -- ``auth_service.Login`` always uppercases the
-submitted password (``FUNCTION UPPER-CASE``, COSGN00C L135-136) before verifying
--- and the seed loader (``batch/loaders/init_users.py``), so that a password set
-here verifies identically at sign-on (QA finding F2). Uppercasing at write time
-is REQUIRED: hashing the raw plaintext instead would silently, permanently lock
-out any account whose password contains a lowercase letter, because that hash
-could never match the always-uppercased sign-on candidate. No plaintext password
-is ever stored, logged, or returned; the :class:`app.schemas.UserRead` /
-:class:`app.schemas.UserSummary` response DTOs carry no password field of any
-kind.
+is applied to the EXACT (whitespace-stripped) plaintext bytes, matching the
+sign-on credential policy -- ``auth_service.Login`` verifies the submitted
+password over its exact bytes -- and the seed loader
+(``batch/loaders/init_users.py``), so a password set here verifies identically
+at sign-on. The legacy ``FUNCTION UPPER-CASE`` password fold (COSGN00C L135-136)
+is deliberately NOT reproduced: it collapses every case variant of a password
+onto a single hash and destroys credential entropy (QA finding M-01). Under AAP
+0.1.1 the password-security uplift is mandatory (faithfully copying the insecure
+legacy handling is "unacceptable"), so under the D1 precedence rule preserving
+case governs. No plaintext password is ever stored, logged, or returned; the
+:class:`app.schemas.UserRead` / :class:`app.schemas.UserSummary` response DTOs
+carry no password field of any kind.
 
-Admin gating (F-002)
---------------------
-The authoritative admin gate is the router dependency ``Depends(require_admin)``
-applied to every ``/admin/users`` endpoint. This service adds an OPTIONAL
-defense-in-depth check: when a caller passes ``currentUser``, each method asserts
-``currentUser.IsAdmin`` and raises :class:`app.core.exceptions.AuthorizationError`
-otherwise. When ``currentUser`` is omitted (``None``) the service trusts the
-router gate and performs no role check, keeping the service focused on business
-logic.
+Admin gating and self-action policy (F-002; QA finding M-04)
+-----------------------------------------------------------
+The router dependency ``Depends(require_admin)`` is the first admin gate, but it
+is no longer the only one. Every public method now takes a MANDATORY
+``currentUser`` (the acting administrator, supplied by the router from
+``require_admin``) and re-checks the role in depth: :meth:`_AssertAdmin` raises
+:class:`app.core.exceptions.AuthorizationError` unless ``currentUser.user_type``
+is :data:`ADMIN_USER_TYPE` ('A'). Making the actor mandatory closes the M-04 gap
+where the check was a no-op whenever a caller omitted the actor, so an internal
+(non-router) caller can no longer bypass the role enforcement.
+
+The acting administrator is also policed against destructive self-actions
+(again M-04, and with no legacy COBOL counterpart -- the mainframe allowed an
+operator to delete or demote itself): an administrator may not delete its own
+account (:meth:`_AssertNotSelfDelete`) nor strip its own administrator role
+(:meth:`_AssertNotSelfDemotion`). These self-guards run AFTER the
+last-administrator invariant (:meth:`_AssertNotLastAdmin`), so removing the sole
+administrator still reports the systemic "last administrator" reason, while a
+self-action that leaves other administrators intact is reported as the
+self-action it is. Both are surfaced as HTTP 409 Conflict, matching the sibling
+last-administrator invariant.
 
 Naming (Ochs resolution, AAP 0.8.3)
 -----------------------------------
@@ -79,7 +92,6 @@ from app.core.security import HashPassword, VerifyPassword
 from app.models.user import User
 from app.repositories import UserRepository
 from app.schemas import (
-    CurrentUser,
     MessageResponse,
     PaginatedResponse,
     PaginationParams,
@@ -142,6 +154,15 @@ ADMIN_USER_TYPE = "A"
 # admin-only user-management screens (AAP 0.1.1 mandatory security uplift).
 MSG_LAST_ADMIN = "Cannot remove the last administrator account..."
 
+# Modern self-action safeguards (QA finding M-04; NO legacy COBOL equivalent --
+# the mainframe let an operator delete or demote its own USRSEC record). An
+# administrator may not delete its own account nor remove its own administrator
+# role; both are surfaced as HTTP 409 Conflict, matching the sibling
+# last-administrator invariant. They are checked AFTER the last-administrator
+# guard so removing the sole admin still reports the systemic reason.
+MSG_CANNOT_DELETE_SELF = "Cannot delete your own account..."
+MSG_CANNOT_DEMOTE_SELF = "Cannot remove your own administrator privileges..."
+
 # ---------------------------------------------------------------------------
 # Success-message action words. The legacy programs build the confirmation with
 # ``STRING 'User ' SEC-USR-ID ' has been <action> ...'`` -- see
@@ -168,9 +189,12 @@ class UserAdminService:
     the active :class:`~sqlalchemy.ext.asyncio.AsyncSession` from the caller and,
     for mutating operations, owns the commit/rollback boundary.
 
-    All operations are admin-only (F-002). The authoritative gate is the router
-    ``require_admin`` dependency; each method also accepts an optional
-    ``currentUser`` for defense-in-depth (see :meth:`_AssertAdmin`).
+    All operations are admin-only (F-002). The router ``require_admin``
+    dependency is the first gate; each method ALSO requires a mandatory
+    ``currentUser`` and re-checks the admin role in depth (see
+    :meth:`_AssertAdmin`), and the two mutating removals police the acting
+    administrator against destructive self-actions (M-04; see
+    :meth:`_AssertNotSelfDelete` and :meth:`_AssertNotSelfDemotion`).
     """
 
     def __init__(self) -> None:
@@ -185,23 +209,71 @@ class UserAdminService:
     # -----------------------------------------------------------------------
     # Private helpers -- admin gating and field validation.
     # -----------------------------------------------------------------------
-    def _AssertAdmin(self, currentUser: CurrentUser | None) -> None:
-        """Enforce the optional service-level admin check (defense-in-depth).
+    def _AssertAdmin(self, currentUser: User) -> None:
+        """Enforce the mandatory service-level admin check (defense in depth).
 
-        The router ``require_admin`` dependency is the authoritative gate. This
-        method only adds a secondary check for callers that choose to pass their
-        identity: it is a no-op when ``currentUser`` is ``None``.
+        The router ``require_admin`` dependency is the first gate; this method is
+        the second, so the role rule holds even for a caller that reaches the
+        service by some path other than the router (QA finding M-04). The acting
+        user's ``user_type`` must equal :data:`ADMIN_USER_TYPE` ('A'); anything
+        else -- including a ``None`` actor, which is treated as unauthorized so a
+        missing identity fails closed rather than raising ``AttributeError`` --
+        is rejected with :class:`app.core.exceptions.AuthorizationError`.
 
         Args:
-            currentUser: The authenticated caller, or ``None`` to defer entirely
-                to the router gate.
+            currentUser: The authenticated acting administrator (the ORM
+                :class:`~app.models.user.User` returned by ``require_admin``).
 
         Raises:
-            AuthorizationError: If ``currentUser`` is supplied and is not an
-                administrator (``user_type`` != 'A').
+            AuthorizationError: If ``currentUser`` is ``None`` or its
+                ``user_type`` is not :data:`ADMIN_USER_TYPE` ('A').
         """
-        if currentUser is not None and not currentUser.IsAdmin:
+        if currentUser is None or currentUser.user_type != ADMIN_USER_TYPE:
             raise AuthorizationError(MSG_ADMIN_REQUIRED)
+
+    def _AssertNotSelfDelete(self, currentUser: User, foundUser: User) -> None:
+        """Block an administrator from deleting its own account (M-04).
+
+        A destructive self-action safeguard with no legacy counterpart. Checked
+        AFTER :meth:`_AssertNotLastAdmin` (see :meth:`DeleteUser`), so an
+        administrator that is the sole remaining admin still reports the systemic
+        "last administrator" reason, while a self-delete that would leave other
+        administrators intact is reported as a self-delete.
+
+        Args:
+            currentUser: The acting administrator.
+            foundUser: The persisted user targeted by the delete.
+
+        Raises:
+            ConflictError: If the acting administrator is the delete target.
+        """
+        if currentUser.user_id == foundUser.user_id:
+            raise ConflictError(MSG_CANNOT_DELETE_SELF)
+
+    def _AssertNotSelfDemotion(
+        self, currentUser: User, foundUser: User, newUserType: str
+    ) -> None:
+        """Block an administrator from removing its own admin role (M-04).
+
+        Fires only when the acting administrator edits its OWN record in a way
+        that strips administrator access ('A' -> non-'A'). A self-edit that keeps
+        the administrator role (for example changing one's own name or password)
+        is allowed. Checked AFTER :meth:`_AssertNotLastAdmin` (see
+        :meth:`UpdateUser`) for the same reason as :meth:`_AssertNotSelfDelete`.
+
+        Args:
+            currentUser: The acting administrator.
+            foundUser: The persisted user targeted by the update.
+            newUserType: The requested post-update role code.
+
+        Raises:
+            ConflictError: If the acting administrator would demote itself.
+        """
+        isSelf = currentUser.user_id == foundUser.user_id
+        isAdmin = foundUser.user_type == ADMIN_USER_TYPE
+        losesAdminRole = newUserType != ADMIN_USER_TYPE
+        if isSelf and isAdmin and losesAdminRole:
+            raise ConflictError(MSG_CANNOT_DEMOTE_SELF)
 
     def _RequireField(
         self, fieldLabel: str, value: object, cobolMessage: str
@@ -364,12 +436,12 @@ class UserAdminService:
         """
         if userUpdate.password is None:
             return False
-        # F2: uppercase the candidate before comparing, matching the sign-on
-        # credential policy (auth_service.Login uppercases via COSGN00C L135-136)
-        # and the uppercasing applied in _ApplyChanges/_BuildUser below. Without
-        # this, change-detection would compare the raw candidate against an
-        # uppercased-then-hashed stored value and report spurious "changes".
-        return not VerifyPassword(userUpdate.password.upper(), user.password_hash)
+        # M-01: verify the candidate over its EXACT bytes, matching the sign-on
+        # policy (auth_service.Login no longer upper-cases the password) and the
+        # exact-byte hashing applied in _ApplyChanges/_BuildUser below. Preserving
+        # case keeps full password entropy; a genuine case change is correctly
+        # detected as a change (the stored hash will not verify the new casing).
+        return not VerifyPassword(userUpdate.password, user.password_hash)
 
     def _DetectChanges(self, user: User, userUpdate: UserUpdate) -> bool:
         """Determine whether the update modifies any stored field.
@@ -398,24 +470,39 @@ class UserAdminService:
     def _ApplyChanges(self, user: User, userUpdate: UserUpdate) -> None:
         """Copy the update DTO onto the ORM instance, re-hashing when needed.
 
-        The password branch is evaluated first so :meth:`_IsPasswordUpdated`
-        reads the original hash before it is overwritten; the password is
-        re-hashed ONLY when a new, different one was supplied, and the plaintext
-        is never stored.
+        The role/password change flags are captured BEFORE any mutation so
+        :meth:`_IsPasswordUpdated` reads the original hash before it is
+        overwritten; the password is re-hashed ONLY when a new, different one was
+        supplied (over its exact bytes -- M-01), and the plaintext is never
+        stored. When the role or the password changes, the user's
+        ``session_version`` is incremented (M-02) so any outstanding session/JWT
+        that embedded the previous generation is revoked at the next request --
+        "rotate on privilege change" -- preventing a demoted admin (or a user
+        whose password was reset) from continuing to act on a stale token.
 
         Args:
             user: The persisted user to mutate in place.
             userUpdate: The validated update DTO.
         """
-        if self._IsPasswordUpdated(user, userUpdate):
-            # F2: hash the UPPERCASED password so a user updated here can sign on
-            # (auth_service.Login always uppercases the candidate per COSGN00C
-            # L135-136). Hashing the raw plaintext instead would silently lock
-            # out any password containing a lowercase letter.
-            user.password_hash = HashPassword(userUpdate.password.upper())
+        # M-02: rotate the target user's session generation when a security-
+        # material field changes (role or password), so any outstanding token
+        # carrying the old generation is revoked ("rotate on privilege change").
+        # Captured before the mutation below so the comparisons read the original
+        # values; the password check reads the ORIGINAL hash before it is
+        # overwritten.
+        roleChanged = userUpdate.user_type != user.user_type
+        passwordChanged = self._IsPasswordUpdated(user, userUpdate)
+        if passwordChanged:
+            # M-01: hash the password over its EXACT bytes (case preserved). The
+            # sign-on path (auth_service.Login) verifies exact bytes, so a
+            # case-sensitive password set here verifies identically at sign-on;
+            # upper-casing would destroy credential entropy.
+            user.password_hash = HashPassword(userUpdate.password)
         user.first_name = userUpdate.first_name
         user.last_name = userUpdate.last_name
         user.user_type = userUpdate.user_type
+        if roleChanged or passwordChanged:
+            user.session_version = user.session_version + 1
 
     def _BuildUser(self, userCreate: UserCreate) -> User:
         """Construct a new ORM user from the add DTO, hashing the password.
@@ -433,14 +520,13 @@ class UserAdminService:
             user_id=userCreate.user_id,
             first_name=userCreate.first_name,
             last_name=userCreate.last_name,
-            # F2: hash the UPPERCASED password so the created user can sign on.
-            # auth_service.Login always uppercases the submitted password
-            # (COSGN00C L135-136 FUNCTION UPPER-CASE), so a raw-hashed password
-            # containing any lowercase letter would never match at sign-on --
-            # the admin would get 201 Created but the account would be silently,
-            # permanently locked out. Uppercasing here makes create and login
-            # consistent (and matches the all-uppercase seed).
-            password_hash=HashPassword(userCreate.password.upper()),
+            # M-01: hash the password over its EXACT bytes (case preserved). The
+            # sign-on path (auth_service.Login) verifies exact bytes, so a
+            # case-sensitive password set at create verifies identically at
+            # sign-on. Upper-casing here would destroy credential entropy (it
+            # collapses every case variant of a password onto a single hash) --
+            # the QA finding M-01 defect.
+            password_hash=HashPassword(userCreate.password),
             user_type=userCreate.user_type,
         )
 
@@ -536,7 +622,7 @@ class UserAdminService:
         self,
         session: AsyncSession,
         params: PaginationParams,
-        currentUser: CurrentUser | None = None,
+        currentUser: User,
     ) -> PaginatedResponse[UserSummary]:
         """List users for the admin browse screen (COUSR00C, CU00).
 
@@ -548,11 +634,15 @@ class UserAdminService:
         Args:
             session: The active async database session.
             params: Page number and page size.
-            currentUser: Optional caller for the defense-in-depth admin check.
+            currentUser: The acting administrator (mandatory; from
+                ``require_admin``), re-checked in depth by :meth:`_AssertAdmin`.
 
         Returns:
             A page of :class:`~app.schemas.UserSummary` items (no password) with
             total-item / total-page / has-next metadata.
+
+        Raises:
+            AuthorizationError: If ``currentUser`` is not an administrator.
         """
         self._AssertAdmin(currentUser)
         allUsers = await self.userRepository.ListUsers(
@@ -568,7 +658,7 @@ class UserAdminService:
         self,
         session: AsyncSession,
         userId: str,
-        currentUser: CurrentUser | None = None,
+        currentUser: User,
     ) -> UserRead:
         """Read a single user for the view / update / delete pre-read.
 
@@ -579,12 +669,14 @@ class UserAdminService:
         Args:
             session: The active async database session.
             userId: The user id to read.
-            currentUser: Optional caller for the defense-in-depth admin check.
+            currentUser: The acting administrator (mandatory; from
+                ``require_admin``), re-checked in depth by :meth:`_AssertAdmin`.
 
         Returns:
             The matching user as a :class:`~app.schemas.UserRead` (no password).
 
         Raises:
+            AuthorizationError: If ``currentUser`` is not an administrator.
             DomainValidationError: If ``userId`` is blank.
             NotFoundError: If no user matches or the read fails.
         """
@@ -597,7 +689,7 @@ class UserAdminService:
         self,
         session: AsyncSession,
         userCreate: UserCreate,
-        currentUser: CurrentUser | None = None,
+        currentUser: User,
     ) -> UserRead:
         """Add a new user (COUSR01C, CU01).
 
@@ -606,18 +698,26 @@ class UserAdminService:
         then inserts and commits. The success confirmation is logged (never the
         password). The commit/rollback boundary is owned by :meth:`_PersistNewUser`.
 
+        The duplicate id is guarded twice: a pre-read rejects an id that already
+        exists, and -- should a concurrent insert slip in between that pre-read
+        and the write (a TOCTOU race) -- the unique-key violation surfaced by
+        :meth:`_PersistNewUser` is mapped to the same "User ID already exist..."
+        conflict, so the race can never create a duplicate or leak a 500.
+
         Args:
             session: The active async database session.
             userCreate: The add-user DTO (first/last name, id, password, type).
-            currentUser: Optional caller for the defense-in-depth admin check.
+            currentUser: The acting administrator (mandatory; from
+                ``require_admin``), re-checked in depth by :meth:`_AssertAdmin`.
 
         Returns:
             The created user as a :class:`~app.schemas.UserRead` (no password).
 
         Raises:
+            AuthorizationError: If ``currentUser`` is not an administrator.
             DomainValidationError: On a blank mandatory field or a non-duplicate
                 database failure ("Unable to Add User...").
-            ConflictError: If the user id already exists.
+            ConflictError: If the user id already exists (pre-read or race).
         """
         self._AssertAdmin(currentUser)
         self._ValidateAddFields(userCreate)
@@ -634,7 +734,7 @@ class UserAdminService:
         session: AsyncSession,
         userId: str,
         userUpdate: UserUpdate,
-        currentUser: CurrentUser | None = None,
+        currentUser: User,
     ) -> UserRead:
         """Update an existing user (COUSR02C, CU02).
 
@@ -648,18 +748,21 @@ class UserAdminService:
             session: The active async database session.
             userId: The path-supplied user id (immutable key).
             userUpdate: The update DTO (first/last name, type, optional password).
-            currentUser: Optional caller for the defense-in-depth admin check.
+            currentUser: The acting administrator (mandatory; from
+                ``require_admin``), re-checked in depth by :meth:`_AssertAdmin`.
 
         Returns:
             The updated user as a :class:`~app.schemas.UserRead` (no password).
 
         Raises:
+            AuthorizationError: If ``currentUser`` is not an administrator.
             DomainValidationError: On a blank field, an unchanged request
                 ("Please modify to update ..."), or a database failure
                 ("Unable to Update User...").
             NotFoundError: If no user matches or the read fails.
             ConflictError: If the update would demote the last administrator
-                (F3 last-administrator invariant).
+                (F3 last-administrator invariant) or would strip the acting
+                administrator's own admin role (M-04 self-demotion guard).
         """
         self._AssertAdmin(currentUser)
         self._ValidateUpdateFields(userId, userUpdate)
@@ -671,6 +774,11 @@ class UserAdminService:
         # still reports "Please modify to update ...", and before the mutation so
         # the FOR UPDATE admin-row lock is held through the commit below.
         await self._AssertNotLastAdmin(session, foundUser, userUpdate.user_type)
+        # M-04: refuse a self-demotion (the acting admin stripping its OWN admin
+        # role). Checked AFTER the last-admin guard so removing the sole admin
+        # still reports the systemic reason; a self-demotion that leaves other
+        # admins intact is reported as the self-action it is.
+        self._AssertNotSelfDemotion(currentUser, foundUser, userUpdate.user_type)
         self._ApplyChanges(foundUser, userUpdate)
         await self._PersistUpdatedUser(session, foundUser)
         LOGGER.info(self._BuildSuccessMessage(foundUser.user_id, UPDATED_ACTION))
@@ -680,7 +788,7 @@ class UserAdminService:
         self,
         session: AsyncSession,
         userId: str,
-        currentUser: CurrentUser | None = None,
+        currentUser: User,
     ) -> MessageResponse:
         """Delete an existing user (COUSR03C, CU03).
 
@@ -693,17 +801,20 @@ class UserAdminService:
         Args:
             session: The active async database session.
             userId: The user id to delete.
-            currentUser: Optional caller for the defense-in-depth admin check.
+            currentUser: The acting administrator (mandatory; from
+                ``require_admin``), re-checked in depth by :meth:`_AssertAdmin`.
 
         Returns:
             A :class:`~app.schemas.MessageResponse` carrying the confirmation.
 
         Raises:
+            AuthorizationError: If ``currentUser`` is not an administrator.
             DomainValidationError: If ``userId`` is blank or the delete fails
                 ("Unable to Update User..." -- the COUSR03C OTHER text).
             NotFoundError: If no user matches or the read fails.
             ConflictError: If the delete would remove the last administrator
-                (F3 last-administrator invariant).
+                (F3 last-administrator invariant) or would delete the acting
+                administrator's own account (M-04 self-delete guard).
         """
         self._AssertAdmin(currentUser)
         self._RequireField(USER_ID_LABEL, userId, MSG_USER_ID_REQUIRED)
@@ -712,6 +823,11 @@ class UserAdminService:
         # signals a delete). The FOR UPDATE admin-row lock is held through the
         # commit in _PersistDeletedUser, serializing concurrent removals.
         await self._AssertNotLastAdmin(session, foundUser, None)
+        # M-04: refuse a self-delete (the acting admin removing its OWN account).
+        # Checked AFTER the last-admin guard so removing the sole admin still
+        # reports the systemic reason; a self-delete that leaves other admins
+        # intact is reported as the self-action it is.
+        self._AssertNotSelfDelete(currentUser, foundUser)
         await self._PersistDeletedUser(session, foundUser)
         successMessage = self._BuildSuccessMessage(foundUser.user_id, DELETED_ACTION)
         LOGGER.info(successMessage)

@@ -346,13 +346,11 @@ async def test_get_transaction_blank_id(admin_client: AsyncClient) -> None:
     """GET /transactions/{blank} is rejected before lookup (CT01, L149).
 
     A whitespace id fails COTRN01C's VALIDATE-INPUT (Tran ID can NOT be empty)
-    which the service raises as ``DomainValidationError`` -> HTTP 422. The exact
-    status is asserted (within the documented accept set) together with the
-    verbatim empty-id message.
+    which the service raises as ``DomainValidationError`` -> HTTP 422. That
+    exact status is asserted together with the verbatim empty-id message.
     """
     response = await admin_client.get(f"{TRANSACTIONS_URL}/ ")
 
-    assert response.status_code in {400, HTTP_NOT_FOUND, HTTP_UNPROCESSABLE}
     assert response.status_code == HTTP_UNPROCESSABLE
     assert "can NOT be empty" in response.text
 
@@ -497,6 +495,39 @@ async def test_add_transaction_after_expiration_103(
     assert DESC_EXPIRED in str(responseBody)
 
 
+@pytest.mark.asyncio
+async def test_add_transaction_overlimit_and_expired_posts_103(
+    admin_client: AsyncClient,
+    seed_data: None,
+) -> None:
+    """A doubly-failing posting (over-limit AND expired) rejects 103, not 102.
+
+    Submits to account 00000000001 an amount far above its 2020.00 credit limit
+    AND an original date of 2099-01-01 -- after its 2025-05-20 expiration -- so
+    BOTH CBTRN02C edits fail at once. 1500-B-LOOKUP-ACCT sets reason 102 then
+    overwrites it with 103 in a SEPARATE sequential ``IF`` (last-write-wins), so
+    the end-to-end reject MUST be code 103 with NO trace of the 102 description.
+    This pins the precedence over HTTP through the real router + service +
+    database (AAP 0.8.1 exact-parity), complementing the pure-unit
+    ``test_run_posting_validation_overlimit_and_expired_prefers_103``.
+    """
+    createPayload = BuildTransactionPayload(
+        acct_id=OVERLIMIT_ACCT_ID,
+        card_num=None,
+        tran_amt=OVERLIMIT_TRAN_AMT,
+        orig_ts=ORIG_DATE_AFTER_EXPIRY,
+        proc_ts=ORIG_DATE_AFTER_EXPIRY,
+    )
+    response = await admin_client.post(TRANSACTIONS_URL, json=createPayload)
+
+    assert response.status_code == HTTP_UNPROCESSABLE
+    responseBody = response.json()
+    assert FindPostingCode(responseBody) == CODE_EXPIRED
+    assert DESC_EXPIRED in str(responseBody)
+    # The over-limit reason (102) must be fully overwritten, not merely tie-broken.
+    assert DESC_OVERLIMIT not in str(responseBody)
+
+
 def test_posting_codes_101_and_109_are_distinct() -> None:
     """Codes 101 and 109 are DISTINCT despite identical descriptions (§0.7.3).
 
@@ -537,7 +568,6 @@ async def test_add_transaction_missing_amount(
 
     response = await admin_client.post(TRANSACTIONS_URL, json=createPayload)
 
-    assert response.status_code in {400, HTTP_UNPROCESSABLE}
     assert response.status_code == HTTP_UNPROCESSABLE
     assert "tran_amt" in response.text
 
@@ -557,7 +587,6 @@ async def test_add_transaction_bad_amount_format(
 
     response = await admin_client.post(TRANSACTIONS_URL, json=createPayload)
 
-    assert response.status_code in {400, HTTP_UNPROCESSABLE}
     assert response.status_code == HTTP_UNPROCESSABLE
     assert "tran_amt" in response.text
     assert "decimal" in response.text.lower()

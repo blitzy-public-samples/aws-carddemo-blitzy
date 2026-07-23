@@ -78,6 +78,50 @@ class CardRepository:
         result = await session.execute(stmt)
         return result.scalar_one_or_none()
 
+    async def GetForUpdate(
+        self,
+        session: AsyncSession,
+        cardNum: str,
+    ) -> Card | None:
+        """Fetch a card by primary key, locked ``FOR UPDATE`` (COCRDUPC READ...UPDATE).
+
+        Emits ``SELECT ... FOR UPDATE`` -- the modern equivalent of the legacy
+        ``READ CARDDAT ... UPDATE`` that COCRDUPC issues before its ``REWRITE``
+        (``9200-WRITE-PROCESSING``) -- and holds the acquired row lock until the
+        caller's transaction commits or rolls back. This serializes concurrent
+        card updates so two independent transactions cannot lose each other's
+        write (QA finding M-10, AAP 0.7.4), exactly as
+        :meth:`app.repositories.account_repo.AccountRepository.GetForUpdate`
+        does for the account update path.
+
+        ``populate_existing()`` is applied so the row's column values are
+        RE-READ from the database even when the instance already lives in the
+        session identity map. The card-update service reads the row once to
+        capture its before-image and then calls this method to lock and re-read
+        it; without ``populate_existing`` the identity-mapped (stale) attributes
+        would be returned and the before-image comparison could not observe a
+        concurrent modification. Forcing the refresh makes the locked read
+        reflect the TRUE current state so the concurrency check is sound.
+
+        Args:
+            session: The active async database session; the acquired row lock is
+                held until this session commits or rolls back.
+            cardNum: The 16-character card-number primary key to lock.
+
+        Returns:
+            The locked :class:`~app.models.card.Card`, or ``None`` when no row
+            carries that card number (the ``INVALID KEY`` / ``NOTFND``
+            condition).
+        """
+        stmt = (
+            select(Card)
+            .where(Card.card_num == cardNum)
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
+        result = await session.execute(stmt)
+        return result.scalar_one_or_none()
+
     async def ListByAcctId(
         self,
         session: AsyncSession,

@@ -3,9 +3,10 @@
 Ported 1:1 from legacy CICS online programs COCRDLIC (card list, CCLI; <=7 rows
 per page per F-004), COCRDSLC (card view, CCDL) and COCRDUPC (card update, CCUP).
 COCRDUPC's READ-UPDATE -> before-image check -> REWRITE is reproduced with a
-GetByCardNum load + submitted-before-image comparison (the card repository exposes
-no locking read; see note). Record layout: CVACT02Y. cvv_cd is never returned;
-card_num is masked. See §0.5.1, §0.7.4, §0.7.8, §0.8.1.
+GetByCardNum load, a before-image snapshot, and a locking re-read via
+GetForUpdate (SELECT ... FOR UPDATE) before the before-image comparison and the
+REWRITE (see note). Record layout: CVACT02Y. cvv_cd is never returned; card_num
+is masked. See §0.5.1, §0.7.4, §0.7.8, §0.8.1.
 
 Design notes (verified against the dependency contracts):
 
@@ -20,14 +21,17 @@ Design notes (verified against the dependency contracts):
   which expose no ``cvv_cd`` field and mask ``card_num`` to its last four digits
   via a Pydantic ``field_serializer``. The service never returns raw ORM
   attributes and never assigns a new ``cvv_cd`` on update (it is preserved).
-* Concurrency: unlike ``account_service`` (whose repository offers a
-  ``GetForUpdate`` ``SELECT ... FOR UPDATE`` locking read), ``CardRepository``
-  exposes NO locking read. COCRDUPC's 9200/9300 READ-UPDATE -> change check ->
-  REWRITE is therefore reproduced optimistically: the current row is loaded,
-  a before-image snapshot is captured, the row is re-read, and the before-image
-  is compared to the freshly-read current values; a difference means a
-  concurrent modification and is rejected. If a locking read is added to
-  ``CardRepository`` later, prefer it to match the legacy READ-for-UPDATE.
+* Concurrency: like ``account_service``, the update path takes a row lock via
+  :meth:`app.repositories.CardRepository.GetForUpdate`
+  (``SELECT ... FOR UPDATE``). COCRDUPC's 9200/9300 READ-UPDATE -> change
+  check -> REWRITE is reproduced as: the current row is loaded and a
+  before-image snapshot captured, the row is re-read UNDER A ROW LOCK
+  (``GetForUpdate`` with ``populate_existing`` so the locked read reflects the
+  true current state), the before-image is compared to the locked current
+  values, and any difference means a concurrent modification and is rejected.
+  Holding the lock from the re-read through the commit both detects a change
+  committed before the lock AND prevents any concurrent write between the check
+  and the commit, so no lost update can occur (QA finding M-10, AAP 0.7.4).
 
 Ochs conventions (AAP 0.8.2 / 0.8.3): the class and its methods use PascalCase,
 local variables use camelCase, module-level constants are ALL_UPPERCASE, and the
@@ -162,16 +166,15 @@ class CardListParams(PaginationParams):
 class _CardImage:
     """Immutable before/after snapshot of the concurrency-relevant card fields.
 
-    Captures exactly the fields COCRDUPC's 9300-CHECK-CHANGE-IN-REC compares
-    (CVV, embossed name, expiration date, and active status) so the optimistic
+    Captures the editable fields COCRDUPC's 9300-CHECK-CHANGE-IN-REC compares
+    (embossed name, expiration date, and active status) so the optimistic
     before-image comparison operates on a stable copy that later ORM mutation
     cannot disturb. Field names stay snake_case to match the ORM/DTO contract
-    (AAP 0.8.3). This structure is module-internal (leading underscore) and is
-    never serialized -- the CVV it holds is used only for the equality check and
-    never leaves the service.
+    (AAP 0.8.3). The legacy CVV field is intentionally absent (QA finding C-03,
+    AAP 0.7.8): the CVV is no longer persisted, so it is neither snapshotted nor
+    compared here. This structure is module-internal and is never serialized.
     """
 
-    cvv_cd: str
     embossed_name: str
     expiration_date: date | None
     active_status: str
@@ -568,16 +571,19 @@ class CardService:
            ``UPPER-CASE`` compare) there is nothing to write, so the legacy
            ``'No change detected with respect to values fetched.'`` (L188) is
            surfaced and no commit occurs.
-        5. Optimistic before-image check (``9300``): re-read the row and compare
-           the current database values against the before-image. Any difference
-           means another actor changed the row first, raising the legacy
-           ``'Record changed by some one else. Please review'`` (L208). Because
-           ``CardRepository`` exposes NO ``GetForUpdate`` (unlike the account
-           path's ``SELECT ... FOR UPDATE``), this re-read + compare is the
-           faithful surrogate for the COBOL ``READ ... UPDATE`` before-image
-           serialization; prefer a locking read here if one is later added.
-        6. Apply the new name/expiry/status and PRESERVE ``cvv_cd`` unchanged,
-           then flush and commit (the service owns the unit-of-work).
+        5. Optimistic before-image check UNDER A ROW LOCK (``9300``): re-read the
+           row with ``SELECT ... FOR UPDATE`` (``CardRepository.GetForUpdate``)
+           and compare the current database values against the before-image. Any
+           difference means another actor changed the row first, raising the
+           legacy ``'Record changed by some one else. Please review'`` (L208).
+           The lock -- the modern equivalent of the COBOL ``READ CARDDAT ...
+           UPDATE`` (AAP 0.7.4) -- is held through the commit, so it both detects
+           a change committed before the lock AND prevents any concurrent
+           transaction from writing between the check and the commit, so no lost
+           update can occur (QA finding M-10).
+        6. Apply the new name/expiry/status, then flush and commit (the service
+           owns the unit-of-work). No CVV is involved: the card row carries no
+           ``cvv_cd`` at all -- it is never persisted (C-03, AAP 0.7.8).
         7. Return the masked, cvv-free detail (legacy ``'Changes committed to
            database'``, L169).
 
@@ -595,11 +601,13 @@ class CardService:
             DomainValidationError: On a card-number, field-edit, or no-change
                 condition (verbatim legacy messages).
             NotFoundError: When no card carries that number
-                (``'Did not find cards for this search condition'``).
+                (``'Did not find cards for this search condition'``), including
+                when a concurrent transaction deletes the row between the
+                before-image load and the locking re-read.
             OptimisticLockError: When the before-image check detects a
                 concurrent modification (``'Record changed by some one else.
                 Please review'``).
-            ConflictError: When the re-read fails
+            ConflictError: When the locking re-read fails
                 (``'Could not lock record for update'``) or the commit fails
                 (``'Update of record failed'``).
         """
@@ -611,11 +619,11 @@ class CardService:
         beforeImage = self._Snapshot(cardRecord)
         if self._IsNoChange(cardUpdate, beforeImage):
             raise DomainValidationError(MSG_NO_CHANGE_DETECTED)
-        await self._RefreshCurrent(session, cardRecord)
-        self._CheckBeforeImage(self._Snapshot(cardRecord), beforeImage)
-        self._ApplyUpdate(cardRecord, cardUpdate)
-        await self._Persist(session, cardRecord)
-        return CardRead.model_validate(cardRecord)
+        lockedRecord = await self._LockCurrent(session, cardRecord)
+        self._CheckBeforeImage(self._Snapshot(lockedRecord), beforeImage)
+        self._ApplyUpdate(lockedRecord, cardUpdate)
+        await self._Persist(session, lockedRecord)
+        return CardRead.model_validate(lockedRecord)
 
     # ------------------------------------------------------------------ #
     # METHOD 3b -- card update BY OWNING ACCOUNT (COCRDUPC via the        #
@@ -850,11 +858,10 @@ class CardService:
             card: The attached ORM card row to snapshot.
 
         Returns:
-            A frozen :class:`_CardImage` of ``cvv_cd``, ``embossed_name``,
+            A frozen :class:`_CardImage` of ``embossed_name``,
             ``expiration_date`` and ``active_status``.
         """
         return _CardImage(
-            cvv_cd=card.cvv_cd,
             embossed_name=card.embossed_name,
             expiration_date=card.expiration_date,
             active_status=card.active_status,
@@ -879,8 +886,9 @@ class CardService:
 
         Mirrors the legacy NEW-vs-OLD comparison that precedes the write: the
         name is compared case-insensitively (``UPPER-CASE`` in COCRDUPC), the
-        expiry and status directly. ``cvv_cd`` is not part of the submitted set
-        (it is preserved), so it is excluded from this compare.
+        expiry and status directly. There is no ``cvv_cd`` in play at all -- the
+        card row never carries one (never persisted; C-03) -- so it is excluded
+        from this compare.
 
         Args:
             cardUpdate: The submitted new field values.
@@ -901,9 +909,10 @@ class CardService:
 
         Compares the just-re-read current row against the before-image the
         service first loaded. The name is folded case-insensitively (legacy
-        ``UPPER-CASE``); ``cvv_cd``, expiry, and status are compared directly --
-        the exact field set COCRDUPC's ``9300-CHECK-CHANGE-IN-REC`` inspects. Any
-        difference means another unit of work committed first.
+        ``UPPER-CASE``); expiry and status are compared directly -- the editable
+        field set COCRDUPC's ``9300-CHECK-CHANGE-IN-REC`` inspects (the legacy
+        CVV comparison is dropped because the CVV is no longer persisted, QA
+        finding C-03). Any difference means another unit of work committed first.
 
         Args:
             currentImage: Snapshot of the row after the concurrency re-read.
@@ -917,46 +926,60 @@ class CardService:
             beforeImage.embossed_name,
         )
         otherChanged = (
-            currentImage.cvv_cd != beforeImage.cvv_cd
-            or currentImage.expiration_date != beforeImage.expiration_date
+            currentImage.expiration_date != beforeImage.expiration_date
             or currentImage.active_status != beforeImage.active_status
         )
         if nameChanged or otherChanged:
             raise OptimisticLockError(MSG_RECORD_CHANGED)
 
     # ------------------------------------------------------------------ #
-    # Concurrency re-read + apply + persist (COCRDUPC 9200-WRITE-PROC).   #
+    # Concurrency locking re-read + apply + persist (COCRDUPC 9200-WRITE  #
+    # -PROC, READ CARDDAT ... UPDATE).                                    #
     # ------------------------------------------------------------------ #
-    @staticmethod
-    async def _RefreshCurrent(session: AsyncSession, card: "Card") -> None:
-        """Re-read the row to obtain its current state (READ ... UPDATE surrogate).
+    async def _LockCurrent(self, session: AsyncSession, card: "Card") -> "Card":
+        """Re-read the row FOR UPDATE, locking it for the rewrite (READ...UPDATE).
 
-        Stands in for the legacy ``READ CARDDAT ... UPDATE`` that both fetched
-        the current record and held it for rewrite. ``CardRepository`` has no
-        ``GetForUpdate`` (see class docstring), so a plain refresh provides the
-        current image; a genuine read failure maps to the legacy
-        ``'Could not lock record for update'``.
+        Replaces the previous lock-free ``session.refresh`` with a genuine
+        ``SELECT ... FOR UPDATE`` via
+        :meth:`app.repositories.CardRepository.GetForUpdate` (QA finding M-10).
+        Holding the acquired row lock from here through the commit serializes
+        concurrent card updates so no lost update can occur after the
+        before-image check passes, reproducing the legacy ``READ CARDDAT ...
+        UPDATE`` -> ``REWRITE`` serialization (AAP 0.7.4). ``GetForUpdate``
+        re-reads the row's columns (``populate_existing``) so the returned image
+        reflects the TRUE current database state for the before-image compare.
 
         Args:
             session: The active async database session that owns ``card``.
-            card: The attached ORM card row to refresh in place.
+            card: The card row previously loaded for its before-image; its key
+                is used to acquire the locking read.
+
+        Returns:
+            The locked, freshly-read :class:`~app.models.card.Card` (the same
+            identity-mapped instance, with its current attributes).
 
         Raises:
-            ConflictError: When the re-read fails
+            NotFoundError: When the row no longer exists -- a concurrent
+                transaction deleted it between the before-image load and the
+                lock (``'Did not find cards for this search condition'``).
+            ConflictError: When the locking read itself fails
                 (``'Could not lock record for update'``).
         """
         try:
-            await session.refresh(card)
-        except SQLAlchemyError as refreshError:
-            raise ConflictError(MSG_COULD_NOT_LOCK) from refreshError
+            lockedCard = await self.cardRepository.GetForUpdate(session, card.card_num)
+        except SQLAlchemyError as lockError:
+            raise ConflictError(MSG_COULD_NOT_LOCK) from lockError
+        if lockedCard is None:
+            raise NotFoundError(MSG_CARD_NOT_FOUND)
+        return lockedCard
 
     @staticmethod
     def _ApplyUpdate(card: "Card", cardUpdate: CardUpdate) -> None:
-        """Copy the submitted fields onto the row, PRESERVING ``cvv_cd``.
+        """Copy the three editable submitted fields onto the row.
 
-        Only the three editable fields are assigned; ``cvv_cd`` is deliberately
-        never touched here (there is no cvv on the request path), so the stored
-        CVV is preserved exactly (AAP 0.7.8).
+        Only the editable fields (embossed name, expiration date, active status)
+        are assigned. There is no CVV on the request path and no CVV column on
+        the row (QA finding C-03, AAP 0.7.8), so nothing sensitive is written.
 
         Args:
             card: The attached ORM card row to mutate.

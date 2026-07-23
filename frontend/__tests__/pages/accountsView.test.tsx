@@ -251,6 +251,23 @@ describe('AccountsViewPage', () => {
         expect(screen.getByText('FICO Score')).toBeInTheDocument();
     });
 
+    // QA N-09 (BMS fidelity): `COACTVWC.cbl` moves CUST-ADDR-LINE-3 into the
+    // ACSCITY screen field, which `COACTVW.bms` labels "City". The third
+    // address line must render under a "City" label (not "Address 3") and the
+    // legacy label must never appear.
+    it('labels the third address line "City" per the legacy ACSCITY mapping', async () => {
+        mockGetAccount.mockResolvedValueOnce(MakeAccountDetail());
+
+        RenderWithProviders(<AccountsViewPage />);
+
+        // The addr_line_3 fixture value ('BLDG C') renders once loaded ...
+        expect(await screen.findByText('BLDG C')).toBeInTheDocument();
+        // ... under a "City" label ...
+        expect(screen.getByText('City')).toBeInTheDocument();
+        // ... and the misleading "Address 3" label is never used.
+        expect(screen.queryByText('Address 3')).not.toBeInTheDocument();
+    });
+
     it('renders an "Active" status chip when active_status is Y', async () => {
         mockGetAccount.mockResolvedValueOnce(
             MakeAccountDetail({ active_status: 'Y' }),

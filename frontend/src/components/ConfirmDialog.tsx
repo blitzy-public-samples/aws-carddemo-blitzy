@@ -33,6 +33,7 @@ import {
     DialogContentText,
     DialogActions,
     Button,
+    Box,
 } from '@mui/material';
 import type { ReactNode } from 'react';
 
@@ -41,6 +42,19 @@ const DEFAULT_CONFIRM_LABEL = 'Confirm';
 
 /** Default label for the cancel (secondary) action button. */
 const DEFAULT_CANCEL_LABEL = 'Cancel';
+
+/** DOM id of the dialog title, referenced by `aria-labelledby`. */
+const TITLE_ID = 'confirm-dialog-title';
+
+/** DOM id of the optional `message` prompt, used as the description target. */
+const MESSAGE_ID = 'confirm-dialog-description';
+
+/**
+ * DOM id of the `children` detail block. When no `message` is supplied, the
+ * children ARE the description, so `aria-describedby` points here instead —
+ * never at a missing element (QA M-29).
+ */
+const DETAIL_ID = 'confirm-dialog-detail';
 
 /**
  * Props for {@link ConfirmDialog}.
@@ -129,27 +143,51 @@ export function ConfirmDialog(props: ConfirmDialogProps) {
         props.onCancel();
     }
 
+    // Resolve which element actually describes the dialog so `aria-describedby`
+    // never dangles (QA M-29). Priority: the `message` prompt when present,
+    // otherwise the `children` detail block (the children-only destructive-
+    // warning path used by /users/delete). When neither is supplied the
+    // attribute is omitted entirely rather than pointing at a missing id.
+    const hasMessage = Boolean(props.message);
+    const hasChildren = props.children !== undefined && props.children !== null;
+    let describedById: string | undefined;
+    if (hasMessage) {
+        describedById = MESSAGE_ID;
+    } else if (hasChildren) {
+        describedById = DETAIL_ID;
+    } else {
+        describedById = undefined;
+    }
+
+    // Destructive dialogs default initial focus to Cancel (the SAFE choice) so a
+    // stray Enter does not immediately confirm a delete (QA M-29). Non-
+    // destructive confirmations keep initial focus on the confirm action.
+    const focusCancel = confirmColor === 'error';
+
     return (
         <Dialog
             open={props.open}
             onClose={HandleCancel}
-            aria-labelledby="confirm-dialog-title"
-            aria-describedby="confirm-dialog-description"
+            aria-labelledby={TITLE_ID}
+            aria-describedby={describedById}
         >
-            <DialogTitle id="confirm-dialog-title">{props.title}</DialogTitle>
+            <DialogTitle id={TITLE_ID}>{props.title}</DialogTitle>
             <DialogContent>
-                {props.message ? (
-                    <DialogContentText id="confirm-dialog-description">
+                {hasMessage ? (
+                    <DialogContentText id={MESSAGE_ID}>
                         {props.message}
                     </DialogContentText>
                 ) : null}
-                {props.children}
+                {hasChildren ? (
+                    <Box id={DETAIL_ID}>{props.children}</Box>
+                ) : null}
             </DialogContent>
             <DialogActions>
                 <Button
                     variant="outlined"
                     onClick={HandleCancel}
                     disabled={loading}
+                    autoFocus={focusCancel}
                 >
                     {cancelLabel}
                 </Button>
@@ -158,7 +196,7 @@ export function ConfirmDialog(props: ConfirmDialogProps) {
                     color={confirmColor}
                     onClick={HandleConfirm}
                     disabled={loading}
-                    autoFocus
+                    autoFocus={!focusCancel}
                 >
                     {confirmLabel}
                 </Button>

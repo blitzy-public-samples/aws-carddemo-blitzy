@@ -94,7 +94,6 @@ BEARER_TOKEN_TYPE = "bearer"
 # Exact HTTP status codes asserted by the tests (never a broad "not 2xx" check).
 HTTP_OK = 200
 HTTP_UNAUTHORIZED = 401
-HTTP_BAD_REQUEST = 400
 HTTP_UNPROCESSABLE_ENTITY = 422
 
 # Stable substrings of the verbatim COSGN00C failure messages. Matching a stable
@@ -286,11 +285,11 @@ async def test_login_unknown_user(client: AsyncClient) -> None:
 
 @pytest.mark.asyncio
 async def test_login_empty_user_id(client: AsyncClient) -> None:
-    """A blank user id is rejected before authentication (HTTP 400 or 422).
+    """A blank user id is rejected before authentication (HTTP 422).
 
-    The ported precedence rejects a blank user id first (COSGN00C L120); whether
-    it surfaces as the service ``DomainValidationError`` or the ``LoginRequest``
-    schema edit, the credentials are never checked.
+    The ported precedence rejects a blank user id first (COSGN00C L120): the
+    ``LoginRequest`` schema edit fires during request parsing, so the
+    credentials are never checked and the API returns HTTP 422.
 
     Args:
         client: The unauthenticated httpx ASGI client.
@@ -298,14 +297,16 @@ async def test_login_empty_user_id(client: AsyncClient) -> None:
     loginPayload = BuildLoginPayload("", SEED_PASSWORD)
     response = await client.post(LOGIN_URL, json=loginPayload)
 
-    assert response.status_code in (HTTP_BAD_REQUEST, HTTP_UNPROCESSABLE_ENTITY)
-    if response.status_code == HTTP_BAD_REQUEST:
-        assert USER_ID_MESSAGE in str(response.json())
+    assert response.status_code == HTTP_UNPROCESSABLE_ENTITY
+    assert USER_ID_MESSAGE in str(response.json())
 
 
 @pytest.mark.asyncio
 async def test_login_empty_password(client: AsyncClient) -> None:
-    """A blank password is rejected before authentication (HTTP 400 or 422).
+    """A blank password is rejected before authentication (HTTP 422).
+
+    The ``LoginRequest`` password field edit fires during request parsing, so
+    the credentials are never checked and the API returns HTTP 422.
 
     Args:
         client: The unauthenticated httpx ASGI client.
@@ -313,7 +314,8 @@ async def test_login_empty_password(client: AsyncClient) -> None:
     loginPayload = BuildLoginPayload(ADMIN_ID, "")
     response = await client.post(LOGIN_URL, json=loginPayload)
 
-    assert response.status_code in (HTTP_BAD_REQUEST, HTTP_UNPROCESSABLE_ENTITY)
+    assert response.status_code == HTTP_UNPROCESSABLE_ENTITY
+    assert "password" in str(response.json()).lower()
 
 
 @pytest.mark.asyncio

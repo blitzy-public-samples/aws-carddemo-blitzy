@@ -6,11 +6,10 @@
  * All monetary fields are `string` (Decimal) - never a number.
  */
 
-/** Bill-payment request (COBIL00). confirm is 'Y'/'N'; payment_amount optional (omitted = full balance). */
+/** Bill-payment request (COBIL00). Inputs are acct_id + confirm ('Y'/'N') only; the server always pays the FULL balance (no partial-payment field). */
 export interface BillPayRequest {
     acct_id: string;
     confirm: string;
-    payment_amount?: string;
 }
 
 /** Bill-payment result. available_credit = credit_limit - curr_bal (F-006). */

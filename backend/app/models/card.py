@@ -20,12 +20,13 @@ Traceability (AAP 0.5.1, 0.8.1): the online programs ``COCRDLIC`` (list),
 ``COCRDSLC`` (view) and ``COCRDUPC`` (update), plus the batch reader
 ``CBACT02C``, all operate on this record layout.
 
-Security (AAP 0.7.8): ``card_num`` and ``cvv_cd`` are sensitive. ``card_num``
-is persisted here in full but MUST be masked (last four digits) by the schema
-layer before it appears in any API response. ``cvv_cd`` is persisted but MUST
-NEVER be serialized into any response schema under any circumstances -- there
-is deliberately no ``cvv`` field on any read DTO (see
-``frontend/src/types/card.ts``).
+Security (AAP 0.7.8; QA finding C-03): ``card_num`` is sensitive and, although
+persisted here in full, MUST be masked (last four digits) by the schema layer
+before it appears in any API response. The legacy card verification value
+(``CARD-CVV-CD``) is DELIBERATELY NOT PERSISTED by this model: the AAP
+prohibition on CVV retention is enforced structurally by the absence of any
+``cvv``/``cvv_cd`` column, so there is nothing to leak, mask, or migrate away.
+No read DTO exposes a CVV field either (see ``frontend/src/types/card.ts``).
 
 Numeric note: this record carries no monetary or rate fields, so no
 ``Decimal`` columns are required here; CardDemo never uses floating point for
@@ -80,9 +81,10 @@ class Card(Base):
         index=True,
     )
 
-    # CARD-CVV-CD PIC 9(03) -> VARCHAR(3).
-    # SENSITIVE: never serialize/return cvv_cd in any API response.
-    cvv_cd: Mapped[str] = mapped_column(String(3))
+    # CARD-CVV-CD PIC 9(03): DELIBERATELY NOT MAPPED (QA finding C-03, AAP 0.7.8).
+    # The card verification value must never be retained, so no column exists for
+    # it. Record-length parity is unaffected: the 3-byte CVV slice is skipped by
+    # the loaders and the trailing FILLER already absorbs record padding.
 
     # CARD-EMBOSSED-NAME PIC X(50) -> the name embossed on the card face.
     embossed_name: Mapped[str] = mapped_column(String(50))
@@ -95,7 +97,9 @@ class Card(Base):
     # CARD-ACTIVE-STATUS PIC X(01) -> fixed-width CHAR(1) (e.g. 'Y'/'N').
     active_status: Mapped[str] = mapped_column(CHAR(1))
 
-    # FILLER PIC X(59) is intentionally dropped. Record-length parity check:
+    # FILLER PIC X(59) is intentionally dropped. Record-length parity check
+    # against the SOURCE VSAM layout (the 3-byte CVV slice still exists in the
+    # fixed-width source record but is NOT persisted -- see the CVV note above):
     # 16 + 11 + 3 + 50 + 10 + 1 + 59 = 150 bytes (RECLN 150 in CVACT02Y).
 
     # --- Relationships -----------------------------------------------------
