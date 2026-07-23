@@ -1,0 +1,164 @@
+# =====================================================================
+# api-gateway - Spring Boot application configuration
+#
+# Edge router (Spring Cloud Gateway Server WebMVC, servlet flavor) plus
+# the local menu-navigation service re-platforming legacy CICS
+# transactions CM00 (COMEN01C) and CA00 (COADM01C).
+#
+# All connection details and downstream base URIs are environment
+# driven so the SAME artifact runs on a developer workstation (defaults
+# below), under Docker Compose (SPRING_PROFILES_ACTIVE=docker), and on
+# Kubernetes (SPRING_PROFILES_ACTIVE=k8s, values from the carddemo-config
+# ConfigMap). The gateway owns NO database - there are intentionally no
+# datasource / JPA / Flyway keys here.
+# =====================================================================
+spring:
+  application:
+    name: api-gateway
+
+  # Externalized pseudo-conversational session state (COMMAREA
+  # replacement, AAP 0.6.3). Spring Session persists the shared
+  # SessionContext in Redis so state survives across the stateless
+  # gateway and downstream services. Host/port are env-overridable.
+  data:
+    redis:
+      host: ${SPRING_DATA_REDIS_HOST:localhost}
+      port: ${SPRING_DATA_REDIS_PORT:6379}
+  session:
+    store-type: redis
+
+  # ------------------------------------------------------------------
+  # Gateway route table - SERVLET Spring Cloud Gateway Server WebMVC.
+  # Namespace MUST be spring.cloud.gateway.server.webmvc.routes
+  # (NEVER the reactive spring.cloud.gateway.routes, NEVER the
+  # deprecated spring.cloud.gateway.mvc.routes).
+  #
+  # 8 downstream routes. Each downstream base URI is env-overridable so
+  # Compose/K8s can point at service DNS. Local defaults use the
+  # per-service host ports published by docker-compose.
+  #
+  # NOTE: /menu/** and /admin/** are deliberately ABSENT here - they are
+  # served LOCALLY by MenuController (legacy CM00/CA00) and must NOT be
+  # routed downstream.
+  # ------------------------------------------------------------------
+  cloud:
+    gateway:
+      server:
+        webmvc:
+          routes:
+            - id: auth-service
+              uri: ${AUTH_SERVICE_URI:http://localhost:8081}
+              predicates:
+                - Path=/auth/**
+            - id: user-service
+              uri: ${USER_SERVICE_URI:http://localhost:8082}
+              predicates:
+                - Path=/users/**
+            - id: account-service
+              uri: ${ACCOUNT_SERVICE_URI:http://localhost:8083}
+              predicates:
+                - Path=/accounts/**
+            - id: card-service
+              uri: ${CARD_SERVICE_URI:http://localhost:8084}
+              predicates:
+                - Path=/cards/**
+            - id: transaction-service
+              uri: ${TRANSACTION_SERVICE_URI:http://localhost:8085}
+              predicates:
+                - Path=/transactions/**
+            - id: billpay-service
+              uri: ${BILLPAY_SERVICE_URI:http://localhost:8086}
+              predicates:
+                - Path=/billpay/**
+            - id: reporting-service
+              uri: ${REPORTING_SERVICE_URI:http://localhost:8087}
+              predicates:
+                - Path=/reports/**
+            - id: batch-service
+              uri: ${BATCH_SERVICE_URI:http://localhost:8088}
+              predicates:
+                - Path=/batch/**
+
+server:
+  port: 8080
+
+# --------------------------------------------------------------------
+# Observability (AAP 0.7.5). The gateway is the distributed-tracing
+# entry point, so it samples at 1.0 locally.
+#
+# NOTE: do NOT add management.metrics.tags.application here - the shared
+# carddemo-common ObservabilityConfig already registers that common tag
+# via a MeterRegistryCustomizer; setting it here would duplicate it.
+# --------------------------------------------------------------------
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,prometheus
+  endpoint:
+    health:
+      probes:
+        enabled: true
+      show-details: when-authorized
+  health:
+    livenessstate:
+      enabled: true
+    readinessstate:
+      enabled: true
+  tracing:
+    sampling:
+      probability: 1.0
+
+# ====================================================================
+# Docker Compose profile (SPRING_PROFILES_ACTIVE=docker).
+# Redis and every downstream service resolve by compose service DNS on
+# their INTERNAL container port 8080. The full route table is repeated
+# because Spring replaces (does not merge) the routes list for the
+# active profile.
+# ====================================================================
+---
+spring:
+  config:
+    activate:
+      on-profile: docker
+  data:
+    redis:
+      host: ${SPRING_DATA_REDIS_HOST:redis}
+      port: ${SPRING_DATA_REDIS_PORT:6379}
+  cloud:
+    gateway:
+      server:
+        webmvc:
+          routes:
+            - id: auth-service
+              uri: ${AUTH_SERVICE_URI:http://auth-service:8080}
+              predicates:
+                - Path=/auth/**
+            - id: user-service
+              uri: ${USER_SERVICE_URI:http://user-service:8080}
+              predicates:
+                - Path=/users/**
+            - id: account-service
+              uri: ${ACCOUNT_SERVICE_URI:http://account-service:8080}
+              predicates:
+                - Path=/accounts/**
+            - id: card-service
+              uri: ${CARD_SERVICE_URI:http://card-service:8080}
+              predicates:
+                - Path=/cards/**
+            - id: transaction-service
+              uri: ${TRANSACTION_SERVICE_URI:http://transaction-service:8080}
+              predicates:
+                - Path=/transactions/**
+            - id: billpay-service
+              uri: ${BILLPAY_SERVICE_URI:http://billpay-service:8080}
+              predicates:
+                - Path=/billpay/**
+            - id: reporting-service
+              uri: ${REPORTING_SERVICE_URI:http://reporting-service:8080}
+              predicates:
+                - Path=/reports/**
+            - id: batch-service
+              uri: ${BATCH_SERVICE_URI:http://batch-service:8080}
+              predicates:
+                - Path=/batch/**
