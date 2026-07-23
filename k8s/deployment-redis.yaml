@@ -1,0 +1,73 @@
+# =============================================================================
+# Redis 8 Deployment — CardDemo externalized Spring Session / cache store.
+#
+# :purpose: Runs a single in-cluster Redis 8 instance that backs Spring Session,
+#           the replacement for the legacy CICS COMMAREA pseudo-conversational
+#           state. Backend services reach it through the ``redis`` Service using
+#           ``SPRING_DATA_REDIS_HOST=redis`` and ``SPRING_DATA_REDIS_PORT=6379``.
+# :output:  A Deployment named ``redis`` scheduling one pod that serves the
+#           Redis protocol on container port 6379 (named ``redis``).
+# :notes:   Redis 8 runs without authentication by default, so no
+#           ``--requirepass`` argument and no Secret/ConfigMap environment are
+#           wired here. Session data is transient — losing it only forces users
+#           to re-authenticate — so it is kept on an ephemeral ``emptyDir``
+#           volume rather than a PersistentVolumeClaim.
+# =============================================================================
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: redis
+  labels:
+    app: redis
+    app.kubernetes.io/part-of: carddemo
+    app.kubernetes.io/component: cache
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: redis
+  template:
+    metadata:
+      labels:
+        app: redis
+        app.kubernetes.io/part-of: carddemo
+        app.kubernetes.io/component: cache
+    spec:
+      containers:
+        - name: redis
+          image: redis:8
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 6379
+              name: redis
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 256Mi
+          volumeMounts:
+            - name: redis-data
+              mountPath: /data
+          readinessProbe:
+            exec:
+              command:
+                - redis-cli
+                - ping
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 6
+          livenessProbe:
+            exec:
+              command:
+                - redis-cli
+                - ping
+            initialDelaySeconds: 15
+            periodSeconds: 15
+            timeoutSeconds: 3
+            failureThreshold: 6
+      volumes:
+        - name: redis-data
+          emptyDir: {}

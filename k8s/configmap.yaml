@@ -1,0 +1,19 @@
+---
+# Non-secret runtime config; credentials live in secret.yaml.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: carddemo-config
+  labels:
+    app.kubernetes.io/part-of: carddemo
+    app.kubernetes.io/component: config
+data:
+  SPRING_PROFILES_ACTIVE: "k8s"
+  SPRING_DATASOURCE_URL: "jdbc:postgresql://postgres:5432/carddemo"
+  SPRING_DATA_REDIS_HOST: "redis"
+  SPRING_DATA_REDIS_PORT: "6379"
+  POSTGRES_DB: "carddemo"
+  MANAGEMENT_ENDPOINTS_WEB_EXPOSURE_INCLUDE: "health,info,metrics,prometheus"
+  MANAGEMENT_ENDPOINT_HEALTH_PROBES_ENABLED: "true"
+  MANAGEMENT_ENDPOINT_HEALTH_SHOW_DETAILS: "always"
+  MANAGEMENT_TRACING_SAMPLING_PROBABILITY: "1.0"

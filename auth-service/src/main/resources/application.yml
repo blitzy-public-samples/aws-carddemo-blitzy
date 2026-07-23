@@ -1,0 +1,86 @@
+# =====================================================================
+# auth-service - Spring Boot application configuration
+#
+# REST re-platforming of legacy COBOL sign-on COSGN00C (CICS CC00,
+# VSAM KSDS USRSEC). All connection settings are environment-driven so
+# the same artifact runs under Docker Compose (SPRING_PROFILES_ACTIVE=
+# docker) and Kubernetes (SPRING_PROFILES_ACTIVE=k8s); the defaults
+# below target a developer workstation.
+# =====================================================================
+spring:
+  application:
+    name: auth-service
+
+  datasource:
+    url: ${SPRING_DATASOURCE_URL:jdbc:postgresql://localhost:5432/carddemo}
+    username: ${SPRING_DATASOURCE_USERNAME:carddemo}
+    password: ${SPRING_DATASOURCE_PASSWORD:carddemo}
+    driver-class-name: org.postgresql.Driver
+
+  jpa:
+    open-in-view: false
+    hibernate:
+      # Flyway owns the schema; Hibernate only validates entity mapping.
+      ddl-auto: validate
+
+  # Flyway schema + seed migrations for the security_users table.
+  # NOTE: this service shares the 'carddemo' database with the other
+  # microservices. The Flyway version-reconciliation decision (service-
+  # local vs. consolidated schema, and whether a per-service history
+  # table is used) is owned by the db/migration migration author and
+  # recorded in docs/decision-log.md. Keep this config standard.
+  flyway:
+    enabled: true
+    locations: classpath:db/migration
+    baseline-on-migrate: true
+
+  data:
+    redis:
+      host: ${SPRING_DATA_REDIS_HOST:localhost}
+      port: ${SPRING_DATA_REDIS_PORT:6379}
+
+  # Externalized pseudo-conversational session (COMMAREA replacement).
+  session:
+    store-type: redis
+
+server:
+  port: 8080
+
+# Observability (AAP 0.7.5): health/info/prometheus exposure + probes.
+# The common 'application' metrics tag is added by carddemo-common's
+# ObservabilityConfig - do not duplicate it here.
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,prometheus
+  endpoint:
+    health:
+      probes:
+        enabled: true
+      show-details: always
+  health:
+    livenessstate:
+      enabled: true
+    readinessstate:
+      enabled: true
+  tracing:
+    sampling:
+      probability: 1.0
+
+# ---------------------------------------------------------------------
+# Docker Compose profile (SPRING_PROFILES_ACTIVE=docker).
+# Compose supplies explicit env vars; these defaults let the service
+# resolve the compose service hostnames even if a var is unset.
+# ---------------------------------------------------------------------
+---
+spring:
+  config:
+    activate:
+      on-profile: docker
+  datasource:
+    url: ${SPRING_DATASOURCE_URL:jdbc:postgresql://postgres:5432/carddemo}
+  data:
+    redis:
+      host: ${SPRING_DATA_REDIS_HOST:redis}
+      port: ${SPRING_DATA_REDIS_PORT:6379}

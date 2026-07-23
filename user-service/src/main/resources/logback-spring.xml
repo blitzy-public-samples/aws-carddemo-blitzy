@@ -1,0 +1,57 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  user-service structured logging (Observability rule, AAP 0.7.5).
+
+  Emits structured JSON (Logstash format) in containerized/deployed
+  profiles (docker, k8s, prod) using Spring Boot's built-in
+  StructuredLogEncoder - no third-party logstash-logback-encoder is on
+  the classpath. The Logstash format automatically includes every MDC
+  entry, so the business correlation id (MDC key "correlationId", set by
+  carddemo-common CorrelationIdContext) and the Micrometer Tracing
+  identifiers ("traceId", "spanId") appear as JSON fields.
+
+  Locally (no docker/k8s/prod profile active) it emits a human-readable
+  line that explicitly renders the same three MDC keys.
+-->
+<configuration>
+
+    <!-- Spring Boot logback conventions (charset, conversion words). -->
+    <include resource="org/springframework/boot/logging/logback/defaults.xml"/>
+
+    <!-- Application name from the Spring Environment, for correlation. -->
+    <springProperty scope="context" name="appName" source="spring.application.name" defaultValue="user-service"/>
+
+    <!-- Structured JSON console (Logstash format); MDC auto-included. -->
+    <appender name="JSON_CONSOLE" class="ch.qos.logback.core.ConsoleAppender">
+        <encoder class="org.springframework.boot.logging.logback.StructuredLogEncoder">
+            <format>logstash</format>
+            <charset>${CONSOLE_LOG_CHARSET:-UTF-8}</charset>
+        </encoder>
+    </appender>
+
+    <!-- Human-readable console for local development; explicit MDC ids. -->
+    <appender name="TEXT_CONSOLE" class="ch.qos.logback.core.ConsoleAppender">
+        <encoder>
+            <charset>${CONSOLE_LOG_CHARSET:-UTF-8}</charset>
+            <pattern>%d{yyyy-MM-dd'T'HH:mm:ss.SSSXXX} %-5level [${appName}] [correlationId=%X{correlationId:-},traceId=%X{traceId:-},spanId=%X{spanId:-}] %logger{36} - %msg%n</pattern>
+        </encoder>
+    </appender>
+
+    <!-- Containerized / deployed profiles: JSON logs. -->
+    <springProfile name="docker,k8s,prod">
+        <root level="INFO">
+            <appender-ref ref="JSON_CONSOLE"/>
+        </root>
+    </springProfile>
+
+    <!-- Local / default (no docker/k8s/prod profile): readable text logs. -->
+    <springProfile name="!docker &amp; !k8s &amp; !prod">
+        <root level="INFO">
+            <appender-ref ref="TEXT_CONSOLE"/>
+        </root>
+    </springProfile>
+
+    <!-- Application package logging level. -->
+    <logger name="com.carddemo" level="INFO"/>
+
+</configuration>

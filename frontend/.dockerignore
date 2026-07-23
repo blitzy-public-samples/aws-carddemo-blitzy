@@ -1,0 +1,66 @@
+# =============================================================================
+# frontend/.dockerignore
+# -----------------------------------------------------------------------------
+# Docker build-context exclusions for the CardDemo React 19 frontend image.
+#
+# Companion to frontend/Dockerfile (multi-stage build: a Node build stage that
+# runs `npm ci` + `npm run build`, followed by an nginx stage that serves the
+# compiled static assets). Everything NOT excluded here is transferred to the
+# Docker daemon as the build context, so this file keeps that context both
+# SMALL and CORRECT.
+#
+# Why this matters: the host's node_modules must NEVER be copied into the image.
+# The builder stage installs a fresh, platform-correct dependency tree with
+# `npm ci`; copying a host node_modules both bloats the context and can inject
+# OS/arch-specific native binaries that break the container build.
+#
+# The following build inputs are intentionally NOT ignored and REMAIN copyable
+# by the Dockerfile:
+#   package.json, package-lock.json, vite.config.ts, tsconfig.json,
+#   tsconfig.node.json, index.html, nginx.conf, src/, public/
+#
+# Patterns are kept consistent with the repository-root .gitignore (Respecting
+# .gitignore rule, AAP 0.7.2); this file complements it, it does not replace it.
+# =============================================================================
+
+# --- Installed dependencies (reinstalled inside the image via `npm ci`) ------
+node_modules
+
+# --- Build output (produced inside the image, never copied from the host) ----
+dist
+build
+
+# --- Test and build caches ---------------------------------------------------
+coverage
+.vite
+
+# --- Version control ---------------------------------------------------------
+.git
+.gitignore
+
+# --- Docker files themselves (not needed inside the build context) -----------
+Dockerfile
+.dockerignore
+
+# --- Logs --------------------------------------------------------------------
+*.log
+npm-debug.log*
+
+# --- Local environment files (never bake local env into the image) -----------
+# VITE_API_BASE_URL is supplied at build time as a Docker build ARG, not a file.
+.env
+.env.*
+
+# --- OS / editor cruft -------------------------------------------------------
+.DS_Store
+.vscode
+.idea
+
+# --- Documentation and tests (not required to build the image) ---------------
+# Keeps the context lean; jest tests are not executed during the image build.
+README*.md
+**/*.test.ts
+**/*.test.tsx
+**/*.spec.ts
+**/*.spec.tsx
+**/__tests__

@@ -1,0 +1,123 @@
+# =============================================================================
+# .gitignore — AWS CardDemo modernized target
+# Java 21 / Spring Boot (multi-module Maven) + React 19 / Node.js 24 (Vite)
+#
+# Baseline: GitHub community Java + Maven + Node templates, merged and
+# de-duplicated for this repository. Directory patterns are intentionally
+# unanchored so they match at any depth: the repository root, the frontend/
+# workspace, and every Maven module's build output.
+#
+# Legacy mainframe sources (app/), reference assets (diagrams/, samples/),
+# and all committed configuration/templates remain tracked — see the final
+# "Do NOT ignore" section.
+# =============================================================================
+
+# ---- Java / Maven ----
+# Per-module build output (matches target/ in every Maven module)
+target/
+# Compiled bytecode and packaged binaries
+*.class
+*.jar
+# Keep the committed Maven Wrapper jar even though *.jar is ignored above
+!.mvn/wrapper/maven-wrapper.jar
+*.war
+*.ear
+*.nar
+# Maven Wrapper scratch
+.mvn/timing.properties
+# maven-release-plugin / build-helper scratch files
+pom.xml.tag
+pom.xml.releaseBackup
+pom.xml.versionsBackup
+pom.xml.next
+release.properties
+dependency-reduced-pom.xml
+buildNumber.properties
+# JVM fatal-error / replay logs
+hs_err_pid*
+replay_pid*
+
+# ---- Node / React ----
+# Dependency directories (root and frontend/ and any nested workspace)
+node_modules/
+jspm_packages/
+# Build output (Vite dist/, CRA build/, SSR output, Vite cache)
+dist/
+dist-ssr/
+build/
+.vite/
+# Package tarballs from `npm pack`
+*.tgz
+# npm / yarn / pnpm caches and lint cache
+.npm/
+.eslintcache
+# Test coverage output (root and frontend/)
+coverage/
+.nyc_output/
+*.lcov
+# Node debug logs (rotated variants such as npm-debug.log.1 are covered here)
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+lerna-debug.log*
+.pnpm-debug.log*
+
+# ---- IDE ----
+# IntelliJ IDEA
+.idea/
+*.iml
+*.iws
+*.ipr
+# Eclipse
+.settings/
+.project
+.classpath
+.factorypath
+.apt_generated/
+bin/
+# Visual Studio Code — ignore per-user settings but keep the shared
+# recommended-extensions list so the whole team gets the same tooling hints
+.vscode/*
+!.vscode/extensions.json
+
+# ---- Secrets & Env ----
+# Never commit real credentials or local environment overrides
+.env
+.env.*
+# Allow a committed, non-secret template
+!.env.example
+# Local-only overrides (e.g., Vite *.local, application-local.*)
+*.local
+
+# ---- Logs & Runtime ----
+*.log
+logs/
+*.tmp
+
+# ---- OS ----
+# macOS
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+# Windows
+Thumbs.db
+Thumbs.db:encryptable
+ehthumbs.db
+desktop.ini
+$RECYCLE.BIN/
+
+# ---- Do NOT ignore (intentionally tracked config, templates & sources) ----
+# The patterns above deliberately do NOT match the following committed files;
+# they are listed here as a maintenance reminder so future edits keep them
+# trackable:
+#   - k8s/*.yaml (including k8s/secret.yaml — a placeholder TEMPLATE, not a real secret)
+#   - observability/prometheus.yml, observability/grafana-dashboard.json
+#   - docker-compose.yml
+#   - pom.xml (root aggregator and per-module) — only pom.xml.* scratch is ignored
+#   - frontend/package.json and frontend/package-lock.json
+#   - db/migration/*.sql (Flyway schema and seed scripts)
+#   - application.yml and logback-spring.xml (per-service config)
+#   - .env.example and .mvn/wrapper/maven-wrapper.jar (re-included via negations above)
+#   - legacy sources: app/, diagrams/, samples/ (includes samples/**/*.zip runtime bundles)

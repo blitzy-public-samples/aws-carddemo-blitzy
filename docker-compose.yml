@@ -1,0 +1,277 @@
+---
+# CardDemo — local orchestration for the modernized stack.
+#
+# Brings up PostgreSQL, Redis, the nine Spring Boot microservices, the React
+# frontend, and the Prometheus + Grafana observability stack on a single
+# user-defined bridge network so every container resolves the others by their
+# service name via Docker's embedded DNS.
+#
+# Usage:
+#   docker compose up --build   # build images and start the stack
+#   docker compose config         # render/validate the effective configuration
+#   docker compose down -v        # stop and remove containers + named volumes
+#
+# The credentials below are non-production, local-only placeholders. Real
+# secrets must never be committed (see .gitignore); override them for any
+# non-local deployment.
+
+name: carddemo
+
+# ---------------------------------------------------------------------------
+# Shared definition for every runnable Spring Boot service. Each service block
+# merges this anchor and then supplies only its own build context and the
+# distinct host port it publishes. All services listen on 8080 internally.
+# ---------------------------------------------------------------------------
+x-backend-service: &backend-service
+  # Gate startup on the datastores being fully ready, not merely started.
+  depends_on:
+    postgres:
+      condition: service_healthy
+    redis:
+      condition: service_healthy
+  environment:
+    # Activates each service's application-docker.yml profile.
+    SPRING_PROFILES_ACTIVE: docker
+    # Force a consistent internal port so the published mapping holds.
+    SERVER_PORT: "8080"
+    # Datasource points at the postgres service by its compose DNS name.
+    SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/carddemo
+    SPRING_DATASOURCE_USERNAME: carddemo
+    SPRING_DATASOURCE_PASSWORD: carddemo
+    # Spring Session state store (externalized COMMAREA equivalent).
+    SPRING_DATA_REDIS_HOST: redis
+    SPRING_DATA_REDIS_PORT: "6379"
+  # Liveness/readiness via the Spring Boot Actuator health endpoint.
+  healthcheck:
+    test:
+      - CMD-SHELL
+      - curl -f http://localhost:8080/actuator/health || exit 1
+    interval: 15s
+    timeout: 5s
+    retries: 5
+    start_period: 60s
+  networks:
+    - carddemo-net
+  restart: unless-stopped
+
+services:
+
+  # =========================================================================
+  # Infrastructure
+  # =========================================================================
+
+  postgres:
+    image: postgres:18
+    environment:
+      POSTGRES_DB: carddemo
+      POSTGRES_USER: carddemo
+      POSTGRES_PASSWORD: carddemo
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - pg_isready -U carddemo -d carddemo
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    networks:
+      - carddemo-net
+    restart: unless-stopped
+
+  redis:
+    image: redis:8
+    command: ["redis-server", "--appendonly", "yes"]
+    ports:
+      - "6379:6379"
+    volumes:
+      - redisdata:/data
+    healthcheck:
+      test:
+        - CMD
+        - redis-cli
+        - ping
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    networks:
+      - carddemo-net
+    restart: unless-stopped
+
+  # =========================================================================
+  # Backend microservices (built from each module's Dockerfile on
+  # eclipse-temurin:21-jre). carddemo-common is a shared library and is
+  # intentionally NOT run as a container — it is built into these services.
+  # api-gateway is the only service the frontend talks to; the rest publish a
+  # host port purely for local debugging.
+  # =========================================================================
+
+  api-gateway:
+    <<: *backend-service
+    build:
+      context: ./api-gateway
+    ports:
+      - "8080:8080"
+
+  auth-service:
+    <<: *backend-service
+    build:
+      context: ./auth-service
+    ports:
+      - "8081:8080"
+
+  user-service:
+    <<: *backend-service
+    build:
+      context: ./user-service
+    ports:
+      - "8082:8080"
+
+  account-service:
+    <<: *backend-service
+    build:
+      context: ./account-service
+    ports:
+      - "8083:8080"
+
+  card-service:
+    <<: *backend-service
+    build:
+      context: ./card-service
+    ports:
+      - "8084:8080"
+
+  transaction-service:
+    <<: *backend-service
+    build:
+      context: ./transaction-service
+    ports:
+      - "8085:8080"
+
+  billpay-service:
+    <<: *backend-service
+    build:
+      context: ./billpay-service
+    ports:
+      - "8086:8080"
+
+  reporting-service:
+    <<: *backend-service
+    build:
+      context: ./reporting-service
+    ports:
+      - "8087:8080"
+
+  batch-service:
+    <<: *backend-service
+    build:
+      context: ./batch-service
+    ports:
+      - "8088:8080"
+
+  # =========================================================================
+  # Frontend (React 19 SPA served by nginx). VITE_* variables are baked into
+  # the bundle at build time, so the gateway URL is supplied as a build arg;
+  # it is also exposed at runtime for any runtime-config consumers. The browser
+  # reaches the gateway on the host-published port, hence localhost:8080.
+  # =========================================================================
+
+  frontend:
+    build:
+      context: ./frontend
+      args:
+        VITE_API_BASE_URL: http://localhost:8080
+    environment:
+      VITE_API_BASE_URL: http://localhost:8080
+    ports:
+      - "3000:80"
+    depends_on:
+      - api-gateway
+    networks:
+      - carddemo-net
+    restart: unless-stopped
+
+  # =========================================================================
+  # Observability — Prometheus scrapes each service's /actuator/prometheus
+  # endpoint; Grafana is auto-provisioned (datasource + dashboard) from inline
+  # configs and the dashboard template under observability/.
+  # =========================================================================
+
+  prometheus:
+    image: prom/prometheus
+    volumes:
+      - ./observability/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheusdata:/prometheus
+    ports:
+      - "9090:9090"
+    networks:
+      - carddemo-net
+    restart: unless-stopped
+
+  grafana:
+    image: grafana/grafana
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_USERS_ALLOW_SIGN_UP: "false"
+    configs:
+      - source: grafana_datasource
+        target: /etc/grafana/provisioning/datasources/prometheus.yml
+      - source: grafana_dashboard_provider
+        target: /etc/grafana/provisioning/dashboards/carddemo.yml
+    volumes:
+      # The provider above loads every dashboard JSON from this directory.
+      - ./observability/grafana-dashboard.json:/var/lib/grafana/dashboards/carddemo-dashboard.json:ro
+      - grafanadata:/var/lib/grafana
+    # Container port 3000; published on 3001 (frontend uses 3000).
+    ports:
+      - "3001:3000"
+    depends_on:
+      - prometheus
+    networks:
+      - carddemo-net
+    restart: unless-stopped
+
+networks:
+  carddemo-net:
+    driver: bridge
+
+volumes:
+  pgdata:
+  redisdata:
+  prometheusdata:
+  grafanadata:
+
+# ---------------------------------------------------------------------------
+# Inline Grafana provisioning. Keeping this content in the compose file avoids
+# adding provisioning files to the observability/ module while still wiring the
+# Prometheus datasource and the dashboard provider on first boot.
+# ---------------------------------------------------------------------------
+configs:
+  grafana_datasource:
+    content: |
+      apiVersion: 1
+      datasources:
+        - name: Prometheus
+          type: prometheus
+          access: proxy
+          url: http://prometheus:9090
+          isDefault: true
+          editable: true
+  grafana_dashboard_provider:
+    content: |
+      apiVersion: 1
+      providers:
+        - name: CardDemo
+          orgId: 1
+          type: file
+          disableDeletion: false
+          allowUiUpdates: true
+          updateIntervalSeconds: 30
+          options:
+            path: /var/lib/grafana/dashboards
+            foldersFromFilesStructure: false
