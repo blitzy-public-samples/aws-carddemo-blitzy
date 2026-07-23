@@ -202,23 +202,35 @@ The batch jobs do **not** run on web startup (`spring.batch.job.enabled=false` b
 # 2. Make sure PostgreSQL is running and the datasource env vars are exported
 #    (SPRING_DATASOURCE_URL / _USERNAME / _PASSWORD -- see Configuration).
 
-# 3. Launch one job -- example: daily transaction posting (CBTRN02C / POSTTRAN)
+# 3. Launch one job -- example: daily transaction posting (CBTRN02C / POSTTRAN).
+#    The DALYTRAN feed MUST be a fixed-block image -- 350-byte records with NO line
+#    delimiters (300 records = exactly 105000 bytes), matching the mainframe RECFM=FB
+#    dataset the FixedLengthItemReader replaces. A ready-to-run sample is committed at
+#    data/DALYTRAN.sample.fb, so this example runs as-is against the repo's own data.
+#
+#    To (re)generate that image -- or to convert any LF-delimited ASCII feed such as
+#    legacy/data/ASCII/dailytran.txt -- strip the newlines with tr:
+#        tr -d '\n' < legacy/data/ASCII/dailytran.txt > data/DALYTRAN.sample.fb   # 105300 -> 105000 bytes
+#    (Feeding the raw LF-delimited .txt directly fails fast with RETURN-CODE 8 and
+#    "SIGNED_DECIMAL field 'amount' has a non-digit byte at offset 132", because each
+#    newline shifts every subsequent 350-byte record window by one byte.)
 java -jar target/carddemo-1.0.0.jar \
   --spring.main.web-application-type=none \
   --spring.batch.job.enabled=true \
   --spring.batch.job.name=postTransactionJob \
-  inputPath=/path/to/DALYTRAN.txt \
-  rejectPath=/path/to/DALYREJS.txt
-echo "RETURN-CODE = $?"
+  inputPath=data/DALYTRAN.sample.fb \
+  rejectPath=/tmp/DALYREJS.txt \
+  run.id=$(date +%s)
+echo "RETURN-CODE = $?"   # 4 = COMPLETED with business rejects: 262 posted + 38 over-limit rejects = 300
 ```
 
-`--spring.batch.job.enabled=true` turns the launcher on for this run, `--spring.batch.job.name=<job>` selects which job runs, and **job parameters are the non-`--` arguments** in `name=value` form. `--spring.main.web-application-type=none` makes the process exit when the job finishes (so `$?` carries the return code) instead of starting the web server.
+`--spring.batch.job.enabled=true` turns the launcher on for this run, `--spring.batch.job.name=<job>` selects which job runs, and **job parameters are the non-`--` arguments** in `name=value` form. `--spring.main.web-application-type=none` makes the process exit when the job finishes (so `$?` carries the return code) instead of starting the web server. The `run.id=$(date +%s)` argument is a unique **identifying** job parameter: `postTransactionJob` defines no `JobParametersIncrementer`, so a fresh `run.id` on each launch avoids a `JobInstanceAlreadyCompleteException` when you re-run with the same `inputPath`. The committed `data/DALYTRAN.sample.fb` produces `RETURN-CODE 4` (completed with business rejects: 262 posted, 38 over-limit records written to `rejectPath` in the 430-byte reject layout, reconciling to 300).
 
 **Jobs and their parameters** (the job name is the value for `--spring.batch.job.name`):
 
 | Job | Parameters | Output artifact |
 |-----|------------|-----------------|
-| `postTransactionJob` | `inputPath` (DALYTRAN feed), `rejectPath` (DALYREJS rejects) | rejected records &rarr; `rejectPath` (430-byte reject layout) |
+| `postTransactionJob` | `inputPath` (DALYTRAN feed &mdash; **fixed-block 350-byte records, no newlines**; use the committed `data/DALYTRAN.sample.fb` or convert with `tr -d '\n'`), `rejectPath` (DALYREJS rejects) | rejected records &rarr; `rejectPath` (430-byte reject layout) |
 | `interestCalcJob` | `processingDate` (COBOL `PARM-DATE`, `PIC X(10)`, e.g. `2022071800`) | updated balances + generated interest transactions |
 | `statementJob` | `textOutputPath`, `htmlOutputPath` | plain-text + HTML statement files |
 | `transactionReportJob` | `startDate`, `endDate` (`yyyy-MM-dd`), `outputPath` | transaction report file |
@@ -316,6 +328,8 @@ To install this repository on the mainframe please follow the following steps
          | AWS.M2.CARDDEMO.TRANCATG.PS       | Transaction Category Types                       | CVTRA04Y          | FB     |     60 | trancatg.txt                  |
          | AWS.M2.CARDDEMO.TRANTYPE.PS       | Transaction Types                                | CVTRA03Y          | FB     |     60 | trantype.txt                  |
          | AWS.M2.CARDDEMO.TCATBALF.PS       | Transaction Category Balance                     | CVTRA01Y          | FB     |     50 | tcatbal.txt                   |
+
+      * Note: the ASCII equivalent files under `legacy/data/ASCII/` are **LF-delimited text** (e.g. `dailytran.txt` is 105300 bytes = 300 records &times; 351 = 350 data + 1 newline). The mainframe datasets above are RECFM=**FB** (fixed-block, *no* delimiters), and the migrated Spring Batch `postTransactionJob` reader (`FixedLengthItemReader`) expects that same undelimited layout. To run the daily-posting job locally use the committed fixed-block image `data/DALYTRAN.sample.fb` (105000 bytes = 300 &times; 350), or convert an ASCII feed yourself with `tr -d '\n' < legacy/data/ASCII/dailytran.txt > data/DALYTRAN.sample.fb`. See [**Running batch jobs locally**](#running-batch-jobs-locally) for the full command.
 
       * Execute the following JCLs in order
 

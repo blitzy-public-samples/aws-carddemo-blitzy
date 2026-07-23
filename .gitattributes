@@ -51,6 +51,11 @@ mvnw          text eol=lf
 *.drawio      binary
 *.PS          binary
 *.ps          binary
+# Fixed-block (RECFM=FB) dataset images — e.g. data/DALYTRAN.sample.fb, the ready-to-run
+# daily-posting feed (300 x 350 = 105000 bytes, NO line delimiters). Marked binary so EOL
+# normalization can never inject/alter bytes and break the fixed-block record layout the
+# Spring Batch FixedLengthItemReader depends on (QA finding FA2-02).
+*.fb          binary
 *.zip         binary
 *.jar         binary
 *.class       binary

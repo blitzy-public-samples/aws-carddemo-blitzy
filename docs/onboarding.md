@@ -351,10 +351,24 @@ java -jar target/carddemo-1.0.0.jar \
   --spring.main.web-application-type=none \
   --spring.batch.job.enabled=true \
   --spring.batch.job.name=postTransactionJob \
-  inputPath=/path/to/DALYTRAN.txt \
-  rejectPath=/path/to/DALYREJS.txt
-echo "RETURN-CODE = $?"
+  inputPath=data/DALYTRAN.sample.fb \
+  rejectPath=/tmp/DALYREJS.txt \
+  run.id=$(date +%s)
+echo "RETURN-CODE = $?"   # 4 = COMPLETED with rejects (262 posted + 38 over-limit = 300)
 ```
+
+> **Pitfall — DALYTRAN must be a fixed-block image, not the LF `.txt`.** The daily-posting
+> reader (`FixedLengthItemReader`) reads **undelimited 350-byte records** (the mainframe
+> RECFM=FB contract), so 300 records = **exactly 105000 bytes with no newlines**. The
+> repo ships a ready-to-run sample at **`data/DALYTRAN.sample.fb`** (used above). The raw
+> `legacy/data/ASCII/dailytran.txt` is **LF-delimited** (105300 bytes = 300 &times; 351);
+> feeding it directly fails fast with `RETURN-CODE 8` and
+> `SIGNED_DECIMAL field 'amount' has a non-digit byte at offset 132` (each newline shifts
+> every later record window by one byte). Regenerate/convert any ASCII feed by stripping the
+> newlines: `tr -d '\n' < legacy/data/ASCII/dailytran.txt > data/DALYTRAN.sample.fb`
+> (105300 → 105000 bytes). `postTransactionJob` defines no `JobParametersIncrementer`, so pass
+> a fresh `run.id` (above) to re-run with the same `inputPath` without a
+> `JobInstanceAlreadyCompleteException`.
 
 `--spring.batch.job.enabled=true` turns the launcher on for the run, `--spring.batch.job.name=<job>`
 picks the job, and job parameters are the non-`--` `name=value` arguments;
