@@ -1,0 +1,57 @@
+{
+  "name": "carddemo-frontend",
+  "version": "1.0.0",
+  "description": "CardDemo React 19 single-page application: the modern SPA presentation layer that replaces the 17 legacy BMS 3270 mapsets and communicates with the CardDemo Spring Boot microservices through the API gateway.",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview",
+    "test": "NODE_OPTIONS=--experimental-vm-modules jest",
+    "test:watch": "NODE_OPTIONS=--experimental-vm-modules jest --watch"
+  },
+  "dependencies": {
+    "axios": "^1.18.1",
+    "react": "19.2.7",
+    "react-dom": "19.2.7",
+    "react-router-dom": "^7.18.1"
+  },
+  "devDependencies": {
+    "@testing-library/dom": "^10.4.1",
+    "@testing-library/jest-dom": "^7.0.0",
+    "@testing-library/react": "^16.3.2",
+    "@testing-library/user-event": "^14.6.1",
+    "@types/jest": "^30.0.0",
+    "@types/node": "^24.13.3",
+    "@types/react": "^19.2.17",
+    "@types/react-dom": "^19.2.3",
+    "@vitejs/plugin-react": "^6.0.4",
+    "identity-obj-proxy": "^3.0.0",
+    "jest": "^30.4.2",
+    "jest-environment-jsdom": "^30.4.1",
+    "ts-jest": "^29.4.12",
+    "typescript": "^5.9.3",
+    "vite": "^8.1.5"
+  },
+  "jest": {
+    "preset": "ts-jest/presets/default-esm",
+    "extensionsToTreatAsEsm": [".ts", ".tsx"],
+    "testEnvironment": "jsdom",
+    "setupFilesAfterEnv": ["<rootDir>/src/setupTests.ts"],
+    "moduleNameMapper": {
+      "\\.(css|less|scss|sass)$": "identity-obj-proxy",
+      "\\.(svg|png|jpg|jpeg|gif|webp)$": "identity-obj-proxy"
+    },
+    "transform": {
+      "^.+\\.tsx?$": ["ts-jest", { "useESM": true }]
+    },
+    "testMatch": [
+      "<rootDir>/src/**/*.test.ts?(x)",
+      "<rootDir>/src/**/__tests__/**/*.ts?(x)"
+    ]
+  }
+}
