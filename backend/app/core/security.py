@@ -61,6 +61,7 @@ __all__ = [
     "PWD_CONTEXT",
     "HashPassword",
     "VerifyPassword",
+    "VerifyPasswordDummy",
     "CreateAccessToken",
     "CreateSessionToken",
     "DecodeAccessToken",
@@ -138,6 +139,35 @@ def VerifyPassword(plainPassword: str, passwordHash: str) -> bool:
     """
     isValid = PWD_CONTEXT.verify(plainPassword, passwordHash)
     return isValid
+
+
+def VerifyPasswordDummy() -> None:
+    """Consume one bcrypt verification's worth of time without a real hash.
+
+    Timing-attack mitigation for the sign-on path (QA finding F1). The legacy
+    plaintext compare ``IF SEC-USR-PWD = WS-USER-PWD`` (COSGN00C L223) returned
+    in constant, negligible time whether or not the user id existed, because the
+    record was already resident. In the modern stack a *successful* USRSEC lookup
+    is followed by a bcrypt :func:`VerifyPassword` (hundreds of milliseconds at
+    the configured cost), whereas a *missing* user id would otherwise skip that
+    work and return almost instantly. That timing difference is a reliable oracle
+    for enumerating valid user ids.
+
+    Calling this in the user-not-found branch of ``auth_service.Login`` performs
+    a bcrypt verification against a throwaway internal hash (passlib's
+    :meth:`~passlib.context.CryptContext.dummy_verify`, computed at the same
+    ``settings.BCRYPT_ROUNDS`` cost as a real verify) so both the found and
+    not-found paths consume equivalent time. It always fails internally and is a
+    no-op with respect to authentication: it takes no input, returns nothing, and
+    never authenticates anyone -- its ONLY purpose is to equalize wall-clock time.
+
+    Returns:
+        ``None``. The verification result is intentionally discarded; the value
+        of the call is its (constant) execution time, not any boolean.
+    """
+    # passlib caches the dummy hash after the first call, so this reliably takes
+    # one bcrypt verification at the configured cost on every invocation.
+    PWD_CONTEXT.dummy_verify()
 
 
 def NormalizeUserId(userId: str) -> str:

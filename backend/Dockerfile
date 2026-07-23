@@ -106,8 +106,11 @@ EXPOSE 8000
 #
 #   * No `--reload`: hot reload is a local/compose-override concern, not a
 #     production image default.
+#   * `--no-server-header`: suppress uvicorn's `server: uvicorn` banner
+#     (information disclosure, QA finding F5). SecurityHeadersMiddleware then
+#     supplies a single controlled `Server: CardDemo` header instead.
 #   * Migrations are NOT run here. Schema migrations are a separate, explicit
 #     compose step (e.g. `docker compose run --rm backend alembic upgrade head`)
 #     so image startup stays idempotent and side-effect free.
 # -----------------------------------------------------------------------------
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--no-server-header"]

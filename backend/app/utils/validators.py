@@ -70,6 +70,7 @@ from app.utils import date_utils, decimal_utils
 __all__ = [
     "ValidationResult",
     "ValidateRequired",
+    "ValidateNoControlChars",
     "ValidateAlpha",
     "ValidateAlphanumeric",
     "ValidateLength",
@@ -148,6 +149,10 @@ MSG_NON_NEGATIVE: Final = "{field} must not be negative."
 MSG_PHONE: Final = "{field} must be a 10-digit US phone number."
 MSG_SSN: Final = "{field} must be a valid 9-digit SSN."
 MSG_SSN_PART1: Final = "{field}: should not be 000, 666, or between 900 and 999"
+# QA finding F4 (Online Security Gate): a free-text field must not carry ASCII
+# control characters. Names only the field, never the offending value, so the
+# message is safe to surface in a 422 body.
+MSG_CONTROL_CHARS: Final = "{field} must not contain control characters."
 
 # ---------------------------------------------------------------------------
 # Anchored, non-backtracking patterns compiled once at import (deterministic
@@ -159,6 +164,14 @@ MSG_SSN_PART1: Final = "{field}: should not be 000, 666, or between 900 and 999"
 ALPHA_PATTERN: Final = re.compile(r"[A-Za-z ]+")
 ALPHANUMERIC_PATTERN: Final = re.compile(r"[A-Za-z0-9 ]+")
 DIGITS_PATTERN: Final = re.compile(r"[0-9]+")
+# Disallowed control characters (QA finding F4, Online Security Gate): the C0
+# control range U+0000-U+001F plus DEL U+007F. These have no legitimate place in
+# the single-line identifier/description fields ported from the fixed-width BMS
+# screens; a NUL (U+0000) in particular is rejected downstream by the PostgreSQL
+# text type (asyncpg) and by bcrypt, surfacing as an unhandled 500 rather than a
+# bounded validation error. ``search`` (not ``fullmatch``) detects an offending
+# character anywhere in the value.
+CONTROL_CHAR_PATTERN: Final = re.compile(r"[\x00-\x1f\x7f]")
 
 
 # ---------------------------------------------------------------------------
@@ -271,6 +284,36 @@ def ValidateRequired(fieldName: str, value: object) -> ValidationResult:
     """
     if _IsBlank(value):
         return _Invalid(MSG_REQUIRED.format(field=fieldName))
+    return _Valid()
+
+
+def ValidateNoControlChars(fieldName: str, value: object) -> ValidationResult:
+    """Reject ASCII control characters in a free-text field (QA finding F4).
+
+    Guards against malformed input that would otherwise bypass Pydantic's
+    bounded validation and reach a driver that rejects it with an unhandled
+    500: PostgreSQL's text type (asyncpg) rejects an embedded NUL (U+0000), and
+    bcrypt rejects a NUL in a password. Rejecting the C0 control range
+    (U+0000-U+001F) and DEL (U+007F) at the field edge turns that 500 into a
+    bounded 422 and satisfies the Ochs rule to sanitize all user-supplied data.
+
+    Only text can carry control characters; a non-``str`` value (for example an
+    unset ``Optional`` field that is ``None``, or an ``int`` id) is outside this
+    check's scope and passes here -- type and format are enforced by the other
+    validators and by the Pydantic field types.
+
+    Args:
+        fieldName: Field label used to build the failure message.
+        value: The candidate value to check.
+
+    Returns:
+        A :class:`ValidationResult`; invalid with :data:`MSG_CONTROL_CHARS` when
+        a control character is present, valid otherwise.
+    """
+    if not isinstance(value, str):
+        return _Valid()
+    if CONTROL_CHAR_PATTERN.search(value) is not None:
+        return _Invalid(MSG_CONTROL_CHARS.format(field=fieldName))
     return _Valid()
 
 

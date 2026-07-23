@@ -22,6 +22,12 @@ from app.models.user import User
 # default when the caller does not specify one.
 DEFAULT_PAGE_SIZE = 20
 
+# Administrator role code (legacy COCOM01Y ``88 CDEMO-USRTYP-ADMIN VALUE 'A'``).
+# Defined locally so this data-access module stays self-contained; the same
+# single-character code is intentionally repeated (with the same citation) in
+# app.core.dependencies and app.schemas.auth.
+ADMIN_USER_TYPE = "A"
+
 
 class UserRepository:
     """Async data-access layer for the ``users`` table (legacy VSAM USRSEC).
@@ -93,6 +99,46 @@ class UserRepository:
         result = await session.execute(stmt)
         return list(result.scalars().all())
 
+    async def CountAdminsForUpdate(self, session: AsyncSession) -> int:
+        """Count administrator users, locking their rows ``FOR UPDATE``.
+
+        Supports the last-administrator invariant (QA finding F3): the service
+        must not demote or delete an administrator when doing so would leave zero
+        administrators, which would irrecoverably lock everyone out of the
+        admin-only user-management screens (COUSR00C-03C). There was no legacy
+        equivalent -- the mainframe allowed the security file to be emptied -- so
+        this is a modern security-uplift guard (AAP 0.1.1).
+
+        Selecting the administrator rows ``FOR UPDATE`` serializes concurrent
+        removals: a second transaction attempting a competing demotion/deletion
+        blocks until the first commits, then re-evaluates the ``user_type = 'A'``
+        predicate against the freshly committed data (PostgreSQL READ COMMITTED
+        EvalPlanQual re-check), so it observes the already-reduced administrator
+        set and cannot also drive the count to zero.
+
+        The rows are counted in Python rather than via ``SELECT count(*) ... FOR
+        UPDATE`` because PostgreSQL rejects ``FOR UPDATE`` alongside an aggregate;
+        the administrator set is tiny (a handful of security users), so
+        materializing it is negligible. This method takes row locks but performs
+        no write and never commits -- the caller owns the unit of work, and the
+        locks are released when that transaction commits or rolls back.
+
+        Args:
+            session: Active async unit-of-work session. The acquired ``FOR
+                UPDATE`` locks are held until this session's transaction ends.
+
+        Returns:
+            The number of users whose ``user_type`` is the administrator code
+            ``'A'``.
+        """
+        stmt = (
+            select(User)
+            .where(User.user_type == ADMIN_USER_TYPE)
+            .with_for_update()
+        )
+        result = await session.execute(stmt)
+        return len(result.scalars().all())
+
     async def Create(self, session: AsyncSession, user: User) -> User:
         """Insert a new user row and return the persisted entity.
 
@@ -159,4 +205,4 @@ class UserRepository:
         await session.flush()
 
 
-__all__ = ["UserRepository", "DEFAULT_PAGE_SIZE"]
+__all__ = ["UserRepository", "DEFAULT_PAGE_SIZE", "ADMIN_USER_TYPE"]

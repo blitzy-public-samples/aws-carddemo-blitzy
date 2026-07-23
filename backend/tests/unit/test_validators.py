@@ -30,6 +30,7 @@ from app.utils.validators import (
     ValidateDateField,
     ValidateDateOfBirthField,
     ValidateLength,
+    ValidateNoControlChars,
     ValidateNonNegative,
     ValidateNumericId,
     ValidateNumericRange,
@@ -749,3 +750,51 @@ def test_object_typed_validators_never_raise_on_wrong_type():
             ValidateNumericRange("field", wrongValue, UNBOUNDED_RANGE).isValid,
             bool,
         )
+
+
+# ---------------------------------------------------------------------------
+# Phase G -- ValidateNoControlChars (QA finding F4, "Online Security Gate").
+# A free-text field carrying an ASCII control character (notably the NUL
+# U+0000) previously flowed into asyncpg/bcrypt and surfaced as an unhandled
+# HTTP 500. This validator is the field-level guard that turns that class of
+# malformed input into a bounded 4xx. These are pure-function tests (no DB).
+# ---------------------------------------------------------------------------
+
+
+def test_control_chars_clean_text_is_valid():
+    # Ordinary printable text (letters, digits, punctuation, space) carries no
+    # control characters and must pass unchanged -- proves no over-rejection.
+    controlResult = ValidateNoControlChars("tranDesc", "TEST PURCHASE #1 - $10.00")
+    assert controlResult.isValid is True
+
+
+def test_control_chars_nul_is_invalid_with_safe_message():
+    # The NUL byte U+0000 is the reproduced payload; it must be rejected and the
+    # message must name the FIELD only, never echo the offending value.
+    controlResult = ValidateNoControlChars("tranDesc", "TEST\x00DESC")
+    assert controlResult.isValid is False
+    assert controlResult.message != ""
+    assert "tranDesc" in controlResult.message
+    assert "\x00" not in controlResult.message
+
+
+def test_control_chars_c0_range_and_del_are_invalid():
+    # The whole C0 range (U+0001..U+001F) plus DEL (U+007F) is rejected. A few
+    # representative code points are exercised: TAB, LF, CR, unit-separator, DEL.
+    for controlChar in ("\x01", "\t", "\n", "\r", "\x1f", "\x7f"):
+        controlResult = ValidateNoControlChars("field", f"ab{controlChar}cd")
+        assert controlResult.isValid is False
+
+
+def test_control_chars_non_string_passes_through():
+    # Non-str inputs (int/Decimal/None) are out of this guard's remit and must
+    # degrade to a valid result rather than raise -- the numeric/date validators
+    # own those types.
+    for nonString in (123, Decimal("1.00"), None):
+        assert ValidateNoControlChars("field", nonString).isValid is True
+
+
+def test_control_chars_boundary_printable_space_is_valid():
+    # U+0020 (space) is the first printable code point just past the C0 range
+    # and must NOT be rejected -- guards the lower boundary of the pattern.
+    assert ValidateNoControlChars("field", "a b c").isValid is True

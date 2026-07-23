@@ -22,7 +22,9 @@ browse of ``COCRDLIC``); see :data:`DEFAULT_PAGE_SIZE`.
 from datetime import datetime, timezone
 from typing import Generic, Optional, TypeVar
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
+
+from app.utils import validators
 
 __all__ = [
     "OrmBase",
@@ -78,6 +80,40 @@ class RequestBase(BaseModel):
         str_strip_whitespace=True,
         extra="forbid",
     )
+
+    @model_validator(mode="after")
+    def _RejectControlCharacters(self) -> "RequestBase":
+        """Reject ASCII control characters in any string field (QA finding F4).
+
+        Every inbound request DTO inherits this base, so this single guard makes
+        the whole write surface reject malformed input (an embedded NUL U+0000,
+        which the PostgreSQL text type and bcrypt reject with an unhandled 500)
+        at the schema edge, turning it into a bounded 422 rather than a generic
+        500 (Ochs rule: sanitize all user data; no generic 500). It runs after
+        field validation, so ``str_strip_whitespace`` has already trimmed
+        surrounding whitespace and only meaningful interior content is checked.
+
+        Iterating the model yields ``(field_name, value)`` pairs; only ``str``
+        values are inspected (``None`` optionals and non-text fields are skipped
+        by :func:`app.utils.validators.ValidateNoControlChars`). Raising
+        ``ValueError`` surfaces as a 422 whose ``input`` container has its
+        sensitive keys (for example ``password``) redacted by the request
+        validation handler in ``app.main`` (QA finding F7), so the value is
+        never echoed back.
+
+        Returns:
+            ``self`` unchanged when every string field is free of control
+            characters.
+
+        Raises:
+            ValueError: If any string field contains a control character; the
+                message names only the field, never its value.
+        """
+        for fieldName, fieldValue in self:
+            result = validators.ValidateNoControlChars(fieldName, fieldValue)
+            if not result.isValid:
+                raise ValueError(result.message)
+        return self
 
 
 # Element type variable for the generic paginated envelope below.

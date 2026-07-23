@@ -108,6 +108,31 @@ DELETE_USER_PASSWORD = "PW123456"
 
 CHANGED_FIRST_NAME = "CHANGED"
 
+# ---------------------------------------------------------------------------
+# QA finding F2 (password casing): a user created with a LOWERCASE password
+# must be stored so it verifies against the uppercased form -- the write side
+# applies the same FUNCTION UPPER-CASE the sign-on path applies (COSGN00C
+# L135-136), so "created with P can sign on with P" holds. The lowercase input
+# and its uppercase equivalent are both <= 8 chars (SEC-USR-PWD X(08)).
+LOWER_CASE_USER_ID = "LOWER001"
+LOWER_CASE_PASSWORD = "secret12"
+LOWER_CASE_PASSWORD_UPPER = "SECRET12"
+
+# ---------------------------------------------------------------------------
+# QA finding F3 (last-administrator invariant): defined LOCALLY (never imported
+# from the service) so the assertion pins the expected wording independently of
+# the service constant. Verbatim match to user_admin_service.MSG_LAST_ADMIN.
+EXPECTED_LAST_ADMIN = "Cannot remove the last administrator account..."
+
+# A SECOND administrator used by the "not over-blocking" tests: with two admins
+# present, demoting/deleting one is allowed because at least one admin remains.
+SECOND_ADMIN_USER_ID = "ADMIN002"
+SECOND_ADMIN_FIRST_NAME = "SECOND"
+SECOND_ADMIN_LAST_NAME = "ADMIN"
+SECOND_ADMIN_PASSWORD = "PW123456"
+ADMIN_USER_TYPE = "A"
+REGULAR_USER_TYPE = "U"
+
 # Pagination window and the minimum number of users the list test seeds.
 LIST_PAGE = 1
 LIST_PAGE_SIZE = 7
@@ -165,6 +190,37 @@ async def test_add_user_success_hashes_password(db_session):
     assert stored is not None
     assert stored.password_hash != NEW_USER_PASSWORD
     assert VerifyPassword(NEW_USER_PASSWORD, stored.password_hash) is True
+
+
+async def test_add_user_lowercase_password_is_uppercased(db_session):
+    """A user created with a lowercase password can sign on with it (F2).
+
+    QA finding F2: the sign-on path uppercases the submitted password
+    (COSGN00C L135-136) before bcrypt verification, but the create path formerly
+    hashed the password verbatim. A user created with "secret12" was therefore
+    stored as hash("secret12") yet, at sign-on, "secret12" was uppercased to
+    "SECRET12" and never matched -- a silent, permanent lockout. The write side
+    now applies the same uppercasing, so the stored hash verifies against the
+    UPPERCASE form (what sign-on actually checks). Asserted both ways: the stored
+    hash verifies the uppercase password and NOT the raw lowercase input.
+    """
+    service = UserAdminService()
+    userCreate = UserCreate(
+        user_id=LOWER_CASE_USER_ID,
+        first_name=NEW_USER_FIRST_NAME,
+        last_name=NEW_USER_LAST_NAME,
+        password=LOWER_CASE_PASSWORD,
+        user_type=NEW_USER_TYPE,
+    )
+
+    await service.AddUser(db_session, userCreate)
+
+    stored = await db_session.get(User, LOWER_CASE_USER_ID)
+    assert stored is not None
+    # What sign-on verifies (the uppercased password) must match the stored hash.
+    assert VerifyPassword(LOWER_CASE_PASSWORD_UPPER, stored.password_hash) is True
+    # The raw lowercase input is NOT what is stored (proving normalization ran).
+    assert VerifyPassword(LOWER_CASE_PASSWORD, stored.password_hash) is False
 
 
 async def test_add_user_duplicate_raises_conflict(db_session, admin_user):
@@ -298,6 +354,60 @@ async def test_update_user_success(db_session, admin_user):
     assert "password_hash" not in updatedFields
 
 
+async def test_update_demote_last_admin_raises_conflict(db_session, admin_user):
+    """Demoting the SOLE administrator is blocked with 409 (QA finding F3).
+
+    The seeded ``admin_user`` (ADMIN001) is the only ``user_type='A'`` row in
+    this isolated session. Changing its type to 'U' would leave the system with
+    zero administrators -- a total admin lockout. The last-administrator
+    invariant raises ``ConflictError`` (surfaced as HTTP 409) with the modern
+    guard message before any change is persisted.
+    """
+    service = UserAdminService()
+    userUpdate = UserUpdate(
+        first_name=admin_user.first_name,
+        last_name=admin_user.last_name,
+        user_type=REGULAR_USER_TYPE,
+    )
+
+    with pytest.raises(ConflictError) as excInfo:
+        await service.UpdateUser(db_session, SEED_ADMIN_USER_ID, userUpdate)
+
+    assert MessageOf(excInfo.value) == EXPECTED_LAST_ADMIN
+    # The invariant fires BEFORE persistence: ADMIN001 is still an admin.
+    stored = await db_session.get(User, SEED_ADMIN_USER_ID)
+    assert stored.user_type == ADMIN_USER_TYPE
+
+
+async def test_update_demote_admin_allowed_with_second_admin(db_session, admin_user):
+    """Demoting an admin is allowed while another admin remains (F3 no over-block).
+
+    With a second administrator present, demoting ADMIN001 to 'U' still leaves
+    one administrator, so the invariant must NOT fire -- proving the guard blocks
+    only the genuinely last admin and never over-restricts ordinary role edits.
+    """
+    service = UserAdminService()
+    await service.AddUser(
+        db_session,
+        UserCreate(
+            user_id=SECOND_ADMIN_USER_ID,
+            first_name=SECOND_ADMIN_FIRST_NAME,
+            last_name=SECOND_ADMIN_LAST_NAME,
+            password=SECOND_ADMIN_PASSWORD,
+            user_type=ADMIN_USER_TYPE,
+        ),
+    )
+    userUpdate = UserUpdate(
+        first_name=admin_user.first_name,
+        last_name=admin_user.last_name,
+        user_type=REGULAR_USER_TYPE,
+    )
+
+    updated = await service.UpdateUser(db_session, SEED_ADMIN_USER_ID, userUpdate)
+
+    assert updated.user_type == REGULAR_USER_TYPE
+
+
 # ===========================================================================
 # Phase D -- DeleteUser: success (confirmed by subsequent NotFound); absent id.
 # (COUSR03C, CU03)
@@ -342,6 +452,52 @@ async def test_delete_user_absent_raises_not_found(db_session):
         await service.DeleteUser(db_session, ABSENT_USER_ID)
 
     assert MessageOf(excInfo.value) == EXPECTED_USER_NOT_FOUND
+
+
+async def test_delete_last_admin_raises_conflict(db_session, admin_user):
+    """Deleting the SOLE administrator is blocked with 409 (QA finding F3).
+
+    Deleting the only ``user_type='A'`` row (the seeded ADMIN001) would leave
+    zero administrators and permanently lock every admin-gated screen (user CRUD,
+    admin menu). The last-administrator invariant raises ``ConflictError``
+    (HTTP 409) and the row must survive.
+    """
+    service = UserAdminService()
+
+    with pytest.raises(ConflictError) as excInfo:
+        await service.DeleteUser(db_session, SEED_ADMIN_USER_ID)
+
+    assert MessageOf(excInfo.value) == EXPECTED_LAST_ADMIN
+    # The invariant fires BEFORE deletion: ADMIN001 still exists.
+    stored = await db_session.get(User, SEED_ADMIN_USER_ID)
+    assert stored is not None
+    assert stored.user_type == ADMIN_USER_TYPE
+
+
+async def test_delete_admin_allowed_with_second_admin(db_session, admin_user):
+    """Deleting an admin is allowed while another admin remains (F3 no over-block).
+
+    With two administrators present, deleting ADMIN001 leaves one admin, so the
+    invariant must NOT fire -- proving the guard blocks only the last admin.
+    """
+    service = UserAdminService()
+    await service.AddUser(
+        db_session,
+        UserCreate(
+            user_id=SECOND_ADMIN_USER_ID,
+            first_name=SECOND_ADMIN_FIRST_NAME,
+            last_name=SECOND_ADMIN_LAST_NAME,
+            password=SECOND_ADMIN_PASSWORD,
+            user_type=ADMIN_USER_TYPE,
+        ),
+    )
+
+    result = await service.DeleteUser(db_session, SEED_ADMIN_USER_ID)
+
+    assert result is not None
+    assert SEED_ADMIN_USER_ID in result.message
+    with pytest.raises(NotFoundError):
+        await service.GetUser(db_session, SEED_ADMIN_USER_ID)
 
 
 # ===========================================================================

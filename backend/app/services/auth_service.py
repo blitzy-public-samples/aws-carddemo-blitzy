@@ -31,7 +31,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
 from app.core.exceptions import AuthenticationError, DomainValidationError
-from app.core.security import CreateAccessToken, VerifyPassword
+from app.core.security import (
+    CreateAccessToken,
+    VerifyPassword,
+    VerifyPasswordDummy,
+)
 from app.models.user import User
 from app.repositories import UserRepository
 from app.schemas import LoginRequest, LoginResponse
@@ -155,6 +159,13 @@ class AuthService:
             # then surface the generic message so the 401 body cannot be used to
             # enumerate which user ids exist.
             _LOGGER.info("%s (user id: %s)", MSG_USER_NOT_FOUND, normalizedUserId)
+            # F1: equalize response time with the password-verify path below so
+            # the 401 cannot be used as a TIMING oracle to enumerate valid user
+            # ids. Without this, a found user pays for a bcrypt VerifyPassword
+            # (hundreds of ms) while a missing user returns almost instantly --
+            # a ~253 ms gap that reliably distinguishes the two. Burning one
+            # equivalent bcrypt verification here makes both paths constant-time.
+            VerifyPasswordDummy()
             raise AuthenticationError(MSG_INVALID_CREDENTIALS)
         # Replaces the plaintext compare IF SEC-USR-PWD = WS-USER-PWD (COSGN00C L223).
         passwordMatches = VerifyPassword(submittedPassword, userRecord.password_hash)

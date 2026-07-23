@@ -179,6 +179,34 @@ async def test_login_unknown_user_raises_authentication(db_session):
     assert MessageOf(excInfo.value) == MSG_INVALID_CREDENTIALS
 
 
+async def test_login_unknown_user_performs_dummy_verify(db_session, monkeypatch):
+    """The unknown-user path spends one bcrypt verification (QA finding F1).
+
+    The legacy plaintext compare returned in constant time whether or not the
+    user id existed. In the modern stack a *found* user triggers a bcrypt verify
+    while a *missing* user id would otherwise skip it, and that timing gap is an
+    enumeration oracle. ``auth_service.Login`` closes it by calling
+    ``security.VerifyPasswordDummy`` in the not-found branch. This installs a spy
+    over that call and asserts it fires exactly once for an unknown user -- so the
+    timing mitigation cannot be silently removed -- while the shared generic
+    credential error is still raised.
+    """
+    dummyCalls = {"count": 0}
+
+    def SpyDummyVerify():
+        dummyCalls["count"] += 1
+
+    monkeypatch.setattr(
+        "app.services.auth_service.VerifyPasswordDummy", SpyDummyVerify
+    )
+    service = AuthService()
+    req = BuildLoginRequest("NOSUCH", SEED_PASSWORD)
+    with pytest.raises(AuthenticationError) as excInfo:
+        await service.Login(db_session, req)
+    assert dummyCalls["count"] == 1
+    assert MessageOf(excInfo.value) == MSG_INVALID_CREDENTIALS
+
+
 async def test_login_wrong_password_raises_authentication(db_session, admin_user):
     """A wrong password for an existing user is rejected (COSGN00C L242).
 

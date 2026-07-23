@@ -24,11 +24,17 @@ Two properties of the legacy artifact drive the implementation:
 2.  **Plaintext password must be hashed.** The legacy record stores an 8-byte
     plaintext password (``SEC-USR-PWD PIC X(08)``). Persisting plaintext is
     unacceptable in the target (AAP 0.1.1 / 0.7.7 and the Ochs "no hardcoding
-    secrets" rule), so every decoded password is run through
-    :func:`~app.core.security.HashPassword` and only the resulting bcrypt
-    ``password_hash`` is written. The plaintext value is never stored, logged,
-    or returned. The seed credentials are non-production values used solely to
-    populate a demo database.
+    secrets" rule), so every decoded password is UPPERCASED (matching the
+    sign-on credential policy -- ``auth_service.Login`` uppercases the submitted
+    password per ``FUNCTION UPPER-CASE`` COSGN00C L135-136 -- and the
+    admin-create path) and then run through
+    :func:`~app.core.security.HashPassword`; only the resulting bcrypt
+    ``password_hash`` is written (QA finding F2). This keeps every
+    credential-write path consistent with the single sign-on read path, so no
+    seeded account can be silently locked out by a lowercase letter in its
+    password. The plaintext value is never stored, logged, or returned. The seed
+    credentials are non-production values used solely to populate a demo
+    database.
 
 Record layout (``CSUSR01Y`` ``SEC-USER-DATA``, 80 bytes)::
 
@@ -180,7 +186,15 @@ def _ParseUserRecord(record: str) -> dict[str, str]:
     # requirement until a password is actually hashed (QA finding #60).
     from app.core.security import HashPassword
 
-    plainPassword = record[PASSWORD_SLICE].strip()
+    # F2: uppercase the plaintext before hashing so the seeded credential matches
+    # the sign-on policy -- auth_service.Login always uppercases the submitted
+    # password (FUNCTION UPPER-CASE, COSGN00C L135-136) before verifying, and the
+    # admin-create path (user_admin_service) does the same. This is a no-op for
+    # the all-uppercase legacy seed password ("PASSWORD") but keeps every
+    # credential-write path (seed, admin-create, admin-update) consistent with
+    # the single sign-on read path, so no seeded account can be silently locked
+    # out by a lowercase letter in its password.
+    plainPassword = record[PASSWORD_SLICE].strip().upper()
     return {
         "user_id": record[USER_ID_SLICE].strip(),
         "first_name": record[FIRST_NAME_SLICE].strip(),

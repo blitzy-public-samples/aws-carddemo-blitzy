@@ -34,12 +34,17 @@ Security (AAP 0.7.7; Ochs Rule #3 "no hardcoding secrets")
 The legacy 8-character plaintext ``SEC-USR-PWD`` is replaced by a bcrypt
 ``password_hash``: :func:`app.core.security.HashPassword` produces the digest and
 :func:`app.core.security.VerifyPassword` compares a candidate against it. Hashing
-is applied to the exact (whitespace-stripped) plaintext with no uppercasing,
-matching the seed loader (``batch/loaders/init_users.py``) and the pure-hashing
-contract documented in ``app.core.security`` so that a password set here verifies
-identically at sign-on. No plaintext password is ever stored, logged, or
-returned; the :class:`app.schemas.UserRead` / :class:`app.schemas.UserSummary`
-response DTOs carry no password field of any kind.
+is applied to the UPPERCASED (whitespace-stripped) plaintext, matching the
+sign-on credential policy -- ``auth_service.Login`` always uppercases the
+submitted password (``FUNCTION UPPER-CASE``, COSGN00C L135-136) before verifying
+-- and the seed loader (``batch/loaders/init_users.py``), so that a password set
+here verifies identically at sign-on (QA finding F2). Uppercasing at write time
+is REQUIRED: hashing the raw plaintext instead would silently, permanently lock
+out any account whose password contains a lowercase letter, because that hash
+could never match the always-uppercased sign-on candidate. No plaintext password
+is ever stored, logged, or returned; the :class:`app.schemas.UserRead` /
+:class:`app.schemas.UserSummary` response DTOs carry no password field of any
+kind.
 
 Admin gating (F-002)
 --------------------
@@ -124,6 +129,18 @@ MSG_UNABLE_TO_LOOKUP = "Unable to lookup User..."  # COUSR02C L349 / COUSR03C L2
 # region / COMMAREA role to reach these screens (there is no per-program COBOL
 # text for a non-admin caller); the router ``require_admin`` gate is authoritative.
 MSG_ADMIN_REQUIRED = "Administrator privileges are required to manage users."
+
+# Administrator role code (legacy COCOM01Y ``88 CDEMO-USRTYP-ADMIN VALUE 'A'``).
+# Defined locally, matching the intentional local duplication (with citation) in
+# app.core.dependencies, app.schemas.auth, and app.repositories.user_repo.
+ADMIN_USER_TYPE = "A"
+
+# Modern security-uplift message (QA finding F3; NO legacy COBOL equivalent --
+# the mainframe permitted the security file to be emptied of administrators).
+# Surfaced as an HTTP 409 Conflict when demoting or deleting a user would leave
+# zero administrators, which would irrecoverably lock everyone out of the
+# admin-only user-management screens (AAP 0.1.1 mandatory security uplift).
+MSG_LAST_ADMIN = "Cannot remove the last administrator account..."
 
 # ---------------------------------------------------------------------------
 # Success-message action words. The legacy programs build the confirmation with
@@ -283,6 +300,51 @@ class UserAdminService:
             raise NotFoundError(MSG_USER_NOT_FOUND)
         return foundUser
 
+    async def _AssertNotLastAdmin(
+        self, session: AsyncSession, foundUser: User, newUserType: str | None
+    ) -> None:
+        """Block demoting or deleting the last administrator (QA finding F3).
+
+        Enforces the modern last-administrator invariant that has no legacy
+        counterpart (the mainframe let the USRSEC security file be emptied of
+        administrators, AAP 0.1.1). The guard fires only when the operation
+        actually REMOVES administrator access from an administrator:
+
+            * update -- ``foundUser`` is an admin and ``newUserType`` is the
+              non-admin regular code (a demotion 'A' -> 'U'); and
+            * delete -- ``foundUser`` is an admin and ``newUserType`` is ``None``
+              (the sentinel this method uses for "the row is being deleted").
+
+        Promotions, admin edits that keep the admin role, and any operation on a
+        non-admin user are all no-ops here. When the operation would remove admin
+        access, :meth:`app.repositories.UserRepository.CountAdminsForUpdate`
+        locks the administrator rows ``FOR UPDATE`` and returns their count; a
+        count of one (this user is the sole remaining admin) raises
+        :class:`~app.core.exceptions.ConflictError`. Because that count is taken
+        under a row lock, concurrent removals are serialized: a second request
+        blocks, then re-reads the reduced admin set, so two callers cannot each
+        assume another admin remains and jointly drive the count to zero. This
+        single target-keyed invariant therefore covers every reported vector --
+        demoting/deleting the sole admin (including the admin acting on its own
+        account), and the concurrent mutual-demotion race.
+
+        Args:
+            session: Active async session (owns the unit of work and the lock).
+            foundUser: The persisted user targeted by the update or delete.
+            newUserType: The user's post-operation role code, or ``None`` when
+                the user is being deleted.
+
+        Raises:
+            ConflictError: If the operation would leave zero administrators.
+        """
+        isAdmin = foundUser.user_type == ADMIN_USER_TYPE
+        losesAdminRole = newUserType != ADMIN_USER_TYPE
+        if not (isAdmin and losesAdminRole):
+            return
+        adminCount = await self.userRepository.CountAdminsForUpdate(session)
+        if adminCount <= 1:
+            raise ConflictError(MSG_LAST_ADMIN)
+
     def _IsPasswordUpdated(self, user: User, userUpdate: UserUpdate) -> bool:
         """Report whether the update supplies a genuinely new password.
 
@@ -302,7 +364,12 @@ class UserAdminService:
         """
         if userUpdate.password is None:
             return False
-        return not VerifyPassword(userUpdate.password, user.password_hash)
+        # F2: uppercase the candidate before comparing, matching the sign-on
+        # credential policy (auth_service.Login uppercases via COSGN00C L135-136)
+        # and the uppercasing applied in _ApplyChanges/_BuildUser below. Without
+        # this, change-detection would compare the raw candidate against an
+        # uppercased-then-hashed stored value and report spurious "changes".
+        return not VerifyPassword(userUpdate.password.upper(), user.password_hash)
 
     def _DetectChanges(self, user: User, userUpdate: UserUpdate) -> bool:
         """Determine whether the update modifies any stored field.
@@ -341,7 +408,11 @@ class UserAdminService:
             userUpdate: The validated update DTO.
         """
         if self._IsPasswordUpdated(user, userUpdate):
-            user.password_hash = HashPassword(userUpdate.password)
+            # F2: hash the UPPERCASED password so a user updated here can sign on
+            # (auth_service.Login always uppercases the candidate per COSGN00C
+            # L135-136). Hashing the raw plaintext instead would silently lock
+            # out any password containing a lowercase letter.
+            user.password_hash = HashPassword(userUpdate.password.upper())
         user.first_name = userUpdate.first_name
         user.last_name = userUpdate.last_name
         user.user_type = userUpdate.user_type
@@ -362,7 +433,14 @@ class UserAdminService:
             user_id=userCreate.user_id,
             first_name=userCreate.first_name,
             last_name=userCreate.last_name,
-            password_hash=HashPassword(userCreate.password),
+            # F2: hash the UPPERCASED password so the created user can sign on.
+            # auth_service.Login always uppercases the submitted password
+            # (COSGN00C L135-136 FUNCTION UPPER-CASE), so a raw-hashed password
+            # containing any lowercase letter would never match at sign-on --
+            # the admin would get 201 Created but the account would be silently,
+            # permanently locked out. Uppercasing here makes create and login
+            # consistent (and matches the all-uppercase seed).
+            password_hash=HashPassword(userCreate.password.upper()),
             user_type=userCreate.user_type,
         )
 
@@ -580,12 +658,19 @@ class UserAdminService:
                 ("Please modify to update ..."), or a database failure
                 ("Unable to Update User...").
             NotFoundError: If no user matches or the read fails.
+            ConflictError: If the update would demote the last administrator
+                (F3 last-administrator invariant).
         """
         self._AssertAdmin(currentUser)
         self._ValidateUpdateFields(userId, userUpdate)
         foundUser = await self._LookupUser(session, userId)
         if not self._DetectChanges(foundUser, userUpdate):
             raise DomainValidationError(MSG_NO_CHANGES)
+        # F3: refuse a demotion (admin -> regular) that would remove the last
+        # administrator. Checked after the no-op guard so an unchanged request
+        # still reports "Please modify to update ...", and before the mutation so
+        # the FOR UPDATE admin-row lock is held through the commit below.
+        await self._AssertNotLastAdmin(session, foundUser, userUpdate.user_type)
         self._ApplyChanges(foundUser, userUpdate)
         await self._PersistUpdatedUser(session, foundUser)
         LOGGER.info(self._BuildSuccessMessage(foundUser.user_id, UPDATED_ACTION))
@@ -617,10 +702,16 @@ class UserAdminService:
             DomainValidationError: If ``userId`` is blank or the delete fails
                 ("Unable to Update User..." -- the COUSR03C OTHER text).
             NotFoundError: If no user matches or the read fails.
+            ConflictError: If the delete would remove the last administrator
+                (F3 last-administrator invariant).
         """
         self._AssertAdmin(currentUser)
         self._RequireField(USER_ID_LABEL, userId, MSG_USER_ID_REQUIRED)
         foundUser = await self._LookupUser(session, userId)
+        # F3: refuse to delete the last administrator (NULL new-type sentinel
+        # signals a delete). The FOR UPDATE admin-row lock is held through the
+        # commit in _PersistDeletedUser, serializing concurrent removals.
+        await self._AssertNotLastAdmin(session, foundUser, None)
         await self._PersistDeletedUser(session, foundUser)
         successMessage = self._BuildSuccessMessage(foundUser.user_id, DELETED_ACTION)
         LOGGER.info(successMessage)

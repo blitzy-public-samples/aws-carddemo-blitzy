@@ -61,6 +61,7 @@ from app.core.security import (  # noqa: E402  (must import after bootstrap)
     HashPassword,
     PWD_CONTEXT,
     VerifyPassword,
+    VerifyPasswordDummy,
 )
 from app.core.exceptions import AuthenticationError  # noqa: E402
 
@@ -136,6 +137,20 @@ def test_pwd_context_uses_bcrypt_scheme():
     assert BCRYPT_SCHEME in PWD_CONTEXT.schemes()
     hashedValue = HashPassword(SEED_PASSWORD)
     assert PWD_CONTEXT.identify(hashedValue) == BCRYPT_SCHEME
+
+
+def test_verify_password_dummy_returns_none_and_never_raises():
+    """The timing-equalizing dummy verify is a safe no-op (QA finding F1).
+
+    ``VerifyPasswordDummy`` exists so the unknown-user sign-on branch can spend
+    one bcrypt verification's worth of time (defeating user-id enumeration by
+    timing). Its contract is deliberately narrow: it takes no input, returns
+    ``None``, authenticates no one, and must never raise -- so wiring it into the
+    hot auth path can never itself become a failure mode. Calling it twice also
+    proves passlib's cached dummy hash keeps it callable on every invocation.
+    """
+    assert VerifyPasswordDummy() is None
+    assert VerifyPasswordDummy() is None
 
 
 # ===========================================================================

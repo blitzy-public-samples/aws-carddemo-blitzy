@@ -142,10 +142,12 @@ created at boot) and calls `engine.dispose()` on shutdown to release the
 connection pool cleanly. The module exports a single ASGI object, `app`, built
 once at import.
 
-Run the API with the ASGI server:
+Run the API with the ASGI server (`--no-server-header` suppresses uvicorn's
+`server` banner; `SecurityHeadersMiddleware` supplies the response security
+headers, including a controlled `Server` value):
 
 ```bash
-uvicorn app.main:app --host 0.0.0.0 --port 8000
+uvicorn app.main:app --host 0.0.0.0 --port 8000 --no-server-header
 ```
 
 Interactive OpenAPI/Swagger docs are served at

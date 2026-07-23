@@ -54,7 +54,9 @@ from fastapi.responses import JSONResponse
 from fastapi.routing import APIRoute
 from pydantic import ValidationError as PydanticValidationError
 from sqlalchemy import text
-from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.exc import DataError, SQLAlchemyError
+from starlette.datastructures import MutableHeaders
+from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from app.core.config import settings
 from app.core.exceptions import (
@@ -153,6 +155,78 @@ async def Lifespan(fastapiApp: FastAPI) -> AsyncIterator[None]:
         _LOGGER.warning("Failed to dispose the database engine on shutdown: %s", disposeError)
 
 
+# QA finding F5 (Online Security Gate): static security response headers applied
+# to EVERY response by SecurityHeadersMiddleware. Only ``frame-ancestors`` is set
+# in the CSP (not a restrictive ``default-src``) so the Swagger UI at ``/docs``
+# keeps loading. ``Server`` overrides uvicorn's banner with a static token to
+# avoid version/implementation disclosure. HSTS is intentionally NOT in this list
+# -- it is added separately and only in production (there is no HTTPS in dev).
+_SECURITY_HEADERS: tuple[tuple[str, str], ...] = (
+    ("X-Content-Type-Options", "nosniff"),
+    ("X-Frame-Options", "DENY"),
+    ("Content-Security-Policy", "frame-ancestors 'none'"),
+    ("Referrer-Policy", "no-referrer"),
+    ("Cache-Control", "no-store"),
+    ("Pragma", "no-cache"),
+    ("Server", "CardDemo"),
+)
+# HSTS value used only when ``settings.ENVIRONMENT == 'production'`` (HTTPS).
+_HSTS_HEADER_NAME = "Strict-Transport-Security"
+_HSTS_HEADER_VALUE = "max-age=31536000; includeSubDomains"
+
+
+class SecurityHeadersMiddleware:
+    """Pure ASGI middleware that attaches security headers to every response.
+
+    Implemented at the ASGI layer (not as a ``BaseHTTPMiddleware``) so the
+    headers are attached to EVERY response type -- including the streaming CSV
+    (``StreamingResponse``) and binary PDF (``Response``) report downloads, and
+    error responses -- rather than only JSON bodies. This closes the systemic
+    missing-security-header gap the Online Security Gate reported (QA finding
+    F5): MIME-sniffing (``X-Content-Type-Options``), clickjacking
+    (``X-Frame-Options`` + CSP ``frame-ancestors``), referrer leakage
+    (``Referrer-Policy``), and -- most material -- caching of sensitive PII and
+    financial CSV/PDF downloads (``Cache-Control``/``Pragma``). HSTS is added
+    only in production; in development there is no HTTPS, so it is omitted per
+    the finding's note.
+
+    The middleware edits the ``http.response.start`` message headers via
+    :class:`~starlette.datastructures.MutableHeaders`; non-HTTP scopes (for
+    example lifespan) pass straight through untouched.
+    """
+
+    def __init__(self, app: ASGIApp) -> None:
+        """Store the wrapped ASGI application.
+
+        Args:
+            app: The next ASGI application in the middleware chain.
+        """
+        self.app = app
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        """Wrap ``send`` so security headers are injected on the response start.
+
+        Args:
+            scope: The ASGI connection scope.
+            receive: The ASGI receive callable.
+            send: The ASGI send callable to forward messages to.
+        """
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+
+        async def SendWithSecurityHeaders(message: Message) -> None:
+            if message["type"] == "http.response.start":
+                responseHeaders = MutableHeaders(scope=message)
+                for headerName, headerValue in _SECURITY_HEADERS:
+                    responseHeaders[headerName] = headerValue
+                if settings.ENVIRONMENT == "production":
+                    responseHeaders[_HSTS_HEADER_NAME] = _HSTS_HEADER_VALUE
+            await send(message)
+
+        await self.app(scope, receive, SendWithSecurityHeaders)
+
+
 def _ConfigureMiddleware(fastapiApp: FastAPI) -> None:
     """Register cross-cutting middleware on the application.
 
@@ -160,9 +234,14 @@ def _ConfigureMiddleware(fastapiApp: FastAPI) -> None:
     listed in ``settings.BACKEND_CORS_ORIGINS`` (for example
     ``http://localhost:3000``) -- may call the API with credentials.
     ``allow_credentials`` is enabled because the session-cookie baseline
-    requires the browser to send the auth cookie cross-origin. No other
-    middleware is registered here: session/JWT decoding is performed by the
-    ``get_current_user`` dependency, not by an application-level middleware.
+    requires the browser to send the auth cookie cross-origin. Session/JWT
+    decoding is still performed by the ``get_current_user`` dependency, not by
+    middleware.
+
+    :class:`SecurityHeadersMiddleware` is added last so it is the OUTERMOST
+    layer: it therefore decorates every outgoing response -- including CORS
+    preflight responses and the streaming CSV/PDF downloads -- with the security
+    headers required by QA finding F5.
 
     Args:
         fastapiApp: The application instance to configure.
@@ -174,6 +253,7 @@ def _ConfigureMiddleware(fastapiApp: FastAPI) -> None:
         allow_methods=["*"],
         allow_headers=["*"],
     )
+    fastapiApp.add_middleware(SecurityHeadersMiddleware)
 
 
 def _MountRouters(fastapiApp: FastAPI) -> None:
@@ -424,20 +504,80 @@ async def _HandleUnexpectedError(request: Request, exc: Exception) -> JSONRespon
     )
 
 
+async def _HandleRecursionError(request: Request, exc: RecursionError) -> JSONResponse:
+    """Map an over-nested request body to a bounded 400 (QA finding F4).
+
+    A pathologically deeply-nested JSON body (thousands of levels) exhausts
+    Python's recursion limit while the body is parsed and validated, raising
+    ``RecursionError`` before any route code runs. Without this handler it would
+    fall through to the catch-all and surface as a generic 500; mapping it to a
+    400 keeps malformed input bounded as a client error (Ochs rule: no generic
+    500 on malformed input). The body is deliberately generic and never reflects
+    the offending payload.
+
+    Args:
+        request: The incoming request, used only to log the method and path.
+        exc: The raised recursion error. Unused beyond the handler contract.
+
+    Returns:
+        A JSON response with status 400 and a generic detail.
+    """
+    _LOGGER.warning(
+        "Rejected over-nested request body on %s %s",
+        request.method,
+        request.url.path,
+    )
+    return JSONResponse(
+        status_code=status.HTTP_400_BAD_REQUEST,
+        content={"detail": "Malformed request: input structure is too deeply nested."},
+    )
+
+
+async def _HandleDataError(request: Request, exc: DataError) -> JSONResponse:
+    """Map a value the database rejects to a bounded 422 (QA finding F4).
+
+    Defense in depth behind the schema-level control-character guard
+    (``RequestBase._RejectControlCharacters``): should any user-supplied value
+    the validators do not cover reach PostgreSQL and be rejected at the driver
+    level (for example an embedded NUL in a text column -- asyncpg raises
+    ``DataError``), this maps that driver error to a 422 instead of letting it
+    reach the catch-all as a generic 500. The body is generic and never echoes
+    the offending value or any SQL/driver text.
+
+    Args:
+        request: The incoming request, used only to log the method and path.
+        exc: The raised SQLAlchemy data error. Unused beyond the contract.
+
+    Returns:
+        A JSON response with status 422 and a generic detail.
+    """
+    _LOGGER.warning(
+        "Rejected database-invalid value on %s %s",
+        request.method,
+        request.url.path,
+    )
+    return JSONResponse(
+        status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+        content={"detail": "Unprocessable value in request."},
+    )
+
+
 def _RegisterExceptionHandlers(fastapiApp: FastAPI) -> None:
     """Register domain-exception handlers that map errors to HTTP responses.
 
     Each general domain error is mapped to its status code via
     :data:`_DOMAIN_ERROR_STATUS`; the transaction-posting family is handled
-    separately so its numeric reject code and description are preserved. Two
-    infrastructure handlers complete the surface: a ``pydantic.ValidationError``
+    separately so its numeric reject code and description are preserved.
+    Infrastructure handlers complete the surface: a ``pydantic.ValidationError``
     handler that restores the 422 contract for validation errors raised inside
-    dependency callables (the inverted report date range), and a last-resort
-    catch-all ``Exception`` handler that sanitizes every otherwise-unhandled
-    fault into a generic 500 -- preventing traceback/SQL/PAN disclosure to the
-    client. The catch-all is only reached when FastAPI is not running in debug
-    mode, which is why ``create_application`` no longer forwards ``settings.DEBUG``
-    to the FastAPI constructor.
+    dependency callables (the inverted report date range); two malformed-input
+    handlers (QA finding F4) that bound a ``RecursionError`` from an over-nested
+    body to a 400 and a SQLAlchemy ``DataError`` from a database-rejected value
+    to a 422; and a last-resort catch-all ``Exception`` handler that sanitizes
+    every otherwise-unhandled fault into a generic 500 -- preventing
+    traceback/SQL/PAN disclosure to the client. The catch-all is only reached
+    when FastAPI is not running in debug mode, which is why ``create_application``
+    no longer forwards ``settings.DEBUG`` to the FastAPI constructor.
 
     Args:
         fastapiApp: The application instance to register handlers on.
@@ -447,6 +587,11 @@ def _RegisterExceptionHandlers(fastapiApp: FastAPI) -> None:
     fastapiApp.add_exception_handler(TransactionPostingError, _HandlePostingReject)
     fastapiApp.add_exception_handler(RequestValidationError, _HandleRequestValidationError)
     fastapiApp.add_exception_handler(PydanticValidationError, _HandleValidationError)
+    # QA finding F4: bound two malformed-input faults that would otherwise reach
+    # the catch-all as a generic 500. Both are more specific than ``Exception``,
+    # so Starlette resolves them first along the exception MRO.
+    fastapiApp.add_exception_handler(RecursionError, _HandleRecursionError)
+    fastapiApp.add_exception_handler(DataError, _HandleDataError)
     fastapiApp.add_exception_handler(Exception, _HandleUnexpectedError)
 
 
@@ -536,7 +681,8 @@ _LOOKUP_OPERATIONS: frozenset[tuple[str, str]] = frozenset(
 )
 
 # (METHOD, PATH) operations that can return 409 -- every conflict-capable path
-# (optimistic-lock mismatch, tran-id race exhaustion, or duplicate user).
+# (optimistic-lock mismatch, tran-id race exhaustion, duplicate user, or the
+# F3 last-administrator invariant on admin demotion/deletion).
 _CONFLICT_OPERATIONS: frozenset[tuple[str, str]] = frozenset(
     {
         ("PUT", f"{_V1_PREFIX}/accounts/{{acctId}}"),
@@ -544,6 +690,7 @@ _CONFLICT_OPERATIONS: frozenset[tuple[str, str]] = frozenset(
         ("POST", f"{_V1_PREFIX}/transactions"),
         ("POST", f"{_V1_PREFIX}/admin/users"),
         ("PUT", f"{_V1_PREFIX}/admin/users/{{userId}}"),
+        ("DELETE", f"{_V1_PREFIX}/admin/users/{{userId}}"),
     }
 )
 
