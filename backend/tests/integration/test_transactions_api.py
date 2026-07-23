@@ -71,6 +71,7 @@ from app.core.exceptions import (
     InvalidCardNumberError,
 )
 from app.models.account import Account
+from app.models.tran_category_balance import TranCategoryBalance
 
 # ---------------------------------------------------------------------------
 # Module constants (ALL_UPPERCASE per the Ochs Rule §0.8.2).
@@ -246,6 +247,39 @@ async def ReadAccountBalance(dbSession: AsyncSession, acctId: str) -> Decimal:
     return result.scalar_one()
 
 
+async def ReadCategoryBalance(
+    dbSession: AsyncSession, acctId: str, tranTypeCd: str, tranCatCd: str
+) -> Decimal:
+    """Read one transaction-category running balance, or zero when absent.
+
+    Uses a column-only ``SELECT`` so each call issues a fresh query (never a
+    stale identity-map object) after the service commits, letting the success
+    test compare the exact pre/post category-balance delta. A missing row -- the
+    legacy ``2700-A-CREATE-TCATBAL-REC`` first-posting case -- reads as an exact
+    ``Decimal("0")`` so the delta arithmetic is uniform whether posting creates
+    or updates the row.
+
+    Args:
+        dbSession: The shared async session the request handlers also use.
+        acctId: The 11-digit owning account id (TRANCAT-ACCT-ID).
+        tranTypeCd: The 2-character transaction type code (TRANCAT-TYPE-CD).
+        tranCatCd: The 4-digit transaction category code (TRANCAT-CD).
+
+    Returns:
+        The category ``balance`` as an exact :class:`~decimal.Decimal`, or
+        ``Decimal("0")`` when no row exists yet.
+    """
+    result = await dbSession.execute(
+        select(TranCategoryBalance.balance).where(
+            TranCategoryBalance.acct_id == acctId,
+            TranCategoryBalance.tran_type_cd == tranTypeCd,
+            TranCategoryBalance.tran_cat_cd == tranCatCd,
+        )
+    )
+    balance = result.scalar_one_or_none()
+    return balance if balance is not None else Decimal("0")
+
+
 # ===========================================================================
 # Phase 2 -- list (COTRN00C / CT00) + view (COTRN01C / CT01)
 # ===========================================================================
@@ -364,16 +398,23 @@ async def test_add_transaction_success(
     seed_data: None,
     db_session: AsyncSession,
 ) -> None:
-    """POST /transactions posts a valid transaction and updates the balance.
+    """POST /transactions posts a valid transaction and updates BOTH balances.
 
     Adds a $10.00 purchase to the non-expired account 00000000050, asserting the
     HTTP 201 result masks ``card_num``, returns the exact ``Decimal`` amount and a
-    16-character ``tran_id``, and -- mirroring CBTRN02C 2800-UPDATE-ACCOUNT-REC --
-    increases the account ``curr_bal`` by exactly the transaction amount.
+    16-character ``tran_id``, and -- mirroring CBTRN02C -- increases BOTH the
+    account ``curr_bal`` (``2800-UPDATE-ACCOUNT-REC``) AND the transaction-category
+    running balance ``tran_category_balance`` (``2700-UPDATE-TCATBAL``) by exactly
+    the transaction amount, in one committed unit-of-work. The category-balance
+    assertion pins finding F-1: online posting must update the category ledger,
+    not only the account balance.
     """
-    balanceBefore = await ReadAccountBalance(db_session, VALID_ACCT_ID)
-
     createPayload = BuildTransactionPayload(tran_amt=SUCCESS_TRAN_AMT)
+    typeCd = createPayload["tran_type_cd"]
+    catCd = createPayload["tran_cat_cd"]
+    balanceBefore = await ReadAccountBalance(db_session, VALID_ACCT_ID)
+    categoryBefore = await ReadCategoryBalance(db_session, VALID_ACCT_ID, typeCd, catCd)
+
     response = await admin_client.post(TRANSACTIONS_URL, json=createPayload)
 
     assert response.status_code == HTTP_CREATED, response.text
@@ -385,6 +426,10 @@ async def test_add_transaction_success(
 
     balanceAfter = await ReadAccountBalance(db_session, VALID_ACCT_ID)
     assert balanceAfter - balanceBefore == SUCCESS_BALANCE_DELTA
+    # F-1: the transaction-category running balance (CBTRN02C 2700-UPDATE-TCATBAL)
+    # must move by the SAME amount as the account balance, in the same commit.
+    categoryAfter = await ReadCategoryBalance(db_session, VALID_ACCT_ID, typeCd, catCd)
+    assert categoryAfter - categoryBefore == SUCCESS_BALANCE_DELTA
 
 
 # ===========================================================================

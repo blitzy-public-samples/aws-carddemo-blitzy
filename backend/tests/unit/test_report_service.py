@@ -28,7 +28,7 @@ indentation, and one behavior asserted per test.
 
 import calendar
 import csv
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 from decimal import Decimal
 
 import pytest
@@ -112,7 +112,14 @@ SEED_TRAN_ID_TWO = "0000000000000002"
 SEED_TRAN_AMT_ONE = Decimal("10.00")
 SEED_TRAN_AMT_TWO = Decimal("20.00")
 SEED_EXPECTED_GRAND_TOTAL = Decimal("30.00")
-SEED_ORIG_TS = datetime(2024, 2, 15, 12, 0, 0)
+# Seeded effective timestamps are tz-aware UTC (never naive). A naive datetime
+# written to a TIMESTAMPTZ column is encoded by asyncpg using the host process
+# TZ, which shifts the stored UTC calendar date at extreme offsets (e.g. noon
+# becomes the previous day at +14 or the next day at -12) and makes date-window
+# assertions host-dependent. Pinning tzinfo=UTC fixes the stored instant so the
+# SQL `::date` filter (transaction_repo) and the Python `.date()` grouping
+# (report_service) agree at every host TZ (QA finding F-01 / M-08).
+SEED_ORIG_TS = datetime(2024, 2, 15, 12, 0, 0, tzinfo=timezone.utc)
 SEED_EXPECTED_ROW_COUNT = 2
 
 
@@ -368,13 +375,17 @@ MULTI_ACCT_LAST_ACCOUNT_TOTAL = Decimal("5.00")
 MULTI_ACCT_ROW_COUNT = 3
 
 # Inclusive custom boundary window and four transactions straddling it: one on
-# each boundary day (included) and one just outside each end (excluded).
+# each boundary day (included) and one just outside each end (excluded). The
+# effective timestamps are tz-aware UTC (see SEED_ORIG_TS): a naive noon on a
+# boundary day would be encoded via the host TZ and slide onto the adjacent
+# calendar date at extreme offsets, flipping which rows fall inside the window
+# and making this boundary assertion host-dependent (QA finding F-01 / M-08).
 BOUNDARY_RANGE_START = date(2024, 2, 10)
 BOUNDARY_RANGE_END = date(2024, 2, 20)
-BOUNDARY_TS_ON_START = datetime(2024, 2, 10, 12, 0, 0)
-BOUNDARY_TS_ON_END = datetime(2024, 2, 20, 12, 0, 0)
-BOUNDARY_TS_BEFORE = datetime(2024, 2, 9, 12, 0, 0)
-BOUNDARY_TS_AFTER = datetime(2024, 2, 21, 12, 0, 0)
+BOUNDARY_TS_ON_START = datetime(2024, 2, 10, 12, 0, 0, tzinfo=timezone.utc)
+BOUNDARY_TS_ON_END = datetime(2024, 2, 20, 12, 0, 0, tzinfo=timezone.utc)
+BOUNDARY_TS_BEFORE = datetime(2024, 2, 9, 12, 0, 0, tzinfo=timezone.utc)
+BOUNDARY_TS_AFTER = datetime(2024, 2, 21, 12, 0, 0, tzinfo=timezone.utc)
 BOUNDARY_EXPECTED_ROW_COUNT = 2
 
 # Status-filter window and amounts: a POSTED and a PENDING row both dated in

@@ -3,9 +3,13 @@
 Ported 1:1 from legacy CICS online programs COTRN00C (list, CT00), COTRN01C
 (view, CT01), COTRN02C (add, CT02). Add-transaction validations reuse the batch
 posting validator CBTRN02C (1500-VALIDATE-TRAN) reject codes 100-103 and the
-additional code 109 (2800-UPDATE-ACCOUNT-REC). Record layouts CVTRA05Y (posted)
-/ CVTRA06Y (daily). tran_amt is Decimal (never float). card_num is masked in
-responses. See 0.5.1, 0.7.1, 0.7.3, 0.8.1.
+additional code 109 (2800-UPDATE-ACCOUNT-REC). Posting a transaction updates
+BOTH the transaction-category running balance (CBTRN02C 2700-UPDATE-TCATBAL) and
+the owning account balances (2800-UPDATE-ACCOUNT-REC) inside one atomic
+unit-of-work, exactly as the legacy posting program does. Record layouts
+CVTRA05Y (posted) / CVTRA06Y (daily) / CVTRA01Y (tran_category_balance).
+tran_amt is Decimal (never float). card_num is masked in responses.
+See 0.5.1, 0.7.1, 0.7.3, 0.8.1.
 """
 
 # Traceability (AAP 0.8.1): this module is the modern re-expression of three
@@ -54,10 +58,12 @@ from app.core.exceptions import (
     OverlimitTransactionError,
 )
 from app.models.account import Account
+from app.models.tran_category_balance import TranCategoryBalance
 from app.models.transaction import Transaction
 from app.repositories import (
     AccountRepository,
     CardXrefRepository,
+    TranCategoryBalanceRepository,
     TransactionRepository,
 )
 from app.schemas import (
@@ -149,10 +155,13 @@ class TransactionService:
     Fuses three legacy CICS online programs -- COTRN00C (list, CT00), COTRN01C
     (view, CT01), and COTRN02C (add, CT02) -- with the batch posting validator
     CBTRN02C (reject codes 100-103 and 109) reused by the add path. The service
-    orchestrates the transaction, card-cross-reference, and account repositories
-    and owns the per-request unit-of-work: list and view are strictly read-only
-    (no commit), while add wraps the transaction insert and the account-balance
-    update in a single committed transaction (rolled back on any failure).
+    orchestrates the transaction, card-cross-reference, account, and
+    transaction-category-balance repositories and owns the per-request
+    unit-of-work: list and view are strictly read-only (no commit), while add
+    wraps the transaction insert, the account-balance update
+    (CBTRN02C 2800-UPDATE-ACCOUNT-REC) and the category-balance update
+    (CBTRN02C 2700-UPDATE-TCATBAL) in a single committed transaction (rolled
+    back as a whole on any failure).
 
     All monetary arithmetic uses :class:`~decimal.Decimal` (never ``float``,
     AAP 0.7.1), and ``card_num`` is masked to its last four digits by the
@@ -164,11 +173,14 @@ class TransactionService:
 
         Each repository is stateless (the active session is passed per call),
         so constructing them once here is safe and lets a single service
-        instance be shared across requests.
+        instance be shared across requests. The transaction-category-balance
+        repository backs the ``2700-UPDATE-TCATBAL`` posting step on the add
+        path (AAP 0.7.3).
         """
         self.transactionRepository = TransactionRepository()
         self.xrefRepository = CardXrefRepository()
         self.accountRepository = AccountRepository()
+        self.tcatbalRepository = TranCategoryBalanceRepository()
 
     # -----------------------------------------------------------------------
     # METHOD 1 -- list (COTRN00C, CT00)
@@ -289,9 +301,12 @@ class TransactionService:
         (resolve the owning card/account) -> VALIDATE-INPUT-DATA-FIELDS (the
         per-field edits) -> the CBTRN02C posting validations (reject codes
         100-103) -> ADD-TRANSACTION (assign the next id and insert) -> the
-        2800-UPDATE-ACCOUNT-REC balance update (reject code 109). The insert and
-        the balance update form a single unit-of-work: this method owns the
-        commit and rolls back on any failure so the two writes are atomic.
+        2800-UPDATE-ACCOUNT-REC account-balance update (reject code 109) -> the
+        2700-UPDATE-TCATBAL category-balance update. The insert and the two
+        balance updates form a single unit-of-work: this method owns the commit
+        and rolls back on any failure so all three writes are atomic (AAP 0.7.3
+        / 0.8.1 -- the legacy program posts to BOTH the account balance and the
+        transaction-category balance).
 
         Args:
             session: Active async database session (caller-owned).
@@ -321,19 +336,35 @@ class TransactionService:
         # Step 3 -- CBTRN02C posting validation (codes 100/101, then 102/103).
         account = await self._LoadAccountForPosting(session, cardNum)
         self._RunPostingValidation(account, tranAmt, transactionCreate.orig_ts)
-        # Steps 4 + 5 -- insert the transaction and post the balances atomically,
-        # retrying only the TRAN-ID primary-key race. Each attempt regenerates
-        # the id from a freshly re-read MAX(tran_id) (a concurrent winner's row
-        # is now visible) and re-locks the account (SELECT ... FOR UPDATE) before
-        # adjusting balances, so a retry can never lose an update. The bound
-        # (MAX_ID_GENERATION_RETRIES) guarantees termination; exhaustion surfaces
-        # as an HTTP 409 conflict rather than an unhandled 500.
+        # Steps 4-6 -- insert the transaction (2900), post the account balances
+        # (2800-UPDATE-ACCOUNT-REC), then post the transaction-category running
+        # balance (2700-UPDATE-TCATBAL), all in ONE atomic unit-of-work, retrying
+        # only the TRAN-ID primary-key race. Each attempt regenerates the id from
+        # a freshly re-read MAX(tran_id) (a concurrent winner's row is now
+        # visible) and re-locks the account (SELECT ... FOR UPDATE) before
+        # adjusting balances, so a retry can never lose an update.
+        #
+        # Ordering (2800 before 2700): the two balance updates are commutative
+        # additive operations, so posting the account balance before the
+        # category balance yields the SAME committed state as the legacy
+        # 2700->2800 order, while atomicity (all-or-nothing on commit/rollback)
+        # is preserved. Posting the account first means the account row lock that
+        # _PostToAccount acquires (SELECT ... FOR UPDATE, held until commit)
+        # is already held when the category-balance read-modify-write runs, so
+        # concurrent posts to the SAME account serialize on that lock -- closing
+        # the lost-update window that CICS/VSAM record locking prevented on the
+        # mainframe (AAP 0.7.4).
+        #
+        # The bound (MAX_ID_GENERATION_RETRIES) guarantees termination;
+        # exhaustion surfaces as an HTTP 409 conflict rather than an unhandled
+        # 500.
         for attempt in range(1, MAX_ID_GENERATION_RETRIES + 1):
             try:
                 transaction = await self._InsertNewTransaction(
                     session, cardNum, tranAmt, transactionCreate
                 )
                 await self._PostToAccount(session, acctId, tranAmt)
+                await self._PostToCategoryBalance(session, acctId, transaction)
                 await session.commit()
             except IntegrityError:
                 # A concurrent add committed the same generated TRAN-ID first,
@@ -793,6 +824,56 @@ class TransactionService:
             account.curr_cyc_credit = account.curr_cyc_credit + tranAmt
         else:
             account.curr_cyc_debit = account.curr_cyc_debit + tranAmt
+
+    async def _PostToCategoryBalance(
+        self, session: AsyncSession, acctId: str, transaction: Transaction
+    ) -> None:
+        """Upsert the transaction-category running balance (CBTRN02C 2700).
+
+        Ports CBTRN02C 2700-UPDATE-TCATBAL (L440, L503-539): the per-account,
+        per-transaction-category running balance keyed by
+        ``(acct_id, tran_type_cd, tran_cat_cd)`` is read, and the transaction
+        amount is ADDed to it. When no row exists (the legacy ``READ ...
+        INVALID KEY`` -> ``2700-A-CREATE-TCATBAL-REC`` branch) a new row is
+        created with ``0 + tran_amt``; otherwise the amount is added to the
+        existing balance (``2700-B-UPDATE-TCATBAL-REC``). This mirrors the batch
+        posting job ``batch/jobs/post_transactions.py::_UpdateTcatbal`` so the
+        online add path and the batch job reconcile field-for-field (AAP 0.7.3).
+
+        The key type/category codes and the amount are read from the already
+        built :class:`~app.models.transaction.Transaction`, keeping this helper
+        within the Ochs four-parameter limit. Every operand is a
+        :class:`~decimal.Decimal`, so no binary floating-point rounding can enter
+        the monetary math (AAP 0.7.1). No commit is issued here: the account row
+        locked by :meth:`_PostToAccount` earlier in the same unit-of-work is
+        still held, so this category-balance read-modify-write is serialized per
+        account and cannot lose a concurrent update (AAP 0.7.4).
+
+        Args:
+            session: Active async unit-of-work session (owns the account lock).
+            acctId: The 11-digit owning account id (TRANCAT-ACCT-ID, PK part 1).
+            transaction: The inserted transaction supplying the type/category
+                codes and the exact Decimal amount to accumulate.
+        """
+        existingBalance = await self.tcatbalRepository.GetByKey(
+            session,
+            acctId,
+            transaction.tran_type_cd,
+            transaction.tran_cat_cd,
+        )
+        if existingBalance is None:
+            # 2700-A-CREATE-TCATBAL-REC: INITIALIZE then ADD amt to a zero base.
+            newBalance = TranCategoryBalance(
+                acct_id=acctId,
+                tran_type_cd=transaction.tran_type_cd,
+                tran_cat_cd=transaction.tran_cat_cd,
+                balance=Decimal("0") + transaction.tran_amt,
+            )
+            await self.tcatbalRepository.Create(session, newBalance)
+        else:
+            # 2700-B-UPDATE-TCATBAL-REC: ADD amt to the accumulated balance.
+            existingBalance.balance = existingBalance.balance + transaction.tran_amt
+            await self.tcatbalRepository.Update(session, existingBalance)
 
     # -----------------------------------------------------------------------
     # Small shared predicate

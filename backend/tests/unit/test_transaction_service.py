@@ -53,7 +53,14 @@ import pytest
 from sqlalchemy.exc import SQLAlchemyError
 
 from app.core.exceptions import DomainValidationError, NotFoundError
-from app.models import Account, Card, CardXref, Customer, Transaction
+from app.models import (
+    Account,
+    Card,
+    CardXref,
+    Customer,
+    TranCategoryBalance,
+    Transaction,
+)
 from app.schemas.common import PaginationParams
 from app.schemas.transaction import TransactionCreate
 from app.services.transaction_service import TransactionService
@@ -706,6 +713,80 @@ async def test_add_transaction_updates_balance(db_session):
     account = await db_session.get(Account, acctId)
     assert account.curr_bal == Decimal("1050.00")
     assert account.curr_cyc_credit == Decimal("50.00")
+
+
+async def test_add_transaction_creates_category_balance(db_session):
+    """Posting updates BOTH the account balance and a NEW category balance (F-1).
+
+    The online add path must perform CBTRN02C ``2700-UPDATE-TCATBAL`` in addition
+    to ``2800-UPDATE-ACCOUNT-REC``. With a fresh posting graph (no seeded category
+    balances), a +40.00 type-01/cat-0005 posting must (a) add 40.00 to
+    ``accounts.curr_bal`` AND (b) create exactly one ``tran_category_balance`` row
+    for ``(acct, 01, 0005)`` seeded at 40.00 (``2700-A-CREATE-TCATBAL-REC``), both
+    as exact :class:`~decimal.Decimal` values inside one committed unit-of-work.
+    This is the unit-level analog of finding F-1.
+    """
+    acctId, cardNum = await SeedPostingGraph(
+        db_session, PostingGraphSpec(currBal=Decimal("200.00")),
+    )
+    service = TransactionService()
+    create = BuildTransactionCreate(cardNum, Decimal("40.00"))
+    await service.AddTransaction(db_session, create)
+    account = await db_session.get(Account, acctId)
+    assert account.curr_bal == Decimal("240.00")
+    balanceRow = await db_session.get(TranCategoryBalance, (acctId, "01", "0005"))
+    assert balanceRow is not None
+    assert balanceRow.balance == Decimal("40.00")
+
+
+async def test_add_transaction_accumulates_category_balance(db_session):
+    """Posting ADDs the amount to an existing category balance (2700-B-UPDATE).
+
+    Ports CBTRN02C ``2700-B-UPDATE-TCATBAL-REC``: when the
+    ``tran_category_balance`` row already exists, posting ADDs ``tran_amt`` to the
+    accumulated balance rather than creating a second row. Starting from a seeded
+    100.00 balance for ``(acct, 01, 0005)``, a +50.00 posting yields exactly
+    150.00 in that SAME single row (the composite primary key admits no duplicate).
+    """
+    acctId, cardNum = await SeedPostingGraph(db_session)
+    db_session.add(
+        TranCategoryBalance(
+            acct_id=acctId, tran_type_cd="01", tran_cat_cd="0005",
+            balance=Decimal("100.00"),
+        )
+    )
+    await db_session.flush()
+    service = TransactionService()
+    create = BuildTransactionCreate(cardNum, Decimal("50.00"))
+    await service.AddTransaction(db_session, create)
+    balanceRow = await db_session.get(TranCategoryBalance, (acctId, "01", "0005"))
+    assert balanceRow is not None
+    assert balanceRow.balance == Decimal("150.00")
+
+
+async def test_add_transaction_negative_amount_decrements_category_balance(db_session):
+    """A negative posting subtracts from the category balance (signed ADD).
+
+    CBTRN02C ``2700`` performs an unconditional ``ADD DALYTRAN-AMT TO
+    TRAN-CAT-BAL`` -- the amount is accumulated WITH its sign, so a -30.00 posting
+    decrements the running category balance, mirroring the signed account-balance
+    arithmetic (a negative amount routes to the cycle-debit total). Starting from
+    a seeded 100.00 balance, a -30.00 posting yields exactly 70.00.
+    """
+    acctId, cardNum = await SeedPostingGraph(db_session)
+    db_session.add(
+        TranCategoryBalance(
+            acct_id=acctId, tran_type_cd="01", tran_cat_cd="0005",
+            balance=Decimal("100.00"),
+        )
+    )
+    await db_session.flush()
+    service = TransactionService()
+    create = BuildTransactionCreate(cardNum, Decimal("-30.00"))
+    await service.AddTransaction(db_session, create)
+    balanceRow = await db_session.get(TranCategoryBalance, (acctId, "01", "0005"))
+    assert balanceRow is not None
+    assert balanceRow.balance == Decimal("70.00")
 
 
 async def test_add_transaction_returns_decimal_amount(db_session):
