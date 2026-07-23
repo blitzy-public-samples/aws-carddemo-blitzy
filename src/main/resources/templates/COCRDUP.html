@@ -1,0 +1,311 @@
+<!DOCTYPE html>
+<!--/*
+  ============================================================================
+  COCRDUP.html - Update Credit Card Details screen
+  ============================================================================
+  Server-rendered Thymeleaf template reproducing the AWS CardDemo 3270/BMS
+  "Update Credit Card Details" screen one-for-one on a fixed 24x80 monospaced
+  character grid.
+
+  Origin (read-only, for traceability):
+    - legacy/bms/COCRDUP.bms       (BMS mapset COCRDUP, map CCRDUPA)
+    - legacy/cpy-bms/COCRDUP.CPY   (symbolic map copybook)
+  Backing bean : com.aws.carddemo.dto.screen.COCRDUPForm  (model attribute "form")
+  Rendered by  : com.aws.carddemo.web.controller.CardController (CICS tran CCUP
+                 -> program COCRDUPC); view name "COCRDUP".
+  Routes       : GET /card/update (display), POST /card/update (process/save).
+
+  Field geometry below is taken verbatim from the BMS POS=(row,col)/LENGTH
+  clauses. Each screen element is absolutely positioned inside the .screen
+  stage using the structural custom properties --r (BMS row), --c (BMS column)
+  and --w (BMS field length); all visual styling lives in the single inline
+  <style> block (no external stylesheet, no JavaScript).
+
+  COCRDUP is the EDITABLE sibling of COCRDSL (view): the card attributes are
+  rendered as UNPROT input fields, a hidden EXPDAY field is present, the error
+  line is X(80), and the PF-key legend is carried by TWO fields (fkeys+fkeysc)
+  that together form "ENTER=Process F3=Exit  F5=Save F12=Cancel".
+*/-->
+<html lang="en" xmlns:th="http://www.thymeleaf.org">
+<head>
+    <th:block th:replace="~{fragments/bms-palette :: palette}"></th:block>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Update Credit Card Details</title>
+    <style>
+        /* ---- Global reset ------------------------------------------------ */
+        *, *::before, *::after { box-sizing: border-box; }
+
+        :root {
+            /* Row height for the 24-line grid (rem keeps it stable regardless
+               of any element's own font-size). Horizontal units use `ch`,
+               which tracks the monospace advance width automatically. */
+            --rh: 1.25rem;
+            --screen-cols: 80;
+            /* 3270 palette mapped to the CardDemo hex contract. */
+            --col-blue:    var(--bms-blue);
+            --col-yellow:  var(--bms-yellow);
+            --col-turq:    var(--bms-turquoise);
+            --col-green:   var(--bms-green);
+            --col-red:     var(--bms-red);
+            --col-neutral: var(--bms-neutral);
+            --col-bg:      var(--bms-bg);
+        }
+
+        html { background: var(--col-bg); }
+
+        body {
+            margin: 0;
+            padding: 1rem;
+            background: var(--col-bg);
+            color: var(--col-neutral);
+            font-family: "Consolas", "DejaVu Sans Mono", "Liberation Mono",
+                         "Courier New", monospace;
+            font-size: var(--bms-cell); /* BLITZY [QA P5-06/P5-13]: responsive artboard cell size (legible floor then pan) */
+            line-height: var(--rh);
+            display: flex;
+            justify-content: safe center;
+            /* Finding #54: horizontal scroll keeps the 80ch artboard's left
+               origin reachable at 375x667; `safe center` falls back to
+               start-alignment (left edge at scrollLeft 0) when it overflows. */
+            overflow-x: auto;
+        }
+
+        /* Finding #54: the terminal artboard must never shrink below 80ch, so
+           its left origin remains reachable inside the horizontal scroller. */
+        body > * {
+            flex-shrink: 0;
+        }
+
+        /* Skip link - invisible accessibility, no visual footprint until
+           focused; never conflicts with the terminal layout. */
+        .skip-link {
+            position: absolute;
+            left: -9999px;
+            top: auto;
+        }
+        .skip-link:focus {
+            left: 1rem;
+            top: 0.25rem;
+            z-index: 10;
+            background: #000;
+            color: #fff;
+            padding: 0.25rem 0.5rem;
+            border: 1px solid var(--col-yellow);
+        }
+
+        main { width: max-content; }
+
+        /* The fixed 24x80 stage. Width is exactly 80 character cells; height is
+           exactly 24 rows so the grid dimensions match the BMS SIZE=(24,80). */
+        .screen {
+            position: relative;
+            width: calc(var(--screen-cols) * 1ch);
+            height: calc(24 * var(--rh));
+            background: var(--col-bg);
+            border: 1px solid #333;
+        }
+
+        /* Every positioned field. --r/--c/--w are supplied inline per element
+           and carry the BMS coordinates/length; the visual rules stay here. */
+        .f {
+            position: absolute;
+            top: calc((var(--r) - 1) * var(--rh));
+            left: calc((var(--c) - 1) * 1ch);
+            height: var(--rh);
+            line-height: var(--rh);
+            white-space: pre;   /* preserve exact label spacing */
+            margin: 0;
+        }
+        /* Width-constrained cells clip overflow so dynamic values can never
+           break the grid or bleed into a neighbouring field. */
+        .w {
+            width: calc(var(--w) * 1ch);
+            overflow: hidden;
+        }
+
+        /* Color classes (NORM intensity). */
+        .c-blue    { color: var(--col-blue); }
+        .c-yellow  { color: var(--col-yellow); }
+        .c-turq    { color: var(--col-turq); }
+        .c-green   { color: var(--col-green); }
+        .c-neutral { color: var(--col-neutral); }
+        /* BRT (bright) error line -> bright red + bold. */
+        .c-red     { color: var(--col-red); font-weight: bold; }
+        /* Neutral bright screen title. */
+        .title     { color: var(--col-neutral); font-weight: bold; }
+
+        /* Editable entry fields. BMS UNPROT + HILIGHT=UNDERLINE: rendered as
+           bare inputs (green, 3270 unprotected convention) with a full-width
+           underline reproducing the field's UNDERLINE highlight. Reset removes
+           the native chrome so the input occupies exactly --w character cells
+           (box-sizing:border-box keeps width == content width). */
+        input.fld {
+            appearance: none;
+            -webkit-appearance: none;
+            margin: 0;
+            padding: 0;
+            border: 0;
+            border-bottom: 1px solid var(--col-green);
+            background: transparent;
+            color: var(--col-green);
+            font: inherit;
+            height: var(--rh);
+            line-height: var(--rh);
+            text-decoration: underline;
+        }
+        input.fld:focus-visible {
+            outline: 2px solid var(--col-yellow);
+            outline-offset: 0;
+        }
+        /* JUSTIFY=(RIGHT) fields. */
+        input.right { text-align: right; }
+
+        /* PF-key controls (QA P5-09/P5-10). The row-24 legend below is the
+           faithful, data-driven visual reproduction of the BMS FKEYS/FKEYSC
+           fields. The previously duplicated control block that rendered BELOW
+           the terminal (and clipped at short viewport heights) has been
+           removed; the operable submit buttons now live INSIDE the terminal
+           section as a single visually-hidden (keyboard- and AT-reachable)
+           group, so there is exactly one coherent control set within the 24x80
+           geometry and no bespoke .controls styling is required. */
+
+        /* Screen-reader-only utility (invisible accessibility). */
+        .visually-hidden {
+            position: absolute;
+            width: 1px;
+            height: 1px;
+            padding: 0;
+            margin: -1px;
+            overflow: hidden;
+            clip: rect(0, 0, 0, 0);
+            white-space: nowrap;
+            border: 0;
+        }
+    </style>
+</head>
+<body>
+    <a class="skip-link" href="#screen">Skip to screen</a>
+
+    <main>
+        <!-- Off-grid semantic heading for assistive tech (review finding #56); the visible
+             title cell is unchanged. -->
+        <h1 class="visually-hidden">Update Credit Card Details</h1>
+        <!-- CSRF is emitted automatically: with spring-boot-starter-security on
+             the classpath, th:action triggers Spring Security's
+             CsrfRequestDataValueProcessor to inject the hidden _csrf field. -->
+        <form th:object="${form}" th:action="@{/card/update}" method="post">
+
+            <section id="screen" class="screen" aria-label="Update Credit Card Details">
+
+                <!-- ===================== Header line 1 ===================== -->
+                <span class="f w c-blue"   style="--r:1;  --c:1;  --w:5;">Tran:</span>
+                <span class="f w c-blue"   style="--r:1;  --c:7;  --w:4;"  th:text="*{trnname}">CCUP</span>
+                <span class="f w c-yellow" style="--r:1;  --c:21; --w:40;" th:text="*{title01}"></span>
+                <span class="f w c-blue"   style="--r:1;  --c:65; --w:5;">Date:</span>
+                <span class="f w c-blue"   style="--r:1;  --c:71; --w:8;"  th:text="*{curdate} ?: 'mm/dd/yy'">mm/dd/yy</span>
+
+                <!-- ===================== Header line 2 ===================== -->
+                <span class="f w c-blue"   style="--r:2;  --c:1;  --w:5;">Prog:</span>
+                <span class="f w c-blue"   style="--r:2;  --c:7;  --w:8;"  th:text="*{pgmname}">COCRDUPC</span>
+                <span class="f w c-yellow" style="--r:2;  --c:21; --w:40;" th:text="*{title02}"></span>
+                <span class="f w c-blue"   style="--r:2;  --c:65; --w:5;">Time:</span>
+                <span class="f w c-blue"   style="--r:2;  --c:71; --w:8;"  th:text="*{curtime} ?: 'hh:mm:ss'">hh:mm:ss</span>
+
+                <!-- ===================== Screen title (row 4) ============== -->
+                <span class="f w title" style="--r:4; --c:30; --w:26;">Update Credit Card Details</span>
+
+                <!-- ===================== Account number (row 7) =========== -->
+                <label class="f w c-turq" style="--r:7; --c:23; --w:19;" for="acctsid">Account Number    :</label>
+                <input id="acctsid" class="f w fld" style="--r:7; --c:45; --w:11;"
+                       type="text" th:field="*{acctsid}" maxlength="11"
+                       th:readonly="${confirmMode}"
+                       autocomplete="off" autofocus>
+
+                <!-- ===================== Card number (row 8) ============== -->
+                <label class="f w c-turq" style="--r:8; --c:23; --w:19;" for="cardsid">Card Number       :</label>
+                <input id="cardsid" class="f w fld" style="--r:8; --c:45; --w:16;"
+                       type="text" th:field="*{cardsid}" maxlength="16"
+                       th:readonly="${confirmMode}"
+                       autocomplete="off">
+
+                <!-- ===================== Name on card (row 11) ============ -->
+                <label class="f w c-turq" style="--r:11; --c:4; --w:19;" for="crdname">Name on card      :</label>
+                <input id="crdname" class="f w fld" style="--r:11; --c:25; --w:50;"
+                       type="text" th:field="*{crdname}" maxlength="50"
+                       th:readonly="${confirmMode}"
+                       autocomplete="off">
+
+                <!-- ===================== Card active Y/N (row 13) ========= -->
+                <label class="f w c-turq" style="--r:13; --c:4; --w:20;" for="crdstcd">Card Active Y/N   : </label>
+                <input id="crdstcd" class="f w fld" style="--r:13; --c:25; --w:1;"
+                       type="text" th:field="*{crdstcd}" maxlength="1"
+                       th:readonly="${confirmMode}"
+                       autocomplete="off">
+
+                <!-- ===================== Expiry date (row 15) ============= -->
+                <label class="f w c-turq" style="--r:15; --c:4; --w:20;" for="expmon">Expiry Date       : </label>
+                <input id="expmon" class="f w fld right" style="--r:15; --c:25; --w:2;"
+                       type="text" th:field="*{expmon}" maxlength="2"
+                       th:readonly="${confirmMode}"
+                       aria-label="Card expiry month" autocomplete="off">
+                <span class="f w c-neutral" style="--r:15; --c:28; --w:1;" aria-hidden="true">/</span>
+                <input id="expyear" class="f w fld right" style="--r:15; --c:30; --w:4;"
+                       type="text" th:field="*{expyear}" maxlength="4"
+                       th:readonly="${confirmMode}"
+                       aria-label="Card expiry year" autocomplete="off">
+
+                <!-- Expiry day: BMS EXPDAY is DRK (non-display) / PROT at
+                     (15,36); carried through the round-trip as a hidden field. -->
+                <input type="hidden" th:field="*{expday}">
+
+                <!-- Review finding #10: single-use confirmation token. Echoed as a
+                     hidden field and validated then consumed on the PF5 save so a
+                     replayed or forged confirmation cannot re-drive the update. -->
+                <input type="hidden" th:field="*{confirmToken}">
+
+                <!-- ===================== Info message (row 20) ============ -->
+                <span class="f w c-neutral" style="--r:20; --c:25; --w:40;"
+                      th:if="${!#strings.isEmpty(form.infomsg)}"
+                      th:text="*{infomsg}"></span>
+
+                <!-- ===================== Error message (row 23, X(80)) ==== -->
+                <span class="f w c-red" role="alert" style="--r:23; --c:1; --w:80;"
+                      th:if="${!#strings.isEmpty(form.errmsg)}"
+                      th:text="*{errmsg}"></span>
+
+                <!-- ===================== PF-key legend (row 24) =========== -->
+                <!-- Two BMS fields: FKEYS (cols 1-21) + FKEYSC (col 23),
+                     positioned at their true columns so the single blank at
+                     col 22 is reproduced exactly. These spans remain the
+                     faithful, data-driven visual reproduction of the BMS
+                     legend (the controller MAY override FKEYS/FKEYSC). -->
+                <span class="f w c-yellow" style="--r:24; --c:1; --w:21;"
+                      th:text="*{fkeys} ?: 'ENTER=Process F3=Exit'">ENTER=Process F3=Exit</span>
+                <span class="f w c-yellow" style="--r:24; --c:23; --w:18;"
+                      th:text="*{fkeysc} ?: 'F5=Save F12=Cancel'">F5=Save F12=Cancel</span>
+
+                <!-- Operable PF-key controls (QA P5-09/P5-10): the duplicate
+                     control block that previously rendered BELOW the terminal
+                     (and clipped at short viewport heights) is removed. Because
+                     the row-24 legend above is a data-driven pair of fields
+                     (FKEYS/FKEYSC) combining several keys per field, it cannot
+                     be split into per-key visible buttons without losing the
+                     data-driven binding; operability is therefore provided by
+                     this single coherent, keyboard- and AT-reachable control
+                     group kept INSIDE the terminal geometry (visually-hidden,
+                     zero visual footprint). ENTER is first so pressing Enter
+                     inside the form submits with pfkey=ENTER. -->
+                <div class="visually-hidden" role="group" aria-label="Function keys">
+                    <button type="submit" name="pfkey" value="ENTER">ENTER=Process</button>
+                    <button type="submit" name="pfkey" value="PF3" formnovalidate>F3=Exit</button>
+                    <button type="submit" name="pfkey" value="PF5">F5=Save</button>
+                    <button type="submit" name="pfkey" value="PF12" formnovalidate>F12=Cancel</button>
+                </div>
+
+            </section>
+
+        </form>
+    </main>
+</body>
+</html>

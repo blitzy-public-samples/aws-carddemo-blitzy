@@ -1,0 +1,235 @@
+<!DOCTYPE html>
+<!--/*
+  ~ AWS CardDemo - Bill Payment screen (server-rendered Thymeleaf view).
+  ~
+  ~ Origin (read-only, 1:1 reproduction):
+  ~   legacy/bms/COBIL00.bms       (BMS mapset COBIL00, map COBIL0A, SIZE=24x80)
+  ~   legacy/cpy-bms/COBIL00.CPY   (BMS symbolic map copybook)
+  ~ Rendered by:
+  ~   com.aws.carddemo.web.controller.BillPayController
+  ~   CICS transaction CB00  ->  program COBIL00C.  View name "COBIL00".
+  ~ Routes:  GET /billpay (display)   |   POST /billpay (submit; controller reads "pfkey").
+  ~ Backing bean: com.aws.carddemo.dto.screen.COBIL00Form (model attribute "form").
+  ~
+  ~ This template preserves the original 3270/BMS field/label/length/color/PF-key
+  ~ contract on a fixed 24x80 monospaced grid. Field positions (row, col), colors and
+  ~ literal labels are taken verbatim from legacy/bms/COBIL00.bms. Migration rationale is
+  ~ recorded in docs/decision-log.md, not repeated in code comments.
+*/-->
+<html lang="en" xmlns:th="http://www.thymeleaf.org">
+<head>
+    <th:block th:replace="~{fragments/bms-palette :: palette}"></th:block>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Bill Payment</title>
+    <style>
+        /* ---------------------------------------------------------------
+           Fixed 24x80 monospaced terminal grid (BMS SIZE=(24,80)).
+           All styling is self-contained here (no external CSS / no JS), using
+           utility CLASSES only - no per-element inline style attributes.
+           --------------------------------------------------------------- */
+        :root {
+            --lh: 1.25rem;              /* height of one BMS row  */
+        }
+
+        *, *::before, *::after { box-sizing: border-box; }
+
+        html { background: #000000; }
+
+        body {
+            margin: 0;
+            background: #000000;        /* 3270 dark background */
+            color: var(--bms-neutral);
+            font-family: "Courier New", Courier, monospace;
+            font-size: 1rem;
+        }
+
+        /* BLITZY [QA P5-06/P5-13]: horizontal scroll keeps the 80-col artboard's left
+           origin reachable on narrow viewports (scrollLeft 0 = left edge). */
+        main { display: block; padding: var(--lh) 0; overflow-x: auto; }
+
+        /* The 24x80 canvas; positioning context for every absolutely placed cell. */
+        .screen {
+            position: relative;
+            width: 80ch;
+            height: calc(24 * var(--lh));
+            margin: 0 auto;
+            /* BLITZY [QA P5-06/P5-13]: responsive artboard cell size (legible floor then pan). */
+            font-size: var(--bms-cell);
+            line-height: var(--lh);
+            background: #000000;
+        }
+
+        /* An absolutely positioned character cell. white-space:pre keeps the
+           fixed-width label spacing (incl. trailing spaces) byte-for-byte. */
+        .cell {
+            position: absolute;
+            margin: 0;
+            padding: 0;
+            line-height: var(--lh);
+            white-space: pre;
+        }
+
+        /* Row positions:  top = (row - 1) * line-height  (BMS POS line). */
+        .r1  { top: calc(0  * var(--lh)); }
+        .r2  { top: calc(1  * var(--lh)); }
+        .r4  { top: calc(3  * var(--lh)); }
+        .r6  { top: calc(5  * var(--lh)); }
+        .r8  { top: calc(7  * var(--lh)); }
+        .r11 { top: calc(10 * var(--lh)); }
+        .r15 { top: calc(14 * var(--lh)); }
+        .r23 { top: calc(22 * var(--lh)); }
+        .r24 { top: calc(23 * var(--lh)); }
+
+        /* Column positions:  left = (col - 1) * 1ch  (BMS POS column). */
+        .c1  { left: 0ch;  }
+        .c6  { left: 5ch;  }
+        .c7  { left: 6ch;  }
+        .c21 { left: 20ch; }
+        .c32 { left: 31ch; }
+        .c35 { left: 34ch; }
+        .c60 { left: 59ch; }
+        .c63 { left: 62ch; }
+        .c65 { left: 64ch; }
+        .c71 { left: 70ch; }
+
+        /* BMS COLOR attribute -> centralized palette var (templates/fragments/bms-palette.html).
+           BLITZY [A11Y / review finding #53]: the two BMS foreground colours that failed WCAG 2.1
+           AA contrast on the black background (BLUE, RED) are replaced with accessible equivalents
+           brightened along the same hue axis (>= 4.5:1); the rest keep their legacy values.
+           Contrast is asserted by BmsPaletteContrastTest; rationale in docs/decision-log.md. */
+        .blue    { color: var(--bms-blue); }
+        .yellow  { color: var(--bms-yellow); }
+        .turq    { color: var(--bms-turquoise); }
+        .green   { color: var(--bms-green); }
+        .red     { color: var(--bms-red); }
+        .neutral { color: var(--bms-neutral); }
+        .brt     { font-weight: bold; }     /* BMS ATTRB=BRT (bright) */
+
+        /* Unprotected input fields (BMS ATTRB=UNPROT). HILIGHT=UNDERLINE is
+           reproduced with a bottom rule. Colour comes from the field's colour
+           class; the underline uses currentColor so it matches. */
+        .fld {
+            position: absolute;
+            margin: 0;
+            padding: 0;
+            height: var(--lh);
+            line-height: var(--lh);
+            font: inherit;
+            background: transparent;
+            border: 0;
+            border-bottom: 1px solid currentColor;
+            text-transform: uppercase;      /* 3270 fields echo uppercase */
+        }
+        .fld:focus-visible { outline: 1px solid #FFFFFF; outline-offset: 0; }
+
+        .w11 { width: 11ch; }
+        .w1  { width: 1ch;  }
+
+        /* PF-key legend (BMS row 24) rendered as functional submit buttons that
+           look exactly like the terminal legend text (yellow monospace). The
+           parent cell's white-space:pre preserves the exact two-space gaps. */
+        .pf {
+            font: inherit;
+            color: inherit;
+            background: transparent;
+            border: 0;
+            margin: 0;
+            padding: 0;
+            cursor: pointer;
+            vertical-align: baseline;
+        }
+        .pf:focus-visible { outline: 1px solid #FFFFFF; }
+        .pf:active { text-decoration: underline; filter: brightness(1.3); }
+        @media (hover: hover) {
+            .pf:hover { text-decoration: underline; }
+        }
+
+        /* Visually hidden yet available to assistive tech (invisible a11y). */
+        .sr-only {
+            position: absolute;
+            width: 1px;
+            height: 1px;
+            padding: 0;
+            margin: -1px;
+            overflow: hidden;
+            clip: rect(0, 0, 0, 0);
+            white-space: nowrap;
+            border: 0;
+        }
+    </style>
+</head>
+<body>
+<a class="sr-only" href="#actidin">Skip to account ID entry</a>
+<main>
+    <!-- Off-grid semantic heading for assistive tech (review finding #56); the visible
+         title cell is unchanged. -->
+    <h1 class="visually-hidden">Bill Payment</h1>
+    <!-- The 24x80 screen. The form is the positioning context; Spring Security's
+         RequestDataValueProcessor auto-injects the hidden _csrf field into any
+         form rendered with th:action. -->
+    <form class="screen" th:object="${form}" th:action="@{/billpay}" method="post" autocomplete="off">
+
+        <!-- ============================= Header (rows 1-2) ============================= -->
+        <!-- Row 1 -->
+        <span class="cell r1 c1 blue">Tran:</span>
+        <span class="cell r1 c7 blue" th:text="*{trnname}">CB00</span>
+        <span class="cell r1 c21 yellow" th:text="*{title01}">AWS CardDemo</span>
+        <span class="cell r1 c65 blue">Date:</span>
+        <span class="cell r1 c71 blue" th:text="*{curdate}">mm/dd/yy</span>
+
+        <!-- Row 2 -->
+        <span class="cell r2 c1 blue">Prog:</span>
+        <span class="cell r2 c7 blue" th:text="*{pgmname}">COBIL00C</span>
+        <span class="cell r2 c21 yellow" th:text="*{title02}">Bill Payment</span>
+        <span class="cell r2 c65 blue">Time:</span>
+        <span class="cell r2 c71 blue" th:text="*{curtime}">hh:mm:ss</span>
+
+        <!-- ============================= Screen title (row 4) ========================= -->
+        <span class="cell r4 c35 neutral brt">Bill Payment</span>
+
+        <!-- ============================= Body ========================================= -->
+        <!-- Row 6: account id prompt + entry field (BMS ACTIDIN, IC -> autofocus). -->
+        <span class="cell r6 c6 green">Enter Acct ID:</span>
+        <input type="text" th:field="*{actidin}" id="actidin"
+               class="r6 c21 green fld w11"
+               maxlength="11" size="11" autocomplete="off" autofocus
+               aria-label="Enter Acct ID">
+
+        <!-- Row 8: 70-dash separator (BMS COLOR=YELLOW, LENGTH=70). -->
+        <span class="cell r8 c6 yellow">----------------------------------------------------------------------</span>
+
+        <!--/* Row 11: current balance (display-formatted string, read-only; NEVER an
+             input and NEVER a numeric/BigDecimal - see COBIL00Form#getCurbal). */-->
+        <span class="cell r11 c6 turq">Your current balance is: </span>
+        <span class="cell r11 c32 blue" th:text="*{curbal}">$0.00</span>
+
+        <!-- Row 15: confirmation prompt + Y/N entry (BMS CONFIRM) + (Y/N) hint. -->
+        <span class="cell r15 c6 turq">Do you want to pay your balance now. Please confirm: </span>
+        <input type="text" th:field="*{confirm}" id="confirm"
+               class="r15 c60 green fld w1"
+               maxlength="1" size="1" autocomplete="off"
+               aria-label="Do you want to pay your balance now. Please confirm (Y/N)">
+        <span class="cell r15 c63 neutral">(Y/N)</span>
+
+        <!-- ============================= Messages / legend =========================== -->
+        <!-- Row 23: error / status message (BMS ERRMSG, RED BRT); shown only when set. -->
+        <span role="alert" aria-live="assertive" class="cell r23 c1 brt"
+              th:classappend="${form.errmsgColor}"
+              th:if="${!#strings.isEmpty(form.errmsg)}"
+              th:text="*{errmsg}">Error message</span>
+
+        <!-- Single-use confirmation nonce (review finding F12). Binds a confirm=Y payment to the
+             account whose balance the server displayed, so a tampered re-post cannot re-aim or
+             replay the payment. The RequestDataValueProcessor injects the hidden _csrf field. -->
+        <input type="hidden" th:field="*{confirmToken}">
+
+        <!-- Row 24: PF-key legend. Buttons carry the BMS legend text verbatim
+             ("ENTER=Continue  F3=Back  F4=Clear" - two spaces between segments).
+             ENTER is first in document order so pressing Enter in a field submits
+             it (pfkey=ENTER). F3=Back and F4=Clear post pfkey=PF3 / PF4. -->
+        <span class="cell r24 c1 yellow"><button type="submit" name="pfkey" value="ENTER" class="pf">ENTER=Continue</button>  <button type="submit" name="pfkey" value="PF3" class="pf">F3=Back</button>  <button type="submit" name="pfkey" value="PF4" class="pf">F4=Clear</button></span>
+    </form>
+</main>
+</body>
+</html>

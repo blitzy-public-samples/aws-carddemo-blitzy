@@ -1,0 +1,341 @@
+<!DOCTYPE html>
+<!--/*
+  COTRN00.html - List Transactions screen (CICS tran CT00, program COTRN00C).
+  Origin (read-only): legacy/bms/COTRN00.bms (mapset COTRN00, map COTRN0A)
+                      + legacy/cpy-bms/COTRN00.CPY (symbolic map COTRN0AI).
+  Rendered by com.aws.carddemo.web.controller.TransactionController (view "COTRN00").
+  Backing bean: com.aws.carddemo.dto.screen.COTRN00Form (model attribute "form").
+  Reproduces the original 24x80 3270 field/label/color/PF-key contract one-for-one.
+*/-->
+<html lang="en" xmlns:th="http://www.thymeleaf.org">
+<head>
+    <th:block th:replace="~{fragments/bms-palette :: palette}"></th:block>
+    <meta charset="UTF-8"/>
+    <meta name="viewport" content="width=device-width, initial-scale=1"/>
+    <title>List Transactions</title>
+    <style>
+        *, *::before, *::after { box-sizing: border-box; }
+
+        /* CardDemo 3270 palette (BMS COLOR -> hex) and grid row height. */
+        :root {
+            --c-blue: var(--bms-blue);
+            --c-yellow: var(--bms-yellow);
+            --c-turquoise: var(--bms-turquoise);
+            --c-green: var(--bms-green);
+            --c-red: var(--bms-red);
+            --c-neutral: var(--bms-neutral);
+            --c-bg: var(--bms-bg);
+            --rh: 1.25rem;
+        }
+
+        html { background: var(--c-bg); }
+
+        body {
+            margin: 0;
+            padding: 1rem 0;
+            background: var(--c-bg);
+            color: var(--c-neutral);
+            font-family: "Courier New", Courier, monospace;
+            overflow-x: auto;
+        }
+
+        /* Skip-navigation link (keyboard/screen-reader affordance). */
+        .skip {
+            position: absolute;
+            left: -9999px;
+            top: 0;
+            z-index: 10;
+            background: var(--c-neutral);
+            color: var(--c-bg);
+            padding: 0.25rem 0.5rem;
+        }
+        .skip:focus { left: 0.5rem; top: 0.5rem; }
+
+        /* Visually-hidden content exposed to assistive technology only. */
+        .sr-only {
+            position: absolute;
+            width: 1px;
+            height: 1px;
+            padding: 0;
+            margin: -1px;
+            overflow: hidden;
+            clip: rect(0, 0, 0, 0);
+            white-space: nowrap;
+            border: 0;
+        }
+
+        /* The fixed 24-row x 80-column terminal grid. */
+        .screen {
+            position: relative;
+            width: 80ch;
+            height: calc(24 * var(--rh));
+            margin: 0 auto;
+            /* BLITZY [QA P5-06/P5-13]: responsive artboard cell size (legible floor then pan). */
+            font-size: var(--bms-cell);
+            line-height: var(--rh);
+            background: var(--c-bg);
+        }
+
+        /*
+         * Field/label placement. Every field declares its 1-based BMS grid
+         * row (--r), column (--c) and character width (--w) inline; this class
+         * converts them to absolute coordinates. 1ch equals one monospace cell,
+         * so columns align exactly with the legacy BMS POS=(row,col) contract.
+         */
+        .f {
+            position: absolute;
+            top: calc((var(--r) - 1) * var(--rh));
+            left: calc((var(--c) - 1) * 1ch);
+            width: calc(var(--w) * 1ch);
+            height: var(--rh);
+            line-height: var(--rh);
+            margin: 0;
+            padding: 0;
+            white-space: pre;
+            overflow: hidden;
+        }
+
+        .c-blue { color: var(--c-blue); }
+        .c-yellow { color: var(--c-yellow); }
+        .c-turquoise { color: var(--c-turquoise); }
+        .c-green { color: var(--c-green); }
+        .c-red { color: var(--c-red); }
+        .c-neutral { color: var(--c-neutral); }
+
+        /* BMS BRT (bright) attribute -> high-intensity / bold. */
+        .brt { font-weight: 700; }
+
+        /* Unprotected input fields (BMS UNPROT, HILIGHT=UNDERLINE). */
+        .inp {
+            background: transparent;
+            border: 0;
+            border-bottom: 1px solid currentColor;
+            font: inherit;
+            height: var(--rh);
+            line-height: var(--rh);
+            padding: 0;
+            margin: 0;
+            outline: none;
+            border-radius: 0;
+        }
+        .inp:focus-visible { outline: 1px solid var(--c-neutral); outline-offset: -1px; }
+
+        /* PF-key legend rendered as text-styled submit buttons (no JavaScript). */
+        .btn {
+            background: transparent;
+            border: 0;
+            font: inherit;
+            height: var(--rh);
+            line-height: var(--rh);
+            padding: 0;
+            margin: 0;
+            text-align: left;
+            white-space: pre;
+            overflow: hidden;
+            cursor: pointer;
+        }
+        .btn:focus-visible { outline: 1px solid var(--c-neutral); outline-offset: -1px; }
+        .btn:active { text-decoration: underline; filter: brightness(1.3); }
+        @media (hover: hover) {
+            .btn:hover { text-decoration: underline; }
+        }
+    </style>
+</head>
+<body>
+    <a class="skip" href="#main">Skip to main content</a>
+    <main id="main">
+        <h1 class="sr-only">List Transactions</h1>
+        <!--
+          POST to /transaction/list; Spring Security CSRF token is emitted
+          automatically by th:action. The four PF-key submit buttons share the
+          request parameter "pfkey"; the ENTER button is the first submit button
+          in DOM order so the Enter key maps to pfkey=ENTER.
+        -->
+        <form th:object="${form}" th:action="@{/transaction/list}" method="post"
+              aria-label="List Transactions">
+            <div class="screen">
+
+                <!-- Header line 1 (BMS row 1) -->
+                <span class="f c-blue" style="--r:1;--c:1;--w:5">Tran:</span>
+                <span class="f c-blue" style="--r:1;--c:7;--w:4" th:text="*{trnname}"></span>
+                <span class="f c-yellow" style="--r:1;--c:21;--w:40" th:text="*{title01}"></span>
+                <span class="f c-blue" style="--r:1;--c:65;--w:5">Date:</span>
+                <span class="f c-blue" style="--r:1;--c:71;--w:8" th:text="*{curdate}"></span>
+
+                <!-- Header line 2 (BMS row 2) -->
+                <span class="f c-blue" style="--r:2;--c:1;--w:5">Prog:</span>
+                <span class="f c-blue" style="--r:2;--c:7;--w:8" th:text="*{pgmname}"></span>
+                <span class="f c-yellow" style="--r:2;--c:21;--w:40" th:text="*{title02}"></span>
+                <span class="f c-blue" style="--r:2;--c:65;--w:5">Time:</span>
+                <span class="f c-blue" style="--r:2;--c:71;--w:8" th:text="*{curtime}"></span>
+
+                <!-- Screen title + page number (BMS row 4) -->
+                <span class="f c-neutral brt" style="--r:4;--c:30;--w:17">List Transactions</span>
+                <span class="f c-turquoise brt" style="--r:4;--c:65;--w:5">Page:</span>
+                <span class="f c-blue" style="--r:4;--c:71;--w:8" th:text="*{pagenum}"></span>
+
+                <!-- Search / filter row (BMS row 6); TRNIDIN is the BMS IC (initial cursor) field -->
+                <span id="lbl-search" class="f c-turquoise" style="--r:6;--c:5;--w:15">Search Tran ID:</span>
+                <input type="text" class="f inp c-green" style="--r:6;--c:21;--w:16"
+                       th:field="*{trnidin}" maxlength="16" autofocus="autofocus"
+                       autocomplete="off" spellcheck="false" aria-labelledby="lbl-search"/>
+
+                <!-- Column headers (BMS row 8) -->
+                <span class="f c-neutral" style="--r:8;--c:2;--w:3">Sel</span>
+                <span class="f c-neutral" style="--r:8;--c:8;--w:16"> Transaction ID </span>
+                <span class="f c-neutral" style="--r:8;--c:27;--w:8">  Date  </span>
+                <span class="f c-neutral" style="--r:8;--c:38;--w:26">     Description          </span>
+                <span class="f c-neutral" style="--r:8;--c:67;--w:12">   Amount   </span>
+
+                <!-- Dash separators (BMS row 9) -->
+                <span class="f c-neutral" style="--r:9;--c:2;--w:3">---</span>
+                <span class="f c-neutral" style="--r:9;--c:8;--w:16">----------------</span>
+                <span class="f c-neutral" style="--r:9;--c:27;--w:8">--------</span>
+                <span class="f c-neutral" style="--r:9;--c:38;--w:26">--------------------------</span>
+                <span class="f c-neutral" style="--r:9;--c:67;--w:12">------------</span>
+
+                <!-- Data row 1 (BMS row 10) -->
+                <input type="text" class="f inp c-green" style="--r:10;--c:3;--w:1"
+                       th:field="*{sel0001}" maxlength="1" autocomplete="off"
+                       spellcheck="false" aria-label="Select transaction row 1"/>
+                <span class="f c-blue" style="--r:10;--c:8;--w:16" th:text="*{trnid01}"></span>
+                <span class="f c-blue" style="--r:10;--c:27;--w:8" th:text="*{tdate01}"></span>
+                <span class="f c-blue" style="--r:10;--c:38;--w:26" th:text="*{tdesc01}"></span>
+                <span class="f c-blue" style="--r:10;--c:67;--w:12" th:text="*{tamt001}"></span>
+
+                <!-- Data row 2 (BMS row 11) -->
+                <input type="text" class="f inp c-green" style="--r:11;--c:3;--w:1"
+                       th:field="*{sel0002}" maxlength="1" autocomplete="off"
+                       spellcheck="false" aria-label="Select transaction row 2"/>
+                <span class="f c-blue" style="--r:11;--c:8;--w:16" th:text="*{trnid02}"></span>
+                <span class="f c-blue" style="--r:11;--c:27;--w:8" th:text="*{tdate02}"></span>
+                <span class="f c-blue" style="--r:11;--c:38;--w:26" th:text="*{tdesc02}"></span>
+                <span class="f c-blue" style="--r:11;--c:67;--w:12" th:text="*{tamt002}"></span>
+
+                <!-- Data row 3 (BMS row 12) -->
+                <input type="text" class="f inp c-green" style="--r:12;--c:3;--w:1"
+                       th:field="*{sel0003}" maxlength="1" autocomplete="off"
+                       spellcheck="false" aria-label="Select transaction row 3"/>
+                <span class="f c-blue" style="--r:12;--c:8;--w:16" th:text="*{trnid03}"></span>
+                <span class="f c-blue" style="--r:12;--c:27;--w:8" th:text="*{tdate03}"></span>
+                <span class="f c-blue" style="--r:12;--c:38;--w:26" th:text="*{tdesc03}"></span>
+                <span class="f c-blue" style="--r:12;--c:67;--w:12" th:text="*{tamt003}"></span>
+
+                <!-- Data row 4 (BMS row 13) -->
+                <input type="text" class="f inp c-green" style="--r:13;--c:3;--w:1"
+                       th:field="*{sel0004}" maxlength="1" autocomplete="off"
+                       spellcheck="false" aria-label="Select transaction row 4"/>
+                <span class="f c-blue" style="--r:13;--c:8;--w:16" th:text="*{trnid04}"></span>
+                <span class="f c-blue" style="--r:13;--c:27;--w:8" th:text="*{tdate04}"></span>
+                <span class="f c-blue" style="--r:13;--c:38;--w:26" th:text="*{tdesc04}"></span>
+                <span class="f c-blue" style="--r:13;--c:67;--w:12" th:text="*{tamt004}"></span>
+
+                <!-- Data row 5 (BMS row 14) -->
+                <input type="text" class="f inp c-green" style="--r:14;--c:3;--w:1"
+                       th:field="*{sel0005}" maxlength="1" autocomplete="off"
+                       spellcheck="false" aria-label="Select transaction row 5"/>
+                <span class="f c-blue" style="--r:14;--c:8;--w:16" th:text="*{trnid05}"></span>
+                <span class="f c-blue" style="--r:14;--c:27;--w:8" th:text="*{tdate05}"></span>
+                <span class="f c-blue" style="--r:14;--c:38;--w:26" th:text="*{tdesc05}"></span>
+                <span class="f c-blue" style="--r:14;--c:67;--w:12" th:text="*{tamt005}"></span>
+
+                <!-- Data row 6 (BMS row 15) -->
+                <input type="text" class="f inp c-green" style="--r:15;--c:3;--w:1"
+                       th:field="*{sel0006}" maxlength="1" autocomplete="off"
+                       spellcheck="false" aria-label="Select transaction row 6"/>
+                <span class="f c-blue" style="--r:15;--c:8;--w:16" th:text="*{trnid06}"></span>
+                <span class="f c-blue" style="--r:15;--c:27;--w:8" th:text="*{tdate06}"></span>
+                <span class="f c-blue" style="--r:15;--c:38;--w:26" th:text="*{tdesc06}"></span>
+                <span class="f c-blue" style="--r:15;--c:67;--w:12" th:text="*{tamt006}"></span>
+
+                <!-- Data row 7 (BMS row 16) -->
+                <input type="text" class="f inp c-green" style="--r:16;--c:3;--w:1"
+                       th:field="*{sel0007}" maxlength="1" autocomplete="off"
+                       spellcheck="false" aria-label="Select transaction row 7"/>
+                <span class="f c-blue" style="--r:16;--c:8;--w:16" th:text="*{trnid07}"></span>
+                <span class="f c-blue" style="--r:16;--c:27;--w:8" th:text="*{tdate07}"></span>
+                <span class="f c-blue" style="--r:16;--c:38;--w:26" th:text="*{tdesc07}"></span>
+                <span class="f c-blue" style="--r:16;--c:67;--w:12" th:text="*{tamt007}"></span>
+
+                <!-- Data row 8 (BMS row 17) -->
+                <input type="text" class="f inp c-green" style="--r:17;--c:3;--w:1"
+                       th:field="*{sel0008}" maxlength="1" autocomplete="off"
+                       spellcheck="false" aria-label="Select transaction row 8"/>
+                <span class="f c-blue" style="--r:17;--c:8;--w:16" th:text="*{trnid08}"></span>
+                <span class="f c-blue" style="--r:17;--c:27;--w:8" th:text="*{tdate08}"></span>
+                <span class="f c-blue" style="--r:17;--c:38;--w:26" th:text="*{tdesc08}"></span>
+                <span class="f c-blue" style="--r:17;--c:67;--w:12" th:text="*{tamt008}"></span>
+
+                <!-- Data row 9 (BMS row 18) -->
+                <input type="text" class="f inp c-green" style="--r:18;--c:3;--w:1"
+                       th:field="*{sel0009}" maxlength="1" autocomplete="off"
+                       spellcheck="false" aria-label="Select transaction row 9"/>
+                <span class="f c-blue" style="--r:18;--c:8;--w:16" th:text="*{trnid09}"></span>
+                <span class="f c-blue" style="--r:18;--c:27;--w:8" th:text="*{tdate09}"></span>
+                <span class="f c-blue" style="--r:18;--c:38;--w:26" th:text="*{tdesc09}"></span>
+                <span class="f c-blue" style="--r:18;--c:67;--w:12" th:text="*{tamt009}"></span>
+
+                <!-- Data row 10 (BMS row 19) -->
+                <input type="text" class="f inp c-green" style="--r:19;--c:3;--w:1"
+                       th:field="*{sel0010}" maxlength="1" autocomplete="off"
+                       spellcheck="false" aria-label="Select transaction row 10"/>
+                <span class="f c-blue" style="--r:19;--c:8;--w:16" th:text="*{trnid10}"></span>
+                <span class="f c-blue" style="--r:19;--c:27;--w:8" th:text="*{tdate10}"></span>
+                <span class="f c-blue" style="--r:19;--c:38;--w:26" th:text="*{tdesc10}"></span>
+                <span class="f c-blue" style="--r:19;--c:67;--w:12" th:text="*{tamt010}"></span>
+
+                <!--
+                  Per-row transaction ids round-trip to the server (hidden inputs), preserving the
+                  legacy 3270 contract: the BMS map defines each TRNIDnn with ATTRB=(ASKIP,FSET,...),
+                  so the pre-set modified-data tag re-transmits the id on ENTER, and COTRN00C
+                  PROCESS-ENTER-KEY resolves the selected row by reading TRNIDnnI from the received
+                  map. The visible value is shown by the c-blue spans above; these hidden fields carry
+                  the same value back so the 'S' selection can be resolved. Only the ids are echoed
+                  (the COBOL never reads date/description/amount back), so the display-only cells stay
+                  server-derived and cannot be over-posted.
+                -->
+                <input type="hidden" th:field="*{trnid01}"/>
+                <input type="hidden" th:field="*{trnid02}"/>
+                <input type="hidden" th:field="*{trnid03}"/>
+                <input type="hidden" th:field="*{trnid04}"/>
+                <input type="hidden" th:field="*{trnid05}"/>
+                <input type="hidden" th:field="*{trnid06}"/>
+                <input type="hidden" th:field="*{trnid07}"/>
+                <input type="hidden" th:field="*{trnid08}"/>
+                <input type="hidden" th:field="*{trnid09}"/>
+                <input type="hidden" th:field="*{trnid10}"/>
+
+                <!--
+                  CDEMO-CT00-PAGE-NUM round-trip (review finding #9): the page counter is
+                  pseudo-conversational cursor state that COTRN00C carries in the COMMAREA across
+                  turns and reads back in PROCESS-PF7-KEY (IF CDEMO-CT00-PAGE-NUM > 1) to decide
+                  whether a previous page exists. The visible value is shown by the c-blue span at
+                  BMS row 4 above; this hidden input carries the same value back so PF7/PF8 step
+                  backward/forward correctly instead of resetting to page one on every turn (which
+                  made F7 after F8 always report "You are already at the top of the page...").
+                -->
+                <input type="hidden" th:field="*{pagenum}"/>
+
+                <!-- Informational instruction line (BMS row 21) -->
+                <span class="f c-neutral brt" style="--r:21;--c:12;--w:50">Type 'S' to View Transaction details from the list</span>
+
+                <!-- Error message line (BMS row 23); shown only when populated -->
+                <span role="alert" aria-live="assertive" class="f c-red brt" style="--r:23;--c:1;--w:78"
+                      th:if="${form.errmsg != null and !#strings.isEmpty(#strings.trim(form.errmsg))}"
+                      th:text="*{errmsg}"></span>
+
+                <!-- PF-key legend (BMS row 24): ENTER=Continue  F3=Back  F7=Backward  F8=Forward -->
+                <button type="submit" name="pfkey" value="ENTER" class="f btn c-yellow"
+                        style="--r:24;--c:1;--w:14">ENTER=Continue</button>
+                <button type="submit" name="pfkey" value="PF3" class="f btn c-yellow"
+                        style="--r:24;--c:17;--w:7">F3=Back</button>
+                <button type="submit" name="pfkey" value="PF7" class="f btn c-yellow"
+                        style="--r:24;--c:26;--w:11">F7=Backward</button>
+                <button type="submit" name="pfkey" value="PF8" class="f btn c-yellow"
+                        style="--r:24;--c:39;--w:10">F8=Forward</button>
+
+            </div>
+        </form>
+    </main>
+</body>
+</html>

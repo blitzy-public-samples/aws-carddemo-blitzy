@@ -1,0 +1,293 @@
+<!DOCTYPE html>
+<!--/*
+  ~ COCRDLI.html — List Credit Cards screen (Thymeleaf)
+  ~
+  ~ Server-rendered reproduction of the AWS CardDemo 3270/BMS "List Credit Cards"
+  ~ screen. One-for-one migration of BMS mapset COCRDLI / map CCRDLIA.
+  ~
+  ~ Origin (read-only): legacy/bms/COCRDLI.bms + legacy/cpy-bms/COCRDLI.CPY
+  ~ Rendered by       : com.aws.carddemo.web.controller.CardController
+  ~ CICS transaction  : CCLI (program COCRDLIC) — paginated list, EXACTLY 7 rows
+  ~ Routes            : GET /card/list (display), POST /card/list (submit/page/select)
+  ~ Backing bean      : com.aws.carddemo.dto.screen.COCRDLIForm (model attribute "form")
+  ~
+  ~ The 24x80 character grid is reproduced with a fixed monospace font where every
+  ~ field is absolutely positioned from its BMS POS(row,col)/LENGTH:
+  ~     top   = (bmsRow - 1) * 1.2em      (row height = 16px * 1.2 line-height)
+  ~     left  = (bmsCol - 1) * 1ch        (1ch = one monospace character cell)
+  ~     width = bmsLength   * 1ch
+  ~
+  ~ ROW-1 ASYMMETRY: BMS defines the status-protect carry field (crdstp) only for
+  ~ rows 2-7; row 1 has NO crdstp1. COCRDLIForm mirrors this exactly. This template
+  ~ therefore renders a hidden crdstp input for rows 2-7 only and never references
+  ~ crdstp1.
+*/-->
+<html lang="en" xmlns:th="http://www.thymeleaf.org">
+<head>
+    <th:block th:replace="~{fragments/bms-palette :: palette}"></th:block>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>List Credit Cards</title>
+    <style>
+        *, *::before, *::after { box-sizing: border-box; }
+
+        html { background: #111111; }
+
+        body {
+            margin: 0;
+            padding: 0;
+            background: #111111;
+            color: var(--bms-green);
+            font-family: 'Courier New', Courier, monospace;
+        }
+
+        /* Skip-navigation link — visible only when focused (keyboard users). */
+        .skip-link {
+            position: absolute;
+            left: -10000px;
+            top: 0;
+            padding: 0.4rem 0.6rem;
+            background: #000000;
+            color: var(--bms-neutral);
+            z-index: 100;
+        }
+        .skip-link:focus,
+        .skip-link:focus-visible { left: 0.5rem; }
+
+        /* Present to assistive tech, removed from the visual grid. */
+        .visually-hidden {
+            position: absolute;
+            width: 1px;
+            height: 1px;
+            margin: -1px;
+            padding: 0;
+            overflow: hidden;
+            clip: rect(0, 0, 0, 0);
+            white-space: nowrap;
+            border: 0;
+        }
+
+        /* The fixed 80-column terminal scrolls horizontally on narrow viewports. */
+        .wrap { padding: 1rem; overflow-x: auto; }
+
+        /* 24x80 fixed 3270 terminal grid. */
+        .screen {
+            position: relative;
+            width: 80ch;
+            height: 28.8em;              /* 24 rows * 1.2em */
+            margin: 0 auto;
+            background: #000000;
+            /* BLITZY [QA P5-06/P5-13]: shared responsive artboard cell size (legible floor,
+               then pan) replaces the fixed 16px that kept the 768px artboard clipping
+               fields/PF-keys off-screen on small viewports. */
+            font-size: var(--bms-cell);
+            line-height: 1.2;
+            border: 1px solid #333333;
+        }
+
+        /* Base for every positioned BMS field. */
+        .f {
+            position: absolute;
+            height: 1.2em;
+            line-height: 1.2em;
+            margin: 0;
+            padding: 0;
+            white-space: pre;           /* preserve exact BMS label/header spacing */
+            overflow: hidden;
+        }
+
+        /* BMS COLOR -> inline hex (3270 palette). */
+        .c-blue    { color: var(--bms-blue); }
+        .c-yellow  { color: var(--bms-yellow); }
+        .c-turq    { color: var(--bms-turquoise); }
+        .c-green   { color: var(--bms-green); }
+        .c-red     { color: var(--bms-red); }
+        .c-neutral { color: var(--bms-neutral); }
+
+        /*
+         * BLITZY [A11Y / review finding #53]: the BMS palette is centralized in
+         * templates/fragments/bms-palette.html and referenced via var(--bms-*). The two
+         * foreground colours that failed WCAG 2.1 AA contrast on the black background
+         * (BLUE, RED) are replaced with accessible equivalents brightened along the same
+         * hue axis (>= 4.5:1); the rest keep their legacy values. Contrast is asserted
+         * by BmsPaletteContrastTest.
+         */
+
+        .bold { font-weight: bold; }
+
+        /* Inputs rendered inside the grid inherit the terminal font/colour. */
+        input.f {
+            background: transparent;
+            border: none;
+            color: inherit;
+            font-family: inherit;
+            font-size: inherit;
+        }
+        /* BMS HILIGHT=UNDERLINE fields (filters + selection column). */
+        input.und { border-bottom: 1px solid currentColor; }
+
+        .f:focus-visible {
+            outline: 1px solid #FFFFFF;
+            outline-offset: -1px;
+        }
+
+        /* ---- PF-key controls (finding P5-09/P5-10) ---------------------- */
+        /* Single coherent control set INSIDE the 24x80 terminal (COMEN01 pattern): the
+           row-24 legend IS the clickable submit buttons, rendered as terminal text, so
+           there is no duplicate .pfkeys block below the terminal and nothing clips at
+           short viewport heights. The BMS legend shows only F3/F7/F8 (ENTER is implicit
+           on a 3270), so a visually-hidden ENTER submit is placed first for keyboard/AT
+           parity without altering the visible legend. */
+        .pfkey {
+            font: inherit;
+            color: var(--bms-turquoise);
+            background: transparent;
+            border: 0;
+            padding: 0;
+            margin: 0;
+            white-space: pre;
+            cursor: pointer;
+            vertical-align: baseline;
+        }
+        .pfkey:active { text-decoration: underline; filter: brightness(1.3); }
+        @media (hover: hover) {
+            .pfkey:hover { text-decoration: underline; }
+        }
+        .pfkey:focus-visible {
+            outline: 2px solid #FFFFFF;
+            outline-offset: -2px;
+        }
+    </style>
+</head>
+<body>
+    <a class="skip-link" href="#main">Skip to main content</a>
+    <main id="main">
+        <h1 class="visually-hidden">List Credit Cards</h1>
+
+        <div class="wrap">
+            <!-- CSRF token is auto-injected by Spring Security via th:action (POST form). -->
+            <form th:object="${form}" th:action="@{/card/list}" method="post">
+
+                <div class="screen" role="group" aria-label="List Credit Cards terminal screen (24 by 80)">
+
+                    <!-- ===== Line 1: Tran / Title 1 / Date ===== -->
+                    <span class="f c-blue"   style="top:0;left:0;width:5ch">Tran:</span>
+                    <span class="f c-blue"   style="top:0;left:6ch;width:4ch"  th:text="*{trnname}"></span>
+                    <span class="f c-yellow" style="top:0;left:20ch;width:40ch" th:text="*{title01}"></span>
+                    <span class="f c-blue"   style="top:0;left:64ch;width:5ch">Date:</span>
+                    <span class="f c-blue"   style="top:0;left:70ch;width:8ch" th:text="*{curdate}"></span>
+
+                    <!-- ===== Line 2: Prog / Title 2 / Time ===== -->
+                    <span class="f c-blue"   style="top:1.2em;left:0;width:5ch">Prog:</span>
+                    <span class="f c-blue"   style="top:1.2em;left:6ch;width:8ch"  th:text="*{pgmname}"></span>
+                    <span class="f c-yellow" style="top:1.2em;left:20ch;width:40ch" th:text="*{title02}"></span>
+                    <span class="f c-blue"   style="top:1.2em;left:64ch;width:5ch">Time:</span>
+                    <span class="f c-blue"   style="top:1.2em;left:70ch;width:8ch" th:text="*{curtime}"></span>
+
+                    <!-- ===== Line 4: centered title + page number ===== -->
+                    <span class="f c-neutral" style="top:3.6em;left:30ch;width:17ch">List Credit Cards</span>
+                    <span class="f c-green"   style="top:3.6em;left:69ch;width:5ch">Page </span>
+                    <span class="f c-green"   style="top:3.6em;left:75ch;width:3ch" th:text="*{pageno}"></span>
+
+                    <!-- ===== Line 6: Account Number filter (IC -> autofocus) ===== -->
+                    <span class="f c-turq" style="top:6em;left:21ch;width:19ch">Account Number    :</span>
+                    <input class="f c-green und" type="text" th:field="*{acctsid}" maxlength="11"
+                           autofocus aria-label="Account Number filter"
+                           style="top:6em;left:43ch;width:11ch" />
+
+                    <!-- ===== Line 7: Credit Card Number filter ===== -->
+                    <span class="f c-turq" style="top:7.2em;left:21ch;width:19ch">Credit Card Number:</span>
+                    <input class="f c-green und" type="text" th:field="*{cardsid}" maxlength="16"
+                           aria-label="Credit Card Number filter"
+                           style="top:7.2em;left:43ch;width:16ch" />
+
+                    <!-- ===== Line 9: column headers ===== -->
+                    <span class="f c-neutral" style="top:9.6em;left:9ch;width:10ch">Select    </span>
+                    <span class="f c-neutral" style="top:9.6em;left:20ch;width:14ch">Account Number</span>
+                    <span class="f c-neutral" style="top:9.6em;left:44ch;width:13ch"> Card Number </span>
+                    <span class="f c-neutral" style="top:9.6em;left:65ch;width:7ch">Active </span>
+
+                    <!-- ===== Line 10: dash separators ===== -->
+                    <span class="f c-neutral" style="top:10.8em;left:9ch;width:6ch">------</span>
+                    <span class="f c-neutral" style="top:10.8em;left:19ch;width:15ch">---------------</span>
+                    <span class="f c-neutral" style="top:10.8em;left:42ch;width:15ch">---------------</span>
+                    <span class="f c-neutral" style="top:10.8em;left:64ch;width:8ch">--------</span>
+
+                    <!-- ===== Data row 1 (line 11) — NO crdstp1 (BMS row-1 asymmetry) ===== -->
+                    <input class="f c-green und" type="text" th:field="*{crdsel1}" maxlength="1"
+                           aria-label="Row 1 selection" style="top:12em;left:11ch;width:1ch" />
+                    <span class="f c-green" style="top:12em;left:21ch;width:11ch" th:text="*{acctno1}"></span>
+                    <span class="f c-green" style="top:12em;left:42ch;width:16ch" th:text="*{crdnum1}"></span>
+                    <span class="f c-green" style="top:12em;left:66ch;width:1ch"  th:text="*{crdsts1}"></span>
+
+                    <!-- ===== Data row 2 (line 12) ===== -->
+                    <input class="f c-green und" type="text" th:field="*{crdsel2}" maxlength="1"
+                           aria-label="Row 2 selection" style="top:13.2em;left:11ch;width:1ch" />
+                    <input type="hidden" th:field="*{crdstp2}" />
+                    <span class="f c-green" style="top:13.2em;left:21ch;width:11ch" th:text="*{acctno2}"></span>
+                    <span class="f c-green" style="top:13.2em;left:42ch;width:16ch" th:text="*{crdnum2}"></span>
+                    <span class="f c-green" style="top:13.2em;left:66ch;width:1ch"  th:text="*{crdsts2}"></span>
+
+                    <!-- ===== Data row 3 (line 13) ===== -->
+                    <input class="f c-green und" type="text" th:field="*{crdsel3}" maxlength="1"
+                           aria-label="Row 3 selection" style="top:14.4em;left:11ch;width:1ch" />
+                    <input type="hidden" th:field="*{crdstp3}" />
+                    <span class="f c-green" style="top:14.4em;left:21ch;width:11ch" th:text="*{acctno3}"></span>
+                    <span class="f c-green" style="top:14.4em;left:42ch;width:16ch" th:text="*{crdnum3}"></span>
+                    <span class="f c-green" style="top:14.4em;left:66ch;width:1ch"  th:text="*{crdsts3}"></span>
+
+                    <!-- ===== Data row 4 (line 14) ===== -->
+                    <input class="f c-green und" type="text" th:field="*{crdsel4}" maxlength="1"
+                           aria-label="Row 4 selection" style="top:15.6em;left:11ch;width:1ch" />
+                    <input type="hidden" th:field="*{crdstp4}" />
+                    <span class="f c-green" style="top:15.6em;left:21ch;width:11ch" th:text="*{acctno4}"></span>
+                    <span class="f c-green" style="top:15.6em;left:42ch;width:16ch" th:text="*{crdnum4}"></span>
+                    <span class="f c-green" style="top:15.6em;left:66ch;width:1ch"  th:text="*{crdsts4}"></span>
+
+                    <!-- ===== Data row 5 (line 15) ===== -->
+                    <input class="f c-green und" type="text" th:field="*{crdsel5}" maxlength="1"
+                           aria-label="Row 5 selection" style="top:16.8em;left:11ch;width:1ch" />
+                    <input type="hidden" th:field="*{crdstp5}" />
+                    <span class="f c-green" style="top:16.8em;left:21ch;width:11ch" th:text="*{acctno5}"></span>
+                    <span class="f c-green" style="top:16.8em;left:42ch;width:16ch" th:text="*{crdnum5}"></span>
+                    <span class="f c-green" style="top:16.8em;left:66ch;width:1ch"  th:text="*{crdsts5}"></span>
+
+                    <!-- ===== Data row 6 (line 16) ===== -->
+                    <input class="f c-green und" type="text" th:field="*{crdsel6}" maxlength="1"
+                           aria-label="Row 6 selection" style="top:18em;left:11ch;width:1ch" />
+                    <input type="hidden" th:field="*{crdstp6}" />
+                    <span class="f c-green" style="top:18em;left:21ch;width:11ch" th:text="*{acctno6}"></span>
+                    <span class="f c-green" style="top:18em;left:42ch;width:16ch" th:text="*{crdnum6}"></span>
+                    <span class="f c-green" style="top:18em;left:66ch;width:1ch"  th:text="*{crdsts6}"></span>
+
+                    <!-- ===== Data row 7 (line 17) ===== -->
+                    <input class="f c-green und" type="text" th:field="*{crdsel7}" maxlength="1"
+                           aria-label="Row 7 selection" style="top:19.2em;left:11ch;width:1ch" />
+                    <input type="hidden" th:field="*{crdstp7}" />
+                    <span class="f c-green" style="top:19.2em;left:21ch;width:11ch" th:text="*{acctno7}"></span>
+                    <span class="f c-green" style="top:19.2em;left:42ch;width:16ch" th:text="*{crdnum7}"></span>
+                    <span class="f c-green" style="top:19.2em;left:66ch;width:1ch"  th:text="*{crdsts7}"></span>
+
+                    <!-- ===== Line 20: informational message (rendered when non-empty) ===== -->
+                    <span class="f c-neutral" style="top:22.8em;left:18ch;width:45ch"
+                          th:if="${!#strings.isEmpty(form.infomsg)}" th:text="*{infomsg}"></span>
+
+                    <!-- ===== Line 23: error message (red, bold, rendered when non-empty) ===== -->
+                    <span role="alert" aria-live="assertive" class="f c-red bold" style="top:26.4em;left:0;width:78ch"
+                          th:if="${!#strings.isEmpty(form.errmsg)}" th:text="*{errmsg}"></span>
+
+                    <!-- ===== Line 24: function-key legend (verbatim from legacy BMS row 24)
+                         rendered AS the clickable submit buttons (finding P5-09/P5-10). Single
+                         in-terminal control set, replacing the former legend span + external
+                         .pfkeys block. The BMS legend shows only F3/F7/F8 (ENTER is implicit on a
+                         3270), so a visually-hidden ENTER submit is placed first so pressing Enter
+                         posts pfkey=ENTER without changing the visible legend. Values map to the
+                         controller's "pfkey" request parameter. The literal spacing "  F3=Exit
+                         F7=Backward  F8=Forward" is preserved verbatim between the buttons. ===== -->
+                    <div class="f c-turq" style="top:27.6em;left:0;width:78ch" role="group" aria-label="Function keys"><button type="submit" name="pfkey" value="ENTER" class="visually-hidden">Enter</button>  <button type="submit" name="pfkey" value="PF3" class="pfkey">F3=Exit</button> <button type="submit" name="pfkey" value="PF7" class="pfkey">F7=Backward</button>  <button type="submit" name="pfkey" value="PF8" class="pfkey">F8=Forward</button></div>
+                </div>
+            </form>
+        </div>
+    </main>
+</body>
+</html>

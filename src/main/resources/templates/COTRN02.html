@@ -1,0 +1,268 @@
+<!DOCTYPE html>
+<!--/*
+  CardDemo - Add Transaction screen (server-rendered Thymeleaf template).
+
+  Origin (read-only): legacy/bms/COTRN02.bms + legacy/cpy-bms/COTRN02.CPY
+  BMS mapset COTRN02 / map COTRN2A. CICS transaction CT02 -> program COTRN02C.
+  Rendered by com.aws.carddemo.web.controller.TransactionController (view name "COTRN02").
+  Backing bean: com.aws.carddemo.dto.screen.COTRN02Form (model attribute "form").
+
+  Faithful one-for-one reproduction of the 3270 24x80 screen: all 21 BMS fields are
+  preserved with their exact row/column positions, lengths, colors and PF-key actions.
+  This is the editable ADD counterpart of the COTRN01 view screen: the account/card key,
+  detail, merchant and confirm fields are UNPROT inputs. Migration rationale is recorded
+  in docs/decision-log.md, not in code comments.
+*/-->
+<html lang="en" xmlns:th="http://www.thymeleaf.org">
+<head>
+    <th:block th:replace="~{fragments/bms-palette :: palette}"></th:block>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>CardDemo - Add Transaction (CT02)</title>
+  <style>
+    /* ===== Design tokens: BMS 3270 COLOR attributes -> hex (AAP 0.3.4) ===== */
+    :root {
+      --rh: 1.25rem;               /* fixed row height for the 24-line grid   */
+      --blue: var(--bms-blue);             /* BMS COLOR=BLUE      (labels, header)     */
+      --yellow: var(--bms-yellow);           /* BMS COLOR=YELLOW    (titles, legend)     */
+      --turquoise: var(--bms-turquoise);        /* BMS COLOR=TURQUOISE (field prompts)      */
+      --green: var(--bms-green);            /* BMS COLOR=GREEN     (UNPROT entry)       */
+      --red: var(--bms-red);              /* BMS COLOR=RED       (error line)         */
+      --neutral: var(--bms-neutral);          /* BMS COLOR=NEUTRAL   (title, hints)       */
+      --screen-bg: var(--bms-bg);        /* 3270 dark background                     */
+      --screen-border: #2A2A2A;    /* subtle bezel to frame the 80x24 area     */
+      --focus-ring: var(--bms-neutral);       /* keyboard focus indicator                 */
+    }
+
+    *,
+    *::before,
+    *::after { box-sizing: border-box; }
+
+    html { background: var(--screen-bg); }
+
+    body {
+      margin: 0;
+      padding: 1.5rem 1rem;
+      background: var(--screen-bg);
+      color: var(--neutral);
+      font-family: "Courier New", Courier, "DejaVu Sans Mono", monospace;
+      font-size: var(--bms-cell); /* BLITZY [QA P5-06/P5-13]: responsive artboard cell size (legible floor then pan) */
+      line-height: var(--rh);
+      display: flex;
+      justify-content: safe center;
+      align-items: flex-start;
+      /* Finding #54: horizontal scroll keeps the 80ch artboard's left origin
+         reachable at 375x667; `safe center` falls back to start-alignment
+         (left edge at scrollLeft 0) when the artboard overflows. */
+      overflow-x: auto;
+    }
+
+    /* Finding #54: the terminal artboard must never shrink below 80ch, so its
+       left origin remains reachable inside the horizontal scroller. */
+    body > * {
+      flex-shrink: 0;
+    }
+
+    /* The terminal screen: exactly 80 character columns wide, 24 rows tall. */
+    .screen {
+      position: relative;
+      width: 80ch;
+      height: calc(24 * var(--rh));
+      background: var(--screen-bg);
+      border: 1px solid var(--screen-border);
+    }
+
+    /* Every positioned element sits on the (row, col) grid via --r / --c
+       (both 1-based, matching the BMS POS=(line,column) coordinates). */
+    .cell {
+      position: absolute;
+      top: calc((var(--r) - 1) * var(--rh));
+      left: calc((var(--c) - 1) * 1ch);
+      height: var(--rh);
+      margin: 0;
+      padding: 0;
+      font: inherit;
+      white-space: pre;            /* preserve literal spacing in labels/legend */
+    }
+
+    h1.cell { font-size: inherit; font-weight: normal; }  /* BLITZY [QA P5-06/P5-13]: inherit responsive cell size so ch basis stays consistent */
+
+    /* Color attribute classes (BMS COLOR=...) */
+    .blue { color: var(--blue); }
+    .yellow { color: var(--yellow); }
+    .turquoise { color: var(--turquoise); }
+    .green { color: var(--green); }
+    .red { color: var(--red); }
+    .neutral { color: var(--neutral); }
+    .brt { font-weight: bold; }    /* BMS ATTRB=BRT (bright / high intensity) */
+
+    label.cell { cursor: default; }
+
+    /* UNPROT entry fields: green text with an underline highlight
+       (BMS ATTRB=UNPROT, HILIGHT=UNDERLINE). Width is exactly the BMS field
+       length in character cells. */
+    .field {
+      width: calc(var(--w) * 1ch);
+      height: var(--rh);
+      background: transparent;
+      border: 0;
+      border-bottom: 1px solid var(--green);
+      border-radius: 0;
+      color: var(--green);
+      font: inherit;
+      line-height: var(--rh);
+      margin: 0;
+      padding: 0;
+      caret-color: var(--green);
+      appearance: none;
+      -webkit-appearance: none;
+    }
+    .field:focus { outline: none; }
+    .field:focus-visible {
+      outline: 2px solid var(--focus-ring);
+      outline-offset: -1px;
+    }
+
+    /* Error / status line (row 23), bounded to its 78-column BMS field. */
+    .errmsg {
+      width: 78ch;
+      overflow: hidden;
+    }
+
+    /* PF-key legend (row 24): inline submit buttons that preserve the exact BMS
+       legend text while remaining keyboard- and mouse-operable. Each button posts
+       the form with the request parameter `pfkey` set to the key the controller
+       expects (ENTER / PF3 / PF4 / PF5). */
+    .pfbar { white-space: pre; }
+    .pf {
+      display: inline;
+      font: inherit;
+      color: var(--yellow);
+      background: transparent;
+      border: 0;
+      margin: 0;
+      padding: 0;
+      white-space: pre;
+      cursor: pointer;
+      appearance: none;
+      -webkit-appearance: none;
+    }
+    .pf:focus { outline: none; }
+    .pf:focus-visible {
+      outline: 2px solid var(--focus-ring);
+      outline-offset: 1px;
+    }
+      .pf:active { text-decoration: underline; filter: brightness(1.3); }
+    @media (hover: hover) {
+      .pf:hover { text-decoration: underline; }
+    }
+
+    /* Skip link: off-screen until focused, so it has no visual impact on the
+       terminal grid in its default state. */
+    .skip-link {
+      position: absolute;
+      left: -9999px;
+      top: auto;
+      background: var(--neutral);
+      color: var(--screen-bg);
+      padding: 0.25rem 0.5rem;
+      z-index: 5;
+    }
+    .skip-link:focus {
+      left: 0.5rem;
+      top: 0.5rem;
+    }
+  </style>
+</head>
+<body>
+  <a class="skip-link" href="#actidin">Skip to Add Transaction form</a>
+  <main id="main">
+    <form class="screen" th:object="${form}" th:action="@{/transaction/add}" method="post" novalidate autocomplete="off">
+
+      <!-- ============================ Header ============================ -->
+      <!-- Row 1: Tran: <trnname>        <title01>        Date: <curdate> -->
+      <span class="cell blue" style="--r:1;--c:1">Tran:</span>
+      <span class="cell blue" style="--r:1;--c:7" th:text="*{trnname}">CT02</span>
+      <span class="cell yellow" style="--r:1;--c:21" th:text="*{title01}">AWS Mainframe Modernization</span>
+      <span class="cell blue" style="--r:1;--c:65">Date:</span>
+      <span class="cell blue" style="--r:1;--c:71" th:text="*{curdate}">mm/dd/yy</span>
+
+      <!-- Row 2: Prog: <pgmname>        <title02>        Time: <curtime> -->
+      <span class="cell blue" style="--r:2;--c:1">Prog:</span>
+      <span class="cell blue" style="--r:2;--c:7" th:text="*{pgmname}">COTRN02C</span>
+      <span class="cell yellow" style="--r:2;--c:21" th:text="*{title02}">CardDemo</span>
+      <span class="cell blue" style="--r:2;--c:65">Time:</span>
+      <span class="cell blue" style="--r:2;--c:71" th:text="*{curtime}">hh:mm:ss</span>
+
+      <!-- Row 4: screen title (NEUTRAL, bright) -->
+      <h1 class="cell neutral brt" style="--r:4;--c:30">Add Transaction</h1>
+
+      <!-- ======================= Account / Card key ==================== -->
+      <!-- Row 6: Enter Acct #: <actidin>  (or)  Card #: <cardnin> -->
+      <label class="cell turquoise" style="--r:6;--c:6" for="actidin">Enter Acct #:</label>
+      <input class="cell field" style="--r:6;--c:21;--w:11" type="text" id="actidin" th:field="*{actidin}" maxlength="11" autofocus autocomplete="off" spellcheck="false" />
+      <span class="cell neutral" style="--r:6;--c:37">(or)</span>
+      <label class="cell turquoise" style="--r:6;--c:46" for="cardnin">Card #:</label>
+      <input class="cell field" style="--r:6;--c:55;--w:16" type="text" id="cardnin" th:field="*{cardnin}" maxlength="16" autocomplete="off" spellcheck="false" />
+
+      <!-- Row 8: separator (70 dashes, verbatim) -->
+      <span class="cell neutral" style="--r:8;--c:6">----------------------------------------------------------------------</span>
+
+      <!-- ========================= Detail fields ======================= -->
+      <!-- Row 10: Type CD: <ttypcd>   Category CD: <tcatcd>   Source: <trnsrc> -->
+      <label class="cell turquoise" style="--r:10;--c:6" for="ttypcd">Type CD:</label>
+      <input class="cell field" style="--r:10;--c:15;--w:2" type="text" id="ttypcd" th:field="*{ttypcd}" maxlength="2" autocomplete="off" spellcheck="false" />
+      <label class="cell turquoise" style="--r:10;--c:23" for="tcatcd">Category CD:</label>
+      <input class="cell field" style="--r:10;--c:36;--w:4" type="text" id="tcatcd" th:field="*{tcatcd}" maxlength="4" autocomplete="off" spellcheck="false" />
+      <label class="cell turquoise" style="--r:10;--c:46" for="trnsrc">Source:</label>
+      <input class="cell field" style="--r:10;--c:54;--w:10" type="text" id="trnsrc" th:field="*{trnsrc}" maxlength="10" autocomplete="off" spellcheck="false" />
+
+      <!-- Row 12: Description: <tdesc> -->
+      <label class="cell turquoise" style="--r:12;--c:6" for="tdesc">Description:</label>
+      <input class="cell field" style="--r:12;--c:19;--w:60" type="text" id="tdesc" th:field="*{tdesc}" maxlength="60" autocomplete="off" spellcheck="false" />
+
+      <!-- Row 14: Amount: <trnamt>   Orig Date: <torigdt>   Proc Date: <tprocdt> -->
+      <label class="cell turquoise" style="--r:14;--c:6" for="trnamt">Amount:</label>
+      <input class="cell field" style="--r:14;--c:14;--w:12" type="text" id="trnamt" th:field="*{trnamt}" maxlength="12" aria-describedby="hint-amt" autocomplete="off" spellcheck="false" />
+      <label class="cell turquoise" style="--r:14;--c:31" for="torigdt">Orig Date:</label>
+      <input class="cell field" style="--r:14;--c:42;--w:10" type="text" id="torigdt" th:field="*{torigdt}" maxlength="10" aria-describedby="hint-orig" autocomplete="off" spellcheck="false" />
+      <label class="cell turquoise" style="--r:14;--c:57" for="tprocdt">Proc Date:</label>
+      <input class="cell field" style="--r:14;--c:68;--w:10" type="text" id="tprocdt" th:field="*{tprocdt}" maxlength="10" aria-describedby="hint-proc" autocomplete="off" spellcheck="false" />
+
+      <!-- Row 15: format hints (BLUE, verbatim BMS literals) -->
+      <span class="cell blue" style="--r:15;--c:13" id="hint-amt">(-99999999.99)</span>
+      <span class="cell blue" style="--r:15;--c:41" id="hint-orig">(YYYY-MM-DD)</span>
+      <span class="cell blue" style="--r:15;--c:67" id="hint-proc">(YYYY-MM-DD)</span>
+
+      <!-- Row 16: Merchant ID: <mid>   Merchant Name: <mname> -->
+      <label class="cell turquoise" style="--r:16;--c:6" for="mid">Merchant ID:</label>
+      <input class="cell field" style="--r:16;--c:19;--w:9" type="text" id="mid" th:field="*{mid}" maxlength="9" autocomplete="off" spellcheck="false" />
+      <label class="cell turquoise" style="--r:16;--c:33" for="mname">Merchant Name:</label>
+      <input class="cell field" style="--r:16;--c:48;--w:30" type="text" id="mname" th:field="*{mname}" maxlength="30" autocomplete="off" spellcheck="false" />
+
+      <!-- Row 18: Merchant City: <mcity>   Merchant Zip: <mzip> -->
+      <label class="cell turquoise" style="--r:18;--c:6" for="mcity">Merchant City:</label>
+      <input class="cell field" style="--r:18;--c:21;--w:25" type="text" id="mcity" th:field="*{mcity}" maxlength="25" autocomplete="off" spellcheck="false" />
+      <label class="cell turquoise" style="--r:18;--c:53" for="mzip">Merchant Zip:</label>
+      <input class="cell field" style="--r:18;--c:67;--w:10" type="text" id="mzip" th:field="*{mzip}" maxlength="10" autocomplete="off" spellcheck="false" />
+
+      <!-- ======================= Confirm prompt ======================== -->
+      <!-- Row 21: confirm prompt + <confirm> + (Y/N) -->
+      <label class="cell turquoise" style="--r:21;--c:6" for="confirm">You are about to add this transaction. Please confirm :</label>
+      <input class="cell field" style="--r:21;--c:63;--w:1" type="text" id="confirm" th:field="*{confirm}" maxlength="1" aria-describedby="hint-confirm" autocomplete="off" spellcheck="false" />
+      <span class="cell neutral" style="--r:21;--c:66" id="hint-confirm">(Y/N)</span>
+
+      <!-- ==================== Messages & PF-key legend ================= -->
+      <!-- Row 23: error / status message (RED, bright), shown only when present -->
+      <div class="cell brt errmsg" th:classappend="${form.errmsgColor}" style="--r:23;--c:1" role="alert" th:if="${!#strings.isEmpty(form.errmsg)}" th:text="*{errmsg}"></div>
+
+      <!-- Row 24: PF-key legend. ENTER is the first submit button in document
+           order, so pressing Enter in any field submits with pfkey=ENTER (the
+           3270 ENTER key). No leading/trailing whitespace inside this pre-formatted
+           element, so the legend renders flush at column 1. -->
+      <div class="cell yellow pfbar" style="--r:24;--c:1"><button class="pf" type="submit" name="pfkey" value="ENTER">ENTER=Continue</button>  <button class="pf" type="submit" name="pfkey" value="PF3">F3=Back</button>  <button class="pf" type="submit" name="pfkey" value="PF4">F4=Clear</button>  <button class="pf" type="submit" name="pfkey" value="PF5">F5=Copy Last Tran.</button></div>
+
+    </form>
+  </main>
+</body>
+</html>

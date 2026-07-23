@@ -1,0 +1,118 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  logback-spring.xml - structured logging configuration for AWS CardDemo
+  (Spring Boot 3.5.16 / Java 25).
+
+  Purpose (Observability rule, AAP 0.7.2): emit structured JSON logs carrying
+  correlation IDs (traceId / spanId) so application logs can be correlated with
+  distributed traces and consumed by the Grafana dashboard template
+  (observability/grafana-dashboard.json). This file is the single source of
+  truth for the logging encoder; do NOT also set logging.structured.format.console
+  in application.yml, which would be duplicate configuration.
+
+  Because this file is named logback-spring.xml (not logback.xml), Spring Boot
+  initializes it late in startup and enables the <springProfile> and
+  <springProperty> extensions used below.
+
+  Correlation IDs are provided by micrometer-tracing-bridge-brave, which places
+  the traceId and spanId values into the SLF4J MDC (sampling probability 1.0 in
+  application.yml traces every request during local validation). The ECS
+  structured encoder serializes the MDC automatically; the human-readable dev
+  pattern references them explicitly via the %X{traceId:-} / %X{spanId:-}
+  conversion words.
+
+  No third-party JSON encoder library is used: JSON output is produced by the
+  Spring Boot built-in StructuredLogEncoder (ECS format), so no additional
+  logging dependency is introduced. This preserves the "no feature expansion /
+  no new dependencies" constraint (AAP 0.2.2).
+-->
+<configuration>
+  <!-- Spring Boot default conversion rules, CONSOLE_LOG_PATTERN, and level
+       definitions. Reused rather than redefined so behavior matches Spring Boot
+       defaults. -->
+  <include resource="org/springframework/boot/logging/logback/defaults.xml"/>
+
+  <!-- Bind the Spring application name into the Logback context so it surfaces
+       as service.name in the ECS JSON output and inside the human-readable dev
+       pattern. Defaults to "carddemo" when spring.application.name is not set. -->
+  <springProperty scope="context" name="appName" source="spring.application.name" defaultValue="carddemo"/>
+
+  <!-- Application logger level for the migrated CardDemo code base. -->
+  <logger name="com.aws.carddemo" level="INFO"/>
+
+  <!--
+    Silence a benign, intentional Spring Security startup WARN so the build/start
+    logs stay warning-free (review finding #35). CardDemo authenticates through a
+    custom cleartext CardDemoAuthenticationProvider (a global AuthenticationProvider
+    @Component, wrapped by the single explicit AuthenticationManager bean in
+    SecurityConfig) for COBOL parity, while CardDemoUserDetailsService (@Service) is
+    deliberately a bean because both SignonService and that provider inject it. With
+    BOTH an AuthenticationProvider bean AND a UserDetailsService bean present,
+    InitializeUserDetailsBeanManagerConfigurer logs, at WARN: "Global
+    AuthenticationManager configured with an AuthenticationProvider bean.
+    UserDetailsService beans will not be used ... If the current configuration is
+    intentional, to turn off this warning, increase the logging level of
+    '...InitializeUserDetailsBeanManagerConfigurer' to ERROR." That message describes
+    exactly the intended topology (the UDS is intentionally NOT auto-wired for login;
+    authentication is fully owned by the custom provider via the single explicit
+    AuthenticationManager), and raising THIS one logger to ERROR is the
+    framework-sanctioned way to declare the intent. It is scoped to this single
+    configurer class, so no other diagnostics are hidden. The alternative of removing
+    one of the two beans is not viable (both are genuinely required) and inlining the
+    provider would create the second, unused AuthenticationManager the SecurityConfig
+    design explicitly forbids. Decision recorded in docs/decision-log.md. -->
+  <logger name="org.springframework.security.config.annotation.authentication.configuration.InitializeUserDetailsBeanManagerConfigurer" level="ERROR"/>
+
+  <!-- dev profile: readable console output with inline correlation IDs. The
+       human-readable appender is DEFINED INSIDE this profile block so it is never
+       left defined-but-unreferenced when the block is inactive (Logback reports an
+       unreferenced appender as "Appender named [...] not referenced" - review
+       finding #35). The bracketed segment [appName,traceId,spanId] mirrors the
+       Micrometer Tracing convention so a developer can follow a request across
+       service boundaries; missing correlation IDs render as empty via the :- default. -->
+  <springProfile name="dev">
+    <appender name="CONSOLE_PLAIN" class="ch.qos.logback.core.ConsoleAppender">
+      <!-- Wrapped in MaskingLogbackEncoder so any card PAN echoed by a framework
+           message/stack trace (e.g. Spring Batch FlatFileParseException on a
+           malformed fixed-width record) is redacted before it is written
+           (QA finding F-1 / Observability rule). Delegate class is stated
+           explicitly (Logback's implicit default for a class-less <encoder> is
+           PatternLayoutEncoder). Masking runs on rendered bytes and changes no
+           batch behaviour; rationale in docs/decision-log.md. -->
+      <encoder class="com.aws.carddemo.config.logging.MaskingLogbackEncoder">
+        <delegate class="ch.qos.logback.classic.encoder.PatternLayoutEncoder">
+          <pattern>%d{yyyy-MM-dd HH:mm:ss.SSS} %-5level [${appName},%X{traceId:-},%X{spanId:-}] %logger{36} - %msg%n</pattern>
+        </delegate>
+      </encoder>
+    </appender>
+    <root level="INFO">
+      <appender-ref ref="CONSOLE_PLAIN"/>
+    </root>
+  </springProfile>
+
+  <!-- All other profiles (default/test/prod): structured JSON with correlation IDs,
+       consumed by the Grafana dashboard template. The ECS JSON appender is DEFINED
+       INSIDE this profile block for the same reason as the dev appender above - an
+       appender is only defined in the profile that references it, so none is ever
+       left unreferenced (#35). The Spring Boot built-in ECS encoder emits one JSON
+       object per line including timestamp, level, logger, message, service.name, and
+       every MDC entry, so the traceId/spanId correlation IDs appear automatically. -->
+  <springProfile name="!dev">
+    <appender name="CONSOLE_JSON" class="ch.qos.logback.core.ConsoleAppender">
+      <!-- Wrapped in MaskingLogbackEncoder so any card PAN embedded in a
+           framework-generated message or stack trace is redacted before it is
+           written to the structured JSON message / error.stack_trace fields
+           (QA finding F-1 / Observability rule). Masking runs on the rendered
+           bytes and does not change any batch behaviour; rationale in
+           docs/decision-log.md. -->
+      <encoder class="com.aws.carddemo.config.logging.MaskingLogbackEncoder">
+        <delegate class="org.springframework.boot.logging.logback.StructuredLogEncoder">
+          <format>ecs</format>
+        </delegate>
+      </encoder>
+    </appender>
+    <root level="INFO">
+      <appender-ref ref="CONSOLE_JSON"/>
+    </root>
+  </springProfile>
+</configuration>

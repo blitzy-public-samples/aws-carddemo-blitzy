@@ -1,0 +1,256 @@
+# =============================================================================
+# AWS CardDemo - base Spring Boot configuration (shared by ALL profiles)
+# -----------------------------------------------------------------------------
+# Net-new, framework-mandated deliverable for the COBOL -> Java/Spring Boot
+# migration (Spring Boot 3.5.16 / Java 25). There is no COBOL source equivalent.
+#
+# This base profile holds configuration common to every environment: DataSource,
+# JPA/Hibernate, Flyway, Spring Batch, Thymeleaf, and Actuator/Micrometer
+# observability. Environment-specific overrides live in the sibling files
+# application-dev.yml and application-test.yml (activated via spring.profiles.active).
+#
+# Scope guard (AAP 0.2.2 / 0.6.4 - no feature expansion): this file configures
+# ONLY PostgreSQL + JPA + Flyway + Spring Batch + Spring MVC/Thymeleaf +
+# Actuator/Micrometer. No MQ/JMS, Kafka, Redis, Db2, IMS, FTP/SFTP, or REST/SOAP
+# client configuration - none of those interfaces exist in the source system.
+# =============================================================================
+
+spring:
+  application:
+    # Logical service name; reused as the Micrometer 'application' metric tag below.
+    name: carddemo
+
+  datasource:
+    # Non-secret localhost default for the JDBC URL is acceptable for local dev;
+    # it is overridden per environment via the SPRING_DATASOURCE_URL env var.
+    url: ${SPRING_DATASOURCE_URL:jdbc:postgresql://localhost:5432/carddemo}
+    # NO HARDCODED CREDENTIALS (AAP 0.7.1): the datasource username and password
+    # are supplied ONLY via the SPRING_DATASOURCE_USERNAME / SPRING_DATASOURCE_PASSWORD
+    # environment variables. They intentionally have NO ':default' fallback so that
+    # no credential is ever embedded in source or configuration.
+    username: ${SPRING_DATASOURCE_USERNAME}
+    password: ${SPRING_DATASOURCE_PASSWORD}
+    driver-class-name: org.postgresql.Driver
+    hikari:
+      # Small connection pool sized for the local, single-node CardDemo workload.
+      pool-name: carddemo-pool
+      maximum-pool-size: 10
+      minimum-idle: 2
+      # P7-OBS-02: bound how long a connection acquisition may block. The 'db' health
+      # contributor calls dataSource.getConnection(), which blocks up to this timeout when
+      # PostgreSQL is unreachable; the HikariCP default of 30s meant /actuator/health and every
+      # DB-backed route stalled ~30s before surfacing 503. 5s bounds that diagnostic window so
+      # readiness/health fail promptly during an outage. validation-timeout (which MUST be less
+      # than connection-timeout) bounds the aliveness probe Hikari runs on a borrowed connection.
+      # These are infrastructure timeouts only and change no business behavior.
+      connection-timeout: 5000
+      validation-timeout: 3000
+
+  jpa:
+    hibernate:
+      # CRITICAL: Flyway (src/main/resources/db/migration) is the single source of
+      # truth for DDL. Hibernate must NEVER create/alter/drop schema; 'validate'
+      # only verifies that the JPA entity mappings match the Flyway-created tables.
+      ddl-auto: validate
+    # Disable Open Session In View: avoids the well-known startup warning and keeps
+    # transaction boundaries explicit in the service layer (zero-warning build goal).
+    open-in-view: false
+    properties:
+      hibernate:
+        jdbc:
+          # Persist and read timestamps in UTC for deterministic, environment-independent
+          # date/time behavior (parity with the mainframe's single-timezone processing).
+          time_zone: UTC
+        # Dialect is intentionally NOT pinned: Spring Boot 3.x auto-detects
+        # PostgreSQLDialect from the JDBC connection. If pinning ever becomes
+        # necessary, use: dialect: org.hibernate.dialect.PostgreSQLDialect
+    # Base profile stays quiet. SQL visibility on the dev profile is provided by
+    # the structured org.hibernate.SQL logger (logback), NOT by show-sql, which
+    # stays false on every profile to avoid a duplicate unstructured stdout copy
+    # (review finding N4).
+    show-sql: false
+
+  flyway:
+    # Flyway runs BEFORE Hibernate validation, guaranteeing the tables exist for
+    # spring.jpa.hibernate.ddl-auto=validate. Migrations applied in order:
+    # V1__schema.sql -> V2__reference_data.sql -> V3__indexes.sql.
+    enabled: true
+    locations: classpath:db/migration
+    baseline-on-migrate: false
+    # Seed-credential externalization (review finding #5, AAP 0.7.1 "no hardcoded
+    # credentials"). V2__reference_data.sql seeds the USRSEC principals with the
+    # placeholder ${carddemo_seed_password} instead of a committed literal. It is
+    # bound here to the CARDDEMO_SEED_PASSWORD environment variable with NO default,
+    # so a clean checkout carries no reusable secret and the migration fails closed
+    # if the value is not provisioned on the host (mirrors the datasource password).
+    # The value must be all-uppercase and at most 8 characters (usr_pwd is CHAR(8);
+    # the signon provider uppercases the entered password before the fixed-width
+    # comparison, AAP 0.6.7). Provisioned locally in /etc/profile.d (see docs/onboarding.md).
+    placeholders:
+      carddemo_seed_password: ${CARDDEMO_SEED_PASSWORD}
+
+  # EBCDIC/ASCII collation parity (AAP 0.6.6): the CardDemo PostgreSQL database
+  # should be created with 'C'/'POSIX' (bytewise) collation, and order-sensitive
+  # access uses an explicit ORDER BY on the CHAR key columns, so Java/PostgreSQL
+  # ordering reproduces the legacy COBOL 'SORT FIELDS=(TRAN-ID,A)' semantics.
+  # Enforcement lives in db/migration/V1__schema.sql (COLLATE "C") and in database
+  # creation - this note is a documentation pointer only.
+  batch:
+    job:
+      # CRITICAL: prevents the 12 migrated JCL-equivalent Spring Batch jobs from
+      # auto-running at application startup. Jobs are launched explicitly on demand.
+      enabled: false
+    jdbc:
+      # Spring Batch metadata (BATCH_* tables + sequences) is created exclusively
+      # by the Flyway migration db/migration/V0__spring_batch_metadata.sql, which is
+      # the single source of truth for this DDL (consistent with
+      # spring.jpa.hibernate.ddl-auto=validate). Boot must therefore NEVER attempt
+      # to initialize the batch schema itself, on any profile (review finding F2).
+      # 'never' replaces the previous 'embedded', which behaved as 'never' on
+      # PostgreSQL but misleadingly implied conditional creation and left the
+      # BATCH_* tables absent, so every Job failed on first execution/restart.
+      initialize-schema: never
+
+  thymeleaf:
+    # Base/prod caches compiled templates for performance; the dev profile
+    # overrides cache to false for live template editing.
+    cache: true
+    prefix: classpath:/templates/
+    suffix: .html
+    mode: HTML
+    encoding: UTF-8
+
+  # ---------------------------------------------------------------------------
+  # P7-PERF-01: static-resource HTTP caching + content versioning. The
+  # server-rendered BMS screens embed their CSS inline, so the only
+  # classpath:/static asset is /js/bms-pfkeys.js (the COADM01 physical-PF-key
+  # helper). Enabling the content strategy appends a content hash to that
+  # asset's URL and rewrites the Thymeleaf @{...} link via the auto-registered
+  # ResourceUrlEncodingFilter, so a long max-age is SAFE: the URL changes
+  # whenever the file changes, so a cached copy can never be stale. This
+  # replaces the previous TTL-0 delivery with a cacheable, versioned asset. It
+  # changes NO security control - the hashed URL is still same-origin, so the
+  # Content-Security-Policy is untouched, and no Subresource-Integrity attribute
+  # exists on any app asset (SRI lives only on the standalone executive deck's
+  # pinned CDN links, which this does not touch).
+  web:
+    resources:
+      cache:
+        cachecontrol:
+          max-age: 30d
+          cache-public: true
+        use-last-modified: true
+      chain:
+        strategy:
+          content:
+            enabled: true
+            paths: /**
+
+# -----------------------------------------------------------------------------
+# server: embedded-Tomcat concerns - HTTP response compression (P7-PERF-01) and
+# the explicit session-cookie attributes (P7-SEC-02). Net-new migration
+# deliverable; there is no COBOL source equivalent.
+# -----------------------------------------------------------------------------
+server:
+  compression:
+    # P7-PERF-01: gzip text responses so the dense server-rendered screens (and
+    # any JSON/CSS/JS) are not delivered uncompressed. Only compressible text
+    # MIME types are listed; responses below 1 KiB stay uncompressed because the
+    # gzip framing overhead is not worthwhile for tiny payloads.
+    enabled: true
+    mime-types: text/html,text/css,text/plain,text/xml,application/javascript,application/json,application/xml,image/svg+xml
+    min-response-size: 1024
+  servlet:
+    session:
+      cookie:
+        # P7-SEC-02: make the session-cookie attributes explicit. HttpOnly keeps
+        # JSESSIONID out of document.cookie (defense against XSS token theft) and
+        # an explicit SameSite=Lax lets the cookie ride top-level GET navigations
+        # (so a redirect back to a protected screen keeps the session) while
+        # withholding it on cross-site POST / subresource requests as CSRF
+        # defense-in-depth. Path stays the servlet default context root ("/").
+        http-only: true
+        same-site: lax
+        # Secure is environment-aware: on plain-HTTP local dev a browser would
+        # drop a Secure cookie and break signon, so it defaults to false and is
+        # switched on (CARDDEMO_COOKIE_SECURE=true) wherever the app is served
+        # over HTTPS / behind TLS termination. This mirrors the datasource
+        # credentials: environment-specific values are externalized, not hardcoded.
+        secure: ${CARDDEMO_COOKIE_SECURE:false}
+
+# -----------------------------------------------------------------------------
+# Observability (AAP Observability rule): least-exposure Actuator surface plus
+# Micrometer tracing and a Prometheus scrape endpoint. Structured JSON logging and
+# correlation IDs are configured in logback-spring.xml.
+# -----------------------------------------------------------------------------
+management:
+  endpoints:
+    web:
+      exposure:
+        # Expose ONLY these three endpoints (least exposure). Access is restricted by the
+        # SecurityConfig SecurityFilterChain (review findings F26/#7): '/actuator/health/**' is
+        # anonymous (liveness/readiness probes) while '/actuator/info' and '/actuator/prometheus'
+        # require ROLE_ADMIN and are NOT readable anonymously. Because that explicit chain is active,
+        # Boot's actuator security auto-configuration backs off, so this restriction is enforced in
+        # SecurityConfig and asserted by SecurityConfigIT for anonymous / user / admin access.
+        include: health,info,prometheus
+  endpoint:
+    health:
+      probes:
+        # Enable Kubernetes-style liveness/readiness health groups.
+        enabled: true
+      # Only reveal detailed health information to authorized principals, and make the
+      # authorization explicit (review finding F26): details require the ADMIN role (authority
+      # ROLE_ADMIN, matching the admin user type 'A'). Until a security filter chain is active no
+      # principal is authorized, so detailed health stays hidden by default (fail-closed).
+      show-details: when_authorized
+      roles:
+        - ADMIN
+      group:
+        # P7-OBS-02: the readiness probe must reflect the REQUIRED datasource so an orchestrator
+        # stops routing traffic when the database is unreachable. By default the readiness group
+        # contains only 'readinessState' - an in-memory lifecycle flag that stays UP throughout a
+        # DB outage - so GET /actuator/health/readiness returned 200/UP in milliseconds even with
+        # PostgreSQL down. Adding the auto-configured 'db' contributor makes readiness return
+        # 503/DOWN promptly during an outage (bounded by the Hikari connection-timeout above), and
+        # UP again once the database recovers. Liveness intentionally remains the process-only
+        # 'livenessState' so a transient DB outage does not trigger a pod restart.
+        readiness:
+          include: readinessState,db
+  tracing:
+    sampling:
+      # Sample 100% of traces locally so every request is observable during
+      # migration validation (Observability rule).
+      probability: 1.0
+  metrics:
+    distribution:
+      # F17: enable server-side latency histogram buckets for http.server.requests so the
+      # Grafana p50/p95/p99 percentile panels (which apply histogram_quantile over
+      # http_server_requests_seconds_bucket) render real data instead of "No data".
+      percentiles-histogram:
+        http.server.requests: true
+    # NOTE (F28): the common 'application' meter tag is applied by a SINGLE authority - the
+    # programmatic ObservabilityConfig#commonTagsCustomizer() bean. It is intentionally NOT
+    # also declared here (management.metrics.tags.application) so there are never two
+    # configuration authorities that can drift out of sync.
+  prometheus:
+    metrics:
+      export:
+        enabled: true
+
+logging:
+  level:
+    root: INFO
+    com.aws.carddemo: INFO
+    # F-A: silence the benign, INTENTIONAL Spring Security startup WARN
+    # ("Global AuthenticationManager configured with an AuthenticationProvider bean.
+    #  UserDetailsService beans will not be used ...") emitted on every boot because
+    # CardDemo deliberately registers BOTH a custom cleartext CardDemoAuthenticationProvider
+    # (the AuthenticationManager ProviderManager bean) and a CardDemoUserDetailsService bean
+    # for COBOL cleartext-password parity. This is Spring Security's own self-documented
+    # remedy (raise this logger to ERROR); Logback treats '$' as a name-hierarchy separator,
+    # so this outer-class level also covers the inner ...$InitializeUserDetailsManagerConfigurer
+    # emitter, while the sibling AuthenticationProvider INFO line is retained. Rationale and
+    # alternatives are recorded in docs/decision-log.md (the F-A decision row); this keeps the
+    # observability-first startup log clean/truthful without hiding any other logs.
+    org.springframework.security.config.annotation.authentication.configuration.InitializeUserDetailsBeanManagerConfigurer: ERROR

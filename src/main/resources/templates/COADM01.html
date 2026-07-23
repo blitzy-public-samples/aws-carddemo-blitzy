@@ -1,0 +1,269 @@
+<!DOCTYPE html>
+<!--/*
+  CardDemo - Admin Menu screen (server-rendered Thymeleaf).
+
+  Origin (read-only): legacy/bms/COADM01.bms (mapset COADM01, map COADM1A)
+                      + legacy/cpy-bms/COADM01.CPY (symbolic map).
+  Rendered by       : com.aws.carddemo.web.controller.AdminMenuController
+                      (CICS transaction CA00, program COADM01C); view name "COADM01".
+  Backing bean      : com.aws.carddemo.dto.screen.COADM01Form (model attribute "form").
+  Routes            : GET /admin/menu (display), POST /admin/menu (submit); ROLE_ADMIN only.
+
+  This template reproduces the original 24x80 3270 screen one-for-one: field
+  positions, lengths, colours and PF-key contract are preserved. It is intentionally
+  self-contained (no shared fragment) and uses only an inline <style> block; no
+  external CSS/JS and no i18n message bundles (US-only, per FixedLocaleResolver).
+*/-->
+<html lang="en" xmlns:th="http://www.thymeleaf.org">
+<head>
+    <th:block th:replace="~{fragments/bms-palette :: palette}"></th:block>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="color-scheme" content="dark">
+    <title>CardDemo - Admin Menu</title>
+    <style>
+        /* ---- Reset ------------------------------------------------------- */
+        *, *::before, *::after { box-sizing: border-box; }
+        html, body { margin: 0; padding: 0; }
+
+        body {
+            background: #000000;
+            color: #cfcfcf;
+            font-family: 'Courier New', Courier, monospace;
+            display: flex;
+            flex-direction: column;
+            /* Finding #54: this is a COLUMN flex, so the horizontal axis is the
+               cross axis governed by `align-items`. `safe center` centers the
+               80ch artboard when it fits and falls back to start-alignment
+               (left edge at scrollLeft 0) when it overflows 375px, keeping the
+               left origin reachable via `overflow-x: auto` below. */
+            align-items: safe center;
+            justify-content: flex-start;
+            min-height: 100vh;
+            padding: 1rem;
+            overflow-x: auto;
+        }
+
+        /* Finding #54: the terminal artboard must never shrink, so its origin
+           remains reachable inside the horizontal scroller. */
+        body > * {
+            flex-shrink: 0;
+        }
+
+        /* ---- 24x80 terminal grid ---------------------------------------- */
+        /* The screen is an exact 80-column by 24-row monospaced character grid.
+           Each field is absolutely positioned: horizontal offset in `ch`
+           (one character cell) and vertical offset in whole row-heights.
+           A fixed pixel-derived grid is used deliberately (not rem) so the
+           80x24 alignment cannot drift with user font settings; the BMS layout
+           is the authoritative design source for these dimensions. */
+        .screen {
+            --rh: 1.5em;                    /* one row height (24px at 16px font) */
+            position: relative;
+            width: 80ch;
+            height: calc(24 * var(--rh));
+            /* BLITZY [QA P5-06/P5-13]: shared responsive artboard cell size (legible floor,
+               then pan) replaces the fixed 16px that kept the 768px artboard clipping
+               fields/PF-keys off-screen on small viewports. */
+            font-size: var(--bms-cell);
+            line-height: 1.5;
+            background: #000000;
+            border: 1px solid #333333;
+        }
+
+        .fld {
+            position: absolute;
+            margin: 0;
+            padding: 0;
+            font-family: inherit;
+            font-size: inherit;
+            font-weight: 400;
+            height: var(--rh);
+            line-height: var(--rh);
+            white-space: pre;               /* preserve exact spacing (e.g. legend) */
+            overflow: hidden;               /* clip to the field's BMS length */
+        }
+
+        /* ---- BMS colour palette (centralized) --------------------------- */
+        /* BLITZY [finding P5-12]: colours are defined once in
+           templates/fragments/bms-palette.html and referenced via var(--bms-*).
+           All six BMS foreground colours (blue, red, green, turquoise, yellow,
+           neutral) render at their literal 3270 values defined centrally in that
+           fragment; the BMS colour contract is the authoritative design intent
+           and is asserted by BmsPaletteContrastTest. Screen templates must never
+           inline the raw blue/red hex - they reference var(--bms-*) only. */
+        .blue    { color: var(--bms-blue); }
+        .yellow  { color: var(--bms-yellow); }
+        .turq    { color: var(--bms-turquoise); }
+        .green   { color: var(--bms-green); }
+        .red     { color: var(--bms-red); }
+        .neutral { color: var(--bms-neutral); }
+        .bright  { font-weight: 700; }      /* BMS BRT attribute */
+
+        /* ---- Option input (BMS field OPTION) ---------------------------- */
+        /* ATTRB=(FSET,IC,NORM,NUM,UNPROT), HILIGHT=UNDERLINE,
+           JUSTIFY=(RIGHT,ZERO), LENGTH=2. IC -> autofocus; NUM -> numeric;
+           UNDERLINE -> bottom border; RIGHT -> right-aligned text. */
+        .opt-input {
+            position: absolute;
+            width: 2ch;
+            height: var(--rh);
+            padding: 0;
+            margin: 0;
+            border: none;
+            border-bottom: 1px solid #00CD00;
+            background: transparent;
+            color: var(--bms-green);
+            caret-color: var(--bms-green);
+            font-family: inherit;
+            font-size: inherit;
+            line-height: var(--rh);
+            text-align: right;
+        }
+        .opt-input:focus { outline: none; background: #001400; }
+        .opt-input:focus-visible {
+            outline: 2px solid #00CDCD;
+            outline-offset: 1px;
+            background: #001400;
+        }
+
+        /* ---- PF-key controls (finding P5-09/P5-10) ---------------------- */
+        /* Single coherent control set INSIDE the 24x80 terminal geometry, matching
+           the COMEN01 pattern: the row-24 PF-key legend IS the set of clickable
+           submit buttons (styled as terminal text), so there is no duplicate control
+           block below the terminal and nothing clips at short viewport heights.
+           "Continue" is first in the DOM so pressing Enter posts pfkey=ENTER, and the
+           external /js/bms-pfkeys.js maps the physical PF keys to these same buttons. */
+        .pfkey {
+            font: inherit;
+            color: inherit;                 /* inherits .yellow from the row-24 wrapper */
+            background: transparent;
+            border: 0;
+            padding: 0;
+            margin: 0;
+            height: var(--rh);
+            line-height: var(--rh);
+            white-space: pre;               /* preserve the two-space BMS legend gap */
+            cursor: pointer;
+            vertical-align: baseline;
+        }
+        .pfkey:active { text-decoration: underline; filter: brightness(1.3); }
+        @media (hover: hover) {
+            .pfkey:hover { text-decoration: underline; }
+        }
+        .pfkey:focus-visible {
+            outline: 2px solid #00CDCD;
+            outline-offset: -2px;           /* inset so the parent overflow:hidden never clips it */
+        }
+
+        /* ---- Skip link (invisible until focused) ------------------------ */
+        .skip-link {
+            position: absolute;
+            left: -9999px;
+            top: auto;
+            width: 1px;
+            height: 1px;
+            overflow: hidden;
+        }
+        .skip-link:focus {
+            left: 8px;
+            top: 8px;
+            width: auto;
+            height: auto;
+            padding: 4px 8px;
+            background: #000000;
+            color: var(--bms-neutral);
+            border: 1px solid #00CDCD;
+            z-index: 10;
+        }
+    </style>
+</head>
+<body>
+    <a class="skip-link" href="#option">Skip to option entry</a>
+
+    <!-- Primary content landmark for assistive tech (review finding #56); geometry unchanged. -->
+    <main>
+    <form id="admin-menu-form"
+          th:object="${form}"
+          th:action="@{/admin/menu}"
+          method="post"
+          class="terminal">
+
+        <!-- 24x80 terminal screen -->
+        <div class="screen">
+
+            <!-- Row 1: Tran / Title01 / Date -->
+            <span class="fld blue"   style="top:0; left:0;    width:5ch">Tran:</span>
+            <span class="fld blue"   style="top:0; left:6ch;  width:4ch"  th:text="*{trnname} ?: ''">CA00</span>
+            <span class="fld yellow" style="top:0; left:20ch; width:40ch" th:text="*{title01} ?: ''"></span>
+            <span class="fld blue"   style="top:0; left:64ch; width:5ch">Date:</span>
+            <span class="fld blue"   style="top:0; left:70ch; width:8ch"  th:text="*{curdate} ?: 'mm/dd/yy'">mm/dd/yy</span>
+
+            <!-- Row 2: Prog / Title02 / Time -->
+            <span class="fld blue"   style="top:calc(1 * var(--rh)); left:0;    width:5ch">Prog:</span>
+            <span class="fld blue"   style="top:calc(1 * var(--rh)); left:6ch;  width:8ch"  th:text="*{pgmname} ?: ''">COADM01C</span>
+            <span class="fld yellow" style="top:calc(1 * var(--rh)); left:20ch; width:40ch" th:text="*{title02} ?: ''"></span>
+            <span class="fld blue"   style="top:calc(1 * var(--rh)); left:64ch; width:5ch">Time:</span>
+            <span class="fld blue"   style="top:calc(1 * var(--rh)); left:70ch; width:8ch"  th:text="*{curtime} ?: 'hh:mm:ss'">hh:mm:ss</span>
+
+            <!-- Row 4: screen title (only content difference vs Main Menu) -->
+            <h1 class="fld neutral bright" style="top:calc(3 * var(--rh)); left:34ch; width:10ch">Admin Menu</h1>
+
+            <!-- Rows 6-17: 12 runtime-filled admin menu option lines -->
+            <span class="fld blue" style="top:calc(5 * var(--rh));  left:19ch; width:40ch" th:text="*{optn001} ?: ''"></span>
+            <span class="fld blue" style="top:calc(6 * var(--rh));  left:19ch; width:40ch" th:text="*{optn002} ?: ''"></span>
+            <span class="fld blue" style="top:calc(7 * var(--rh));  left:19ch; width:40ch" th:text="*{optn003} ?: ''"></span>
+            <span class="fld blue" style="top:calc(8 * var(--rh));  left:19ch; width:40ch" th:text="*{optn004} ?: ''"></span>
+            <span class="fld blue" style="top:calc(9 * var(--rh));  left:19ch; width:40ch" th:text="*{optn005} ?: ''"></span>
+            <span class="fld blue" style="top:calc(10 * var(--rh)); left:19ch; width:40ch" th:text="*{optn006} ?: ''"></span>
+            <span class="fld blue" style="top:calc(11 * var(--rh)); left:19ch; width:40ch" th:text="*{optn007} ?: ''"></span>
+            <span class="fld blue" style="top:calc(12 * var(--rh)); left:19ch; width:40ch" th:text="*{optn008} ?: ''"></span>
+            <span class="fld blue" style="top:calc(13 * var(--rh)); left:19ch; width:40ch" th:text="*{optn009} ?: ''"></span>
+            <span class="fld blue" style="top:calc(14 * var(--rh)); left:19ch; width:40ch" th:text="*{optn010} ?: ''"></span>
+            <span class="fld blue" style="top:calc(15 * var(--rh)); left:19ch; width:40ch" th:text="*{optn011} ?: ''"></span>
+            <span class="fld blue" style="top:calc(16 * var(--rh)); left:19ch; width:40ch" th:text="*{optn012} ?: ''"></span>
+
+            <!-- Row 20: prompt + option input -->
+            <label class="fld turq bright"
+                   for="option"
+                   style="top:calc(19 * var(--rh)); left:14ch; width:25ch">Please select an option :</label>
+            <input class="opt-input"
+                   style="top:calc(19 * var(--rh)); left:40ch"
+                   type="text"
+                   th:field="*{option}"
+                   maxlength="2"
+                   inputmode="numeric"
+                   pattern="\d{0,2}"
+                   autocomplete="off"
+                   spellcheck="false"
+                   autofocus
+                   aria-describedby="errmsg-line">
+
+            <!-- Row 23: error / informational message (red, bold; empty when none) -->
+            <span id="errmsg-line"
+                  class="fld bright"
+                  th:classappend="${form.errmsgColor}"
+                  style="top:calc(22 * var(--rh)); left:0; width:78ch"
+                  role="alert"
+                  aria-live="assertive"
+                  th:text="*{errmsg} ?: ''"></span>
+
+            <!-- Row 24: PF-key legend rendered AS the clickable submit buttons (finding
+                 P5-09/P5-10). This single in-terminal control set replaces the former
+                 duplicate: a static legend span plus an external .controls button block.
+                 The buttons render as terminal text (verbatim from the BMS INITIAL legend,
+                 two spaces between), work without JavaScript, and are keyboard/AT friendly;
+                 "Continue" is first so Enter posts pfkey=ENTER. -->
+            <div class="fld yellow" style="top:calc(23 * var(--rh)); left:0; width:78ch"><button type="submit" name="pfkey" value="ENTER" id="pf-continue" class="pfkey">ENTER=Continue</button>  <button type="submit" name="pfkey" value="PF3" id="pf-exit" class="pfkey">F3=Exit</button></div>
+        </div>
+    </form>
+    </main>
+
+    <!-- Progressive enhancement only: the submit buttons above are the canonical controls and work
+         fully without JavaScript. This external script (finding P5-04) maps the physical 3270 PF
+         keys to the matching pfkey submit button so keyboard users get terminal-faithful behaviour.
+         It is served from /js (same origin), satisfying the Content-Security-Policy default-src
+         'self'; the previous inline <script> was blocked by CSP and never ran. -->
+    <script th:src="@{/js/bms-pfkeys.js}"></script>
+</body>
+</html>

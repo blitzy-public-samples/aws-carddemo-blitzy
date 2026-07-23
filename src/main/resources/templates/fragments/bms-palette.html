@@ -1,0 +1,95 @@
+<!DOCTYPE html>
+<html xmlns:th="http://www.thymeleaf.org">
+<!--/*
+  BLITZY [A11Y / review finding #53]: Centralized BMS 3270 colour palette.
+
+  This is the SINGLE SOURCE OF TRUTH for the CardDemo terminal palette. Every screen
+  template includes it via  <th:block th:replace="~{fragments/bms-palette :: palette}">
+  so all screens share one definition and a future designer changes a colour in ONE place.
+
+  BLITZY [QA finding P5-12 - literal BMS palette parity]: this fragment now renders the EXACT
+  legacy BMS 3270 foreground colours. There is no Figma for this migration, so (per the AAP
+  precedence rule) the BMS colour contract is the authoritative design intent (AAP section 0.3.4
+  "colors rendered as styles" one-for-one), and WCAG contrast heuristics NEVER override that
+  design contract. An earlier revision brightened BLUE/RED for WCAG 2.1 AA, but that changed the
+  observable colour contract without an accepted requirement change, so the literal values are
+  restored:
+    * BLUE  #0000CD  -- authentic 3270 blue (BMS COLOR=BLUE)
+    * RED   #CD0000  -- authentic 3270 red  (BMS COLOR=RED)
+  The remaining BMS colours were already literal and are unchanged:
+    GREEN #00CD00, TURQUOISE #00CDCD, YELLOW #CCCC00, NEUTRAL #FFFFFF.
+  Rationale (parity-vs-contrast resolution) is recorded in docs/decision-log.md; the literal
+  palette is asserted automatically by BmsPaletteContrastTest.
+
+  BLITZY [A11Y / review finding #56]: this shared fragment also defines the .visually-hidden
+  screen-reader utility so every screen can expose an off-grid semantic <h1> heading (and other
+  assistive-only content) WITHOUT altering the visible 24x80 character grid. It matches the
+  definition already used inline by several screens (e.g. COACTVW, COUSR01); defining it once here
+  makes it available to every template that lacked it. Screens that still declare it locally simply
+  re-state an identical rule (harmless).
+*/-->
+<head>
+<th:block th:fragment="palette">
+<style>
+    :root {
+        --bms-blue:      #0000CD; /* literal BMS COLOR=BLUE (QA P5-12 parity) */
+        --bms-red:       #CD0000; /* literal BMS COLOR=RED  (QA P5-12 parity) */
+        --bms-green:     #00CD00; /* literal BMS COLOR=GREEN                  */
+        --bms-turquoise: #00CDCD; /* literal BMS COLOR=TURQUOISE              */
+        --bms-yellow:    #CCCC00; /* literal BMS COLOR=YELLOW                 */
+        --bms-neutral:   #FFFFFF; /* literal BMS COLOR=NEUTRAL                */
+        --bms-bg:        #000000; /* terminal background                     */
+
+        /*
+         * BLITZY [QA finding P5-06 / P5-13 - responsive terminal parity]: shared cell
+         * size for the fixed 24x80 artboard. Every screen's 80-column grid element
+         * (.screen / .grid / .terminal / .scr) sets  font-size: var(--bms-cell)  so all
+         * 17 screens share ONE responsive behaviour instead of the previous divergent
+         * per-screen rules (sign-on scaled to an illegible ~8px; the other screens kept a
+         * fixed ~768px width and clipped fields/PF-keys off-screen on small viewports).
+         *
+         * The advance of the monospace cell was measured at ch = 0.6em, so the rendered
+         * artboard width is  80ch = 48 * cell . The clamp therefore behaves as:
+         *   - viewport >= ~769px : 1rem (16px) ceiling  -> 768px artboard, centered.
+         *   - viewport ~625-769px: 2.083vw              -> artboard fills the width exactly.
+         *   - viewport <  ~625px : 0.8125rem (13px) floor-> 624px artboard; the terminal
+         *                          scroll-container pans (both axes) so every cell and
+         *                          control stays reachable and legible on a 375px phone.
+         * This "fit-to-width down to a legible floor, then scroll" model preserves the
+         * 80x24 grid exactly (no reflow of the BMS contract) while keeping text readable
+         * and controls operable at the required 375x812 and 800x600 breakpoints.
+         * Rationale is recorded in docs/decision-log.md.
+         */
+        --bms-cell:      clamp(0.8125rem, 2.083vw, 1rem);
+    }
+
+    /*
+     * BLITZY [QA finding P5-06 / P5-13]: cross-cutting responsive safety net shared by
+     * every screen. box-sizing keeps borders/padding inside the artboard math; disabling
+     * the mobile text auto-inflation stops the OS from re-scaling the carefully sized
+     * monospace grid. These are safe global rules (no colour or geometry override) that
+     * complement each screen's  font-size: var(--bms-cell)  on its 80-column element.
+     */
+    *, *::before, *::after { box-sizing: border-box; }
+    html { -webkit-text-size-adjust: 100%; text-size-adjust: 100%; }
+
+    /*
+     * Screen-reader-only utility (review finding #56). Removes the element from the visual
+     * layout while keeping it in the accessibility tree, so an off-grid <h1> and assistive
+     * text announce correctly without changing the visible terminal geometry.
+     */
+    .visually-hidden {
+        position: absolute;
+        width: 1px;
+        height: 1px;
+        padding: 0;
+        margin: -1px;
+        overflow: hidden;
+        clip: rect(0 0 0 0);
+        white-space: nowrap;
+        border: 0;
+    }
+</style>
+</th:block>
+</head>
+</html>

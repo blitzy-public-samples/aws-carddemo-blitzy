@@ -1,0 +1,71 @@
+# .gitattributes — line-ending & diff-hygiene policy for the AWS CardDemo Java migration
+#
+# Addresses code-review finding F27 (Diff Hygiene). It establishes a single,
+# explicit line-ending contract so `git diff --check` stays clean and generated
+# sources are stored with LF regardless of the contributor's OS.
+#
+# IMPORTANT: the retained COBOL / CICS / JCL / BMS mainframe assets under legacy/
+# are EXPLICITLY excluded from normalization (see the final rule) so their original
+# bytes — including any native EBCDIC datasets and mainframe line conventions — are
+# preserved verbatim for reference and traceability.
+
+# ---------------------------------------------------------------------------
+# Default: auto-detect text vs binary; normalize all text to LF in the repo
+# and in the working tree.
+# ---------------------------------------------------------------------------
+* text=auto eol=lf
+
+# ---------------------------------------------------------------------------
+# Migrated Java application sources & resources — always LF.
+# ---------------------------------------------------------------------------
+*.java        text eol=lf
+*.xml         text eol=lf
+*.yml         text eol=lf
+*.yaml        text eol=lf
+*.sql         text eol=lf
+*.html        text eol=lf
+*.css         text eol=lf
+*.js          text eol=lf
+*.json        text eol=lf
+*.md          text eol=lf
+*.properties  text eol=lf
+*.txt         text eol=lf
+
+# Maven wrapper POSIX launcher must stay LF so it remains executable on *nix.
+mvnw          text eol=lf
+
+# ---------------------------------------------------------------------------
+# Windows-only scripts MUST retain CRLF or they break on cmd.exe.
+# ---------------------------------------------------------------------------
+*.cmd         text eol=crlf
+*.bat         text eol=crlf
+
+# ---------------------------------------------------------------------------
+# Binary assets — never normalize, never diff as text.
+# ---------------------------------------------------------------------------
+*.png         binary
+*.jpg         binary
+*.jpeg        binary
+*.gif         binary
+*.pdf         binary
+*.drawio      binary
+*.PS          binary
+*.ps          binary
+# Fixed-block (RECFM=FB) dataset images — e.g. data/DALYTRAN.sample.fb, the ready-to-run
+# daily-posting feed (300 x 350 = 105000 bytes, NO line delimiters). Marked binary so EOL
+# normalization can never inject/alter bytes and break the fixed-block record layout the
+# Spring Batch FixedLengthItemReader depends on (QA finding FA2-02).
+*.fb          binary
+*.zip         binary
+*.jar         binary
+*.class       binary
+
+# ---------------------------------------------------------------------------
+# Reference-only material — DO NOT normalize — preserve original bytes.
+# Per the migration plan, both the retained legacy mainframe sources and the
+# sample JCL/PROC under samples/ are reference-only (never migrated or edited),
+# so their original line endings and bytes are kept verbatim. These rules are
+# last so they override the defaults above for every matching path.
+# ---------------------------------------------------------------------------
+legacy/**     -text
+samples/**    -text

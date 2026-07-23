@@ -1,0 +1,479 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <!--
+      AWS CardDemo - Java / Spring Boot migration (COBOL / CICS / VSAM / JCL / BMS  ->
+      Java 25 LTS + Spring Boot 3.5.16). Single-module Maven project (AAP 0.3.1 / 0.7.3:
+      single module chosen for one-phase reviewability; multi-module is a documented
+      alternative). All Java layers live under src/main/java/com/aws/carddemo/**.
+
+      No placeholder versions (AAP 0.5.1): every version is either managed by the Spring
+      Boot parent BOM or explicitly pinned below (parent 3.5.16, JaCoCo 0.8.15, OWASP
+      dependency-check 12.2.2). The Maven wrapper separately pins Maven to 3.9.9.
+      No hardcoded credentials anywhere in this build manifest.
+    -->
+    <parent>
+        <groupId>org.springframework.boot</groupId>
+        <artifactId>spring-boot-starter-parent</artifactId>
+        <version>3.5.16</version>
+        <relativePath/>
+    </parent>
+
+    <groupId>com.aws.carddemo</groupId>
+    <artifactId>carddemo</artifactId>
+    <version>1.0.0</version>
+    <packaging>jar</packaging>
+    <name>AWS CardDemo (Java/Spring Boot Migration)</name>
+    <description>Java/Spring Boot migration of the AWS CardDemo mainframe credit-card management application (COBOL/CICS/VSAM/JCL/BMS to Java 25 + Spring Boot), preserving 100% of existing business behavior.</description>
+
+    <properties>
+        <java.version>25</java.version>
+        <maven.compiler.release>25</maven.compiler.release>
+        <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+        <project.reporting.outputEncoding>UTF-8</project.reporting.outputEncoding>
+        <!-- Explicitly pinned plugin versions (NOT managed by the Spring Boot parent BOM). -->
+        <!-- JaCoCo 0.8.15 filters javac 24-26 bytecode, required for the Java 25 target. -->
+        <jacoco.version>0.8.15</jacoco.version>
+        <!-- OWASP dependency-check 12.2.2 enforces the zero critical/high CVE gate. -->
+        <dependency-check.version>12.2.2</dependency-check.version>
+        <!--
+          Jackson BOM override (m-01). Spring Boot 3.5.16 manages Jackson via the
+          `jackson-bom.version` property and would otherwise resolve jackson-databind 2.21.4,
+          which is affected by CVE-2026-54515 / GHSA-5jmj-h7xm-6q6v (fixed in 2.21.5). Overriding
+          the managed property pins the WHOLE Jackson BOM (databind, core, annotations and every
+          jackson module) to 2.21.5 consistently. Rationale is recorded in docs/decision-log.md.
+        -->
+        <jackson-bom.version>2.21.5</jackson-bom.version>
+        <!--
+          Application-shipped dependency security-patch overrides (C-03). The Spring Boot
+          3.5.16 parent BOM (the final stable 3.x release, EOL 2026-06-30) manages these three
+          runtime/compile artifacts at versions that the OWASP dependency-check scan flags for
+          High/Critical CVEs published after 3.5.16 shipped. Each override stays WITHIN the same
+          major.minor line the BOM already uses, so it is a low-risk patch bump that preserves
+          Spring Boot 3.5.16 compatibility while clearing the shipped-artifact advisories:
+            - Tomcat  10.1.55 -> 10.1.57 (embedded servlet container; tomcat.version)
+            - PostgreSQL 42.7.11 -> 42.7.13 (JDBC driver; postgresql.version)
+            - Log4j2  2.24.3 -> 2.26.1 (log4j-api via the log4j-to-slf4j bridge; log4j2.version)
+          These clear the only build-shipped (compile/runtime scope) High/Critical findings; the
+          remaining advisories are confined to build-time Maven plugin / test-only graphs (not
+          shipped) and are handled by dependency-check-suppressions.xml with per-item
+          justification. Rationale + the SB 3.5.16 EOL follow-on are recorded in docs/decision-log.md.
+        -->
+        <tomcat.version>10.1.57</tomcat.version>
+        <postgresql.version>42.7.13</postgresql.version>
+        <log4j2.version>2.26.1</log4j2.version>
+        <!--
+          Logback security-patch override (SEC-F6). The Spring Boot 3.5.16 parent BOM manages
+          logback (logback-classic + logback-core) via the `logback.version` property at 1.5.34,
+          which is in-range for CVE-2026-13006 (CWE-917 Expression Injection, HIGH CVSS 7.0): a
+          crafted Janino-evaluated `condition` attribute of an <if> configuration element can
+          execute arbitrary code. The definitive upstream fix is logback 1.5.38 (which additionally
+          removes Janino conditional support entirely). The OWASP dependency-check gate
+          (failBuildOnCVSS=7) produced a FALSE NEGATIVE for this advisory, so it is pinned here at
+          source rather than suppressed. Overriding this single property retargets BOTH version-less
+          logback artifacts (classic + core) consistently, and 1.5.38 stays WITHIN the logback 1.5.x
+          line the BOM already uses (API-stable, low-risk, preserves Spring Boot 3.5.16
+          compatibility). Reachability note: this application's logback-spring.xml contains no <if>
+          conditionals and Janino is not on the classpath, so the CVE is not runtime-exploitable
+          here; the bump is applied to satisfy the AAP "OWASP zero critical/high CVEs" gate and to
+          patch the shipped artifact at source. Rationale is recorded in docs/decision-log.md.
+        -->
+        <logback.version>1.5.38</logback.version>
+        <!--
+          Flyway PostgreSQL-18 compatibility override (#49). The Spring Boot 3.5.16 parent BOM
+          manages Flyway (flyway-core + flyway-database-postgresql) at 11.7.2 via the
+          `flyway.version` property. Flyway 11.7.2 encodes its highest *tested* PostgreSQL major
+          version as 17, so running against the target PostgreSQL 18.4 server emits, on every
+          launch (and once per Testcontainers boot), a WARN from
+          org.flywaydb.core.internal.database.base.Database:
+            "Flyway upgrade recommended: PostgreSQL 18.4 is newer than this version of Flyway and
+             support has not been tested. The latest supported version of PostgreSQL is 17."
+          That single line accounted for the bulk of the non-warning-free build/start logs
+          (hundreds of occurrences across the full test suite). Flyway raised its tested-PostgreSQL
+          ceiling to 18 in 11.16.0 (verified empirically: the PostgreSQLDatabase max-version
+          constant is "17" through 11.13.0 and "18" from 11.16.0 onward). Pinning to the latest
+          Flyway 11.x (11.20.3) stays WITHIN the Flyway 11 major line the parent BOM already uses
+          (API-stable, low-risk, preserves Spring Boot 3.5.16 compatibility) while marking
+          PostgreSQL 18 as tested, which removes the warning at its root cause rather than
+          suppressing it. Overriding this property retargets BOTH version-less Flyway artifacts
+          below consistently. Rationale + risk/mitigation are recorded in docs/decision-log.md.
+        -->
+        <flyway.version>11.20.3</flyway.version>
+        <!--
+          Empty default for the test-fork JVM argLine (#35). The JaCoCo prepare-agent goals set
+          this property to the coverage `-javaagent:...jacocoagent.jar=...` string (prepending to
+          any existing value); Surefire/Failsafe reference it below via late-bound @{argLine} and
+          append the Mockito startup agent. Defining an empty default means @{argLine} resolves
+          cleanly to just the Mockito agent when coverage is skipped (e.g. -Djacoco.skip=true),
+          instead of a literal unresolved token.
+        -->
+        <argLine></argLine>
+    </properties>
+
+    <dependencies>
+        <!-- ============ Web / presentation (replace CICS online transactions) ============ -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-web</artifactId>
+        </dependency>
+        <!-- Server-rendered screens preserving the 24x80 BMS field/label/PF-key contract. -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-thymeleaf</artifactId>
+        </dependency>
+
+        <!-- ============ Persistence (replace VSAM KSDS I/O with JPA over PostgreSQL) ============ -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-data-jpa</artifactId>
+        </dependency>
+
+        <!-- ============ Batch (replace JCL / JES2 orchestration) ============ -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-batch</artifactId>
+        </dependency>
+
+        <!-- ============ Security (replace app-level signon + RACF) ============ -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-security</artifactId>
+        </dependency>
+
+        <!-- ============ Validation (replace program / BMS field edits) ============ -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-validation</artifactId>
+        </dependency>
+
+        <!-- ============ Observability (Observability rule: health/readiness/metrics/tracing) ============ -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-actuator</artifactId>
+        </dependency>
+        <!-- Distributed tracing + correlation IDs. -->
+        <dependency>
+            <groupId>io.micrometer</groupId>
+            <artifactId>micrometer-tracing-bridge-brave</artifactId>
+        </dependency>
+        <!-- Prometheus metrics scrape endpoint feeding the Grafana dashboard template. -->
+        <dependency>
+            <groupId>io.micrometer</groupId>
+            <artifactId>micrometer-registry-prometheus</artifactId>
+        </dependency>
+
+        <!-- ============ Database: PostgreSQL driver + Flyway (VSAM -> relational schema) ============ -->
+        <!-- JDBC driver only needed at runtime; DB target 18.4, supported floor 16. -->
+        <dependency>
+            <groupId>org.postgresql</groupId>
+            <artifactId>postgresql</artifactId>
+            <scope>runtime</scope>
+        </dependency>
+        <!-- Flyway schema migrations (DEFINE CLUSTER -> DDL) and reference/seed data load. -->
+        <dependency>
+            <groupId>org.flywaydb</groupId>
+            <artifactId>flyway-core</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.flywaydb</groupId>
+            <artifactId>flyway-database-postgresql</artifactId>
+        </dependency>
+
+        <!-- ============ Test scope ============ -->
+        <!-- JUnit 5 (Jupiter) + Mockito + AssertJ + Spring Test. -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-test</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <!-- Spring Batch job/step testing utilities. -->
+        <dependency>
+            <groupId>org.springframework.batch</groupId>
+            <artifactId>spring-batch-test</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <!-- Testcontainers JUnit 5 integration (version managed by the testcontainers BOM
+             imported through the Spring Boot parent; no explicit version). -->
+        <dependency>
+            <groupId>org.testcontainers</groupId>
+            <artifactId>junit-jupiter</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <!-- Real PostgreSQL container for integration / parity tests. -->
+        <dependency>
+            <groupId>org.testcontainers</groupId>
+            <artifactId>postgresql</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <!-- Spring Security test support (@WithMockUser, request post-processors, etc.). -->
+        <dependency>
+            <groupId>org.springframework.security</groupId>
+            <artifactId>spring-security-test</artifactId>
+            <scope>test</scope>
+        </dependency>
+    </dependencies>
+
+    <build>
+        <plugins>
+            <!-- Repackage into an executable (fat) jar and enable `./mvnw spring-boot:run`. -->
+            <plugin>
+                <groupId>org.springframework.boot</groupId>
+                <artifactId>spring-boot-maven-plugin</artifactId>
+            </plugin>
+
+            <!--
+              Compile against Java release 25 (via <release>25</release> below) and enforce a
+              zero-COMPILER-warning build (AAP 0.7.1): -Xlint:all surfaces every javac lint category
+              and failOnWarning turns any javac warning into a build failure. (Lombok/MapStruct are
+              intentionally NOT used by the generated sources, so no annotationProcessorPaths are
+              required here.)
+
+              Scope note (M-03): failOnWarning governs javac COMPILE warnings only. Separately, the
+              Maven 3.9.9 process JVM emits two startup warnings from Maven's OWN bundled libraries
+              on Java 25 - a Jansi restricted-native-access warning and a Guava sun.misc.Unsafe
+              terminal-deprecation warning. The Jansi warning is suppressed by the native-access
+              flag configured in `.mvn/jvm.config`. The Guava warning originates inside Maven's
+              bundled guava jar and CANNOT be removed by this project's configuration; it is
+              documented honestly in docs/decision-log.md rather than masked, and it does not affect
+              the compiled artifact. See the Maven-version support/warning decision row.
+            -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-compiler-plugin</artifactId>
+                <configuration>
+                    <release>25</release>
+                    <failOnWarning>true</failOnWarning>
+                    <compilerArgs>
+                        <arg>-Xlint:all</arg>
+                    </compilerArgs>
+                </configuration>
+            </plugin>
+
+            <!--
+              Resolve dependency artifact paths into build properties (#35). The `properties`
+              goal binds ${org.mockito:mockito-core:jar} (and every other resolved dependency) to
+              the absolute path of its jar in the local repository, BEFORE the test phases run.
+              Surefire/Failsafe reference ${org.mockito:mockito-core:jar} in their argLine to load
+              Mockito as a startup -javaagent, which stops the inline mock-maker from
+              self-attaching byte-buddy-agent at runtime (removing the "self-attaching" /
+              "dynamic agent loaded" / "dynamic loading disallowed" JDK+Mockito warnings).
+            -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-dependency-plugin</artifactId>
+                <executions>
+                    <execution>
+                        <id>resolve-dependency-artifact-paths</id>
+                        <phase>initialize</phase>
+                        <goals>
+                            <goal>properties</goal>
+                        </goals>
+                    </execution>
+                </executions>
+            </plugin>
+
+            <!--
+              Unit tests via JUnit 5 (M-02). Non-overlapping naming contract: unit tests end in
+              `*Test` and run here (surefire); integration/parity tests end in `*IT` and run in
+              failsafe below - the two sets never overlap. failIfNoTests=true makes an empty unit
+              suite a build failure so the >=80% coverage gate (AAP 0.7.1) cannot be bypassed by
+              simply shipping no tests. (Test sources are a later checkpoint; `-DskipTests`
+              short-circuits execution and does not trip failIfNoTests.)
+            -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-surefire-plugin</artifactId>
+                <configuration>
+                    <!--
+                      Load Mockito as a startup -javaagent (#35). mockito-core 5.17.0 declares
+                      Premain-Class org.mockito.internal.PremainAttach, so passing its jar via
+                      -javaagent means the inline mock-maker is already attached at JVM start and
+                      no longer SELF-attaches byte-buddy-agent at runtime - this removes the
+                      "Mockito is currently self-attaching", "A Java agent has been loaded
+                      dynamically", "Dynamic loading of agents will be disallowed" and the JDK
+                      dynamic-agent hint warnings. @{argLine} is late-bound so the JaCoCo coverage
+                      agent argLine (set by prepare-agent) is preserved; ${org.mockito:mockito-core:jar}
+                      is bound by the maven-dependency-plugin `properties` goal above. -Xshare:off
+                      disables class-data sharing for the test fork so the agent's necessary
+                      append to the bootstrap classpath no longer triggers the OpenJDK "Sharing is
+                      only supported for boot loader classes ..." warning (CDS is a JVM startup
+                      optimization, not a correctness feature; opting the test fork out of it is a
+                      standard, side-effect-free way to keep the logs warning-free).
+                    -->
+                    <argLine>@{argLine} -javaagent:${org.mockito:mockito-core:jar} -Xshare:off</argLine>
+                    <failIfNoTests>true</failIfNoTests>
+                    <includes>
+                        <include>**/*Test.java</include>
+                    </includes>
+                    <excludes>
+                        <exclude>**/*IT.java</exclude>
+                    </excludes>
+                </configuration>
+            </plugin>
+
+            <!--
+              Integration / parity tests (*IT) via Testcontainers. Bound to the
+              integration-test/verify phases so combined unit + integration coverage is
+              produced for the JaCoCo gate.
+            -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-failsafe-plugin</artifactId>
+                <configuration>
+                    <!-- Load Mockito as a startup -javaagent (#35), same rationale as surefire
+                         above: prevents the inline mock-maker's runtime self-attach so the
+                         "self-attaching" / "dynamic agent loaded" / CDS "Sharing" warnings never
+                         appear in integration-test logs. @{argLine} preserves the JaCoCo
+                         integration coverage agent argLine (set by prepare-agent-integration). -->
+                    <argLine>@{argLine} -javaagent:${org.mockito:mockito-core:jar} -Xshare:off</argLine>
+                    <!-- Integration / parity tests only (*IT); disjoint from surefire's *Test set.
+                         failIfNoTests=true makes an empty integration suite fail verify so the
+                         combined coverage gate genuinely requires integration tests (M-02). -->
+                    <failIfNoTests>true</failIfNoTests>
+                    <includes>
+                        <include>**/*IT.java</include>
+                    </includes>
+                </configuration>
+                <executions>
+                    <execution>
+                        <goals>
+                            <goal>integration-test</goal>
+                            <goal>verify</goal>
+                        </goals>
+                    </execution>
+                </executions>
+            </plugin>
+
+            <!--
+              Coverage gate: >=80% COMBINED (unit + integration) line coverage (AAP 0.7.1).
+              JaCoCo 0.8.15 is explicitly pinned because it is NOT managed by the Spring Boot
+              parent BOM and it is the version that filters javac 24-26 bytecode (Java 25).
+
+              Both the unit agent (surefire) and the integration agent (failsafe) write their
+              execution data to a single shared file (${project.build.directory}/jacoco.exec,
+              append=true is the agent default). The report and check goals read that same
+              file (their dataFile default), so the gate reflects COMBINED coverage.
+            -->
+            <plugin>
+                <groupId>org.jacoco</groupId>
+                <artifactId>jacoco-maven-plugin</artifactId>
+                <version>${jacoco.version}</version>
+                <executions>
+                    <!-- Unit-test agent: writes ${project.build.directory}/jacoco.exec (surefire). -->
+                    <execution>
+                        <id>prepare-agent</id>
+                        <goals>
+                            <goal>prepare-agent</goal>
+                        </goals>
+                    </execution>
+                    <!-- Integration-test agent (failsafe): redirect exec output to the SAME
+                         jacoco.exec so report/check gate on combined coverage. -->
+                    <execution>
+                        <id>prepare-agent-integration</id>
+                        <goals>
+                            <goal>prepare-agent-integration</goal>
+                        </goals>
+                        <configuration>
+                            <destFile>${project.build.directory}/jacoco.exec</destFile>
+                        </configuration>
+                    </execution>
+                    <!-- Human-readable HTML/XML report from the combined exec data; declared
+                         before check so it runs first within the verify phase. -->
+                    <execution>
+                        <id>report</id>
+                        <phase>verify</phase>
+                        <goals>
+                            <goal>report</goal>
+                        </goals>
+                    </execution>
+                    <!-- Fail `./mvnw clean verify` below 80% combined line coverage. -->
+                    <execution>
+                        <id>check</id>
+                        <phase>verify</phase>
+                        <goals>
+                            <goal>check</goal>
+                        </goals>
+                        <configuration>
+                            <rules>
+                                <rule>
+                                    <element>BUNDLE</element>
+                                    <limits>
+                                        <limit>
+                                            <counter>LINE</counter>
+                                            <value>COVEREDRATIO</value>
+                                            <minimum>0.80</minimum>
+                                        </limit>
+                                    </limits>
+                                </rule>
+                            </rules>
+                            <!--
+                              Exclusions are narrowly limited to the Spring Boot bootstrap entry
+                              point and generated MapStruct mapper implementations (M-02). The
+                              previous blanket `**/config/**` exclusion was REMOVED: config classes
+                              carry behavior (SecurityConfig authorization rules, BatchConfig job
+                              wiring, DataSourceConfig, WebConfig, ObservabilityConfig) and must be
+                              covered by the >=80% BUNDLE gate rather than silently excluded.
+                            -->
+                            <excludes>
+                                <exclude>**/CardDemoApplication.*</exclude>
+                                <exclude>**/*MapperImpl.*</exclude>
+                            </excludes>
+                        </configuration>
+                    </execution>
+                </executions>
+            </plugin>
+
+            <!--
+              OWASP dependency-check: software-composition CVE scan bound to `verify`.
+              failBuildOnCVSS=7 fails the build on any HIGH (CVSS >= 7) or CRITICAL finding
+              (AAP 0.7.1 "zero critical/high CVEs"). Version 12.2.2 is explicitly pinned
+              because it is NOT managed by the Spring Boot parent BOM.
+
+              Scope coverage (C-03): skipTestScope=false and scanPlugins=true so the scan covers
+              test-scope dependencies AND the Maven build-plugin graph, not just compile/runtime.
+              Without these, HIGH/CRITICAL advisories in test or plugin dependencies are invisible
+              and the declared zero-high/critical policy is not substantiated.
+
+              NVD API key (M-01): nvdApiKeyEnvironmentVariable=NVD_API_KEY makes the plugin actually
+              consume the NVD_API_KEY environment variable (the previous comment claimed this but no
+              configuration wired it). Supply the key via that env var for reliable/rate-limit-free
+              updates; the first run downloads the NVD data cache into the local Maven repository and
+              subsequent runs reuse it. Do NOT hardcode any key in this file. See docs/decision-log.md
+              for the offline/rate-limit note (NVD returns HTTP 429 without a key).
+            -->
+            <plugin>
+                <groupId>org.owasp</groupId>
+                <artifactId>dependency-check-maven</artifactId>
+                <version>${dependency-check.version}</version>
+                <configuration>
+                    <failBuildOnCVSS>7</failBuildOnCVSS>
+                    <skipTestScope>false</skipTestScope>
+                    <scanPlugins>true</scanPlugins>
+                    <nvdApiKeyEnvironmentVariable>NVD_API_KEY</nvdApiKeyEnvironmentVariable>
+                    <!--
+                      Suppressions (C-03) apply ONLY to build-time Maven plugin-graph and test-only
+                      dependencies that are never packaged into the deployable artifact (surfaced
+                      because scanPlugins=true / skipTestScope=false). Every application compile/runtime
+                      High/Critical finding is fixed at source via the patched-version property
+                      overrides above - none of those are suppressed. Each suppression is version-pinned
+                      and individually justified. See docs/decision-log.md.
+                    -->
+                    <suppressionFiles>
+                        <suppressionFile>${project.basedir}/dependency-check-suppressions.xml</suppressionFile>
+                    </suppressionFiles>
+                </configuration>
+                <executions>
+                    <execution>
+                        <phase>verify</phase>
+                        <goals>
+                            <goal>check</goal>
+                        </goals>
+                    </execution>
+                </executions>
+            </plugin>
+        </plugins>
+    </build>
+</project>

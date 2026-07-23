@@ -1,0 +1,339 @@
+<!DOCTYPE html>
+<!--/*
+  COACTVW.html — View Account screen (Thymeleaf)
+
+  Server-rendered reproduction of the AWS CardDemo "View Account" 3270/BMS screen,
+  one-for-one with the legacy terminal contract (24x80 character grid, field labels,
+  colors, lengths, and PF-key actions).
+
+  Origin (read-only): legacy/bms/COACTVW.bms (mapset COACTVW / map CACTVWA) and
+                      legacy/cpy-bms/COACTVW.CPY (symbolic map CACTVWAI).
+  Rendered by       : com.aws.carddemo.web.controller.AccountController
+                      (CICS transaction CAVW -> program COACTVWC). View name "COACTVW".
+  Routes            : GET  /account/view  (display)
+                      POST /account/view  (search by account id / PF-key submit)
+  Backing bean      : com.aws.carddemo.dto.screen.COACTVWForm  (model attribute "form").
+
+  Contract notes:
+   - This is a read-only VIEW: only ACCTSID (the search key) is an editable input field;
+     every other field is display-only (th:text). The five money fields are pre-formatted display
+     strings supplied by the controller (never BigDecimal). SSN/DOB are PII display
+     strings (already masked/formatted by the controller).
+   - CSRF is enabled; the form uses th:action so Spring/Thymeleaf emits the _csrf hidden
+     field automatically. No plain action= is used.
+   - No i18n (literal English labels, matching the BMS INITIAL text verbatim). No JS.
+   - Self-contained styling: a single inline <style> block plus per-field grid coordinates
+     carried as CSS custom properties (row, column, and width, in characters). The
+     coordinates map directly to the BMS POS=(row,col) values, so the layout is traceable
+     field-for-field to the source map.
+*/-->
+<html lang="en" xmlns:th="http://www.thymeleaf.org">
+<head>
+    <th:block th:replace="~{fragments/bms-palette :: palette}"></th:block>
+    <meta charset="UTF-8"/>
+    <meta name="viewport" content="width=device-width, initial-scale=1"/>
+    <title>View Account</title>
+    <style>
+        /*
+         * 3270 palette mapped from the legacy/bms/COACTVW.bms COLOR= attributes. Colours are
+         * centralized in templates/fragments/bms-palette.html (single source of truth) and
+         * referenced here via var(--bms-*).
+         *
+         * BLITZY [A11Y / review finding #53]: the two BMS foreground colours that failed WCAG 2.1
+         * AA normal-text contrast on the black background (BLUE, RED) are replaced with accessible
+         * equivalents brightened along the same hue axis (>= 4.5:1); the remaining colours keep
+         * their legacy values (all already pass AA). Contrast is asserted by BmsPaletteContrastTest
+         * and the rationale is recorded in docs/decision-log.md. Semantic HTML, label association,
+         * focus indicators and ARIA live regions are applied unconditionally below.
+         */
+        :root {
+            --rh: 1.25rem;          /* height of one terminal row */
+            --blue:    var(--bms-blue);     /* BMS COLOR=BLUE     */
+            --yellow:  var(--bms-yellow);     /* BMS COLOR=YELLOW   */
+            --turq:    var(--bms-turquoise);     /* BMS COLOR=TURQUOISE*/
+            --green:   var(--bms-green);     /* BMS COLOR=GREEN / 3270 default field color */
+            --red:     var(--bms-red);     /* BMS COLOR=RED      */
+            --neutral: var(--bms-neutral);     /* BMS COLOR=NEUTRAL  */
+            --bg:      var(--bms-bg);     /* dark terminal background */
+        }
+
+        *, *::before, *::after { box-sizing: border-box; }
+
+        html { background: var(--bg); }
+
+        body {
+            margin: 0;
+            background: var(--bg);
+            color: var(--green);
+            font-family: 'Courier New', Courier, monospace;
+            font-size: 16px;
+        }
+
+        /* Full-width page wrapper; the fixed 80-column screen is centered within it. */
+        .screen-wrap {
+            width: 100%;
+            display: flex;
+            justify-content: safe center;
+            overflow-x: auto;
+            padding-block: 1rem;
+        }
+
+        /* The screen is the positioning context for every absolutely placed field. */
+        .screen {
+            position: relative;
+            width: 80ch;
+            min-width: 80ch;
+            height: calc(24 * var(--rh));
+            background: var(--bg);
+            /* BLITZY [QA P5-06/P5-13]: responsive artboard cell size (legible floor then pan). */
+            font-size: var(--bms-cell);
+            line-height: var(--rh);
+        }
+
+        /*
+         * Every terminal field is absolutely positioned from its BMS coordinates.
+         * --r = row (1-based), --c = column (1-based). left is expressed in ch so columns
+         * align exactly on the monospaced grid; top is a multiple of the row height.
+         */
+        .fld {
+            position: absolute;
+            top: calc((var(--r) - 1) * var(--rh));
+            left: calc((var(--c) - 1) * 1ch);
+            height: var(--rh);
+            line-height: var(--rh);
+            margin: 0;
+            padding: 0;
+            white-space: pre;       /* preserve exact BMS INITIAL spacing in labels */
+            font-weight: normal;
+            font-size: inherit;  /* BLITZY [QA P5-06/P5-13]: inherit responsive cell size so ch basis stays consistent */
+        }
+
+        /* A fixed-width value cell (--w characters wide), clipped to its field extent. */
+        .box {
+            display: inline-block;
+            width: calc(var(--w) * 1ch);
+            overflow: hidden;
+        }
+
+        /* 3270 HILIGHT=UNDERLINE: underline spans the whole field width, even when empty. */
+        .ul { border-bottom: 1px solid currentColor; }
+
+        .right { text-align: right; }   /* BMS JUSTIFY=(RIGHT) */
+        .bold  { font-weight: bold; }   /* BMS ATTRB=BRT (bright) */
+
+        .blue    { color: var(--blue); }
+        .yellow  { color: var(--yellow); }
+        .turq    { color: var(--turq); }
+        .green   { color: var(--green); }
+        .red     { color: var(--red); }
+        .neutral { color: var(--neutral); }
+
+        /* Section headings kept at terminal (normal) weight to match NEUTRAL/NORM intensity. */
+        h1.fld, h2.fld { font-weight: normal; }
+
+        /* ACCTSID — the only editable field (BMS ATTRB includes UNPROT; IC = insert cursor). */
+        .acct-input {
+            width: calc(11 * 1ch);
+            background: transparent;
+            border: none;
+            border-bottom: 1px solid var(--green);  /* mirrors HILIGHT=UNDERLINE */
+            color: var(--green);
+            font-family: inherit;
+            font-size: inherit;  /* BLITZY [QA P5-06/P5-13]: inherit responsive cell size so ch width stays consistent */
+            padding: 0;
+            margin: 0;
+        }
+        .acct-input:focus-visible { outline: 2px solid var(--yellow); outline-offset: 0; }
+
+        /* PF-key legend rendered as an accessible submit control that looks like BMS text. */
+        .legend {
+            background: transparent;
+            border: none;
+            color: var(--turq);
+            font-family: inherit;
+            font-size: inherit;  /* BLITZY [QA P5-06/P5-13]: inherit responsive cell size so legend aligns with grid */
+            cursor: pointer;
+            text-align: left;
+        }
+        .legend:focus-visible { outline: 2px solid var(--yellow); }
+        .legend:active { text-decoration: underline; filter: brightness(1.3); }
+        @media (hover: hover) {
+            .legend:hover { text-decoration: underline; }
+        }
+
+        /* Screen-reader-only utility: keeps the element operable but visually hidden. */
+        .visually-hidden {
+            position: absolute;
+            width: 1px;
+            height: 1px;
+            padding: 0;
+            margin: -1px;
+            overflow: hidden;
+            clip: rect(0 0 0 0);
+            white-space: nowrap;
+            border: 0;
+        }
+
+        /* Keyboard skip link — appears on focus, hidden otherwise. */
+        .skip-link {
+            position: absolute;
+            left: -9999px;
+            top: 0;
+            z-index: 10;
+            background: var(--bg);
+            color: var(--yellow);
+            padding: 0.25rem 0.5rem;
+        }
+        .skip-link:focus { left: 0.5rem; }
+    </style>
+</head>
+<body>
+    <a class="skip-link" href="#acctsid">Skip to account number field</a>
+    <div class="screen-wrap">
+        <!--
+          The <form> itself is the 80x24 positioning context. th:action emits the CSRF token.
+          novalidate defers all field validation to the controller, preserving the COBOL/BMS
+          edit-check behavior (e.g. ACCTSID MUSTFILL) rather than the browser's.
+        -->
+        <form class="screen" th:object="${form}" th:action="@{/account/view}" method="post" novalidate>
+
+            <!--
+              Default submit for the ENTER key. It is the first submit control in the form, so
+              pressing Enter in the account-id field submits with pfkey=ENTER (search). It is
+              visually hidden but remains operable and labeled for assistive technology.
+            -->
+            <button type="submit" name="pfkey" value="ENTER" class="visually-hidden">Search account (Enter)</button>
+
+            <!-- ============================= Header (rows 1-2) ============================= -->
+            <header>
+                <span class="fld blue"                  style="--r:1;--c:1">Tran:</span>
+                <span class="fld blue box"              style="--r:1;--c:7;--w:4"   th:text="*{trnname}"></span>
+                <span class="fld yellow box"            style="--r:1;--c:21;--w:40" th:text="*{title01}"></span>
+                <span class="fld blue"                  style="--r:1;--c:65">Date:</span>
+                <span class="fld blue box"              style="--r:1;--c:71;--w:8"  th:text="*{curdate}"></span>
+
+                <span class="fld blue"                  style="--r:2;--c:1">Prog:</span>
+                <span class="fld blue box"              style="--r:2;--c:7;--w:8"   th:text="*{pgmname}"></span>
+                <span class="fld yellow box"            style="--r:2;--c:21;--w:40" th:text="*{title02}"></span>
+                <span class="fld blue"                  style="--r:2;--c:65">Time:</span>
+                <span class="fld blue box"              style="--r:2;--c:71;--w:8"  th:text="*{curtime}"></span>
+            </header>
+
+            <!-- ================================ Title (row 4) ============================== -->
+            <h1 class="fld neutral" style="--r:4;--c:33">View Account</h1>
+
+            <!-- ================================ Body (rows 5-20) =========================== -->
+            <main>
+                <!-- Row 5: account id (input) + active status -->
+                <label class="fld turq" style="--r:5;--c:19" for="acctsid">Account Number :</label>
+                <input type="text" th:field="*{acctsid}" id="acctsid"
+                       class="fld acct-input" style="--r:5;--c:38"
+                       maxlength="11" inputmode="numeric" pattern="[0-9]{11}"
+                       autocomplete="off" autofocus/>
+                <span class="fld turq" style="--r:5;--c:57">Active Y/N: </span>
+                <span class="fld green box ul" style="--r:5;--c:70;--w:1" th:text="*{acsttus}"></span>
+
+                <!-- Row 6: opened date / credit limit -->
+                <span class="fld turq" style="--r:6;--c:8">Opened:</span>
+                <span class="fld green box ul" style="--r:6;--c:17;--w:10" th:text="*{adtopen}"></span>
+                <span class="fld turq" style="--r:6;--c:39">Credit Limit        :</span>
+                <span class="fld green box ul right" style="--r:6;--c:61;--w:15" th:text="*{acrdlim}"></span>
+
+                <!-- Row 7: expiry date / cash credit limit -->
+                <span class="fld turq" style="--r:7;--c:8">Expiry:</span>
+                <span class="fld green box ul" style="--r:7;--c:17;--w:10" th:text="*{aexpdt}"></span>
+                <span class="fld turq" style="--r:7;--c:39">Cash credit Limit   :</span>
+                <span class="fld green box ul right" style="--r:7;--c:61;--w:15" th:text="*{acshlim}"></span>
+
+                <!-- Row 8: reissue date / current balance -->
+                <span class="fld turq" style="--r:8;--c:8">Reissue:</span>
+                <span class="fld green box ul" style="--r:8;--c:17;--w:10" th:text="*{areisdt}"></span>
+                <span class="fld turq" style="--r:8;--c:39">Current Balance     :</span>
+                <span class="fld green box ul right" style="--r:8;--c:61;--w:15" th:text="*{acurbal}"></span>
+
+                <!-- Row 9: current cycle credit -->
+                <span class="fld turq" style="--r:9;--c:39">Current Cycle Credit:</span>
+                <span class="fld green box ul right" style="--r:9;--c:61;--w:15" th:text="*{acrcycr}"></span>
+
+                <!-- Row 10: account group / current cycle debit -->
+                <span class="fld turq" style="--r:10;--c:8">Account Group:</span>
+                <span class="fld green box ul" style="--r:10;--c:23;--w:10" th:text="*{aaddgrp}"></span>
+                <span class="fld turq" style="--r:10;--c:39">Current Cycle Debit :</span>
+                <span class="fld green box ul right" style="--r:10;--c:61;--w:15" th:text="*{acrcydb}"></span>
+
+                <!-- Row 11: customer section heading -->
+                <h2 class="fld neutral" style="--r:11;--c:32">Customer Details</h2>
+
+                <!-- Row 12: customer id / SSN (PII) -->
+                <span class="fld turq" style="--r:12;--c:8">Customer id  :</span>
+                <span class="fld green box ul" style="--r:12;--c:23;--w:9" th:text="*{acstnum}"></span>
+                <span class="fld turq" style="--r:12;--c:49">SSN:</span>
+                <span class="fld green box ul" style="--r:12;--c:54;--w:12" th:text="*{acstssn}"></span>
+
+                <!-- Row 13: date of birth (PII) / FICO score -->
+                <span class="fld turq" style="--r:13;--c:8">Date of birth:</span>
+                <span class="fld green box ul" style="--r:13;--c:23;--w:10" th:text="*{acstdob}"></span>
+                <span class="fld turq" style="--r:13;--c:49">FICO Score:</span>
+                <span class="fld green box ul" style="--r:13;--c:61;--w:3" th:text="*{acstfco}"></span>
+
+                <!-- Row 14: name labels -->
+                <span class="fld turq" style="--r:14;--c:1">First Name</span>
+                <span class="fld turq" style="--r:14;--c:28">Middle Name: </span>
+                <span class="fld turq" style="--r:14;--c:55">Last Name : </span>
+
+                <!-- Row 15: name values -->
+                <span class="fld green box ul" style="--r:15;--c:1;--w:25" th:text="*{acsfnam}"></span>
+                <span class="fld green box ul" style="--r:15;--c:28;--w:25" th:text="*{acsmnam}"></span>
+                <span class="fld green box ul" style="--r:15;--c:55;--w:25" th:text="*{acslnam}"></span>
+
+                <!-- Row 16: address line 1 / state -->
+                <span class="fld turq" style="--r:16;--c:1">Address:</span>
+                <span class="fld green box ul" style="--r:16;--c:10;--w:50" th:text="*{acsadl1}"></span>
+                <span class="fld turq" style="--r:16;--c:63">State </span>
+                <span class="fld green box ul" style="--r:16;--c:73;--w:2" th:text="*{acsstte}"></span>
+
+                <!-- Row 17: address line 2 / zip -->
+                <span class="fld green box ul" style="--r:17;--c:10;--w:50" th:text="*{acsadl2}"></span>
+                <span class="fld turq" style="--r:17;--c:63">Zip</span>
+                <span class="fld green box ul right" style="--r:17;--c:73;--w:5" th:text="*{acszipc}"></span>
+
+                <!-- Row 18: city / country -->
+                <span class="fld turq" style="--r:18;--c:1">City </span>
+                <span class="fld green box ul" style="--r:18;--c:10;--w:50" th:text="*{acscity}"></span>
+                <span class="fld turq" style="--r:18;--c:63">Country</span>
+                <span class="fld green box ul" style="--r:18;--c:73;--w:3" th:text="*{acsctry}"></span>
+
+                <!-- Row 19: phone 1 / government-issued id -->
+                <span class="fld turq" style="--r:19;--c:1">Phone 1:</span>
+                <span class="fld green box ul" style="--r:19;--c:10;--w:13" th:text="*{acsphn1}"></span>
+                <span class="fld turq" style="--r:19;--c:24">Government Issued Id Ref    : </span>
+                <span class="fld green box ul" style="--r:19;--c:58;--w:20" th:text="*{acsgovt}"></span>
+
+                <!-- Row 20: phone 2 / EFT account id / primary card holder flag -->
+                <span class="fld turq" style="--r:20;--c:1">Phone 2:</span>
+                <span class="fld green box ul" style="--r:20;--c:10;--w:13" th:text="*{acsphn2}"></span>
+                <span class="fld turq" style="--r:20;--c:24">EFT Account Id: </span>
+                <span class="fld green box ul" style="--r:20;--c:41;--w:10" th:text="*{acseftc}"></span>
+                <span class="fld turq" style="--r:20;--c:53">Primary Card Holder Y/N:</span>
+                <span class="fld green box ul" style="--r:20;--c:78;--w:1" th:text="*{acspflg}"></span>
+            </main>
+
+            <!-- ========================= Messages & legend (rows 22-24) ==================== -->
+            <footer>
+                <!-- Row 22: informational message (NEUTRAL, no underline). Empty renders nothing. -->
+                <span class="fld neutral box" style="--r:22;--c:23;--w:45"
+                      role="status" aria-live="polite" th:text="*{infomsg}"></span>
+
+                <!-- Row 23: error message (RED, bright/bold). Announced when present. -->
+                <span class="fld red box bold" style="--r:23;--c:1;--w:78"
+                      role="alert" aria-live="assertive" th:text="*{errmsg}"></span>
+
+                <!-- Row 24: PF-key legend. Verbatim BMS INITIAL '  F3=Exit ' (2 leading + 1 trailing space). -->
+                <button type="submit" name="pfkey" value="PF3"
+                        class="fld legend" style="--r:24;--c:1" aria-label="Exit (F3)">  F3=Exit </button>
+            </footer>
+
+        </form>
+    </div>
+</body>
+</html>
