@@ -1,0 +1,107 @@
+---
+# =============================================================================
+# k8s/deployment-account-service.yaml
+# -----------------------------------------------------------------------------
+# :purpose: Kubernetes Deployment for the CardDemo **account-service** Spring
+#           Boot microservice (AAP 0.3.1, 0.4.2). It re-platforms the legacy
+#           COBOL programs ``COACTVWC`` (account view) and ``COACTUPC`` (account
+#           update) into the REST endpoints ``GET /accounts/{id}`` (CICS
+#           ``CAVW``) and ``PUT /accounts/{id}`` (CICS ``CAUP``). The service
+#           persists the ``Account``/``Customer`` tables in PostgreSQL and
+#           preserves the CICS read-snapshot-compare-rewrite concurrency pattern
+#           as JPA ``@Version`` optimistic locking inside a single
+#           ``@Transactional`` account+customer update (AAP 0.6.2).
+# :output:  A Deployment named ``account-service`` that schedules one pod
+#           serving HTTP on container port 8080 (named ``http``). The companion
+#           ``service-account-service.yaml`` selects these pods via the
+#           ``app: account-service`` label.
+# :notes:   Image ``carddemo/account-service:1.0.0`` is built by
+#           ``account-service/Dockerfile`` (FROM eclipse-temurin:21-jre, AAP
+#           0.5.1) and pulled with ``IfNotPresent`` so a locally built image is
+#           reused. Non-secret runtime configuration is injected from the
+#           ``carddemo-config`` ConfigMap and datasource credentials from the
+#           ``carddemo-secret`` Secret via ``envFrom``. Actuator liveness and
+#           readiness probes satisfy the Observability rule (AAP 0.7.5). Their
+#           health-group sub-paths require the Actuator property
+#           ``MANAGEMENT_ENDPOINT_HEALTH_PROBES_ENABLED``, which the
+#           ``carddemo-config`` ConfigMap sets to ``"true"``.
+# =============================================================================
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: account-service
+  labels:
+    app: account-service
+    app.kubernetes.io/name: account-service
+    app.kubernetes.io/part-of: carddemo
+    app.kubernetes.io/component: backend
+spec:
+  # Single replica for the reference deployment. The service is stateless
+  # (pseudo-conversational state lives in Redis-backed Spring Session, not in
+  # the pod), so it can be scaled horizontally without shared in-process state.
+  replicas: 1
+  selector:
+    matchLabels:
+      app: account-service
+  template:
+    metadata:
+      labels:
+        app: account-service
+        app.kubernetes.io/name: account-service
+        app.kubernetes.io/part-of: carddemo
+        app.kubernetes.io/component: backend
+    spec:
+      containers:
+        - name: account-service
+          # Built by account-service/Dockerfile (FROM eclipse-temurin:21-jre).
+          image: carddemo/account-service:1.0.0
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8080
+              name: http
+          # Non-secret runtime config from the carddemo-config ConfigMap and
+          # datasource credentials from the carddemo-secret Secret. Keys map
+          # 1:1 to Spring Boot environment properties (SPRING_DATASOURCE_*,
+          # SPRING_DATA_REDIS_*, MANAGEMENT_*).
+          envFrom:
+            - configMapRef:
+                name: carddemo-config
+            - secretRef:
+                name: carddemo-secret
+          resources:
+            requests:
+              cpu: 250m
+              memory: 512Mi
+            limits:
+              cpu: "1"
+              memory: 1Gi
+          # Startup probe gates the liveness/readiness probes so a slow JVM +
+          # Spring context boot (Flyway migrations, JPA/Hibernate init) is not
+          # restarted prematurely: up to 30 x 5s = 150s (after a 10s delay) to
+          # report healthy before the liveness probe begins evaluating.
+          startupProbe:
+            httpGet:
+              path: /actuator/health
+              port: 8080
+            initialDelaySeconds: 10
+            periodSeconds: 5
+            failureThreshold: 30
+          # Liveness: restart the container if the Actuator liveness group
+          # reports DOWN (irrecoverable in-process state).
+          livenessProbe:
+            httpGet:
+              path: /actuator/health/liveness
+              port: 8080
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+          # Readiness: remove the pod from the Service endpoints when the
+          # readiness group (PostgreSQL/Redis connectivity) reports DOWN, so
+          # traffic is routed only to pods able to serve account requests.
+          readinessProbe:
+            httpGet:
+              path: /actuator/health/readiness
+              port: 8080
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3

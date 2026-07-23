@@ -1,0 +1,111 @@
+---
+# ===========================================================================
+# k8s/deployment-api-gateway.yaml
+# ---------------------------------------------------------------------------
+# Kubernetes Deployment for the CardDemo API gateway (Spring Cloud Gateway).
+#
+# :purpose: Runs the api-gateway Spring Boot service, the PRIMARY EXTERNAL
+#           ENTRY POINT of the CardDemo stack (AAP 0.3.1). It re-platforms the
+#           legacy CICS menu-navigation programs COMEN01C (main menu, tran-id
+#           CM00) and COADM01C (admin menu, tran-id CA00) into role-gated menu
+#           routing, and forwards REST traffic to the backend Spring Boot
+#           services by their in-cluster Kubernetes Service DNS names
+#           (auth-service, user-service, account-service, card-service,
+#           transaction-service, billpay-service, reporting-service,
+#           batch-service), all on port 8080. Route definitions are baked into
+#           the application image (Spring Cloud Gateway, Spring Cloud BOM
+#           2025.1.2), not declared in this Deployment manifest.
+# :output:  A Deployment named ``api-gateway`` scheduling one pod that serves
+#           HTTP on container port 8080 (named ``http``). The companion
+#           ``service-api-gateway.yaml`` (type LoadBalancer) selects these pods
+#           via ``app: api-gateway`` and exposes the gateway externally.
+# :notes:   The container image ``carddemo/api-gateway:1.0.0`` is built by
+#           ``api-gateway/Dockerfile`` FROM ``eclipse-temurin:21-jre`` (AAP
+#           0.5.1). Runtime configuration and datasource credentials are
+#           injected via ``envFrom`` from the ``carddemo-config`` ConfigMap and
+#           the ``carddemo-secret`` Secret. Actuator health probes
+#           (Observability rule, AAP 0.7.5) depend on
+#           ``MANAGEMENT_ENDPOINT_HEALTH_PROBES_ENABLED=true`` supplied by
+#           ``carddemo-config`` to expose the ``/actuator/health/liveness`` and
+#           ``/actuator/health/readiness`` probe groups.
+# ===========================================================================
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: api-gateway
+  labels:
+    app: api-gateway
+    app.kubernetes.io/name: api-gateway
+    app.kubernetes.io/part-of: carddemo
+    app.kubernetes.io/component: gateway
+spec:
+  # Single replica for the reference deployment. The gateway is stateless
+  # (pseudo-conversational state lives in Redis via Spring Session), so it can
+  # be scaled horizontally without shared in-pod state.
+  replicas: 1
+  selector:
+    matchLabels:
+      app: api-gateway
+  template:
+    metadata:
+      labels:
+        app: api-gateway
+        app.kubernetes.io/name: api-gateway
+        app.kubernetes.io/part-of: carddemo
+        app.kubernetes.io/component: gateway
+    spec:
+      containers:
+        - name: api-gateway
+          # Built by api-gateway/Dockerfile FROM eclipse-temurin:21-jre
+          # (AAP 0.5.1); tagged carddemo/api-gateway:1.0.0.
+          image: carddemo/api-gateway:1.0.0
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8080
+          # Non-secret runtime config from carddemo-config plus datasource
+          # credentials from carddemo-secret. carddemo-config supplies
+          # MANAGEMENT_ENDPOINT_HEALTH_PROBES_ENABLED=true, which the
+          # liveness/readiness probe sub-paths below require.
+          envFrom:
+            - configMapRef:
+                name: carddemo-config
+            - secretRef:
+                name: carddemo-secret
+          resources:
+            requests:
+              cpu: 250m
+              memory: 512Mi
+            limits:
+              cpu: "1"
+              memory: 1Gi
+          # ---- Actuator health probes (Observability rule, AAP 0.7.5) ------
+          # startupProbe gates liveness/readiness until Spring Boot has fully
+          # booted: failureThreshold 30 x periodSeconds 5 plus the 10s initial
+          # delay allows ~2.5 min for a slow start, so the livenessProbe does
+          # not restart the pod before the gateway is up.
+          startupProbe:
+            httpGet:
+              path: /actuator/health
+              port: 8080
+            initialDelaySeconds: 10
+            periodSeconds: 5
+            failureThreshold: 30
+          # Liveness: restart the container if the JVM/context becomes
+          # unhealthy after startup has completed.
+          livenessProbe:
+            httpGet:
+              path: /actuator/health/liveness
+              port: 8080
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+          # Readiness: remove the pod from the Service endpoints while
+          # dependencies (Redis, downstream services) are not reachable.
+          readinessProbe:
+            httpGet:
+              path: /actuator/health/readiness
+              port: 8080
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3

@@ -1,0 +1,42 @@
+---
+# =============================================================================
+# Redis ClusterIP Service — stable in-cluster address for the redis Deployment.
+#
+# :purpose: Publish the single-replica ``redis`` Deployment
+#           (deployment-redis.yaml) behind a stable virtual IP and the
+#           cluster-internal DNS name ``redis`` so CardDemo backend services
+#           reach the Spring Session / cache store using
+#           ``SPRING_DATA_REDIS_HOST=redis`` and ``SPRING_DATA_REDIS_PORT=6379``
+#           (both supplied by the ``carddemo-config`` ConfigMap).
+# :output:  A ClusterIP Service named ``redis`` reachable in-cluster at
+#           ``redis:6379`` that load-balances TCP traffic on port 6379 to every
+#           Ready pod carrying the ``app: redis`` label.
+# :notes:   Type ClusterIP is internal only — Redis holds transient session
+#           state and must never be exposed outside the cluster. The
+#           ``app: redis`` selector is a subset of the Deployment pod-template
+#           labels, so it resolves exactly the redis pods; ``targetPort: 6379``
+#           matches the container's named ``redis`` port. Endpoints populate
+#           only after a pod passes its ``redis-cli ping`` readiness probe.
+# =============================================================================
+apiVersion: v1
+kind: Service
+metadata:
+  name: redis
+  labels:
+    app: redis
+    app.kubernetes.io/part-of: carddemo
+    app.kubernetes.io/component: cache
+spec:
+  # ClusterIP keeps Redis reachable only from inside the cluster; session and
+  # cache data must not be published via an external LoadBalancer or NodePort.
+  type: ClusterIP
+  # Selects the redis Deployment pods (their pod template carries app: redis).
+  selector:
+    app: redis
+  ports:
+    # Named port 'redis' permits by-name references; service port 6379 forwards
+    # to targetPort 6379, the redis container's port (named 'redis' there too).
+    - name: redis
+      port: 6379
+      targetPort: 6379
+      protocol: TCP

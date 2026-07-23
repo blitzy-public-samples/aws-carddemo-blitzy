@@ -1,0 +1,78 @@
+# ------------------------------------------------------------------------------
+# CardDemo — Prometheus scrape configuration
+#
+# Rule-mandated observability infrastructure (Observability rule; no legacy
+# analogue). Mounted read-only into the prom/prometheus container by the
+# repository-root docker-compose.yml at /etc/prometheus/prometheus.yml.
+#
+# All application services expose Micrometer metrics through Spring Boot
+# Actuator at HTTP path /actuator/prometheus on container port 8080. Prometheus
+# runs on the shared docker network (carddemo-net) and reaches each service by
+# its docker-compose service name (DNS), so targets use the INTERNAL port 8080
+# (never the host-published ports).
+# ------------------------------------------------------------------------------
+
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+  scrape_timeout: 10s
+  external_labels:
+    application: carddemo
+    environment: local
+
+scrape_configs:
+  # --- Prometheus self-monitoring -------------------------------------------
+  - job_name: prometheus
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["localhost:9090"]
+        labels:
+          service: prometheus
+
+  # --- CardDemo microservices (Spring Boot Actuator + Micrometer) -----------
+  # metrics_path is the Actuator Prometheus exposition endpoint; targets use
+  # docker-compose service DNS names on the shared network, internal port 8080.
+  - job_name: api-gateway
+    metrics_path: /actuator/prometheus
+    static_configs:
+      - targets: ["api-gateway:8080"]
+
+  - job_name: auth-service
+    metrics_path: /actuator/prometheus
+    static_configs:
+      - targets: ["auth-service:8080"]
+
+  - job_name: user-service
+    metrics_path: /actuator/prometheus
+    static_configs:
+      - targets: ["user-service:8080"]
+
+  - job_name: account-service
+    metrics_path: /actuator/prometheus
+    static_configs:
+      - targets: ["account-service:8080"]
+
+  - job_name: card-service
+    metrics_path: /actuator/prometheus
+    static_configs:
+      - targets: ["card-service:8080"]
+
+  - job_name: transaction-service
+    metrics_path: /actuator/prometheus
+    static_configs:
+      - targets: ["transaction-service:8080"]
+
+  - job_name: billpay-service
+    metrics_path: /actuator/prometheus
+    static_configs:
+      - targets: ["billpay-service:8080"]
+
+  - job_name: reporting-service
+    metrics_path: /actuator/prometheus
+    static_configs:
+      - targets: ["reporting-service:8080"]
+
+  - job_name: batch-service
+    metrics_path: /actuator/prometheus
+    static_configs:
+      - targets: ["batch-service:8080"]

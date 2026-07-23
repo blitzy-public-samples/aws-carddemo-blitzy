@@ -1,0 +1,111 @@
+---
+# =============================================================================
+# k8s/deployment-reporting-service.yaml
+# -----------------------------------------------------------------------------
+# Kubernetes Deployment for the CardDemo reporting-service Spring Boot service
+# (AAP 0.3.1, 0.4.2, 0.4.4). It re-platforms the legacy COBOL report-request
+# program CORPT00C (CICS transaction CR00) together with the batch statement
+# generation programs CBSTM03A / CBSTM03B (text + HTML output). The service
+# exposes REST POST /reports, which launches the statement job asynchronously
+# via a Spring Batch JobLauncher, and reads transaction/account data from the
+# shared PostgreSQL 'carddemo' database.
+#
+# :purpose: Schedule the reporting-service pod, inject the shared datasource,
+#           Redis and observability configuration, and wire Actuator-backed
+#           startup, liveness and readiness probes.
+# :output:  A Deployment named ``reporting-service`` running one pod that
+#           serves HTTP on container port 8080 (named ``http``).
+# :notes:   replicas is fixed at 1 on purpose. The asynchronous JobLauncher
+#           statement/report jobs must run on exactly one instance so a single
+#           POST /reports never fans out into duplicate concurrent job launches
+#           across replicas. Scale batch fan-out at the Spring Batch layer, not
+#           by adding pods here.
+#
+#           The image ``carddemo/reporting-service:1.0.0`` is built by
+#           ``reporting-service/Dockerfile`` (runtime stage FROM
+#           eclipse-temurin:21-jre, AAP 0.5.1). ``imagePullPolicy``
+#           ``IfNotPresent`` keeps the locally built image without
+#           contacting a registry.
+#
+#           Non-secret runtime configuration is projected from the
+#           ``carddemo-config`` ConfigMap (k8s/configmap.yaml) and database
+#           credentials from the ``carddemo-secret`` Secret (k8s/secret.yaml)
+#           via ``envFrom``. The companion service-reporting-service.yaml
+#           selects these pods through the ``app: reporting-service`` label.
+# =============================================================================
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: reporting-service
+  labels:
+    app: reporting-service
+    app.kubernetes.io/name: reporting-service
+    app.kubernetes.io/part-of: carddemo
+    app.kubernetes.io/component: backend
+spec:
+  # Single replica: the async statement/report JobLauncher must run on one
+  # instance so a POST /reports never triggers duplicate concurrent jobs.
+  replicas: 1
+  selector:
+    matchLabels:
+      app: reporting-service
+  template:
+    metadata:
+      labels:
+        app: reporting-service
+        app.kubernetes.io/name: reporting-service
+        app.kubernetes.io/part-of: carddemo
+        app.kubernetes.io/component: backend
+    spec:
+      containers:
+        - name: reporting-service
+          # Built by reporting-service/Dockerfile (runtime stage FROM
+          # eclipse-temurin:21-jre). Locally built tag, so never pull if
+          # the image is already present on the node.
+          image: carddemo/reporting-service:1.0.0
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8080
+          # Shared non-secret config (datasource URL, Redis host/port,
+          # Actuator exposure) plus DB credentials, projected as environment
+          # variables that resolve the application.yml property references.
+          envFrom:
+            - configMapRef:
+                name: carddemo-config
+            - secretRef:
+                name: carddemo-secret
+          resources:
+            requests:
+              cpu: 250m
+              memory: 512Mi
+            limits:
+              # Quoted so the value is parsed as the string "1" core, not an
+              # integer, matching Kubernetes CPU-quantity conventions.
+              cpu: "1"
+              memory: 1Gi
+          # Observability (AAP 0.7.5): Actuator health endpoints. startupProbe
+          # shields the slower JVM/Spring Batch boot; once it passes, liveness
+          # and readiness use the dedicated probe groups exposed by
+          # management.endpoint.health.probes.enabled=true.
+          startupProbe:
+            httpGet:
+              path: /actuator/health
+              port: 8080
+            initialDelaySeconds: 10
+            periodSeconds: 5
+            failureThreshold: 30
+          livenessProbe:
+            httpGet:
+              path: /actuator/health/liveness
+              port: 8080
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /actuator/health/readiness
+              port: 8080
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3

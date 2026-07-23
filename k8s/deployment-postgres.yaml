@@ -1,0 +1,131 @@
+---
+# =============================================================================
+# k8s/deployment-postgres.yaml
+# -----------------------------------------------------------------------------
+# PostgreSQL 18 in-cluster data service for CardDemo, plus its backing
+# PersistentVolumeClaim.
+#
+# :purpose: Run the PostgreSQL 18 datastore that replaces the legacy VSAM
+#           KSDS / sequential data sets (AAP 0.1.2). Backend Spring Boot
+#           services reach it through the ``postgres`` Service at
+#           jdbc:postgresql://postgres:5432/carddemo; Flyway migrations owned
+#           by those services create the schema and seed data on first connect.
+# :output:  Two objects: a ``postgres-pvc`` PersistentVolumeClaim (2Gi, RWO)
+#           and a ``postgres`` Deployment scheduling one pod that serves the
+#           PostgreSQL protocol on container port 5432 (named ``postgres``).
+# :notes:   Credentials are not hardcoded here. POSTGRES_USER and
+#           POSTGRES_PASSWORD come from the ``carddemo-secret`` Secret and
+#           POSTGRES_DB from the ``carddemo-config`` ConfigMap. A single replica
+#           with the Recreate strategy keeps exactly one writer against the
+#           ReadWriteOnce volume. Design rationale lives in
+#           docs/decision-log.md.
+# =============================================================================
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: postgres-pvc
+  labels:
+    app: postgres
+    app.kubernetes.io/part-of: carddemo
+    app.kubernetes.io/component: database
+spec:
+  # No storageClassName: bind to the cluster default so the claim is portable
+  # across minikube, kind, and managed cloud clusters.
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 2Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: postgres
+  labels:
+    app: postgres
+    app.kubernetes.io/part-of: carddemo
+    app.kubernetes.io/component: database
+spec:
+  # Single-writer datastore: exactly one replica may mount the RWO volume.
+  replicas: 1
+  strategy:
+    # Recreate (not RollingUpdate) so the old pod releases the ReadWriteOnce
+    # volume before the new pod starts during a rollout.
+    type: Recreate
+  selector:
+    matchLabels:
+      app: postgres
+  template:
+    metadata:
+      labels:
+        app: postgres
+        app.kubernetes.io/part-of: carddemo
+        app.kubernetes.io/component: database
+    spec:
+      containers:
+        - name: postgres
+          image: postgres:18
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 5432
+              name: postgres
+          env:
+            - name: POSTGRES_DB
+              valueFrom:
+                configMapKeyRef:
+                  name: carddemo-config
+                  key: POSTGRES_DB
+            - name: POSTGRES_USER
+              valueFrom:
+                secretKeyRef:
+                  name: carddemo-secret
+                  key: SPRING_DATASOURCE_USERNAME
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: carddemo-secret
+                  key: SPRING_DATASOURCE_PASSWORD
+            # Store the cluster under a subdirectory so PostgreSQL init does not
+            # trip over a volume-root "lost+found" directory.
+            - name: PGDATA
+              value: /var/lib/postgresql/data/pgdata
+          volumeMounts:
+            - name: postgres-data
+              mountPath: /var/lib/postgresql/data
+          resources:
+            requests:
+              cpu: 250m
+              memory: 256Mi
+            limits:
+              cpu: "1"
+              memory: 512Mi
+          # pg_isready confirms the server accepts connections. User/db default
+          # to carddemo (carddemo-config/secret); update args if those change.
+          readinessProbe:
+            exec:
+              command:
+                - pg_isready
+                - -U
+                - carddemo
+                - -d
+                - carddemo
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 6
+          livenessProbe:
+            exec:
+              command:
+                - pg_isready
+                - -U
+                - carddemo
+                - -d
+                - carddemo
+            initialDelaySeconds: 30
+            periodSeconds: 15
+            timeoutSeconds: 5
+            failureThreshold: 6
+      volumes:
+        - name: postgres-data
+          persistentVolumeClaim:
+            claimName: postgres-pvc

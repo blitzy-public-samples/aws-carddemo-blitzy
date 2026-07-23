@@ -1,0 +1,100 @@
+---
+# ==========================================================================
+# k8s/deployment-user-service.yaml
+# --------------------------------------------------------------------------
+# Kubernetes Deployment for the CardDemo user-service (Spring Boot).
+#
+# :purpose: Runs the administrator-only user-management microservice that
+#           re-platforms the legacy COBOL programs COUSR00C, COUSR01C,
+#           COUSR02C and COUSR03C (CICS tran-ids CU00-CU03). It owns the
+#           SecurityUser table in PostgreSQL and serves user CRUD
+#           endpoints consumed through the api-gateway.
+# :output:  A Deployment named ``user-service`` scheduling one pod that
+#           serves HTTP on container port 8080 (named ``http``) and is
+#           selected by ``service-user-service.yaml`` via
+#           ``app: user-service``.
+# :notes:   The image is built by ``user-service/Dockerfile`` FROM
+#           ``eclipse-temurin:21-jre`` (AAP 0.5.1). Runtime config and
+#           datasource credentials are injected via ``envFrom`` from the
+#           ``carddemo-config`` ConfigMap and the ``carddemo-secret``
+#           Secret. Actuator startup/liveness/readiness probes satisfy
+#           the Observability rule (AAP 0.7.5). The health-probe groups
+#           are enabled by the ConfigMap key
+#           ``MANAGEMENT_ENDPOINT_HEALTH_PROBES_ENABLED``.
+# ==========================================================================
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: user-service
+  labels:
+    app: user-service
+    app.kubernetes.io/name: user-service
+    app.kubernetes.io/part-of: carddemo
+    app.kubernetes.io/component: backend
+spec:
+  # Single replica for the reference deployment. The service is stateless
+  # (session state lives in Redis via Spring Session), so it can be scaled
+  # horizontally without changes to this manifest.
+  replicas: 1
+  selector:
+    matchLabels:
+      app: user-service
+  template:
+    metadata:
+      labels:
+        app: user-service
+        app.kubernetes.io/name: user-service
+        app.kubernetes.io/part-of: carddemo
+        app.kubernetes.io/component: backend
+    spec:
+      containers:
+        - name: user-service
+          # Built by user-service/Dockerfile (FROM eclipse-temurin:21-jre).
+          image: carddemo/user-service:1.0.0
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8080
+              name: http
+          # Runtime configuration and datasource credentials are injected
+          # from the shared ConfigMap and Secret (see k8s/configmap.yaml
+          # and k8s/secret.yaml).
+          envFrom:
+            - configMapRef:
+                name: carddemo-config
+            - secretRef:
+                name: carddemo-secret
+          resources:
+            requests:
+              cpu: 250m
+              memory: 512Mi
+            limits:
+              cpu: "1"
+              memory: 1Gi
+          # Startup probe gives the JVM/Spring context up to 150s
+          # (30 x 5s) to come up before liveness/readiness begin, so a
+          # slow cold start is never mistaken for a crash.
+          startupProbe:
+            httpGet:
+              path: /actuator/health
+              port: 8080
+            initialDelaySeconds: 10
+            periodSeconds: 5
+            failureThreshold: 30
+          # Liveness uses the Actuator liveness group; a sustained failure
+          # triggers a pod restart.
+          livenessProbe:
+            httpGet:
+              path: /actuator/health/liveness
+              port: 8080
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+          # Readiness uses the Actuator readiness group; failure removes
+          # the pod from Service endpoints without restarting it.
+          readinessProbe:
+            httpGet:
+              path: /actuator/health/readiness
+              port: 8080
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3

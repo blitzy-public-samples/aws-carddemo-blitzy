@@ -1,0 +1,37 @@
+---
+# =============================================================================
+# k8s/service-frontend.yaml
+# -----------------------------------------------------------------------------
+# External Service for the CardDemo React 19 SPA.
+# Companion to deployment-frontend.yaml.
+#
+# As the user-facing UI entry point this Service is type LoadBalancer: cloud
+# clusters provision an external address, and bare clusters degrade to a
+# NodePort reachable on every node.
+#
+# It selects the frontend pods via `app: frontend` (matching the Deployment
+# pod template labels) and forwards port 80 -> targetPort 80, the port the
+# nginx static server listens on inside the container (frontend/Dockerfile).
+# =============================================================================
+apiVersion: v1
+kind: Service
+metadata:
+  name: frontend
+  labels:
+    app: frontend
+    app.kubernetes.io/name: frontend
+    app.kubernetes.io/part-of: carddemo
+    app.kubernetes.io/component: frontend
+spec:
+  # LoadBalancer exposes the UI externally; degrades to NodePort on bare
+  # clusters that lack a cloud load-balancer controller.
+  type: LoadBalancer
+  # Must match the pod template labels in deployment-frontend.yaml.
+  selector:
+    app: frontend
+  ports:
+    # nginx serves the static Vite bundle on container port 80 (named http).
+    - name: http
+      port: 80
+      targetPort: 80
+      protocol: TCP

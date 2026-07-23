@@ -1,0 +1,104 @@
+---
+# ===========================================================================
+# k8s/deployment-batch-service.yaml
+# ---------------------------------------------------------------------------
+# Kubernetes Deployment for the CardDemo batch-service (Spring Boot / Spring
+# Batch). It re-platforms the legacy COBOL batch programs CBACT01C, CBACT02C,
+# CBACT03C, CBACT04C and CBCUS01C — interest calculation (COMP-3 -> BigDecimal
+# precision preserved, AAP 0.6.1) plus data-management — into Spring Batch
+# jobs launched on demand through a JobLauncher endpoint.
+#
+# :purpose: Schedule exactly ONE resident batch-service pod that stays up to
+#           serve Actuator health/metrics and the JobLauncher trigger endpoint
+#           on container port 8080, reading and writing PostgreSQL.
+# :output:  A Deployment named ``batch-service`` (apps/v1) that manages a
+#           single pod replica selected by the label ``app: batch-service``,
+#           consumed by the companion ``service-batch-service.yaml`` Service.
+# :notes:   ``replicas`` is pinned to 1 and the rollout strategy is
+#           ``Recreate`` so two batch pods never run at once; a second
+#           instance would risk duplicate scheduled/launched job executions.
+#           The image ``carddemo/batch-service:1.0.0`` is built FROM
+#           ``eclipse-temurin:21-jre`` by ``batch-service/Dockerfile``.
+#           Runtime configuration and datasource credentials are injected via
+#           ``envFrom`` from the ``carddemo-config`` ConfigMap and the
+#           ``carddemo-secret`` Secret. CPU limits are intentionally generous
+#           so batch jobs are not throttled out of their window (AAP 0.7.6).
+# ===========================================================================
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: batch-service
+  labels:
+    app: batch-service
+    app.kubernetes.io/name: batch-service
+    app.kubernetes.io/part-of: carddemo
+    app.kubernetes.io/component: backend
+spec:
+  # Singleton: a batch runner must never be horizontally scaled, or scheduled
+  # and on-demand jobs would execute more than once.
+  replicas: 1
+  # Recreate (not RollingUpdate): tear the old pod down before the new one
+  # starts so two batch pods never overlap during a rollout.
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: batch-service
+  template:
+    metadata:
+      labels:
+        app: batch-service
+        app.kubernetes.io/name: batch-service
+        app.kubernetes.io/part-of: carddemo
+        app.kubernetes.io/component: backend
+    spec:
+      containers:
+        - name: batch-service
+          # Built by batch-service/Dockerfile FROM eclipse-temurin:21-jre.
+          image: carddemo/batch-service:1.0.0
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8080
+          # Datasource/Redis config + credentials come from the shared
+          # ConfigMap and Secret (dependencies k8s/configmap.yaml and
+          # k8s/secret.yaml).
+          envFrom:
+            - configMapRef:
+                name: carddemo-config
+            - secretRef:
+                name: carddemo-secret
+          # Batch is CPU-heavier than the online services; limits stay
+          # generous so jobs complete inside their window (AAP 0.7.6).
+          resources:
+            requests:
+              cpu: 500m
+              memory: 512Mi
+            limits:
+              cpu: "2"
+              memory: 1Gi
+          # Startup probe gates the liveness/readiness probes until the JVM
+          # and Spring context are up (up to 30 x 5s = 150s grace).
+          startupProbe:
+            httpGet:
+              path: /actuator/health
+              port: 8080
+            initialDelaySeconds: 10
+            periodSeconds: 5
+            failureThreshold: 30
+          # Liveness: Actuator liveness group; restart the pod if it fails.
+          livenessProbe:
+            httpGet:
+              path: /actuator/health/liveness
+              port: 8080
+            periodSeconds: 15
+            timeoutSeconds: 3
+            failureThreshold: 3
+          # Readiness: Actuator readiness group; gate traffic until ready.
+          readinessProbe:
+            httpGet:
+              path: /actuator/health/readiness
+              port: 8080
+            periodSeconds: 15
+            timeoutSeconds: 3
+            failureThreshold: 3

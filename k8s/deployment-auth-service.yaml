@@ -1,0 +1,120 @@
+---
+# =============================================================================
+# k8s/deployment-auth-service.yaml
+# -----------------------------------------------------------------------------
+# Kubernetes Deployment for the CardDemo **auth-service** Spring Boot 4.1.0
+# microservice — the cloud-native re-platforming of the legacy COBOL sign-on
+# program COSGN00C (CICS transaction CC00), exposed as REST `POST /auth/signon`
+# (AAP 0.3.1, 0.4.2, 0.6.7).
+#
+# :purpose: Schedule the auth-service pod(s) that verify user credentials
+#           against the PostgreSQL ``security_users`` table using a Spring
+#           Security filter chain with a BCrypt/PBKDF2 ``PasswordEncoder`` and a
+#           ``UserDetailsService`` (the replacement for RACF/USRSEC plaintext
+#           credentials, AAP 0.6.7), backing pseudo-conversational state with
+#           externalized Spring Session in Redis.
+# :output:  A Deployment named ``auth-service`` running a Spring Boot container
+#           that listens on container port 8080 (named ``http``) and reports
+#           health through Spring Boot Actuator probe endpoints.
+# :notes:   The image ``carddemo/auth-service:1.0.0`` is built by
+#           ``auth-service/Dockerfile`` (base image FROM eclipse-temurin:21-jre,
+#           per the pinned runtime in AAP 0.5.1).
+#           ``imagePullPolicy: IfNotPresent`` keeps locally built images
+#           without forcing a registry pull.
+#
+#           Runtime configuration is injected entirely through ``envFrom``:
+#             * ConfigMap ``carddemo-config`` — non-secret settings
+#               (SPRING_PROFILES_ACTIVE=k8s, SPRING_DATASOURCE_URL,
+#               SPRING_DATA_REDIS_HOST/PORT, Actuator health-probe exposure).
+#             * Secret ``carddemo-secret`` — datasource username/password.
+#
+#           Observability (AAP 0.7.5): Actuator liveness/readiness probes are
+#           wired below; the ConfigMap enables the health probe groups
+#           (MANAGEMENT_ENDPOINT_HEALTH_PROBES_ENABLED=true) so
+#           ``/actuator/health/liveness`` and ``/actuator/health/readiness``
+#           resolve at runtime.
+#
+#           The companion ``service-auth-service.yaml`` selects these pods via
+#           ``app: auth-service`` and forwards traffic to targetPort 8080.
+# =============================================================================
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: auth-service
+  labels:
+    app: auth-service
+    app.kubernetes.io/name: auth-service
+    app.kubernetes.io/part-of: carddemo
+    app.kubernetes.io/component: backend
+spec:
+  # Single replica for the reference deployment. The service is stateless
+  # (session state lives in Redis), so it can be scaled horizontally without
+  # code changes to meet the 150-concurrent-user non-functional target.
+  replicas: 1
+  selector:
+    matchLabels:
+      app: auth-service
+  template:
+    metadata:
+      labels:
+        app: auth-service
+        app.kubernetes.io/name: auth-service
+        app.kubernetes.io/part-of: carddemo
+        app.kubernetes.io/component: backend
+    spec:
+      containers:
+        - name: auth-service
+          # Built by auth-service/Dockerfile (FROM eclipse-temurin:21-jre).
+          image: carddemo/auth-service:1.0.0
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8080
+          # Inject all runtime config: non-secret settings from the ConfigMap
+          # and datasource credentials from the Secret. Names must match
+          # k8s/configmap.yaml (carddemo-config) and k8s/secret.yaml
+          # (carddemo-secret) exactly.
+          envFrom:
+            - configMapRef:
+                name: carddemo-config
+            - secretRef:
+                name: carddemo-secret
+          # Sized for a JVM Spring Boot service; the 1Gi limit keeps the
+          # per-pod footprint within the stated memory budget.
+          resources:
+            requests:
+              cpu: 250m
+              memory: 512Mi
+            limits:
+              cpu: "1"
+              memory: 1Gi
+          # Startup probe guards the JVM/Spring Boot warm-up: up to
+          # 30 x 5s = 150s before the container is considered failed, and it
+          # gates the liveness/readiness probes so a slow boot is never killed
+          # prematurely. Uses the aggregate health endpoint.
+          startupProbe:
+            httpGet:
+              path: /actuator/health
+              port: 8080
+            initialDelaySeconds: 10
+            periodSeconds: 5
+            failureThreshold: 30
+          # Liveness uses the Actuator liveness group: restart the pod only if
+          # the application enters a broken (non-recoverable) internal state.
+          livenessProbe:
+            httpGet:
+              path: /actuator/health/liveness
+              port: 8080
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+          # Readiness uses the Actuator readiness group: remove the pod from
+          # Service endpoints while dependencies (PostgreSQL, Redis) are not
+          # ready, without restarting the container.
+          readinessProbe:
+            httpGet:
+              path: /actuator/health/readiness
+              port: 8080
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3

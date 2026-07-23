@@ -1,0 +1,100 @@
+---
+# =============================================================================
+# k8s/deployment-billpay-service.yaml
+# -----------------------------------------------------------------------------
+# :purpose: Kubernetes Deployment for the CardDemo bill-payment microservice,
+#           the Spring Boot re-platform of legacy COBOL program COBIL00C
+#           (CICS transaction CB00). The service exposes REST POST /billpay,
+#           computing available credit as credit limit minus balance and
+#           posting the payment to the Account and Transaction tables in
+#           PostgreSQL inside a single @Transactional boundary.
+# :output:  A Deployment named ``billpay-service`` scheduling one pod that
+#           serves HTTP on container port 8080 (named ``http``).
+# :notes:   Image ``carddemo/billpay-service:1.0.0`` is built by
+#           ``billpay-service/Dockerfile`` (FROM eclipse-temurin:21-jre) and is
+#           pulled with ``IfNotPresent`` so a locally built image is reused.
+#           Runtime configuration and datasource credentials are injected via
+#           ``envFrom`` from the ``carddemo-config`` ConfigMap
+#           (k8s/configmap.yaml) and the ``carddemo-secret`` Secret
+#           (k8s/secret.yaml); no secret material is inlined here. Actuator
+#           health probes satisfy the Observability rule (AAP 0.7.5): the
+#           readiness/liveness group endpoints are active because the
+#           ConfigMap sets
+#           ``MANAGEMENT_ENDPOINT_HEALTH_PROBES_ENABLED=true``. The companion
+#           ``service-billpay-service.yaml`` selects these pods via the
+#           ``app: billpay-service`` label and forwards traffic to port 8080.
+# =============================================================================
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: billpay-service
+  labels:
+    app: billpay-service
+    app.kubernetes.io/name: billpay-service
+    app.kubernetes.io/part-of: carddemo
+    app.kubernetes.io/component: backend
+spec:
+  # Single replica for the reference deployment. The service is stateless
+  # (session state lives in Redis via Spring Session), so it can be scaled
+  # horizontally without shared in-pod state.
+  replicas: 1
+  selector:
+    matchLabels:
+      app: billpay-service
+  template:
+    metadata:
+      labels:
+        app: billpay-service
+        app.kubernetes.io/name: billpay-service
+        app.kubernetes.io/part-of: carddemo
+        app.kubernetes.io/component: backend
+    spec:
+      containers:
+        - name: billpay-service
+          # Built by billpay-service/Dockerfile (FROM eclipse-temurin:21-jre).
+          image: carddemo/billpay-service:1.0.0
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8080
+              name: http
+          # Non-secret runtime config + datasource credentials. Names must match
+          # k8s/configmap.yaml (carddemo-config) and k8s/secret.yaml
+          # (carddemo-secret).
+          envFrom:
+            - configMapRef:
+                name: carddemo-config
+            - secretRef:
+                name: carddemo-secret
+          resources:
+            requests:
+              cpu: 250m
+              memory: 512Mi
+            limits:
+              cpu: "1"
+              memory: 1Gi
+          # Startup probe gates the liveness/readiness probes while the JVM
+          # and Spring context warm up (up to 30 * 5s = 150s before liveness).
+          startupProbe:
+            httpGet:
+              path: /actuator/health
+              port: 8080
+            initialDelaySeconds: 10
+            periodSeconds: 5
+            failureThreshold: 30
+          # Liveness -> Actuator liveness group; restarts the pod if it dies.
+          livenessProbe:
+            httpGet:
+              path: /actuator/health/liveness
+              port: 8080
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+          # Readiness -> Actuator readiness group; gates Service traffic until
+          # datasource/Redis dependencies report UP.
+          readinessProbe:
+            httpGet:
+              path: /actuator/health/readiness
+              port: 8080
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3

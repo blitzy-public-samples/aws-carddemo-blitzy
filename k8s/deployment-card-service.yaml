@@ -1,0 +1,112 @@
+---
+# =============================================================================
+# k8s/deployment-card-service.yaml
+# -----------------------------------------------------------------------------
+# :purpose: Kubernetes Deployment for the CardDemo **card-service** Spring Boot
+#           microservice - the REST re-platforming of the legacy COBOL card
+#           programs COCRDLIC (card list, 7 rows/page, CICS tran-id CCLI),
+#           COCRDSLC (card detail, CICS tran-id CCDL) and COCRDUPC (card
+#           update, CICS tran-id CCUP). It owns the PostgreSQL ``cards`` and
+#           ``card_xref`` tables, the latter being the legacy CXACAIX /
+#           CVACT03Y card <-> customer <-> account cross-reference. See
+#           AAP 0.3.1 and 0.4.2.
+# :output:  A Deployment named ``card-service`` scheduling one replica whose
+#           pod serves HTTP on container port 8080 (named ``http``).
+# :notes:   * Image ``carddemo/card-service:1.0.0`` is built by
+#             ``card-service/Dockerfile`` (FROM eclipse-temurin:21-jre; see
+#             AAP 0.5.1). ``imagePullPolicy: IfNotPresent`` keeps a locally
+#             built/loaded image from being re-pulled in a demo cluster.
+#           * Runtime configuration is injected entirely via ``envFrom`` from
+#             the shared ConfigMap ``carddemo-config`` (k8s/configmap.yaml,
+#             non-secret settings) and Secret ``carddemo-secret``
+#             (k8s/secret.yaml, datasource credentials); nothing is hard-coded
+#             in this manifest. Keys bind 1:1 to Spring Boot relaxed-binding
+#             environment variables (SPRING_DATASOURCE_*, SPRING_DATA_REDIS_*).
+#           * Observability (AAP 0.7.5): the startup, liveness, and readiness
+#             probes target the Spring Boot Actuator health endpoints on the
+#             HTTP port (8080) - /actuator/health, /actuator/health/liveness
+#             and /actuator/health/readiness - which are enabled in the
+#             service's application.yml
+#             (management.endpoint.health.probes.enabled=true).
+#           * The companion ``service-card-service.yaml`` (ClusterIP) selects
+#             these pods via ``app: card-service`` and forwards to targetPort
+#             8080.
+# =============================================================================
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: card-service
+  labels:
+    app: card-service
+    app.kubernetes.io/name: card-service
+    app.kubernetes.io/part-of: carddemo
+    app.kubernetes.io/component: backend
+spec:
+  # Single replica for the reference deployment. The service is stateless -
+  # pseudo-conversational state (the legacy CICS COMMAREA) lives in
+  # Redis-backed Spring Session - so it can be scaled horizontally without any
+  # additional coordination.
+  replicas: 1
+  selector:
+    matchLabels:
+      app: card-service
+  template:
+    metadata:
+      labels:
+        app: card-service
+        app.kubernetes.io/name: card-service
+        app.kubernetes.io/part-of: carddemo
+        app.kubernetes.io/component: backend
+    spec:
+      containers:
+        - name: card-service
+          # Built by card-service/Dockerfile (FROM eclipse-temurin:21-jre).
+          image: carddemo/card-service:1.0.0
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8080
+              name: http
+          # Inject every runtime setting from the shared ConfigMap and Secret;
+          # never hard-code datasource/Redis values in this manifest.
+          envFrom:
+            - configMapRef:
+                name: carddemo-config
+            - secretRef:
+                name: carddemo-secret
+          resources:
+            requests:
+              cpu: 250m
+              memory: 512Mi
+            limits:
+              cpu: "1"
+              memory: 1Gi
+          # Startup probe gates the liveness/readiness probes until the JVM and
+          # Spring context have finished initializing. failureThreshold 30 x
+          # periodSeconds 5 allows roughly 150s for a cold start before the
+          # kubelet gives up and restarts the container.
+          startupProbe:
+            httpGet:
+              path: /actuator/health
+              port: 8080
+            initialDelaySeconds: 10
+            periodSeconds: 5
+            failureThreshold: 30
+          # Liveness: restart the container if the Actuator liveness group
+          # reports DOWN (an unrecoverable internal state).
+          livenessProbe:
+            httpGet:
+              path: /actuator/health/liveness
+              port: 8080
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+          # Readiness: withdraw the pod from the Service endpoints whenever the
+          # readiness group reports DOWN (e.g. a lost PostgreSQL or Redis
+          # dependency) so no traffic is routed to an unready instance.
+          readinessProbe:
+            httpGet:
+              path: /actuator/health/readiness
+              port: 8080
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
