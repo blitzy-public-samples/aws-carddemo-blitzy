@@ -1,4 +1,8 @@
-/** Card Update page spec — legacy origin BMS COCRDUP / Tx CCUP / program COCRDUPC. card_num masked; cvv NEVER rendered; no 409 flow. */
+/**
+ * Card Update page spec — legacy origin BMS COCRDUP / Tx CCUP / program
+ * COCRDUPC. card_num masked; cvv NEVER rendered; before_image echoed;
+ * 409 surfaced.
+ */
 
 /**
  * cardsUpdate.test.tsx — Jest + React Testing Library component/integration spec
@@ -8,11 +12,23 @@
  *
  * The real page component is rendered against a MOCKED `@/lib/apiClient`
  * (`CardsApi`) and a MOCKED `next/navigation` (router + search params) — there is
- * NO real network traffic. The editable form carries exactly THREE fields
- * (`embossed_name`, `expiration_date`, `active_status`); the account id and card
- * number are read-only and the card number is masked. There is deliberately NO
- * `cvv` field anywhere, and — unlike the accounts/update screen — NO HTTP 409
- * optimistic-lock conflict branch: every update failure is surfaced generically.
+ * NO real network traffic. The editable form carries the three editable fields
+ * (`embossed_name`, `expiration_date`, `active_status`) PLUS the required
+ * client-echoed `before_image` optimistic-lock token (QA finding C06); the
+ * account id and card number are read-only and the card number is masked. There
+ * is deliberately NO `cvv` field anywhere.
+ *
+ * Navigation is keyed on the card number the operator entered — the legacy
+ * COCRDSL/COCRDUP `CARDSID` input — read from the `cardNum` query param, over
+ * the frozen GET/PUT /cards/{cardNum} contract (AAP 0.5.5). The earlier
+ * by-account variant was removed (QA C07/C08): it resolved an account to one
+ * card with `.limit(1)` and silently edited the wrong card on the NONUNIQUE
+ * account->card relationship, and was outside the frozen route list.
+ *
+ * Optimistic locking (QA C06): the submitted `CardUpdate` carries `before_image`
+ * (the editable-field values as loaded); the backend compares it against the
+ * freshly locked row and rejects a stale write with HTTP 409, whose message is
+ * surfaced to the operator through the error alert.
  *
  * Field lengths/types/options and the success route are taken from the real
  * `cards/update/page.tsx`; field origins trace to the BMS symbolic-map copybook
@@ -45,14 +61,20 @@ let mockSearchParams = new URLSearchParams();
 /* ------------------------------------------------------------------------- */
 
 /**
- * A full 16-digit PAN used ONLY as a defensive-masking fixture value (fed as a
- * card_num to prove the read-only card field masks before display). QA C1: it is
- * never a route key — the screen is keyed on the owning-account id.
+ * The card number the operator ENTERS (the route key). Faithful to the legacy
+ * COCRDSL/COCRDUP `CARDSID` input; it addresses the frozen /cards/{cardNum}
+ * endpoint (AAP 0.5.5). It is the operator's own lookup entry — distinct from
+ * any record-sourced card_num, which the page never renders.
+ */
+const ROUTE_CARD_NUM = '4000123412341234';
+
+/**
+ * A full 16-digit PAN used ONLY as a defensive fixture value (fed as the
+ * response `card_num`) to prove the update page never renders a record-sourced
+ * PAN. Deliberately different from {@link ROUTE_CARD_NUM} so a positive picker
+ * assertion cannot accidentally match this "must-never-render" value.
  */
 const CARD_NUMBER = '4111111111111111';
-
-/** Result of masking {@link CARD_NUMBER} (last-4 visible) — defensive-mask check. */
-const CARD_NUMBER_MASKED = '************1111';
 
 /** Already-masked card number returned by default (honors the masked contract). */
 const MASKED_CARD_NUM = '************1234';
@@ -61,12 +83,12 @@ const MASKED_CARD_NUM = '************1234';
 const DEFAULT_ACCT_ID = '00000000011';
 
 /**
- * Success navigation target, mirroring the page's BuildCardViewRoute helper. Per
- * QA C1 the detail/update screens are keyed on the UNMASKED owning-account id,
- * so the success route carries `?acctId=` (never a masked PAN). Declared after
- * {@link DEFAULT_ACCT_ID} to avoid a temporal-dead-zone reference.
+ * Success navigation target, mirroring the page's BuildCardViewRoute helper. The
+ * detail/update screens are keyed on the card number the operator entered
+ * (QA C07/C08), so the success route carries `?cardNum=`. Declared after
+ * {@link ROUTE_CARD_NUM} to avoid a temporal-dead-zone reference.
  */
-const EXPECTED_VIEW_ROUTE = `/cards/view?acctId=${encodeURIComponent(DEFAULT_ACCT_ID)}`;
+const EXPECTED_VIEW_ROUTE = `/cards/view?cardNum=${encodeURIComponent(ROUTE_CARD_NUM)}`;
 
 /** Prefilled name-on-card value used to assert the initial form state. */
 const DEFAULT_EMBOSSED_NAME = 'TEST CARDHOLDER';
@@ -83,11 +105,11 @@ const UPDATED_EMBOSSED_NAME = 'NEW NAME';
 /** Max accepted length of the name-on-card input (CRDNAMEI PIC X(50)). */
 const EMBOSSED_NAME_LENGTH = 50;
 
-/** HTTP 409 — used to prove this page does NOT special-case a conflict. */
+/** HTTP 409 — the optimistic-lock conflict the backend raises on a stale write. */
 const HTTP_CONFLICT = 409;
 
-/** Generic server error text asserted verbatim in the failure scenario. */
-const SERVER_ERROR_MESSAGE = 'Update failed on server';
+/** Conflict message the backend returns on a 409; surfaced verbatim (C06). */
+const CONFLICT_MESSAGE = 'The record was changed by another user';
 
 /* ------------------------------------------------------------------------- */
 /* Mocks. next/navigation is fully stubbed; @/lib/apiClient keeps everything  */
@@ -114,9 +136,7 @@ jest.mock('@/lib/apiClient', () => ({
     CardsApi: {
         ListCards: jest.fn(),
         GetCard: jest.fn(),
-        GetCardByAccount: jest.fn(),
         UpdateCard: jest.fn(),
-        UpdateCardByAccount: jest.fn(),
     },
 }));
 
@@ -150,18 +170,19 @@ function MakeCardRead(overrides?: Partial<CardRead>): CardRead {
 
 describe('CardsUpdatePage', () => {
     beforeEach(() => {
-        // QA C1: the screen is keyed on the UNMASKED owning-account id from the
-        // `acctId` query param. A card is present by default; specs may override.
-        mockSearchParams = new URLSearchParams({ acctId: DEFAULT_ACCT_ID });
+        // QA C07/C08: the screen is keyed on the card number the operator entered
+        // from the `cardNum` query param. A card is present by default; specs may
+        // override.
+        mockSearchParams = new URLSearchParams({ cardNum: ROUTE_CARD_NUM });
     });
 
-    it('prefills the three editable fields from CardsApi.GetCardByAccount (C1)', async () => {
-        (CardsApi.GetCardByAccount as jest.Mock).mockResolvedValueOnce(MakeCardRead());
+    it('prefills the three editable fields from CardsApi.GetCard (C07/C08)', async () => {
+        (CardsApi.GetCard as jest.Mock).mockResolvedValueOnce(MakeCardRead());
 
         RenderWithProviders(<CardsUpdatePage />);
 
         await waitFor(() =>
-            expect(CardsApi.GetCardByAccount).toHaveBeenCalledWith(DEFAULT_ACCT_ID),
+            expect(CardsApi.GetCard).toHaveBeenCalledWith(ROUTE_CARD_NUM),
         );
 
         // embossed_name / expiration_date prefill into their inputs; the status
@@ -179,29 +200,54 @@ describe('CardsUpdatePage', () => {
         ).toHaveTextContent('Active (Y)');
     });
 
-    it('renders acct_id and card_num as read-only, with card_num masked', async () => {
-        // Feed a full PAN to prove the page defensively masks before display.
-        (CardsApi.GetCardByAccount as jest.Mock).mockResolvedValueOnce(
+    it('titles the page with a single accessible h1 heading (N-01)', async () => {
+        (CardsApi.GetCard as jest.Mock).mockResolvedValueOnce(MakeCardRead());
+
+        RenderWithProviders(<CardsUpdatePage />);
+
+        // Let the on-mount GetCard load settle inside act() so the trailing
+        // setIsLoading(false) is captured (no act warning), matching the other
+        // specs in this file.
+        await waitFor(() =>
+            expect(CardsApi.GetCard).toHaveBeenCalledWith(ROUTE_CARD_NUM),
+        );
+        await screen.findByLabelText(/Name on Card/i);
+
+        // The CardHeader title now renders as a semantic level-1 heading (was a
+        // non-heading <span> before the QA N-01 fix), so the page exposes exactly
+        // one h1 naming the update screen.
+        const h1s = screen.getAllByRole('heading', { level: 1 });
+        expect(h1s).toHaveLength(1);
+        expect(h1s[0]).toHaveTextContent('Update Credit Card Details');
+    });
+
+    it('renders the owning account id read-only and never renders a record-sourced PAN (0.7.8/C05)', async () => {
+        // Feed a full PAN as the response card_num to prove the update page never
+        // renders a record-sourced card number. The single "Card Number" field is
+        // the lookup ENTRY (the operator's own input), mirroring the account-id
+        // picker and the legacy COCRDUP CARDSID input.
+        (CardsApi.GetCard as jest.Mock).mockResolvedValueOnce(
             MakeCardRead({ card_num: CARD_NUMBER }),
         );
 
         RenderWithProviders(<CardsUpdatePage />);
 
         const acctInput = await screen.findByLabelText(/Account ID/i);
-        const cardInput = screen.getByLabelText(/Card Number/i);
-
         expect(acctInput).toHaveAttribute('readonly');
-        expect(cardInput).toHaveAttribute('readonly');
         expect(acctInput).toHaveValue(DEFAULT_ACCT_ID);
 
-        // The full PAN must never be rendered — only the last-4 masked form.
-        await waitFor(() => expect(cardInput).toHaveValue(CARD_NUMBER_MASKED));
-        expect(cardInput).not.toHaveValue(CARD_NUMBER);
+        // The response's full PAN is never rendered anywhere on the page.
         expect(screen.queryByDisplayValue(CARD_NUMBER)).not.toBeInTheDocument();
+        expect(screen.queryByText(CARD_NUMBER)).not.toBeInTheDocument();
+
+        // The single card-number field is the lookup entry: it shows the number
+        // the operator typed (the route key), not a record-sourced value.
+        const cardInput = screen.getByLabelText(/Card Number/i);
+        await waitFor(() => expect(cardInput).toHaveValue(ROUTE_CARD_NUM));
     });
 
     it('never renders a CVV field or label', async () => {
-        (CardsApi.GetCardByAccount as jest.Mock).mockResolvedValueOnce(MakeCardRead());
+        (CardsApi.GetCard as jest.Mock).mockResolvedValueOnce(MakeCardRead());
 
         RenderWithProviders(<CardsUpdatePage />);
 
@@ -213,7 +259,7 @@ describe('CardsUpdatePage', () => {
     });
 
     it('bounds the name-on-card input to 50 characters', async () => {
-        (CardsApi.GetCardByAccount as jest.Mock).mockResolvedValueOnce(MakeCardRead());
+        (CardsApi.GetCard as jest.Mock).mockResolvedValueOnce(MakeCardRead());
 
         RenderWithProviders(<CardsUpdatePage />);
 
@@ -225,7 +271,7 @@ describe('CardsUpdatePage', () => {
     });
 
     it('offers Active (Y) and Inactive (N) and updates on selection', async () => {
-        (CardsApi.GetCardByAccount as jest.Mock).mockResolvedValueOnce(MakeCardRead());
+        (CardsApi.GetCard as jest.Mock).mockResolvedValueOnce(MakeCardRead());
         const user = SetupUser();
 
         RenderWithProviders(<CardsUpdatePage />);
@@ -253,7 +299,7 @@ describe('CardsUpdatePage', () => {
     });
 
     it('renders the expiration date as a native date input', async () => {
-        (CardsApi.GetCardByAccount as jest.Mock).mockResolvedValueOnce(MakeCardRead());
+        (CardsApi.GetCard as jest.Mock).mockResolvedValueOnce(MakeCardRead());
 
         RenderWithProviders(<CardsUpdatePage />);
 
@@ -261,9 +307,9 @@ describe('CardsUpdatePage', () => {
         expect(dateInput).toHaveAttribute('type', 'date');
     });
 
-    it('submits only the 3 editable fields and navigates to the card view', async () => {
-        (CardsApi.GetCardByAccount as jest.Mock).mockResolvedValueOnce(MakeCardRead());
-        (CardsApi.UpdateCardByAccount as jest.Mock).mockResolvedValueOnce(
+    it('submits the editable fields plus the before_image echo and navigates to the card view (C06)', async () => {
+        (CardsApi.GetCard as jest.Mock).mockResolvedValueOnce(MakeCardRead());
+        (CardsApi.UpdateCard as jest.Mock).mockResolvedValueOnce(
             MakeCardRead({ embossed_name: UPDATED_EMBOSSED_NAME }),
         );
         const user = SetupUser();
@@ -281,9 +327,14 @@ describe('CardsUpdatePage', () => {
         await user.click(screen.getByRole('button', { name: /save/i }));
 
         await waitFor(() =>
-            expect(CardsApi.UpdateCardByAccount).toHaveBeenCalledWith(
-                DEFAULT_ACCT_ID,
+            expect(CardsApi.UpdateCard).toHaveBeenCalledWith(
+                ROUTE_CARD_NUM,
                 expect.objectContaining({
+                    before_image: expect.objectContaining({
+                        embossed_name: DEFAULT_EMBOSSED_NAME,
+                        active_status: DEFAULT_ACTIVE_STATUS,
+                        expiration_date: DEFAULT_EXPIRATION_DATE,
+                    }),
                     embossed_name: UPDATED_EMBOSSED_NAME,
                     expiration_date: expect.any(String),
                     active_status: expect.any(String),
@@ -291,12 +342,14 @@ describe('CardsUpdatePage', () => {
             ),
         );
 
-        // The payload must carry ONLY the three editable keys — never the
-        // read-only identifiers and never a (non-existent) cvv.
-        const updateBody = (CardsApi.UpdateCardByAccount as jest.Mock).mock
+        // The payload must carry the three editable keys plus the REQUIRED
+        // before_image optimistic-lock token (C06) — never the read-only
+        // identifiers and never a (non-existent) cvv.
+        const updateBody = (CardsApi.UpdateCard as jest.Mock).mock
             .calls[0][1] as CardUpdate;
         expect(Object.keys(updateBody).sort()).toEqual([
             'active_status',
+            'before_image',
             'embossed_name',
             'expiration_date',
         ]);
@@ -309,12 +362,13 @@ describe('CardsUpdatePage', () => {
         );
     });
 
-    it('surfaces a generic error alert on failure with no 409 conflict handling', async () => {
-        (CardsApi.GetCardByAccount as jest.Mock).mockResolvedValueOnce(MakeCardRead());
-        // A 409 is armed on purpose: this page must treat it exactly like any
-        // other error (no bespoke optimistic-lock conflict branch).
-        (CardsApi.UpdateCardByAccount as jest.Mock).mockRejectedValueOnce(
-            new ApiError({ status: HTTP_CONFLICT, message: SERVER_ERROR_MESSAGE }),
+    it('surfaces the backend conflict message on a 409 stale-write rejection (C06)', async () => {
+        (CardsApi.GetCard as jest.Mock).mockResolvedValueOnce(MakeCardRead());
+        // The backend rejects a stale write (before_image mismatch under the
+        // SELECT ... FOR UPDATE lock) with HTTP 409; the page surfaces the
+        // server-supplied conflict message through the error alert.
+        (CardsApi.UpdateCard as jest.Mock).mockRejectedValueOnce(
+            new ApiError({ status: HTTP_CONFLICT, message: CONFLICT_MESSAGE }),
         );
         const user = SetupUser();
 
@@ -327,21 +381,13 @@ describe('CardsUpdatePage', () => {
 
         await user.click(screen.getByRole('button', { name: /save/i }));
 
-        // The alert shows the server message verbatim (generic passthrough)...
+        // The alert shows the backend's conflict message; no navigation occurs.
         const alert = await screen.findByRole('alert');
-        expect(alert).toHaveTextContent(SERVER_ERROR_MESSAGE);
-
-        // ...and NONE of the conflict-specific phrasing the accounts/update
-        // screen uses for its 409 branch appears here.
-        expect(
-            screen.queryByText(
-                /version conflict|modified by another|reload the page|refresh and try again/i,
-            ),
-        ).not.toBeInTheDocument();
+        expect(alert).toHaveTextContent(CONFLICT_MESSAGE);
         expect(mockPush).not.toHaveBeenCalled();
     });
 
-    it('shows a prompt and skips GetCardByAccount when acctId is absent', async () => {
+    it('shows a prompt and skips GetCard when cardNum is absent', async () => {
         mockSearchParams = new URLSearchParams();
 
         RenderWithProviders(<CardsUpdatePage />);
@@ -352,6 +398,6 @@ describe('CardsUpdatePage', () => {
         expect(
             screen.getByRole('button', { name: /back to cards/i }),
         ).toBeInTheDocument();
-        expect(CardsApi.GetCardByAccount).not.toHaveBeenCalled();
+        expect(CardsApi.GetCard).not.toHaveBeenCalled();
     });
 });

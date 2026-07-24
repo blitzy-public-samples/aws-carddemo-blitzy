@@ -6,7 +6,10 @@
  * All monetary fields are `string` (Decimal) - never a number.
  */
 
-/** Bill-payment request (COBIL00). Inputs are acct_id + confirm ('Y'/'N') only; the server always pays the FULL balance (no partial-payment field). */
+/**
+ * Bill-payment request (COBIL00). Inputs are acct_id + confirm ('Y'/'N')
+ * only; the server always pays the FULL balance (no partial-payment field).
+ */
 export interface BillPayRequest {
     acct_id: string;
     confirm: string;

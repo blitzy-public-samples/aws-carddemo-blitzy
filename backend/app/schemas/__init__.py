@@ -80,6 +80,7 @@ from app.schemas.account import (
 # Card master record (``app/cpy/CVACT02Y.cpy``) -- programs COCRDLIC/SLC/UPC.
 from app.schemas.card import (
     CardBase,
+    CardBeforeImage,
     CardRead,
     CardSummary,
     CardUpdate,
@@ -169,6 +170,7 @@ __all__ = [
     "AccountDetail",
     # card
     "CardBase",
+    "CardBeforeImage",
     "CardRead",
     "CardSummary",
     "CardUpdate",

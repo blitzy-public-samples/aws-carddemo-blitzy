@@ -68,7 +68,6 @@ from app.core.exceptions import (
     OverlimitTransactionError,
 )
 from app.models.account import Account
-from app.models.account_group import AccountGroup
 from app.models.card import Card
 from app.models.card_xref import CardXref
 from app.models.customer import Customer
@@ -129,9 +128,10 @@ EXPECTED_TRANSACTION_COUNT = 0                      # daily-tran NOT seeded
 NONEXISTENT_ACCT_ID = "99999999999"
 NONEXISTENT_CARD_NUM = "9999999999999999"
 NONEXISTENT_TRAN_ID = "9999999999999999"
-# Account-group FK (M-16) fixtures: a bogus group with no account_groups parent,
-# and a valid group to prove the constraint accepts a real reference.
-NONEXISTENT_GROUP_ID = "NOSUCHGRP"
+# Account-group fixtures (QA finding C01): accounts.group_id is a PLAIN indexed
+# column, not a foreign key, so an arbitrary group id is accepted and no parent
+# registry row is required. These ids exercise the plain-column semantics.
+ARBITRARY_GROUP_ID = "NOSUCHGRP"
 FK_TEST_GROUP_ID = "FKTESTGRP"
 FK_TEST_ACCT_ID = "88888888888"
 
@@ -498,50 +498,33 @@ async def test_fk_enforced_missing_parent_transaction(seed_data, db_session):
     await db_session.rollback()
 
 
-async def test_fk_enforced_missing_account_group(db_session):
-    """Inserting an account with an unknown ``group_id`` raises ``IntegrityError``.
+async def test_account_group_id_accepts_arbitrary_value(db_session):
+    """C01: ``accounts.group_id`` accepts any value -- it is a plain column.
 
-    Proves the AAP-mandated ``accounts.group_id -> account_groups.group_id``
-    relationship (AAP §0.5.1, §0.8.1; QA finding M-16) is an ENFORCED foreign
-    key: flushing an account whose group has no ``account_groups`` parent row is
-    rejected by PostgreSQL. No ``account_groups`` row is seeded for
-    ``NONEXISTENT_GROUP_ID``, so the reference is dangling. The session is rolled
-    back afterwards so its transaction is clean for teardown.
+    The AAP fixes the schema at exactly ten tables (AAP §0.5.1), so
+    ``accounts.group_id`` (``ACCT-GROUP-ID`` from ``CVACT01Y``) is a plain
+    indexed ``VARCHAR(10)`` column, NOT a foreign key -- a faithful port of the
+    legacy free-text field. An account carrying a group id with no matching
+    disclosure-group row therefore flushes cleanly (no ``IntegrityError``);
+    the interest-calc job falls back to the DEFAULT disclosure group at runtime.
+    The session is rolled back so its transaction is clean for teardown.
     """
-    orphanAccount = _BuildFkTestAccount(FK_TEST_ACCT_ID, NONEXISTENT_GROUP_ID)
-    db_session.add(orphanAccount)
-    with pytest.raises(IntegrityError):
-        await db_session.flush()
-    await db_session.rollback()
-
-
-async def test_account_group_fk_accepts_valid_group(db_session):
-    """An account referencing an existing ``account_groups`` row is accepted.
-
-    The complement of :func:`test_fk_enforced_missing_account_group`: once the
-    parent ``account_groups`` row exists, an account referencing it flushes
-    cleanly. This proves the M-16 foreign key accepts valid references (it is not
-    merely rejecting everything). The session is rolled back for teardown.
-    """
-    db_session.add(AccountGroup(group_id=FK_TEST_GROUP_ID))
-    await db_session.flush()
-
-    validAccount = _BuildFkTestAccount(FK_TEST_ACCT_ID, FK_TEST_GROUP_ID)
-    db_session.add(validAccount)
+    arbitraryGroupAccount = _BuildFkTestAccount(FK_TEST_ACCT_ID, ARBITRARY_GROUP_ID)
+    db_session.add(arbitraryGroupAccount)
     await db_session.flush()
 
     persisted = await db_session.get(Account, FK_TEST_ACCT_ID)
     assert persisted is not None
-    assert persisted.group_id == FK_TEST_GROUP_ID
+    assert persisted.group_id == ARBITRARY_GROUP_ID
     await db_session.rollback()
 
 
-async def test_account_group_fk_allows_null(db_session):
+async def test_account_group_id_allows_null(db_session):
     """An account with a NULL ``group_id`` is accepted (mirrors the seed quirk).
 
     Every golden-master account carries a blank ``ACCT-GROUP-ID`` (loaded as
-    NULL), and NULLs are exempt from the foreign-key check. This confirms the
-    M-16 constraint does not force a group on the byte-faithful seed data. The
+    NULL). This confirms ``group_id`` is nullable and does not force a group on
+    the byte-faithful seed data (QA finding C01: plain column, no FK). The
     session is rolled back for teardown.
     """
     nullGroupAccount = _BuildFkTestAccount(FK_TEST_ACCT_ID, None)

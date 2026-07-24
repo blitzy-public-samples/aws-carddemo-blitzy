@@ -142,7 +142,7 @@ Install the following before building. Exact pins live in
 | Alembic | 1.14 | Versioned schema migrations |
 | asyncpg | 0.30.x | Async PostgreSQL driver (app runtime) |
 | psycopg2-binary | 2.9.x | Sync PostgreSQL driver (Alembic + loaders) |
-| passlib[bcrypt] | 1.7.x | Password hashing (bcrypt; argon2 acceptable) |
+| passlib[bcrypt] | 1.7.x | Password hashing (bcrypt — the implemented scheme) |
 | PyJWT | 2.x | JWT tokens (session-based auth is the baseline) |
 | reportlab + Jinja2 | 4.5.x / 3.1.x | PDF / HTML statement + report generation |
 | pytest + pytest-asyncio + httpx | 9.x / 1.x / 0.28.x | Unit, integration, and golden-master tests |
@@ -190,16 +190,16 @@ configuration are added **alongside** the untouched legacy `app/` tree.
 ├── backend/                     FastAPI service
 │   ├── app/
 │   │   ├── main.py              Application factory (create_application) + async lifespan
-│   │   ├── api/v1/              Thin routers (auth, menu, accounts, cards, transactions, reports, billpay, users)
+│   │   ├── api/v1/              Thin routers (auth, menu, accounts, cards, transactions, …)
 │   │   ├── services/            Business logic, 1:1 with the COBOL online programs
 │   │   ├── repositories/        Data access, 1:1 with the former VSAM files
 │   │   ├── models/              SQLAlchemy ORM models (one per table) ← record copybooks
 │   │   ├── schemas/             Pydantic request/response DTOs ← record + screen copybooks
-│   │   ├── core/                config, security, exceptions, dependencies (get_db / get_current_user / require_admin)
+│   │   ├── core/                config, security, exceptions, dependencies (DI providers)
 │   │   ├── db/                  Async engine + session + declarative Base
 │   │   └── utils/               date_utils, decimal_utils (zoned-decimal decode), validators
 │   ├── alembic/                 Migration environment
-│   │   └── versions/            0001_initial_schema, 0002_seed_data
+│   │   └── versions/            0001_initial_schema … 0007 (seven migrations)
 │   ├── tests/                   Unit + integration + golden-master parity tests
 │   ├── pyproject.toml           PEP 621 manifest (dependency pins)
 │   ├── requirements.txt         pip manifest (dependency pins)
@@ -209,7 +209,7 @@ configuration are added **alongside** the untouched legacy `app/` tree.
 ├── frontend/                    Next.js + Material UI single-page app
 │   ├── src/
 │   │   ├── app/                 App Router: layout.tsx, theme.ts, and one page.tsx per BMS map (17)
-│   │   ├── components/          Reusable MUI components (AppShell, DataTable, FormField, ConfirmDialog, ErrorAlert)
+│   │   ├── components/          Reusable MUI components (AppShell, DataTable, FormField, …)
 │   │   ├── lib/                 apiClient.ts (axios + auth interceptor), auth.ts
 │   │   └── types/               TypeScript interfaces ← backend schemas
 │   ├── __tests__/               Component / integration tests per screen
@@ -221,7 +221,7 @@ configuration are added **alongside** the untouched legacy `app/` tree.
 ├── batch/                       Python CLI batch package
 │   ├── cli.py                   Typer entrypoint (python -m batch.cli)
 │   ├── jobs/                    1:1 with the batch COBOL programs (posting, interest, statements, reports)
-│   ├── loaders/                 Seed loaders ← app/data (accounts, cards, customers, xref, transactions, …, users)
+│   ├── loaders/                 Seed loaders ← app/data (accounts, cards, customers, xref, …)
 │   ├── orchestration/           batch_chain.py — preserves the legacy CLOSEFIL → … → OPENFIL order
 │   └── tests/                   Batch parity tests
 ├── docs/                        Architecture & API reference (Markdown)
@@ -248,7 +248,7 @@ the backend and frontend services.
    ```bash
    cp backend/.env.example backend/.env
    cp frontend/.env.local.example frontend/.env.local
-   # Then edit backend/.env and set a strong SECRET_KEY / SESSION_SECRET, e.g.:
+   # Then edit backend/.env and set a strong SECRET_KEY, e.g.:
    #   python -c "import secrets; print(secrets.token_urlsafe(48))"
    ```
 
@@ -301,7 +301,7 @@ cd backend
 python3.13 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
-cp .env.example .env          # then edit secrets (SECRET_KEY, SESSION_SECRET, …)
+cp .env.example .env          # then edit the secret (SECRET_KEY, …)
 uvicorn app.main:app --reload
 ```
 
@@ -359,7 +359,8 @@ secondary indexes, and foreign keys.
    batch loaders use the sync (psycopg2) DSN, while the app runtime uses the
    async `DATABASE_URL` (see [Configuration](#configuration)).
 2. Apply migrations with Alembic. Use **either** the host command **or** the
-   containerized command below — both apply the same two migrations:
+   containerized command below — both apply the same seven migrations
+   (`0001`–`0007`):
 
    **Host (local development):** run from `backend/`, where the sibling
    repo-root `app/data` is on disk and resolved automatically:
@@ -411,8 +412,10 @@ CREASTMT → TRANIDX → OPENFIL
 ```
 
 `CLOSEFIL` and `OPENFIL` — originally `IEFBR14` no-ops that quiesced and re-enabled
-the CICS files — become **no-op guard steps**. Every job is **idempotent and
-re-runnable** within a database transaction.
+the CICS files — become **no-op guard steps**. Jobs are designed to be
+**idempotent and re-runnable** within a database transaction: loaders upsert,
+posting skips transactions already posted, and interest accrual is keyed to the
+accounting month so re-running within the same month does not double-accrue.
 
 The following table maps each legacy step to the modern module that implements it
 and to its legacy COBOL/JCL source (REFERENCE).
@@ -488,9 +491,10 @@ client and the server.
 | Batch | `pytest batch/tests` | Batch job parity tests |
 | Frontend | `cd frontend && npm test` | Component / integration tests per screen |
 
-**Golden-master parity.** Modern outputs must reconcile **field-for-field** with
-the legacy outputs for the sample data under `app/data`. This is how the port
-proves it preserves the original business behaviour exactly.
+**Golden-master parity.** The parity tests reconcile modern outputs
+**field-for-field** against the legacy outputs for the sample data under
+`app/data`. This is how the port validates that it preserves the original
+business behaviour for that sample data set.
 
 ---
 
@@ -508,8 +512,7 @@ Key backend variables:
 | :------- | :------ |
 | `DATABASE_URL` | Async PostgreSQL DSN (`postgresql+asyncpg://…`) used by the app runtime |
 | `SYNC_DATABASE_URL` | Sync PostgreSQL DSN (`postgresql+psycopg2://…`) used by Alembic and loaders |
-| `SECRET_KEY` | Signing key for tokens (set a strong value; never commit it) |
-| `SESSION_SECRET` | Server-side session signing key (session auth is the baseline) |
+| `SECRET_KEY` | Single signing key for the session cookie and JWT alike (set a strong value ≥32 chars; never commit it) |
 | `AUTH_MODE` | Authentication strategy: `session` (baseline) or `jwt` |
 | `ALGORITHM` | JWT signing algorithm, used when `AUTH_MODE=jwt` (default `HS256`) |
 | `ACCESS_TOKEN_EXPIRE_MINUTES` | Session / access-token lifetime in minutes |
@@ -543,7 +546,7 @@ The seed data provides two demo accounts:
 | `USER0001` | Regular user | `PASSWORD` |
 
 These are **non-production seed accounts only**. Their passwords are stored
-**hashed** (bcrypt/argon2) at rest — never in plaintext — and they must never be
+**hashed** (bcrypt) at rest — never in plaintext — and they must never be
 treated as real credentials or hardcoded anywhere in application code. Change or
 remove them before any non-demo use.
 

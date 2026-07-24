@@ -92,6 +92,66 @@ def _ResolveClientHost(request: Request) -> str:
     return request.client.host or UNKNOWN_CLIENT_HOST
 
 
+def _EnforceLoginThrottle(request: Request, userId: str) -> str:
+    """Build the login throttle key and reject a locked attempt (M-01/M09).
+
+    Checks the ``(user id, client IP)`` pair against
+    :data:`~app.core.rate_limiter.loginRateLimiter` BEFORE any credential check,
+    so a brute-force run -- whether rotating hosts against one account or
+    spraying ids from one host -- cannot even reach the password comparison.
+
+    Args:
+        request: The incoming sign-on request, read to derive the client host.
+        userId: The submitted user id (the account side of the throttle key).
+
+    Returns:
+        The throttle key for this attempt, for the caller to advance on failure
+        or clear on success.
+
+    Raises:
+        HTTPException: Status 429 when either the account bucket (this user id)
+            or the source-host bucket (this client IP) is currently locked.
+    """
+    throttleKey = loginRateLimiter.BuildKey(userId, _ResolveClientHost(request))
+    if loginRateLimiter.IsLocked(throttleKey):
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail=LOGIN_THROTTLED_DETAIL,
+        )
+    return throttleKey
+
+
+def _SetSessionCookie(response: Response, loginResponse: LoginResponse) -> None:
+    """Mint the signed session token and set it as an HTTP-only cookie.
+
+    Session baseline only. The token is deliberately NOT echoed in the response
+    body (``loginResponse.access_token`` stays ``None``), keeping it out of JS
+    reach. M-02: the user's current session generation travels as the ``sver``
+    claim (carried on ``loginResponse``, excluded from the JSON body) so the
+    cookie is revocable server-side -- logout and role/password changes advance
+    ``session_version``, which ``get_current_user`` then rejects.
+
+    Args:
+        response: The outgoing response the cookie is attached to.
+        loginResponse: The authenticated identity carrying the ``user_id``,
+            ``user_type``, and ``session_version`` embedded in the token.
+    """
+    sessionToken = CreateAccessToken(
+        loginResponse.user_id,
+        loginResponse.user_type,
+        sessionVersion=loginResponse.session_version,
+    )
+    response.set_cookie(
+        key=settings.SESSION_COOKIE_NAME,
+        value=sessionToken,
+        httponly=True,
+        samesite=SESSION_COOKIE_SAMESITE,
+        secure=settings.ENVIRONMENT != DEVELOPMENT_ENVIRONMENT,
+        max_age=settings.ACCESS_TOKEN_EXPIRE_MINUTES * 60,
+        path=SESSION_COOKIE_PATH,
+    )
+
+
 router = APIRouter(prefix="/auth", tags=["auth"])
 
 
@@ -139,22 +199,16 @@ async def Login(
         cookie instead.
 
     Raises:
-        HTTPException: With status 429 when the ``(user id, client IP)`` pair is
-            currently locked out by the login throttle.
+        HTTPException: With status 429 when the login throttle currently blocks
+            the attempt -- because EITHER the account bucket (this user id) OR
+            the source-host bucket (this client IP) is locked (M09).
         AuthenticationError: If the credentials are invalid. It is intentionally
             not caught here (only observed to advance the throttle counter, then
             re-raised); ``app.main`` maps it to an HTTP 401 response.
     """
-    # M-01 throttle: reject a locked-out (user id, client IP) pair up front so a
-    # brute-force run cannot even reach the password check.
-    throttleKey = loginRateLimiter.BuildKey(
-        loginRequest.user_id, _ResolveClientHost(request)
-    )
-    if loginRateLimiter.IsLocked(throttleKey):
-        raise HTTPException(
-            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-            detail=LOGIN_THROTTLED_DETAIL,
-        )
+    # M-01/M09 throttle up front (raises 429 while the account or source-host
+    # bucket is locked, before any password check).
+    throttleKey = _EnforceLoginThrottle(request, loginRequest.user_id)
     try:
         loginResponse = await AuthService().Login(session, loginRequest)
     except AuthenticationError:
@@ -163,30 +217,12 @@ async def Login(
         # advance the counter (it is a client edit, not a password guess).
         loginRateLimiter.RegisterFailure(throttleKey)
         raise
-    # Successful sign-on: clear any accumulated failures for this pair.
+    # Successful sign-on: clear any accumulated failures on both the account and
+    # the source-host bucket for this attempt.
     loginRateLimiter.RegisterSuccess(throttleKey)
     if settings.AUTH_MODE == SESSION_AUTH_MODE:
-        # Session baseline: mint the signed token and set it as an HTTP-only
-        # cookie. The token is deliberately NOT echoed in the response body
-        # (loginResponse.access_token stays None), keeping it out of JS reach.
-        # M-02: embed the user's current session generation as the ``sver``
-        # claim (carried on loginResponse, excluded from the JSON body) so the
-        # cookie is revocable server-side -- logout and role/password changes
-        # advance session_version, which get_current_user then rejects.
-        sessionToken = CreateAccessToken(
-            loginResponse.user_id,
-            loginResponse.user_type,
-            sessionVersion=loginResponse.session_version,
-        )
-        response.set_cookie(
-            key=settings.SESSION_COOKIE_NAME,
-            value=sessionToken,
-            httponly=True,
-            samesite=SESSION_COOKIE_SAMESITE,
-            secure=settings.ENVIRONMENT != DEVELOPMENT_ENVIRONMENT,
-            max_age=settings.ACCESS_TOKEN_EXPIRE_MINUTES * 60,
-            path=SESSION_COOKIE_PATH,
-        )
+        # Session baseline: the signed token travels in an HTTP-only cookie.
+        _SetSessionCookie(response, loginResponse)
         return loginResponse
     # JWT alternative: AuthService already populated access_token / token_type
     # on loginResponse, so the bearer token travels in the response body and no

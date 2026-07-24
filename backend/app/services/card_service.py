@@ -3,10 +3,12 @@
 Ported 1:1 from legacy CICS online programs COCRDLIC (card list, CCLI; <=7 rows
 per page per F-004), COCRDSLC (card view, CCDL) and COCRDUPC (card update, CCUP).
 COCRDUPC's READ-UPDATE -> before-image check -> REWRITE is reproduced with a
-GetByCardNum load, a before-image snapshot, and a locking re-read via
-GetForUpdate (SELECT ... FOR UPDATE) before the before-image comparison and the
-REWRITE (see note). Record layout: CVACT02Y. cvv_cd is never returned; card_num
-is masked. See §0.5.1, §0.7.4, §0.7.8, §0.8.1.
+locking read via GetForUpdate (SELECT ... FOR UPDATE) followed by comparing the
+CLIENT-ECHOED before-image against the locked current row before the REWRITE
+(see note). Record layout: CVACT02Y. cvv_cd is never returned; card_num is
+masked. Card detail/update are keyed by card number (the frozen AAP 0.5.5
+GET/PUT /cards/{cardNum} contract); the earlier by-account helper methods were
+removed (QA findings C07/C08). See §0.5.1, §0.5.5, §0.7.4, §0.7.8, §0.8.1.
 
 Design notes (verified against the dependency contracts):
 
@@ -24,14 +26,17 @@ Design notes (verified against the dependency contracts):
 * Concurrency: like ``account_service``, the update path takes a row lock via
   :meth:`app.repositories.CardRepository.GetForUpdate`
   (``SELECT ... FOR UPDATE``). COCRDUPC's 9200/9300 READ-UPDATE -> change
-  check -> REWRITE is reproduced as: the current row is loaded and a
-  before-image snapshot captured, the row is re-read UNDER A ROW LOCK
+  check -> REWRITE is reproduced as: the row is read UNDER A ROW LOCK
   (``GetForUpdate`` with ``populate_existing`` so the locked read reflects the
-  true current state), the before-image is compared to the locked current
-  values, and any difference means a concurrent modification and is rejected.
-  Holding the lock from the re-read through the commit both detects a change
-  committed before the lock AND prevents any concurrent write between the check
-  and the commit, so no lost update can occur (QA finding M-10, AAP 0.7.4).
+  true current state), then the CLIENT-ECHOED before-image
+  (``CardUpdate.before_image`` -- the values the operator last read) is compared
+  to the locked current values, and any difference means a concurrent
+  modification and is rejected (HTTP 409). Sourcing the before-image from the
+  client echo (rather than a server read taken at the start of the PUT) is what
+  lets the check detect a GET -> intervening-commit -> PUT stale overwrite (QA
+  finding C06). Holding the lock from the read through the commit prevents any
+  concurrent write between the check and the commit, so no lost update can occur
+  (QA finding M-10, AAP 0.7.4).
 
 Ochs conventions (AAP 0.8.2 / 0.8.3): the class and its methods use PascalCase,
 local variables use camelCase, module-level constants are ALL_UPPERCASE, and the
@@ -59,6 +64,7 @@ from app.core.exceptions import (
 from app.repositories import CardRepository
 from app.repositories.card_repo import MAX_SCREEN_LINES
 from app.schemas import (
+    CardBeforeImage,
     CardRead,
     CardSummary,
     CardUpdate,
@@ -114,18 +120,6 @@ MSG_NO_CHANGE_DETECTED = "No change detected with respect to values fetched."  #
 MSG_COULD_NOT_LOCK = "Could not lock record for update"                      # COCRDUPC L206
 MSG_RECORD_CHANGED = "Record changed by some one else. Please review"        # COCRDUPC L208
 MSG_UPDATE_FAILED = "Update of record failed"                                # COCRDUPC L210
-
-# ---------------------------------------------------------------------------
-# Account-id edit labels/messages for the by-account card view/update (QA C1).
-# The modern UI navigates to a card by its (unmasked) OWNING ACCOUNT id rather
-# than by the PAN, because the list masks card_num (AAP 0.7.8) and a masked PAN
-# can never be a valid key. These mirror the COACTVWC 2210-EDIT-ACCOUNT edits
-# (identical wording to account_service) so account-id validation is consistent
-# across the app; the not-found case reuses the verbatim COCRDSLC card message.
-# ---------------------------------------------------------------------------
-ACCT_ID_FIELD_LABEL = "Account number"
-MSG_ACCT_NUM_NOT_PROVIDED = "Account number not provided"                    # COACTVWC 2210
-MSG_ACCT_NUM_INVALID = "Account number must be a non zero 11 digit number"   # COACTVWC 2210
 
 __all__ = ["CardListParams", "CardService"]
 
@@ -271,25 +265,49 @@ class CardService:
         # are small (one account, or the whole modest file), so materialising
         # ``pageNumber * pageSize`` ordered rows stays inexpensive.
         fetchLimit = pageNumber * pageSize
-        if acctId is not None:
-            # Account-scoped browse via the CARD-ACCT-ID alternate index.
-            fetchedRows = await self.cardRepository.ListByAcctId(
-                session,
-                acctId,
-                limit=fetchLimit,
-            )
-        else:
-            # Unscoped browse across every account (admin / internal caller).
-            fetchedRows = await self.cardRepository.ListCards(
-                session,
-                acctId=None,
-                startCardNum=None,
-                limit=fetchLimit,
-            )
+        fetchedRows = await self._FetchOffsetWindow(session, acctId, fetchLimit)
         startIndex = (pageNumber - MIN_PAGE) * pageSize
         pageRows = fetchedRows[startIndex : startIndex + pageSize]
         pageItems = [self._BuildSummary(card) for card in pageRows]
         return self._BuildPage(pageItems, pageNumber, pageSize, totalItems)
+
+    async def _FetchOffsetWindow(
+        self,
+        session: AsyncSession,
+        acctId: str | None,
+        fetchLimit: int,
+    ) -> "list[Card]":
+        """Fetch the ordered card rows up to ``fetchLimit`` for the offset browse.
+
+        Selects the correct repository read for the requested scope: an
+        account-scoped browse uses the ``CARD-ACCT-ID`` alternate index, while an
+        unscoped browse (admin / internal caller) walks every account. The rows
+        are ordered by ``card_num`` so the caller can slice out the requested
+        page deterministically.
+
+        Args:
+            session: Active async unit-of-work session.
+            acctId: The account filter, or ``None`` for an unscoped browse.
+            fetchLimit: The number of ordered rows to materialise (``page *
+                page_size``), covering every row up to and including this page.
+
+        Returns:
+            The ordered card rows for the offset window (never committed).
+        """
+        if acctId is not None:
+            # Account-scoped browse via the CARD-ACCT-ID alternate index.
+            return await self.cardRepository.ListByAcctId(
+                session,
+                acctId,
+                limit=fetchLimit,
+            )
+        # Unscoped browse across every account (admin / internal caller).
+        return await self.cardRepository.ListCards(
+            session,
+            acctId=None,
+            startCardNum=None,
+            limit=fetchLimit,
+        )
 
     @staticmethod
     def _NormalizeFilter(rawFilter: str | None) -> str | None:
@@ -500,51 +518,6 @@ class CardService:
         return CardRead.model_validate(cardRecord)
 
     # ------------------------------------------------------------------ #
-    # METHOD 2b -- card view BY OWNING ACCOUNT (COCRDSLC via CARD-ACCT-ID #
-    # alternate index). READ-ONLY. Added for QA C1: the list masks        #
-    # card_num, so the UI cannot navigate by PAN; it navigates by the     #
-    # unmasked acct_id instead, and this resolves that account to its     #
-    # card server-side without ever exposing the full PAN in the URL.     #
-    # ------------------------------------------------------------------ #
-    async def GetCardByAccount(self, session: AsyncSession, acctId: str) -> CardRead:
-        """Return one card's detail by its OWNING ACCOUNT id (QA C1).
-
-        The modern UI reaches card detail by the (unmasked) account id shown in
-        the card-list grid rather than by the masked PAN, which can never be a
-        valid key (AAP 0.7.8). This edits the account id exactly as COACTVWC
-        ``2210-EDIT-ACCOUNT`` did (blank rejected, then the non-zero 11-digit
-        edit), resolves the account to its card through the ``CARD-ACCT-ID``
-        alternate index (:meth:`CardRepository.GetByAcctId`), and surfaces the
-        verbatim COCRDSLC not-found message when the account owns no card. The
-        response is a :class:`~app.schemas.card.CardRead`, so ``card_num`` is
-        masked and ``cvv_cd`` is never serialized. This is a pure read: it never
-        opens a write or commits.
-
-        Args:
-            session: The active async database session (unit of work).
-            acctId: The 11-digit owning-account id from
-                ``GET /cards/by-account/{acctId}``.
-
-        Returns:
-            The masked, cvv-free :class:`~app.schemas.card.CardRead` detail of
-            the account's card.
-
-        Raises:
-            DomainValidationError: When ``acctId`` is blank
-                (``'Account number not provided'``) or not a non-zero 11-digit
-                number (``'Account number must be a non zero 11 digit number'``).
-            NotFoundError: When the account owns no card
-                (``'Did not find cards for this search condition'``,
-                COCRDSLC L154).
-        """
-        normalizedAcctId = self._ValidateAcctId(acctId)
-        cardRecord = await self.cardRepository.GetByAcctId(session, normalizedAcctId)
-        if cardRecord is None:
-            raise NotFoundError(MSG_CARD_NOT_FOUND)
-        # CardRead masks card_num and omits cvv_cd via its schema (AAP 0.7.8).
-        return CardRead.model_validate(cardRecord)
-
-    # ------------------------------------------------------------------ #
     # METHOD 3 -- card update (COCRDUPC, tx CCUP). Optimistic before-     #
     # image check (AAP 0.7.4). Service owns the unit-of-work / commit.    #
     # ------------------------------------------------------------------ #
@@ -564,23 +537,29 @@ class CardService:
            must be non-blank alphabetic (``1230-EDIT-NAME``), the active status
            must be ``Y``/``N`` (``1240-EDIT-CARDSTATUS``), and the expiry must
            carry a valid month and year (``1250``/``1260``).
-        3. Load the current row (``GetByCardNum``); a missing row is the legacy
-           not-found condition. That loaded state is the before-image snapshot.
-        4. No-change short-circuit: if the submitted values equal the
-           before-image (name compared case-insensitively, mirroring the legacy
+        3. Lock the current row with ``SELECT ... FOR UPDATE``
+           (``CardRepository.GetForUpdate`` via :meth:`_LockCurrent`); a missing
+           row is the legacy not-found condition. The lock -- the modern
+           equivalent of the COBOL ``READ CARDDAT ... UPDATE`` (AAP 0.7.4) -- is
+           held through the commit, so it prevents any concurrent transaction
+           from writing between the check and the commit (no lost update; QA
+           finding M-10).
+        4. Optimistic before-image check UNDER THE ROW LOCK (``9300``): compare
+           the CLIENT-ECHOED before-image (``cardUpdate.before_image`` -- the
+           values the operator last read) against the freshly-locked current
+           row. Any difference means another actor committed a change AFTER the
+           client read and BEFORE this update, raising the legacy ``'Record
+           changed by some one else. Please review'`` (L208). Echoing the
+           client's last-read image is what lets the check detect a
+           GET -> intervening-commit -> PUT stale overwrite; the previous
+           implementation snapshotted the row from a server-side read at the
+           START of the PUT, so the before-image always equaled the current row
+           and a stale write went undetected (QA finding C06).
+        5. No-change short-circuit: if the submitted values equal the current
+           locked values (name compared case-insensitively, mirroring the legacy
            ``UPPER-CASE`` compare) there is nothing to write, so the legacy
            ``'No change detected with respect to values fetched.'`` (L188) is
            surfaced and no commit occurs.
-        5. Optimistic before-image check UNDER A ROW LOCK (``9300``): re-read the
-           row with ``SELECT ... FOR UPDATE`` (``CardRepository.GetForUpdate``)
-           and compare the current database values against the before-image. Any
-           difference means another actor changed the row first, raising the
-           legacy ``'Record changed by some one else. Please review'`` (L208).
-           The lock -- the modern equivalent of the COBOL ``READ CARDDAT ...
-           UPDATE`` (AAP 0.7.4) -- is held through the commit, so it both detects
-           a change committed before the lock AND prevents any concurrent
-           transaction from writing between the check and the commit, so no lost
-           update can occur (QA finding M-10).
         6. Apply the new name/expiry/status, then flush and commit (the service
            owns the unit-of-work). No CVV is involved: the card row carries no
            ``cvv_cd`` at all -- it is never persisted (C-03, AAP 0.7.8).
@@ -590,8 +569,9 @@ class CardService:
         Args:
             session: The active async database session (unit of work).
             cardNum: The 16-digit card-number key from ``PUT /cards/{cardNum}``.
-            cardUpdate: The validated new field values (no ``cvv_cd``, no
-                before-image; see class docstring).
+            cardUpdate: The validated new field values plus the required
+                client-echoed ``before_image`` optimistic-lock token (no
+                ``cvv_cd``; see class docstring).
 
         Returns:
             The masked, cvv-free :class:`~app.schemas.card.CardRead` reflecting
@@ -601,88 +581,24 @@ class CardService:
             DomainValidationError: On a card-number, field-edit, or no-change
                 condition (verbatim legacy messages).
             NotFoundError: When no card carries that number
-                (``'Did not find cards for this search condition'``), including
-                when a concurrent transaction deletes the row between the
-                before-image load and the locking re-read.
+                (``'Did not find cards for this search condition'``).
             OptimisticLockError: When the before-image check detects a
                 concurrent modification (``'Record changed by some one else.
                 Please review'``).
-            ConflictError: When the locking re-read fails
+            ConflictError: When the locking read fails
                 (``'Could not lock record for update'``) or the commit fails
                 (``'Update of record failed'``).
         """
         normalizedCardNum = self._ValidateCardNum(cardNum)
         self._EditUpdateFields(cardUpdate)
-        cardRecord = await self.cardRepository.GetByCardNum(session, normalizedCardNum)
-        if cardRecord is None:
-            raise NotFoundError(MSG_CARD_NOT_FOUND)
-        beforeImage = self._Snapshot(cardRecord)
-        if self._IsNoChange(cardUpdate, beforeImage):
+        lockedRecord = await self._LockCurrent(session, normalizedCardNum)
+        currentImage = self._Snapshot(lockedRecord)
+        self._CheckBeforeImage(currentImage, self._ExtractBeforeImage(cardUpdate))
+        if self._IsNoChange(cardUpdate, currentImage):
             raise DomainValidationError(MSG_NO_CHANGE_DETECTED)
-        lockedRecord = await self._LockCurrent(session, cardRecord)
-        self._CheckBeforeImage(self._Snapshot(lockedRecord), beforeImage)
         self._ApplyUpdate(lockedRecord, cardUpdate)
         await self._Persist(session, lockedRecord)
         return CardRead.model_validate(lockedRecord)
-
-    # ------------------------------------------------------------------ #
-    # METHOD 3b -- card update BY OWNING ACCOUNT (COCRDUPC via the        #
-    # CARD-ACCT-ID alternate index). Added for QA C1: the by-account      #
-    # detail view returns a MASKED card_num, so the client cannot address #
-    # the PUT by PAN. This resolves the account to its real PAN           #
-    # server-side and delegates to the PAN-keyed update, reusing every    #
-    # field edit, the optimistic before-image check, and the commit.      #
-    # ------------------------------------------------------------------ #
-    async def UpdateCardByAccount(
-        self,
-        session: AsyncSession,
-        acctId: str,
-        cardUpdate: CardUpdate,
-    ) -> CardRead:
-        """Update a card's editable fields addressed BY OWNING ACCOUNT (QA C1).
-
-        Because the by-account detail view (:meth:`GetCardByAccount`) returns a
-        MASKED ``card_num``, the client has no real PAN to address a
-        PAN-keyed ``PUT /cards/{cardNum}`` with. This method accepts the
-        unmasked account id instead: it edits the account id
-        (``2210-EDIT-ACCOUNT``), resolves the account to its real card number
-        through the ``CARD-ACCT-ID`` alternate index
-        (:meth:`CardRepository.GetByAcctId`) entirely server-side (the full PAN
-        never leaves the service), and then DELEGATES to :meth:`UpdateCard` so
-        the legacy field edits, the optimistic before-image concurrency check
-        (AAP 0.7.4), and the unit-of-work commit are reused verbatim rather than
-        duplicated (Minimal Change Clause / DRY). The service owns the commit.
-
-        Args:
-            session: The active async database session (unit of work).
-            acctId: The 11-digit owning-account id from
-                ``PUT /cards/by-account/{acctId}``.
-            cardUpdate: The validated new field values (editable fields only:
-                embossed name, expiration date, active status -- never
-                ``card_num``, ``acct_id``, or the CVV).
-
-        Returns:
-            The masked, cvv-free :class:`~app.schemas.card.CardRead` reflecting
-            the committed row.
-
-        Raises:
-            DomainValidationError: On a blank/invalid account id, a failed field
-                edit, or a no-change condition (verbatim legacy messages).
-            NotFoundError: When the account owns no card
-                (``'Did not find cards for this search condition'``).
-            OptimisticLockError: When the before-image check detects a
-                concurrent modification.
-            ConflictError: When the re-read or the commit fails.
-        """
-        normalizedAcctId = self._ValidateAcctId(acctId)
-        cardRecord = await self.cardRepository.GetByAcctId(session, normalizedAcctId)
-        if cardRecord is None:
-            raise NotFoundError(MSG_CARD_NOT_FOUND)
-        # Delegate to the PAN-keyed update with the REAL (unmasked) card number
-        # resolved above; UpdateCard re-loads the row for its before-image
-        # check, so passing the key (not the ORM row) keeps the two paths
-        # behaviourally identical.
-        return await self.UpdateCard(session, cardRecord.card_num, cardUpdate)
 
     # ------------------------------------------------------------------ #
     # Shared card-number edit (COCRDSLC/COCRDUPC 1000-EDIT-INPUTS).       #
@@ -714,55 +630,6 @@ class CardService:
         if not editResult.isValid:
             raise DomainValidationError(MSG_CARD_NUM_INVALID)
         return normalizedCardNum
-
-    # ------------------------------------------------------------------ #
-    # Shared account-id edit for the by-account view/update (QA C1).      #
-    # Mirrors COACTVWC 2210-EDIT-ACCOUNT so account-id validation is      #
-    # identical to account_service (blank -> non-zero 11-digit numeric).  #
-    # ------------------------------------------------------------------ #
-    def _ValidateAcctId(self, acctId: str) -> str:
-        """Edit and normalize the owning-account id (blank -> non-zero 11-digit).
-
-        The validator is used only to DETECT validity; the raised message is the
-        verbatim legacy operator text (identical to ``account_service``), not the
-        validator's generic wording.
-
-        Args:
-            acctId: The raw account-id key from the request path.
-
-        Returns:
-            The stripped, validated non-zero 11-digit account id.
-
-        Raises:
-            DomainValidationError: Blank (``'Account number not provided'``) or
-                not a non-zero 11-digit number
-                (``'Account number must be a non zero 11 digit number'``).
-        """
-        if acctId is None or not str(acctId).strip():
-            raise DomainValidationError(MSG_ACCT_NUM_NOT_PROVIDED)
-        normalizedAcctId = str(acctId).strip()
-        editResult = validators.ValidateNumericId(
-            ACCT_ID_FIELD_LABEL, normalizedAcctId, validators.ACCT_ID_LENGTH,
-        )
-        if not editResult.isValid or self._IsAllZeros(normalizedAcctId):
-            raise DomainValidationError(MSG_ACCT_NUM_INVALID)
-        return normalizedAcctId
-
-    @staticmethod
-    def _IsAllZeros(numericText: str) -> bool:
-        """Return True when every character of ``numericText`` is ``'0'``.
-
-        Ports the COACTVWC all-zeroes rejection so an account id of all zeroes
-        fails the non-zero edit exactly as the legacy screen (and
-        ``account_service``) do.
-
-        Args:
-            numericText: The already-stripped numeric string to test.
-
-        Returns:
-            True when the string is non-empty and consists solely of ``'0'``.
-        """
-        return len(numericText) > 0 and set(numericText) == {"0"}
 
     # ------------------------------------------------------------------ #
     # Field edits (COCRDUPC 1230/1240/1250/1260-EDIT-*).                  #
@@ -881,42 +748,73 @@ class CardService:
             return ""
         return embossedName.strip().upper()
 
-    def _IsNoChange(self, cardUpdate: CardUpdate, beforeImage: _CardImage) -> bool:
-        """Return whether the submitted values match the before-image (no-op).
+    def _IsNoChange(self, cardUpdate: CardUpdate, currentImage: _CardImage) -> bool:
+        """Return whether the submitted values match the current row (no-op).
 
         Mirrors the legacy NEW-vs-OLD comparison that precedes the write: the
         name is compared case-insensitively (``UPPER-CASE`` in COCRDUPC), the
-        expiry and status directly. There is no ``cvv_cd`` in play at all -- the
-        card row never carries one (never persisted; C-03) -- so it is excluded
-        from this compare.
+        expiry and status directly. The comparison is against the freshly-locked
+        CURRENT row (the values now in the database), so if the submission is
+        identical to what is stored there is nothing to write. There is no
+        ``cvv_cd`` in play at all -- the card row never carries one (never
+        persisted; C-03) -- so it is excluded from this compare.
 
         Args:
             cardUpdate: The submitted new field values.
-            beforeImage: The snapshot of the row as first loaded.
+            currentImage: Snapshot of the freshly-locked current row.
 
         Returns:
             True when nothing changed and the update should short-circuit.
         """
         sameName = self._NormalizeName(cardUpdate.embossed_name) == self._NormalizeName(
-            beforeImage.embossed_name,
+            currentImage.embossed_name,
         )
-        sameExpiry = cardUpdate.expiration_date == beforeImage.expiration_date
-        sameStatus = cardUpdate.active_status == beforeImage.active_status
+        sameExpiry = cardUpdate.expiration_date == currentImage.expiration_date
+        sameStatus = cardUpdate.active_status == currentImage.active_status
         return sameName and sameExpiry and sameStatus
 
-    def _CheckBeforeImage(self, currentImage: _CardImage, beforeImage: _CardImage) -> None:
-        """Enforce the optimistic before-image check (COCRDUPC ``9300``).
+    @staticmethod
+    def _ExtractBeforeImage(cardUpdate: CardUpdate) -> "CardBeforeImage":
+        """Return the client-echoed before-image carried on the update payload.
 
-        Compares the just-re-read current row against the before-image the
-        service first loaded. The name is folded case-insensitively (legacy
-        ``UPPER-CASE``); expiry and status are compared directly -- the editable
-        field set COCRDUPC's ``9300-CHECK-CHANGE-IN-REC`` inspects (the legacy
-        CVV comparison is dropped because the CVV is no longer persisted, QA
-        finding C-03). Any difference means another unit of work committed first.
+        Implements the client side of the COCRDUPC optimistic-lock contract
+        (AAP 0.7.4, QA finding C06): ``CardUpdate.before_image`` is a *required*
+        echo of the editable card fields the caller last read.
+        :meth:`_CheckBeforeImage` compares it against the freshly-locked row, so
+        a stale write (the client read old values, another actor committed
+        newer ones, the client then submits based on the old values) is rejected
+        instead of silently overwriting the concurrent change. This mirrors
+        ``account_service._ExtractBeforeImage``.
 
         Args:
-            currentImage: Snapshot of the row after the concurrency re-read.
-            beforeImage: Snapshot of the row as first loaded.
+            cardUpdate: The validated update payload (carries ``before_image``).
+
+        Returns:
+            The :class:`~app.schemas.card.CardBeforeImage` the client echoed.
+        """
+        return cardUpdate.before_image
+
+    def _CheckBeforeImage(
+        self, currentImage: _CardImage, beforeImage: "CardBeforeImage"
+    ) -> None:
+        """Enforce the optimistic before-image check (COCRDUPC ``9300``).
+
+        Compares the freshly-locked current row against the CLIENT-ECHOED
+        before-image -- the values the operator last read (``cardUpdate.
+        before_image``), NOT a server-side snapshot taken at the start of the
+        PUT. This is what lets the check detect a GET -> intervening-commit ->
+        PUT stale overwrite (QA finding C06): if any field the client last read
+        differs from the current committed row, another unit of work changed it
+        in the interim. The name is folded case-insensitively (legacy
+        ``UPPER-CASE``); ``active_status`` is compared directly;
+        ``expiration_date`` is compared only when the client echoed it (the
+        column is nullable, so an unsent value must not manufacture a false
+        conflict). The legacy CVV comparison is dropped because the CVV is no
+        longer persisted (QA finding C-03).
+
+        Args:
+            currentImage: Snapshot of the freshly-locked current row.
+            beforeImage: The client-echoed :class:`~app.schemas.card.CardBeforeImage`.
 
         Raises:
             OptimisticLockError: When any compared field differs
@@ -925,48 +823,50 @@ class CardService:
         nameChanged = self._NormalizeName(currentImage.embossed_name) != self._NormalizeName(
             beforeImage.embossed_name,
         )
-        otherChanged = (
-            currentImage.expiration_date != beforeImage.expiration_date
-            or currentImage.active_status != beforeImage.active_status
+        statusChanged = currentImage.active_status != beforeImage.active_status
+        expiryEchoed = "expiration_date" in beforeImage.model_fields_set
+        expiryChanged = (
+            expiryEchoed
+            and currentImage.expiration_date != beforeImage.expiration_date
         )
-        if nameChanged or otherChanged:
+        if nameChanged or statusChanged or expiryChanged:
             raise OptimisticLockError(MSG_RECORD_CHANGED)
 
     # ------------------------------------------------------------------ #
     # Concurrency locking re-read + apply + persist (COCRDUPC 9200-WRITE  #
     # -PROC, READ CARDDAT ... UPDATE).                                    #
     # ------------------------------------------------------------------ #
-    async def _LockCurrent(self, session: AsyncSession, card: "Card") -> "Card":
-        """Re-read the row FOR UPDATE, locking it for the rewrite (READ...UPDATE).
+    async def _LockCurrent(self, session: AsyncSession, cardNum: str) -> "Card":
+        """Read the row FOR UPDATE, locking it for the rewrite (READ...UPDATE).
 
-        Replaces the previous lock-free ``session.refresh`` with a genuine
-        ``SELECT ... FOR UPDATE`` via
-        :meth:`app.repositories.CardRepository.GetForUpdate` (QA finding M-10).
+        Issues a genuine ``SELECT ... FOR UPDATE`` via
+        :meth:`app.repositories.CardRepository.GetForUpdate` (QA findings M-10 /
+        C06). The lock is the FIRST database access of the update flow -- the
+        current row and its lock are acquired together -- so the before-image
+        check and the write both operate on the same locked, freshly-read image.
         Holding the acquired row lock from here through the commit serializes
-        concurrent card updates so no lost update can occur after the
-        before-image check passes, reproducing the legacy ``READ CARDDAT ...
-        UPDATE`` -> ``REWRITE`` serialization (AAP 0.7.4). ``GetForUpdate``
-        re-reads the row's columns (``populate_existing``) so the returned image
-        reflects the TRUE current database state for the before-image compare.
+        concurrent card updates so no lost update can occur, reproducing the
+        legacy ``READ CARDDAT ... UPDATE`` -> ``REWRITE`` serialization
+        (AAP 0.7.4). ``GetForUpdate`` re-reads the row's columns
+        (``populate_existing``) so the returned image reflects the TRUE current
+        database state for the before-image compare against the client echo.
 
         Args:
-            session: The active async database session that owns ``card``.
-            card: The card row previously loaded for its before-image; its key
-                is used to acquire the locking read.
+            session: The active async database session (unit of work).
+            cardNum: The 16-digit card-number key to lock.
 
         Returns:
-            The locked, freshly-read :class:`~app.models.card.Card` (the same
-            identity-mapped instance, with its current attributes).
+            The locked, freshly-read :class:`~app.models.card.Card`.
 
         Raises:
-            NotFoundError: When the row no longer exists -- a concurrent
-                transaction deleted it between the before-image load and the
-                lock (``'Did not find cards for this search condition'``).
+            NotFoundError: When no row carries that card number -- the legacy
+                ``INVALID KEY`` / ``NOTFND`` condition
+                (``'Did not find cards for this search condition'``).
             ConflictError: When the locking read itself fails
                 (``'Could not lock record for update'``).
         """
         try:
-            lockedCard = await self.cardRepository.GetForUpdate(session, card.card_num)
+            lockedCard = await self.cardRepository.GetForUpdate(session, cardNum)
         except SQLAlchemyError as lockError:
             raise ConflictError(MSG_COULD_NOT_LOCK) from lockError
         if lockedCard is None:

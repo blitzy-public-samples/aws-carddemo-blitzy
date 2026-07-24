@@ -2,10 +2,15 @@
 
 This matrix maps every legacy z/OS mainframe artifact of the CardDemo
 application to its modern three-tier equivalent, and back again. It follows the
-**Minimal Change Clause** of the migration: **1 COBOL online program → 1
-service + router + repository cluster**, **1 BMS map → 1 frontend page**, **1
-batch program → 1 `batch/jobs` module**, **1 record copybook → 1 SQLAlchemy
-model + Pydantic schema**, and **1 VSAM file → 1 PostgreSQL table + repository**.
+**Minimal Change Clause** of the migration: **1 BMS map → 1 frontend page → 1
+REST endpoint**, **1 batch program → 1 `batch/jobs` module**, **1 record
+copybook → 1 SQLAlchemy model + Pydantic schema**, and **1 VSAM file → 1
+PostgreSQL table + repository**. Online **services are consolidated by domain**:
+the related `CO*C` programs of one domain share a single service (for example
+account view + update → `account_service`), so the program → service mapping is
+**many-to-one, not 1:1**. The per-program detail, the domain consolidations, and
+the additional non-screen operations are all disclosed in
+[§1](#1-online-transactions).
 Use it to trace any mainframe program, map, copybook, or dataset to the exact
 modern route, endpoint, service, model, or module that now carries its business
 logic. Every legacy source remains **unchanged** under [`../app/`](../app); the
@@ -19,16 +24,19 @@ modern code lives under `backend/`, `frontend/`, and `batch/`.
 - [4. VSAM Datasets to Tables and Repositories](#4-vsam-datasets-to-tables-and-repositories)
 - [5. Concept Mapping](#5-concept-mapping)
 - [6. Out-of-Scope Legacy Artifacts](#6-out-of-scope-legacy-artifacts)
-- [7. Related Documentation](#7-related-documentation)
+- [7. Target Inventory and Scope Reconciliation](#7-target-inventory-and-scope-reconciliation)
+- [8. Related Documentation](#8-related-documentation)
 
 ## 1. Online Transactions
 
 Each legacy CICS transaction (a BMS map driven by one `CO*C` COBOL program) maps
-to one Next.js/Material UI page, one REST endpoint, and one backend service.
-Backend services are the `*_service.py` modules under
-`backend/app/services/`; their HTTP routers are the matching files under
-`backend/app/api/v1/`. REST endpoints are shown relative to the versioned API
-mount — every endpoint is served under the `/api/v1` prefix (for example
+to one Next.js/Material UI page and one REST endpoint. The **backend service is
+shared by domain**: several related programs consolidate into one `*_service.py`
+module (see the consolidation note below the table), so the `Backend Service`
+column is intentionally *many-to-one*. Backend services are the `*_service.py`
+modules under `backend/app/services/`; their HTTP routers are the matching files
+under `backend/app/api/v1/`. REST endpoints are shown relative to the versioned
+API mount — every endpoint is served under the `/api/v1` prefix (for example
 `POST /auth/login` is `POST /api/v1/auth/login`); see the
 [API reference](./api-reference.md) for the full contract.
 
@@ -59,6 +67,37 @@ mount — every endpoint is served under the `/api/v1` prefix (for example
 > menu and admin-user paths are those declared in
 > `backend/app/api/v1/menu.py` and `backend/app/api/v1/users.py`.
 
+**Service consolidation (many-to-one).** Related online programs share one
+domain service, so the program → service mapping above is deliberately
+*many-to-one*:
+
+| Backend Service | Consolidated COBOL programs (screens) |
+| :-------------- | :------------------------------------ |
+| `auth_service` | `COSGN00C` (CC00) |
+| `menu_service` | `COMEN01C` (CM00) + `COADM01C` (CA00) |
+| `account_service` | `COACTVWC` (CAVW) + `COACTUPC` (CAUP) |
+| `card_service` | `COCRDLIC` (CCLI) + `COCRDSLC` (CCDL) + `COCRDUPC` (CCUP) |
+| `transaction_service` | `COTRN00C` (CT00) + `COTRN01C` (CT01) + `COTRN02C` (CT02) |
+| `report_service` | `CORPT00C` (CR00) |
+| `billpay_service` | `COBIL00C` (CB00) |
+| `user_admin_service` | `COUSR00C`–`COUSR03C` (CU00–CU03) |
+
+**Additional operations (no 1:1 legacy screen).** Beyond the 17 screen
+endpoints above, the API exposes three read/support operations under `/api/v1`
+that have no dedicated legacy BMS map, plus two unversioned health probes. They
+are disclosed here for a complete, bidirectional inventory:
+
+| Operation | Purpose | Origin |
+| :-------- | :------ | :----- |
+| `POST /auth/logout` | Server-side session revocation (session-based auth baseline, AAP §0.8.4) | Modern session infrastructure (no legacy screen) |
+| `GET /billpay/{acctId}` | Available-credit lookup backing the bill-pay screen (`limit − balance`) | Read half of the `COBIL00C` bill-pay flow |
+| `GET /admin/users/{userId}` | Single-user fetch that populates the Update-User and Delete-User forms | Read half of `COUSR02C` / `COUSR03C` |
+| `GET /health`, `GET /health/ready` | Unversioned liveness + DB-readiness probes | Modern operational infrastructure |
+
+This yields **20 operations under `/api/v1`** (the 17 screen endpoints above plus
+the three read/support operations) and **2 unversioned health probes** — **22
+HTTP operations in total**.
+
 ## 2. Batch Programs
 
 Each in-scope batch COBOL program becomes one idempotent Python module under
@@ -84,8 +123,28 @@ is listed for cross-reference.
 
 > The full batch chain order (`CLOSEFIL → … → OPENFIL`) and per-job semantics —
 > posting codes, interest truncation, and statement formats — are documented in
-> the [batch guide](./batch.md). Data loaders (`batch/loaders/*.py`) seed each
-> table from `../app/data`.
+> the [batch guide](./batch.md).
+
+### Data Loaders
+
+The seed loaders under `batch/loaders/` populate each table from the
+`../app/data` sample datasets, re-expressing the legacy IDCAMS `REPRO` load jobs.
+`USRSEC` ships EBCDIC-only, so `init_users.py` decodes it (or regenerates the
+seed users) and **hashes** the plaintext password before it reaches the `users`
+table.
+
+| Loader Module | Seed Source (`app/data`) | Legacy Load JCL | Table |
+| :------------ | :----------------------- | :-------------- | :---- |
+| `init_users.py` | `EBCDIC/USRSEC.PS` | `DUSRSECJ` | `users` |
+| `load_accounts.py` | `ASCII/acctdata.txt` | `ACCTFILE` | `accounts` |
+| `load_cards.py` | `ASCII/carddata.txt` | `CARDFILE` | `cards` |
+| `load_customers.py` | `ASCII/custdata.txt` | `CUSTFILE` | `customers` |
+| `load_xref.py` | `ASCII/cardxref.txt` | `XREFFILE` | `card_xref` |
+| `load_transactions.py` | `ASCII/dailytran.txt` | `TRANFILE` | `transactions` |
+| `load_disclosure_groups.py` | `ASCII/discgrp.txt` | `DISCGRP` | `disclosure_group` |
+| `load_tcatbal.py` | `ASCII/tcatbal.txt` | `TCATBALF` | `tran_category_balance` |
+| `load_tran_categories.py` | `ASCII/trancatg.txt` | `TRANCATG` | `transaction_category` |
+| `load_tran_types.py` | `ASCII/trantype.txt` | `TRANTYPE` | `transaction_type` |
 
 ## 3. Copybooks to Models and Schemas
 
@@ -102,6 +161,7 @@ own.
 | `CVACT02Y` | `CARD-RECORD` | `backend/app/models/card.py` | `cards` |
 | `CVACT03Y` | `CARD-XREF-RECORD` | `backend/app/models/card_xref.py` | `card_xref` |
 | `CVCUS01Y` | `CUSTOMER-RECORD` | `backend/app/models/customer.py` | `customers` |
+| `CUSTREC` | `CUSTOMER-RECORD` (legacy alternate layout) | `backend/app/models/customer.py` (consolidated with `CVCUS01Y`) | `customers` |
 | `CSUSR01Y` | `SEC-USER-DATA` | `backend/app/models/user.py` | `users` |
 | `CVTRA05Y` (+ `CVTRA06Y` daily) | `TRAN-RECORD` / `DALYTRAN-RECORD` | `backend/app/models/transaction.py` | `transactions` |
 | `CVTRA01Y` | `TRAN-CAT-BAL-RECORD` | `backend/app/models/tran_category_balance.py` | `tran_category_balance` |
@@ -111,6 +171,10 @@ own.
 | `COCOM01Y` | `CARDDEMO-COMMAREA` | `backend/app/core/dependencies.py` — session/JWT identity + role (replaces COMMAREA propagation) | — |
 | `COMEN02Y`, `COADM02Y`, `COTTL01Y`, `COSTM01`, `CSDAT01Y`, `CSMSG01Y`, `CSMSG02Y`, `CSSETATY`, `CSSTRPFY` | Screen / message / attribute layouts | Pydantic `backend/app/schemas/*` + constants + `frontend/src/types/*` | — |
 | `CSUTLDPY`, `CSUTLDWY` | Date work areas | `backend/app/utils/date_utils.py` | — |
+| `CVTRA07Y` | `REPORT-NAME-HEADER` (report header layout) | `backend/app/services/report_service.py` + `batch/jobs/tran_detail_report.py` (report headers) | — |
+| `CVCRD01Y` | `CC-WORK-AREAS` (card-screen work areas + AID / PF-key constants) | `frontend/src/app/cards/*` pages + PF-key → button/keyboard mapping | — |
+| `CSLKPCDY` | US phone / state / ZIP lookup-edit codes | `backend/app/utils/validators.py` (field validation) | — |
+| `UNUSED1Y` | `UNUSED-DATA` (intentionally unused placeholder) | none — **not ported** (no target artifact) | — |
 
 > Symbolic-map copybooks in [`../app/cpy-bms/`](../app/cpy-bms) supply the exact
 > screen field names, lengths, and attributes that drive the TypeScript
@@ -191,7 +255,28 @@ All of the above legacy material — together with every ported COBOL program,
 copybook, BMS map, and dataset — is preserved unchanged under
 [`../app/`](../app).
 
-## 7. Related Documentation
+## 7. Target Inventory and Scope Reconciliation
+
+The modern target trees add files beyond the specific paths named in the AAP
+feature description. Every such file is **either** matched by an AAP trailing
+wildcard (§0.2.1 / §0.5.6) **or** mandated by a specific remediation finding —
+none is a silent scope expansion, and none can be removed without dropping
+required behaviour. The categories are:
+
+| Category | Example files | Authorization |
+| :------- | :------------ | :------------ |
+| Additional Alembic migrations | `0003_drop_card_cvv`, `0004_add_account_group_fk`, `0005_add_user_session_version`, `0006_drop_account_groups`, `0007_repair_daily_staging_status` | AAP `backend/alembic/versions/*.py` wildcard; each realizes a required schema correction (CVV removal, `group_id` handling, session versioning, daily-staging repair) |
+| Security / hardening modules | `core/rate_limiter.py`, `core/log_masking.py`, `core/correlation.py`, `utils/csv_safety.py`, `jobs/output_safety.py` | AAP `core/*.py`, `utils/*.py`, `jobs/*.py` wildcards; mandated by the Ochs no-hardcoding / sanitize-input rule and findings on rate limiting, PII redaction, CSV-injection safety, and correlation IDs |
+| Split dependency manifest | `backend/requirements-dev.txt` | Runtime-vs-dev dependency split so the production image installs runtime deps only |
+| Additional tests | files under `backend/tests/`, `batch/tests/`, `frontend/__tests__/` | AAP `tests/**` / `__tests__/**` wildcards; cover the concurrency, race-safety, idempotency, staging-status, and header behaviours added during remediation |
+
+Current tracked target-file counts (excluding the reference-only `app/` tree):
+**backend 124, frontend 81, batch 51, docs 6, root config 5**. Test modules:
+**backend 36, batch 14, frontend 26**. These counts are stated here as the
+authoritative, honest inventory; they exceed the AAP's individually-named paths
+only by the wildcard-permitted and finding-mandated files catalogued above.
+
+## 8. Related Documentation
 
 - [Architecture](./architecture.md) — system design, layering, and migration mapping.
 - [API Reference](./api-reference.md) — the full REST endpoint contract.

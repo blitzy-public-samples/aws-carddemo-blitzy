@@ -101,6 +101,15 @@ const EMPTY_USER_ID_MESSAGE = /please enter user id/i;
 /** Server login-failure message surfaced for an HTTP 401 (bad credentials). */
 const LOGIN_FAILURE_MESSAGE = 'Wrong Password. Try again ...';
 
+/**
+ * Actionable message the client normalizes for a request that never reaches the
+ * server -- a dropped network, a timeout, or a CORS / host-alias rejection (QA
+ * finding M-11). The signon screen must surface this so the user is never left
+ * without feedback.
+ */
+const NETWORK_ERROR_MESSAGE =
+    'Unable to reach the server. Please check your network connection and try again.';
+
 /* ------------------------------------------------------------------------- */
 /* Suite.                                                                    */
 /* ------------------------------------------------------------------------- */
@@ -131,6 +140,27 @@ describe('SignonPage', () => {
         expect(
             screen.getByRole('button', { name: SIGN_ON_BUTTON_NAME }),
         ).toBeInTheDocument();
+    });
+
+    it('exposes an accessible h1 heading and password-manager autocomplete tokens (N-01)', () => {
+        RenderWithProviders(<SignonPage />);
+
+        // Exactly one level-1 heading names the page, so assistive tech has a
+        // single, correct document title anchor (QA N-01, "H1 hierarchy").
+        const headings = screen.getAllByRole('heading', { level: 1 });
+        expect(headings).toHaveLength(1);
+        expect(headings[0]).toHaveTextContent(/card\s*demo sign on/i);
+
+        // Identity fields carry the semantic autocomplete tokens so browsers and
+        // password managers offer the right credentials (QA N-01, "autocomplete").
+        expect(screen.getByLabelText(/user id/i)).toHaveAttribute(
+            'autocomplete',
+            'username',
+        );
+        expect(screen.getByLabelText(/password/i)).toHaveAttribute(
+            'autocomplete',
+            'current-password',
+        );
     });
 
     it('shows the verbatim User ID edit and does not call the server when fields are empty', async () => {
@@ -223,6 +253,31 @@ describe('SignonPage', () => {
         expect(errorAlert).toHaveTextContent(/wrong password/i);
 
         // A failed signon must NOT leave the /signon screen (no navigation).
+        expect(mockPush).not.toHaveBeenCalled();
+        expect(mockReplace).not.toHaveBeenCalled();
+    });
+
+    it('surfaces an actionable network/CORS error and does not navigate (M-11)', async () => {
+        const user = SetupUser();
+        // A CORS / host-alias rejection or dropped connection is normalized by the
+        // client into an ApiError with status 0 and the actionable network message;
+        // the signon screen must show it (never leave the user without feedback).
+        (Login as jest.Mock).mockRejectedValueOnce(
+            new ApiError({ status: 0, message: NETWORK_ERROR_MESSAGE }),
+        );
+        RenderWithProviders(<SignonPage />);
+
+        await user.type(screen.getByLabelText(/user id/i), REGULAR_USER_ID);
+        await user.type(screen.getByLabelText(/password/i), THROWAWAY_PASSWORD);
+        await user.click(
+            screen.getByRole('button', { name: SIGN_ON_BUTTON_NAME }),
+        );
+
+        // The actionable network message is surfaced in the ErrorAlert.
+        const errorAlert = await screen.findByRole('alert');
+        expect(errorAlert).toHaveTextContent(/unable to reach the server/i);
+
+        // A network failure must NOT navigate away from /signon.
         expect(mockPush).not.toHaveBeenCalled();
         expect(mockReplace).not.toHaveBeenCalled();
     });

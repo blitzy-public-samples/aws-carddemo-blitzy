@@ -382,6 +382,7 @@ function UsersDeleteContent() {
                         onChange={HandleChange}
                         maxLength={USER_ID_MAX_LENGTH}
                         autoFocus={!deepLinkId}
+                        autoComplete="off"
                     />
                     <Button
                         variant="contained"
@@ -396,28 +397,51 @@ function UsersDeleteContent() {
                 </Stack>
 
                 {fetchedUser ? (
-                    <Stack spacing={2}>
+                    /*
+                     * The fetched user's read-only attributes render as a
+                     * description list (`<dl>` / `<dt>` / `<dd>`) so each value
+                     * is programmatically associated with its label (QA N-01,
+                     * "associated labels"). The `<dl>`/`<dd>` user-agent margins
+                     * are reset (`m: 0`) so this is a purely semantic change
+                     * with no visual difference. Typography's `component` prop
+                     * keeps every node an MUI Typography (AAP §0.3.4 rule b).
+                     */
+                    <Stack component="dl" spacing={2} sx={{ m: 0 }}>
                         <Box>
-                            <Typography variant="subtitle2" color="text.secondary">
+                            <Typography
+                                component="dt"
+                                variant="subtitle2"
+                                color="text.secondary"
+                            >
                                 First Name
                             </Typography>
-                            <Typography variant="body1">
+                            <Typography component="dd" variant="body1" sx={{ m: 0 }}>
                                 {fetchedUser.first_name}
                             </Typography>
                         </Box>
                         <Box>
-                            <Typography variant="subtitle2" color="text.secondary">
+                            <Typography
+                                component="dt"
+                                variant="subtitle2"
+                                color="text.secondary"
+                            >
                                 Last Name
                             </Typography>
-                            <Typography variant="body1">
+                            <Typography component="dd" variant="body1" sx={{ m: 0 }}>
                                 {fetchedUser.last_name}
                             </Typography>
                         </Box>
                         <Box>
-                            <Typography variant="subtitle2" color="text.secondary">
+                            <Typography
+                                component="dt"
+                                variant="subtitle2"
+                                color="text.secondary"
+                            >
                                 User Type
                             </Typography>
-                            <Typography variant="body1">{userTypeLabel}</Typography>
+                            <Typography component="dd" variant="body1" sx={{ m: 0 }}>
+                                {userTypeLabel}
+                            </Typography>
                         </Box>
                     </Stack>
                 ) : null}

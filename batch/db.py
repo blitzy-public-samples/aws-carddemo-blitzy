@@ -242,9 +242,9 @@ def GetSyncSession() -> Iterator[Session]:
             test database. This is checked BEFORE the session opens, so no
             statement runs (see :func:`_AssertTestDatabase`).
         Exception: Re-raises, unchanged, whatever the caller's block raised.
-            The broad ``except Exception`` below is the one justified broad guard
-            in this codebase: it does not swallow the error — it performs a
-            unit-of-work rollback and then immediately ``raise``s, so the
+            No exception is ever caught here (Ochs "specific exceptions only",
+            QA M-31): the rollback is driven by a ``finally`` block guarded by a
+            ``committed`` flag, so a failed unit of work is rolled back while the
             original, specific exception type (and traceback) propagates to the
             caller intact. It is a rollback guard, not a catch-all handler.
 
@@ -259,13 +259,18 @@ def GetSyncSession() -> Iterator[Session]:
     # session or statement exists (QA Finding C).
     _AssertTestDatabase()
     session = SessionLocal()
+    # `committed` gates the rollback so NO exception is caught here (Ochs
+    # "specific exceptions only", QA M-31). If the caller's block or the commit
+    # raises, `committed` stays False and the `finally` rolls back the partial
+    # unit of work; the original, specific exception propagates untouched because
+    # it is never intercepted. On clean completion `committed` is True and the
+    # rollback is skipped. The session is always closed.
+    committed = False
     try:
         yield session
         session.commit()
-    except Exception:
-        # Unit-of-work rollback guard: undo any partial writes from the failed
-        # block, then re-raise so the caller sees the original specific error.
-        session.rollback()
-        raise
+        committed = True
     finally:
+        if not committed:
+            session.rollback()
         session.close()

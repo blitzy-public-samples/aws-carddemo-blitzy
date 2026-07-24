@@ -17,14 +17,50 @@
  * elevation (shadows) and the typography variant scale are deliberately left at
  * their MUI defaults and therefore not overridden here.
  *
- * TOKEN-DEFINITION EXEMPTION (AAP §0.3.4): the hex / rgba color literals in this
- * file are the token DEFINITIONS and are explicitly permitted here. The "zero
- * hardcoded CSS values" rule applies to the component/page files that CONSUME
- * the theme (via `sx` / `theme`) — never to this theme-definition file.
+ * TOKEN-DEFINITION EXEMPTION (AAP §0.3.4): the hex / rgba color literals AND the
+ * named `layout` sizing tokens (`drawerWidth`, `fullWidth`, `fullViewportHeight`)
+ * in this file are the token DEFINITIONS and are explicitly permitted here. The
+ * "zero hardcoded CSS values" rule applies to the component/page files that
+ * CONSUME the theme (via `sx` / `theme`) — never to this theme-definition file.
  */
 
 import { createTheme } from '@mui/material/styles';
 import type { ThemeOptions } from '@mui/material/styles';
+
+/**
+ * Layout-token contract (QA finding M-25). The design-system rule (AAP §0.3.4)
+ * requires every CSS value in the CONSUMING component/page files to resolve to a
+ * theme token — magic layout literals such as the `240` drawer width, `100%`
+ * fill-parent width and `100vh` full-viewport height are NOT among the six
+ * exempt keywords and must not be hardcoded at the call site. They are therefore
+ * hoisted here, into the theme, as NAMED tokens under a custom `layout`
+ * namespace, and consumed via `sx={(theme) => ({ ... theme.layout.X })}`.
+ *
+ * The augmentation makes `layout` a required member of the resolved `Theme` (so
+ * consumers get non-optional, typo-safe access) while keeping it optional on
+ * `ThemeOptions` (so `createTheme` does not force every caller to re-supply it;
+ * the single application theme below sets it once, and the test theme inherits
+ * it via `createTheme(theme, …)`).
+ */
+declare module '@mui/material/styles' {
+    interface Theme {
+        layout: {
+            /** Side-navigation drawer width in pixels (AppShell). */
+            drawerWidth: number;
+            /** Fill-parent width token (`100%`) for flex/region children. */
+            fullWidth: string;
+            /** Full-viewport height token (`100vh`) for full-page shells. */
+            fullViewportHeight: string;
+        };
+    }
+    interface ThemeOptions {
+        layout?: {
+            drawerWidth?: number;
+            fullWidth?: string;
+            fullViewportHeight?: string;
+        };
+    }
+}
 
 /**
  * Explicit token contract for the CardDemo theme. Typed as `ThemeOptions` so the
@@ -79,6 +115,16 @@ const themeOptions: ThemeOptions = {
     },
     shape: {
         borderRadius: 4,
+    },
+    // Named layout tokens (QA finding M-25). These are the token DEFINITIONS for
+    // the drawer width and the fill-parent / full-viewport sizing keywords; they
+    // are permitted HERE (theme-definition file) under the same exemption as the
+    // color literals above, and consumed symbolically as `theme.layout.*` by the
+    // AppShell, DataTable and signon page rather than as inline magic values.
+    layout: {
+        drawerWidth: 240,
+        fullWidth: '100%',
+        fullViewportHeight: '100vh',
     },
 };
 

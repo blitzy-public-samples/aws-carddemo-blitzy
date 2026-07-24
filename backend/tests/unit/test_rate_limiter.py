@@ -24,7 +24,13 @@ helpers, camelCase locals, ALL_UPPERCASE constants.
 from __future__ import annotations
 
 from app.core.config import settings
-from app.core.rate_limiter import UNKNOWN_CLIENT_HOST, LoginRateLimiter
+from app.core.rate_limiter import (
+    IP_ATTEMPT_MULTIPLIER,
+    MAX_TRACKED_KEYS,
+    RECORD_IDLE_TTL_SECONDS,
+    UNKNOWN_CLIENT_HOST,
+    LoginRateLimiter,
+)
 
 # ---------------------------------------------------------------------------
 # Module constants (ALL_UPPERCASE per the Ochs Rule 0.8.2).
@@ -89,7 +95,8 @@ def test_build_key_normalizes_user_id_case_and_whitespace():
     keyUpper = limiter.BuildKey("ADMIN001", CLIENT_HOST)
 
     assert keyLower == keyUpper
-    assert CLIENT_HOST in keyUpper
+    assert CLIENT_HOST in keyUpper.ipKey
+    assert "ADMIN001" in keyUpper.accountKey
 
 
 def test_distinct_hosts_produce_distinct_keys():
@@ -218,5 +225,105 @@ def test_unknown_host_sentinel_builds_valid_key():
 
     sentinelKey = limiter.BuildKey(USER_ID, UNKNOWN_CLIENT_HOST)
 
-    assert UNKNOWN_CLIENT_HOST in sentinelKey
+    assert UNKNOWN_CLIENT_HOST in sentinelKey.ipKey
     assert limiter.IsLocked(sentinelKey) is False
+
+
+# ---------------------------------------------------------------------------
+# M09: independent account / IP buckets close the rotation bypass.
+# ---------------------------------------------------------------------------
+def test_account_bucket_locks_across_rotating_hosts():
+    """QA finding M09: guessing ONE account from MANY hosts trips the account bucket.
+
+    The old combined ``(user, host)`` key let an attacker rotate the source host
+    to mint a fresh key every attempt and never lock. With an independent
+    account bucket, LOGIN_MAX_ATTEMPTS failures against a single user id lock
+    that account REGARDLESS of the (all-distinct) source hosts, and a further
+    attempt on the same account from a brand-new host is still blocked.
+    """
+    limiter, _ = BuildLimiter()
+    for attempt in range(settings.LOGIN_MAX_ATTEMPTS):
+        rotatingHost = f"203.0.113.{attempt}"
+        limiter.RegisterFailure(limiter.BuildKey(USER_ID, rotatingHost))
+
+    # A fresh, never-seen host for the SAME account is still locked (account
+    # bucket), proving host rotation cannot bypass the limit.
+    assert limiter.IsLocked(limiter.BuildKey(USER_ID, "203.0.113.250")) is True
+
+
+def test_ip_bucket_locks_on_id_spray_from_one_host():
+    """QA finding M09: spraying MANY user ids from ONE host trips the IP bucket.
+
+    Distinct user ids never fill any single account bucket, but they all share
+    the source-host bucket, which locks at
+    ``LOGIN_MAX_ATTEMPTS * IP_ATTEMPT_MULTIPLIER``. After that many single
+    failures from one host, a further attempt from that host -- even for a
+    brand-new user id -- is blocked.
+    """
+    limiter, _ = BuildLimiter()
+    ipThreshold = settings.LOGIN_MAX_ATTEMPTS * IP_ATTEMPT_MULTIPLIER
+    for attempt in range(ipThreshold):
+        sprayedUser = f"USER{attempt:05d}"
+        limiter.RegisterFailure(limiter.BuildKey(sprayedUser, CLIENT_HOST))
+
+    # A brand-new user id from the same host is blocked by the IP bucket.
+    assert limiter.IsLocked(limiter.BuildKey("BRANDNEW9", CLIENT_HOST)) is True
+
+
+def test_ip_bucket_has_headroom_over_account_threshold():
+    """QA finding M09: a shared host is not locked by a few distinct-account misses.
+
+    ``LOGIN_MAX_ATTEMPTS`` failures from one host, each for a DIFFERENT account,
+    leave every account bucket sub-threshold and the IP bucket well under its
+    (multiplied) threshold, so a legitimate user behind the same NAT egress is
+    not collaterally locked out.
+    """
+    limiter, _ = BuildLimiter()
+    for attempt in range(settings.LOGIN_MAX_ATTEMPTS):
+        distinctUser = f"NATUSER{attempt:03d}"
+        limiter.RegisterFailure(limiter.BuildKey(distinctUser, CLIENT_HOST))
+
+    # Neither an as-yet-unseen user nor the shared host is locked yet.
+    assert limiter.IsLocked(limiter.BuildKey("NATFRESH1", CLIENT_HOST)) is False
+
+
+# ---------------------------------------------------------------------------
+# M09: bounded memory (idle TTL prune + hard size cap).
+# ---------------------------------------------------------------------------
+def test_idle_records_are_pruned_after_ttl():
+    """QA finding M09: a non-locked record idle beyond the TTL is pruned.
+
+    A sub-threshold failure leaves a live (unlocked) record. After the idle TTL
+    elapses, the next mutating call runs the prune and drops it, bounding memory
+    over time without affecting any currently-active lockout.
+    """
+    limiter, clock = BuildLimiter()
+    staleIdentity = limiter.BuildKey("STALEUSER", "10.0.0.1")
+    limiter.RegisterFailure(staleIdentity)
+    assert staleIdentity.accountKey in limiter._records
+    assert staleIdentity.ipKey in limiter._records
+
+    clock.Advance(RECORD_IDLE_TTL_SECONDS + 1)
+    freshIdentity = limiter.BuildKey("FRESHUSER", "10.0.0.2")
+    limiter.RegisterFailure(freshIdentity)
+
+    assert staleIdentity.accountKey not in limiter._records
+    assert staleIdentity.ipKey not in limiter._records
+    assert freshIdentity.accountKey in limiter._records
+
+
+def test_tracked_keys_are_bounded_under_flood():
+    """QA finding M09: a random-id/IP flood cannot grow the map without bound.
+
+    Registering far more distinct identities than the cap keeps the record map
+    at or below :data:`MAX_TRACKED_KEYS` via least-recently-seen eviction, so a
+    spray of random user ids and source hosts can no longer exhaust memory.
+    """
+    limiter, _ = BuildLimiter()
+    floodSize = MAX_TRACKED_KEYS + 200
+    for attempt in range(floodSize):
+        floodUser = f"F{attempt:07d}"
+        floodHost = f"10.{(attempt // 65536) % 256}.{(attempt // 256) % 256}.{attempt % 256}"
+        limiter.RegisterFailure(limiter.BuildKey(floodUser, floodHost))
+
+    assert len(limiter._records) <= MAX_TRACKED_KEYS

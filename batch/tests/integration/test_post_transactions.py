@@ -74,7 +74,6 @@ from sqlalchemy.exc import OperationalError, ProgrammingError
 
 from app.models import (
     Account,
-    AccountGroup,
     Card,
     STATUS_PENDING,
     STATUS_POSTED,
@@ -262,7 +261,7 @@ def _CommittedPendingGraph():
     Cross-connection row locking (``SELECT ... FOR UPDATE SKIP LOCKED``) can only
     be exercised against data that is visible to more than one transaction, so
     this helper deliberately steps OUTSIDE the rolled-back ``db_session`` recipe:
-    it seeds a minimal ``account_group -> account -> card -> 2 PENDING
+    it seeds a minimal ``account -> card -> 2 PENDING
     transactions`` graph on its OWN connection and COMMITS it, then yields two
     independent :class:`~sqlalchemy.orm.Session` objects (``sessionA``,
     ``sessionB``) on two separate connections. On exit it rolls back both
@@ -276,7 +275,7 @@ def _CommittedPendingGraph():
     """
     seedSession = batch_db.SessionLocal()
     try:
-        seedSession.add(AccountGroup(group_id=CONCURRENCY_GROUP_ID))
+        # accounts.group_id is a plain column (QA finding C01) -- no parent row.
         seedSession.add(
             Account(
                 acct_id=CONCURRENCY_ACCT_ID,
@@ -333,11 +332,6 @@ def _CommittedPendingGraph():
             )
             cleanupSession.execute(
                 delete(Account).where(Account.acct_id == CONCURRENCY_ACCT_ID)
-            )
-            cleanupSession.execute(
-                delete(AccountGroup).where(
-                    AccountGroup.group_id == CONCURRENCY_GROUP_ID
-                )
             )
             cleanupSession.commit()
         finally:

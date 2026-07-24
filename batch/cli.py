@@ -49,6 +49,27 @@ from typing import Optional
 import typer
 from sqlalchemy.exc import SQLAlchemyError
 
+# Shared, configuration-free PAN log-masking filter reused from the backend
+# (app.core.log_masking has NO SECRET_KEY/config dependency, so importing it does
+# not reintroduce the backend-only secret requirement). It is installed on the
+# batch root log handlers so that any full PAN that ever reaches a log record is
+# masked to its last four digits as defense-in-depth (QA finding M13); the print
+# jobs additionally mask PAN/SSN at the source before emitting them.
+from app.core.log_masking import PanMaskingFilter
+
+# Shared, dependency-free request-correlation primitive reused from the backend
+# (QA finding M-32). The batch run inherits a correlation id from the
+# CARDDEMO_CORRELATION_ID environment variable when an orchestrator (or the API
+# tier) supplies one -- so a single id spans both tiers -- and stamps it on every
+# batch log record via the correlation filter, mirroring how the API tier tags its
+# request logs. Like log_masking, this module has NO config/SECRET_KEY dependency.
+from app.core.correlation import (
+    CORRELATION_ID_ENV_VAR,
+    BindCorrelationId,
+    InstallCorrelationIdLogFilter,
+    SanitizeCorrelationId,
+)
+
 # --- Batch module public contract (imports restricted to the batch package) ---
 # Transactional session factory (owns commit/rollback per unit of work) and the
 # shared concise-error formatter (strips SQLAlchemy's SQL/parameter dump).
@@ -72,7 +93,7 @@ from batch.jobs.print_customer import PrintCustomers
 from batch.jobs.read_daily_tran import ReadDailyTransactions
 from batch.jobs.tran_detail_report import ReportTransactionDetail
 from batch.jobs.combine_tran import CombineTransactions
-from batch.jobs.backup_tran import BackupTransactions
+from batch.jobs.backup_tran import BackupTransactions, RestoreTransactions
 
 # Data loaders (1:1 with the legacy IDCAMS load jobs).
 from batch.loaders.load_accounts import LoadAccounts
@@ -101,6 +122,12 @@ DEFAULT_OUTPUT_DIR: Path = Path(__file__).resolve().parent.parent / "out"
 
 # Environment variable that overrides the default (INFO) logging level.
 LOG_LEVEL_ENV_VAR: str = "BATCH_LOG_LEVEL"
+
+# Batch log line format. The ``[%(correlation_id)s]`` field is populated by the
+# correlation log filter (QA finding M-32) installed in ``_ConfigureLogging`` so
+# every batch line can be tied to the run's correlation id (and, when inherited
+# from CARDDEMO_CORRELATION_ID, to the API-tier request that triggered it).
+BATCH_LOG_FORMAT: str = "%(asctime)s %(levelname)s [%(correlation_id)s] %(name)s: %(message)s"
 
 # Process exit code emitted when transaction posting produced at least one
 # reject. Mirrors the legacy CBTRN02C ``MOVE 4 TO RETURN-CODE`` when
@@ -167,13 +194,60 @@ def _ConfigureLogging(verbose: bool) -> None:
 
     The level defaults to INFO, is overridable through the ``BATCH_LOG_LEVEL``
     environment variable, and is forced to DEBUG when ``--verbose`` is supplied.
+    The correlation log filter is attached to the batch handlers immediately after
+    ``basicConfig`` (before any record is formatted) so the ``%(correlation_id)s``
+    field in :data:`BATCH_LOG_FORMAT` is always populated (QA finding M-32).
     """
     envLevel = os.environ.get(LOG_LEVEL_ENV_VAR, "INFO").upper()
     logLevel = logging.DEBUG if verbose else getattr(logging, envLevel, logging.INFO)
     logging.basicConfig(
         level=logLevel,
-        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+        format=BATCH_LOG_FORMAT,
     )
+    # Attach the correlation filter FIRST so the correlation_id format token is
+    # populated on every record the batch handlers emit (QA finding M-32), then the
+    # PAN-masking redaction (QA finding M13), then bind this run's correlation id.
+    InstallCorrelationIdLogFilter()
+    _InstallLogRedaction()
+    _BindBatchCorrelationId()
+
+
+def _BindBatchCorrelationId() -> None:
+    """Bind this batch run's correlation id for cross-tier propagation (M-32).
+
+    The id is inherited from the :data:`CORRELATION_ID_ENV_VAR`
+    (``CARDDEMO_CORRELATION_ID``) environment variable when an orchestrator or the
+    API tier supplies one, so a single id can span both tiers; an absent or
+    invalid value yields a fresh, server-generated id via
+    :func:`SanitizeCorrelationId`. Once bound, the id is stamped on every
+    subsequent batch log record by the correlation filter installed in
+    :func:`_ConfigureLogging`.
+    """
+    inheritedId = os.environ.get(CORRELATION_ID_ENV_VAR)
+    correlationId = SanitizeCorrelationId(inheritedId)
+    BindCorrelationId(correlationId)
+    LOGGER.debug("Batch run correlation id: %s", correlationId)
+
+
+def _InstallLogRedaction() -> None:
+    """Attach the PAN-masking filter to every root log handler (QA finding M13).
+
+    Installing the filter on the root logger's HANDLERS (rather than on a single
+    logger) masks every record that flows through batch logging, because all
+    batch module loggers propagate to root. Any full PAN that inadvertently
+    reaches a log message or its arguments is rewritten to its last four digits
+    before the record is formatted, as defense-in-depth on top of the explicit
+    masking the print jobs already perform. The filter is idempotent: a handler
+    that already carries a :class:`PanMaskingFilter` is left untouched, so
+    repeated calls (for example across tests) never stack duplicate filters.
+    """
+    for handler in logging.getLogger().handlers:
+        hasFilter = any(
+            isinstance(existingFilter, PanMaskingFilter)
+            for existingFilter in handler.filters
+        )
+        if not hasFilter:
+            handler.addFilter(PanMaskingFilter())
 
 
 # --------------------------------------------------------------------------- #
@@ -286,10 +360,15 @@ def ReportTransactionDetailCommand(
 
 
 @jobApp.command("combine-tran")
-def CombineTransactionsCommand() -> None:
-    """Combine system + daily transactions (legacy COMBTRAN.jcl / REPROCT.ctl)."""
+def CombineTransactionsCommand(
+    outputDir: Path = typer.Option(
+        DEFAULT_OUTPUT_DIR, "--output-dir", file_okay=False,
+        help="Directory for the combined transaction ledger file.",
+    ),
+) -> None:
+    """Combine POSTED transactions into the master ledger file (legacy COMBTRAN.jcl / REPROCT.ctl)."""
     with GetSyncSession() as session:
-        count = CombineTransactions(session)
+        count = CombineTransactions(session, outputDir=outputDir)
     typer.echo(f"combine-tran complete: {count} rows")
 
 
@@ -300,10 +379,23 @@ def BackupTransactionsCommand(
         help="Directory for the transaction backup file.",
     ),
 ) -> None:
-    """Back up the transaction master (legacy TRANBKP.jcl)."""
+    """Back up the POSTED transaction master (legacy TRANBKP.jcl)."""
     with GetSyncSession() as session:
         count = BackupTransactions(session, outputDir=outputDir)
     typer.echo(f"backup-tran complete: {count} rows")
+
+
+@jobApp.command("restore-tran")
+def RestoreTransactionsCommand(
+    backupFile: Path = typer.Option(
+        ..., "--backup-file", exists=True, dir_okay=False, readable=True,
+        help="Path to a transact_bkup_*.csv file written by backup-tran.",
+    ),
+) -> None:
+    """Restore transactions from a backup file (idempotent replay of TRANBKP output)."""
+    with GetSyncSession() as session:
+        count = RestoreTransactions(session, backupFile)
+    typer.echo(f"restore-tran complete: {count} rows")
 
 
 # --------------------------------------------------------------------------- #

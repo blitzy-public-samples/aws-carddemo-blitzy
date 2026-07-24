@@ -57,7 +57,8 @@ depends_on: str | Sequence[str] | None = None
 # --- Module constants (Ochs ALL_UPPERCASE). No secret or DSN is hardcoded here;
 # the database bind is obtained exclusively from op.get_bind() inside upgrade().
 MONEY_SCALE = 2                       # implied V99 fractional digits on every amount
-POSTED_STATUS = "POSTED"              # transactions seeded as the posted ledger
+POSTED_STATUS = "POSTED"              # terminal posted-ledger status (set by POSTTRAN)
+PENDING_STATUS = "PENDING"            # daily-staging status (CVTRA06Y input; QA C01/C02)
 RECLEN_USER = 80                      # fixed record length of the EBCDIC USRSEC file
 ENCODING_EBCDIC = "cp037"             # IBM EBCDIC code page for the USRSEC dataset
 ENCODING_ASCII = "latin-1"            # byte-preserving decode for the ASCII datasets
@@ -510,11 +511,20 @@ def BuildTransactionRow(r: str) -> dict:
 
     Layout (reclen 350): tran_id X(16), tran_type_cd X(2), tran_cat_cd 9(4),
     tran_source X(10), tran_desc X(100), tran_amt S9(09)V99 -> NUMERIC(11, 2),
-    merchant block, card_num X(16), orig_ts/proc_ts X(26) -> TIMESTAMPTZ. Seeded
-    status is POSTED: the transactions table is the posted ledger (CVTRA05Y)
-    browsed by COTRN00C/CR00, matching the column server_default; the PENDING
-    lifecycle is exercised by the batch posting job, not this baseline seed
-    (AAP 0.7.5 and key insights).
+    merchant block, card_num X(16), orig_ts/proc_ts X(26) -> TIMESTAMPTZ.
+
+    Seeded status is PENDING (QA finding C02). ``dailytran.txt`` is the legacy
+    CVTRA06Y *daily-transaction* file -- the INPUT to posting, not the posted
+    ledger -- and every one of its 300 rows carries a BLANK ``proc_ts`` (the
+    processing timestamp that the CBTRN02C/POSTTRAN posting job stamps only when
+    it posts a row). A blank ``proc_ts`` therefore means "not yet posted", so the
+    faithful seeded status is PENDING and ``proc_ts`` is left NULL (AAP 0.7.5 --
+    dailytran modeled as a PENDING->POSTED staging construct; AAP 0.7.3 --
+    posting stamps the processing timestamp). Marking these rows POSTED with a
+    NULL ``proc_ts`` was incoherent (a posted transaction always has a processing
+    timestamp) and bypassed the POSTTRAN lifecycle. The batch posting job
+    transitions them to POSTED and stamps ``proc_ts``; ``0007`` repairs any
+    database already seeded with the old POSTED value.
     """
     return {
         "tran_id": RequiredText(r[0:16]),
@@ -529,8 +539,10 @@ def BuildTransactionRow(r: str) -> dict:
         "merchant_zip": CleanText(r[252:262]),
         "card_num": RequiredText(r[262:278]),
         "orig_ts": ParseOptionalTimestamp(r[278:304]),
+        # proc_ts is blank in every dailytran.txt row (not yet posted); left NULL
+        # and stamped only by the posting job (QA C02, AAP 0.7.3/0.7.5).
         "proc_ts": ParseOptionalTimestamp(r[304:330]),
-        "status": POSTED_STATUS,
+        "status": PENDING_STATUS,
     }
 
 

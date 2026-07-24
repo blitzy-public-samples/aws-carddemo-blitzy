@@ -5,9 +5,10 @@
  * WHAT IS VERIFIED
  *   - `Login`: forwards the credentials to the (mocked) `AuthApi.Login`, builds
  *     and returns the NON-SENSITIVE `CurrentUser`, persists it under
- *     `SESSION_USER_STORAGE_KEY`, stores the bearer token under
- *     `ACCESS_TOKEN_STORAGE_KEY` ONLY when the response carries one
- *     (JWT-alternative mode), and PROPAGATES auth errors without persisting;
+ *     `SESSION_USER_STORAGE_KEY`, NEVER stores any bearer token in localStorage
+ *     even when the response carries one (QA finding M-10 -- the SPA relies only
+ *     on the HTTP-only session cookie), and PROPAGATES auth errors without
+ *     persisting;
  *   - `Logout`: delegates client-state teardown to `ClearStoredAuth` and then
  *     performs the hard redirect to `/signon`;
  *   - `GetCurrentUser`: returns the parsed stored user, `null` when absent, and
@@ -41,7 +42,6 @@ jest.mock('@/lib/apiClient', () => ({
     AuthApi: { Login: jest.fn(), Logout: jest.fn() },
     ClearStoredAuth: jest.fn(),
     SESSION_USER_STORAGE_KEY: 'carddemo_user',
-    ACCESS_TOKEN_STORAGE_KEY: 'carddemo_access_token',
 }));
 
 import { Login, Logout, GetCurrentUser, GetRole, IsAdmin } from '@/lib/auth';
@@ -49,8 +49,12 @@ import {
     AuthApi,
     ClearStoredAuth,
     SESSION_USER_STORAGE_KEY,
-    ACCESS_TOKEN_STORAGE_KEY,
 } from '@/lib/apiClient';
+
+// The former JWT-bearer localStorage key (QA finding M-10). The SPA no longer
+// exports or uses it; these tests assert it is NEVER written. Kept here only as
+// the literal string to prove its absence from storage.
+const LEGACY_ACCESS_TOKEN_KEY = 'carddemo_access_token';
 import type { CurrentUser, LoginResponse } from '@/types';
 import { MakeCurrentUser, MakeAdminUser } from '../testUtils';
 
@@ -153,7 +157,10 @@ describe('Login', () => {
         expect(stored).not.toHaveProperty('password');
     });
 
-    it('stores the access token when the response carries one (JWT mode)', async () => {
+    it('never stores a bearer token even when the response carries one (M-10)', async () => {
+        // Even in JWT-alternative mode (backend returns a token), the browser SPA
+        // must NOT place any credential in localStorage: authentication rides on
+        // the HTTP-only session cookie only.
         mockAuthLogin.mockResolvedValueOnce(
             MakeLoginResponse({ access_token: 'jwt-abc', token_type: 'bearer' }),
         );
@@ -161,16 +168,18 @@ describe('Login', () => {
 
         await Login(credentials);
 
-        expect(localStorage.getItem(ACCESS_TOKEN_STORAGE_KEY)).toBe('jwt-abc');
+        expect(localStorage.getItem(LEGACY_ACCESS_TOKEN_KEY)).toBeNull();
+        // Only the non-sensitive identity mirror is ever written.
+        expect(localStorage.getItem(SESSION_USER_STORAGE_KEY)).not.toBeNull();
     });
 
-    it('stores no access token in the session baseline (no token in response)', async () => {
+    it('stores no bearer token in the session baseline (no token in response)', async () => {
         mockAuthLogin.mockResolvedValueOnce(MakeLoginResponse());
         const credentials = { user_id: 'USER0001', password: THROWAWAY_PASSWORD };
 
         await Login(credentials);
 
-        expect(localStorage.getItem(ACCESS_TOKEN_STORAGE_KEY)).toBeNull();
+        expect(localStorage.getItem(LEGACY_ACCESS_TOKEN_KEY)).toBeNull();
     });
 
     it('propagates authentication errors and persists nothing', async () => {
@@ -180,7 +189,7 @@ describe('Login', () => {
         await expect(Login(credentials)).rejects.toThrow('invalid credentials');
 
         expect(localStorage.getItem(SESSION_USER_STORAGE_KEY)).toBeNull();
-        expect(localStorage.getItem(ACCESS_TOKEN_STORAGE_KEY)).toBeNull();
+        expect(localStorage.getItem(LEGACY_ACCESS_TOKEN_KEY)).toBeNull();
     });
 });
 

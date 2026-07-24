@@ -88,7 +88,7 @@ manifest change in [`../backend/requirements.txt`](../backend/requirements.txt),
 | Backend | Alembic | 1.14 | Versioned schema migrations |
 | Backend | asyncpg | 0.30.x | Async PostgreSQL driver (app engine) |
 | Backend | psycopg2-binary | 2.9.x | Sync PostgreSQL driver (Alembic + batch) |
-| Backend | passlib[bcrypt] / argon2 | current | Password hashing (plaintext → hash) |
+| Backend | passlib[bcrypt] | current | Password hashing (plaintext → hash) |
 | Backend | PyJWT | current | JWT tokens (COMMAREA identity replacement) |
 | Backend | python-multipart | current | Login form parsing |
 | Backend | reportlab + Jinja2 | current | PDF/HTML statements and reports (CSV via stdlib `csv`) |
@@ -242,9 +242,11 @@ distinct from the backend's async engine, because the batch chain runs as a
 plain synchronous process. Each job receives an open `Session` and runs inside a
 caller-owned transaction (the job itself performs no `commit`/`rollback`). The
 batch code reuses the backend `app` package for ORM models and shared utilities.
-Re-run behavior is per-job and is not uniformly monetarily neutral — for
-example, `interest-calc` re-accrues interest on a repeat run — so consult the
-per-job detail below rather than assuming universal idempotency.
+Re-run behavior is per-job and is designed to be idempotent: loaders upsert,
+posting skips transactions already marked `POSTED`, and `interest-calc` keys its
+generated interest transaction on the accounting month, so a same-month re-run
+does not re-accrue interest. Consult the per-job detail below for each job's
+exact re-run semantics.
 
 For the exact chain order and per-job semantics, see
 [`./batch.md`](./batch.md).
@@ -265,7 +267,7 @@ to switch). Admin-only screens and endpoints are gated to `user_type='A'` on
 **both** the client and the server — the client hides them for a regular user,
 and the server rejects them regardless of what the client sends.
 
-**Password storage.** Passwords are **hashed** with bcrypt/argon2. The legacy
+**Password storage.** Passwords are **hashed** with bcrypt. The legacy
 plaintext `SEC-USR-PWD` field is never reproduced. The seed accounts `ADMIN001`
 and `USER0001` (password `PASSWORD`) are **non-production, seed-only** accounts;
 their passwords are stored hashed at rest, and they must never be treated as

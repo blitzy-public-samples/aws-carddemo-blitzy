@@ -77,8 +77,33 @@ services:
       POSTGRES_DB: ${POSTGRES_DB:-carddemo}
     # Publish 5432 for host tooling (psql, host-run migrations/loaders, ...).
     # ${POSTGRES_HOST_PORT} lets parallel clones pick non-colliding host ports.
+    # QA findings M-12 / M-23: bind to the LOOPBACK interface by default so the
+    # database is reachable only from the host, NOT from the LAN/other machines.
+    # Override ${DB_BIND_HOST} (e.g. to 0.0.0.0) only for a deliberate, secured
+    # remote-access deployment.
     ports:
-      - "${POSTGRES_HOST_PORT:-5432}:5432"
+      - "${DB_BIND_HOST:-127.0.0.1}:${POSTGRES_HOST_PORT:-5432}:5432"
+    # Least-privilege container hardening (QA finding M-23). PostgreSQL's official
+    # entrypoint starts as root to chown the data dir and create its socket dir,
+    # then drops to the `postgres` user via gosu, so it needs a SMALL capability
+    # set (CHOWN/DAC_OVERRIDE/FOWNER for the chown+initdb, SETUID/SETGID for the
+    # privilege drop) -- everything else is dropped. `no-new-privileges` blocks
+    # setuid escalation. The root filesystem is read-only; the data lives in the
+    # named volume (writable) and the socket/temp dirs are backed by tmpfs.
+    security_opt:
+      - "no-new-privileges:true"
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN
+      - DAC_OVERRIDE
+      - FOWNER
+      - SETGID
+      - SETUID
+    read_only: true
+    tmpfs:
+      - /tmp
+      - /var/run/postgresql
     # Persist data in a named volume so it survives `docker compose down`.
     volumes:
       - carddemo_pgdata:/var/lib/postgresql/data
@@ -121,17 +146,24 @@ services:
     #     `export SECRET_KEY=...` or an uncommented backend/.env.
     #   * Every value is interpolated — no real secret is baked into this file.
     #
-    # Prefer a real backend/.env instead? Uncomment the env_file block below
-    # (`required: false` means it is skipped without error when absent). The
-    # DATABASE_URL / SYNC_DATABASE_URL overrides here intentionally still win so
-    # the container always reaches `db` rather than localhost.
-    #
-    # env_file:
-    #   - path: ./backend/.env
-    #     required: false
+    # Backend runtime configuration is loaded from ./backend/.env when present
+    # (QA finding M-07: Compose now loads the DOCUMENTED backend env file rather
+    # than ignoring it). `required: false` means the file is skipped without error
+    # when a developer has not created one (e.g. the db-only bring-up, or a
+    # checkout that only copied backend/.env.example). Values in the `environment:`
+    # block below are applied AFTER the env_file and therefore WIN, so the
+    # DATABASE_URL / SYNC_DATABASE_URL overrides always point the container at the
+    # compose-internal `db` host rather than a localhost value that a copied .env
+    # might carry. Put SECRET_KEY (and any other real secret) in backend/.env; it
+    # is git-ignored and never baked into the image.
+    env_file:
+      - path: ./backend/.env
+        required: false
     environment:
-      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-carddemo}:${POSTGRES_PASSWORD:-carddemo}@db:5432/${POSTGRES_DB:-carddemo}
-      SYNC_DATABASE_URL: postgresql+psycopg2://${POSTGRES_USER:-carddemo}:${POSTGRES_PASSWORD:-carddemo}@db:5432/${POSTGRES_DB:-carddemo}
+      DATABASE_URL: "postgresql+asyncpg://${POSTGRES_USER:-carddemo}:${POSTGRES_PASSWORD:-carddemo}\
+        @db:5432/${POSTGRES_DB:-carddemo}"
+      SYNC_DATABASE_URL: "postgresql+psycopg2://${POSTGRES_USER:-carddemo}:${POSTGRES_PASSWORD:-carddemo}\
+        @db:5432/${POSTGRES_DB:-carddemo}"
       SECRET_KEY: ${SECRET_KEY:-}
       ENVIRONMENT: ${ENVIRONMENT:-development}
       BACKEND_CORS_ORIGINS: http://localhost:${FRONTEND_HOST_PORT:-3000}
@@ -155,8 +187,23 @@ services:
       - ./app/data:/app/data:ro
     # Publish the ASGI port. The image CMD already runs
     # `uvicorn app.main:app --host 0.0.0.0 --port 8000`, so no `command:` here.
+    # QA findings M-12 / M-23: bind to loopback by default (host-only reach; a
+    # reverse proxy / deliberate deployment overrides ${BACKEND_BIND_HOST}).
     ports:
-      - "${BACKEND_HOST_PORT:-8000}:8000"
+      - "${BACKEND_BIND_HOST:-127.0.0.1}:${BACKEND_HOST_PORT:-8000}:8000"
+    # Least-privilege container hardening (QA finding M-23). The backend runs as
+    # the non-root `appuser`, is a STATELESS API (reads app/data read-only, talks
+    # to PostgreSQL, writes nothing to its own filesystem, and PYTHONDONTWRITEBYTE-
+    # CODE=1 suppresses .pyc), so it needs NO Linux capabilities and runs on a
+    # read-only root filesystem with only a small tmpfs for /tmp. `no-new-
+    # privileges` blocks any setuid escalation.
+    security_opt:
+      - "no-new-privileges:true"
+    cap_drop:
+      - ALL
+    read_only: true
+    tmpfs:
+      - /tmp
     # Readiness gate (QA finding F5). Polls the /health/ready probe, which runs a
     # `SELECT 1` against PostgreSQL and returns 200 only when the database is
     # reachable (503 otherwise). The python:3.13-slim base has no curl, so the
@@ -208,8 +255,23 @@ services:
       NEXT_PUBLIC_API_URL: http://localhost:${BACKEND_HOST_PORT:-8000}
     # Publish the Next.js port. The image CMD already runs `node server.js`
     # (standalone output) bound to 0.0.0.0:3000, so no `command:` here.
+    # QA findings M-12 / M-23: bind to loopback by default (host-only reach; a
+    # reverse proxy / deliberate deployment overrides ${FRONTEND_BIND_HOST}).
     ports:
-      - "${FRONTEND_HOST_PORT:-3000}:3000"
+      - "${FRONTEND_BIND_HOST:-127.0.0.1}:${FRONTEND_HOST_PORT:-3000}:3000"
+    # Least-privilege container hardening (QA finding M-23). The Next.js standalone
+    # server runs as the non-root `nextjs` user and needs NO Linux capabilities.
+    # The root filesystem is read-only; a small tmpfs backs /tmp and the Next.js
+    # runtime cache dir (.next/cache) so any on-demand cache write still succeeds
+    # without a writable image layer. `no-new-privileges` blocks setuid escalation.
+    security_opt:
+      - "no-new-privileges:true"
+    cap_drop:
+      - ALL
+    read_only: true
+    tmpfs:
+      - /tmp
+      - /app/.next/cache
     # Liveness/readiness gate for the SPA (QA finding F5). The node:22-alpine base
     # ships BusyBox wget (no curl); `-O /dev/null` discards the body and wget
     # exits non-zero on any HTTP error status. It probes /signon (a real 200 page)

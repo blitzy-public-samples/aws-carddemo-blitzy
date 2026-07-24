@@ -1,11 +1,10 @@
 """SQLAlchemy ORM models for CardDemo (ported 1:1 from app/cpy record copybooks).
 
-Importing this package registers all 11 tables on ``Base.metadata`` (the ten
-VSAM-derived tables plus the ``account_groups`` referential-integrity registry
-introduced per QA finding M-16 -- see below).
+Importing this package registers exactly the ten VSAM-derived tables on
+``Base.metadata`` -- the exact 10-table data model the AAP mandates (AAP 0.5.1).
 
 This package initializer is the single aggregation point for the CardDemo ORM
-layer. It intentionally imports every one of the eleven model modules under
+layer. It intentionally imports every one of the ten model modules under
 ``app.models`` so that, purely as a *side effect* of importing ``app.models``,
 each mapped class is registered on the shared declarative registry and its table
 is attached to ``Base.metadata``.
@@ -25,20 +24,23 @@ they are therefore NOT dead code. The ``__all__`` list at the bottom both
 documents the package's public surface and marks the re-exported names as used,
 so linters do not flag the imports whose sole purpose is mapper registration.
 
-Ten of the models port the legacy VSAM record copybooks (``app/cpy/*.cpy``) 1:1;
-the eleventh, ``account_group`` (table ``account_groups``), is the enforceable
-parent/reference introduced per QA finding M-16 so that ``accounts.group_id`` can
-be a real foreign key (AAP 0.5.1, 0.8.1) despite ``disclosure_group`` having a
-composite primary key. All extend the shared declarative
-:class:`app.db.base.Base`. Monetary and rate
+All ten models port the legacy VSAM record copybooks (``app/cpy/*.cpy``) 1:1 and
+extend the shared declarative :class:`app.db.base.Base`. Monetary and rate
 fields are exact ``NUMERIC`` / :class:`decimal.Decimal` columns -- never floating
 point (AAP section 0.7.1). Two ORM-only synonyms (``card_xref.card_num`` ->
 ``xref_card_num`` and ``disclosure_group.acct_group_id`` -> ``group_id``) expose
 copybook/DTO field names without emitting phantom DDL columns.
 
+``accounts.group_id`` (``ACCT-GROUP-ID PIC X(10)`` from ``CVACT01Y``) is a plain
+indexed ``VARCHAR(10)`` column -- a faithful port of the legacy free-text group
+id, which the mainframe carried as a field on the account record (there was no
+standalone "account groups" dataset). It is NOT a foreign key: the only
+group-bearing table, ``disclosure_group``, uses a COMPOSITE primary key, so
+``group_id`` alone has no single-column FK target, and the AAP fixes the model at
+exactly ten tables (AAP 0.5.1). See ``backend/app/models/account.py``.
+
 Model module -> mapped class -> table:
     account                 -> Account              -> accounts
-    account_group           -> AccountGroup         -> account_groups
     card                    -> Card                 -> cards
     card_xref               -> CardXref             -> card_xref
     customer                -> Customer             -> customers
@@ -62,7 +64,6 @@ from app.db.base import Base
 # module path. The ``transaction`` module additionally exports the two
 # staging-status constants used by the batch posting job and the services layer.
 from app.models.account import Account
-from app.models.account_group import AccountGroup
 from app.models.card import Card
 from app.models.card_xref import CardXref
 from app.models.customer import Customer
@@ -81,12 +82,11 @@ from app.models.user import User
 # Public surface of the package. Enumerating the re-exported names here documents
 # the package API and marks the "unused" model imports above as used -- their
 # real job is mapper/table registration on ``Base.metadata``. Ordered as: the
-# declarative Base, the eleven ORM model classes, then the transaction
+# declarative Base, the ten ORM model classes, then the transaction
 # staging-status constants.
 __all__ = [
     "Base",
     "Account",
-    "AccountGroup",
     "Card",
     "CardXref",
     "Customer",

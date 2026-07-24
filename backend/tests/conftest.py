@@ -80,6 +80,7 @@ constants ALL_UPPERCASE (``ASCII_DATA_DIR``, ``TEST_DATABASE_URL``).
 """
 
 import os
+import re
 from collections.abc import AsyncGenerator, Iterator
 from datetime import date
 from pathlib import Path
@@ -127,9 +128,20 @@ os.environ.setdefault("ENVIRONMENT", "test")
 #      ``carddemo_test`` default that matches the docker-compose ``postgres:17``
 #      service. It is NEVER derived from the application's ``DATABASE_URL`` --
 #      the destructive fallback that made C-01 dangerous is removed entirely.
-#   3. The resolved database NAME must be unmistakably a test database (it must
-#      contain the token ``test``); an arbitrary name is rejected.
-#   4. If the application ``DATABASE_URL`` is also set, the test target must not
+#   3. The resolved database NAME must match an ANCHORED disposable-name
+#      allowlist (QA finding M-14): exactly ``carddemo_test`` or ``test``,
+#      optionally followed by ``_``-separated alphanumeric suffixes (for parallel
+#      clones, e.g. ``carddemo_test_3``). A naive ``"test" in name`` substring
+#      check wrongly accepted lookalikes such as ``contest_prod`` and
+#      ``carddemo_testify``; the anchored pattern rejects them.
+#   4. The destructive suite may run against a NON-local database host only when
+#      the explicit opt-in env var ``CARDDEMO_ALLOW_DESTRUCTIVE_TESTS`` is truthy
+#      (QA finding M-14). The documented local hosts (loopback -> the compose
+#      ``postgres:17`` service and its parallel-clone variants) are the dedicated
+#      disposable hosts and need no opt-in, so ordinary local/CI runs are
+#      unaffected; a remote/shared target requires a human/CI to acknowledge the
+#      destruction explicitly.
+#   5. If the application ``DATABASE_URL`` is also set, the test target must not
 #      be the SAME (host, port, database) as the application database, so a
 #      misconfigured environment can never truncate the app's own database.
 # Any violation raises ``RuntimeError`` before a single connection is opened.
@@ -137,8 +149,24 @@ os.environ.setdefault("ENVIRONMENT", "test")
 # ``*_test*`` database so concurrent sessions never share schema/state.
 # ---------------------------------------------------------------------------
 
-# Token that a resolved database name MUST contain to be accepted as disposable.
-TEST_DATABASE_NAME_TOKEN = "test"
+# Anchored allowlist of disposable test-database NAME shapes (QA finding M-14).
+# The name must be EXACTLY an allowed disposable base (``carddemo_test`` or
+# ``test``) optionally followed by ``_``-separated alphanumeric suffixes. The
+# ``^``/``$`` anchors and the required ``_`` boundary after the base are what
+# reject a lookalike such as ``contest_prod`` or ``carddemo_testify`` that the
+# previous ``"test" in name`` substring check wrongly accepted.
+DISPOSABLE_TEST_DB_NAME_PATTERN = re.compile(r"^(?:carddemo_test|test)(?:_[A-Za-z0-9]+)*$")
+
+# Hosts treated as dedicated, disposable local test hosts: the documented
+# docker-compose ``postgres:17`` service published on the loopback interface and
+# its parallel-clone variants. A test target on any OTHER host is treated as
+# remote/shared and requires the explicit destructive opt-in below.
+LOCAL_TEST_DB_HOSTS = frozenset({"localhost", "127.0.0.1", "::1", ""})
+
+# Env var that must be truthy to authorize the destructive suite against a
+# NON-local host (QA finding M-14: explicit destructive opt-in).
+DESTRUCTIVE_OPT_IN_ENV = "CARDDEMO_ALLOW_DESTRUCTIVE_TESTS"
+DESTRUCTIVE_OPT_IN_TRUTHY = frozenset({"1", "true", "yes", "on"})
 
 # Safe, unmistakably-disposable local default (matches docker-compose). This is a
 # test database name, never the application's ``carddemo`` database, and it does
@@ -181,8 +209,9 @@ def _AssertDisposableTestDatabase(testDatabaseUrl: str) -> None:
 
     Raises:
         RuntimeError: If ``ENVIRONMENT`` is not ``test``, the database name does
-            not look like a disposable test database, or the target coincides
-            with the application ``DATABASE_URL`` database.
+            not match the anchored disposable-name allowlist, the target is on a
+            non-local host without the explicit destructive opt-in, or the target
+            coincides with the application ``DATABASE_URL`` database.
     """
     environment = os.environ.get("ENVIRONMENT", "").strip().lower()
     if environment != "test":
@@ -191,13 +220,24 @@ def _AssertDisposableTestDatabase(testDatabaseUrl: str) -> None:
             f"'test' (got {environment!r}). Set ENVIRONMENT=test explicitly."
         )
     host, port, dbName = _ExtractDatabaseIdentity(testDatabaseUrl)
-    if TEST_DATABASE_NAME_TOKEN not in dbName.lower():
+    if not DISPOSABLE_TEST_DB_NAME_PATTERN.match(dbName.lower()):
         raise RuntimeError(
             "Refusing to run the destructive test suite against database "
-            f"{dbName!r}: the target database name must contain "
-            f"{TEST_DATABASE_NAME_TOKEN!r} to prove it is disposable. Set "
-            "TEST_DATABASE_URL to an isolated *_test* database."
+            f"{dbName!r}: the target database name must match the disposable "
+            f"allowlist {DISPOSABLE_TEST_DB_NAME_PATTERN.pattern!r} (e.g. "
+            "'carddemo_test' or 'carddemo_test_3') to prove it is disposable. A "
+            "name that merely contains 'test' (such as 'contest_prod') is "
+            "rejected. Set TEST_DATABASE_URL to an isolated *_test* database."
         )
+    if host.lower() not in LOCAL_TEST_DB_HOSTS:
+        optIn = os.environ.get(DESTRUCTIVE_OPT_IN_ENV, "").strip().lower()
+        if optIn not in DESTRUCTIVE_OPT_IN_TRUTHY:
+            raise RuntimeError(
+                "Refusing to run the destructive test suite against non-local "
+                f"host {host!r}: set {DESTRUCTIVE_OPT_IN_ENV}=1 to explicitly "
+                "authorize destructive DDL/DML against a remote/shared test "
+                "database. Local loopback hosts need no opt-in."
+            )
     applicationDatabaseUrl = os.environ.get("DATABASE_URL", "").strip()
     if applicationDatabaseUrl:
         if (host, port, dbName) == _ExtractDatabaseIdentity(applicationDatabaseUrl):
@@ -227,7 +267,7 @@ TEST_SYNC_DATABASE_URL = TEST_DATABASE_URL.replace("+asyncpg", "+psycopg2")
 # ``Base.metadata`` -- so it must precede any ``Base.metadata.create_all`` call
 # (hence the additional F401 suppression: the bare package import is deliberate,
 # not dead code).
-import app.models  # noqa: E402,F401  (side effect: registers all 11 tables)
+import app.models  # noqa: E402,F401  (side effect: registers all 10 tables)
 from app.core.config import settings  # noqa: E402
 from app.core.dependencies import (  # noqa: E402
     ADMIN_USER_TYPE,
@@ -245,7 +285,6 @@ from app.main import app  # noqa: E402
 from app.models import (  # noqa: E402
     STATUS_PENDING,
     Account,
-    AccountGroup,
     Card,
     CardXref,
     Customer,
@@ -541,24 +580,6 @@ def LoadCustomerRows() -> list[dict]:
             }
         )
     return customerRows
-
-
-def LoadAccountGroupRows() -> list[dict]:
-    """Distinct account-group identifiers for the ``account_groups`` registry.
-
-    Derived from the disclosure-group seed so the registry is exactly the set of
-    groups the golden-master dataset defines (``A000000000``, ``DEFAULT``,
-    ``ZEROAPR``). The value is stripped to match how ``accounts.group_id`` stores
-    a group reference, so the M-16 foreign key resolves for any account assigned
-    a disclosure-known group. Dict keys match
-    :class:`app.models.account_group.AccountGroup`.
-    """
-    seenGroupIds = []
-    for disclosureRow in LoadDisclosureGroupRows():
-        groupId = disclosureRow["group_id"].strip()
-        if groupId and groupId not in seenGroupIds:
-            seenGroupIds.append(groupId)
-    return [{"group_id": groupId} for groupId in seenGroupIds]
 
 
 def LoadDisclosureGroupRows() -> list[dict]:
@@ -1147,11 +1168,11 @@ async def regular_auth_headers(client, regular_user) -> dict[str, str]:
 async def seed_reference_data(db_session) -> AsyncGenerator[None, None]:
     """Populate the standalone reference tables from the golden-master data.
 
-    Loads the account-group registry, transaction types, transaction
-    categories, disclosure groups and per-category balances. The
-    ``account_groups`` registry (M-16 parent of ``accounts.group_id``) is seeded
-    first so any account subsequently assigned a disclosure-known group resolves
-    its foreign key; the remaining reference tables carry no foreign keys, so
+    Loads transaction types, transaction categories, disclosure groups and
+    per-category balances. ``accounts.group_id`` is a plain indexed column (QA
+    finding C01 -- no ``account_groups`` registry table and no foreign key; the
+    AAP fixes the schema at exactly ten tables), so nothing needs to be seeded
+    for referential integrity. These reference tables carry no foreign keys, so
     their order is unconstrained. Rows are flushed into ``db_session`` and are
     wiped by that fixture's truncate teardown.
 
@@ -1161,7 +1182,6 @@ async def seed_reference_data(db_session) -> AsyncGenerator[None, None]:
     Yields:
         None -- a setup barrier; tests read the data back through ``db_session``.
     """
-    db_session.add_all([AccountGroup(**row) for row in LoadAccountGroupRows()])
     db_session.add_all([TransactionType(**row) for row in LoadTranTypeRows()])
     db_session.add_all(
         [TransactionCategory(**row) for row in LoadTranCategoryRows()]

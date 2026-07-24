@@ -7,7 +7,7 @@
  * pagination (page size = 7), row click opens the transaction detail view.
  */
 
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { useRouter } from 'next/navigation';
 
 import Box from '@mui/material/Box';
@@ -150,16 +150,27 @@ export default function TransactionsPage() {
     const [searchTranId, setSearchTranId] = useState<string>('');
     const [searchError, setSearchError] = useState<string>('');
 
+    // Monotonic request-generation counter (QA M-05). Each LoadTransactions call
+    // claims the next generation; only the request whose captured generation
+    // still equals `requestGenerationRef.current` on settle may commit state, so
+    // a slow earlier page can never overwrite a newer one and no state update
+    // lands after unmount.
+    const requestGenerationRef = useRef<number>(0);
+
     /**
      * Loads a single page of transactions from the backend. Failures are
      * captured into `errorState` and surfaced through {@link ErrorAlert} (which
      * maps posting codes 100-103/109) — never swallowed. A stable identity
-     * (useCallback with no reactive deps) keeps the loading effect lint-clean.
+     * (useCallback with no reactive deps) keeps the loading effect lint-clean. A
+     * request-generation guard (QA M-05) discards the result of any superseded or
+     * post-unmount request.
      *
      * @param targetPage - The 1-based page number to fetch.
      */
     const LoadTransactions = useCallback(
         async (targetPage: number): Promise<void> => {
+            const requestGeneration = requestGenerationRef.current + 1;
+            requestGenerationRef.current = requestGeneration;
             setIsLoading(true);
             setErrorState(null);
             try {
@@ -167,20 +178,36 @@ export default function TransactionsPage() {
                     page: targetPage,
                     page_size: DEFAULT_PAGE_SIZE,
                 });
+                // Only the latest request may commit its data (QA M-05).
+                if (requestGenerationRef.current !== requestGeneration) {
+                    return;
+                }
                 setTransactionsData(result);
             } catch (error) {
+                // Discard a superseded request's error too (QA M-05).
+                if (requestGenerationRef.current !== requestGeneration) {
+                    return;
+                }
                 setErrorState(error);
                 setIsErrorOpen(true);
             } finally {
-                setIsLoading(false);
+                // Only the latest request owns the shared loading flag (QA M-05).
+                if (requestGenerationRef.current === requestGeneration) {
+                    setIsLoading(false);
+                }
             }
         },
         [],
     );
 
-    // Refetch whenever the target page changes (initial mount loads page 1).
+    // Refetch whenever the target page changes (initial mount loads page 1). The
+    // cleanup bumps the request generation so a request still in flight when the
+    // page changes or this component unmounts is invalidated (QA M-05).
     useEffect(() => {
         void LoadTransactions(pageNumber);
+        return () => {
+            requestGenerationRef.current += 1;
+        };
     }, [LoadTransactions, pageNumber]);
 
     /**

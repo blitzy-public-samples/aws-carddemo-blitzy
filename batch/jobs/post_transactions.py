@@ -61,7 +61,7 @@ from __future__ import annotations
 import logging
 import os
 from dataclasses import dataclass
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 from decimal import Decimal
 from pathlib import Path
 
@@ -442,7 +442,9 @@ def _ResolveRejectFilename(runDate: date | None) -> str:
     """
     if runDate is not None:
         return f"{REJECT_FILE_PREFIX}_{runDate:%Y%m%d}.txt"
-    return f"{REJECT_FILE_PREFIX}_{datetime.now():%Y%m%d_%H%M%S}.txt"
+    # UTC-aware wall clock (QA finding M03) so the generation suffix is a
+    # deterministic instant independent of the host's local timezone.
+    return f"{REJECT_FILE_PREFIX}_{datetime.now(timezone.utc):%Y%m%d_%H%M%S}.txt"
 
 
 def _ResolvePostingTimestamp(runDate: date | None) -> datetime:
@@ -454,15 +456,25 @@ def _ResolvePostingTimestamp(runDate: date | None) -> datetime:
     time of day) so a re-run for a given business date is reproducible; when it
     is omitted the full current timestamp is used, matching the legacy default.
 
+    The returned value is timezone-aware (UTC) because ``proc_ts`` is a
+    TIMESTAMPTZ column (QA finding M03): a naive datetime would be silently
+    interpreted in the server session's local zone and lose its true instant
+    across timezones, whereas an explicit UTC datetime stamps the exact instant
+    deterministically. The legacy ``Z-GET-DB2-FORMAT-TIMESTAMP`` likewise
+    produced an absolute timestamp.
+
     Args:
         runDate: Optional business date to pin the processing timestamp to.
 
     Returns:
-        The naive local :class:`~datetime.datetime` to store in ``proc_ts``.
+        The timezone-aware (UTC) :class:`~datetime.datetime` to store in
+        ``proc_ts``.
     """
     if runDate is None:
-        return datetime.now()
-    return datetime.combine(runDate, datetime.now().time())
+        return datetime.now(timezone.utc)
+    return datetime.combine(
+        runDate, datetime.now(timezone.utc).time(), tzinfo=timezone.utc
+    )
 
 
 def _ValidateTran(session: Session, dailyTran: Transaction) -> tuple[int, str]:

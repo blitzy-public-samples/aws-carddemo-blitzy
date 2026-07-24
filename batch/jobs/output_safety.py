@@ -57,7 +57,14 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Iterable, Iterator
 
-__all__ = ["NeutralizeCsvCell", "SafeCsvWriter", "AtomicWritePath"]
+__all__ = [
+    "NeutralizeCsvCell",
+    "SafeCsvWriter",
+    "AtomicWritePath",
+    "SecureDirectory",
+    "SECURE_DIR_MODE",
+    "SECURE_FILE_MODE",
+]
 
 
 # ---------------------------------------------------------------------------
@@ -81,6 +88,16 @@ CSV_INJECTION_PREFIX = "'"
 
 # Filename marker for the in-progress temporary file used by AtomicWritePath.
 TEMP_FILE_SUFFIX = ".tmp"
+
+# Owner-only permission modes for batch outputs (QA finding M13). Batch jobs emit
+# files that can contain sensitive material (full PANs in a restore-capable
+# backup, customer statements, transaction detail), so both the containing
+# directory and every published file are restricted to the owning user rather
+# than left at the process umask default (which is commonly world- or
+# group-readable). SECURE_DIR_MODE (0700) grants the owner rwx and nobody else;
+# SECURE_FILE_MODE (0600) grants the owner rw and nobody else.
+SECURE_DIR_MODE = 0o700
+SECURE_FILE_MODE = 0o600
 
 
 def _IsNumericLiteral(text: str) -> bool:
@@ -174,20 +191,60 @@ class SafeCsvWriter:
             self.writerow(row)
 
 
+def SecureDirectory(directoryPath: str | Path, mode: int = SECURE_DIR_MODE) -> Path:
+    """Create (if needed) and lock down an output directory to owner-only access.
+
+    Ensures the batch output directory exists and is restricted to the owning
+    user (QA finding M13). Missing parents are created; the leaf directory is
+    then ``chmod``-ed to ``mode`` (default :data:`SECURE_DIR_MODE`, ``0700``) so
+    that the sensitive files written into it (restore-capable backups, customer
+    statements, transaction detail) are never exposed through a world- or
+    group-readable directory left at the process umask default. Only the leaf
+    directory's permissions are tightened; pre-existing parent directories are
+    left untouched so shared roots (for example a test ``tmp_path`` or a mounted
+    output volume) are not silently narrowed.
+
+    Args:
+        directoryPath: The directory to create and secure.
+        mode: The permission bits to apply to the leaf directory. Defaults to
+            :data:`SECURE_DIR_MODE` (owner rwx only).
+
+    Returns:
+        The resolved directory as a :class:`~pathlib.Path`.
+
+    Raises:
+        OSError: If the directory cannot be created or its mode cannot be set.
+    """
+    resolvedDirectory = Path(directoryPath)
+    resolvedDirectory.mkdir(parents=True, exist_ok=True)
+    os.chmod(resolvedDirectory, mode)
+    return resolvedDirectory
+
+
 @contextmanager
-def AtomicWritePath(finalPath: str | Path) -> Iterator[Path]:
+def AtomicWritePath(
+    finalPath: str | Path, mode: int = SECURE_FILE_MODE
+) -> Iterator[Path]:
     """Yield a temporary path that is atomically promoted to ``finalPath``.
 
     The caller writes its output to the yielded temporary path (a sibling of
     ``finalPath`` in the same directory, guaranteeing a same-filesystem rename).
-    On clean completion the temporary file is atomically moved onto
-    ``finalPath`` with :func:`os.replace`; on any exception the temporary file
-    is removed and the exception is re-raised, so ``finalPath`` never holds a
-    partially written file. Any pre-existing file at ``finalPath`` is left
-    untouched when the write fails.
+    On clean completion the temporary file is restricted to ``mode`` and
+    atomically moved onto ``finalPath`` with :func:`os.replace`; on any exception
+    the temporary file is removed and the exception is re-raised, so ``finalPath``
+    never holds a partially written file. Any pre-existing file at ``finalPath``
+    is left untouched when the write fails.
+
+    The published file is ``chmod``-ed to ``mode`` (default
+    :data:`SECURE_FILE_MODE`, ``0600``) *before* the atomic rename (QA finding
+    M13). Because :func:`os.replace` moves the staged inode onto the destination,
+    the destination inherits this owner-only mode regardless of the process
+    umask, so a sensitive batch output is never briefly world-readable.
 
     Args:
         finalPath: The destination path the output should ultimately occupy.
+        mode: The permission bits to apply to the published file. Defaults to
+            :data:`SECURE_FILE_MODE` (owner rw only).
 
     Yields:
         The temporary :class:`~pathlib.Path` to write to.
@@ -199,11 +256,21 @@ def AtomicWritePath(finalPath: str | Path) -> Iterator[Path]:
     destinationPath = Path(finalPath)
     temporaryName = f".{destinationPath.name}.{os.getpid()}.{uuid.uuid4().hex}{TEMP_FILE_SUFFIX}"
     temporaryPath = destinationPath.parent / temporaryName
+    # No exception is caught here (Ochs "specific exceptions only", QA M-31):
+    # `bodyRaised` gates a `finally`-based cleanup, so the staged temp file is
+    # removed whenever the caller's write block fails for ANY reason (including
+    # KeyboardInterrupt / SystemExit / GeneratorExit) while the original, specific
+    # exception propagates untouched. Only a clean write reaches the publish step.
+    bodyRaised = True
     try:
         yield temporaryPath
-    except BaseException:
-        _RemoveTemporaryFile(temporaryPath)
-        raise
+        bodyRaised = False
+    finally:
+        if bodyRaised:
+            _RemoveTemporaryFile(temporaryPath)
+    # Restrict the finished file to owner-only access before publishing it, so
+    # the atomically renamed destination is never exposed at the umask default.
+    os.chmod(temporaryPath, mode)
     os.replace(temporaryPath, destinationPath)
 
 

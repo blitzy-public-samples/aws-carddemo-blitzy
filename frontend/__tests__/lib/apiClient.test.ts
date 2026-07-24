@@ -5,7 +5,8 @@
  * WHAT IS VERIFIED
  *   - the axios singleton configuration (baseURL `/api/v1` suffix, withCredentials,
  *     default JSON Content-Type);
- *   - the request interceptor (attaches a bearer token only when one is stored);
+ *   - that NO request interceptor exists (QA finding M-10: the browser SPA sends
+ *     no bearer Authorization header; auth rides on the HTTP-only session cookie);
  *   - the response interceptor's typed error normalization into `ApiError`
  *     (app-standard `{message,code,detail}`, FastAPI `{detail:string}`, FastAPI 422
  *     `{detail:[...]}`, and network errors);
@@ -65,7 +66,6 @@ import {
     IsApiError,
     ClearStoredAuth,
     SESSION_USER_STORAGE_KEY,
-    ACCESS_TOKEN_STORAGE_KEY,
     AuthApi,
     MenuApi,
     AccountsApi,
@@ -106,13 +106,21 @@ function AsMock(candidate: unknown): jest.Mock {
     return candidate as jest.Mock;
 }
 
+// The former JWT-bearer localStorage key (QA finding M-10). The client no longer
+// exports or uses it; these tests assert it is never written and that the 401
+// handler / ClearStoredAuth no longer touch it. Kept only as a literal to prove
+// its absence.
+const LEGACY_ACCESS_TOKEN_KEY = 'carddemo_access_token';
+
 // --- Phase B: capture import-time registrations at MODULE SCOPE (clearMocks gotcha) ---
 
 /** The config object passed to `axios.create(...)` during module import. */
 const capturedCreateConfig = AsMock(axios.create).mock.calls[0][0];
 
-/** The request interceptor's onFulfilled callback (only callback registered). */
-const requestOnFulfilled = AsMock(apiClient.interceptors.request.use).mock.calls[0][0];
+// QA finding M-10: apiClient.ts registers NO request interceptor, so
+// `apiClient.interceptors.request.use` is never called at import. This test file
+// therefore does NOT capture a request-interceptor callback (doing so would read
+// an undefined `mock.calls[0]`); a dedicated test below asserts that absence.
 
 /** The response interceptor's onFulfilled callback (pass-through). */
 const responseOnFulfilled = AsMock(apiClient.interceptors.response.use).mock.calls[0][0];
@@ -240,33 +248,25 @@ describe('apiClient configuration', () => {
         expect(capturedCreateConfig.headers['Content-Type']).toBe('application/json');
     });
 
-    it('registered both interceptors once at import (callbacks captured)', () => {
-        expect(typeof requestOnFulfilled).toBe('function');
+    it('registered ONLY the response interceptor at import (no request interceptor)', () => {
+        // QA finding M-10: there is no request interceptor (no bearer header),
+        // so request.use was never called; only the response interceptor exists.
+        expect(AsMock(apiClient.interceptors.request.use)).not.toHaveBeenCalled();
         expect(typeof responseOnFulfilled).toBe('function');
         expect(typeof responseOnRejected).toBe('function');
     });
 });
 
 /* ------------------------------------------------------------------------- */
-/* Phase E — request interceptor.                                            */
+/* Phase E — request interceptor (removed: QA finding M-10).                 */
 /* ------------------------------------------------------------------------- */
 
-describe('request interceptor', () => {
-    it('attaches a bearer Authorization header when a token is stored', () => {
-        localStorage.setItem(ACCESS_TOKEN_STORAGE_KEY, 'test-token-123');
-        const requestConfig = requestOnFulfilled({ headers: {} });
-        expect(requestConfig.headers.Authorization).toBe('Bearer test-token-123');
-    });
-
-    it('omits the Authorization header when no token is stored', () => {
-        localStorage.clear();
-        const requestConfig = requestOnFulfilled({ headers: {} });
-        expect(requestConfig.headers.Authorization).toBeUndefined();
-    });
-
-    it('returns the same config object it received', () => {
-        const inputConfig = { headers: {} };
-        expect(requestOnFulfilled(inputConfig)).toBe(inputConfig);
+describe('request interceptor (removed per M-10)', () => {
+    it('does not register any request interceptor (no bearer Authorization header)', () => {
+        // The browser SPA authenticates only via the HTTP-only session cookie
+        // (sent automatically by withCredentials), so no Authorization header is
+        // ever attached and no request interceptor is registered.
+        expect(AsMock(apiClient.interceptors.request.use)).not.toHaveBeenCalled();
     });
 });
 
@@ -335,12 +335,32 @@ describe('response interceptor / error normalization', () => {
         expect(apiError.detail).toBeUndefined();
     });
 
-    it('reports status 0 and a non-empty fallback message for a network error', async () => {
+    it('reports status 0 and an ACTIONABLE network message for a network error (M-11)', async () => {
+        // A CORS / host-alias rejection or dropped connection reaches axios as a
+        // terse "Network Error" with NO response. The client must replace that with
+        // an actionable message so the signon screen (and every page) tells the user
+        // what to do, rather than echoing the bare axios string.
         const apiError = await ExpectApiErrorRejection(
             responseOnRejected(MakeAxiosError({ message: 'Network Error' })),
         );
         expect(apiError.status).toBe(0);
-        expect(apiError.message.length).toBeGreaterThan(0);
+        expect(apiError.message).toBe(
+            'Unable to reach the server. Please check your network connection and try again.',
+        );
+        // The bare, non-actionable axios string is NOT surfaced to the user.
+        expect(apiError.message).not.toBe('Network Error');
+    });
+
+    it('uses the actionable network message even when axios supplies no message (M-11)', async () => {
+        // Some environments reject with an empty/undefined message on a blocked
+        // request; the actionable text must still appear (never an empty alert).
+        const apiError = await ExpectApiErrorRejection(
+            responseOnRejected(MakeAxiosError({ message: '' })),
+        );
+        expect(apiError.status).toBe(0);
+        expect(apiError.message).toBe(
+            'Unable to reach the server. Please check your network connection and try again.',
+        );
     });
 
     it('produces a value that satisfies the IsApiError type guard', async () => {
@@ -384,7 +404,6 @@ describe('posting validation codes', () => {
     it('does not trigger the 401 side effects for a 400 posting error', async () => {
         const locationStub = StubLocation('/menu');
         localStorage.setItem(SESSION_USER_STORAGE_KEY, JSON.stringify(MakeCurrentUser()));
-        localStorage.setItem(ACCESS_TOKEN_STORAGE_KEY, 'stored-token');
         const apiError = await ExpectApiErrorRejection(
             responseOnRejected(
                 MakeAxiosError({
@@ -395,9 +414,8 @@ describe('posting validation codes', () => {
             ),
         );
         expect(apiError.status).toBe(400);
-        // Storage untouched and no redirect: the 401-only path did not run.
+        // Session storage untouched and no redirect: the 401-only path did not run.
         expect(localStorage.getItem(SESSION_USER_STORAGE_KEY)).not.toBeNull();
-        expect(localStorage.getItem(ACCESS_TOKEN_STORAGE_KEY)).not.toBeNull();
         expect(locationStub.href).toBe('');
     });
 });
@@ -410,13 +428,11 @@ describe('401 unauthorized handling', () => {
     it('clears stored auth and redirects to /signon for a normal 401', async () => {
         const locationStub = StubLocation('/menu');
         localStorage.setItem(SESSION_USER_STORAGE_KEY, JSON.stringify(MakeCurrentUser()));
-        localStorage.setItem(ACCESS_TOKEN_STORAGE_KEY, 'stored-token');
         const apiError = await ExpectApiErrorRejection(
             responseOnRejected(MakeAxiosError({ status: 401, url: '/accounts/1' })),
         );
         expect(apiError.status).toBe(401);
         expect(localStorage.getItem(SESSION_USER_STORAGE_KEY)).toBeNull();
-        expect(localStorage.getItem(ACCESS_TOKEN_STORAGE_KEY)).toBeNull();
         expect(locationStub.href).toBe('/signon');
     });
 
@@ -446,13 +462,13 @@ describe('401 unauthorized handling', () => {
 
     it('does not redirect or clear auth for a 403 (that path is 401-only)', async () => {
         const locationStub = StubLocation('/menu');
-        localStorage.setItem(ACCESS_TOKEN_STORAGE_KEY, 'stored-token');
+        localStorage.setItem(SESSION_USER_STORAGE_KEY, JSON.stringify(MakeCurrentUser()));
         const apiError = await ExpectApiErrorRejection(
             responseOnRejected(MakeAxiosError({ status: 403, url: '/admin/users' })),
         );
         expect(apiError.status).toBe(403);
         expect(locationStub.href).toBe('');
-        expect(localStorage.getItem(ACCESS_TOKEN_STORAGE_KEY)).not.toBeNull();
+        expect(localStorage.getItem(SESSION_USER_STORAGE_KEY)).not.toBeNull();
     });
 });
 
@@ -480,12 +496,15 @@ describe('IsApiError', () => {
 });
 
 describe('ClearStoredAuth', () => {
-    it('removes both the user and access-token storage keys', () => {
+    it('removes the user session key and leaves any legacy token untouched (M-10)', () => {
+        // M-10: the SPA no longer stores/manages a bearer token, so ClearStoredAuth
+        // clears only the cached session user. Any pre-existing legacy token key is
+        // never written and never removed by our code.
         localStorage.setItem(SESSION_USER_STORAGE_KEY, JSON.stringify(MakeCurrentUser()));
-        localStorage.setItem(ACCESS_TOKEN_STORAGE_KEY, 'stored-token');
+        localStorage.setItem(LEGACY_ACCESS_TOKEN_KEY, 'stored-token');
         ClearStoredAuth();
         expect(localStorage.getItem(SESSION_USER_STORAGE_KEY)).toBeNull();
-        expect(localStorage.getItem(ACCESS_TOKEN_STORAGE_KEY)).toBeNull();
+        expect(localStorage.getItem(LEGACY_ACCESS_TOKEN_KEY)).toBe('stored-token');
     });
 
     it('does not throw when storage is already empty', () => {
@@ -657,8 +676,16 @@ describe('CardsApi', () => {
         expect(result).toEqual(cardRead);
     });
 
-    it('UpdateCard -> PUT /cards/{cardNum} with the update body', async () => {
+    it('UpdateCard -> PUT /cards/{cardNum} with the update body (before_image echoed)', async () => {
+        // QA finding C06: the backend `CardUpdate` schema declares `before_image`
+        // (the client-echoed optimistic-lock token) mandatory, so the client must
+        // forward the body verbatim, before_image included.
         const cardUpdate: CardUpdate = {
+            before_image: {
+                embossed_name: 'TEST CARDHOLDER',
+                active_status: 'Y',
+                expiration_date: '2030-01-01',
+            },
             embossed_name: 'TEST CARDHOLDER',
             expiration_date: '2031-01-01',
             active_status: 'Y',
@@ -893,7 +920,7 @@ describe('UsersApi', () => {
 
     it('surfaces a server-enforced admin gate (403) as an ApiError without redirect/clear', async () => {
         const locationStub = StubLocation('/menu');
-        localStorage.setItem(ACCESS_TOKEN_STORAGE_KEY, 'stored-token');
+        localStorage.setItem(SESSION_USER_STORAGE_KEY, JSON.stringify(MakeCurrentUser()));
         const apiError = await ExpectApiErrorRejection(
             responseOnRejected(
                 MakeAxiosError({
@@ -905,7 +932,7 @@ describe('UsersApi', () => {
         );
         expect(apiError.status).toBe(403);
         expect(locationStub.href).toBe('');
-        expect(localStorage.getItem(ACCESS_TOKEN_STORAGE_KEY)).not.toBeNull();
+        expect(localStorage.getItem(SESSION_USER_STORAGE_KEY)).not.toBeNull();
     });
 });
 

@@ -41,7 +41,6 @@ Example:
 """
 
 import logging
-import uuid
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from urllib.parse import urlsplit
@@ -61,6 +60,16 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from app.core.config import settings
+from app.core.correlation import (
+    INGRESS_HEADER_NAMES,
+    REQUEST_STATE_ATTRIBUTE,
+    RESPONSE_HEADER_NAME,
+    BindCorrelationId,
+    GetCorrelationId,
+    InstallCorrelationIdLogFilter,
+    ResetCorrelationId,
+    SanitizeCorrelationId,
+)
 from app.core.exceptions import (
     AuthenticationError,
     AuthorizationError,
@@ -152,6 +161,12 @@ async def Lifespan(fastapiApp: FastAPI) -> AsyncIterator[None]:
     # uvicorn, sqlalchemy.engine loggers and lastResort, before any handler emits
     # them; the install is idempotent across restarts.
     InstallPanMaskingFilter()
+    # Also install the correlation-id log filter (QA finding M-32) across the same
+    # server log paths, so every record carries the current request's
+    # ``correlation_id`` for structured logs. Deferred to here for the same reason
+    # as the masking filter -- uvicorn's access/error handlers already exist -- and
+    # is likewise idempotent.
+    InstallCorrelationIdLogFilter()
     yield
     # Shutdown: release the async connection pool. A specific SQLAlchemy error
     # is caught and logged (never a bare except) so a teardown hiccup cannot
@@ -232,6 +247,93 @@ class SecurityHeadersMiddleware:
             await send(message)
 
         await self.app(scope, receive, SendWithSecurityHeaders)
+
+
+def _ReadIngressCorrelationId(scope: Scope) -> str | None:
+    """Return the first client-supplied correlation id from the request headers.
+
+    Scans the ASGI ``scope`` headers (a list of lowercased ``(name, value)`` byte
+    pairs) for the ingress header names in :data:`INGRESS_HEADER_NAMES`, in order,
+    and returns the RAW value of the first match. Validation/sanitization is the
+    caller's responsibility (:func:`SanitizeCorrelationId`), keeping this helper a
+    pure lookup.
+
+    Args:
+        scope: The ASGI HTTP connection scope.
+
+    Returns:
+        The raw header value decoded as UTF-8 (latin-1 fallback for a non-UTF-8
+        byte string), or ``None`` when no ingress correlation header is present.
+    """
+    rawHeaders = scope.get("headers") or []
+    for headerName, headerValue in rawHeaders:
+        if headerName.decode("latin-1").lower() in INGRESS_HEADER_NAMES:
+            try:
+                return headerValue.decode("utf-8")
+            except UnicodeDecodeError:
+                return headerValue.decode("latin-1")
+    return None
+
+
+class CorrelationIdMiddleware:
+    """Pure ASGI middleware that binds and echoes a per-request correlation id.
+
+    For every HTTP request it resolves a correlation id -- a validated,
+    sanitized client-supplied ``X-Request-ID`` / ``X-Correlation-ID`` ingress
+    header when offered, otherwise a fresh server-generated id -- binds it to the
+    request-scoped context variable (so every coroutine and log record while the
+    request is handled carries it), and echoes it on the response
+    :data:`~app.core.correlation.RESPONSE_HEADER_NAME` header so the caller can
+    correlate its request with the server logs (QA finding M-32).
+
+    Implemented at the ASGI layer (like :class:`SecurityHeadersMiddleware`, not as
+    a ``BaseHTTPMiddleware``) so the id is bound before ANY inner layer runs and is
+    echoed on EVERY response type -- JSON, the streaming CSV / binary PDF report
+    downloads, and error responses. Registered as the OUTERMOST middleware so the
+    id is available to CORS, CSRF, the routers, and the exception handlers alike.
+    Non-HTTP scopes (for example lifespan) pass straight through untouched.
+    """
+
+    def __init__(self, app: ASGIApp) -> None:
+        """Store the wrapped ASGI application.
+
+        Args:
+            app: The next ASGI application in the middleware chain.
+        """
+        self.app = app
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        """Bind the correlation id for the request and echo it on the response.
+
+        Args:
+            scope: The ASGI connection scope.
+            receive: The ASGI receive callable.
+            send: The ASGI send callable to forward messages to.
+        """
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+
+        correlationId = SanitizeCorrelationId(_ReadIngressCorrelationId(scope))
+        # Stash the id on the ASGI scope state so request-scoped code AND the
+        # catch-all HTTP 500 handler (which runs in Starlette's OUTER
+        # ServerErrorMiddleware, above this layer, after this middleware's context
+        # binding has been reset) can read the SAME id via ``request.state``.
+        scope.setdefault("state", {})[REQUEST_STATE_ATTRIBUTE] = correlationId
+        resetToken = BindCorrelationId(correlationId)
+
+        async def SendWithCorrelationId(message: Message) -> None:
+            if message["type"] == "http.response.start":
+                responseHeaders = MutableHeaders(scope=message)
+                responseHeaders[RESPONSE_HEADER_NAME] = correlationId
+            await send(message)
+
+        try:
+            await self.app(scope, receive, SendWithCorrelationId)
+        finally:
+            # Restore the prior context value so a reused task/context never leaks
+            # this request's id into an unrelated scope.
+            ResetCorrelationId(resetToken)
 
 
 # ---------------------------------------------------------------------------
@@ -389,8 +491,8 @@ def _ConfigureMiddleware(fastapiApp: FastAPI) -> None:
 
     Middleware is registered inner-to-outer (Starlette treats the LAST
     ``add_middleware`` call as the OUTERMOST layer), producing this response
-    chain from outermost to innermost: ``SecurityHeaders`` -> ``CORS`` ->
-    ``CsrfProtection`` -> routers.
+    chain from outermost to innermost: ``CorrelationId`` -> ``SecurityHeaders``
+    -> ``CORS`` -> ``CsrfProtection`` -> routers.
 
     * :class:`CsrfProtectionMiddleware` is added FIRST (innermost) so its
       origin check for cookie mutations (QA finding M-02) runs just before the
@@ -404,10 +506,16 @@ def _ConfigureMiddleware(fastapiApp: FastAPI) -> None:
       OUTER of CSRF means the preflight ``OPTIONS`` is answered here without ever
       reaching the CSRF layer. Session/JWT decoding is still performed by the
       ``get_current_user`` dependency, not by middleware.
-    * :class:`SecurityHeadersMiddleware` is added LAST so it is the OUTERMOST
-      layer: it therefore decorates every outgoing response -- including CORS
-      preflight responses, the CSRF 403, and the streaming CSV/PDF downloads --
-      with the security headers required by QA finding F5.
+    * :class:`SecurityHeadersMiddleware` is added next so it wraps every outgoing
+      response -- including CORS preflight responses, the CSRF 403, and the
+      streaming CSV/PDF downloads -- with the security headers required by QA
+      finding F5.
+    * :class:`CorrelationIdMiddleware` is added LAST so it is the OUTERMOST layer
+      (QA finding M-32): it binds the request-scoped correlation id BEFORE any
+      inner layer or exception handler runs -- so CORS, CSRF, the routers, the
+      log records, and :func:`_HandleUnexpectedError` all observe the same id --
+      and echoes that id on the ``X-Request-ID`` response header of every
+      response type.
 
     Args:
         fastapiApp: The application instance to configure.
@@ -421,6 +529,7 @@ def _ConfigureMiddleware(fastapiApp: FastAPI) -> None:
         allow_headers=["*"],
     )
     fastapiApp.add_middleware(SecurityHeadersMiddleware)
+    fastapiApp.add_middleware(CorrelationIdMiddleware)
 
 
 def _MountRouters(fastapiApp: FastAPI) -> None:
@@ -643,21 +752,36 @@ async def _HandleUnexpectedError(request: Request, exc: Exception) -> JSONRespon
     mapped to a precise status by the domain handlers above (or, for request
     validation, by FastAPI itself), so reaching here means a genuinely
     unexpected fault. The full exception -- including its traceback -- is logged
-    server-side under a random correlation id for diagnosis, while the client
-    receives only a generic body carrying that same correlation id. This never
-    leaks a stack trace, file path, SQL statement, or bound parameter (which may
-    include a card number) to the caller, closing the information-disclosure
-    exposure that a debug-mode error page would otherwise create.
+    server-side under the request's correlation id for diagnosis, while the client
+    receives only a generic body carrying that same id. This never leaks a stack
+    trace, file path, SQL statement, or bound parameter (which may include a card
+    number) to the caller, closing the information-disclosure exposure that a
+    debug-mode error page would otherwise create.
+
+    The correlation id is the one bound by :class:`CorrelationIdMiddleware` for
+    this request (QA finding M-32), so the id in the log line, the id in this
+    response body, and the id echoed on the ``X-Request-ID`` response header all
+    match -- letting an operator tie a client-reported id straight to the
+    server-side traceback. (Previously an id was minted here in isolation, tied to
+    nothing else.) Because this catch-all handler runs in Starlette's OUTER
+    ``ServerErrorMiddleware`` -- above ``CorrelationIdMiddleware``, whose
+    context-variable binding has already been reset as the exception unwound -- the
+    id is recovered from ``request.state`` (stashed on the shared ASGI scope by the
+    middleware), with the context variable as a fallback. The ``X-Request-ID``
+    header is set explicitly on this response because the outer middleware sends
+    this error response without passing it back through the correlation layer.
 
     Args:
-        request: The incoming request, used only to log the method and path.
+        request: The incoming request, used to recover the correlation id and to
+            log the method and path.
         exc: The unhandled exception.
 
     Returns:
-        A JSON response with status 500 and a generic detail plus correlation
-        id. The response body is intentionally free of any internal detail.
+        A JSON response with status 500 and a generic detail plus the request's
+        correlation id (also echoed on the ``X-Request-ID`` header). The response
+        body is intentionally free of any internal detail.
     """
-    correlationId = uuid.uuid4().hex
+    correlationId = getattr(request.state, REQUEST_STATE_ATTRIBUTE, None) or GetCorrelationId()
     _LOGGER.error(
         "Unhandled error [%s] on %s %s",
         correlationId,
@@ -668,6 +792,7 @@ async def _HandleUnexpectedError(request: Request, exc: Exception) -> JSONRespon
     return JSONResponse(
         status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
         content={"detail": "Internal Server Error", "correlation_id": correlationId},
+        headers={RESPONSE_HEADER_NAME: correlationId},
     )
 
 
@@ -849,12 +974,15 @@ _LOOKUP_OPERATIONS: frozenset[tuple[str, str]] = frozenset(
 
 # (METHOD, PATH) operations that can return 409 -- every conflict-capable path
 # (optimistic-lock mismatch, tran-id race exhaustion, duplicate user, or the
-# F3 last-administrator invariant on admin demotion/deletion).
+# F3 last-administrator invariant on admin demotion/deletion). POST /billpay is
+# included because its pay-in-full posting assigns MAX(tran_id)+1 and, under a
+# cross-account race, exhausting the bounded retry surfaces as a 409 (M04).
 _CONFLICT_OPERATIONS: frozenset[tuple[str, str]] = frozenset(
     {
         ("PUT", f"{_V1_PREFIX}/accounts/{{acctId}}"),
         ("PUT", f"{_V1_PREFIX}/cards/{{cardNum}}"),
         ("POST", f"{_V1_PREFIX}/transactions"),
+        ("POST", f"{_V1_PREFIX}/billpay"),
         ("POST", f"{_V1_PREFIX}/admin/users"),
         ("PUT", f"{_V1_PREFIX}/admin/users/{{userId}}"),
         ("DELETE", f"{_V1_PREFIX}/admin/users/{{userId}}"),

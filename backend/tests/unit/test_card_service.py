@@ -44,7 +44,7 @@ import pytest
 
 from app.core.exceptions import DomainValidationError, NotFoundError
 from app.models import Account, Card
-from app.schemas.card import CardUpdate
+from app.schemas.card import CardBeforeImage, CardUpdate
 from app.schemas.common import PaginationParams
 from app.services.card_service import CardService
 
@@ -291,6 +291,11 @@ async def test_update_card_returns_read_without_cvv(db_session):
     await SeedAccountWithCards(db_session, cardCount=1)
     service = CardService()
     cardUpdate = CardUpdate(
+        before_image=CardBeforeImage(
+            embossed_name="JANE DOE",
+            active_status="Y",
+            expiration_date=date(2027, 1, 1),
+        ),
         embossed_name="JOHN DOE",
         expiration_date=date(2028, 1, 1),
         active_status="Y",

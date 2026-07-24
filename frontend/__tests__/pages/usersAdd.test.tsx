@@ -1,4 +1,7 @@
-/** Add User page spec — legacy origin BMS COUSR01 / Tx CU01 / program COUSR01C. Admin-only; password on create only. */
+/**
+ * Add User page spec — legacy origin BMS COUSR01 / Tx CU01 /
+ * program COUSR01C. Admin-only; password on create only.
+ */
 
 /*
  * Component / integration spec for the modern Add-User page

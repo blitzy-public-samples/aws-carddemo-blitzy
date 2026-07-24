@@ -266,6 +266,74 @@ describe('AppShell', () => {
     });
 
     // ----------------------------------------------------------------------
+    // Route-change focus management (QA N-02)
+    // ----------------------------------------------------------------------
+
+    it('moves focus to the new page heading on a client-side route change (N-02)', async () => {
+        // Initial route /menu: the announcer must NOT steal focus on first paint
+        // (it acts only on SUBSEQUENT navigations), so the heading is unfocused.
+        mockUsePathname.mockReturnValue(MENU_ROUTE);
+
+        const { rerender } = RenderWithProviders(
+            <AppShell>
+                <h1>Main Menu</h1>
+            </AppShell>,
+        );
+
+        expect(
+            screen.getByRole('heading', { level: 1, name: 'Main Menu' }),
+        ).not.toHaveFocus();
+
+        // Simulate a client-side navigation to /cards with a new page heading.
+        mockUsePathname.mockReturnValue('/cards');
+        rerender(
+            <AppShell>
+                <h1>List Credit Cards</h1>
+            </AppShell>,
+        );
+
+        // The new page's <h1> receives focus (made programmatically focusable via
+        // tabindex="-1") so assistive tech announces the new page.
+        await waitFor(() => {
+            expect(
+                screen.getByRole('heading', {
+                    level: 1,
+                    name: 'List Credit Cards',
+                }),
+            ).toHaveFocus();
+        });
+    });
+
+    it('leaves focus on a page control that autofocused on navigation (N-02)', async () => {
+        mockUsePathname.mockReturnValue(MENU_ROUTE);
+
+        const { rerender } = RenderWithProviders(
+            <AppShell>
+                <h1>Main Menu</h1>
+            </AppShell>,
+        );
+
+        // Navigate to a page whose primary input autofocuses. React applies
+        // autoFocus during commit (before the announcer's passive effect), so the
+        // announcer must find focus already inside <main> and leave it there
+        // rather than yanking focus to the heading.
+        mockUsePathname.mockReturnValue('/accounts/update');
+        rerender(
+            <AppShell>
+                <h1>Update Account</h1>
+                <input aria-label="Account Number" autoFocus />
+            </AppShell>,
+        );
+
+        await waitFor(() => {
+            expect(screen.getByLabelText('Account Number')).toHaveFocus();
+        });
+        expect(
+            screen.getByRole('heading', { level: 1, name: 'Update Account' }),
+        ).not.toHaveFocus();
+    });
+
+    // ----------------------------------------------------------------------
     // Post-mount auth read + Logout + PF3/Escape mapping
     // ----------------------------------------------------------------------
 

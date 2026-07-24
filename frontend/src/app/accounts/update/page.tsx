@@ -425,6 +425,7 @@ function AccountsUpdateContent() {
                                     required
                                     readOnly={isLoaded}
                                     autoFocus
+                                    autoComplete="off"
                                 />
                             </Box>
                             <Button
@@ -447,7 +448,10 @@ function AccountsUpdateContent() {
                 {/* Editable account section ---------------------------------- */}
                 {isLoaded && formValues ? (
                     <Card sx={{ mb: 2 }}>
-                        <CardHeader title="Account" />
+                        <CardHeader
+                            title="Account"
+                            slotProps={{ title: { component: 'h2' } }}
+                        />
                         <CardContent>
                             <Stack spacing={2}>
                                 <FormField
@@ -548,7 +552,10 @@ function AccountsUpdateContent() {
                 {/* Read-only customer context -------------------------------- */}
                 {isLoaded && customer ? (
                     <Card sx={{ mb: 2 }}>
-                        <CardHeader title="Customer Details" />
+                        <CardHeader
+                            title="Customer Details"
+                            slotProps={{ title: { component: 'h2' } }}
+                        />
                         <CardContent>
                             <Stack spacing={2}>
                                 <FormField

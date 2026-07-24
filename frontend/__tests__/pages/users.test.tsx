@@ -435,4 +435,87 @@ describe('UsersPage', () => {
             expect(mockReplace).not.toHaveBeenCalledWith(MENU_ROUTE);
         });
     });
+
+    describe('stale response handling (M-05)', () => {
+        it('discards a superseded page fetch so a slow earlier page cannot overwrite a newer one', async () => {
+            const user = SetupUser();
+            ArmAdminSession();
+
+            const STALE_USER_ID = 'STALE002';
+            const FRESH_USER_ID = 'FRESH001';
+
+            // Mount (page 1) resolves immediately with a 3-page envelope so the
+            // pagination control renders; the page-2 and page-3 fetches are
+            // hand-controlled (deferred) so the spec dictates resolution ORDER.
+            let resolveStalePageTwo!: (
+                value: PaginatedResponse<UserSummary>,
+            ) => void;
+            let resolveFreshPageThree!: (
+                value: PaginatedResponse<UserSummary>,
+            ) => void;
+            const stalePageTwo = new Promise<PaginatedResponse<UserSummary>>(
+                (resolve) => {
+                    resolveStalePageTwo = resolve;
+                },
+            );
+            const freshPageThree = new Promise<PaginatedResponse<UserSummary>>(
+                (resolve) => {
+                    resolveFreshPageThree = resolve;
+                },
+            );
+
+            const listMock = UsersApi.ListUsers as jest.Mock;
+            listMock
+                .mockResolvedValueOnce(
+                    MakePaginatedResponse<UserSummary>(
+                        [MakeUserSummary({ user_id: REGULAR_USER_ID })],
+                        { page: 1, total_items: 21, total_pages: 3, has_next: true },
+                    ),
+                ) // mount -> generation 1 (page 1)
+                .mockReturnValueOnce(stalePageTwo) // page 2 -> older generation
+                .mockReturnValueOnce(freshPageThree); // page 3 -> newer generation
+
+            RenderUsersPage();
+            await screen.findByText(REGULAR_USER_ID);
+
+            // Advance to page 2 (older request, left in flight), then to page 3
+            // (newer request). The grid shows page 1 until a fetch resolves, so
+            // both page buttons stay clickable.
+            await user.click(
+                screen.getByRole('button', { name: /go to page 2/i }),
+            );
+            await user.click(
+                screen.getByRole('button', { name: /go to page 3/i }),
+            );
+            await waitFor(() => expect(listMock).toHaveBeenCalledTimes(3));
+
+            // Resolve the NEWER (page 3) request first; its row must render.
+            resolveFreshPageThree(
+                MakePaginatedResponse<UserSummary>(
+                    [MakeUserSummary({ user_id: FRESH_USER_ID })],
+                    { page: 3, total_items: 21, total_pages: 3, has_previous: true },
+                ),
+            );
+            expect(await screen.findByText(FRESH_USER_ID)).toBeInTheDocument();
+
+            // Now resolve the OLDER (page 2) request. The generation guard must
+            // discard it: the page-3 row stays and the page-2 row never appears.
+            resolveStalePageTwo(
+                MakePaginatedResponse<UserSummary>(
+                    [MakeUserSummary({ user_id: STALE_USER_ID })],
+                    {
+                        page: 2,
+                        total_items: 21,
+                        total_pages: 3,
+                        has_next: true,
+                        has_previous: true,
+                    },
+                ),
+            );
+            await waitFor(() =>
+                expect(screen.getByText(FRESH_USER_ID)).toBeInTheDocument(),
+            );
+            expect(screen.queryByText(STALE_USER_ID)).not.toBeInTheDocument();
+        });
+    });
 });

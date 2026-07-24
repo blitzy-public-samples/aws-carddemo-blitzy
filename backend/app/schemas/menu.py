@@ -1,4 +1,5 @@
-"""Menu DTOs. Source: app/cpy/COMEN02Y.cpy (regular, 10 options) + app/cpy/COADM02Y.cpy (admin, 4 options); screens COMEN01/COADM01.
+"""Menu DTOs. Source: app/cpy/COMEN02Y.cpy (regular, 10 options) +
+app/cpy/COADM02Y.cpy (admin, 4 options); screens COMEN01/COADM01.
 
 Pydantic v2 data-transfer objects for the CardDemo navigation menus. They model
 the role-based navigation that replaces the legacy 3270 menu-driven flow

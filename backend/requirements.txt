@@ -9,9 +9,27 @@
 # stable releases, mid-2026). This manifest covers the FastAPI backend ONLY.
 # `typer` is intentionally NOT listed here: it is a batch/ package dependency
 # (batch/cli.py) per AAP 0.6.1, not a backend dependency.
+#
+# RUNTIME-ONLY set (QA finding M-22): this file lists ONLY the packages the
+# running FastAPI service needs. The backend Dockerfile installs exactly this
+# file, so the production image never carries test tooling. Development / test
+# dependencies (pytest, pytest-asyncio, httpx) live in the companion
+# `requirements-dev.txt`, which pulls this file in via `-r requirements.txt` and
+# then adds the test set. Install for development with:
+#   pip install -r requirements-dev.txt
+# Both manifests mirror the pins in pyproject.toml (runtime `dependencies` vs the
+# `dev` optional-dependencies group); keep all three synchronized.
 
 # Web framework & server
 fastapi==0.136.1
+# starlette is pinned as a DIRECT dependency (QA finding M-15): app/main.py imports
+# from `starlette.datastructures`, `starlette.middleware.base`, and
+# `starlette.types` directly (the SecurityHeaders / CSRF / correlation-id
+# middleware), so its version is part of this service's own contract and must not
+# float with FastAPI's transitive `starlette>=0.46.0` range. 1.3.1 is the version
+# FastAPI 0.136.1 resolves and the release whose `starlette.requests` hard-imports
+# python_multipart (see the python-multipart pin below).
+starlette==1.3.1
 uvicorn[standard]==0.34.0
 # python-multipart >= 0.0.32 (QA finding M-23): releases < 0.0.32 are vulnerable
 # to a malformed-multipart denial-of-service. It is NOT removable even though this
@@ -52,12 +70,6 @@ PyJWT==2.13.0
 reportlab==4.5.1
 Jinja2==3.1.6
 
-# Testing
-# pytest >= 9.0.3 (QA finding M-24): 8.3.4 has a fixed tmpdir vulnerability and
-# the suite performs privileged DB operations. pytest-asyncio is upgraded to the
-# 1.x line as the compatible pair (0.25.2 caps at pytest < 9); 1.4.0 also makes
-# the async-fixture loop scope explicit-by-default, clearing the prior
-# PytestDeprecationWarning (see the asyncio_default_fixture_loop_scope pin, N-05).
-pytest==9.1.1
-pytest-asyncio==1.4.0
-httpx==0.28.1
+# NOTE (QA finding M-22): test tooling (pytest, pytest-asyncio, httpx) is
+# intentionally NOT listed here so the production backend image stays runtime-
+# only. Those packages now live in `requirements-dev.txt`.

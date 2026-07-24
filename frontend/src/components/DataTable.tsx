@@ -348,10 +348,11 @@ export function DataTable<T>(props: DataTableProps<T>) {
             role="region"
             aria-label={`Records table, up to ${ROWS_PER_PAGE} rows per page`}
             aria-busy={loading}
-            // width:100% + minWidth:0 keep the region within its (flex) parent so
+            // fullWidth + minWidth:0 keep the region within its (flex) parent so
             // the TableContainer below — not the page — owns any horizontal scroll
-            // on narrow viewports (QA #2).
-            sx={{ width: '100%', minWidth: 0 }}
+            // on narrow viewports (QA #2). The fill-parent width is the named
+            // `theme.layout.fullWidth` token, not a hardcoded `100%` (QA M-25).
+            sx={(theme) => ({ width: theme.layout.fullWidth, minWidth: 0 })}
         >
             <TableContainer
                 component={Paper}
@@ -361,11 +362,11 @@ export function DataTable<T>(props: DataTableProps<T>) {
                 // container (and everything below it, e.g. Pagination) keeps the
                 // same height across the empty / loading / populated / partial-page
                 // states. This eliminates the async-load layout shift (QA #16 CLS).
-                sx={{
-                    width: '100%',
+                sx={(theme) => ({
+                    width: theme.layout.fullWidth,
                     overflowX: 'auto',
-                    minHeight: (theme) => theme.spacing(64),
-                }}
+                    minHeight: theme.spacing(64),
+                })}
             >
                 <Table
                     // Fixed body-row height keeps every row (skeleton, data, or

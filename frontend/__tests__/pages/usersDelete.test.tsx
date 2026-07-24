@@ -1,4 +1,7 @@
-/** Delete User page spec — legacy origin BMS COUSR03 / Tx CU03 / program COUSR03C. Admin-only; confirm-before-delete. */
+/**
+ * Delete User page spec — legacy origin BMS COUSR03 / Tx CU03 /
+ * program COUSR03C. Admin-only; confirm-before-delete.
+ */
 
 /*
  * Component / integration test for the modern Delete User page

@@ -59,6 +59,12 @@ HELP_SURFACES: tuple[tuple[str, ...], ...] = (
     ("seed-all", "--help"),
     ("job", "post-transactions", "--help"),
     ("job", "statement-gen", "--help"),
+    # QA finding M17/M18: the combine/backup/restore job help surfaces. restore-tran
+    # in particular declares a REQUIRED typer.Option (``--backup-file``), the exact
+    # construct behind Finding B's make_metavar crash, so its help must render cleanly.
+    ("job", "combine-tran", "--help"),
+    ("job", "backup-tran", "--help"),
+    ("job", "restore-tran", "--help"),
     ("load", "accounts", "--help"),
     ("load", "init-users", "--help"),
 )

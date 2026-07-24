@@ -46,7 +46,6 @@ from sqlalchemy.exc import OperationalError
 
 from app.models import (
     Account,
-    AccountGroup,
     Card,
     CardXref,
     Customer,
@@ -442,6 +441,42 @@ def test_interest_new_period_accrues_again(db_session, record_builder):
     assert _CountInterestTransactions(db_session, ACCT_ONE) == 2            # one per period
 
 
+def test_interest_same_month_different_day_is_idempotent(db_session, record_builder):
+    # QA finding M02 (regression guard): interest idempotency keys on the
+    # accounting MONTH (YYYYMM), not the exact run DAY. Running on the 1st and
+    # re-running on the 20th of the SAME month must be recognized as an existing
+    # accrual and skipped -- under the previous day-scoped key the 20th used a
+    # different 10-char prefix, did not find the 1st's posting, and WRONGLY
+    # accrued interest twice in one billing month.
+    spec = {
+        "groupId": "TESTGRP",
+        "cardNum": CARD_ONE,
+        "custId": CUST_ONE,
+        "currBal": Decimal("200.00"),
+        "cycCredit": Decimal("0.00"),
+        "cycDebit": Decimal("0.00"),
+        "balance": Decimal("100.00"),
+        "rate": Decimal("12.00"),
+    }
+    _BuildInterestScenario(record_builder, ACCT_ONE, spec)
+
+    firstDayRun = CalculateInterest(db_session, runDate=date(2023, 6, 1))
+    assert firstDayRun.accountsProcessed == 1                # accrues on the 1st
+    assert firstDayRun.interestTransactionsWritten == 1
+    db_session.expire_all()
+    assert db_session.get(Account, ACCT_ONE).curr_bal == Decimal("201.00")   # 200 + 1
+    assert _CountInterestTransactions(db_session, ACCT_ONE) == 1
+
+    # Same month (June), DIFFERENT day (the 20th): must be suppressed.
+    sameMonthRerun = CalculateInterest(db_session, runDate=date(2023, 6, 20))
+    assert sameMonthRerun.accountsProcessed == 0             # skipped: already accrued
+    assert sameMonthRerun.interestTransactionsWritten == 0
+    assert sameMonthRerun.totalInterest == Decimal("0")
+    db_session.expire_all()
+    assert db_session.get(Account, ACCT_ONE).curr_bal == Decimal("201.00")   # NOT 202
+    assert _CountInterestTransactions(db_session, ACCT_ONE) == 1             # no duplicate
+
+
 # Distinct COMMITTED-fixture keys for the concurrency test, held well away from
 # the rolled-back scenario keys so the surgical cleanup can never touch another
 # test's rows.
@@ -458,7 +493,7 @@ def _CommittedInterestGraph():
     Cross-connection row locking (``SELECT ... FOR UPDATE``) can only be
     exercised against committed data, so this helper steps outside the rolled-back
     ``db_session`` recipe: it seeds a complete interest graph
-    (``account_group -> customer -> account -> card -> xref -> tran category
+    (``customer -> account -> card -> xref -> tran category
     balance -> disclosure rate``) on its own connection and COMMITS it, then
     yields two independent sessions on separate connections. On exit it rolls back
     both sessions and surgically DELETEs exactly the rows it committed (in
@@ -470,7 +505,7 @@ def _CommittedInterestGraph():
     """
     seedSession = batch_db.SessionLocal()
     try:
-        seedSession.add(AccountGroup(group_id=CONCURRENCY_GROUP_ID))
+        # accounts.group_id is a plain column (QA finding C01) -- no parent row.
         seedSession.add(
             Customer(
                 cust_id=CONCURRENCY_CUST_ID,
@@ -565,11 +600,6 @@ def _CommittedInterestGraph():
             )
             cleanupSession.execute(
                 delete(Customer).where(Customer.cust_id == CONCURRENCY_CUST_ID)
-            )
-            cleanupSession.execute(
-                delete(AccountGroup).where(
-                    AccountGroup.group_id == CONCURRENCY_GROUP_ID
-                )
             )
             cleanupSession.commit()
         finally:

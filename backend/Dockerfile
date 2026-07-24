@@ -18,6 +18,20 @@
 #   * All secrets/configuration (DATABASE_URL, SYNC_DATABASE_URL, SECRET_KEY,
 #     ENVIRONMENT, ...) are supplied at container start via environment
 #     variables / .env — NEVER baked into this image (Ochs Rule #3).
+#
+# Supply chain (QA finding M-15):
+#   * The application's DIRECT dependency versions are fully pinned in
+#     requirements.txt (== on every package, including the direct `starlette`
+#     import used by the middleware), so the Python layer is reproducible.
+#   * The base image below is pinned to the AAP-specified TAG (python:3.13-slim,
+#     per AAP 0.6.1). Digest-pinning (`FROM python:3.13-slim@sha256:...`), SBOM
+#     emission (e.g. syft), and image vulnerability scanning (e.g. trivy/grype)
+#     of the exact built artifact are DEPLOYMENT-PIPELINE responsibilities: they
+#     require a CI/release toolchain that the AAP dependency inventory (0.6) does
+#     not define and that has no repository artifact in scope. They are therefore
+#     performed by the operator's build pipeline against the exact image digest
+#     it publishes, not hardcoded here where the digest cannot be resolved or
+#     verified. The same applies to the frontend image and the Compose services.
 # =============================================================================
 FROM python:3.13-slim
 
@@ -27,13 +41,20 @@ FROM python:3.13-slim
 #   PYTHONDONTWRITEBYTECODE  do not emit .pyc files into the read-only image.
 #   PIP_NO_CACHE_DIR         keep the image slim (no pip wheel cache).
 #   PIP_DISABLE_PIP_VERSION_CHECK  skip the "new pip available" network check.
+#   PIP_ROOT_USER_ACTION=ignore  suppress pip's "running as the root user"
+#       advisory (QA finding M24 zero-warning gate). Dependencies are installed
+#       into the system site-packages as root during the build BY DESIGN (there
+#       is no per-user venv in the image); the runtime then drops to the non-
+#       root `appuser`. This is the pip-sanctioned way to silence that specific,
+#       expected warning without weakening the least-privilege runtime.
 # NOTE: no application secrets are declared here (Ochs Rule #3) — configuration
 #       arrives at runtime from the environment, not from the image.
 # -----------------------------------------------------------------------------
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     PIP_NO_CACHE_DIR=1 \
-    PIP_DISABLE_PIP_VERSION_CHECK=1
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    PIP_ROOT_USER_ACTION=ignore
 
 WORKDIR /app
 
@@ -73,6 +94,12 @@ RUN useradd --create-home --uid 1000 appuser
 # BEFORE the application source. Application code changes then do not invalidate
 # this (slow) pip layer, so rebuilds reuse the cached dependencies. Installed as
 # root into the system site-packages and read by appuser at runtime.
+#
+# RUNTIME-ONLY install (QA finding M-22): this installs `requirements.txt`, which
+# now lists ONLY the packages the running service needs. Test tooling (pytest,
+# pytest-asyncio, httpx) lives in `requirements-dev.txt` and is deliberately NOT
+# copied or installed here, so the production image never ships test frameworks.
+# The dev manifest is also excluded from the build context by backend/.dockerignore.
 # -----------------------------------------------------------------------------
 COPY --chown=appuser:appuser requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt

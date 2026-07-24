@@ -52,7 +52,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 from decimal import Decimal
 
 from sqlalchemy import select
@@ -112,6 +112,15 @@ INTEREST_DIVISOR = Decimal("1200")
 # Reserved disclosure-group id used as the fallback when an account's specific
 # group has no row for a (type, category) pair (legacy 1200-A default lookup).
 DEFAULT_GROUP_ID = "DEFAULT"
+
+# Number of leading tran-id characters that encode the accounting MONTH (YYYYMM).
+# Interest idempotency is keyed to the accounting month, NOT the exact run day
+# (QA finding M02): the legacy chain accrues interest once per monthly cycle, so
+# a re-run on a DIFFERENT calendar day of the SAME month must be recognized as
+# already accrued and must not post a second interest transaction. The 10-char
+# date prefix (YYYYMMDD00) begins with these six month characters, so slicing the
+# first MONTH_PREFIX_LENGTH characters yields the accounting-month idempotency key.
+MONTH_PREFIX_LENGTH = 6
 
 
 # ---------------------------------------------------------------------------
@@ -200,6 +209,26 @@ def _ResolveDatePrefix(runDate: date | None) -> str:
     """
     effectiveDate = runDate if runDate is not None else date.today()
     return effectiveDate.strftime("%Y%m%d") + "00"
+
+
+def _ResolveMonthPrefix(datePrefix: str) -> str:
+    """Return the 6-character accounting-month idempotency key (``YYYYMM``).
+
+    Derives the accounting month from the run's 10-character date prefix
+    (``YYYYMMDD00``) by taking its leading :data:`MONTH_PREFIX_LENGTH`
+    characters. Interest idempotency keys on the accounting MONTH rather than the
+    exact run day (QA finding M02): every interest transaction id begins with the
+    run-date prefix, so any interest posting made anywhere within the same month
+    shares this ``YYYYMM`` prefix and is recognized by
+    :func:`_InterestAlreadyAccrued` as an existing accrual for the period.
+
+    Args:
+        datePrefix: The run's 10-character tran-id date prefix (``YYYYMMDD00``).
+
+    Returns:
+        The 6-character accounting-month key, for example ``'202207'``.
+    """
+    return datePrefix[:MONTH_PREFIX_LENGTH]
 
 
 def _LookupRate(
@@ -302,33 +331,41 @@ def _BeginAccount(
 def _InterestAlreadyAccrued(session: Session, datePrefix: str, acctId: str) -> bool:
     """Report whether this account's interest is already posted for the period.
 
-    Implements the interest idempotency ledger (QA finding M-12). An interest
-    run for one account in one period leaves a deterministic fingerprint: a
-    POSTED transaction of type :data:`INTEREST_TRAN_TYPE_CD` / category
-    :data:`INTEREST_TRAN_CAT_CD`, whose description is
-    ``INTEREST_DESC_PREFIX + acctId`` and whose 16-character id begins with the
-    run's 10-character ``datePrefix``. When such a row already exists the account
-    has been accrued for this period, so the caller skips re-computing interest
-    and re-adding it to the balance -- making a re-run of the same period a
-    no-op for monetary state while a genuinely new period (a different
-    ``datePrefix``) still accrues normally.
+    Implements the interest idempotency ledger, keyed to the accounting MONTH
+    (QA findings M-12 and M02). An interest run for one account in one monthly
+    cycle leaves a deterministic fingerprint: a POSTED transaction of type
+    :data:`INTEREST_TRAN_TYPE_CD` / category :data:`INTEREST_TRAN_CAT_CD`, whose
+    description is ``INTEREST_DESC_PREFIX + acctId`` and whose 16-character id
+    begins with the run's 6-character accounting-month prefix (``YYYYMM``, see
+    :func:`_ResolveMonthPrefix`). When such a row already exists the account has
+    been accrued for this month, so the caller skips re-computing interest and
+    re-adding it to the balance.
+
+    Keying on the month rather than the exact day is the M02 correction: a re-run
+    on a DIFFERENT calendar day of the SAME accounting month (for example a
+    corrected re-run the day after a failed run) shares the ``YYYYMM`` prefix and
+    is therefore correctly recognized as already accrued, making the re-run a
+    no-op for monetary state. A genuinely new accounting month (a different
+    ``YYYYMM`` prefix) still accrues normally.
 
     Args:
         session: The caller-owned SQLAlchemy session.
-        datePrefix: The run's 10-character tran-id date prefix.
+        datePrefix: The run's 10-character tran-id date prefix (``YYYYMMDD00``);
+            its leading six characters supply the accounting-month key.
         acctId: The account id whose prior accrual is being probed.
 
     Returns:
-        ``True`` if an interest transaction for this account+period already
-        exists; ``False`` otherwise.
+        ``True`` if an interest transaction for this account in this accounting
+        month already exists; ``False`` otherwise.
     """
+    monthPrefix = _ResolveMonthPrefix(datePrefix)
     statement = (
         select(Transaction.tran_id)
         .where(
             Transaction.tran_type_cd == INTEREST_TRAN_TYPE_CD,
             Transaction.tran_cat_cd == INTEREST_TRAN_CAT_CD,
             Transaction.tran_desc == INTEREST_DESC_PREFIX + str(acctId),
-            Transaction.tran_id.startswith(datePrefix),
+            Transaction.tran_id.startswith(monthPrefix),
             Transaction.status == STATUS_POSTED,
         )
         .limit(1)
@@ -385,7 +422,13 @@ def _BuildInterestTransaction(
         :class:`~app.models.transaction.Transaction`.
     """
     tranId = f"{state.datePrefix}{state.tranIdSuffix:06d}"  # 10-char date + 6-digit suffix = 16
-    postingTimestamp = datetime.now()  # both timestamps take the same value
+    # UTC-aware posting timestamp (QA finding M03): orig_ts / proc_ts are
+    # TIMESTAMPTZ columns, so a NAIVE datetime.now() would be interpreted in the
+    # server session's local zone and lose its true instant across timezones. An
+    # explicit timezone.utc datetime stamps the exact UTC instant deterministically
+    # (the legacy DB2-FORMAT-TS was likewise an absolute timestamp). Both TRAN-ORIG-TS
+    # and TRAN-PROC-TS take this same value, matching the legacy single MOVE.
+    postingTimestamp = datetime.now(timezone.utc)
     return Transaction(
         tran_id=tranId,
         tran_type_cd=INTEREST_TRAN_TYPE_CD,  # MOVE '01' TO TRAN-TYPE-CD

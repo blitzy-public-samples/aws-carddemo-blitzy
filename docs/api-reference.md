@@ -167,7 +167,7 @@ BMS map `COSGN00`). This is the only unauthenticated endpoint in the API.
 | Field | Type | Constraints | Description |
 | :---- | :--- | :---------- | :---------- |
 | `user_id` | string | ≤ 8 chars, required | User id (`SEC-USR-ID`). |
-| `password` | string | ≤ 8 chars, required | Plaintext password, verified against the stored bcrypt/argon2 hash. |
+| `password` | string | ≤ 8 chars, required | Plaintext password, verified against the stored bcrypt hash. |
 
 ```http
 POST /api/v1/auth/login
@@ -205,6 +205,38 @@ cookie is set.
 > The demo credentials `ADMIN001` / `USER0001` (password `PASSWORD`) are
 > **non-production seed accounts only**. They are stored hashed at rest and must
 > never be treated as real credentials or hardcoded in application code.
+
+#### `POST /auth/logout`
+
+Sign out the caller and revoke the session server-side (the `COSGN00C` exit
+path). Unlike every other endpoint, logout takes **no authentication
+dependency**: it is idempotent and always succeeds — even when the session
+cookie is already missing or expired — so it never itself returns `401`.
+
+Logout performs **both** halves of a real sign-off:
+
+1. **Server-side revocation** — the caller's `session_version` is advanced, so
+   any token minted before this call is rejected by `get_current_user` on its
+   next use. This closes the gap where a captured pre-logout cookie would remain
+   valid if only the client copy were deleted.
+2. **Client-side deletion** — the browser is instructed to delete the
+   `carddemo_session` cookie so it stops presenting the now-revoked credential.
+
+```http
+POST /api/v1/auth/logout
+```
+
+**Response** (`MessageResponse`, `200 OK`):
+
+```json
+{
+  "message": "Signed out successfully."
+}
+```
+
+| Status | Meaning |
+| :----- | :------ |
+| `200 OK` | Session revoked server-side and the session cookie cleared. Returned even when no valid session was present (idempotent). |
 
 ### Menu
 

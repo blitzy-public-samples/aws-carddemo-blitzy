@@ -73,12 +73,12 @@ from typing import Protocol
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.models.transaction import Transaction
+from app.models.transaction import STATUS_POSTED, Transaction
 from app.models.card_xref import CardXref
 from app.models.transaction_type import TransactionType
 from app.models.transaction_category import TransactionCategory
 
-from batch.jobs.output_safety import AtomicWritePath, SafeCsvWriter
+from batch.jobs.output_safety import AtomicWritePath, SafeCsvWriter, SecureDirectory
 
 # Module logger. Named for this module so batch log configuration can target it.
 LOGGER = logging.getLogger(__name__)
@@ -466,7 +466,15 @@ def _RunReport(
     """
     state = _ReportState()
     _WriteReportTitle(writer, dateRange)
-    statement = select(Transaction).order_by(Transaction.card_num, Transaction.tran_id)
+    # Report the POSTED transaction master ONLY (QA finding M16). The legacy
+    # CBTRN03C reads the posted TRANSACT ledger; PENDING daily staging rows and
+    # validation-REJECTED rows must never appear on the detail report or in its
+    # page/account/grand totals, exactly as they are excluded from statements.
+    statement = (
+        select(Transaction)
+        .where(Transaction.status == STATUS_POSTED)
+        .order_by(Transaction.card_num, Transaction.tran_id)
+    )
     for tran in session.execute(statement).scalars():
         if not _WithinDateRange(tran, dateRange):
             continue
@@ -518,8 +526,10 @@ def ReportTransactionDetail(
         detailLineCount = _RunReport(session, _NullWriter(), dateRange)
         LOGGER.info("Report generated (not persisted): %d detail line(s)", detailLineCount)
     else:
-        reportDirectory = Path(outputDir)
-        reportDirectory.mkdir(parents=True, exist_ok=True)
+        # Owner-only (0700) output directory; the CSV itself is published 0600
+        # by AtomicWritePath (QA finding M13), so the transaction detail report is
+        # never left group- or world-readable at the umask default.
+        reportDirectory = SecureDirectory(outputDir)
         reportPath = reportDirectory / REPORT_FILE_NAME
         # Neutralize CSV formula injection (F-3, CWE-1236) and publish atomically
         # (F-4): every free-text cell that could be read as a spreadsheet formula

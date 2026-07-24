@@ -476,4 +476,39 @@ describe('ReportsPage', () => {
             expect.objectContaining({ confirm: 'Y' }),
         );
     });
+
+    it('invalidates an in-flight report request when the page unmounts (M-05)', async () => {
+        const user = SetupUser();
+
+        // A hand-controlled report request left in flight across unmount. The
+        // Generate button disables while loading, so a second overlapping fetch
+        // is not reachable via the UI; the realistic report race is therefore
+        // unmount-during-load, which the request-generation guard covers.
+        let resolveReport!: (value: ReportResponse) => void;
+        const pendingReport = new Promise<ReportResponse>((resolve) => {
+            resolveReport = resolve;
+        });
+        mockGetTransactionReport.mockReturnValueOnce(pendingReport);
+
+        const { unmount } = RenderWithProviders(<ReportsPage />);
+
+        // Default Monthly criteria are valid, so Generate fires the request.
+        await user.click(screen.getByRole('button', { name: GENERATE_BUTTON }));
+        await waitFor(() =>
+            expect(mockGetTransactionReport).toHaveBeenCalledTimes(1),
+        );
+
+        // Unmount BEFORE the request resolves; the effect cleanup bumps the
+        // request generation, invalidating the in-flight request (QA M-05).
+        unmount();
+
+        // Resolving now runs the guarded continuation, whose captured generation
+        // no longer matches, so it discards the result — a safe no-op with no
+        // state update on the torn-down tree and no throw.
+        resolveReport(MakeReportResponse());
+        await waitFor(() =>
+            expect(mockGetTransactionReport).toHaveBeenCalledTimes(1),
+        );
+        expect(screen.queryByRole('table')).not.toBeInTheDocument();
+    });
 });

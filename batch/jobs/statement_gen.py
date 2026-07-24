@@ -1,4 +1,6 @@
-# Ported from legacy COBOL batch programs CBSTM03A.CBL + CBSTM03B.CBL + JCL app/jcl/CREASTMT.JCL (CardDemo). Function: generate per-account statements. AUTHORIZED REDESIGN: legacy text+HTML -> CSV + PDF.
+# Ported from legacy COBOL batch programs CBSTM03A.CBL + CBSTM03B.CBL +
+# JCL app/jcl/CREASTMT.JCL (CardDemo). Function: generate per-account
+# statements. AUTHORIZED REDESIGN: legacy text+HTML -> CSV + PDF.
 """Per-account statement generation for the CardDemo batch chain.
 
 This module is the modern Python port of the legacy mainframe statement job. On
@@ -93,7 +95,7 @@ from app.models.card_xref import CardXref
 from app.models.customer import Customer
 from app.models.transaction import STATUS_POSTED, Transaction
 
-from batch.jobs.output_safety import AtomicWritePath, SafeCsvWriter
+from batch.jobs.output_safety import AtomicWritePath, SafeCsvWriter, SecureDirectory
 
 __all__ = ["GenerateStatements", "StatementResult"]
 
@@ -164,6 +166,21 @@ CARD_LAST_DIGITS_FALLBACK = "0000"
 DEFAULT_OUTPUT_DIR_PARTS = ("out", "statements")
 
 
+# --- Statement generation (GDG) semantics --------------------------------------
+# Statement files are named ``statement_<acctId>_<lastDigits>_<NNNN>.<ext>`` where
+# the trailing ``<NNNN>`` is a run-level generation number (QA finding M19). The
+# legacy CREASTMT job wrote each run's statements to the next GDG generation
+# ``(+1)`` and never overwrote a prior generation; a deterministic filename that
+# overwrote on every re-run lost that point-in-time history. Every statement
+# produced by a single run shares ONE generation (a run == one GDG generation),
+# so a re-run allocates the next number and preserves all earlier generations.
+STATEMENT_FILE_PREFIX = "statement_"
+STATEMENT_GENERATION_PADDING = 4
+# File extensions a run produces; both are scanned when computing the next
+# generation so the CSV and PDF of a run always share the same generation number.
+STATEMENT_FILE_EXTENSIONS = (".csv", ".pdf")
+
+
 # --- PDF layout constants ------------------------------------------------------
 # A monospaced font keeps the ported column alignment intact in the PDF. Margins
 # and line height are expressed in PDF points (1 point = 1/72 inch).
@@ -219,6 +236,9 @@ class _StatementContext:
         trans: The card's transactions, ordered by transaction id.
         statementTotal: The exact :class:`decimal.Decimal` sum of ``trans``
             amounts for this statement.
+        generation: The zero-padded run generation suffix (``"0001"``) embedded
+            in this statement's file names, shared by its CSV and PDF so both
+            belong to the same GDG-style generation (QA finding M19).
     """
 
     outputDir: Path
@@ -228,6 +248,7 @@ class _StatementContext:
     card: Card | None
     trans: list[Transaction]
     statementTotal: Decimal
+    generation: str
 
 
 # -----------------------------------------------------------------------------
@@ -369,32 +390,70 @@ def _ResolveOutputDir(outputDir: str | Path | None) -> Path:
         # parent hops from the jobs directory reach the repository root.
         repoRoot = Path(__file__).resolve().parents[2]
         resolvedDir = repoRoot.joinpath(*DEFAULT_OUTPUT_DIR_PARTS)
-    resolvedDir.mkdir(parents=True, exist_ok=True)
-    return resolvedDir
+    # Owner-only (0700) statement directory (QA finding M13): the CSV/PDF files
+    # themselves are published 0600 by AtomicWritePath, so customer statements are
+    # never left group- or world-readable at the umask default.
+    return SecureDirectory(resolvedDir)
+
+
+def _ResolveRunGeneration(outputDir: Path) -> str:
+    """Compute the next run-level statement generation (GDG ``(+1)`` semantics).
+
+    Scans ``outputDir`` for existing ``statement_*_<NNNN>.csv`` /
+    ``statement_*_<NNNN>.pdf`` files, parses the trailing numeric generation
+    segment of each, and returns the next value (highest found plus one) as a
+    zero-padded string (QA finding M19). Because the generation is the LAST
+    underscore-delimited segment of the file stem, it is read with a single
+    ``rsplit`` regardless of the account id / last-four in the middle. Files
+    without a numeric trailing segment (for example any legacy file written
+    before generations existed) are ignored so they never derail the sequence.
+    When no prior generation exists the first identifier is ``"0001"``.
+
+    A single value is returned for the whole run so every statement produced by
+    one :func:`GenerateStatements` call shares the same generation (one run ==
+    one GDG generation), preserving all earlier generations untouched.
+
+    Args:
+        outputDir: The (already-created) directory holding prior generations.
+
+    Returns:
+        The next run generation identifier, zero-padded to
+        :data:`STATEMENT_GENERATION_PADDING` digits.
+    """
+    highestGeneration = 0
+    for extension in STATEMENT_FILE_EXTENSIONS:
+        for existingFile in outputDir.glob(f"{STATEMENT_FILE_PREFIX}*{extension}"):
+            trailingSegment = existingFile.stem.rsplit("_", 1)
+            if len(trailingSegment) == 2 and trailingSegment[1].isdigit():
+                highestGeneration = max(highestGeneration, int(trailingSegment[1]))
+    nextGeneration = highestGeneration + 1
+    return f"{nextGeneration:0{STATEMENT_GENERATION_PADDING}d}"
 
 
 def _BuildStatementFilename(context: _StatementContext, suffix: str) -> str:
-    """Build a deterministic, PAN-safe statement file name.
+    """Build a generation-suffixed, PAN-safe statement file name.
 
-    The name embeds the account id and the masked last four card digits, so
-    re-running the job overwrites the prior file for the same card (idempotent)
-    while never exposing the full card number.
+    The name embeds the account id, the masked last four card digits, and the
+    run generation, so each run writes a NEW generation file rather than
+    overwriting the prior one (QA finding M19), while never exposing the full
+    card number. The CSV and PDF of one statement share ``context.generation``,
+    so both belong to the same generation.
 
     Args:
-        context: The statement context (source of the account id and card
-            number).
+        context: The statement context (source of the account id, card number,
+            and run generation).
         suffix: The file extension including the leading dot (``".csv"`` or
             ``".pdf"``).
 
     Returns:
-        A file name such as ``statement_00000000010_1234.csv``.
+        A file name such as ``statement_00000000010_1234_0001.csv``.
     """
     if context.account is not None:
         acctId = _SafeText(context.account.acct_id)
     else:
         acctId = _SafeText(context.xref.acct_id)
     lastDigits = _CardLastDigits(context.xref.xref_card_num)
-    return f"statement_{acctId}_{lastDigits}{suffix}"
+    return f"{STATEMENT_FILE_PREFIX}{acctId}_{lastDigits}_{context.generation}{suffix}"
 
 
 
@@ -627,7 +686,7 @@ def _WriteStatementPdf(context: _StatementContext) -> Path:
 # Per-statement data assembly + public driver
 # -----------------------------------------------------------------------------
 def _BuildStatementContext(
-    session: Session, outputDir: Path, xref: CardXref
+    session: Session, outputDir: Path, xref: CardXref, generation: str
 ) -> _StatementContext:
     """Assemble the data for one statement from the database.
 
@@ -647,6 +706,8 @@ def _BuildStatementContext(
         session: The open, caller-owned SQLAlchemy session.
         outputDir: The resolved statement output directory.
         xref: The cross-reference row driving this statement.
+        generation: The zero-padded run generation suffix embedded in this
+            statement's file names (shared by its CSV and PDF).
 
     Returns:
         A fully populated :class:`_StatementContext`, including the exact
@@ -686,6 +747,7 @@ def _BuildStatementContext(
         card=card,
         trans=trans,
         statementTotal=statementTotal,
+        generation=generation,
     )
 
 
@@ -717,11 +779,17 @@ def GenerateStatements(
     LOGGER.info("START OF EXECUTION OF PROGRAM CBSTM03A")
     result = StatementResult()
     resolvedDir = _ResolveOutputDir(outputDir)
+    # Allocate ONE generation for this run (GDG (+1) semantics, QA finding M19):
+    # every statement written below shares this suffix, so a re-run writes a fresh
+    # generation and never overwrites the prior run's statements. Retention of
+    # older generations is left to the operator/deployment (the job never deletes
+    # a prior generation), mirroring the legacy GDG retention policy.
+    runGeneration = _ResolveRunGeneration(resolvedDir)
     xrefs = session.execute(
         select(CardXref).order_by(CardXref.xref_card_num)
     ).scalars().all()
     for xref in xrefs:
-        context = _BuildStatementContext(session, resolvedDir, xref)
+        context = _BuildStatementContext(session, resolvedDir, xref, runGeneration)
         csvPath = _WriteStatementCsv(context)
         pdfPath = _WriteStatementPdf(context)
         result.csvPaths.append(str(csvPath))

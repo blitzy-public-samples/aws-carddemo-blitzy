@@ -55,7 +55,7 @@ from datetime import date
 from decimal import Decimal
 from typing import List, Optional
 
-from sqlalchemy import CHAR, Date, ForeignKey, Numeric, String
+from sqlalchemy import CHAR, Date, Numeric, String
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base
@@ -113,18 +113,21 @@ class Account(Base):
     # ACCT-ADDR-ZIP PIC X(10) -> VARCHAR(10) (account billing ZIP).
     addr_zip: Mapped[Optional[str]] = mapped_column(String(10), nullable=True)
 
-    # ACCT-GROUP-ID PIC X(10) -> VARCHAR(10), indexed FOREIGN KEY.
-    # Per the AAP (0.5.1 "group_id FK"; 0.8.1 "Preserve referential integrity")
-    # and QA finding M-16, this is an enforceable foreign key to the
-    # ``account_groups`` registry (introduced precisely so group_id has a
-    # single-column FK target -- ``disclosure_group`` has a COMPOSITE PK and so
-    # cannot be the target). Remains NULLABLE because the golden-master seed
-    # leaves ACCT-GROUP-ID blank in every row (the interest-calc job falls back
-    # to the DEFAULT disclosure group); NULLs are exempt from the FK check, and a
-    # non-null value MUST reference an existing account_groups row.
+    # ACCT-GROUP-ID PIC X(10) -> VARCHAR(10), plain indexed column.
+    # A faithful port of the legacy free-text group id: the mainframe carried
+    # ACCT-GROUP-ID as a field on the account record (CVACT01Y) and used it as a
+    # key prefix into DISCGRP -- there was NO standalone "account groups"
+    # dataset. It is deliberately NOT a foreign key: the only group-bearing
+    # table, ``disclosure_group``, uses a COMPOSITE primary key
+    # ``(group_id, tran_type_cd, tran_cat_cd)``, so ``group_id`` alone has no
+    # single-column FK target, and the AAP fixes the schema at exactly ten
+    # tables (AAP 0.5.1) -- adding a registry table to carry an FK would violate
+    # that contract. The column is indexed for the account-group lookups the
+    # interest-calc job performs, and remains NULLABLE because the golden-master
+    # seed leaves ACCT-GROUP-ID blank in every row (interest-calc then falls back
+    # to the DEFAULT disclosure group).
     group_id: Mapped[Optional[str]] = mapped_column(
         String(10),
-        ForeignKey("account_groups.group_id", name="fk_accounts_group_id_account_groups"),
         index=True,
         nullable=True,
     )
@@ -147,11 +150,8 @@ class Account(Base):
     cards: Mapped[List["Card"]] = relationship(back_populates="account")  # noqa: F821
     # Reciprocal of CardXref.account (FK card_xref.acct_id -> accounts.acct_id).
     xrefs: Mapped[List["CardXref"]] = relationship(back_populates="account")  # noqa: F821
-    # Child side of the account_groups FK (accounts.group_id ->
-    # account_groups.group_id). Optional because group_id is nullable.
-    group: Mapped[Optional["AccountGroup"]] = relationship(  # noqa: F821
-        back_populates="accounts"
-    )
+    # NOTE: group_id is a plain indexed column, not a relationship -- see the
+    # column definition above (AAP 0.5.1 exact-ten-table contract).
 
     def __repr__(self) -> str:
         """Return an unambiguous developer representation keyed by account id."""

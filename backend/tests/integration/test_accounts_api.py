@@ -362,6 +362,53 @@ async def test_get_account_embeds_customer_with_masked_ssn(
     assert maskedSsn.endswith(fullSsn[-4:])
 
 
+async def test_get_account_masks_customer_govt_and_eft_identifiers(
+    admin_client: AsyncClient,
+    seed_data: None,
+    db_session: AsyncSession,
+) -> None:
+    """GET masks the embedded customer's government-ID and EFT-account ID (C-04).
+
+    Proves the AAP §0.7.8 sensitive-data rule extended per QA finding C-04: the
+    embedded ``CustomerRead`` exposes only the final four characters of
+    ``govt_issued_id`` and ``eft_account_id`` (``****…NNNN``) and never the full
+    value. Both full values are read directly from the database and asserted
+    ABSENT from the raw response text, so the check cannot silently pass on a
+    masking-format change.
+
+    Args:
+        admin_client: Authenticated (admin) httpx ASGI client.
+        seed_data: Golden-master seed loaded from ``app/data/ASCII``.
+        db_session: Shared async session used to read the stored values at rest.
+    """
+    resp = await admin_client.get(f"{ACCOUNTS_URL}/{SEED_ACCT_ID}")
+
+    assert resp.status_code == HTTP_OK
+    responseBody = resp.json()
+    customer = responseBody["customer"]
+
+    customerRow = await db_session.get(Customer, customer["cust_id"])
+    assert customerRow is not None
+
+    # Government-issued identifier: populated in the golden master, masked here.
+    fullGovtId = customerRow.govt_issued_id
+    assert fullGovtId is not None and len(fullGovtId.strip()) > 4
+    maskedGovtId = customer["govt_issued_id"]
+    assert maskedGovtId is not None
+    assert "*" in maskedGovtId
+    assert maskedGovtId.endswith(fullGovtId.strip()[-4:])
+    assert fullGovtId.strip() not in resp.text
+
+    # EFT / bank account identifier: populated in the golden master, masked here.
+    fullEftId = customerRow.eft_account_id
+    assert fullEftId is not None and len(fullEftId.strip()) > 4
+    maskedEftId = customer["eft_account_id"]
+    assert maskedEftId is not None
+    assert "*" in maskedEftId
+    assert maskedEftId.endswith(fullEftId.strip()[-4:])
+    assert fullEftId.strip() not in resp.text
+
+
 async def test_get_account_not_found(
     admin_client: AsyncClient,
     seed_data: None,

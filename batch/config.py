@@ -29,8 +29,8 @@ Why a batch-owned settings model (QA finding #60):
         * anchors its ``.env`` file to the *absolute* ``backend/.env`` path so a
           root-launched CLI reads the same database URL the backend uses;
         * sets ``extra="ignore"`` so the backend's other variables (``SECRET_KEY``,
-          ``DATABASE_URL``, ``SESSION_SECRET`` ...) present in ``backend/.env`` are
-          silently skipped rather than raising.
+          ``DATABASE_URL`` ...) present in ``backend/.env`` are silently skipped
+          rather than raising.
 
     It deliberately does NOT import :mod:`app.core.config`: doing so would
     instantiate the backend singleton and reintroduce the ``SECRET_KEY``

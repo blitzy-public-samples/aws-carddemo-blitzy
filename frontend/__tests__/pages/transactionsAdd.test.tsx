@@ -1,4 +1,7 @@
-/** Add Transaction page spec — legacy origin BMS COTRN02 / Tx CT02 / program COTRN02C. Posting codes 100-103/109 preserved. */
+/**
+ * Add Transaction page spec — legacy origin BMS COTRN02 / Tx CT02 /
+ * program COTRN02C. Posting codes 100-103/109 preserved.
+ */
 
 /*
  * Component/integration spec for the modern Add-Transaction page

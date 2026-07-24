@@ -27,7 +27,6 @@ import type {
     AxiosInstance,
     AxiosError,
     AxiosResponse,
-    InternalAxiosRequestConfig,
 } from 'axios';
 
 import { DEFAULT_PAGE_SIZE } from '@/types';
@@ -89,24 +88,39 @@ const AUTH_LOGOUT_PATH = '/auth/logout';
 
 /**
  * localStorage key under which `auth.ts` persists the non-sensitive CurrentUser
- * context. Exported so `auth.ts` shares exactly one key with the interceptor's
- * clear logic below.
+ * context. Exported so `auth.ts` shares exactly one key with the clear logic
+ * below.
+ *
+ * NOTE (QA finding M-10): the browser SPA NEVER persists an authentication
+ * credential in localStorage. Authentication rides exclusively on the backend's
+ * HTTP-only `carddemo_session` cookie (unreadable by JavaScript, so it cannot be
+ * exfiltrated by XSS). Only this NON-SENSITIVE identity context (user id, names,
+ * role) is mirrored to localStorage for rendering decisions; it is never a
+ * credential. The former optional localStorage JWT bearer path was removed.
  */
 export const SESSION_USER_STORAGE_KEY = 'carddemo_user';
 
-/**
- * localStorage key for the optional JWT bearer token (JWT-alternative mode).
- * Unused in the session-cookie baseline; exported for `auth.ts`.
- */
-export const ACCESS_TOKEN_STORAGE_KEY = 'carddemo_access_token';
-
-/** Named HTTP status codes (no magic numbers). */
+/** Named HTTP status code (no magic numbers). The interceptor only acts on
+ *  401; 403/409/400 are propagated unchanged, so no constants are needed for
+ *  them. */
 const HTTP_UNAUTHORIZED = 401;
-const HTTP_FORBIDDEN = 403;
-const HTTP_CONFLICT = 409;
 
 /** Fallback message shown when the backend supplies no usable error text. */
 const DEFAULT_ERROR_MESSAGE = 'An unexpected error occurred. Please try again.';
+
+/**
+ * Actionable message shown when a request never receives a response from the
+ * server (QA finding M-11). This covers a dropped/offline network, a DNS
+ * failure, a request timeout, and -- critically -- a CORS / host-alias rejection
+ * that the browser blocks before axios can read any response body. In all of
+ * these cases axios reports only a terse, non-actionable "Network Error" (with no
+ * `response`), which previously left the signon screen showing text the user
+ * could not act on. This message tells the user what to do; because it is
+ * produced at the client's error-normalization core, EVERY page (signon and all
+ * others) surfaces it consistently via `ErrorAlert`.
+ */
+const NETWORK_ERROR_MESSAGE =
+    'Unable to reach the server. Please check your network connection and try again.';
 
 /**
  * Base URL for every request, composed ONLY from the environment (Ochs rule #3 --
@@ -192,9 +206,13 @@ function ExtractValidationMessages(detail: unknown[]): string {
 /**
  * Extracts a display message from the error body, handling BOTH the app-standard
  * `{ message, code?, detail? }` shape and FastAPI's default
- * `{ detail: string | ValidationItem[] }` shape. Falls back to the axios/network
- * message and finally to {@link DEFAULT_ERROR_MESSAGE}. Inspects specific shapes --
- * never a blanket catch that hides detail (Ochs error-handling rule).
+ * `{ detail: string | ValidationItem[] }` shape. When there is no usable body it
+ * distinguishes a request that never reached the server (no `response` --
+ * network/CORS/timeout) and returns the ACTIONABLE {@link NETWORK_ERROR_MESSAGE}
+ * (QA finding M-11) instead of axios's terse "Network Error"; otherwise it falls
+ * back to the axios message and finally to {@link DEFAULT_ERROR_MESSAGE}. Inspects
+ * specific shapes -- never a blanket catch that hides detail (Ochs error-handling
+ * rule).
  */
 function ExtractErrorMessage(error: AxiosError<ErrorResponse>): string {
     const data: unknown = error.response?.data;
@@ -211,6 +229,12 @@ function ExtractErrorMessage(error: AxiosError<ErrorResponse>): string {
                 return joined;
             }
         }
+    }
+    // QA finding M-11: a request that never received a response (no `error.response`)
+    // is a connectivity/CORS/timeout failure. Surface the actionable network message
+    // rather than the bare, non-actionable axios "Network Error" string.
+    if (!error.response) {
+        return NETWORK_ERROR_MESSAGE;
     }
     return error.message || DEFAULT_ERROR_MESSAGE;
 }
@@ -246,29 +270,19 @@ function NormalizeAxiosError(error: AxiosError<ErrorResponse>): ApiError {
 /* ------------------------------------------------------------------------- */
 
 /**
- * Reads the optional JWT bearer token from localStorage (JWT-alternative mode).
- * Guarded for SSR/prerender where `window`/`localStorage` do not exist; returns
- * `null` there and in the session baseline (where no token is stored).
- */
-function ReadStoredAccessToken(): string | null {
-    if (typeof window === 'undefined') {
-        return null;
-    }
-    return window.localStorage.getItem(ACCESS_TOKEN_STORAGE_KEY);
-}
-
-/**
- * Clears all client-held auth artifacts (the persisted CurrentUser context and any
- * JWT token). The HTTP-only `carddemo_session` cookie is NOT touched here -- it is
- * not readable or removable from JS and is cleared server-side on logout/expiry.
+ * Clears the client-held identity mirror (the persisted CurrentUser context).
+ * The HTTP-only `carddemo_session` cookie is NOT touched here -- it is not
+ * readable or removable from JS and is cleared server-side on logout/expiry.
  * Guarded for SSR.
+ *
+ * QA finding M-10: no bearer token is ever stored, so there is no token key to
+ * clear -- only the non-sensitive identity mirror.
  */
 export function ClearStoredAuth(): void {
     if (typeof window === 'undefined') {
         return;
     }
     window.localStorage.removeItem(SESSION_USER_STORAGE_KEY);
-    window.localStorage.removeItem(ACCESS_TOKEN_STORAGE_KEY);
 }
 
 /* ------------------------------------------------------------------------- */
@@ -306,20 +320,14 @@ function RedirectToSignon(): void {
     }
 }
 
-/**
- * Request interceptor (JWT-alternative hook). The session-cookie baseline needs no
- * Authorization header (the cookie is auto-sent via `withCredentials`), but when a
- * bearer token has been stored (JWT mode) it is attached here.
+/*
+ * QA finding M-10: there is deliberately NO request interceptor attaching an
+ * Authorization bearer header. The browser SPA authenticates ONLY via the
+ * backend's HTTP-only `carddemo_session` cookie, which axios sends automatically
+ * because the client is created with `withCredentials: true`. Removing the
+ * bearer path eliminates any need to hold a token in JavaScript-reachable
+ * storage. (Non-browser API clients that use JWT mode manage their own header.)
  */
-apiClient.interceptors.request.use(
-    (config: InternalAxiosRequestConfig) => {
-        const accessToken = ReadStoredAccessToken();
-        if (accessToken) {
-            config.headers.Authorization = `Bearer ${accessToken}`;
-        }
-        return config;
-    },
-);
 
 /**
  * Response interceptor. Passes successful responses through unchanged; on error,
@@ -329,10 +337,10 @@ apiClient.interceptors.request.use(
  * - HTTP_UNAUTHORIZED (401): clear client auth and redirect to /signon, EXCEPT for
  *   the login request itself or when already on /signon (see
  *   {@link ShouldRedirectOnUnauthorized}).
- * - HTTP_FORBIDDEN (403, admin-gated), HTTP_CONFLICT (409, optimistic-lock conflict
- *   from `PUT /accounts/{acctId}`), and 400 posting errors (codes 100-103, 109) need
- *   no side effect here -- they are propagated as the typed ApiError (with `.status`
- *   and, for posting errors, `.code`) so callers / ErrorAlert can display them.
+ * - 403 (admin-gated), 409 (optimistic-lock conflict from `PUT /accounts/{acctId}`),
+ *   and 400 posting errors (codes 100-103, 109) need no side effect here -- they are
+ *   propagated as the typed ApiError (with `.status` and, for posting errors,
+ *   `.code`) so callers / ErrorAlert can display them.
  */
 apiClient.interceptors.response.use(
     (response: AxiosResponse) => response,
@@ -517,10 +525,14 @@ export const CardsApi = {
     },
 
     /**
-     * Fetches one card by PAN. GET /cards/{cardNum}. Retained because the AAP
-     * REST contract mandates this endpoint (CCDL; AAP 0.5.5); the UI prefers the
-     * PAN-free {@link GetCardByAccount} because the browse grid masks `card_num`
-     * (AAP 0.7.8). Server responses mask the PAN and app logs are PAN-scrubbed.
+     * Fetches one card by card number. GET /cards/{cardNum} (CCDL; AAP 0.5.5).
+     * This is the sole card-detail endpoint: the earlier by-account helper was
+     * removed because it resolved an account to a single card with `.limit(1)`,
+     * silently selecting the wrong card on the NONUNIQUE account->card
+     * relationship (QA C07), and was outside the frozen route contract (QA C08).
+     * Faithful to the legacy COCRDSL screen, the operator ENTERS the card number
+     * (its `CARDSID` input), so no unmasked PAN is returned in a list; server
+     * responses mask the PAN and app logs are PAN-scrubbed (AAP 0.7.8).
      */
     async GetCard(cardNum: string): Promise<CardRead> {
         const response = await apiClient.get<CardRead>(
@@ -530,44 +542,16 @@ export const CardsApi = {
     },
 
     /**
-     * Fetches one card by its OWNING ACCOUNT id. GET /cards/by-account/{acctId}.
-     * The card-list grid masks `card_num` (AAP 0.7.8), so the UI navigates to
-     * card detail by the unmasked account id and the backend resolves the
-     * account to its card server-side -- the fix for the C1 masked-PAN dead-end.
-     */
-    async GetCardByAccount(acctId: string): Promise<CardRead> {
-        const response = await apiClient.get<CardRead>(
-            `/cards/by-account/${encodeURIComponent(acctId)}`,
-        );
-        return response.data;
-    },
-
-    /**
-     * Updates a card by PAN. PUT /cards/{cardNum}. Retained because the AAP REST
-     * contract mandates this endpoint (CCUP; AAP 0.5.5); the UI prefers the
-     * PAN-free {@link UpdateCardByAccount}. Responses mask the PAN (AAP 0.7.8).
+     * Updates a card by card number. PUT /cards/{cardNum} (CCUP; AAP 0.5.5).
+     * The sole card-update endpoint (see {@link GetCard}). `cardUpdate` carries
+     * the required client-echoed `before_image` optimistic-lock token: the
+     * editable-field values the operator last read, compared field-for-field
+     * against the freshly locked row so a stale write is rejected with HTTP 409
+     * (QA C06). Responses mask the PAN (AAP 0.7.8).
      */
     async UpdateCard(cardNum: string, cardUpdate: CardUpdate): Promise<CardRead> {
         const response = await apiClient.put<CardRead>(
             `/cards/${encodeURIComponent(cardNum)}`,
-            cardUpdate,
-        );
-        return response.data;
-    },
-
-    /**
-     * Updates a card addressed by its OWNING ACCOUNT id.
-     * PUT /cards/by-account/{acctId}. The companion of {@link GetCardByAccount}:
-     * because the by-account detail returns a MASKED `card_num`, the client has
-     * no real PAN to call the PAN-keyed update with, so it submits by account id
-     * and the backend resolves the real card server-side (QA C1).
-     */
-    async UpdateCardByAccount(
-        acctId: string,
-        cardUpdate: CardUpdate,
-    ): Promise<CardRead> {
-        const response = await apiClient.put<CardRead>(
-            `/cards/by-account/${encodeURIComponent(acctId)}`,
             cardUpdate,
         );
         return response.data;

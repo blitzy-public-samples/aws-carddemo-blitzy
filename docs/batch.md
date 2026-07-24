@@ -287,12 +287,29 @@ through `Decimal`; **floating point is never used**. The resulting interest
 transaction is posted as transaction **type `01`**, **category `05`** (stored as
 the 4-byte value `0005`), and its amount is added to `curr_bal`.
 
+Interest accrual is **idempotent per accounting month**: the generated interest
+transaction id is keyed on the accounting month (`YYYYMM`), and the job skips any
+account/category whose interest has already been accrued for that month. Running
+the job twice in the same month therefore does not double-accrue.
+
 ### Statement generation (`statement-gen` ← CBSTM03A/CBSTM03B)
 
 Statements are produced as **CSV and PDF** files. This is the single intentional
 redesign (AAP §0.8.4): the legacy GDG text + HTML statement output is replaced by
 a downloadable CSV plus a PDF rendering. All monetary values and business rules
-are otherwise preserved exactly.
+are otherwise preserved exactly. Each run writes a **new generation** (a run
+suffix, GDG-style) rather than overwriting the previous statement files, so prior
+generations are retained.
+
+### Transaction combine and backup (`combine-tran`, `backup-tran`)
+
+Both master-file utilities operate on **`POSTED`** transactions only (matching
+the legacy master-file outputs). `combine-tran` (← `COMBTRAN.jcl` +
+`REPROCT.ctl` SORT) materializes a real combined output file sorted by `tran_id`
+ascending. `backup-tran` (← `TRANBKP.jcl`) writes a **full-fidelity,
+restore-capable** backup and provides a matching restore path
+(`RestoreTransactions`) that re-loads the backed-up rows idempotently. Both write
+to protected on-disk files (directory mode `0700`, file mode `0600`).
 
 ## 7. Golden-Master Parity and Idempotency
 
@@ -303,10 +320,12 @@ their verbatim description strings, the 430-byte reject-record byte layout,
 truncated interest amounts, and posted balances. Parity and behavior tests live
 in [`batch/tests/`](../batch/tests).
 
-Every job and loader is **idempotent and re-runnable**: each runs inside its own
-database transaction (`batch/db.py`, `GetSyncSession`) that commits on success and
-rolls back on error, and the loaders upsert rather than blind-insert. Re-running a
-job — or the entire chain — is therefore safe and converges to the same state.
+Jobs and loaders are designed to be **idempotent and re-runnable**: each runs
+inside its own database transaction (`batch/db.py`, `GetSyncSession`) that commits
+on success and rolls back on error; loaders upsert rather than blind-insert;
+posting skips transactions already marked `POSTED`; and interest accrual is keyed
+to the accounting month so a same-month re-run does not double-accrue. Re-running
+a job — or the chain — therefore converges to the same state.
 
 ## 8. Related Documentation
 

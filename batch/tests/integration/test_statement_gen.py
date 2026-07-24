@@ -324,7 +324,9 @@ def test_statement_masks_card_and_hides_cvv_ssn(db_session, record_builder, tmp_
 
 
 def test_statement_filename_uses_acct_and_last4(db_session, record_builder, tmp_path):
-    # Reconciles CREASTMT.JCL statement dataset naming: card-scoped, acct + last 4.
+    # Reconciles CREASTMT.JCL statement dataset naming: card-scoped, acct + last 4,
+    # plus the run generation suffix (QA finding M19 -- GDG (+1), no overwrite).
+    # The first run of an empty output directory is generation "0001".
     _BuildStatementCard(
         record_builder,
         {
@@ -334,8 +336,35 @@ def test_statement_filename_uses_acct_and_last4(db_session, record_builder, tmp_
         },
     )
     result = GenerateStatements(db_session, tmp_path)
-    assert Path(result.csvPaths[0]).name == f"statement_{ACCT_ONE}_{CARD_ONE_LAST4}.csv"
-    assert Path(result.pdfPaths[0]).name == f"statement_{ACCT_ONE}_{CARD_ONE_LAST4}.pdf"
+    assert Path(result.csvPaths[0]).name == f"statement_{ACCT_ONE}_{CARD_ONE_LAST4}_0001.csv"
+    assert Path(result.pdfPaths[0]).name == f"statement_{ACCT_ONE}_{CARD_ONE_LAST4}_0001.pdf"
+
+
+def test_statement_generation_increments_on_rerun(db_session, record_builder, tmp_path):
+    # QA finding M19: statement runs use GDG-like generation suffixes and must
+    # NEVER overwrite a prior run's output. Re-running for the same account/card
+    # produces a new, higher generation and keeps BOTH prior files on disk, so a
+    # historical statement can never be silently clobbered.
+    _BuildStatementCard(
+        record_builder,
+        {
+            "acct_id": ACCT_ONE,
+            "card_num": CARD_ONE,
+            "cust_id": CUST_ONE,
+        },
+    )
+    firstResult = GenerateStatements(db_session, tmp_path)
+    secondResult = GenerateStatements(db_session, tmp_path)
+
+    # Distinct, ascending generations across the two runs.
+    assert Path(firstResult.csvPaths[0]).name == f"statement_{ACCT_ONE}_{CARD_ONE_LAST4}_0001.csv"
+    assert Path(secondResult.csvPaths[0]).name == f"statement_{ACCT_ONE}_{CARD_ONE_LAST4}_0002.csv"
+    assert Path(firstResult.pdfPaths[0]).name == f"statement_{ACCT_ONE}_{CARD_ONE_LAST4}_0001.pdf"
+    assert Path(secondResult.pdfPaths[0]).name == f"statement_{ACCT_ONE}_{CARD_ONE_LAST4}_0002.pdf"
+
+    # Both generations coexist (no overwrite): 2 CSV + 2 PDF files remain.
+    assert len(list(tmp_path.glob(f"statement_{ACCT_ONE}_{CARD_ONE_LAST4}_*.csv"))) == 2
+    assert len(list(tmp_path.glob(f"statement_{ACCT_ONE}_{CARD_ONE_LAST4}_*.pdf"))) == 2
 
 
 def test_no_card_xref_yields_no_statements(db_session, tmp_path):

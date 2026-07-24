@@ -49,15 +49,18 @@ WORKDIR /app
 # defensively so native dependencies resolve reliably.
 RUN apk add --no-cache libc6-compat
 
-# Copy the manifest and, when present, the lockfile. The trailing `*` on
-# package-lock.json makes the lockfile OPTIONAL: the repository git-ignores the
-# lockfile (root .gitignore), so a clean CI checkout has none, while a local
-# build that produced one still benefits from a reproducible `npm ci`.
+# Copy the manifest and the lockfile. package-lock.json is now TRACKED in the
+# repository (QA finding M-08), so a clean checkout always carries it; the
+# trailing `*` is retained only as a defensive no-op so the COPY never fails if a
+# lockfile is somehow absent. The lockfile pins the full transitive tree, giving
+# reproducible, locked installs.
 COPY package.json package-lock.json* ./
 
-# Reproducible install when a lockfile exists (`npm ci`); otherwise fall back to
-# a plain `npm install`. Written as a multi-line shell block per the Ochs
-# formatting rule (loops/conditionals are always multi-line, 4-space indented).
+# Reproducible LOCKED install: `npm ci` installs exactly the tree recorded in
+# package-lock.json (and fails if it is out of sync with package.json). The
+# fallback to `npm install` is kept only for the defensive no-lockfile edge case
+# above. Written as a multi-line shell block per the Ochs formatting rule
+# (loops/conditionals are always multi-line, 4-space indented).
 RUN if [ -f package-lock.json ]; then \
         npm ci; \
     else \

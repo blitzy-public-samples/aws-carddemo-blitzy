@@ -320,6 +320,43 @@ class Settings(BaseSettings):
             )
         return self
 
+    @model_validator(mode="after")
+    def RequireSecureCorsOriginsInProduction(self) -> "Settings":
+        """Reject cleartext ``http://`` CORS origins outside a local profile.
+
+        Browsers send the session cookie / bearer token to any allowed CORS
+        origin, so permitting a cleartext ``http://`` origin in a real
+        deployment would expose those credentials to trivial network
+        interception and stripping. Inside an unmistakable local profile
+        (:data:`LOCAL_PROFILE_ENVIRONMENTS`) plain ``http://localhost`` origins
+        remain allowed for developer convenience; everywhere else every
+        configured origin MUST use ``https://`` (QA finding M11). The origins
+        were already normalized and format-checked by
+        :meth:`AssembleCorsOrigins`, so this guard only inspects their scheme.
+
+        Returns:
+            The validated settings instance, unchanged.
+
+        Raises:
+            ValueError: If ``ENVIRONMENT`` is not a local profile and any
+                configured CORS origin uses the cleartext ``http://`` scheme.
+        """
+        normalizedEnvironment = self.ENVIRONMENT.strip().lower()
+        if normalizedEnvironment in LOCAL_PROFILE_ENVIRONMENTS:
+            return self
+        insecureOrigins = [
+            origin
+            for origin in self.BACKEND_CORS_ORIGINS
+            if not origin.lower().startswith("https://")
+        ]
+        if insecureOrigins:
+            raise ValueError(
+                "BACKEND_CORS_ORIGINS must use https:// when "
+                f"ENVIRONMENT={self.ENVIRONMENT!r}; insecure origin(s): "
+                f"{', '.join(insecureOrigins)}"
+            )
+        return self
+
 
 def _BuildSettings() -> Settings:
     """Construct the settings singleton, sanitizing any validation failure.

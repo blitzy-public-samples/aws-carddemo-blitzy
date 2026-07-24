@@ -1,4 +1,7 @@
-/** Account Update page spec — legacy origin BMS COACTUP / Tx CAUP / program COACTUPC. Optimistic-lock (409) preserved. */
+/**
+ * Account Update page spec — legacy origin BMS COACTUP / Tx CAUP /
+ * program COACTUPC. Optimistic-lock (409) preserved.
+ */
 
 /*
  * accountsUpdate.test.tsx — Jest + React Testing Library component/integration

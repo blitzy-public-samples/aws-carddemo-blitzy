@@ -55,12 +55,20 @@ A review finding requesting IDOR-style per-user ownership scoping is thus declin
 on AAP grounds and preserved as this documented decision (see resolution report).
 
 PAN-keyed routes (AAP 0.5.5 REST contract): ``GET``/``PUT /cards/{cardNum}`` are
-mandated by the frozen AAP endpoint list (CCDL/CCUP), so they are retained rather
-than removed. Their PAN exposure is mitigated within the AAP: the card number is
-masked to its last four digits in every response (see above), scrubbed from logs
-by the application PAN-masking log filter (AAP 0.7.8), and an account-scoped
-alternative that keeps the PAN out of the URL -- ``GET``/``PUT
-/cards/by-account/{acctId}`` -- is additionally provided.
+mandated by the frozen AAP endpoint list (CCDL/CCUP), so they are the ONLY card
+detail/update endpoints (QA findings C05/C07/C08). Earlier ``by-account`` helper
+routes were removed: they resolved an account to a single card with
+``.limit(1)``, which silently selects the WRONG card on the NONUNIQUE
+account->card relationship (legacy CARDFILE AIX ``NONUNIQUEKEY``, C07) and were
+two operations beyond the frozen contract (C08). The card detail/update screens
+are keyed by a card number the operator ENTERS, faithful to the legacy COCRDSL /
+COCRDUP maps (whose ``CARDSID`` field is an unprotected card-number input), so
+no unmasked PAN is ever returned to the client. PAN exposure on these routes is
+mitigated within the AAP: the card number is masked to its last four digits in
+every response (see above) and scrubbed from logs by the application PAN-masking
+log filter (AAP 0.7.8). Replacing the ``{cardNum}`` key with an opaque token
+(C05's suggestion) is declined because it conflicts with the frozen AAP 0.5.5
+endpoint list; see the resolution report.
 
 Ochs conventions (AAP 0.8.2 / 0.8.3): handler names are PascalCase
 (``ListCards``, ``GetCard``, ``UpdateCard``); local variables are camelCase
@@ -130,88 +138,6 @@ async def ListCards(
         and no CVV -- plus page metadata.
     """
     return await CardService().ListCards(session, params, currentUser)
-
-
-# --------------------------------------------------------------------------- #
-# By-account card detail/update (QA C1). ROUTE ORDERING IS LOAD-BEARING: these #
-# literal ``/cards/by-account/{acctId}`` paths MUST be declared BEFORE the     #
-# ``/cards/{cardNum}`` catch-all below, or FastAPI would match "by-account" as #
-# a ``cardNum`` path value and never reach these handlers. The modern UI       #
-# navigates to a card by its UNMASKED owning-account id because the list masks #
-# card_num (AAP 0.7.8) -- a masked PAN can never be a valid ``/{cardNum}`` key #
-# (that was the C1 dead-end). The AAP-mandated PAN-keyed endpoints below are   #
-# retained unchanged.                                                          #
-# --------------------------------------------------------------------------- #
-@router.get("/by-account/{acctId}", response_model=CardRead)
-async def GetCardByAccount(
-    acctId: str,
-    session: AsyncSession = Depends(get_db),
-    currentUser=Depends(get_current_user),
-) -> CardRead:
-    """Return one card's detail by its OWNING ACCOUNT id (QA C1).
-
-    The card-list grid displays ``card_num`` MASKED to its last four digits
-    (AAP 0.7.8), so the UI cannot address card detail by the real PAN. It
-    instead navigates by the unmasked ``acct_id`` shown on each row, and this
-    endpoint resolves that account to its card entirely server-side (via the
-    ``CARD-ACCT-ID`` alternate index) without the full PAN ever appearing in a
-    URL. Delegates to :meth:`app.services.CardService.GetCardByAccount`, which
-    edits the account id (blank / non-zero-11-digit), performs the AIX read, and
-    raises :class:`app.core.exceptions.NotFoundError` (HTTP 404) when the
-    account owns no card.
-
-    Args:
-        session: Request-scoped async database session (unit of work).
-        acctId: The 11-digit owning-account id taken from the URL path.
-        currentUser: The authenticated user; its presence enforces that this
-            endpoint is protected by authentication.
-
-    Returns:
-        The masked, CVV-free :class:`app.schemas.CardRead` card detail.
-    """
-    return await CardService().GetCardByAccount(session, acctId)
-
-
-@router.put("/by-account/{acctId}", response_model=CardRead)
-async def UpdateCardByAccount(
-    acctId: str,
-    cardUpdate: CardUpdate,
-    session: AsyncSession = Depends(get_db),
-    currentUser=Depends(get_current_user),
-) -> CardRead:
-    """Update a card's editable fields addressed BY OWNING ACCOUNT (QA C1).
-
-    The companion of :func:`GetCardByAccount`: because the by-account detail
-    view returns a MASKED ``card_num``, the client has no real PAN with which to
-    call the PAN-keyed ``PUT /cards/{cardNum}``. This endpoint accepts the
-    unmasked account id instead and delegates to
-    :meth:`app.services.CardService.UpdateCardByAccount`, which resolves the
-    account to its real card number server-side and then reuses the full
-    COCRDUPC update path (field edits + optimistic before-image check,
-    AAP 0.7.4 + commit). The request body is validated by
-    :class:`app.schemas.CardUpdate` (editable fields only -- never ``card_num``,
-    ``acct_id``, or the CVV).
-
-    Service-raised domain errors bubble to the application handlers: a blank or
-    invalid account id / failed field edit / no-change ->
-    :class:`app.core.exceptions.DomainValidationError` (400/422), an account
-    with no card -> :class:`app.core.exceptions.NotFoundError` (404), and a
-    concurrent modification ->
-    :class:`app.core.exceptions.OptimisticLockError` /
-    :class:`app.core.exceptions.ConflictError` (409).
-
-    Args:
-        session: Request-scoped async database session (unit of work).
-        acctId: The 11-digit owning-account id taken from the URL path.
-        cardUpdate: The validated new field values (editable fields only).
-        currentUser: The authenticated user; its presence enforces that this
-            endpoint is protected by authentication.
-
-    Returns:
-        The masked, CVV-free :class:`app.schemas.CardRead` reflecting the
-        committed row.
-    """
-    return await CardService().UpdateCardByAccount(session, acctId, cardUpdate)
 
 
 @router.get("/{cardNum}", response_model=CardRead)

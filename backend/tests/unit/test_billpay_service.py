@@ -30,16 +30,16 @@ module-level constants are ALL_UPPERCASE with underscores.
 """
 
 import importlib
-from datetime import date
+from datetime import date, datetime, timezone
 from decimal import Decimal
 
 import pytest
 from pydantic import ValidationError
 from sqlalchemy import select
-from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from app.core.exceptions import DomainValidationError, NotFoundError
+from app.core.exceptions import ConflictError, DomainValidationError, NotFoundError
 from app.models import Account, Card, CardXref, Customer, Transaction
 from app.schemas.billpay import BillPayRequest
 from app.services.billpay_service import BillPayService
@@ -488,3 +488,228 @@ async def test_paybill_posts_despite_expired_card(db_session):
     assert response.tran_id is not None
     refreshedAccount = await db_session.get(Account, ACCT_ID)
     assert refreshedAccount.curr_bal == Decimal("0.00")
+
+
+# ===========================================================================
+# Phase G -- M04 cross-account TRAN-ID race safety.
+#
+# A bill payment locks only its OWN account row, so two payments for DIFFERENT
+# accounts do not serialize against one another and can generate the same
+# MAX(tran_id)+1 successor, colliding on the transactions primary key. The fix
+# (billpay_service._ExecutePayment) retries the losing insert with a freshly
+# recomputed id, bounded by MAX_ID_GENERATION_RETRIES, and surfaces a
+# ConflictError (HTTP 409) only if the cap is exhausted. These tests pin both
+# the recovery path and the bounded-failure path deterministically.
+# ===========================================================================
+
+# A second, independent account graph representing the "other account" whose
+# concurrently-committed payment grabs a TRAN-ID first (Ochs: ALL_UPPERCASE).
+OTHER_ACCT_ID = "00000000002"
+OTHER_CUST_ID = "000000002"
+OTHER_CARD_NUM = "4222222222222222"
+
+# The TRAN-ID the other account's committed payment occupies, and the id the
+# payer must fall through to after its first (stale) attempt collides.
+COLLIDING_TRAN_ID = "0000000000000005"
+NEXT_AFTER_COLLIDING = "0000000000000006"
+
+
+async def SeedForeignAccountPayment(session, tranId):
+    """Seed a second account graph plus one committed payment on it.
+
+    Represents the concurrently-committed bill payment of a DIFFERENT account
+    that has already claimed ``tranId`` on the shared (global) TRAN-ID keyspace.
+    The graph is FK-complete (Account -> Customer -> Card -> CardXref) so the
+    payment transaction's ``card_num`` foreign key resolves, and the row is left
+    for the caller to commit on its own session.
+
+    Args:
+        session: The active async session to seed on.
+        tranId: The 16-digit transaction id the foreign payment occupies.
+    """
+    account = Account(
+        acct_id=OTHER_ACCT_ID,
+        active_status="Y",
+        curr_bal=Decimal("0.00"),
+        credit_limit=Decimal("5000.00"),
+        cash_credit_limit=Decimal("0.00"),
+        curr_cyc_credit=Decimal("0.00"),
+        curr_cyc_debit=Decimal("0.00"),
+    )
+    customer = Customer(
+        cust_id=OTHER_CUST_ID,
+        first_name="JANE",
+        last_name="ROE",
+        addr_line_1="2 SECOND STREET",
+    )
+    session.add_all([account, customer])
+    await session.flush()
+
+    card = Card(
+        card_num=OTHER_CARD_NUM,
+        acct_id=OTHER_ACCT_ID,
+        embossed_name="JANE ROE",
+        active_status="Y",
+    )
+    session.add(card)
+    await session.flush()
+
+    xref = CardXref(xref_card_num=OTHER_CARD_NUM, cust_id=OTHER_CUST_ID, acct_id=OTHER_ACCT_ID)
+    session.add(xref)
+    await session.flush()
+
+    foreignPaymentTimestamp = datetime.now(timezone.utc)
+    session.add(
+        Transaction(
+            tran_id=tranId,
+            tran_type_cd="02",
+            tran_cat_cd="0002",
+            tran_source="POS TERM",
+            tran_desc="BILL PAYMENT - ONLINE",
+            tran_amt=Decimal("10.00"),
+            merchant_id="999999999",
+            merchant_name="BILL PAYMENT",
+            merchant_city="N/A",
+            merchant_zip="N/A",
+            card_num=OTHER_CARD_NUM,
+            orig_ts=foreignPaymentTimestamp,
+            proc_ts=foreignPaymentTimestamp,
+        )
+    )
+    await session.flush()
+
+
+async def test_paybill_recovers_from_cross_account_tran_id_collision(
+    test_engine, db_session, monkeypatch
+):
+    """A cross-account TRAN-ID collision is retried, not lost (M04).
+
+    Simulates the exact M04 race: a DIFFERENT account's bill payment has already
+    committed a transaction occupying id 5 on the shared TRAN-ID keyspace. The
+    payer's first allocation returns that same stale id 5 (the two payments read
+    the same MAX because they hold different account row locks); its insert
+    therefore collides on the primary key. The service must roll back, recompute
+    the id from a freshly re-read MAX (now 5, so the successor is 6), and commit
+    successfully -- the legitimate payment is NEVER dropped. Before the fix the
+    collision surfaced as the generic "unable to add" validation error and the
+    payment was lost.
+
+    The stale-then-real id is injected by patching the service's ``_NextTranId``
+    to return the colliding id exactly once, then delegate to the real
+    allocator, so the collision and the recovery are both deterministic.
+
+    Args:
+        test_engine: Function-scoped async engine (independent committed
+            sessions are opened against it, mirroring the replay test).
+        db_session: Requested only for its truncate teardown.
+        monkeypatch: Injects the stale-then-real id allocator.
+    """
+    sessionMaker = async_sessionmaker(
+        bind=test_engine,
+        class_=AsyncSession,
+        expire_on_commit=False,
+        autoflush=False,
+    )
+
+    # Seed the payer graph and the foreign account's committed id-5 payment on
+    # an independent session, then COMMIT so both are durably visible and hold
+    # no locks that could block the payer's SELECT ... FOR UPDATE.
+    async with sessionMaker() as seedSession:
+        await SeedBillPayGraph(
+            seedSession,
+            currBal=Decimal("400.00"),
+            creditLimit=Decimal("5000.00"),
+        )
+        await SeedForeignAccountPayment(seedSession, COLLIDING_TRAN_ID)
+        await seedSession.commit()
+
+    service = BillPayService()
+
+    # Force attempt #1 to reuse the already-committed id 5 (the cross-account
+    # collision); every later call delegates to the genuine allocator, which
+    # re-reads MAX (=5) and returns 6.
+    realNextTranId = service._NextTranId
+    allocationCalls = {"count": 0}
+
+    async def _StaleThenReal(session):
+        allocationCalls["count"] += 1
+        if allocationCalls["count"] == 1:
+            return COLLIDING_TRAN_ID
+        return await realNextTranId(session)
+
+    monkeypatch.setattr(service, "_NextTranId", _StaleThenReal)
+
+    request = BillPayRequest(acct_id=ACCT_ID, confirm="Y")
+    async with sessionMaker() as paySession:
+        response = await service.PayBill(paySession, request)
+
+    # The payment recovered: it collided once, retried once, and committed with
+    # the NEXT id -- the full balance was paid and the balance is zeroed.
+    assert allocationCalls["count"] == 2
+    assert response.tran_id == NEXT_AFTER_COLLIDING
+    assert response.payment_amount == Decimal("400.00")
+
+    async with sessionMaker() as verifySession:
+        settledAccount = await verifySession.get(Account, ACCT_ID)
+        assert settledAccount.curr_bal == Decimal("0.00")
+        # Exactly the payer's card carries the recovered id-6 payment.
+        payerRows = await verifySession.execute(
+            select(Transaction).where(Transaction.card_num == CARD_NUM)
+        )
+        payerTransactions = payerRows.scalars().all()
+        assert len(payerTransactions) == 1
+        assert payerTransactions[0].tran_id == NEXT_AFTER_COLLIDING
+
+
+async def test_paybill_tran_id_conflict_exhaustion_raises_conflict(
+    db_session, monkeypatch
+):
+    """Unresolvable TRAN-ID collisions surface a 409, not a lost payment (M04).
+
+    When every insert collides on the primary key (a pathological, persistent
+    race), the bounded retry loop must terminate: after
+    ``MAX_ID_GENERATION_RETRIES`` attempts the service raises ``ConflictError``
+    (mapped to HTTP 409) carrying the verbatim conflict advisory, rather than
+    looping forever or masking the failure as a generic validation error. The
+    balance must be left UNCHANGED and no payment persisted, proving the
+    exhausted retry rolls its unit of work back cleanly.
+
+    The persistent collision is injected by patching the transaction
+    repository's ``Insert`` to always raise :class:`sqlalchemy.exc.IntegrityError`
+    (the primary-key violation the race produces).
+
+    Args:
+        db_session: The async session used to seed, run, and verify.
+        monkeypatch: Injects the always-colliding ``Insert``.
+    """
+    await SeedBillPayGraph(
+        db_session,
+        currBal=Decimal("300.00"),
+        creditLimit=Decimal("5000.00"),
+    )
+    await db_session.commit()
+
+    service = BillPayService()
+
+    async def _AlwaysCollide(session, transaction):
+        """Simulate a persistent TRAN-ID primary-key collision."""
+        raise IntegrityError(
+            "INSERT INTO transactions ...",
+            {},
+            Exception("duplicate key value violates unique constraint"),
+        )
+
+    monkeypatch.setattr(service.transactionRepository, "Insert", _AlwaysCollide)
+
+    request = BillPayRequest(acct_id=ACCT_ID, confirm="Y")
+    with pytest.raises(ConflictError) as excInfo:
+        await service.PayBill(db_session, request)
+    assert MessageOf(excInfo.value) == billpayModule.MSG_TRAN_ID_CONFLICT
+
+    # The unit of work rolled back: balance unchanged, nothing persisted.
+    refreshedAccount = await db_session.get(Account, ACCT_ID)
+    assert refreshedAccount.curr_bal == Decimal("300.00")
+    postedRows = await db_session.execute(
+        select(Transaction).where(Transaction.card_num == CARD_NUM)
+    )
+    assert postedRows.scalars().first() is None

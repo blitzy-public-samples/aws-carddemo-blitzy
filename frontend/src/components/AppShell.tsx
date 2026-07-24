@@ -33,8 +33,10 @@
  * it never renders passwords or tokens.
  *
  * DESIGN SYSTEM (AAP §0.3.4): only Material UI components are emitted (never raw
- * HTML), and every style value resolves to a theme-scale `sx` token or an allowed
- * keyword; the sole permitted numeric layout constant is `DRAWER_WIDTH`.
+ * HTML), and every style value resolves to a theme token — including the named
+ * `theme.layout.*` sizing tokens (drawer width, fill-parent width) hoisted into
+ * the theme per QA finding M-25 — or an allowed keyword; no magic layout literal
+ * is hardcoded at the call site.
  * `AppRouterCacheProvider` + `ThemeProvider` + `CssBaseline` are supplied by
  * `src/app/layout.tsx`; this component is rendered INSIDE that provider tree and
  * must not add them.
@@ -71,7 +73,7 @@ import {
 } from '@mui/icons-material';
 import { usePathname, useRouter } from 'next/navigation';
 import Link from 'next/link';
-import { Fragment, useEffect, useState } from 'react';
+import { Fragment, useEffect, useRef, useState } from 'react';
 import type { KeyboardEvent as ReactKeyboardEvent, ReactNode } from 'react';
 
 import { GetCurrentUser, IsAdmin, Logout } from '@/lib/auth';
@@ -82,12 +84,13 @@ import type { CurrentUser } from '@/types';
 /* ------------------------------------------------------------------------- */
 
 /**
- * Width of the side navigation drawer, in pixels. This is the ONE permitted
- * numeric layout dimension for the shell (AAP §0.3.4 design-system rules); it is
- * applied symbolically through `sx` on both the nav container and the drawer
- * paper so the two always stay in lockstep.
+ * The side-navigation drawer width, the fill-parent width and the full-viewport
+ * height are NO LONGER local constants (QA finding M-25): they are named theme
+ * tokens (`theme.layout.drawerWidth`, `theme.layout.fullWidth`) defined once in
+ * `src/app/theme.ts` and consumed symbolically through `sx={(theme) => …}` on the
+ * nav container and both drawer papers so the three stay in lockstep and no magic
+ * layout literal is hardcoded here.
  */
-const DRAWER_WIDTH = 240;
 
 /** Header title shown in the AppBar. Source: `app/cpy/COTTL01Y.cpy`. */
 const APP_TITLE = 'CardDemo';
@@ -200,6 +203,56 @@ export function AppShell(props: AppShellProps) {
         setCurrentUser(GetCurrentUser());
         setShowAdmin(IsAdmin());
         setIsMounted(true);
+    }, [pathname]);
+
+    // The single `<main>` landmark, used to move focus to the new page's heading
+    // on client-side navigation (QA N-02). One ref serves both render branches
+    // (bare/pre-auth and the authenticated shell) because they are mutually
+    // exclusive, so only one `<main>` is mounted at a time.
+    const mainRef = useRef<HTMLElement | null>(null);
+
+    // Skips the very first render so the browser's natural initial focus (or a
+    // page's `autoFocus` field) is never stolen on a full page load; the route
+    // announcer only acts on subsequent client-side navigations.
+    const isInitialRouteRef = useRef<boolean>(true);
+
+    useEffect(() => {
+        // QA N-02 — SPA route-change focus management. A client-side navigation
+        // does not reload the document, so focus is left where it was (or falls
+        // to <body>) and assistive-tech users are never told the page changed.
+        // On each route change we move focus to the new page's main heading so
+        // the new <h1> is announced. This ALSO lands focus in a valid place after
+        // a dialog-driven navigation (e.g. /users/delete confirm -> redirect),
+        // completing the retained-focus fix begun in ConfirmDialog.
+        if (isInitialRouteRef.current) {
+            isInitialRouteRef.current = false;
+            return;
+        }
+        const main = mainRef.current;
+        if (main === null) {
+            return;
+        }
+        // Respect a page that legitimately claims focus for its primary control:
+        // React applies `autoFocus` during commit (before this passive effect),
+        // so if focus already rests on an element inside <main> (e.g. the account
+        // /card/transaction id picker), leave it there rather than yanking focus
+        // to the heading.
+        const active = document.activeElement;
+        if (
+            active !== null &&
+            active !== main &&
+            main.contains(active)
+        ) {
+            return;
+        }
+        // Prefer the semantic page heading; fall back to the main landmark when a
+        // page has not (yet) rendered an <h1>. `tabindex="-1"` makes the target
+        // programmatically focusable WITHOUT adding it to the tab order, and
+        // `:focus-visible` keeps the ring off for this scripted focus.
+        const heading = main.querySelector<HTMLElement>('h1');
+        const focusTarget: HTMLElement = heading ?? main;
+        focusTarget.setAttribute('tabindex', '-1');
+        focusTarget.focus();
     }, [pathname]);
 
     // Role-gated nav (client-side UX only — NOT the security boundary; see the
@@ -349,7 +402,11 @@ export function AppShell(props: AppShellProps) {
     // its own single `<main>`, and these two branches are mutually exclusive, so
     // there is never more than one main landmark.
     if (pathname === SIGNON_ROUTE || (isMounted && !currentUser)) {
-        return <Box component="main">{props.children}</Box>;
+        return (
+            <Box component="main" ref={mainRef}>
+                {props.children}
+            </Box>
+        );
     }
 
     return (
@@ -409,33 +466,36 @@ export function AppShell(props: AppShellProps) {
             <Box
                 component="nav"
                 aria-label="Main navigation"
-                sx={{ width: { md: DRAWER_WIDTH }, flexShrink: { md: 0 } }}
+                sx={(theme) => ({
+                    width: { md: theme.layout.drawerWidth },
+                    flexShrink: { md: 0 },
+                })}
             >
                 <Drawer
                     variant="temporary"
                     open={mobileOpen}
                     onClose={HandleDrawerClose}
                     ModalProps={{ keepMounted: true }}
-                    sx={{
+                    sx={(theme) => ({
                         display: { xs: 'block', md: 'none' },
                         '& .MuiDrawer-paper': {
-                            width: DRAWER_WIDTH,
+                            width: theme.layout.drawerWidth,
                             boxSizing: 'border-box',
                         },
-                    }}
+                    })}
                 >
                     {RenderNavList()}
                 </Drawer>
                 <Drawer
                     variant="permanent"
                     open
-                    sx={{
+                    sx={(theme) => ({
                         display: { xs: 'none', md: 'block' },
                         '& .MuiDrawer-paper': {
-                            width: DRAWER_WIDTH,
+                            width: theme.layout.drawerWidth,
                             boxSizing: 'border-box',
                         },
-                    }}
+                    })}
                 >
                     {RenderNavList()}
                 </Drawer>
@@ -450,7 +510,13 @@ export function AppShell(props: AppShellProps) {
              */}
             <Box
                 component="main"
-                sx={{ flexGrow: 1, minWidth: 0, maxWidth: '100%', p: 3 }}
+                ref={mainRef}
+                sx={(theme) => ({
+                    flexGrow: 1,
+                    minWidth: 0,
+                    maxWidth: theme.layout.fullWidth,
+                    p: 3,
+                })}
             >
                 <Toolbar />
                 {props.children}

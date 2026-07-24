@@ -35,6 +35,7 @@ import {
     Button,
     Box,
 } from '@mui/material';
+import { useRef } from 'react';
 import type { ReactNode } from 'react';
 
 /** Default label for the confirm (primary) action button. */
@@ -127,11 +128,107 @@ export function ConfirmDialog(props: ConfirmDialogProps) {
         loading = false,
     } = props;
 
+    // --- Focus management across close (QA N-02) -----------------------------
+    //
+    // MUI's Modal drives two focus behaviours as a dialog closes that, together,
+    // produce the browser warning "Blocked aria-hidden on an element because its
+    // descendant retained focus":
+    //   1. While the ~225ms exit transition plays, the background content behind
+    //      the dialog still carries `aria-hidden="true"`.
+    //   2. By default the Modal RESTORES focus to the element that opened it —
+    //      here the destructive trigger button, which lives INSIDE that still
+    //      `aria-hidden` background. A focused descendant of an aria-hidden
+    //      subtree is exactly what the browser blocks and warns about.
+    //
+    // The fix has three cooperating parts:
+    //   (a) `disableRestoreFocus` on the Dialog stops MUI from moving focus back
+    //       to the trigger mid-transition (removes cause #2).
+    //   (b) `BlurActiveDialogElement` parks focus on <body> BEFORE `open` flips
+    //       to false, so no dialog descendant retains focus when the Modal also
+    //       briefly marks the closing dialog container itself `aria-hidden`.
+    //   (c) `HandleExited` returns focus to the opener AFTER the transition ends
+    //       (once `aria-hidden` has been cleared from the background), preserving
+    //       the accessible "focus returns to the control you came from" behaviour
+    //       for the cancel/stay-on-page path.
+
+    /**
+     * The element that had focus when the dialog opened (its "trigger").
+     *
+     * Captured at the render where `open` transitions false → true — which runs
+     * BEFORE MUI's focus-trap effect moves focus into the dialog — so it records
+     * the opener (e.g. the page's DELETE button), never a dialog control.
+     */
+    const triggerRef = useRef<HTMLElement | null>(null);
+    const wasOpenRef = useRef<boolean>(false);
+    // N02 accessibility (chrome-verified): capture the opener's focused element
+    // at the render where `open` flips false -> true, BEFORE MUI's focus-trap
+    // layout effect (a CHILD effect, which React runs before THIS parent
+    // component's own effects) moves focus into the dialog. Capturing this in a
+    // useEffect/useLayoutEffect is impossible -- by the time any effect here
+    // runs, the focus trap has already relocated focus, so document.activeElement
+    // would read a dialog control instead of the trigger. The captured ref is
+    // only READ later in event/transition callbacks (never during render) and
+    // the writes are idempotent per open-transition, so react-hooks/refs is
+    // deliberately suppressed for exactly this correct render-time capture.
+    /* eslint-disable react-hooks/refs */
+    if (props.open && !wasOpenRef.current && typeof document !== 'undefined') {
+        const active = document.activeElement;
+        triggerRef.current = active instanceof HTMLElement ? active : null;
+    }
+    wasOpenRef.current = props.open;
+    /* eslint-enable react-hooks/refs */
+
+    /**
+     * Moves focus off the currently-focused dialog descendant BEFORE the parent
+     * flips `open` to false (QA N-02).
+     *
+     * Parking focus on `<body>` guarantees no dialog descendant retains focus
+     * while the Modal is applying/removing `aria-hidden` during close, so the
+     * "descendant retained focus" warning never fires. Final focus placement is
+     * handled by {@link HandleExited} (cancel: back on the trigger) or by the
+     * AppShell route announcer (confirm+navigate: the next page's heading).
+     */
+    function BlurActiveDialogElement(): void {
+        if (typeof document === 'undefined') {
+            return;
+        }
+        const active = document.activeElement;
+        if (active instanceof HTMLElement) {
+            active.blur();
+        }
+    }
+
+    /**
+     * Returns focus to the opener after the close transition completes.
+     *
+     * Runs on the transition `onExited` callback, by which point MUI has cleared
+     * `aria-hidden` from the background. Focus is restored on the NEXT animation
+     * frame (so any trailing aria-hidden bookkeeping has settled) and only when
+     * the trigger is still present and enabled — after a CONFIRMED delete the
+     * trigger is unmounted/disabled, so focus is intentionally left for the route
+     * announcer to place on the destination page's heading instead.
+     */
+    function HandleExited(): void {
+        const trigger = triggerRef.current;
+        triggerRef.current = null;
+        if (trigger === null || typeof window === 'undefined') {
+            return;
+        }
+        window.requestAnimationFrame(() => {
+            const isButton = trigger instanceof HTMLButtonElement;
+            const isDisabled = isButton && trigger.disabled;
+            if (trigger.isConnected && !isDisabled) {
+                trigger.focus();
+            }
+        });
+    }
+
     /** Confirms the action, unless a request is already in flight. */
     function HandleConfirm(): void {
         if (loading) {
             return;
         }
+        BlurActiveDialogElement();
         props.onConfirm();
     }
 
@@ -140,6 +237,7 @@ export function ConfirmDialog(props: ConfirmDialogProps) {
         if (loading) {
             return;
         }
+        BlurActiveDialogElement();
         props.onCancel();
     }
 
@@ -170,6 +268,8 @@ export function ConfirmDialog(props: ConfirmDialogProps) {
             onClose={HandleCancel}
             aria-labelledby={TITLE_ID}
             aria-describedby={describedById}
+            disableRestoreFocus
+            slotProps={{ transition: { onExited: HandleExited } }}
         >
             <DialogTitle id={TITLE_ID}>{props.title}</DialogTitle>
             <DialogContent>

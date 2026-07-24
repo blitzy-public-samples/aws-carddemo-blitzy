@@ -80,6 +80,15 @@ export default function RootLayout({ children }: RootLayoutProps) {
     return (
         <html lang="en">
             <head>
+                {/*
+                  eslint-disable-next-line @next/next/no-page-custom-font --
+                  The rule discourages custom-font <link> tags in individual
+                  PAGE components (they load per-page and hurt performance). Here
+                  the Roboto stylesheet is declared ONCE in the App Router ROOT
+                  layout -- the document-level, centralized location the rule
+                  actually wants -- so the theme's `Roboto` family resolves for
+                  every route with zero coupling and no extra dependency.
+                */}
                 <link
                     rel="stylesheet"
                     href="https://fonts.googleapis.com/css2?family=Roboto:wght@300;400;500;700&display=swap"

@@ -10,7 +10,7 @@
  * → MUI DataTable + Pagination) and the page size (legacy 10 rows → modern 7 rows, F-004).
  */
 
-import { useState, useEffect, useCallback, useMemo } from 'react';
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { useRouter } from 'next/navigation';
 import { Box, Stack, Container, Typography, Button } from '@mui/material';
 
@@ -81,25 +81,47 @@ export default function UsersPage() {
         }
     }, [router]);
 
+    // Monotonic request-generation counter (QA M-05). Each LoadUsers call claims
+    // the next generation; only the request whose captured generation still
+    // equals `requestGenerationRef.current` on settle may commit list data or
+    // surface an error, so a slow earlier page cannot overwrite a newer one and
+    // no state update lands after unmount. The 403 redirect is exempt: losing
+    // admin access is terminal navigation, correct regardless of generation.
+    const requestGenerationRef = useRef<number>(0);
+
     const LoadUsers = useCallback(async () => {
+        const requestGeneration = requestGenerationRef.current + 1;
+        requestGenerationRef.current = requestGeneration;
         setLoading(true);
         try {
             const result = await UsersApi.ListUsers({
                 page: currentPage,
                 page_size: ROWS_PER_PAGE,
             });
+            // Only the latest request may commit its data (QA M-05).
+            if (requestGenerationRef.current !== requestGeneration) {
+                return;
+            }
             setUsersPage(result);
         } catch (caughtError) {
             // Narrow the caught value with IsApiError (the TypeScript equivalent of catching a
             // specific exception) rather than blindly swallowing an unknown error.
+            // The 403 redirect fires regardless of generation (terminal navigation).
             if (IsApiError(caughtError) && caughtError.status === HTTP_FORBIDDEN) {
                 router.replace('/menu');
+                return;
+            }
+            // Discard a superseded request's error too (QA M-05).
+            if (requestGenerationRef.current !== requestGeneration) {
                 return;
             }
             setErrorValue(caughtError);
             setAlertOpen(true);
         } finally {
-            setLoading(false);
+            // Only the latest request owns the shared loading flag (QA M-05).
+            if (requestGenerationRef.current === requestGeneration) {
+                setLoading(false);
+            }
         }
     }, [currentPage, router]);
 
@@ -107,6 +129,11 @@ export default function UsersPage() {
         if (isAdminUser) {
             LoadUsers();
         }
+        // Invalidate any in-flight request when the page changes or unmounts so
+        // its late resolve cannot update state afterwards (QA M-05).
+        return () => {
+            requestGenerationRef.current += 1;
+        };
     }, [isAdminUser, LoadUsers]);
 
     const HandlePageChange = (page: number) => {

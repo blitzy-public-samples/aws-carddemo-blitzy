@@ -34,6 +34,9 @@ __pycache__/
 
 # --- Test suite and test/tooling caches (not part of the runtime image)
 tests/
+# Dev/test dependency manifest (QA finding M-22): the runtime image installs
+# only requirements.txt, so this file has no place in the build context.
+requirements-dev.txt
 .pytest_cache/
 .ruff_cache/
 .mypy_cache/

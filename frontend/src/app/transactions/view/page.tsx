@@ -121,7 +121,17 @@ interface DetailRowProps {
 }
 
 /**
- * Renders one labelled, read-only detail row as a label/value Typography pair.
+ * Renders one labelled, read-only detail row as a description-list term/value
+ * pair (`<dt>` label + `<dd>` value).
+ *
+ * Using `<dt>`/`<dd>` (via Typography's `component` prop) programmatically
+ * associates every value with its label (QA N-01, "associated labels") so a
+ * screen reader announces the pair as a term and its definition rather than two
+ * unrelated text runs. The container `<Stack component="dl">` in the caller
+ * supplies the enclosing description list. The `<dd>` user-agent margin is reset
+ * (`m: 0`) so this is a purely semantic change with no visual difference from
+ * the previous label/value Typography pair. Every node stays an MUI Typography
+ * (AAP §0.3.4 rule b), never a raw HTML text element.
  *
  * @param props - The {@link DetailRowProps} describing the row.
  * @returns The MUI element for the row.
@@ -137,13 +147,14 @@ function DetailRow(props: DetailRowProps) {
                 gap: 1,
             }}
         >
-            <Typography variant="subtitle2" color="text.secondary">
+            <Typography component="dt" variant="subtitle2" color="text.secondary">
                 {props.label}
             </Typography>
             <Typography
+                component="dd"
                 variant="body1"
                 align={valueAlign}
-                sx={{ wordBreak: 'break-word' }}
+                sx={{ m: 0, wordBreak: 'break-word' }}
             >
                 {props.value}
             </Typography>
@@ -262,7 +273,9 @@ function TransactionsViewContent() {
     return (
         <Container maxWidth="md">
             <Stack spacing={3} sx={{ py: 4 }}>
-                <Typography variant="h4">{PAGE_TITLE}</Typography>
+                <Typography variant="h4" component="h1">
+                    {PAGE_TITLE}
+                </Typography>
 
                 <Stack
                     direction={{ xs: 'column', sm: 'row' }}
@@ -279,6 +292,7 @@ function TransactionsViewContent() {
                             error={tranIdError.length > 0}
                             helperText={tranIdError}
                             autoFocus
+                            autoComplete="off"
                         />
                     </Box>
                     <Button
@@ -295,9 +309,17 @@ function TransactionsViewContent() {
 
                 {transactionDetail !== null ? (
                     <Card>
-                        <CardHeader title="Transaction Detail" />
+                        <CardHeader
+                            title="Transaction Detail"
+                            slotProps={{ title: { component: 'h2' } }}
+                        />
                         <CardContent>
-                            <Stack spacing={1.5} divider={<Divider flexItem />}>
+                            <Stack
+                                component="dl"
+                                spacing={1.5}
+                                divider={<Divider flexItem />}
+                                sx={{ m: 0 }}
+                            >
                                 <DetailRow
                                     label="Transaction ID:"
                                     value={transactionDetail.tran_id}

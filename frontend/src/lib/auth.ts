@@ -16,6 +16,12 @@
  * NON-SENSITIVE `CurrentUser` context (user id, names, role) is mirrored in
  * `localStorage` so the SPA can render the correct menu without a round-trip.
  *
+ * SECURITY (QA finding M-10): no authentication credential is ever placed in
+ * `localStorage`. The SPA relies solely on the HTTP-only session cookie; the
+ * previous optional JWT bearer-in-localStorage path was removed because a token
+ * in JavaScript-reachable storage is exfiltratable by XSS. Only the
+ * non-sensitive identity mirror below is persisted.
+ *
  * SECURITY: the role helpers below (`GetRole`, `IsAdmin`) drive UI convenience
  * only -- they hide admin-only screens (COADM01, COUSR00-03) from regular
  * users. They are NEVER the authorization boundary; the backend independently
@@ -29,7 +35,6 @@ import {
     AuthApi,
     ClearStoredAuth,
     SESSION_USER_STORAGE_KEY,
-    ACCESS_TOKEN_STORAGE_KEY,
 } from './apiClient';
 
 /* ------------------------------------------------------------------------- */
@@ -43,7 +48,7 @@ import {
  * any same-name client behavior is ever needed. Matches the backend
  * `settings.SESSION_COOKIE_NAME`.
  */
-const SESSION_COOKIE_NAME = 'carddemo_session';
+export const SESSION_COOKIE_NAME = 'carddemo_session';
 
 /* ------------------------------------------------------------------------- */
 /* Private storage helpers (small, SSR-guarded).                             */
@@ -70,21 +75,6 @@ function StoreCurrentUser(currentUser: CurrentUser): void {
         SESSION_USER_STORAGE_KEY,
         JSON.stringify(currentUser),
     );
-}
-
-/**
- * Persists the optional JWT bearer token (JWT-alternative auth mode) under the
- * shared token key so the apiClient request interceptor can attach it. In the
- * session-cookie baseline no token is issued and this helper is never called.
- * Guarded for SSR.
- *
- * @param accessToken The bearer token returned by the backend in JWT mode.
- */
-function StoreAccessToken(accessToken: string): void {
-    if (typeof window === 'undefined') {
-        return;
-    }
-    window.localStorage.setItem(ACCESS_TOKEN_STORAGE_KEY, accessToken);
 }
 
 /**
@@ -121,11 +111,11 @@ function ReadStoredUser(): CurrentUser | null {
 /**
  * Signs a user in. Origin: COSGN00C / COSGN00.bms (CICS tx CC00).
  *
- * Delegates the HTTP call to {@link AuthApi.Login}; in the session baseline the
- * backend sets the HTTP-only `carddemo_session` cookie and returns a null
- * `access_token`. The non-sensitive identity is mirrored to `localStorage` for
- * UI decisions, and (only in JWT-alternative mode) any returned bearer token is
- * persisted for the request interceptor.
+ * Delegates the HTTP call to {@link AuthApi.Login}; the backend sets the
+ * HTTP-only `carddemo_session` cookie (the sole authentication credential) and
+ * only the non-sensitive identity is mirrored to `localStorage` for UI
+ * decisions. Any `access_token` the backend may return (JWT-alternative mode) is
+ * deliberately IGNORED by the browser SPA and never stored (QA finding M-10).
  *
  * The password is used solely for this request and is never stored or logged.
  * On invalid credentials `AuthApi.Login` rejects with the typed `ApiError`
@@ -145,9 +135,6 @@ export async function Login(credentials: LoginRequest): Promise<CurrentUser> {
         last_name: loginResponse.last_name,
     };
     StoreCurrentUser(currentUser);
-    if (loginResponse.access_token) {
-        StoreAccessToken(loginResponse.access_token);
-    }
     return currentUser;
 }
 
@@ -165,9 +152,9 @@ export async function Login(credentials: LoginRequest): Promise<CurrentUser> {
  * The backend call is best-effort: it is wrapped so that a transient network or
  * server error still lets local teardown and the redirect proceed (a user must
  * always be able to sign out of the SPA). After the round-trip the mirrored
- * identity and any bearer token are cleared via {@link ClearStoredAuth} (the
- * exact keys the 401 interceptor clears), then a hard redirect to `/signon` is
- * performed (SSR-guarded).
+ * identity is cleared via {@link ClearStoredAuth} (the same key the 401
+ * interceptor clears), then a hard redirect to `/signon` is performed
+ * (SSR-guarded).
  *
  * @returns A promise that resolves once teardown has completed and the redirect
  *   has been issued.

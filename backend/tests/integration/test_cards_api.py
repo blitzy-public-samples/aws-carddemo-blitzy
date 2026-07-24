@@ -45,7 +45,7 @@ from app.core.exceptions import OptimisticLockError
 from app.models.account import Account
 from app.models.card import Card
 from app.repositories.card_repo import CardRepository
-from app.schemas.card import CardUpdate
+from app.schemas.card import CardBeforeImage, CardUpdate
 from app.services.card_service import CardService
 
 # ---------------------------------------------------------------------------
@@ -101,7 +101,7 @@ VALID_EMBOSSED_NAME = "VALID CARDHOLDER"
 # that is COMMITTED on its own connection so two independent sessions can both
 # see and contend for it. A ``cards`` row's only foreign key is
 # ``cards.acct_id -> accounts.acct_id``, so the minimal committed graph is one
-# account (``group_id`` is nullable, so no ``account_groups`` parent is needed)
+# account (``group_id`` is a plain free-text column with no parent table)
 # plus one card. These identifiers are deliberately outside the golden-master
 # seed set so they never collide with it.
 # ---------------------------------------------------------------------------
@@ -161,22 +161,42 @@ def BuildUpdatePayload(
     embossedName: str,
     expirationDate: str,
     activeStatus: str,
+    beforeImage: dict | None = None,
 ) -> dict:
     """Build a ``CardUpdate`` request body from the three editable fields.
 
     Groups the editable card fields into one JSON-serializable object (the
     request body accepts only the embossed name, expiration date, and active
-    status; the identifiers and the CVV are never in the body).
+    status; the identifiers and the CVV are never in the body). Every update
+    also carries the client-echoed ``before_image`` optimistic-lock token
+    (COACTUPC-style READ-before-image; QA finding C-06) so the service can
+    detect a concurrent modification under ``SELECT ... FOR UPDATE``.
 
     Args:
         embossedName: New embossed name (alphabetic + spaces).
         expirationDate: Expiry date as ISO ``YYYY-MM-DD`` text.
         activeStatus: Active-status flag, ``'Y'`` or ``'N'``.
+        beforeImage: The card's editable values as last read by the client
+            (an ``AssertCardMaskedNoCvv``-shaped GET response, or any mapping
+            exposing ``embossed_name``/``active_status``/``expiration_date``).
+            When ``None`` the golden-master seed card's committed values are
+            echoed, which matches an unmodified ``SEED_CARD_NUM`` row.
 
     Returns:
         A dict matching the ``CardUpdate`` schema, ready to pass as ``json=``.
     """
+    if beforeImage is None:
+        beforeImage = {
+            "embossed_name": SEED_EMBOSSED_NAME,
+            "active_status": SEED_ACTIVE_STATUS,
+            "expiration_date": SEED_EXPIRATION_DATE,
+        }
     return {
+        "before_image": {
+            "embossed_name": beforeImage["embossed_name"],
+            "active_status": beforeImage["active_status"],
+            "expiration_date": beforeImage["expiration_date"],
+        },
         "embossed_name": embossedName,
         "expiration_date": expirationDate,
         "active_status": activeStatus,
@@ -411,6 +431,7 @@ async def test_update_card_success(
         NEW_EMBOSSED_NAME,
         beforeImage["expiration_date"],
         beforeImage["active_status"],
+        beforeImage,
     )
     putResp = await admin_client.put(f"{CARDS_URL}/{SEED_CARD_NUM}", json=updatePayload)
 
@@ -509,6 +530,11 @@ async def test_update_card_lost_update_prevented_independent_sessions(
             sessionWinner,
             CONFLICT_CARD_NUM,
             CardUpdate(
+                before_image=CardBeforeImage(
+                    embossed_name=CONFLICT_ORIGINAL_NAME,
+                    active_status="Y",
+                    expiration_date=CONFLICT_CARD_EXPIRY,
+                ),
                 embossed_name=CONFLICT_WINNER_NAME,
                 expiration_date=CONFLICT_CARD_EXPIRY,
                 active_status="Y",
@@ -524,6 +550,11 @@ async def test_update_card_lost_update_prevented_independent_sessions(
                 sessionLoser,
                 CONFLICT_CARD_NUM,
                 CardUpdate(
+                    before_image=CardBeforeImage(
+                        embossed_name=CONFLICT_ORIGINAL_NAME,
+                        active_status="Y",
+                        expiration_date=CONFLICT_CARD_EXPIRY,
+                    ),
                     embossed_name=CONFLICT_LOSER_NAME,
                     expiration_date=CONFLICT_CARD_EXPIRY,
                     active_status="Y",

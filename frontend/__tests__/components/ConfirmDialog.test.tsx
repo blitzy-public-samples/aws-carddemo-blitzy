@@ -14,6 +14,7 @@ import {
     waitFor,
 } from '../testUtils';
 import { axe } from 'jest-axe';
+import { useState } from 'react';
 import { ConfirmDialog } from '@/components/ConfirmDialog';
 
 /** Benign, non-sensitive dialog heading reused across the specs. */
@@ -110,6 +111,27 @@ describe('ConfirmDialog', () => {
         await user.click(screen.getByRole('button', { name: 'Cancel' }));
 
         expect(onCancel).toHaveBeenCalledTimes(1);
+    });
+
+    it('blurs the focused control on confirm so no descendant retains focus at close (N-02)', async () => {
+        const user = userEvent.setup();
+        const { onConfirm } = renderDialog({ confirmLabel: 'Delete' });
+
+        const confirmButton = screen.getByRole('button', { name: 'Delete' });
+        const blurSpy = jest.spyOn(confirmButton, 'blur');
+
+        await user.click(confirmButton);
+
+        // The action still fires (behavior preserved) ...
+        expect(onConfirm).toHaveBeenCalledTimes(1);
+        // ... and the focused control is explicitly blurred, so when the parent
+        // flips the dialog closed MUI applies aria-hidden with NO focused
+        // descendant inside the dialog -> the Chrome retained-focus warning
+        // (QA N-02) cannot fire. The dialog stays open here because the mock
+        // onConfirm does not close it, which is exactly why the blur (not the
+        // unmount) is what the spec asserts.
+        expect(blurSpy).toHaveBeenCalledTimes(1);
+        blurSpy.mockRestore();
     });
 
     // ----------------------------------------------------------------------
@@ -244,6 +266,82 @@ describe('ConfirmDialog', () => {
                 expect(
                     screen.getByRole('button', { name: 'Save' }),
                 ).toHaveFocus();
+            });
+        });
+    });
+
+    // ----------------------------------------------------------------------
+    // Focus management across close (QA N-02) — the dialog must NEVER leave a
+    // focused descendant inside an `aria-hidden` subtree during close (the
+    // Chrome "Blocked aria-hidden ... retained focus" warning), and must return
+    // focus to the opener on the cancel/stay-on-page path.
+    // ----------------------------------------------------------------------
+    describe('focus management on close (N-02)', () => {
+        it('blurs the focused control on cancel so no descendant retains focus at close', async () => {
+            const user = userEvent.setup();
+            const { onCancel } = renderDialog({ confirmLabel: 'Delete' });
+
+            const cancelButton = screen.getByRole('button', { name: 'Cancel' });
+            const blurSpy = jest.spyOn(cancelButton, 'blur');
+
+            await user.click(cancelButton);
+
+            // The cancel action still fires (behavior preserved) ...
+            expect(onCancel).toHaveBeenCalledTimes(1);
+            // ... and the focused control is explicitly blurred, so focus is
+            // parked on <body> (not on a dialog descendant) while MUI toggles
+            // aria-hidden during the close transition -> the retained-focus
+            // warning cannot fire.
+            expect(blurSpy).toHaveBeenCalledTimes(1);
+            blurSpy.mockRestore();
+        });
+
+        /**
+         * Stateful harness: a trigger button opens the dialog, and both actions
+         * close it — mirroring the /users/delete cancel flow. Exercises the full
+         * capture-opener → `disableRestoreFocus` → restore-on-`onExited` machinery
+         * end to end.
+         */
+        function FocusHarness() {
+            const [open, setOpen] = useState(false);
+            return (
+                <>
+                    <button type="button" onClick={() => setOpen(true)}>
+                        Open Dialog
+                    </button>
+                    <ConfirmDialog
+                        open={open}
+                        title={DEFAULT_TITLE}
+                        confirmLabel="Delete"
+                        onConfirm={() => setOpen(false)}
+                        onCancel={() => setOpen(false)}
+                    />
+                </>
+            );
+        }
+
+        it('returns focus to the opening trigger after the cancel transition', async () => {
+            const user = userEvent.setup();
+            RenderWithProviders(<FocusHarness />);
+
+            const trigger = screen.getByRole('button', { name: 'Open Dialog' });
+            await user.click(trigger);
+
+            // Dialog is open and focus moved INTO it (Cancel is autofocused for a
+            // destructive dialog), so the trigger no longer holds focus.
+            await screen.findByRole('dialog');
+            expect(trigger).not.toHaveFocus();
+
+            await user.click(screen.getByRole('button', { name: 'Cancel' }));
+
+            // Once the exit transition completes, `onExited` restores focus to the
+            // opener (on the next animation frame, after aria-hidden is cleared),
+            // so the cancel path lands focus back on the still-enabled trigger.
+            await waitFor(() => {
+                expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+            });
+            await waitFor(() => {
+                expect(trigger).toHaveFocus();
             });
         });
     });

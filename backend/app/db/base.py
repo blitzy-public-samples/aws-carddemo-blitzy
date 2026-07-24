@@ -73,6 +73,18 @@ class Base(DeclarativeBase):
     column definitions, keeping the dependency graph acyclic (models depend on
     ``Base``, never the reverse). Each table is declared by its own model module
     and is registered into the shared :attr:`metadata` when that module imports.
+
+    Naming convention (Ochs Rule, AAP section 0.8.3 -- documented once here for
+    the whole ORM layer): every model class is PascalCase (``Account``,
+    ``CardXref``) and every module-level constant is ALL_UPPERCASE, per Ochs. The
+    mapped ATTRIBUTE names, however, are snake_case (``acct_id``, ``curr_bal``)
+    as an intentional, unavoidable framework exception: each attribute name is
+    the physical PostgreSQL COLUMN name (the datastore contract that replaces the
+    VSAM record layout) and it is shared verbatim with the Pydantic DTO fields in
+    ``app.schemas`` (the JSON wire contract) and the TypeScript interfaces in
+    ``frontend/src/types``. Renaming a column attribute would break that
+    end-to-end contract and the golden-master parity, so these names are
+    preserved rather than PascalCased.
     """
 
     # Shared MetaData carrying the deterministic naming convention. Every table

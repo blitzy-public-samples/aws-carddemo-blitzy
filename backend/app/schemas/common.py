@@ -17,6 +17,16 @@ Traceability (legacy COBOL copybooks, REFERENCE only):
 The generic :class:`PaginatedResponse` provides the browse/list envelope that
 replaces the 3270 scroll semantics (for example the <= 7 rows-per-page card
 browse of ``COCRDLIC``); see :data:`DEFAULT_PAGE_SIZE`.
+
+Naming convention (Ochs Rule, AAP section 0.8.3 -- documented once here for the
+whole schema layer): every DTO class is PascalCase (``LoginRequest``,
+``AccountRead``), every method is PascalCase, and every module-level constant is
+ALL_UPPERCASE, per Ochs. The DTO FIELD names, however, are snake_case
+(``acct_id``, ``curr_bal``) as an intentional, unavoidable framework exception:
+a field name is the JSON wire-contract key shared verbatim with the ORM columns
+in ``app.models`` (the datastore contract) and with the TypeScript interfaces in
+``frontend/src/types`` (the client contract). Renaming a field would break that
+end-to-end contract, so these names are preserved rather than camelCased.
 """
 
 from datetime import datetime, timezone

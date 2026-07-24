@@ -43,6 +43,12 @@ dependencies = [
     # multipart DoS; it is NOT removable because Starlette 1.3.1 hard-imports it
     # at ``starlette.requests`` load time even without Form/File endpoints.
     "fastapi==0.136.1",
+    # starlette pinned as a DIRECT dependency (QA finding M-15): app/main.py
+    # imports from starlette directly (SecurityHeaders / CSRF / correlation-id
+    # middleware), so it is part of this service's own contract and must not float
+    # with FastAPI's transitive `starlette>=0.46.0` range. 1.3.1 is what FastAPI
+    # 0.136.1 resolves.
+    "starlette==1.3.1",
     "uvicorn[standard]==0.34.0",
     "python-multipart==0.0.32",
     # Validation / typed settings (Ochs Rule #3: env-driven configuration).

@@ -49,6 +49,7 @@ Isolation model:
 from __future__ import annotations
 
 import os
+import re
 import sys
 from collections.abc import Callable, Iterator
 from contextlib import AbstractContextManager, contextmanager
@@ -99,21 +100,35 @@ TEST_DATABASE_URL = os.environ.get(
 os.environ.setdefault("ENVIRONMENT", "test")
 
 
-# Token a resolved database name MUST contain to be accepted as disposable.
-TEST_DATABASE_NAME_TOKEN = "test"
+# Anchored allowlist of disposable test-database NAME shapes (QA finding M-14):
+# exactly ``carddemo_test`` or ``test`` optionally followed by ``_``-separated
+# alphanumeric suffixes. The anchors + ``_`` boundary reject lookalikes such as
+# ``contest_prod`` / ``carddemo_testify`` that a substring ``"test" in name``
+# check wrongly accepted. Mirrors the backend conftest guard.
+DISPOSABLE_TEST_DB_NAME_PATTERN = re.compile(r"^(?:carddemo_test|test)(?:_[A-Za-z0-9]+)*$")
+
+# Dedicated disposable local hosts (loopback -> the compose ``postgres:17``
+# service and parallel-clone variants); a non-local target requires the explicit
+# opt-in below (QA finding M-14).
+LOCAL_TEST_DB_HOSTS = frozenset({"localhost", "127.0.0.1", "::1", ""})
+DESTRUCTIVE_OPT_IN_ENV = "CARDDEMO_ALLOW_DESTRUCTIVE_TESTS"
+DESTRUCTIVE_OPT_IN_TRUTHY = frozenset({"1", "true", "yes", "on"})
 
 
 def _AssertDisposableTestDatabase(testDatabaseUrl: str) -> None:
     """Fail closed unless ``testDatabaseUrl`` is an unmistakably disposable test DB.
 
-    Mirrors the backend conftest guard (QA finding C-01 -- CRITICAL). The batch
+    Mirrors the backend conftest guard (QA findings C-01 / M-14). The batch
     integration suite creates/drops the schema and, via
     :func:`RelaxForeignKeys`, can toggle table triggers, so its target database
     MUST be provably disposable and the resolution MUST fail closed. This check
     runs at import time, before any engine binds. It (1) requires
-    ``ENVIRONMENT=test``, (2) requires the database NAME to contain ``test``, and
-    (3) forbids the target from coinciding with the application ``DATABASE_URL``
-    database. Only the non-secret database identity is named in errors.
+    ``ENVIRONMENT=test``; (2) requires the database NAME to match the anchored
+    disposable allowlist (M-14: a substring ``test`` is no longer sufficient);
+    (3) requires the explicit ``CARDDEMO_ALLOW_DESTRUCTIVE_TESTS`` opt-in for a
+    non-local host; and (4) forbids the target from coinciding with the
+    application ``DATABASE_URL`` database. Only the non-secret database identity
+    is named in errors.
 
     Args:
         testDatabaseUrl: The resolved TEST database URL to validate.
@@ -129,13 +144,24 @@ def _AssertDisposableTestDatabase(testDatabaseUrl: str) -> None:
         )
     parsed = urlsplit(testDatabaseUrl)
     dbName = parsed.path.lstrip("/")
-    if TEST_DATABASE_NAME_TOKEN not in dbName.lower():
+    testHost = parsed.hostname or ""
+    if not DISPOSABLE_TEST_DB_NAME_PATTERN.match(dbName.lower()):
         raise RuntimeError(
             "Refusing to run the destructive batch test suite against database "
-            f"{dbName!r}: the target database name must contain "
-            f"{TEST_DATABASE_NAME_TOKEN!r} to prove it is disposable. Set "
-            "TEST_DATABASE_URL to an isolated *_test* database."
+            f"{dbName!r}: the target database name must match the disposable "
+            f"allowlist {DISPOSABLE_TEST_DB_NAME_PATTERN.pattern!r} (e.g. "
+            "'carddemo_test'); a name that merely contains 'test' (such as "
+            "'contest_prod') is rejected. Set TEST_DATABASE_URL accordingly."
         )
+    if testHost.lower() not in LOCAL_TEST_DB_HOSTS:
+        optIn = os.environ.get(DESTRUCTIVE_OPT_IN_ENV, "").strip().lower()
+        if optIn not in DESTRUCTIVE_OPT_IN_TRUTHY:
+            raise RuntimeError(
+                "Refusing to run the destructive batch test suite against "
+                f"non-local host {testHost!r}: set {DESTRUCTIVE_OPT_IN_ENV}=1 to "
+                "explicitly authorize destructive DDL/DML against a remote/shared "
+                "test database. Local loopback hosts need no opt-in."
+            )
     applicationDatabaseUrl = os.environ.get("DATABASE_URL", "").strip()
     if applicationDatabaseUrl:
         appParsed = urlsplit(applicationDatabaseUrl)

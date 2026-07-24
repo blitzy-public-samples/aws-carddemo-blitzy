@@ -27,7 +27,10 @@ setup, and the quick-start guide, start with the
 | Database | PostgreSQL 17 | `localhost:5432` |
 | Batch | Python CLI (Typer) — `python -m batch.cli` | n/a (command-line) |
 
-The whole stack can be started together with `docker compose up`; see the
+The backend and frontend services are gated behind the `full` Compose profile,
+so the whole stack is started with `docker compose --profile full up --build`
+(a plain `docker compose up -d db` starts only the database). The backend loads
+its configuration from `backend/.env` when present. See the
 [root `../README.md`](../README.md) and
 [`../docker-compose.yml`](../docker-compose.yml) for details.
 
@@ -65,7 +68,7 @@ openssl rand -hex 32
 The seed data provides two demo logins — `ADMIN001` (administrator) and
 `USER0001` (regular user), both with the password `PASSWORD`. These are
 **seed-only, non-production** accounts: their passwords are stored **hashed**
-(bcrypt/argon2) at rest — never in plaintext — and they must never be treated as
+(bcrypt) at rest — never in plaintext — and they must never be treated as
 real credentials or hardcoded anywhere.
 
 ## Documentation Conventions

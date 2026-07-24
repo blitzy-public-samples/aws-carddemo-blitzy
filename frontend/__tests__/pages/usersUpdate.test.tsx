@@ -1,4 +1,7 @@
-/** Update User page spec — legacy origin BMS COUSR02 / Tx CU02 / program COUSR02C. Admin-only; password optional (blank=keep). */
+/**
+ * Update User page spec — legacy origin BMS COUSR02 / Tx CU02 /
+ * program COUSR02C. Admin-only; password optional (blank=keep).
+ */
 
 /*
  * WHAT IS VERIFIED (the real @/app/users/update/page is rendered; NO real

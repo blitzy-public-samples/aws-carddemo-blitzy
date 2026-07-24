@@ -38,8 +38,40 @@ export interface CardSummary {
     active_status: string;
 }
 
-/** Editable fields for the card-update screen (COCRDUP). */
+/**
+ * Client-echoed before-image of the editable card fields (COCRDUP).
+ * Mirrors the backend `CardBeforeImage` schema (backend/app/schemas/card.py).
+ *
+ * This is the optimistic-lock token that reproduces the legacy COCRDUPC
+ * READ-for-UPDATE -> REWRITE lost-update guard (AAP §0.7.4 / 9300-CHECK-CHANGE-IN-REC).
+ * The ORM `Card` model carries no `version`/`updated_at` column (Minimal Change
+ * Clause), so the client instead echoes the values it last read for the editable
+ * fields. The service re-reads the `SELECT ... FOR UPDATE` locked row and compares
+ * each supplied field; any divergence is a concurrent modification and is rejected
+ * with HTTP 409 (QA finding C06).
+ *
+ * `embossed_name` and `active_status` are REQUIRED (they always exist on a read
+ * card and anchor the lost-update check); `expiration_date` is optional (compared
+ * only when supplied) so an unsent nullable date never manufactures a false
+ * conflict. Dates are ISO strings.
+ */
+export interface CardBeforeImage {
+    embossed_name: string;      // X(50) - REQUIRED
+    active_status: string;      // X(1) - REQUIRED
+    expiration_date?: string;   // ISO date - optional (compared only when sent)
+}
+
+/**
+ * Editable fields for the card-update screen (COCRDUP).
+ * Mirrors the backend `CardUpdate` schema exactly (extra="forbid").
+ *
+ * `before_image` is REQUIRED (QA finding C06): the backend `CardUpdate` schema
+ * declares it as a mandatory nested echo used for the optimistic-lock compare,
+ * so omitting it makes every save fail with HTTP 422. It is populated from the
+ * pre-edit card snapshot and is a control field, not an edited value.
+ */
 export interface CardUpdate {
+    before_image: CardBeforeImage;
     embossed_name: string;
     expiration_date: string;
     active_status: string;

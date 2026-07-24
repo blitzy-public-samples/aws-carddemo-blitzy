@@ -116,6 +116,18 @@ export interface FormFieldProps {
     fullWidth?: boolean;
     /** Focuses the control on mount (e.g. the sign-on user-id field). */
     autoFocus?: boolean;
+    /**
+     * Browser autofill hint forwarded to the native `<input autocomplete>`
+     * attribute (QA N-01). Identity screens pass semantic tokens so password
+     * managers behave correctly (`"username"` / `"current-password"` on
+     * `/signon`); transient business-key lookups pass `"off"` so the browser
+     * does not offer to autofill an account/card/transaction key with the
+     * operator's own saved data. Applies to the text/password/number/date
+     * shapes only (a `select` has no autofill semantics). Defaults to
+     * `undefined` (the browser heuristic default) so existing fields are
+     * unchanged unless a caller opts in.
+     */
+    autoComplete?: string;
 }
 
 /**
@@ -217,6 +229,7 @@ export function FormField(props: FormFieldProps) {
             placeholder={effectivePlaceholder}
             disabled={props.disabled}
             autoFocus={props.autoFocus}
+            autoComplete={props.autoComplete}
             slotProps={{
                 htmlInput: {
                     maxLength: props.maxLength,

@@ -10,14 +10,21 @@
  * The legacy 3270 screen presented a fixed 7-row browse of credit cards with two
  * search keys (Account Number / Credit Card Number) and per-row select markers.
  * The modern redesign (Material Design 3 via Material UI) preserves the browse
- * limit and the two filters, and replaces the terminal CRDSEL selection markers
- * with row-click navigation to the card detail page. PF7/PF8 paging is handled by
- * the shared DataTable component (PageUp/PageDown), so this page only supplies the
- * columns, the current page envelope, and the page-change / row-click callbacks.
+ * limit and the two filters. It is a browse-only grid: because `card_num` is
+ * returned MASKED (AAP 0.7.8), a list row carries no full PAN and therefore
+ * cannot key a card-detail navigation. Direct access to a card's detail/update
+ * is by the card-number picker on those screens — faithful to the legacy
+ * COCRDSL/COCRDUP `CARDSID` input the operator types — over the frozen
+ * GET/PUT /cards/{cardNum} contract (AAP 0.5.5). The earlier row-click that
+ * navigated by owning-account id was removed with its by-account backend routes,
+ * which resolved an account to one card with `.limit(1)` and silently selected
+ * the wrong card on the NONUNIQUE account->card relationship (QA C07/C08).
+ * PF7/PF8 paging is handled by the shared DataTable component (PageUp/PageDown),
+ * so this page supplies the columns, the current page envelope, and the
+ * page-change callback.
  */
 
 import { useState, useEffect, useCallback, useRef } from 'react';
-import { useRouter } from 'next/navigation';
 
 import Box from '@mui/material/Box';
 import Stack from '@mui/material/Stack';
@@ -183,8 +190,6 @@ const columns: ColumnDef<CardSummary>[] = [
  * @returns The Cards List page element.
  */
 export default function CardsPage() {
-    const router = useRouter();
-
     // State (camelCase variables). `pageData` is null until the first page
     // arrives, so the render tree guards against it before handing it to
     // DataTable (whose `data` prop is non-nullable).
@@ -208,13 +213,26 @@ export default function CardsPage() {
     const accountIdFilterRef = useRef<string>('');
     const cardIdFilterRef = useRef<string>('');
 
+    // Monotonic request-generation counter (QA M-05). Every LoadCards
+    // invocation -- from the mount/page effect, Search or Clear -- claims the
+    // next generation and captures it locally; only the request whose captured
+    // generation still equals `requestGenerationRef.current` when it settles may
+    // commit state. A superseded (stale) response, or any response that resolves
+    // after this page has unmounted, is DISCARDED, so a slow earlier request can
+    // never overwrite a newer one's data nor flip the shared loading flag, and no
+    // state update ever lands on an unmounted component.
+    const requestGenerationRef = useRef<number>(0);
+
     /**
      * Fetches the current page of cards, capped at ROWS_PER_PAGE (F-004). On
      * failure the caught value is routed to the ErrorAlert, which performs the
      * specific narrowing (ApiError / ErrorResponse / string); this handler never
-     * swallows the error nor logs it silently.
+     * swallows the error nor logs it silently. A request-generation guard
+     * (QA M-05) discards the result of any superseded or post-unmount request.
      */
     const LoadCards = useCallback(async (): Promise<void> => {
+        const requestGeneration = requestGenerationRef.current + 1;
+        requestGenerationRef.current = requestGeneration;
         setIsLoading(true);
         setIsErrorOpen(false);
         setErrorState(null);
@@ -230,19 +248,38 @@ export default function CardsPage() {
                 card_num: cardIdFilterRef.current,
             };
             const response = await CardsApi.ListCards(params);
+            // Ignore a stale/superseded response (QA M-05): only the latest
+            // request may commit its data.
+            if (requestGenerationRef.current !== requestGeneration) {
+                return;
+            }
             setPageData(response);
         } catch (caughtError: unknown) {
+            // Discard a stale request's error too, so a superseded failure does
+            // not surface over a newer success (QA M-05).
+            if (requestGenerationRef.current !== requestGeneration) {
+                return;
+            }
             setErrorState(caughtError);
             setIsErrorOpen(true);
         } finally {
-            setIsLoading(false);
+            // Only the latest request owns the shared loading flag (QA M-05).
+            if (requestGenerationRef.current === requestGeneration) {
+                setIsLoading(false);
+            }
         }
     }, [pageNumber]);
 
     // Fetch on mount and whenever the page number changes (LoadCards is memoized
-    // on [pageNumber], so it is a stable, correct effect dependency).
+    // on [pageNumber], so it is a stable, correct effect dependency). The cleanup
+    // bumps the request generation so any request still in flight when the page
+    // changes or this component unmounts is invalidated and cannot update state
+    // afterwards (QA M-05).
     useEffect(() => {
         void LoadCards();
+        return () => {
+            requestGenerationRef.current += 1;
+        };
     }, [LoadCards]);
 
     /**
@@ -252,22 +289,6 @@ export default function CardsPage() {
      */
     function HandlePageChange(page: number): void {
         setPageNumber(page);
-    }
-
-    /**
-     * Navigates to the card detail page keyed by the row's UNMASKED owning
-     * ACCOUNT id (QA C1). The grid displays `card_num` MASKED (AAP 0.7.8), so a
-     * masked value can never be a valid card key -- navigating by it produced the
-     * C1 dead-end (masked PAN -> 422). The account id is not sensitive and
-     * uniquely identifies the card (1:1), so the detail/update pages load the
-     * card via GET /cards/by-account/{acctId}. Never unmasks; never references a
-     * security code.
-     *
-     * @param row - The clicked card row.
-     */
-    function HandleRowClick(row: CardSummary): void {
-        const accountId = row.acct_id;
-        router.push(`/cards/view?acctId=${encodeURIComponent(accountId)}`);
     }
 
     /**
@@ -366,7 +387,6 @@ export default function CardsPage() {
                     data={pageData}
                     onPageChange={HandlePageChange}
                     getRowKey={(row) => row.card_num}
-                    onRowClick={HandleRowClick}
                     loading={isLoading}
                     emptyMessage={EMPTY_CARDS_MESSAGE}
                 />

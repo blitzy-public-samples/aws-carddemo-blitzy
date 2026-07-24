@@ -454,4 +454,87 @@ describe('TransactionsPage', () => {
             expect(errorAlert).toHaveTextContent(SERVER_ERROR_MESSAGE);
         });
     });
+
+    // --- Scenario 9: request-generation guard (QA M-05).
+    describe('stale response handling (M-05)', () => {
+        it('discards a superseded page fetch so a slow earlier page cannot overwrite a newer one', async () => {
+            const user = SetupUser();
+            const THIRD_TRAN_ID = '0000000000000003';
+
+            // Mount (page 1) resolves immediately with a 3-page envelope so the
+            // pagination control renders; the page-2 and page-3 fetches are
+            // hand-controlled (deferred) so the spec dictates resolution ORDER.
+            let resolveStalePageTwo!: (
+                value: PaginatedResponse<TransactionSummary>,
+            ) => void;
+            let resolveFreshPageThree!: (
+                value: PaginatedResponse<TransactionSummary>,
+            ) => void;
+            const stalePageTwo = new Promise<
+                PaginatedResponse<TransactionSummary>
+            >((resolve) => {
+                resolveStalePageTwo = resolve;
+            });
+            const freshPageThree = new Promise<
+                PaginatedResponse<TransactionSummary>
+            >((resolve) => {
+                resolveFreshPageThree = resolve;
+            });
+
+            const listMock = TransactionsApi.ListTransactions as jest.Mock;
+            listMock
+                .mockResolvedValueOnce(
+                    MakePaginatedResponse<TransactionSummary>(
+                        [MakeTransactionSummary({ tran_id: FIRST_TRAN_ID })],
+                        { page: 1, total_items: 21, total_pages: 3, has_next: true },
+                    ),
+                ) // mount -> generation 1 (page 1)
+                .mockReturnValueOnce(stalePageTwo) // page 2 -> older generation
+                .mockReturnValueOnce(freshPageThree); // page 3 -> newer generation
+
+            RenderTransactionsPage();
+            await screen.findByText(FIRST_TRAN_ID);
+
+            // Advance to page 2 (older request, left in flight), then immediately
+            // to page 3 (newer request). The grid keeps showing page 1 until a
+            // fetch resolves, so both page buttons stay clickable.
+            await user.click(
+                screen.getByRole('button', { name: /go to page 2/i }),
+            );
+            await user.click(
+                screen.getByRole('button', { name: /go to page 3/i }),
+            );
+            await waitFor(() =>
+                expect(listMock).toHaveBeenCalledTimes(3),
+            );
+
+            // Resolve the NEWER (page 3) request first; its row must render.
+            resolveFreshPageThree(
+                MakePaginatedResponse<TransactionSummary>(
+                    [MakeTransactionSummary({ tran_id: THIRD_TRAN_ID })],
+                    { page: 3, total_items: 21, total_pages: 3, has_previous: true },
+                ),
+            );
+            expect(await screen.findByText(THIRD_TRAN_ID)).toBeInTheDocument();
+
+            // Now resolve the OLDER (page 2) request. The generation guard must
+            // discard it: the page-3 row stays and the page-2 row never appears.
+            resolveStalePageTwo(
+                MakePaginatedResponse<TransactionSummary>(
+                    [MakeTransactionSummary({ tran_id: SECOND_TRAN_ID })],
+                    {
+                        page: 2,
+                        total_items: 21,
+                        total_pages: 3,
+                        has_next: true,
+                        has_previous: true,
+                    },
+                ),
+            );
+            await waitFor(() =>
+                expect(screen.getByText(THIRD_TRAN_ID)).toBeInTheDocument(),
+            );
+            expect(screen.queryByText(SECOND_TRAN_ID)).not.toBeInTheDocument();
+        });
+    });
 });

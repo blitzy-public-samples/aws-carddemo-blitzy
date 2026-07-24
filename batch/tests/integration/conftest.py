@@ -51,6 +51,7 @@ module constants are ALL_UPPERCASE.
 
 from __future__ import annotations
 
+import re
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import date, datetime
@@ -63,7 +64,6 @@ from sqlalchemy.orm import Session
 
 from app.models import (
     Account,
-    AccountGroup,
     Card,
     CardXref,
     Customer,
@@ -190,27 +190,6 @@ class RecordBuilder:
         self.session.flush()
         return row
 
-    def _EnsureAccountGroup(self, groupId: str | None) -> None:
-        """Get-or-create the ``account_groups`` parent for ``groupId``.
-
-        The M-16 foreign key ``accounts.group_id -> account_groups.group_id``
-        requires that any NON-NULL account group id already exist in the parent
-        registry. Interest-calc scenarios legitimately stage accounts whose group
-        has no disclosure rows (for example ``MISSINGGRP``, exercising the
-        CBACT04C DEFAULT fallback for missing RATES) -- such a group is still a
-        valid ACCOUNT group, so it belongs in the registry. This inserts the
-        parent row only when it is both non-null and not already present, keeping
-        every ``BuildAccount`` call FK-valid without changing any scenario intent.
-
-        Args:
-            groupId: The account's group id (post-override), or None.
-        """
-        if groupId is None:
-            return
-        if self.session.get(AccountGroup, groupId) is None:
-            self.session.add(AccountGroup(group_id=groupId))
-            self.session.flush()
-
     def BuildCustomer(self, custId: str = "000000009", overrides: dict | None = None) -> Customer:
         """Insert a customer master row (``customers``) and return it."""
         values = {
@@ -243,9 +222,10 @@ class RecordBuilder:
         }
         if overrides:
             values.update(overrides)
-        # Satisfy the M-16 accounts.group_id -> account_groups.group_id FK: make
-        # sure the (post-override) group id exists in the parent registry first.
-        self._EnsureAccountGroup(values.get("group_id"))
+        # accounts.group_id is a plain indexed column (QA finding C01), so no
+        # parent registry row is required -- any group id (including one whose
+        # disclosure rows are absent, exercising the CBACT04C DEFAULT fallback)
+        # is accepted directly.
         return self._Persist(Account(**values))
 
     def BuildCard(self, cardNum: str, acctId: str, overrides: dict | None = None) -> Card:
@@ -420,18 +400,23 @@ def RelaxForeignKeys(session: Session, tableName: str) -> Iterator[None]:
     Yields:
         None. The wrapped block runs with the table's triggers disabled.
     """
-    # Defense-in-depth (QA finding C-01): re-verify at RUNTIME -- immediately
-    # before issuing the privileged DISABLE TRIGGER DDL -- that the live
-    # connection is bound to an unmistakably disposable test database. The
+    # Defense-in-depth (QA findings C-01 / M-14): re-verify at RUNTIME --
+    # immediately before issuing the privileged DISABLE TRIGGER DDL -- that the
+    # live connection is bound to an unmistakably disposable test database. The
     # import-time guard in ``batch/tests/conftest.py`` already fails closed, but
     # this second, connection-level check ensures trigger disabling can NEVER run
-    # against a database whose name does not contain ``test`` even if a fixture
-    # were somehow rebound. A mismatch raises before any trigger is touched.
-    liveDatabaseName = session.execute(text("SELECT current_database()")).scalar_one()
-    if "test" not in str(liveDatabaseName).lower():
+    # against a non-disposable database even if a fixture were somehow rebound.
+    # M-14: the anchored allowlist (a name that merely CONTAINS ``test`` such as
+    # ``contest_prod`` is rejected) mirrors the import-time guard. A mismatch
+    # raises before any trigger is touched.
+    liveDatabaseName = str(
+        session.execute(text("SELECT current_database()")).scalar_one()
+    )
+    if not re.match(r"^(?:carddemo_test|test)(?:_[A-Za-z0-9]+)*$", liveDatabaseName.lower()):
         raise RuntimeError(
             "Refusing to DISABLE TRIGGER: the live database "
-            f"{liveDatabaseName!r} is not an unmistakable test database."
+            f"{liveDatabaseName!r} is not an unmistakable disposable test "
+            "database (must match the carddemo_test/test allowlist)."
         )
     session.execute(text(f"ALTER TABLE {tableName} DISABLE TRIGGER ALL"))
     try:

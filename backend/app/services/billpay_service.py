@@ -54,10 +54,10 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from decimal import Decimal
 
-from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.exceptions import DomainValidationError, NotFoundError
+from app.core.exceptions import ConflictError, DomainValidationError, NotFoundError
 from app.models.account import Account
 from app.models.transaction import Transaction
 from app.repositories import (
@@ -91,6 +91,29 @@ TRAN_ID_WIDTH = validators.TRAN_ID_LENGTH
 # Seed used when the transactions table is empty (COBOL READPREV on an empty
 # file leaves TRAN-ID at zero, and ``ADD 1`` then yields the first id of 1).
 FIRST_TRAN_ID_SEED = "1"
+
+# Concurrency guard for TRAN-ID assignment (QA finding M04). The legacy id is
+# MAX(tran_id)+1; because a bill payment locks only its OWN account row
+# (SELECT ... FOR UPDATE on ACCTDAT), two payments for DIFFERENT accounts hold
+# DIFFERENT row locks and therefore do NOT serialize with respect to one
+# another -- they can read the same MAX(tran_id) and generate the same
+# successor, colliding on the transactions primary key. On the mainframe
+# CICS/VSAM record locking serialized every WRITE-TRANSACT-FILE, so no such
+# cross-account race existed. Here the losing INSERT rolls back and retries with
+# a freshly re-read maximum (the winner's committed row is now visible), bounded
+# by this cap so a persistent fault can never loop forever. This mirrors the
+# identical guard in ``transaction_service`` so both TRAN-ID allocators behave
+# the same. Exhaustion surfaces as a ``ConflictError`` (HTTP 409) rather than
+# the generic "unable to add" validation error, so a legitimate payment is never
+# silently lost to a cross-account id collision.
+MAX_ID_GENERATION_RETRIES = 10
+
+# Client message when TRAN-ID assignment cannot succeed within the retry cap.
+# This has no legacy counterpart (the mainframe never surfaced this race), so it
+# is a plain, non-sensitive advisory rather than a ported verbatim screen text.
+# It is intentionally identical to the ``transaction_service`` wording so the
+# two allocators present one consistent conflict message to clients.
+MSG_TRAN_ID_CONFLICT = "Unable to assign a unique transaction id; please retry."
 
 # ---------------------------------------------------------------------------
 # Confirmation-flag values (COBIL00C EVALUATE CONFIRMI, L173-191). The legacy
@@ -403,13 +426,27 @@ class BillPayService:
         )
 
     async def _ExecutePayment(self, session: AsyncSession, account: Account) -> BillPayResponse:
-        """Post a confirmed pay-in-full payment and zero the balance.
+        """Post a confirmed pay-in-full payment, retrying on a TRAN-ID race.
 
         Reproduces the COBIL00C confirmed path (L210-235): resolve the card via
         the account cross-reference, compute the next transaction id, build and
         insert the payment transaction, subtract it from the balance (leaving
-        zero), and commit -- all as one unit of work owned here. The amount is
-        always the full current balance (Minimal Change Clause).
+        zero), and commit -- all as one unit of work. The amount is always the
+        full current balance (Minimal Change Clause).
+
+        Concurrency (QA finding M04): because a bill payment locks only its own
+        account row, two payments for DIFFERENT accounts can generate the same
+        ``MAX(tran_id)+1`` successor and collide on the transactions primary key.
+        The single attempt is therefore wrapped in a bounded retry loop: a
+        primary-key collision (``IntegrityError``) rolls the unit of work back,
+        re-locks the account with a fresh ``SELECT ... FOR UPDATE`` snapshot (the
+        winning row is now committed and visible, so the recomputed id is
+        distinct), and tries again. The account row lock guarantees a
+        same-account concurrent payer cannot have zeroed the balance underneath
+        us between attempts, so the re-read observes the same payable balance and
+        only the id changes. Exhausting :data:`MAX_ID_GENERATION_RETRIES` raises
+        :class:`~app.core.exceptions.ConflictError` (HTTP 409) rather than
+        silently losing the payment.
 
         Args:
             session: Active async unit-of-work session; committed here.
@@ -421,10 +458,78 @@ class BillPayService:
             a success message.
 
         Raises:
-            NotFoundError: If the account has no card cross-reference to post
-                the payment against.
-            DomainValidationError: If the payment transaction cannot be
-                inserted / committed (the unit of work is rolled back first).
+            NotFoundError: If the account has no card cross-reference to post the
+                payment against (or the row vanished before a retry re-lock).
+            ConflictError: If a unique ``tran_id`` cannot be assigned within
+                :data:`MAX_ID_GENERATION_RETRIES` attempts (HTTP 409).
+            DomainValidationError: If the payment transaction cannot be inserted
+                for any non-collision reason (the unit of work is rolled back
+                first) -- the verbatim "Unable to Add Bill pay Transaction..."
+                error (L543).
+        """
+        # Capture the id as a plain string while the object is attached; after a
+        # rollback the ORM instance is detached and its attributes must not be
+        # read (an async lazy-refresh would raise), so the re-lock keys off this.
+        acctId = account.acct_id
+        lockedAccount = account
+        for attempt in range(1, MAX_ID_GENERATION_RETRIES + 1):
+            try:
+                nextTranId, paymentAmount = await self._PostPaymentOnce(
+                    session, lockedAccount
+                )
+            except IntegrityError:
+                # A concurrent bill payment (any account) committed the same
+                # generated TRAN-ID first, colliding on the primary key. Roll
+                # back and retry with a newly recomputed id; give up (409) only
+                # when the bounded cap is reached.
+                await session.rollback()
+                if attempt >= MAX_ID_GENERATION_RETRIES:
+                    raise ConflictError(MSG_TRAN_ID_CONFLICT) from None
+                lockedAccount = await self._RelockAccount(session, acctId)
+                continue
+            except SQLAlchemyError as exc:
+                # Any other write failure (the legacy DUPKEY / INVALID KEY
+                # write condition) voids the whole unit of work: roll back and
+                # re-raise the verbatim validation error so no partial payment
+                # is persisted. IntegrityError is handled above, so this never
+                # retries.
+                await session.rollback()
+                raise DomainValidationError(MSG_UNABLE_ADD_TRAN) from exc
+            return self._BuildPaidResponse(lockedAccount, nextTranId, paymentAmount)
+        # Unreachable: the loop either returns on success or raises on the final
+        # collision above. This terminal raise satisfies the type checker's need
+        # for every path to produce a value or raise.
+        raise ConflictError(MSG_TRAN_ID_CONFLICT)
+
+    async def _PostPaymentOnce(
+        self, session: AsyncSession, account: Account
+    ) -> tuple[str, Decimal]:
+        """Attempt one pay-in-full posting and commit it atomically.
+
+        Ports WRITE-TRANSACT-FILE + ``COMPUTE ACCT-CURR-BAL = ACCT-CURR-BAL -
+        TRAN-AMT`` + UPDATE-ACCTDAT-FILE (L218-235) for a SINGLE attempt: resolve
+        the card via the cross-reference, assign the next id, insert the payment
+        transaction, subtract it from the balance (leaving zero), and commit the
+        insert and the balance rewrite together as one unit of work. Retrying on
+        a primary-key collision is owned by the caller (:meth:`_ExecutePayment`),
+        which is why this method lets :class:`sqlalchemy.exc.IntegrityError`
+        propagate uncaught.
+
+        Args:
+            session: Active async unit-of-work session; committed here on
+                success.
+            account: The locked account being paid.
+
+        Returns:
+            A ``(tranId, paymentAmount)`` tuple: the assigned 16-digit
+            transaction id and the exact ``Decimal`` amount paid (the full
+            balance).
+
+        Raises:
+            NotFoundError: If the account has no card cross-reference row.
+            IntegrityError: If the assigned ``tran_id`` collides on the primary
+                key (surfaced to the caller's retry loop).
+            SQLAlchemyError: For any other insert/commit failure.
         """
         paymentAmount = decimal_utils.ToDecimal(account.curr_bal)
         xrefs = await self.xrefRepository.ListByAcctId(session, account.acct_id)
@@ -434,7 +539,52 @@ class BillPayService:
         paymentTransaction = self._BuildPaymentTransaction(
             xrefs[0].xref_card_num, nextTranId, paymentAmount
         )
-        await self._CommitPayment(session, paymentTransaction, account, paymentAmount)
+        await self.transactionRepository.Insert(session, paymentTransaction)
+        account.curr_bal = decimal_utils.ToDecimal(account.curr_bal) - paymentAmount
+        await self.accountRepository.Update(session, account)
+        await session.commit()
+        return nextTranId, paymentAmount
+
+    async def _RelockAccount(self, session: AsyncSession, acctId: str) -> Account:
+        """Re-acquire the account row lock for a post-rollback retry.
+
+        After :meth:`_ExecutePayment` rolls back a collided attempt, the previous
+        locked instance is detached and its row lock released. This re-reads the
+        account under a fresh ``SELECT ... FOR UPDATE`` (in the new implicit
+        transaction) so the next attempt mutates a live, locked row.
+
+        Args:
+            session: Active async unit-of-work session (post-rollback).
+            acctId: The account id captured before the rollback.
+
+        Returns:
+            The freshly locked :class:`~app.models.account.Account`.
+
+        Raises:
+            NotFoundError: If the account no longer exists (it cannot under the
+                pay-in-full flow, but the guard keeps the retry total).
+        """
+        refreshed = await self.accountRepository.GetForUpdate(session, acctId)
+        if refreshed is None:
+            raise NotFoundError(MSG_ACCOUNT_NOT_FOUND) from None
+        return refreshed
+
+    def _BuildPaidResponse(
+        self, account: Account, tranId: str, paymentAmount: Decimal
+    ) -> BillPayResponse:
+        """Build the success response for a committed pay-in-full payment.
+
+        Args:
+            account: The account whose balance was just zeroed (still attached;
+                ``expire_on_commit=False`` keeps its columns loaded post-commit).
+            tranId: The assigned 16-digit transaction id.
+            paymentAmount: The exact ``Decimal`` amount that was paid.
+
+        Returns:
+            A :class:`~app.schemas.billpay.BillPayResponse` carrying the zeroed
+            balance, recomputed F-006 available credit, the posted ``tran_id``
+            and the verbatim success message.
+        """
         availableCredit = self._ComputeAvailableCredit(account)
         return BillPayResponse(
             acct_id=account.acct_id,
@@ -442,46 +592,9 @@ class BillPayService:
             credit_limit=account.credit_limit,
             available_credit=availableCredit,
             payment_amount=paymentAmount,
-            tran_id=nextTranId,
-            message=PAYMENT_SUCCESS_TEMPLATE.format(tranId=nextTranId),
+            tran_id=tranId,
+            message=PAYMENT_SUCCESS_TEMPLATE.format(tranId=tranId),
         )
-
-    async def _CommitPayment(
-        self,
-        session: AsyncSession,
-        transaction: Transaction,
-        account: Account,
-        paymentAmount: Decimal,
-    ) -> None:
-        """Insert the payment, zero the balance, and commit atomically.
-
-        Ports WRITE-TRANSACT-FILE + ``COMPUTE ACCT-CURR-BAL = ACCT-CURR-BAL -
-        TRAN-AMT`` + UPDATE-ACCTDAT-FILE (L233-235). The insert and the balance
-        rewrite are committed together as one unit of work; any
-        :class:`sqlalchemy.exc.SQLAlchemyError` (for example the legacy DUPKEY /
-        INVALID KEY write failure) triggers a rollback so no partial payment is
-        persisted, and is re-raised as the verbatim "Unable to Add Bill pay
-        Transaction..." validation error (L543).
-
-        Args:
-            session: Active async unit-of-work session; committed or rolled back.
-            transaction: The fully-built payment transaction to insert.
-            account: The locked account whose balance is zeroed.
-            paymentAmount: The exact ``Decimal`` amount subtracted from the
-                balance (equal to the full current balance, so the result is 0).
-
-        Raises:
-            DomainValidationError: If the insert or commit fails; the unit of
-                work is rolled back before the error is raised.
-        """
-        try:
-            await self.transactionRepository.Insert(session, transaction)
-            account.curr_bal = decimal_utils.ToDecimal(account.curr_bal) - paymentAmount
-            await self.accountRepository.Update(session, account)
-            await session.commit()
-        except SQLAlchemyError as exc:
-            await session.rollback()
-            raise DomainValidationError(MSG_UNABLE_ADD_TRAN) from exc
 
     def _BuildReadOnlyResponse(self, account: Account, message: str | None) -> BillPayResponse:
         """Build a no-posting response carrying the F-006 display figures.

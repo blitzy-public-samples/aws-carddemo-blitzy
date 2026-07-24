@@ -109,7 +109,6 @@ FORBIDDEN_CARD_COLUMNS = frozenset({"cvv", "cvv_cd", "card_cvv_cd"})
 # conftest ASCII loader row counts, so any future divergence is a genuine
 # migration/seed regression this suite must catch.
 EXPECTED_SEED_COUNTS = {
-    "account_groups": 3,
     "accounts": 50,
     "cards": 50,
     "customers": 50,
@@ -397,8 +396,7 @@ def test_migration_foreign_keys_match_models(migrated_inspector):
     """Every model foreign key must exist in the migrated schema.
 
     This proves referential integrity is created by the *migrations*, not merely
-    declared on the models -- including the M-16 ``accounts.group_id ->
-    account_groups`` constraint and the ``card_xref`` relationships.
+    declared on the models -- including the ``card_xref`` relationships.
     """
     for tableName in sorted(MODEL_TABLE_NAMES):
         expectedForeignKeys = _ModelForeignKeys(tableName)
@@ -411,12 +409,23 @@ def test_migration_foreign_keys_match_models(migrated_inspector):
         )
 
 
-def test_migration_includes_account_group_fk(migrated_inspector):
-    """Regression pin for M-16: accounts.group_id must reference account_groups."""
+def test_migration_has_no_account_groups_table(migrated_inspector):
+    """Regression pin for C01: the extra account_groups table must NOT exist.
+
+    The AAP fixes the data model at exactly ten tables (AAP 0.5.1). The earlier
+    ``account_groups`` registry (added by 0004 and removed by 0006) violated that
+    contract, so the migrated schema must contain no such table and
+    ``accounts.group_id`` must be a plain column with no foreign key.
+    """
+    tableNames = set(migrated_inspector.get_table_names())
+    assert "account_groups" not in tableNames, (
+        "C01 regression: the forbidden account_groups table is present in the "
+        "migrated schema (the AAP mandates exactly ten tables)"
+    )
     reflectedForeignKeys = _ReflectedForeignKeys(migrated_inspector, "accounts")
-    assert ("group_id", "account_groups") in reflectedForeignKeys, (
-        "M-16 regression: accounts.group_id foreign key to account_groups is "
-        "absent from the migrated schema"
+    assert not any(target == "account_groups" for _, target in reflectedForeignKeys), (
+        "C01 regression: accounts.group_id must be a plain indexed column, not a "
+        "foreign key to account_groups"
     )
 
 
@@ -464,6 +473,41 @@ def test_migration_seeds_expected_row_counts(migrated_sync_url):
                     f"Seed-count drift on {tableName!r}: "
                     f"expected {expectedCount}, migrated schema has {actualCount}"
                 )
+    finally:
+        engine.dispose()
+
+
+def test_migration_seeds_daily_transactions_as_pending_staging(migrated_sync_url):
+    """Regression pin for C02: seeded daily transactions are PENDING staging.
+
+    ``dailytran.txt`` is the legacy CVTRA06Y daily-transaction file -- the INPUT
+    to posting (AAP 0.7.5) -- and every row has a blank ``proc_ts`` (the
+    processing timestamp POSTTRAN stamps only when it posts a row). After the
+    full migration chain (0002 seeds PENDING; 0007 repairs any legacy POSTED
+    rows) every seeded transaction must therefore be PENDING with a NULL
+    ``proc_ts``; none may be POSTED with no processing timestamp (the incoherent
+    state C02 flagged).
+    """
+    engine = create_engine(migrated_sync_url)
+    try:
+        with engine.connect() as connection:
+            postedWithoutProcTs = connection.execute(
+                text(
+                    "SELECT count(*) FROM transactions "
+                    "WHERE status = 'POSTED' AND proc_ts IS NULL"
+                )
+            ).scalar_one()
+            assert postedWithoutProcTs == 0, (
+                "C02 regression: found POSTED transactions with a NULL proc_ts "
+                f"({postedWithoutProcTs}); daily-staging rows must be PENDING"
+            )
+            pendingCount = connection.execute(
+                text("SELECT count(*) FROM transactions WHERE status = 'PENDING'")
+            ).scalar_one()
+            assert pendingCount == 300, (
+                "C02 regression: expected 300 PENDING daily-staging transactions, "
+                f"migrated schema has {pendingCount}"
+            )
     finally:
         engine.dispose()
 

@@ -1,4 +1,7 @@
-/** Bill Pay page spec — legacy origin BMS COBIL00 / Tx CB00 / program COBIL00C. Available credit server-authoritative (F-006). */
+/**
+ * Bill Pay page spec — legacy origin BMS COBIL00 / Tx CB00 /
+ * program COBIL00C. Available credit server-authoritative (F-006).
+ */
 
 /**
  * billpay.test.tsx — Jest + React Testing Library component/integration suite

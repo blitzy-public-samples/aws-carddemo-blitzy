@@ -1,4 +1,5 @@
-"""Bill-payment DTOs. Sources: app/cpy-bms/COBIL00.CPY, app/cpy/CVACT01Y.cpy. F-006: available_credit = credit_limit - curr_bal.
+"""Bill-payment DTOs. Sources: app/cpy-bms/COBIL00.CPY,
+app/cpy/CVACT01Y.cpy. F-006: available_credit = credit_limit - curr_bal.
 
 Pydantic v2 request/response schemas for the Bill Payment feature (CICS
 transaction ``CB00``, legacy online program ``COBIL00C``). The request DTO

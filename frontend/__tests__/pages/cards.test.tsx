@@ -1,4 +1,7 @@
-/** Card List page spec — legacy origin BMS COCRDLI / Tx CCLI / program COCRDLIC. ≤7 rows/page (F-004); card_num masked; no cvv. */
+/**
+ * Card List page spec — legacy origin BMS COCRDLI / Tx CCLI / program
+ * COCRDLIC. ≤7 rows/page (F-004); card_num masked; no cvv.
+ */
 
 /*
  * Component / integration spec for the Card List page (`@/app/cards/page`,
@@ -103,7 +106,7 @@ const MASKED_CARD_NUMBER = '************1111';
 /** Embossed name carried by the default {@link MakeCardSummary} fixture. */
 const DEFAULT_EMBOSSED_NAME = 'TEST CARDHOLDER';
 
-/** Unmasked owning-account id used to assert C1 row-click navigation. */
+/** Unmasked owning-account id shown in the row's Account column. */
 const ROW_ACCT_ID = '00000000011';
 
 /** Empty-state message the page passes to DataTable (overrides its default). */
@@ -255,11 +258,14 @@ describe('CardsPage', () => {
         expect(CARD_SUMMARY_HAS_NO_CVV).toBe(true);
     });
 
-    it('navigates to the card detail route with the unmasked account id on row click (C1)', async () => {
+    it('is a browse-only grid: a row click does not navigate (C07/C08)', async () => {
         const user = SetupUser();
-        // QA C1: the list masks `card_num` (AAP 0.7.8), so a masked PAN can never
-        // be a valid card key. Row-click must therefore navigate by the row's
-        // UNMASKED owning-account id (the full PAN never appears in a URL).
+        // QA C07/C08: the list masks `card_num` (AAP 0.7.8), so a row carries no
+        // full PAN and cannot key a card-detail navigation; the earlier row-click
+        // that navigated by owning-account id was removed with its by-account
+        // backend routes (which selected the wrong card via `.limit(1)` on the
+        // NONUNIQUE account->card relationship). Direct card access is by the
+        // card-number picker on the view/update screens, not a list row click.
         ListCardsMock().mockResolvedValueOnce(
             BuildCardPage([
                 MakeCardSummary({
@@ -271,12 +277,17 @@ describe('CardsPage', () => {
 
         RenderWithProviders(<CardsPage />);
 
+        // The masked cell renders (the grid is populated) but is not an
+        // actionable navigation control; clicking it must not push any route.
         const maskedCell = await screen.findByText(MASKED_CARD_NUMBER);
         await user.click(maskedCell);
 
-        expect(mockPush).toHaveBeenCalledWith(
-            `/cards/view?acctId=${encodeURIComponent(ROW_ACCT_ID)}`,
-        );
+        expect(mockPush).not.toHaveBeenCalled();
+        // The row is not exposed as a selectable button (DataTable only makes a
+        // row a button when an onRowClick handler is supplied, which it is not).
+        expect(
+            screen.queryByRole('button', { name: /select record/i }),
+        ).not.toBeInTheDocument();
     });
 
     it('refetches with page 2 when the pagination control advances', async () => {
@@ -381,5 +392,65 @@ describe('CardsPage', () => {
         expect(
             within(alert).getByText('Internal Server Error'),
         ).toBeInTheDocument();
+    });
+
+    it('discards a stale (superseded) response so it cannot overwrite newer data (M-05)', async () => {
+        const user = SetupUser();
+
+        // Two distinct pages. The OLDER (mount, generation 1) request is made to
+        // resolve LAST with STALE data; the NEWER (Search, generation 2) request
+        // resolves FIRST with FRESH data. A correct request-generation guard must
+        // let the fresh row render and then DISCARD the late stale response.
+        const STALE_MASK = '************1111';
+        const FRESH_MASK = '************9999';
+        const stalePage = BuildCardPage([
+            MakeCardSummary({ card_num: STALE_MASK }),
+        ]);
+        const freshPage = BuildCardPage([
+            MakeCardSummary({ card_num: FRESH_MASK }),
+        ]);
+
+        // Hand-controlled (deferred) promises so the spec dictates the resolution
+        // ORDER independently of the call order.
+        let resolveStale!: (value: PaginatedResponse<CardSummary>) => void;
+        let resolveFresh!: (value: PaginatedResponse<CardSummary>) => void;
+        const stalePromise = new Promise<PaginatedResponse<CardSummary>>(
+            (resolve) => {
+                resolveStale = resolve;
+            },
+        );
+        const freshPromise = new Promise<PaginatedResponse<CardSummary>>(
+            (resolve) => {
+                resolveFresh = resolve;
+            },
+        );
+
+        ListCardsMock()
+            .mockReturnValueOnce(stalePromise) // mount -> generation 1 (older)
+            .mockReturnValueOnce(freshPromise); // Search -> generation 2 (newer)
+
+        RenderWithProviders(<CardsPage />);
+
+        // The mount request (generation 1) is in flight and unresolved. The
+        // filter/Search controls render regardless of load state, so trigger a
+        // second load via Search — the page-1 path calls LoadCards directly,
+        // claiming generation 2 and superseding the mount request.
+        await waitFor(() => expect(ListCardsMock()).toHaveBeenCalledTimes(1));
+        await user.click(screen.getByRole('button', { name: 'Search' }));
+        await waitFor(() => expect(ListCardsMock()).toHaveBeenCalledTimes(2));
+
+        // Resolve the NEWER request first; its fresh row must render.
+        resolveFresh(freshPage);
+        expect(await screen.findByText(FRESH_MASK)).toBeInTheDocument();
+
+        // Now resolve the OLDER (stale) request. The generation guard must
+        // discard it: the fresh row stays and the stale row never appears. If the
+        // guard were absent, the late stale resolve would overwrite state and
+        // this assertion would fail.
+        resolveStale(stalePage);
+        await waitFor(() =>
+            expect(screen.getByText(FRESH_MASK)).toBeInTheDocument(),
+        );
+        expect(screen.queryByText(STALE_MASK)).not.toBeInTheDocument();
     });
 });

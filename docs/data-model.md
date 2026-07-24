@@ -21,12 +21,14 @@ cross-reference file become explicit `FOREIGN KEY` constraints.
 
 ## 1. Overview
 
-CardDemo persists eleven tables. Nine map one-to-one to a legacy VSAM/PS dataset
+CardDemo persists ten tables. Nine map one-to-one to a legacy VSAM/PS dataset
 and its COBOL record copybook; the tenth relationship set (`card_xref`) makes the
-former cross-reference file explicit; the eleventh, `account_groups`, is a small
-referential-integrity registry introduced so that `accounts.group_id` can be an
-enforced foreign key as the AAP requires (§0.5.1, §0.8.1) — the disclosure-group
-key is composite and so cannot be that single-column FK target. Two migration-era corrections that this
+former cross-reference file explicit. `accounts.group_id` is a nullable, indexed
+logical reference to `disclosure_group.group_id` (not a hard foreign key): the
+disclosure-group primary key is composite, so `group_id` alone cannot be a
+single-column FK target, and the legacy `ACCT-GROUP-ID PIC X(10)` was a free-text
+field with no standalone account-group dataset to reference (AAP §0.5.1, §0.8.1).
+Two migration-era corrections that this
 model applies and that are documented below are: (1) all monetary and rate fields
 are **signed zoned-decimal DISPLAY**, not `COMP-3` packed decimal, and map to
 PostgreSQL `NUMERIC(p,s)` handled as Python `Decimal` — **never** floating point
@@ -91,7 +93,7 @@ PIC S9(09)V99, value +1234.56 (DISPLAY, implied decimal point):
 
 ## 4. Entity-Relationship Overview
 
-The diagram below shows the relationships between the eleven tables. **Solid**
+The diagram below shows the relationships between the ten tables. **Solid**
 lines are enforced `FOREIGN KEY` constraints; **dashed** lines are logical
 references that are indexed but intentionally have no hard foreign key (by scope
 discipline that matches the ORM models — for example the composite-keyed
@@ -118,12 +120,12 @@ Relationship notes:
   `customers.cust_id`, `card_xref.acct_id` → `accounts.acct_id` (three enforced
   FKs realizing the legacy `CARDXREF` integrity).
 - `transactions.card_num` → `cards.card_num` (enforced FK).
-- `accounts.group_id` → `account_groups.group_id` (enforced FK; AAP §0.5.1,
-  §0.8.1). Because `disclosure_group` has a composite primary key and so cannot
-  be a single-column FK target, the `account_groups` registry provides the
-  single-column parent. `group_id` is nullable (the seed leaves `ACCT-GROUP-ID`
-  blank in every row and NULLs are exempt from the check); a non-null value must
-  reference an existing `account_groups` row.
+- `accounts.group_id` → `disclosure_group.group_id` is a **logical, indexed
+  reference, not an enforced FK** (dashed line above). `disclosure_group` has a
+  composite primary key (`group_id, tran_type_cd, tran_cat_cd`), so `group_id`
+  alone cannot be a single-column FK target; the column is a plain indexed
+  `VARCHAR(10)` matching the free-text legacy `ACCT-GROUP-ID X(10)`. `group_id`
+  is nullable (the seed leaves it blank in every row).
 - `transactions.tran_type_cd` / `tran_cat_cd` and `transaction_category` →
   `transaction_type` are logical lookups, not enforced FKs (matches the models).
 
@@ -146,7 +148,7 @@ RECLN 80). Application sign-on identities and roles, replacing the legacy VSAM
 | `user_id` | `VARCHAR(8)` | PK | `SEC-USR-ID X(08)` |
 | `first_name` | `VARCHAR(20)` | | `SEC-USR-FNAME X(20)` |
 | `last_name` | `VARCHAR(20)` | | `SEC-USR-LNAME X(20)` |
-| `password_hash` | `VARCHAR(255)` | | `SEC-USR-PWD X(08)` — plaintext replaced by a bcrypt/argon2 **hash** |
+| `password_hash` | `VARCHAR(255)` | | `SEC-USR-PWD X(08)` — plaintext replaced by a bcrypt **hash** |
 | `user_type` | `CHAR(1)` | | `SEC-USR-TYPE X(01)` — `'A'` = admin, `'U'` = regular |
 
 `FILLER X(23)` dropped (padding to RECLN 80). The legacy 8-character plaintext
@@ -173,14 +175,15 @@ RECLN 300). One row per credit-card account, ported from VSAM `ACCTDATA`
 | `curr_cyc_credit` | `NUMERIC(12,2)` | | `ACCT-CURR-CYC-CREDIT S9(10)V99` |
 | `curr_cyc_debit` | `NUMERIC(12,2)` | | `ACCT-CURR-CYC-DEBIT S9(10)V99` |
 | `addr_zip` | `VARCHAR(10)` | | `ACCT-ADDR-ZIP X(10)` |
-| `group_id` | `VARCHAR(10)` | FK `fk_accounts_group_id_account_groups`, INDEX `ix_accounts_group_id` | `ACCT-GROUP-ID X(10)` |
+| `group_id` | `VARCHAR(10)` | INDEX `ix_accounts_group_id` | `ACCT-GROUP-ID X(10)` |
 
 `FILLER X(178)` dropped. All five monetary fields are `NUMERIC(12,2)` (`Decimal`,
-never float). `group_id` is a nullable **enforced foreign key** to
-`account_groups.group_id` (AAP §0.5.1, §0.8.1). The `account_groups` registry
-exists precisely because `disclosure_group` has a composite primary key and so
-cannot be a single-column FK target; NULL `group_id` values (the seed default)
-are exempt from the constraint.
+never float). `group_id` is a nullable, plain **indexed column** — a logical
+reference to `disclosure_group.group_id`, **not** an enforced foreign key.
+`disclosure_group` has a composite primary key (`group_id, tran_type_cd,
+tran_cat_cd`), so `group_id` alone cannot be a single-column FK target; the
+column preserves the free-text legacy `ACCT-GROUP-ID X(10)` (blank in every seed
+row) and its index backs account-group lookups (AAP §0.5.1, §0.8.1).
 
 ### `customers`
 
@@ -310,24 +313,6 @@ used by interest calculation, ported from VSAM `TCATBALF`.
 foreign keys are defined, by design (matching the ORM). `balance` is
 `NUMERIC(11,2)` (`Decimal`, never float).
 
-### `account_groups`
-
-Source: none (no legacy dataset). This is the referential-integrity registry
-introduced per QA finding M-16 so that `accounts.group_id` can be an enforced
-foreign key (AAP §0.5.1, §0.8.1). Its rows are the distinct account-group
-identifiers the dataset defines, seeded from `SELECT DISTINCT group_id FROM
-disclosure_group` (`A000000000`, `DEFAULT`, `ZEROAPR`).
-
-| Column | Type | Key/Index | Legacy field (PIC) |
-|--------|------|-----------|--------------------|
-| `group_id` | `VARCHAR(10)` | PK | `ACCT-GROUP-ID X(10)` (parent registry) |
-
-The mainframe had no standalone account-group dataset (the group id was a field
-on the account and a key prefix on `DISCGRP`); this single-column table is the
-minimal modern construct that makes the AAP-mandated FK enforceable. It does not
-alter any business rule — an account whose group has no `disclosure_group` rate
-rows still follows the CBACT04C fallback to the `DEFAULT` group.
-
 ### `disclosure_group`
 
 Source: [`../app/cpy/CVTRA02Y.cpy`](../app/cpy/CVTRA02Y.cpy)
@@ -403,7 +388,6 @@ centralized in
 |-------|-------------|
 | `users` | `user_id` |
 | `accounts` | `acct_id` |
-| `account_groups` | `group_id` |
 | `customers` | `cust_id` |
 | `cards` | `card_num` |
 | `card_xref` | `xref_card_num` |
@@ -413,9 +397,8 @@ centralized in
 | `transaction_type` | `tran_type` |
 | `transaction_category` | `(tran_type_cd, tran_cat_cd)` |
 
-**Foreign keys.** Six enforced foreign keys realize the legacy VSAM referential
-relationships (chiefly the `CARDXREF` cross-reference) plus the AAP-mandated
-account-group reference.
+**Foreign keys.** Five enforced foreign keys realize the legacy VSAM referential
+relationships (chiefly the `CARDXREF` cross-reference).
 
 | Constraint | Child column | References |
 |------------|--------------|------------|
@@ -424,14 +407,13 @@ account-group reference.
 | `fk_card_xref_cust_id_customers` | `card_xref.cust_id` | `customers.cust_id` |
 | `fk_card_xref_acct_id_accounts` | `card_xref.acct_id` | `accounts.acct_id` |
 | `fk_transactions_card_num_cards` | `transactions.card_num` | `cards.card_num` |
-| `fk_accounts_group_id_account_groups` | `accounts.group_id` | `account_groups.group_id` |
 
 **Secondary indexes.** Five non-unique secondary indexes re-express the VSAM
 alternate indexes and support the browse screens.
 
 | Index | Table (columns) | Purpose |
 |-------|-----------------|---------|
-| `ix_accounts_group_id` | `accounts(group_id)` | Backs the `fk_accounts_group_id_account_groups` FK and account-group lookups. |
+| `ix_accounts_group_id` | `accounts(group_id)` | Backs account-group lookups (`accounts.group_id` → `disclosure_group.group_id`, a logical reference — not an enforced FK). |
 | `ix_cards_acct_id` | `cards(acct_id)` | Card-list-by-account (`COCRDLIC` / `CCLI`). |
 | `ix_card_xref_cust_id` | `card_xref(cust_id)` | Cross-reference by customer. |
 | `ix_card_xref_acct_id` | `card_xref(acct_id)` | Cross-reference by account (VSAM AIX). |

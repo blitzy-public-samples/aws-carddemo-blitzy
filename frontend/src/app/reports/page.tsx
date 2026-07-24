@@ -27,7 +27,7 @@
  * or the app shell.
  */
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 
 import { ReportType } from '@/types';
 import type {
@@ -224,6 +224,20 @@ export default function ReportsPage() {
     const [errorOpen, setErrorOpen] = useState<boolean>(false);
     const [errorValue, setErrorValue] = useState<unknown>(null);
 
+    // Monotonic request-generation counter (QA M-05). Rapid repeat "Generate"
+    // clicks (e.g. after changing the criteria) can race; only the latest
+    // request's result may commit to `reportData`, and a request in flight when
+    // the page unmounts is discarded.
+    const requestGenerationRef = useRef<number>(0);
+
+    // Invalidate any in-flight report request on unmount so its late resolve
+    // cannot update state afterwards (QA M-05).
+    useEffect(() => {
+        return () => {
+            requestGenerationRef.current += 1;
+        };
+    }, []);
+
     // Custom mode enables the date fields; Monthly/Yearly derive + disable them.
     const isCustom = reportType === ReportType.Custom;
 
@@ -327,15 +341,28 @@ export default function ReportsPage() {
             setErrorOpen(true);
             return;
         }
+        const requestGeneration = requestGenerationRef.current + 1;
+        requestGenerationRef.current = requestGeneration;
         setLoading(true);
         try {
             const data = await ReportsApi.GetTransactionReport(request);
+            // Only the latest Generate request may commit its data (QA M-05).
+            if (requestGenerationRef.current !== requestGeneration) {
+                return;
+            }
             setReportData(data);
         } catch (caughtError) {
+            // Discard a superseded request's error too (QA M-05).
+            if (requestGenerationRef.current !== requestGeneration) {
+                return;
+            }
             setErrorValue(caughtError);
             setErrorOpen(true);
         } finally {
-            setLoading(false);
+            // Only the latest request owns the shared loading flag (QA M-05).
+            if (requestGenerationRef.current === requestGeneration) {
+                setLoading(false);
+            }
         }
     }
 

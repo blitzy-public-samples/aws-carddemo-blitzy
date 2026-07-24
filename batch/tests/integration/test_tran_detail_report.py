@@ -36,9 +36,10 @@ import logging
 from datetime import datetime
 from decimal import Decimal
 
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 
 from app.models import Transaction
+from app.models.transaction import STATUS_POSTED
 from batch.jobs.tran_detail_report import ReportTransactionDetail
 
 # --------------------------------------------------------------------------- #
@@ -179,14 +180,42 @@ def _BuildLinkedCard(recordBuilder, cardNum, acctId):
     return recordBuilder.BuildCard(cardNum, acctId)
 
 
+def _PromoteAllToPosted(session):
+    """Promote every staged transaction to POSTED, mirroring a POSTTRAN run.
+
+    The golden-master seed loads the daily-transaction file as PENDING staging
+    (QA finding C02), and the detail report reads the POSTED master only (QA
+    finding M16), so on a fresh seed the report is empty. These report-layer
+    parity tests exercise the report's structure, masking, date filtering and
+    control-break totals over a POSTED ledger, so this helper simulates the
+    upstream POSTTRAN posting pass by promoting all seeded rows to POSTED (the
+    posting-validation logic itself is covered by ``test_post_transactions.py``).
+    It preserves the 300-row golden-master anchor without changing any other
+    field.
+
+    Args:
+        session: The open, rolled-back synchronous test session.
+
+    Returns:
+        The number of rows promoted to POSTED.
+    """
+    result = session.execute(update(Transaction).values(status=STATUS_POSTED))
+    session.flush()
+    return result.rowcount
+
+
 # =========================================================================== #
 # CBTRN03C -> batch.jobs.tran_detail_report.ReportTransactionDetail
 # =========================================================================== #
 def test_report_no_output_dir_returns_seeded_count(seeded_db, caplog):
-    # CBTRN03C with no output directory: the report streams every transaction,
-    # returns the detail-line count, and logs a summary WITHOUT persisting a
-    # file (the _NullWriter path). On the golden-master seed the count is 300.
+    # CBTRN03C with no output directory: the report streams every POSTED
+    # transaction, returns the detail-line count, and logs a summary WITHOUT
+    # persisting a file (the _NullWriter path). The seed stages the daily file as
+    # PENDING (QA finding C02) and the report reads the POSTED master only (QA
+    # finding M16), so the batch is promoted to POSTED first; the golden-master
+    # count is then 300.
     assert _CountTransactions(seeded_db) == EXPECTED_TRANSACTION_COUNT
+    assert _PromoteAllToPosted(seeded_db) == EXPECTED_TRANSACTION_COUNT
     with caplog.at_level(logging.INFO):
         detailLines = ReportTransactionDetail(seeded_db)
     assert detailLines == EXPECTED_TRANSACTION_COUNT
@@ -199,6 +228,9 @@ def test_report_writes_csv_with_title_header_and_all_dates_band(seeded_db, tmp_p
     # CBTRN03C with an output directory: the CSV opens with the report title,
     # the date-range band (ALL/ALL when unfiltered), a blank spacer, and the
     # eight-column header; the returned count matches the golden-master total.
+    # POSTED-master semantics (QA findings C02 + M16): promote the PENDING seed
+    # to POSTED before reporting.
+    _PromoteAllToPosted(seeded_db)
     detailLines = ReportTransactionDetail(seeded_db, outputDir=tmp_path)
     assert detailLines == EXPECTED_TRANSACTION_COUNT
     reportPath = tmp_path / REPORT_FILE_NAME
@@ -215,7 +247,9 @@ def test_report_writes_csv_with_title_header_and_all_dates_band(seeded_db, tmp_p
 def test_report_masks_pan_and_never_writes_full_pan(seeded_db, tmp_path):
     # AAP 0.7.8: a real seed card that owns transactions appears only in its
     # masked ****last-four form (in that card's Account Total band); its full
-    # sixteen-digit PAN is never written to the report anywhere.
+    # sixteen-digit PAN is never written to the report anywhere. POSTED-master
+    # semantics (QA findings C02 + M16): promote the PENDING seed to POSTED first.
+    _PromoteAllToPosted(seeded_db)
     ReportTransactionDetail(seeded_db, outputDir=tmp_path)
     csvText = (tmp_path / REPORT_FILE_NAME).read_text(encoding="utf-8")
     assert SEED_TRAN_CARD_NUM not in csvText
@@ -227,18 +261,24 @@ def test_report_date_range_includes_inclusive_boundaries(record_builder, db_sess
     # <= WS-END-DATE: of four dated transactions, only the two ON the window's
     # start and end dates are retained (both boundaries inclusive); the one the
     # day before and the one the day after are excluded.
+    # POSTED-master semantics (QA findings C02 + M16): the report reads the
+    # POSTED master, so each dated row is staged directly as POSTED.
     _BuildLinkedCard(record_builder, BOUNDARY_CARD, BOUNDARY_ACCT)
     record_builder.BuildPendingTransaction(
-        BOUNDARY_TRAN_BEFORE, BOUNDARY_CARD, BOUNDARY_AMT, overrides={"proc_ts": BOUNDARY_TS_BEFORE}
+        BOUNDARY_TRAN_BEFORE, BOUNDARY_CARD, BOUNDARY_AMT,
+        overrides={"proc_ts": BOUNDARY_TS_BEFORE, "status": STATUS_POSTED},
     )
     record_builder.BuildPendingTransaction(
-        BOUNDARY_TRAN_START, BOUNDARY_CARD, BOUNDARY_AMT, overrides={"proc_ts": BOUNDARY_TS_START}
+        BOUNDARY_TRAN_START, BOUNDARY_CARD, BOUNDARY_AMT,
+        overrides={"proc_ts": BOUNDARY_TS_START, "status": STATUS_POSTED},
     )
     record_builder.BuildPendingTransaction(
-        BOUNDARY_TRAN_END, BOUNDARY_CARD, BOUNDARY_AMT, overrides={"proc_ts": BOUNDARY_TS_END}
+        BOUNDARY_TRAN_END, BOUNDARY_CARD, BOUNDARY_AMT,
+        overrides={"proc_ts": BOUNDARY_TS_END, "status": STATUS_POSTED},
     )
     record_builder.BuildPendingTransaction(
-        BOUNDARY_TRAN_AFTER, BOUNDARY_CARD, BOUNDARY_AMT, overrides={"proc_ts": BOUNDARY_TS_AFTER}
+        BOUNDARY_TRAN_AFTER, BOUNDARY_CARD, BOUNDARY_AMT,
+        overrides={"proc_ts": BOUNDARY_TS_AFTER, "status": STATUS_POSTED},
     )
     detailLines = ReportTransactionDetail(db_session, outputDir=tmp_path, dateRange=DATE_WINDOW)
     assert detailLines == EXPECTED_IN_WINDOW
@@ -251,11 +291,13 @@ def test_report_control_break_totals_are_exact_decimal(record_builder, db_sessio
     # CBTRN03C control break: two cards (A: 10.00 + 20.00, B: 5.00) yield two
     # Account Total bands -- 30.00 for the masked card A and 5.00 for card B --
     # and one Grand Total of 35.00, each an EXACT Decimal (never float).
+    # POSTED-master semantics (QA findings C02 + M16): stage all rows as POSTED.
     _BuildLinkedCard(record_builder, CTRL_CARD_A, CTRL_ACCT_A)
     _BuildLinkedCard(record_builder, CTRL_CARD_B, CTRL_ACCT_B)
-    record_builder.BuildPendingTransaction(CTRL_TRAN_A1, CTRL_CARD_A, CTRL_AMT_A1)
-    record_builder.BuildPendingTransaction(CTRL_TRAN_A2, CTRL_CARD_A, CTRL_AMT_A2)
-    record_builder.BuildPendingTransaction(CTRL_TRAN_B1, CTRL_CARD_B, CTRL_AMT_B1)
+    _postedOverride = {"status": STATUS_POSTED}
+    record_builder.BuildPendingTransaction(CTRL_TRAN_A1, CTRL_CARD_A, CTRL_AMT_A1, overrides=_postedOverride)
+    record_builder.BuildPendingTransaction(CTRL_TRAN_A2, CTRL_CARD_A, CTRL_AMT_A2, overrides=_postedOverride)
+    record_builder.BuildPendingTransaction(CTRL_TRAN_B1, CTRL_CARD_B, CTRL_AMT_B1, overrides=_postedOverride)
     detailLines = ReportTransactionDetail(db_session, outputDir=tmp_path)
     assert detailLines == CTRL_DETAIL_LINE_COUNT
     rows = _ReadCsvRows(tmp_path / REPORT_FILE_NAME)

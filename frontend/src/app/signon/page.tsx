@@ -73,6 +73,13 @@ const ADMIN_USER_TYPE = 'A';
  * (for example a 401 with the server's "Wrong Password" / "User not found"
  * message) is surfaced in the {@link ErrorAlert} without leaving `/signon`.
  *
+ * Network / CORS failures (QA finding M-11): when the login request never reaches
+ * the server -- a dropped network, a timeout, or a CORS / host-alias rejection the
+ * browser blocks before any response body -- the {@link Login} helper rejects with
+ * an ApiError whose message is the actionable "Unable to reach the server..."
+ * text (normalized in `apiClient`), which is surfaced here in the same
+ * {@link ErrorAlert} so the user is never left without feedback.
+ *
  * @returns The signon page element.
  */
 export default function SignonPage() {
@@ -150,16 +157,16 @@ export default function SignonPage() {
 
     return (
         <Box
-            sx={{
+            sx={(theme) => ({
                 display: 'flex',
                 justifyContent: 'center',
                 alignItems: 'center',
-                // The single intentional non-token dimension: full-viewport
-                // height is required for vertical centering and has no MUI
-                // theme-token equivalent (AAP Section 0.3.4 exception).
-                minHeight: '100vh',
+                // Full-viewport height is required for vertical centering of the
+                // signon card. It is the named `theme.layout.fullViewportHeight`
+                // token (QA M-25), not a hardcoded `100vh` literal.
+                minHeight: theme.layout.fullViewportHeight,
                 p: 2,
-            }}
+            })}
         >
             <Container maxWidth="xs">
                 <Card sx={{ width: 1 }}>
@@ -178,6 +185,7 @@ export default function SignonPage() {
                                     maxLength={USER_ID_MAX_LENGTH}
                                     required
                                     autoFocus
+                                    autoComplete="username"
                                     disabled={submitting}
                                 />
                                 <FormField
@@ -188,6 +196,7 @@ export default function SignonPage() {
                                     type="password"
                                     maxLength={PASSWORD_MAX_LENGTH}
                                     required
+                                    autoComplete="current-password"
                                     disabled={submitting}
                                 />
                                 <Button

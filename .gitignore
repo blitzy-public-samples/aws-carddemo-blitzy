@@ -69,9 +69,12 @@ node_modules/
 out/
 .turbo/
 
-# npm lock file - intentionally NOT tracked at setup time (setup policy);
-# the pinned package.json manifest carries the exact versions.
-package-lock.json
+# npm lock file — TRACKED for reproducible, locked installs (QA finding M-08).
+# The lockfile pins the entire transitive dependency tree (not just the direct
+# ranges in package.json), so `npm ci` reproduces an identical node_modules on
+# every checkout and in every image build. It is intentionally NOT ignored; the
+# frontend Dockerfile uses `npm ci` when it is present. (Previously ignored under
+# a setup-time policy that left builds dependent on floating range resolution.)
 
 # Debug logs
 npm-debug.log*
@@ -141,3 +144,11 @@ logs/
 
 # Process id files
 *.pid
+
+# -----------------------------------------------------------------------------
+# Agent / QA validation artifacts (never committed)
+# -----------------------------------------------------------------------------
+# Browser-validation screenshots and screen recordings produced during
+# runtime/visual QA are evidence artifacts, not source; keep them out of the
+# repository.
+blitzy/

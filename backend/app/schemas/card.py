@@ -62,6 +62,7 @@ from app.utils import date_utils, validators
 
 __all__ = [
     "CardBase",
+    "CardBeforeImage",
     "CardRead",
     "CardSummary",
     "CardUpdate",
@@ -461,6 +462,61 @@ class CardSummary(OrmBase):
         return _MaskCardNumber(value)
 
 
+class CardBeforeImage(RequestBase):
+    """Client-echoed before-image of the editable card fields (``COCRDUPC``).
+
+    Reproduces the ``COCRDUPC`` optimistic-lock contract (AAP section 0.7.4 /
+    ``9300-CHECK-CHANGE-IN-REC``): the 3270 card-maintenance screen always
+    carried the record image the operator had originally read, and the program
+    re-read the row and compared it field-for-field before the ``REWRITE``,
+    rejecting the update when another unit-of-work had changed the record in the
+    interim. The ORM ``Card`` model deliberately carries no
+    ``version``/``updated_at`` column (Minimal Change Clause), so the client
+    supplies that prior image here instead -- the values it last read for the
+    editable card fields. ``app.services.card_service`` re-reads the
+    ``SELECT ... FOR UPDATE`` locked row and compares each supplied field; any
+    difference is a concurrent modification and is rejected with HTTP 409 (QA
+    finding C06). This is the exact card-side analogue of
+    :class:`app.schemas.account.AccountBeforeImage`.
+
+    ``embossed_name`` and ``active_status`` are required because they are always
+    present on a read card and anchor the lost-update check; ``expiration_date``
+    is optional (the column is nullable) and is compared only when supplied, so
+    an unsent nullable date never manufactures a false conflict.
+    """
+
+    embossed_name: str = Field(
+        ...,
+        min_length=1,
+        max_length=EMBOSSED_NAME_MAX_LENGTH,
+        description="Last-read embossed name (CARD-EMBOSSED-NAME PIC X(50)).",
+    )
+    active_status: str = Field(
+        ...,
+        max_length=ACTIVE_STATUS_LENGTH,
+        description="Last-read active-status flag (CARD-ACTIVE-STATUS PIC X(01)); 'Y'/'N'.",
+    )
+    expiration_date: Optional[date] = Field(
+        default=None,
+        description=(
+            "Last-read expiry date (CARD-EXPIRAION-DATE PIC X(10)) as an ISO "
+            "date; compared only when supplied."
+        ),
+    )
+
+    @field_validator("active_status")
+    @classmethod
+    def ValidateActiveStatus(cls, value: str) -> str:
+        """Enforce the 'Y'/'N' active-status edit (see :func:`_ValidateActiveStatusValue`)."""
+        return _ValidateActiveStatusValue(value)
+
+    @field_validator("expiration_date", mode="before")
+    @classmethod
+    def CoerceExpirationDate(cls, value: object) -> object:
+        """Validate/parse the echoed expiration date (see :func:`_CoerceExpirationDate`)."""
+        return _CoerceExpirationDate(value)
+
+
 class CardUpdate(RequestBase):
     """Request DTO for the editable card fields (``COCRDUPC`` update, ``CCUP``).
 
@@ -477,7 +533,23 @@ class CardUpdate(RequestBase):
     sanitization boundary, so the incoming values are strictly edited with the
     same rules the legacy screen applied.
 
+    The optimistic-lock semantics of the legacy READ-for-UPDATE -> REWRITE cycle
+    (AAP section 0.7.4) are enforced in ``app.services.card_service`` with a
+    ``SELECT ... FOR UPDATE`` transaction. The ORM model exposes no
+    ``version``/``updated_at`` column (Minimal Change Clause), so the prior
+    record image is supplied by the client instead: ``before_image`` is a
+    *required* echo of the editable fields the caller last read, and the service
+    compares it field-for-field against the freshly locked row before applying
+    the change. Any divergence means another unit-of-work modified the record in
+    the interim and the update is rejected with HTTP 409 -- reproducing the
+    ``COCRDUPC`` lost-update guard exactly (QA finding C06). Previously the
+    before-image was taken from a server-side read at the START of the PUT, so a
+    stale client write could not be detected; echoing the client's last-read
+    image closes that gap.
+
     Attributes:
+        before_image: Required client-echoed before-image of the editable fields
+            (see :class:`CardBeforeImage`); the optimistic-lock token.
         embossed_name: New embossed name (``CARD-EMBOSSED-NAME PIC X(50)``);
             required and non-empty.
         expiration_date: New expiry date (``CARD-EXPIRAION-DATE PIC X(10)``) as
@@ -486,6 +558,17 @@ class CardUpdate(RequestBase):
         active_status: New active-status flag (``CARD-ACTIVE-STATUS PIC X(01)``);
             required and restricted to ``'Y'`` or ``'N'``.
     """
+
+    before_image: CardBeforeImage = Field(
+        ...,
+        description=(
+            "Required optimistic-lock token: the editable-field image the caller "
+            "last read (see :class:`CardBeforeImage`). Compared field-for-field "
+            "against the locked row; any mismatch is a concurrent-modification "
+            "conflict (HTTP 409). This is a control field, not an edited value, so "
+            "it is excluded from the set of fields written to the record."
+        ),
+    )
 
     embossed_name: str = Field(
         ...,

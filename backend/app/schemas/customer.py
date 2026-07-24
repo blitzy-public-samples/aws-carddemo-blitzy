@@ -1,4 +1,5 @@
-"""Customer DTOs. Source: app/cpy/CVCUS01Y.cpy; screen edits from app/cpy-bms/COACTVW.CPY (view) and app/cpy-bms/COACTUP.CPY (update).
+"""Customer DTOs. Source: app/cpy/CVCUS01Y.cpy; screen edits from
+app/cpy-bms/COACTVW.CPY (view) and app/cpy-bms/COACTUP.CPY (update).
 
 Pydantic v2 request/response schemas (DTOs) for the Customer entity. Field
 names, lengths, and types are ported 1:1 from the legacy COBOL copybook
@@ -23,17 +24,18 @@ Traceability (legacy COBOL sources, REFERENCE only -- never modified):
         - CUST-PHONE-NUM-1         PIC X(15)  -> ``phone_num_1``        (str, <=15)
         - CUST-PHONE-NUM-2         PIC X(15)  -> ``phone_num_2``        (str, <=15, opt)
         - CUST-SSN                 PIC 9(09)  -> ``ssn``                (str, 9; MASKED in Read)
-        - CUST-GOVT-ISSUED-ID      PIC X(20)  -> ``govt_issued_id``     (str, <=20)
+        - CUST-GOVT-ISSUED-ID      PIC X(20)  -> ``govt_issued_id``     (str, <=20; MASKED in Read)
         - CUST-DOB-YYYY-MM-DD      PIC X(10)  -> ``date_of_birth``      (date, ISO)
-        - CUST-EFT-ACCOUNT-ID      PIC X(10)  -> ``eft_account_id``     (str, <=10, opt)
+        - CUST-EFT-ACCOUNT-ID      PIC X(10)  -> ``eft_account_id``     (str, <=10, opt; MASKED in Read)
         - CUST-PRI-CARD-HOLDER-IND PIC X(01)  -> ``pri_card_holder_ind`` (str, <=1)
         - CUST-FICO-CREDIT-SCORE   PIC 9(03)  -> ``fico_credit_score``  (int, 0..999)
         - FILLER                   PIC X(168) -> dropped (record-length padding only)
 
-Sensitive-data handling (AAP §0.7.8): ``ssn`` is stored in full on the ORM
-model but is **always masked** in the :class:`CustomerRead` response (only the
-last four digits are exposed). ``cvv`` and ``card_num`` are card attributes and
-are intentionally absent from this customer module.
+Sensitive-data handling (AAP §0.7.8; QA finding C-04): ``ssn``,
+``govt_issued_id`` and ``eft_account_id`` are stored in full on the ORM model
+but are **always masked** in the :class:`CustomerRead` response (only the last
+four characters of each are exposed). ``cvv`` and ``card_num`` are card
+attributes and are intentionally absent from this customer module.
 
 The four exported classes cover the full REST contract for the customer entity:
 :class:`CustomerBase` (the raw, full field carrier used for create/internal
@@ -103,6 +105,15 @@ SSN_MASK_PREFIX = "***-**-"
 # Fully redacted form used when there are too few digits to reveal a last-four.
 SSN_FULLY_MASKED = "***-**-****"
 
+# Government-ID / EFT-account masking (AAP §0.7.8; QA finding C-04). Like the SSN
+# and the card PAN, these sensitive identifiers must never be returned in full:
+# only the last four characters are revealed and every preceding character is
+# replaced by SENSITIVE_ID_MASK_CHARACTER, preserving length (the same
+# convention as the card-PAN mask). A value four characters or shorter is fully
+# masked so nothing is revealed.
+SENSITIVE_ID_VISIBLE_SUFFIX = 4
+SENSITIVE_ID_MASK_CHARACTER = "*"
+
 # Human-readable field labels passed to the shared validators purely to build
 # legacy-style failure messages; they are not part of the serialized contract.
 CUST_ID_LABEL = "Customer ID"
@@ -134,6 +145,42 @@ def _MaskSsn(rawValue: Optional[str]) -> Optional[str]:
         return SSN_FULLY_MASKED
     lastFour = normalizedValue[-SSN_VISIBLE_DIGITS:]
     return f"{SSN_MASK_PREFIX}{lastFour}"
+
+
+def _MaskTrailingIdentifier(rawValue: Optional[str]) -> Optional[str]:
+    """Mask a sensitive identifier so only its last four characters remain.
+
+    Shared by the ``govt_issued_id`` and ``eft_account_id`` response serializers
+    to enforce the AAP §0.7.8 sensitive-data rule (QA finding C-04): a customer's
+    government-issued identifier and EFT / bank account identifier must never be
+    returned in full over the API, in exports, or in logs. The full value is
+    stored on the ORM row; this helper renders the masked form only at
+    serialization time, so internal callers retain access to the raw value.
+
+    The masked form keeps the last four characters and replaces every preceding
+    character with :data:`SENSITIVE_ID_MASK_CHARACTER`, preserving the (trimmed)
+    length -- the same convention as the card-PAN mask. A value of four
+    characters or fewer is fully masked so nothing is revealed.
+
+    Args:
+        rawValue: The stored identifier text, or None when unset.
+
+    Returns:
+        None when ``rawValue`` is None; an empty string preserved as-is; a fully
+        masked string when the trimmed value is four characters or fewer;
+        otherwise the ``****…NNNN`` form revealing only the final four
+        characters.
+    """
+    if rawValue is None:
+        return None
+    normalizedValue = str(rawValue).strip()
+    if not normalizedValue:
+        return normalizedValue
+    if len(normalizedValue) <= SENSITIVE_ID_VISIBLE_SUFFIX:
+        return SENSITIVE_ID_MASK_CHARACTER * len(normalizedValue)
+    maskedLength = len(normalizedValue) - SENSITIVE_ID_VISIBLE_SUFFIX
+    revealedSuffix = normalizedValue[-SENSITIVE_ID_VISIBLE_SUFFIX:]
+    return f"{SENSITIVE_ID_MASK_CHARACTER * maskedLength}{revealedSuffix}"
 
 
 def _CoerceDateOfBirthText(rawValue: object) -> str:
@@ -411,9 +458,12 @@ class CustomerRead(OrmBase):
     Optional. No strict input edits run here because the values originate from
     the trusted datastore, not from user input.
 
-    Sensitive data (AAP §0.7.8): ``ssn`` is serialized through
-    :func:`_MaskSsn`, so ``model_dump()`` / API responses expose only the last
-    four digits (``***-**-NNNN``) and never the full nine-digit value.
+    Sensitive data (AAP §0.7.8; QA finding C-04): ``ssn`` is serialized through
+    :func:`_MaskSsn` (``***-**-NNNN``), and ``govt_issued_id`` / ``eft_account_id``
+    through :func:`_MaskTrailingIdentifier` (``****…NNNN``), so ``model_dump()`` /
+    API responses expose only the last four characters of each and never the full
+    value. Masking runs on serialization only; the raw values remain on the ORM
+    row for internal use.
     """
 
     cust_id: str = Field(
@@ -486,7 +536,11 @@ class CustomerRead(OrmBase):
     govt_issued_id: Optional[str] = Field(
         default=None,
         max_length=GOVT_ISSUED_ID_MAX_LENGTH,
-        description="Government-issued identifier (CUST-GOVT-ISSUED-ID, PIC X(20)).",
+        description=(
+            "Government-issued identifier (CUST-GOVT-ISSUED-ID, PIC X(20)); "
+            "ALWAYS masked to '****…NNNN' on serialization (C-04) -- the full "
+            "value is never returned."
+        ),
     )
     date_of_birth: Optional[date] = Field(
         default=None,
@@ -498,7 +552,11 @@ class CustomerRead(OrmBase):
     eft_account_id: Optional[str] = Field(
         default=None,
         max_length=EFT_ACCOUNT_ID_MAX_LENGTH,
-        description="EFT account identifier (CUST-EFT-ACCOUNT-ID, PIC X(10)).",
+        description=(
+            "EFT account identifier (CUST-EFT-ACCOUNT-ID, PIC X(10)); ALWAYS "
+            "masked to '****…NNNN' on serialization (C-04) -- the full value is "
+            "never returned."
+        ),
     )
     pri_card_holder_ind: Optional[str] = Field(
         default=None,
@@ -536,6 +594,41 @@ class CustomerRead(OrmBase):
             The masked ``***-**-NNNN`` form, or None when no SSN is present.
         """
         return _MaskSsn(value)
+
+    @field_serializer("govt_issued_id")
+    def SerializeGovtIssuedId(self, value: Optional[str]) -> Optional[str]:
+        """Serialize ``govt_issued_id`` masked to its last four characters.
+
+        Enforces the AAP §0.7.8 sensitive-data rule (QA finding C-04) on every
+        serialization path (``model_dump()`` and ``model_dump(mode="json")``), so
+        a customer's full government-issued identifier is never emitted in an API
+        response, export, or log. The raw value remains on the in-memory model
+        but is redacted the moment it is serialized.
+
+        Args:
+            value: The raw ``govt_issued_id`` stored on the model (or None).
+
+        Returns:
+            The masked ``****…NNNN`` form, or None when absent.
+        """
+        return _MaskTrailingIdentifier(value)
+
+    @field_serializer("eft_account_id")
+    def SerializeEftAccountId(self, value: Optional[str]) -> Optional[str]:
+        """Serialize ``eft_account_id`` masked to its last four characters.
+
+        Enforces the AAP §0.7.8 sensitive-data rule (QA finding C-04) on every
+        serialization path, so a customer's full EFT / bank account identifier is
+        never emitted in an API response, export, or log. The raw value remains
+        on the in-memory model but is redacted the moment it is serialized.
+
+        Args:
+            value: The raw ``eft_account_id`` stored on the model (or None).
+
+        Returns:
+            The masked ``****…NNNN`` form, or None when absent.
+        """
+        return _MaskTrailingIdentifier(value)
 
 
 class CustomerUpdate(RequestBase):

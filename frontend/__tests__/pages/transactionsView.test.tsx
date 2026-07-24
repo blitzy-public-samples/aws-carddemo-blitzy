@@ -196,6 +196,39 @@ describe('TransactionsViewPage', () => {
             expect(await screen.findByText(DETAIL_CARD_TITLE)).toBeInTheDocument();
             expect(screen.getByText(DEFAULT_TRAN_ID)).toBeInTheDocument();
         });
+
+        it('exposes a single h1 page heading, an h2 section heading and a description list (N-01)', async () => {
+            mockGetTransaction.mockResolvedValueOnce(MakeTransactionRead());
+
+            const { container } = RenderWithProviders(<TransactionsViewPage />);
+
+            // Exactly one level-1 heading titles the page (was a bare
+            // variant="h4" with no semantic level before the QA N-01 fix).
+            const h1s = screen.getAllByRole('heading', { level: 1 });
+            expect(h1s).toHaveLength(1);
+
+            // The detail card's "Transaction Detail" title is a level-2 heading
+            // beneath the page h1 (descending, non-skipping order).
+            await screen.findByText(DETAIL_CARD_TITLE);
+            expect(
+                screen.getByRole('heading', {
+                    level: 2,
+                    name: DETAIL_CARD_TITLE,
+                }),
+            ).toBeInTheDocument();
+
+            // The 13 read-only fields render as a description list, associating
+            // every value with its label (dt -> dd) instead of two unlabeled
+            // Typography runs. The transaction id value sits inside a <dd>.
+            const descriptionList = container.querySelector('dl');
+            expect(descriptionList).not.toBeNull();
+            expect(
+                descriptionList?.querySelectorAll('dt').length,
+            ).toBe(DETAIL_FIELD_LABELS.length);
+            expect(
+                screen.getByText(DEFAULT_TRAN_ID).closest('dd'),
+            ).not.toBeNull();
+        });
     });
 
     /* ----------------------------------------------------------------------- */

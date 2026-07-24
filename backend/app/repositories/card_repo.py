@@ -154,41 +154,6 @@ class CardRepository:
         result = await session.execute(stmt)
         return list(result.scalars().all())
 
-    async def GetByAcctId(
-        self,
-        session: AsyncSession,
-        acctId: str,
-    ) -> Card | None:
-        """Fetch a single card by its owning account id (``CARD-ACCT-ID`` AIX).
-
-        Ports the account-scoped keyed read the legacy programs perform through
-        the ``CARD-ACCT-ID`` alternate index when the account -- not the PAN --
-        is the known key. It returns at most one row (the lowest ``card_num``
-        for that account, matching the :meth:`ListByAcctId` ordering) so the
-        modern by-account card view/update can resolve an account to its card
-        WITHOUT ever exposing the full PAN in the URL (AAP 0.7.8). CardDemo's
-        card:account relationship is 1:1 in the seed data, so the account
-        uniquely identifies a card; should an account ever carry several cards,
-        the first by ascending ``card_num`` is returned deterministically.
-
-        Args:
-            session: The active async database session (unit of work).
-            acctId: The 11-character owning-account id to look up.
-
-        Returns:
-            The matching :class:`~app.models.card.Card`, or ``None`` when the
-            account owns no card -- the relational equivalent of the COBOL
-            ``INVALID KEY`` / ``NOTFND`` condition on the AIX path.
-        """
-        stmt = (
-            select(Card)
-            .where(Card.acct_id == acctId)
-            .order_by(Card.card_num)
-            .limit(1)
-        )
-        result = await session.execute(stmt)
-        return result.scalars().first()
-
     async def ListCards(
         self,
         session: AsyncSession,
