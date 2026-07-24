@@ -1,0 +1,93 @@
+/**
+ * :module: ``frontend/src/api/cards.ts``
+ * :purpose: Domain API module for the three CardDemo card screens —
+ *   ``CardListPage`` (``COCRDLI`` / CICS ``CCLI``, ``app/cbl/COCRDLIC.cbl``),
+ *   ``CardDetailPage`` (``COCRDSL`` / CICS ``CCDL``, ``app/cbl/COCRDSLC.cbl``),
+ *   and ``CardUpdatePage`` (``COCRDUP`` / CICS ``CCUP``,
+ *   ``app/cbl/COCRDUPC.cbl``). It re-expresses the legacy alternate-index browse
+ *   (``CXACAIX`` -> ``findByAccountId``), single-record read, and
+ *   read-validate-rewrite update as REST calls against the ``card-service`` card
+ *   routes on the api-gateway, using the shared axios instance so session,
+ *   correlation-id, and error normalization are applied uniformly.
+ * :output: The named async functions ``listCards`` (``GET /cards``, 7 rows per
+ *   page), ``getCard`` (``GET /cards/{cardNumber}``), and ``updateCard``
+ *   (``PUT /cards/{cardNumber}``).
+ * :note: The 16-digit card number (PAN) is always a ``string``: it exceeds
+ *   ``Number.MAX_SAFE_INTEGER`` and preserves leading zeros, so it is never
+ *   typed as ``number``. Request/response DTOs are passed through untouched to
+ *   preserve wire formats — money as ``string``, dates as ``YYYY-MM-DD``,
+ *   single-character status flags, and the legacy misspelling
+ *   ``cardExpiraionDate``.
+ * :note: The 7-rows-per-page contract is enforced by ``card-service`` (the
+ *   backend page size), so this module sends only the zero-based ``page`` index
+ *   and relies on the backend default rather than hard-coding a page size.
+ */
+
+import apiClient from './client';
+import type {
+  CardListRequestDto,
+  CardListResponseDto,
+  CardDetailResponseDto,
+  CardUpdateRequestDto,
+  CardUpdateResponseDto,
+} from '../types';
+
+/**
+ * :purpose: List cards for the ``CardListPage`` screen (CICS ``CCLI`` /
+ *   ``COCRDLIC``). The account-scoped browse can additionally narrow to a single
+ *   card number, and pages 7 rows at a time.
+ * :param request: optional ``accountId`` and ``cardNum`` filters plus the
+ *   zero-based ``page`` index; carried as query parameters (undefined values are
+ *   omitted by axios and never sent as empty strings).
+ * :returns: the page of card rows as a :ts:type:`CardListResponseDto`.
+ */
+export async function listCards(
+  request: CardListRequestDto,
+): Promise<CardListResponseDto> {
+  const response = await apiClient.get<CardListResponseDto>('/cards', {
+    params: {
+      accountId: request.accountId,
+      cardNum: request.cardNum,
+      page: request.page,
+    },
+  });
+  return response.data;
+}
+
+/**
+ * :purpose: Fetch a single card's read-only detail for the ``CardDetailPage``
+ *   screen (CICS ``CCDL`` / ``COCRDSLC``).
+ * :param cardNumber: the 16-digit card number (PAN) as a ``string``; encoded as
+ *   a path segment.
+ * :returns: the card detail as a :ts:type:`CardDetailResponseDto`.
+ */
+export async function getCard(
+  cardNumber: string,
+): Promise<CardDetailResponseDto> {
+  const response = await apiClient.get<CardDetailResponseDto>(
+    `/cards/${encodeURIComponent(cardNumber)}`,
+  );
+  return response.data;
+}
+
+/**
+ * :purpose: Update a card's editable fields for the ``CardUpdatePage`` screen
+ *   (CICS ``CCUP`` / ``COCRDUPC``). The target card number travels in the path;
+ *   the request body carries only the mutable fields and is forwarded untouched
+ *   so the ``cardExpiraionDate`` spelling and single-character status flag are
+ *   preserved.
+ * :param cardNumber: the 16-digit card number (PAN) as a ``string``; encoded as
+ *   a path segment.
+ * :param request: the editable card fields to persist.
+ * :returns: the refreshed card record as a :ts:type:`CardUpdateResponseDto`.
+ */
+export async function updateCard(
+  cardNumber: string,
+  request: CardUpdateRequestDto,
+): Promise<CardUpdateResponseDto> {
+  const response = await apiClient.put<CardUpdateResponseDto>(
+    `/cards/${encodeURIComponent(cardNumber)}`,
+    request,
+  );
+  return response.data;
+}

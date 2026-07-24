@@ -54,7 +54,7 @@ import org.springframework.transaction.PlatformTransactionManager;
  *     ({@link JobRepository}, {@link PlatformTransactionManager}) is injected
  *     from Boot auto-configuration and never self-instantiated.
  */
-@Configuration
+@Configuration("transactionPostingJobConfig")
 public class TransactionPostingJob {
 
     /**

@@ -1,0 +1,162 @@
+/*
+ * Copyright Amazon.com, Inc. or its affiliates.
+ * All Rights Reserved.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License").
+ * You may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *    http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND,
+ * either express or implied. See the License for the specific
+ * language governing permissions and limitations under the License.
+ */
+package com.carddemo.auth.repository;
+
+import java.util.List;
+import java.util.Map;
+import java.util.Optional;
+
+import org.junit.jupiter.api.DisplayName;
+import org.junit.jupiter.api.Test;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder;
+import org.springframework.security.crypto.password.PasswordEncoder;
+import org.springframework.test.context.TestPropertySource;
+
+import com.carddemo.auth.AbstractIntegrationTest;
+import com.carddemo.common.domain.SecurityUser;
+
+import static org.assertj.core.api.Assertions.assertThat;
+
+/**
+ * :purpose: Testcontainers integration test verifying the VSAM ``USRSEC`` ->
+ *     PostgreSQL ``security_users`` migration. Extends
+ *     {@link AbstractIntegrationTest} to boot the full auth-service context
+ *     against shared ``postgres:18`` + ``redis:8`` containers under the
+ *     ``test`` profile; Flyway applies ``V1__create_security_users_table.sql``
+ *     then ``V2__seed_security_users.sql`` against the container database, and
+ *     the {@link SecurityUser} mapping is exercised through the repository. The
+ *     test asserts the ``findBySecUsrId`` keyed lookup, the ten-user seed (five
+ *     admin plus five user) with frozen names, and the bare-BCrypt password
+ *     contract including the documented case-sensitivity behavior.
+ */
+@TestPropertySource(properties = "spring.jpa.hibernate.ddl-auto=none")
+class SecurityUserRepositoryTest extends AbstractIntegrationTest {
+
+    /** :purpose: Bare 60-char BCrypt hash of ``PASSWORD`` seeded for all users. */
+    private static final String EXPECTED_BCRYPT_HASH =
+            "$2a$10$ucIRth.iIafhA4MgE1RXZ.0whYamgfRIpJebWmPswpnxmLKA/peYm";
+
+    /**
+     * :purpose: Repository under test; the Spring Data JPA re-platforming of the
+     *     legacy keyed ``USRSEC`` VSAM read.
+     */
+    @Autowired
+    private SecurityUserRepository securityUserRepository;
+
+    /**
+     * :purpose: Application-wide password encoder bean wired by the booted
+     *     context (the shared delegating ``{bcrypt}`` policy).
+     */
+    @Autowired
+    private PasswordEncoder passwordEncoder;
+
+    /**
+     * :purpose: BCrypt encoder used to verify the bare ``$2a$`` seeded hash and
+     *     its case-sensitive matching.
+     */
+    private final BCryptPasswordEncoder bcryptPasswordEncoder = new BCryptPasswordEncoder();
+
+    /**
+     * :purpose: Verify the keyed lookup returns the seeded admin and user rows
+     *     with their frozen names and types, and yields an empty result for an
+     *     unknown id (the legacy user-not-found path).
+     */
+    @Test
+    @DisplayName("findBySecUsrId returns seeded admin/user rows and empty for an unknown id")
+    void findBySecUsrIdReturnsSeededRowsAndEmptyForUnknown() {
+        Optional<SecurityUser> admin = securityUserRepository.findBySecUsrId("ADMIN001");
+        assertThat(admin).isPresent();
+        assertThat(admin.get().getSecUsrFname()).isEqualTo("MARGARET");
+        assertThat(admin.get().getSecUsrLname()).isEqualTo("GOLD");
+        assertThat(admin.get().getSecUsrType()).isEqualTo("A");
+
+        Optional<SecurityUser> user = securityUserRepository.findBySecUsrId("USER0001");
+        assertThat(user).isPresent();
+        assertThat(user.get().getSecUsrFname()).isEqualTo("LAWRENCE");
+        assertThat(user.get().getSecUsrLname()).isEqualTo("THOMAS");
+        assertThat(user.get().getSecUsrType()).isEqualTo("U");
+
+        assertThat(securityUserRepository.findBySecUsrId("NOPE9999")).isEmpty();
+    }
+
+    /**
+     * :purpose: Verify the seed migration loads exactly ten users split five
+     *     admin and five user, and that every row matches the frozen id, first
+     *     name, last name, and type contract.
+     */
+    @Test
+    @DisplayName("Seed migration loads exactly 10 users (5 admin + 5 user) with frozen names")
+    void seedLoadsExactlyTenUsers() {
+        assertThat(securityUserRepository.count()).isEqualTo(10L);
+
+        List<SecurityUser> all = securityUserRepository.findAll();
+        long admins = all.stream().filter(u -> "A".equals(u.getSecUsrType())).count();
+        long users = all.stream().filter(u -> "U".equals(u.getSecUsrType())).count();
+        assertThat(admins).isEqualTo(5L);
+        assertThat(users).isEqualTo(5L);
+
+        Map<String, String[]> expected = Map.ofEntries(
+                Map.entry("ADMIN001", new String[] {"MARGARET", "GOLD", "A"}),
+                Map.entry("ADMIN002", new String[] {"RUSSELL", "RUSSELL", "A"}),
+                Map.entry("ADMIN003", new String[] {"RAYMOND", "WHITMORE", "A"}),
+                Map.entry("ADMIN004", new String[] {"EMMANUEL", "CASGRAIN", "A"}),
+                Map.entry("ADMIN005", new String[] {"GRANVILLE", "LACHAPELLE", "A"}),
+                Map.entry("USER0001", new String[] {"LAWRENCE", "THOMAS", "U"}),
+                Map.entry("USER0002", new String[] {"AJITH", "KUMAR", "U"}),
+                Map.entry("USER0003", new String[] {"LAURITZ", "ALME", "U"}),
+                Map.entry("USER0004", new String[] {"AVERARDO", "MAZZI", "U"}),
+                Map.entry("USER0005", new String[] {"LEE", "TING", "U"}));
+
+        expected.forEach((id, exp) -> {
+            Optional<SecurityUser> found = securityUserRepository.findBySecUsrId(id);
+            assertThat(found).as("seeded user %s must be present", id).isPresent();
+            assertThat(found.get().getSecUsrFname()).isEqualTo(exp[0]);
+            assertThat(found.get().getSecUsrLname()).isEqualTo(exp[1]);
+            assertThat(found.get().getSecUsrType()).isEqualTo(exp[2]);
+        });
+    }
+
+    /**
+     * :purpose: Verify the seeded credential is a bare 60-character BCrypt hash
+     *     (no algorithm prefix) that matches ``PASSWORD`` but not ``password``,
+     *     and that the wired delegating encoder applies an algorithm prefix and
+     *     is likewise case-sensitive.
+     */
+    @Test
+    @DisplayName("Seeded password is a bare BCrypt hash; matching is case-sensitive (deviation)")
+    void seededPasswordIsBareBcryptAndCaseSensitive() {
+        SecurityUser admin = securityUserRepository.findBySecUsrId("ADMIN001").orElseThrow();
+        String storedHash = admin.getSecUsrPwd();
+
+        assertThat(storedHash).isEqualTo(EXPECTED_BCRYPT_HASH);
+        assertThat(storedHash).startsWith("$2a$");
+        assertThat(storedHash).hasSize(60);
+        assertThat(storedHash).doesNotStartWith("{");
+
+        assertThat(bcryptPasswordEncoder.matches("PASSWORD", storedHash)).isTrue();
+        assertThat(bcryptPasswordEncoder.matches("password", storedHash)).isFalse();
+
+        String encoded = passwordEncoder.encode("PASSWORD");
+        assertThat(encoded).startsWith("{");
+        assertThat(passwordEncoder.matches("PASSWORD", encoded)).isTrue();
+        assertThat(passwordEncoder.matches("password", encoded)).isFalse();
+
+        assertThat(securityUserRepository.findAll())
+                .allSatisfy(u -> assertThat(u.getSecUsrPwd()).isEqualTo(EXPECTED_BCRYPT_HASH));
+    }
+}

@@ -143,6 +143,7 @@
             <scope>test</scope>
         </dependency>
 
+
     </dependencies>
 
     <build>
@@ -189,6 +190,18 @@
                     </execution>
                 </executions>
             </plugin>
+            <!--
+              Activate the integration-test/verify executions the Spring Boot parent
+              declares for maven-failsafe-plugin (version managed by the parent). This
+              runs the Testcontainers-backed repository integration tests (the *IT
+              classes, e.g. CardXrefRepositoryIT) during the verify phase, keeping them
+              out of the fast surefire unit-test phase.
+            -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-failsafe-plugin</artifactId>
+            </plugin>
+
         </plugins>
     </build>
 

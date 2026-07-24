@@ -94,6 +94,16 @@
             <groupId>org.flywaydb</groupId>
             <artifactId>flyway-database-postgresql</artifactId>
         </dependency>
+        <!--
+          Spring Boot 4 modularized auto-configuration: FlywayAutoConfiguration lives in the
+          spring-boot-flyway module (it is NOT bundled with flyway-core). Without it, the
+          migrations never run and Hibernate `validate` fails on the missing security_users table.
+          It is gated by `spring.flyway.enabled`, so it remains inert wherever Flyway is disabled.
+        -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-flyway</artifactId>
+        </dependency>
 
         <!-- Shared library: SecurityUser entity, SessionContext/ErrorResponse DTOs, observability,
              exception handling, and constants. Only intra-project dependency; version locked to the
@@ -108,6 +118,19 @@
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-test</artifactId>
+            <scope>test</scope>
+        </dependency>
+
+        <!--
+          Spring MVC test slice (@WebMvcTest / @AutoConfigureMockMvc). As of Spring Boot 4.0 the Web
+          MVC test support was extracted from the catch-all spring-boot-test-autoconfigure module into
+          its own module surfaced through this starter; it is no longer transitively provided by
+          spring-boot-starter-test. Backs AuthenticationControllerTest (the POST /auth/signon
+          web-layer contract test). Version managed by the Spring Boot BOM.
+        -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-webmvc-test</artifactId>
             <scope>test</scope>
         </dependency>
 
