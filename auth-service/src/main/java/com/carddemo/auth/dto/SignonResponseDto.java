@@ -15,11 +15,18 @@
  */
 package com.carddemo.auth.dto;
 
+import com.carddemo.common.dto.SessionContext;
+
 /**
  * :purpose: Success response body for ``POST /auth/signon``, re-platforming the successful-sign-on
  *           routing of legacy CICS program ``COSGN00C`` (transaction ``CC00``). Conveys the
- *           authenticated user id, the granted role authority, and the post-login navigation target.
+ *           authenticated user id, the granted user type, and the post-login navigation target.
  *           This is a plain POJO serialized to JSON by Jackson; it carries no password or secret.
+ * :note: The user type is published as the frozen one-character ``SEC-USR-TYPE`` wire code
+ *        (``"A"`` / ``"U"``) via the shared {@link SessionContext.UserType} enum, so this response,
+ *        the server-side {@code SessionContext}, and the React ``session.ts`` ``Role`` type all bind
+ *        to a single JSON schema without field remapping (finding CR-05). The client derives the
+ *        Spring Security authority (``ROLE_ADMIN`` / ``ROLE_USER``) from that code.
  */
 public class SignonResponseDto {
 
@@ -30,13 +37,12 @@ public class SignonResponseDto {
     private String userId;
 
     /**
-     * :purpose: The granted Spring Security authority. Legal values are ``"ROLE_ADMIN"`` (legacy
-     *           ``SEC-USR-TYPE`` value ``'A'``, i.e. ``CDEMO-USRTYP-ADMIN``) or ``"ROLE_USER"``
-     *           (legacy ``SEC-USR-TYPE`` value ``'U'``, i.e. ``CDEMO-USRTYP-USER``). The already-mapped
-     *           authority string is supplied by the authentication service; this field is a passive
-     *           carrier.
+     * :purpose: The granted user type as the frozen ``SEC-USR-TYPE`` wire code. Serializes to the
+     *           single character ``"A"`` (administrator, ``CDEMO-USRTYP-ADMIN``) or ``"U"`` (standard
+     *           user, ``CDEMO-USRTYP-USER``) through {@link SessionContext.UserType}. The client maps
+     *           this code to the ``ROLE_ADMIN`` / ``ROLE_USER`` authority.
      */
-    private String role;
+    private SessionContext.UserType userType;
 
     /**
      * :purpose: The post-login navigation target as the legacy CICS menu transaction id: ``"CA00"``
@@ -54,12 +60,13 @@ public class SignonResponseDto {
     /**
      * :purpose: Construct a fully populated sign-on success response.
      * :param userId: the authenticated user id.
-     * :param role: the granted authority (``"ROLE_ADMIN"`` or ``"ROLE_USER"``).
+     * :param userType: the granted user type (``CDEMO_USRTYP_ADMIN`` / ``CDEMO_USRTYP_USER``),
+     *                  serialized to the ``"A"`` / ``"U"`` wire code.
      * :param redirectTarget: the post-login menu transaction id (``"CA00"`` or ``"CM00"``).
      */
-    public SignonResponseDto(String userId, String role, String redirectTarget) {
+    public SignonResponseDto(String userId, SessionContext.UserType userType, String redirectTarget) {
         this.userId = userId;
-        this.role = role;
+        this.userType = userType;
         this.redirectTarget = redirectTarget;
     }
 
@@ -80,19 +87,19 @@ public class SignonResponseDto {
     }
 
     /**
-     * :purpose: Return the granted authority.
-     * :returns: ``"ROLE_ADMIN"`` or ``"ROLE_USER"``.
+     * :purpose: Return the granted user type.
+     * :returns: the {@link SessionContext.UserType} that serializes to ``"A"`` or ``"U"``.
      */
-    public String getRole() {
-        return role;
+    public SessionContext.UserType getUserType() {
+        return userType;
     }
 
     /**
-     * :purpose: Set the granted authority.
-     * :param role: ``"ROLE_ADMIN"`` or ``"ROLE_USER"``.
+     * :purpose: Set the granted user type.
+     * :param userType: the {@link SessionContext.UserType} (serialized as ``"A"`` / ``"U"``).
      */
-    public void setRole(String role) {
-        this.role = role;
+    public void setUserType(SessionContext.UserType userType) {
+        this.userType = userType;
     }
 
     /**
@@ -113,13 +120,13 @@ public class SignonResponseDto {
 
     /**
      * :purpose: Human-readable representation over the three non-sensitive fields; carries no secrets.
-     * :returns: a string containing ``userId``, ``role``, and ``redirectTarget``.
+     * :returns: a string containing ``userId``, ``userType``, and ``redirectTarget``.
      */
     @Override
     public String toString() {
         return "SignonResponseDto{"
                 + "userId='" + userId + '\''
-                + ", role='" + role + '\''
+                + ", userType=" + userType
                 + ", redirectTarget='" + redirectTarget + '\''
                 + '}';
     }

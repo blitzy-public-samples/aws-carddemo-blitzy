@@ -7,7 +7,6 @@ import jakarta.persistence.Table;
 import jakarta.persistence.Version;
 
 import java.math.BigDecimal;
-import java.util.Objects;
 
 /**
  * JPA entity for the CardDemo account master record.
@@ -32,23 +31,23 @@ public class Account {
     private Long acctId;
 
     /** ACCT-ACTIVE-STATUS PIC X(01): single-character active flag (e.g. "Y"). */
-    @Column(name = "acct_active_status", length = 1)
+    @Column(name = "acct_active_status", length = 1, nullable = false)
     private String acctActiveStatus;
 
     /** ACCT-CURR-BAL PIC S9(10)V99 -> NUMERIC(12,2). */
-    @Column(name = "acct_curr_bal", precision = 12, scale = 2)
+    @Column(name = "acct_curr_bal", precision = 12, scale = 2, nullable = false)
     private BigDecimal acctCurrBal;
 
     /** ACCT-CREDIT-LIMIT PIC S9(10)V99 -> NUMERIC(12,2). */
-    @Column(name = "acct_credit_limit", precision = 12, scale = 2)
+    @Column(name = "acct_credit_limit", precision = 12, scale = 2, nullable = false)
     private BigDecimal acctCreditLimit;
 
     /** ACCT-CASH-CREDIT-LIMIT PIC S9(10)V99 -> NUMERIC(12,2). */
-    @Column(name = "acct_cash_credit_limit", precision = 12, scale = 2)
+    @Column(name = "acct_cash_credit_limit", precision = 12, scale = 2, nullable = false)
     private BigDecimal acctCashCreditLimit;
 
     /** ACCT-OPEN-DATE PIC X(10): "YYYY-MM-DD" wire format kept as String. */
-    @Column(name = "acct_open_date", length = 10)
+    @Column(name = "acct_open_date", length = 10, nullable = false)
     private String acctOpenDate;
 
     /**
@@ -66,11 +65,11 @@ public class Account {
     private String acctReissueDate;
 
     /** ACCT-CURR-CYC-CREDIT PIC S9(10)V99 -> NUMERIC(12,2). */
-    @Column(name = "acct_curr_cyc_credit", precision = 12, scale = 2)
+    @Column(name = "acct_curr_cyc_credit", precision = 12, scale = 2, nullable = false)
     private BigDecimal acctCurrCycCredit;
 
     /** ACCT-CURR-CYC-DEBIT PIC S9(10)V99 -> NUMERIC(12,2). */
-    @Column(name = "acct_curr_cyc_debit", precision = 12, scale = 2)
+    @Column(name = "acct_curr_cyc_debit", precision = 12, scale = 2, nullable = false)
     private BigDecimal acctCurrCycDebit;
 
     /** ACCT-ADDR-ZIP PIC X(10): postal ZIP code. */
@@ -292,19 +291,18 @@ public class Account {
         if (this == o) {
             return true;
         }
-        if (o == null || getClass() != o.getClass()) {
+        if (!(o instanceof Account other)) {
             return false;
         }
-        Account other = (Account) o;
-        return Objects.equals(acctId, other.acctId);
+        return acctId != null && acctId.equals(other.getAcctId());
     }
 
     /**
-     * :returns: a hash code derived from the account identifier.
+     * :returns: a proxy-stable hash code consistent with {@link #equals(Object)}.
      */
     @Override
     public int hashCode() {
-        return Objects.hashCode(acctId);
+        return Account.class.hashCode();
     }
 
     /**

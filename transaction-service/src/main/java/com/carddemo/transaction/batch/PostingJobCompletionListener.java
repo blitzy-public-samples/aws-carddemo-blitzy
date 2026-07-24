@@ -18,6 +18,7 @@ package com.carddemo.transaction.batch;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.batch.core.BatchStatus;
 import org.springframework.batch.core.ExitStatus;
 import org.springframework.batch.core.job.JobExecution;
 import org.springframework.batch.core.listener.JobExecutionListener;
@@ -48,21 +49,28 @@ public class PostingJobCompletionListener implements JobExecutionListener {
     private static final Logger log = LoggerFactory.getLogger(PostingJobCompletionListener.class);
 
     /**
-     * :purpose: Emit the processed and rejected tallies and, when rejects
-     *           occurred, mark the job with an exit status carrying return
-     *           code 4 without downgrading the batch status to failed.
-     * :param jobExecution: the completed job execution whose step executions
-     *        supply the read count (processed total) and the rejected count
-     *        published under :data:`REJECT_COUNT_KEY`.
-     * :output: Sets the ``COMPLETED_WITH_REJECTS`` exit status when the
-     *          rejected total is greater than zero; otherwise leaves the
-     *          default ``COMPLETED`` exit status (return code 0).
+     * :purpose: Emit the processed and rejected tallies and map the legacy
+     *           ``RETURN-CODE`` for a normally completed run — code 4 when
+     *           records were rejected, code 0 otherwise — while leaving a
+     *           ``FAILED`` or ``STOPPED`` job's batch status and exit code
+     *           untouched so a hard failure is never reported as a clean run.
+     * :param jobExecution: the completed job execution whose ``COMPLETED`` step
+     *        executions supply the read count (processed total) and the rejected
+     *        count published under :data:`REJECT_COUNT_KEY`.
+     * :output: Sets the ``COMPLETED_WITH_REJECTS`` exit status (return code 4)
+     *          only when the batch status is ``COMPLETED`` and the rejected total
+     *          is greater than zero; otherwise leaves the existing exit status.
      */
     @Override
     public void afterJob(JobExecution jobExecution) {
         long processedCount = 0L;
         long rejectCount = 0L;
         for (StepExecution stepExecution : jobExecution.getStepExecutions()) {
+            // Tally only successfully completed step executions: restarted or
+            // failed partial executions must not double-count reads or rejects.
+            if (stepExecution.getStatus() != BatchStatus.COMPLETED) {
+                continue;
+            }
             processedCount += stepExecution.getReadCount();
             rejectCount += stepExecution.getExecutionContext().getLong(REJECT_COUNT_KEY, 0L);
         }
@@ -70,7 +78,10 @@ public class PostingJobCompletionListener implements JobExecutionListener {
         log.info("TRANSACTIONS PROCESSED :{}", processedCount);
         log.info("TRANSACTIONS REJECTED  :{}", rejectCount);
 
-        if (rejectCount > 0L) {
+        // Map the legacy return code only for a normally completed run. A FAILED
+        // or STOPPED job keeps the status and exit code Spring Batch assigned, so
+        // rejects can never mask a hard failure as COMPLETED_WITH_REJECTS.
+        if (jobExecution.getStatus() == BatchStatus.COMPLETED && rejectCount > 0L) {
             jobExecution.setExitStatus(new ExitStatus(
                     "COMPLETED_WITH_REJECTS",
                     "Return code 4: " + rejectCount + " transaction(s) rejected"));

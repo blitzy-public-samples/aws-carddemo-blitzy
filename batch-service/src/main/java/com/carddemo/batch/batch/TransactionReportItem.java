@@ -17,6 +17,7 @@
 package com.carddemo.batch.batch;
 
 import java.math.BigDecimal;
+import java.util.Objects;
 
 /**
  * :purpose: Immutable carrier of one fully-resolved transaction-detail report row,
@@ -81,15 +82,19 @@ public final class TransactionReportItem {
                                  String tranSource,
                                  BigDecimal tranAmt,
                                  String tranCardNum) {
-        this.tranId = tranId;
-        this.accountId = accountId;
-        this.tranTypeCd = tranTypeCd;
-        this.tranTypeDesc = tranTypeDesc;
-        this.tranCatCd = tranCatCd;
-        this.tranCatDesc = tranCatDesc;
-        this.tranSource = tranSource;
-        this.tranAmt = tranAmt;
-        this.tranCardNum = tranCardNum;
+        // A report row is a FULLY-resolved value object: every field is supplied
+        // by the processor after the cross-reference/type/category lookups, so a
+        // null here is a wiring defect that would corrupt the fixed-width layout
+        // or the card-number control break. Reject it at construction.
+        this.tranId = Objects.requireNonNull(tranId, "tranId");
+        this.accountId = Objects.requireNonNull(accountId, "accountId");
+        this.tranTypeCd = Objects.requireNonNull(tranTypeCd, "tranTypeCd");
+        this.tranTypeDesc = Objects.requireNonNull(tranTypeDesc, "tranTypeDesc");
+        this.tranCatCd = Objects.requireNonNull(tranCatCd, "tranCatCd");
+        this.tranCatDesc = Objects.requireNonNull(tranCatDesc, "tranCatDesc");
+        this.tranSource = Objects.requireNonNull(tranSource, "tranSource");
+        this.tranAmt = Objects.requireNonNull(tranAmt, "tranAmt");
+        this.tranCardNum = Objects.requireNonNull(tranCardNum, "tranCardNum");
     }
 
     /** :purpose: Return the 16-character transaction id (``TRAN-ID``). */

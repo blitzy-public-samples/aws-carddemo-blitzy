@@ -8,13 +8,15 @@
 #
 # Image `carddemo/frontend:1.0.0` is built by `frontend/Dockerfile`: a
 # multi-stage build that compiles the Vite bundle on the `node:24` base image
-# and serves the static assets with nginx (`nginx:alpine`) on port 80.
+# and serves the static assets with nginx on port 80. nginx also reverse-
+# proxies the same-origin `/api` path to the api-gateway (CR-10), so the browser
+# never needs an absolute gateway URL.
 #
 # This is NOT a Spring Boot service (AAP 0.3.1):
 #   * NO Actuator -> health probes use a plain HTTP GET on "/" (nginx returns
 #     index.html), never an "/actuator/*" path.
 #   * NO database/Redis credentials -> this Deployment attaches NO `envFrom`
-#     and never references `carddemo-secret` / `carddemo-config`.
+#     and never references any Secret / the carddemo-config ConfigMap.
 #
 # The companion `service-frontend.yaml` (type LoadBalancer) selects these pods
 # via `app: frontend` and forwards port 80 -> targetPort 80.
@@ -43,24 +45,51 @@ spec:
         app.kubernetes.io/part-of: carddemo
         app.kubernetes.io/component: frontend
     spec:
+      # Pod-level runtime hardening (MJ-10). nginx in the image runs as uid 101.
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 101
+        runAsGroup: 101
+        fsGroup: 101
+        seccompProfile:
+          type: RuntimeDefault
+      automountServiceAccountToken: false
       containers:
         - name: frontend
           # Built by frontend/Dockerfile (build stage FROM node:24; runtime
-          # stage FROM nginx:alpine serving /usr/share/nginx/html on port 80).
+          # stage serving /usr/share/nginx/html on port 80).
           image: carddemo/frontend:1.0.0
           imagePullPolicy: IfNotPresent
+          # Container-level runtime hardening (MJ-10): drop all capabilities but
+          # add back only NET_BIND_SERVICE so the non-root nginx can bind :80;
+          # read-only root filesystem with writable emptyDir scratch below.
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+              add:
+                - NET_BIND_SERVICE
           ports:
             - name: http
               containerPort: 80
-          # API base URL (informational). The browser-side REST base URL is
-          # baked into the bundle at BUILD time via the Vite arg
-          # `VITE_API_BASE_URL` (see frontend/Dockerfile); this runtime value
-          # documents the intended in-cluster api-gateway address and is honored
-          # only under a runtime-config or nginx `/api` proxy pattern. Provided
-          # WITHOUT `envFrom` so the frontend never receives DB/Redis secrets.
+          # Same-origin API base (CR-10): the bundle issues requests to "/api",
+          # which nginx reverse-proxies to the api-gateway on the private
+          # network. VITE_* is baked at BUILD time (frontend/Dockerfile arg);
+          # this runtime value documents the contract. Provided WITHOUT
+          # `envFrom` so the frontend never receives DB/Redis secrets.
           env:
-            - name: API_BASE_URL
-              value: "http://api-gateway:8080"
+            - name: VITE_API_BASE_URL
+              value: "/api"
+          # Writable scratch required by nginx under the read-only root fs.
+          volumeMounts:
+            - name: nginx-cache
+              mountPath: /var/cache/nginx
+            - name: nginx-run
+              mountPath: /var/run
+            - name: tmp
+              mountPath: /tmp
           # nginx static serving is lightweight on CPU and memory.
           resources:
             requests:
@@ -86,3 +115,10 @@ spec:
             periodSeconds: 15
             timeoutSeconds: 3
             failureThreshold: 3
+      volumes:
+        - name: nginx-cache
+          emptyDir: {}
+        - name: nginx-run
+          emptyDir: {}
+        - name: tmp
+          emptyDir: {}

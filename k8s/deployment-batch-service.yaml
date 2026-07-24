@@ -21,7 +21,7 @@
 #           ``eclipse-temurin:21-jre`` by ``batch-service/Dockerfile``.
 #           Runtime configuration and datasource credentials are injected via
 #           ``envFrom`` from the ``carddemo-config`` ConfigMap and the
-#           ``carddemo-secret`` Secret. CPU limits are intentionally generous
+#           ``carddemo-batch-service-db`` Secret. CPU limits are intentionally generous
 #           so batch jobs are not throttled out of their window (AAP 0.7.6).
 # ===========================================================================
 apiVersion: apps/v1
@@ -52,6 +52,17 @@ spec:
         app.kubernetes.io/part-of: carddemo
         app.kubernetes.io/component: backend
     spec:
+      # Pod-level runtime hardening (MJ-10): run as a non-root user with a
+      # default seccomp profile and no auto-mounted ServiceAccount token
+      # (these services never call the Kubernetes API).
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      automountServiceAccountToken: false
       containers:
         - name: batch-service
           # Built by batch-service/Dockerfile FROM eclipse-temurin:21-jre.
@@ -63,11 +74,28 @@ spec:
           # Datasource/Redis config + credentials come from the shared
           # ConfigMap and Secret (dependencies k8s/configmap.yaml and
           # k8s/secret.yaml).
+          # Container-level runtime hardening (MJ-10): drop every Linux
+          # capability, forbid privilege escalation, and run on a read-only
+          # root filesystem (writable scratch is the mounted tmp emptyDir).
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
           envFrom:
             - configMapRef:
                 name: carddemo-config
+            # Per-service least-privilege database role (CR-11): each service
+            # authenticates with its own DB principal, not a shared owner.
             - secretRef:
-                name: carddemo-secret
+                name: carddemo-batch-service-db
+            # Shared Redis AUTH secret for externalized Spring Session (CR-17).
+            - secretRef:
+                name: carddemo-redis-secret
           # Batch is CPU-heavier than the online services; limits stay
           # generous so jobs complete inside their window (AAP 0.7.6).
           resources:
@@ -102,3 +130,8 @@ spec:
             periodSeconds: 15
             timeoutSeconds: 3
             failureThreshold: 3
+      # Writable scratch for the read-only root filesystem (MJ-10). A Spring
+      # Boot fat-jar only needs a writable /tmp (Tomcat work dir, JVM temp).
+      volumes:
+        - name: tmp
+          emptyDir: {}

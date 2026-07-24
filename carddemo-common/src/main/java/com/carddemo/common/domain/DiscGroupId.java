@@ -51,26 +51,56 @@ public class DiscGroupId implements Serializable {
         this.disTranCatCd = disTranCatCd;
     }
 
+    /**
+     * Return the account group id key component.
+     *
+     * :output: the ``DIS-ACCT-GROUP-ID`` value.
+     */
     public String getDisAcctGroupId() {
         return disAcctGroupId;
     }
 
+    /**
+     * Set the account group id key component.
+     *
+     * :param disAcctGroupId: the ``DIS-ACCT-GROUP-ID`` value.
+     */
     public void setDisAcctGroupId(String disAcctGroupId) {
         this.disAcctGroupId = disAcctGroupId;
     }
 
+    /**
+     * Return the transaction type code key component.
+     *
+     * :output: the ``DIS-TRAN-TYPE-CD`` value.
+     */
     public String getDisTranTypeCd() {
         return disTranTypeCd;
     }
 
+    /**
+     * Set the transaction type code key component.
+     *
+     * :param disTranTypeCd: the ``DIS-TRAN-TYPE-CD`` value.
+     */
     public void setDisTranTypeCd(String disTranTypeCd) {
         this.disTranTypeCd = disTranTypeCd;
     }
 
+    /**
+     * Return the transaction category code key component.
+     *
+     * :output: the ``DIS-TRAN-CAT-CD`` value.
+     */
     public Integer getDisTranCatCd() {
         return disTranCatCd;
     }
 
+    /**
+     * Set the transaction category code key component.
+     *
+     * :param disTranCatCd: the ``DIS-TRAN-CAT-CD`` value.
+     */
     public void setDisTranCatCd(Integer disTranCatCd) {
         this.disTranCatCd = disTranCatCd;
     }

@@ -26,10 +26,10 @@ spring:
       ddl-auto: validate
 
   # billpay-service SHARES the 'carddemo' database and owns NO tables and
-  # ships NO migrations - the schema is created by account-service /
-  # transaction-service / card-service migrations. Flyway is therefore
-  # disabled here so this service never touches the shared migration
-  # history. Reconciliation rationale: docs/decision-log.md.
+  # ships NO migrations. A single migration owner (batch-service) applies the
+  # shared schema/history; Flyway is disabled here so this service never opens
+  # a second migration history against the one public schema (QA CR-09/CR-16).
+  # Reconciliation rationale: docs/decision-log.md.
   flyway:
     enabled: false
 
@@ -39,8 +39,16 @@ spring:
       port: ${SPRING_DATA_REDIS_PORT:6379}
 
   # Externalized pseudo-conversational session (COMMAREA replacement).
+  # Boot 4.x auto-detects the Redis session store from spring-session-data-redis
+  # on the classpath; the legacy spring.session.store-type property was removed
+  # and is inert (QA CR-15). Session tuning lives under spring.session.redis.*;
+  # the Redis connection uses spring.data.redis.* declared above. A shared
+  # namespace lets every service read/write the same COMMAREA-equivalent session.
   session:
-    store-type: redis
+    timeout: ${SPRING_SESSION_TIMEOUT:30m}
+    redis:
+      namespace: ${SPRING_SESSION_REDIS_NAMESPACE:carddemo:session}
+      flush-mode: on-save
 
 server:
   port: 8080
@@ -58,15 +66,25 @@ management:
     health:
       probes:
         enabled: true
-      show-details: always
+      # Health detail is disclosed only to authenticated principals so an
+      # anonymous caller cannot enumerate datastore/dependency internals
+      # (QA MJ-16). Liveness/readiness aggregate status stays public for probes.
+      show-details: when-authorized
   health:
     livenessstate:
       enabled: true
     readinessstate:
       enabled: true
+  # Distributed tracing export (QA CR-12). The OTLP endpoint and the sampling
+  # probability are environment-driven (QA MN-03): 100% capture is unsafe for
+  # p95/memory NFRs in production, so the default is a 10% sample that each
+  # environment overrides (e.g. 1.0 in dev, lower under load).
+  otlp:
+    tracing:
+      endpoint: ${MANAGEMENT_OTLP_TRACING_ENDPOINT:http://localhost:4318/v1/traces}
   tracing:
     sampling:
-      probability: 1.0
+      probability: ${MANAGEMENT_TRACING_SAMPLING_PROBABILITY:0.1}
 
 # ---------------------------------------------------------------------
 # Docker Compose profile (SPRING_PROFILES_ACTIVE=docker). Compose passes

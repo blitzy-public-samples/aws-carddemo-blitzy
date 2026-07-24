@@ -17,9 +17,9 @@ job stream maps to an idiomatic Java or TypeScript construct; the legacy sources
 are retained in-place as the transformation reference and traceability anchor.
 
 The rationale behind every non-trivial migration decision is recorded in the
-[decision log](./docs/decision-log.md), and the complete source-to-target
-mapping (100% bidirectional coverage) is recorded in the
-[traceability matrix](./docs/traceability-matrix.md). This README intentionally
+[decision log](./docs/decision-log.md), and the bidirectional source-to-target
+mapping between legacy COBOL constructs and their Java/React targets is recorded
+in the [traceability matrix](./docs/traceability-matrix.md). This README intentionally
 does **not** duplicate that rationale inline.
 
 ---
@@ -181,7 +181,7 @@ carddemo/                        (repository root — legacy app/ retained)
 ├── README-target.md             This document
 ├── docs/
 │   ├── decision-log.md          Non-trivial decisions with rationale
-│   └── traceability-matrix.md   Bidirectional COBOL <-> Java mapping (100%)
+│   └── traceability-matrix.md   Bidirectional COBOL <-> Java construct mapping
 ├── k8s/                         Kubernetes manifests (deployments, services, config)
 ├── observability/
 │   ├── grafana-dashboard.json   Grafana dashboard template
@@ -324,12 +324,31 @@ npm run dev       # Vite dev server
 
 ### Preferred: Docker Compose
 
+The Compose stack reads every credential from a local `.env` file (never
+committed — it is listed in `.gitignore`). Create it from the template and set a
+strong, unique value for each secret first; Compose uses `${VAR:?}` references
+and therefore fails fast if any value is unset:
+
+```bash
+cp .env.example .env
+# then edit .env and set: POSTGRES_DB / POSTGRES_USER / POSTGRES_PASSWORD,
+# REDIS_PASSWORD, GRAFANA_ADMIN_USER / GRAFANA_ADMIN_PASSWORD, MONITORING_PASSWORD
+```
+
 From the repository root, build and start the entire stack — PostgreSQL, Redis,
 all services, the frontend, Prometheus, and Grafana — with a single command:
 
 ```bash
 docker compose up --build
 ```
+
+Each backend image is produced by a multi-stage Dockerfile that runs the Maven
+reactor build **inside** the image (compiling from source — it never copies a
+prebuilt JAR), so a clean clone builds end-to-end. The per-service Dockerfiles
+are delivered together with the bootable services; until then `docker compose
+config` validates the full topology. Container health checks use a curl-free
+probe (bash `/dev/tcp` against `/actuator/health`) because the
+`eclipse-temurin:21-jre` base image ships neither `curl` nor `wget`.
 
 On first start, Flyway applies the schema and seed migrations against the
 PostgreSQL container automatically. To stop and remove the stack:
@@ -350,10 +369,16 @@ docker compose down -v
 | :-------- | :-- |
 | Frontend (React SPA) | <http://localhost:3000> |
 | API gateway | <http://localhost:8080> |
-| Prometheus | <http://localhost:9090> |
-| Grafana | <http://localhost:3001> |
-| Per-service health probe | `http://localhost:<service-port>/actuator/health` |
-| Per-service metrics | `http://localhost:<service-port>/actuator/prometheus` |
+| Prometheus | <http://localhost:9090> (bound to loopback only) |
+| Grafana | <http://localhost:3001> (bound to loopback only) |
+
+Only the frontend (`3000`) and the API gateway (`8080`) publish host ports. The
+individual backend services and the datastores (PostgreSQL, Redis) are **not**
+exposed on the host — they are reachable only on the private Compose network and,
+for the browser, exclusively through the gateway (the SPA calls the same-origin
+`/api` path, which nginx reverse-proxies to the gateway). Each service's
+`/actuator/health` and `/actuator/prometheus` endpoints are scraped by Prometheus
+over that private network, not via a host port.
 
 ### Default Login Credentials
 
@@ -402,9 +427,12 @@ COBOL monetary values are stored as packed decimal (`COMP-3`). To keep financial
 output byte-identical, every such field maps to Java `BigDecimal` backed by a
 PostgreSQL `NUMERIC(p,s)` column at the **exact** declared scale — for example
 account balance and limit fields to `NUMERIC(12,2)` and transaction amount to
-`NUMERIC(11,2)`. Arithmetic preserves the original rounding (fixed scale with
-`RoundingMode.HALF_UP`) and calculation order, so results match the mainframe
-exactly. The rounding and precision rules are not changed by this migration.
+`NUMERIC(11,2)`. Arithmetic preserves the original operand order and intermediate
+scale and **truncates toward zero** at the receiver scale (`setScale(2,
+RoundingMode.DOWN)`), because the COBOL `COMPUTE` statements carry no `ROUNDED`
+phrase — for example `0.125` becomes `0.12`, never `0.13`. Results therefore
+match the mainframe exactly; the rounding and precision rules are not changed by
+this migration.
 
 ---
 
@@ -466,8 +494,9 @@ npm test
   decision, with alternatives, rationale, and risk. Rationale lives here, not in
   code comments.
 - **[Traceability matrix](./docs/traceability-matrix.md)** — the bidirectional
-  mapping between legacy COBOL constructs and their Java/React implementations,
-  at 100% coverage in both directions.
+  mapping between legacy COBOL constructs and their Java/React implementations;
+  it enumerates the complete legacy inventory and records, per tranche, which
+  targets are delivered versus planned.
 
 ---
 

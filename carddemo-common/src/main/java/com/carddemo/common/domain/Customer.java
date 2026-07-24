@@ -1,11 +1,15 @@
 package com.carddemo.common.domain;
 
+import com.carddemo.common.crypto.CryptoConverter;
+import com.fasterxml.jackson.annotation.JsonIgnore;
 import jakarta.persistence.Column;
+import jakarta.persistence.Convert;
 import jakarta.persistence.Entity;
 import jakarta.persistence.Id;
 import jakarta.persistence.Table;
-
-import java.util.Objects;
+import jakarta.persistence.Version;
+import jakarta.validation.constraints.NotBlank;
+import jakarta.validation.constraints.Size;
 
 /**
  * Customer master record entity mapped to the ``customers`` table.
@@ -31,15 +35,20 @@ public class Customer {
     private Long custId;
 
     /** Customer first name (source ``CUST-FIRST-NAME`` PIC X(25)). */
-    @Column(name = "cust_first_name", length = 25)
+    @NotBlank
+    @Size(max = 25)
+    @Column(name = "cust_first_name", length = 25, nullable = false)
     private String custFirstName;
 
     /** Customer middle name (source ``CUST-MIDDLE-NAME`` PIC X(25)). */
+    @Size(max = 25)
     @Column(name = "cust_middle_name", length = 25)
     private String custMiddleName;
 
     /** Customer last name (source ``CUST-LAST-NAME`` PIC X(25)). */
-    @Column(name = "cust_last_name", length = 25)
+    @NotBlank
+    @Size(max = 25)
+    @Column(name = "cust_last_name", length = 25, nullable = false)
     private String custLastName;
 
     /** Address line 1 (source ``CUST-ADDR-LINE-1`` PIC X(50)). */
@@ -77,18 +86,24 @@ public class Customer {
     /**
      * Social-security number (source ``CUST-SSN`` PIC 9(09)).
      *
-     * :sensitive: PII. Stored as ``String`` to preserve leading zeros and to
-     *             support masking and encryption-at-rest; never logged in full.
+     * :sensitive: PII. Encrypted at rest via {@link CryptoConverter} and never
+     *             serialized to clients; masked by {@link #toString()}. The
+     *             column is widened to hold the Base64 ciphertext token.
      */
-    @Column(name = "cust_ssn", length = 9)
+    @Column(name = "cust_ssn", length = 512)
+    @Convert(converter = CryptoConverter.class)
+    @JsonIgnore
     private String custSsn;
 
     /**
      * Government-issued identifier (source ``CUST-GOVT-ISSUED-ID`` PIC X(20)).
      *
-     * :sensitive: PII. Never logged in full; masked by {@link #toString()}.
+     * :sensitive: PII. Encrypted at rest via {@link CryptoConverter} and never
+     *             serialized to clients; masked by {@link #toString()}.
      */
-    @Column(name = "cust_govt_issued_id", length = 20)
+    @Column(name = "cust_govt_issued_id", length = 512)
+    @Convert(converter = CryptoConverter.class)
+    @JsonIgnore
     private String custGovtIssuedId;
 
     /**
@@ -98,8 +113,15 @@ public class Customer {
     @Column(name = "cust_dob_yyyy_mm_dd", length = 10)
     private String custDobYyyyMmDd;
 
-    /** EFT account identifier (source ``CUST-EFT-ACCOUNT-ID`` PIC X(10)). */
-    @Column(name = "cust_eft_account_id", length = 10)
+    /**
+     * EFT account identifier (source ``CUST-EFT-ACCOUNT-ID`` PIC X(10)).
+     *
+     * :sensitive: PII. Encrypted at rest via {@link CryptoConverter} and never
+     *             serialized to clients.
+     */
+    @Column(name = "cust_eft_account_id", length = 512)
+    @Convert(converter = CryptoConverter.class)
+    @JsonIgnore
     private String custEftAccountId;
 
     /** Primary card-holder indicator (source ``CUST-PRI-CARD-HOLDER-IND`` PIC X(01)). */
@@ -107,8 +129,21 @@ public class Customer {
     private String custPriCardHolderInd;
 
     /** FICO credit score (source ``CUST-FICO-CREDIT-SCORE`` PIC 9(03)). */
-    @Column(name = "cust_fico_credit_score")
+    @Column(name = "cust_fico_credit_score", nullable = false)
     private Integer custFicoCreditScore;
+
+    /**
+     * Optimistic-locking version counter.
+     *
+     * :purpose: Reproduce the legacy ``COACTUPC`` read-snapshot-compare-rewrite
+     *           concurrency guard for the customer aggregate as JPA optimistic
+     *           locking; a concurrent modification raises an optimistic-lock
+     *           failure that maps to the legacy "please review" outcome. There
+     *           is no legacy column analogue.
+     */
+    @Version
+    @Column(name = "version")
+    private Long version;
 
     /**
      * Creates an empty customer instance.
@@ -341,8 +376,10 @@ public class Customer {
      *
      * :sensitive: PII. Callers must not write the returned value to logs or any
      *             diagnostic output; use {@link #toString()} for safe rendering.
-     * :return: the social-security number, or ``null`` if unset.
+     * :return: the social-security number, or ``null`` if unset; never
+     *          serialized to clients.
      */
+    @JsonIgnore
     public String getCustSsn() {
         return custSsn;
     }
@@ -362,8 +399,10 @@ public class Customer {
      *
      * :sensitive: PII. Callers must not write the returned value to logs or any
      *             diagnostic output; use {@link #toString()} for safe rendering.
-     * :return: the government-issued id, or ``null`` if unset.
+     * :return: the government-issued id, or ``null`` if unset; never serialized
+     *          to clients.
      */
+    @JsonIgnore
     public String getCustGovtIssuedId() {
         return custGovtIssuedId;
     }
@@ -399,8 +438,10 @@ public class Customer {
     /**
      * Returns the EFT account identifier.
      *
-     * :return: the EFT account id, or ``null`` if unset.
+     * :return: the EFT account id, or ``null`` if unset; never serialized to
+     *          clients.
      */
+    @JsonIgnore
     public String getCustEftAccountId() {
         return custEftAccountId;
     }
@@ -412,6 +453,25 @@ public class Customer {
      */
     public void setCustEftAccountId(String custEftAccountId) {
         this.custEftAccountId = custEftAccountId;
+    }
+
+    /**
+     * Returns the optimistic-locking version counter.
+     *
+     * :return: the current version, or ``null`` before the row is first persisted.
+     */
+    public Long getVersion() {
+        return version;
+    }
+
+    /**
+     * Sets the optimistic-locking version counter.
+     *
+     * :param version: the version value to assign; normally managed by the JPA
+     *        provider.
+     */
+    public void setVersion(Long version) {
+        this.version = version;
     }
 
     /**
@@ -495,7 +555,7 @@ public class Customer {
                 + ", custSsn='" + maskSensitive(custSsn) + '\''
                 + ", custGovtIssuedId='" + maskSensitive(custGovtIssuedId) + '\''
                 + ", custDobYyyyMmDd='" + custDobYyyyMmDd + '\''
-                + ", custEftAccountId='" + custEftAccountId + '\''
+                + ", custEftAccountId='" + maskSensitive(custEftAccountId) + '\''
                 + ", custPriCardHolderInd='" + custPriCardHolderInd + '\''
                 + ", custFicoCreditScore=" + custFicoCreditScore
                 + '}';
@@ -513,21 +573,20 @@ public class Customer {
         if (this == o) {
             return true;
         }
-        if (o == null || getClass() != o.getClass()) {
+        if (!(o instanceof Customer other)) {
             return false;
         }
-        Customer customer = (Customer) o;
-        return Objects.equals(custId, customer.custId);
+        return custId != null && custId.equals(other.getCustId());
     }
 
     /**
      * Returns a hash code consistent with {@link #equals(Object)}.
      *
-     * :return: a hash code derived from :field:`custId`.
+     * :return: a proxy-stable, identity-consistent hash code.
      */
     @Override
     public int hashCode() {
-        return Objects.hash(custId);
+        return Customer.class.hashCode();
     }
 }
 

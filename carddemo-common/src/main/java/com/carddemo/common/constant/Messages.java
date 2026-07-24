@@ -22,6 +22,11 @@ public final class Messages {
     private Messages() {
     }
 
+    /**
+     * Fixed width of the ``CCDA-COMMON-MESSAGES`` fields (``PIC X(50)``).
+     */
+    public static final int COMMON_MESSAGE_LENGTH = 50;
+
     // ---------------------------------------------------------------------
     // Common messages (source: CSMSG01Y, group CCDA-COMMON-MESSAGES)
     // ---------------------------------------------------------------------
@@ -29,23 +34,24 @@ public final class Messages {
     /**
      * Sign-off / thank-you message shown on the 3270-equivalent screens.
      *
-     * :output: Byte-identical copy of ``CCDA-MSG-THANK-YOU``. The source field
-     *          is declared ``PIC X(50)``; the source literal is 49 characters
-     *          (trailing spaces preserved exactly, not padded to 50).
+     * :output: The effective 50-byte value of ``CCDA-MSG-THANK-YOU``. The source
+     *          field is declared ``PIC X(50)`` and the 49-character source literal
+     *          is right-padded with one trailing space at runtime; this constant
+     *          exposes that byte-identical 50-character value.
      */
     public static final String CCDA_MSG_THANK_YOU =
-            "Thank you for using CardDemo application...      ";
+            padToWidth("Thank you for using CardDemo application...      ", COMMON_MESSAGE_LENGTH);
 
     /**
      * Invalid-key banner shown when an unsupported key is pressed.
      *
-     * :output: Byte-identical copy of ``CCDA-MSG-INVALID-KEY``. The source
-     *          field is declared ``PIC X(50)``; the source literal is 49
-     *          characters (trailing spaces preserved exactly, not padded to
-     *          50).
+     * :output: The effective 50-byte value of ``CCDA-MSG-INVALID-KEY``. The source
+     *          field is declared ``PIC X(50)`` and the 49-character source literal
+     *          is right-padded with one trailing space at runtime; this constant
+     *          exposes that byte-identical 50-character value.
      */
     public static final String CCDA_MSG_INVALID_KEY =
-            "Invalid key pressed. Please see below...         ";
+            padToWidth("Invalid key pressed. Please see below...         ", COMMON_MESSAGE_LENGTH);
 
     // ---------------------------------------------------------------------
     // Abend-diagnostic area (source: CSMSG02Y, group ABEND-DATA)
@@ -103,4 +109,24 @@ public final class Messages {
      * :output: A string of ``ABEND_MSG_LENGTH`` spaces.
      */
     public static final String ABEND_MSG = " ".repeat(ABEND_MSG_LENGTH);
+
+    /**
+     * Fixed-width serializer mirroring a COBOL alphanumeric ``MOVE`` into a
+     * ``PIC X(width)`` field: the value is left-justified and right-padded with
+     * spaces to exactly ``width`` characters, or truncated on the right when it is
+     * longer than ``width``.
+     *
+     * :param value: the text to normalize; ``null`` is treated as spaces.
+     * :param width: the target fixed field width; must not be negative.
+     * :output: a string of exactly ``width`` characters.
+     */
+    public static String padToWidth(String value, int width) {
+        if (value == null) {
+            return " ".repeat(width);
+        }
+        if (value.length() >= width) {
+            return value.substring(0, width);
+        }
+        return value + " ".repeat(width - value.length());
+    }
 }

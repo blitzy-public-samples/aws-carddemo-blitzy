@@ -10,6 +10,22 @@
 # runs on the shared docker network (carddemo-net) and reaches each service by
 # its docker-compose service name (DNS), so targets use the INTERNAL port 8080
 # (never the host-published ports).
+#
+# PROTECTED MONITORING PATH (QA CR-11/CR-12).
+# The Actuator management endpoints (including /actuator/prometheus) are NOT
+# anonymous - the service SecurityConfig requires an authenticated principal.
+# Two controls protect the scrape:
+#   1. Network isolation - management ports are never host-published; scrape
+#      traffic stays on the private carddemo-net bridge.
+#   2. Authenticated scrape - Prometheus presents a dedicated least-privilege
+#      monitoring principal via HTTP basic auth. The password is NEVER committed:
+#      it is read at runtime from a mounted secret file (password_file), supplied
+#      by the docker-compose/k8s secret wiring. The shared &carddemo_scrape_auth
+#      anchor keeps one definition for every service job.
+# Cross-cutting dependencies (wired by the compose/secret layer and the per-
+# service security chains): the monitoring principal is seeded read-only, the
+# management security chain accepts HTTP basic for that principal, and the
+# secret file is mounted at the path below.
 # ------------------------------------------------------------------------------
 
 global:
@@ -34,45 +50,56 @@ scrape_configs:
   # docker-compose service DNS names on the shared network, internal port 8080.
   - job_name: api-gateway
     metrics_path: /actuator/prometheus
+    basic_auth: &carddemo_scrape_auth
+      username: monitoring
+      password_file: /etc/prometheus/secrets/monitoring-password
     static_configs:
       - targets: ["api-gateway:8080"]
 
   - job_name: auth-service
     metrics_path: /actuator/prometheus
+    basic_auth: *carddemo_scrape_auth
     static_configs:
       - targets: ["auth-service:8080"]
 
   - job_name: user-service
     metrics_path: /actuator/prometheus
+    basic_auth: *carddemo_scrape_auth
     static_configs:
       - targets: ["user-service:8080"]
 
   - job_name: account-service
     metrics_path: /actuator/prometheus
+    basic_auth: *carddemo_scrape_auth
     static_configs:
       - targets: ["account-service:8080"]
 
   - job_name: card-service
     metrics_path: /actuator/prometheus
+    basic_auth: *carddemo_scrape_auth
     static_configs:
       - targets: ["card-service:8080"]
 
   - job_name: transaction-service
     metrics_path: /actuator/prometheus
+    basic_auth: *carddemo_scrape_auth
     static_configs:
       - targets: ["transaction-service:8080"]
 
   - job_name: billpay-service
     metrics_path: /actuator/prometheus
+    basic_auth: *carddemo_scrape_auth
     static_configs:
       - targets: ["billpay-service:8080"]
 
   - job_name: reporting-service
     metrics_path: /actuator/prometheus
+    basic_auth: *carddemo_scrape_auth
     static_configs:
       - targets: ["reporting-service:8080"]
 
   - job_name: batch-service
     metrics_path: /actuator/prometheus
+    basic_auth: *carddemo_scrape_auth
     static_configs:
       - targets: ["batch-service:8080"]

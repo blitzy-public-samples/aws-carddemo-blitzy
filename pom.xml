@@ -26,7 +26,24 @@
         <maven.compiler.release>21</maven.compiler.release>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
         <project.reporting.outputEncoding>UTF-8</project.reporting.outputEncoding>
+        <!--
+          Spring Cloud release-train version consumed exclusively by the
+          api-gateway module, which imports the spring-cloud-dependencies BOM
+          in its OWN POM. The BOM is intentionally NOT imported here so that
+          Spring Cloud managed versions do not leak into the other services
+          (see docs/decision-log.md, "Platform & Build").
+        -->
         <spring-cloud.version>2025.1.2</spring-cloud.version>
+        <!--
+          Security override: pin patched versions of two libraries managed by
+          the Spring Boot 4.1.0 BOM to remediate known, fixed CVEs. The Boot
+          BOM otherwise resolves pgJDBC 42.7.11 and Tomcat 11.0.22. These
+          property names are the exact keys the Spring Boot dependency
+          management uses, so setting them here upgrades every module that
+          pulls the driver or the embedded container.
+        -->
+        <postgresql.version>42.7.13</postgresql.version>
+        <tomcat.version>11.0.24</tomcat.version>
     </properties>
 
     <modules>
@@ -42,18 +59,16 @@
         <module>api-gateway</module>
     </modules>
 
-    <dependencyManagement>
-        <dependencies>
-            <!-- Spring Cloud BOM (Oakwood); consumed by api-gateway. All other library versions come from the inherited Spring Boot BOM. -->
-            <dependency>
-                <groupId>org.springframework.cloud</groupId>
-                <artifactId>spring-cloud-dependencies</artifactId>
-                <version>${spring-cloud.version}</version>
-                <type>pom</type>
-                <scope>import</scope>
-            </dependency>
-        </dependencies>
-    </dependencyManagement>
+    <!--
+      NOTE: The Spring Cloud BOM (spring-cloud-dependencies) is deliberately
+      NOT imported in this parent's <dependencyManagement>. It is imported
+      only by the api-gateway module (the sole consumer of Spring Cloud
+      Gateway), using the inherited ${spring-cloud.version} property. Importing
+      it globally here would leak Spring Cloud managed versions into every
+      service and contradicts the approved gateway-only scoping recorded in
+      docs/decision-log.md. All other managed versions come from the inherited
+      Spring Boot parent BOM.
+    -->
 
     <build>
         <pluginManagement>

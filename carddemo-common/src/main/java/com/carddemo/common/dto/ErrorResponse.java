@@ -38,6 +38,16 @@ public class ErrorResponse {
     /** :purpose: HTTP reason phrase / short error label (for example "Not Found", "Conflict"). */
     private String error;
 
+    /**
+     * :purpose: Stable, non-sensitive application/domain error code that is
+     *  independent of the HTTP status. Carries the exact legacy reject/validation
+     *  codes (for example the batch posting reject codes ``100``-``103`` from
+     *  ``CBTRN02C``) so that programmatic callers and the React client can branch
+     *  on a precise code rather than parsing the human-readable message. Null when
+     *  the error has no domain-specific code.
+     */
+    private String errorCode;
+
     /** :purpose: Human-readable, non-sensitive detail message. */
     private String message;
 
@@ -75,58 +85,150 @@ public class ErrorResponse {
         this.path = path;
     }
 
+    /**
+     * :purpose: Create an error body from the core HTTP error metadata plus a stable
+     *  domain error code, defaulting the timestamp to the current instant and leaving
+     *  traceId and fieldErrors to setters.
+     * :param status: HTTP status code.
+     * :param error: HTTP reason phrase / short error label.
+     * :param message: human-readable, non-sensitive detail message.
+     * :param path: request URI that produced the error.
+     * :param errorCode: stable, non-sensitive application/domain error code.
+     */
+    public ErrorResponse(int status, String error, String message, String path, String errorCode) {
+        this.timestamp = Instant.now();
+        this.status = status;
+        this.error = error;
+        this.message = message;
+        this.path = path;
+        this.errorCode = errorCode;
+    }
+
+    /**
+     * :purpose: Return the instant the error was produced.
+     * :output: the error timestamp, serialized as ISO-8601.
+     */
     public Instant getTimestamp() {
         return timestamp;
     }
 
+    /**
+     * :purpose: Set the instant the error was produced.
+     * :param timestamp: the error timestamp.
+     */
     public void setTimestamp(Instant timestamp) {
         this.timestamp = timestamp;
     }
 
+    /**
+     * :purpose: Return the HTTP status code.
+     * :output: the numeric HTTP status (for example 400, 404, 409, 500).
+     */
     public int getStatus() {
         return status;
     }
 
+    /**
+     * :purpose: Set the HTTP status code.
+     * :param status: the numeric HTTP status.
+     */
     public void setStatus(int status) {
         this.status = status;
     }
 
+    /**
+     * :purpose: Return the HTTP reason phrase / short error label.
+     * :output: the error label (for example "Not Found", "Conflict").
+     */
     public String getError() {
         return error;
     }
 
+    /**
+     * :purpose: Set the HTTP reason phrase / short error label.
+     * :param error: the error label.
+     */
     public void setError(String error) {
         this.error = error;
     }
 
+    /**
+     * :purpose: Return the stable application/domain error code.
+     * :output: the domain error code (for example a ``100``-``103`` reject code),
+     *  or ``null`` when the error has no domain-specific code.
+     */
+    public String getErrorCode() {
+        return errorCode;
+    }
+
+    /**
+     * :purpose: Set the stable application/domain error code.
+     * :param errorCode: the domain error code, independent of the HTTP status.
+     */
+    public void setErrorCode(String errorCode) {
+        this.errorCode = errorCode;
+    }
+
+    /**
+     * :purpose: Return the human-readable, non-sensitive detail message.
+     * :output: the detail message.
+     */
     public String getMessage() {
         return message;
     }
 
+    /**
+     * :purpose: Set the human-readable, non-sensitive detail message.
+     * :param message: the detail message.
+     */
     public void setMessage(String message) {
         this.message = message;
     }
 
+    /**
+     * :purpose: Return the request URI that produced the error.
+     * :output: the request path.
+     */
     public String getPath() {
         return path;
     }
 
+    /**
+     * :purpose: Set the request URI that produced the error.
+     * :param path: the request path.
+     */
     public void setPath(String path) {
         this.path = path;
     }
 
+    /**
+     * :purpose: Return the correlation / trace id sourced from the MDC.
+     * :output: the trace id, or ``null`` when tracing is absent.
+     */
     public String getTraceId() {
         return traceId;
     }
 
+    /**
+     * :purpose: Set the correlation / trace id.
+     * :param traceId: the trace id sourced from the MDC.
+     */
     public void setTraceId(String traceId) {
         this.traceId = traceId;
     }
 
+    /**
+     * :purpose: Return the optional per-field validation messages.
+     * :output: a field-name-to-message map, or ``null``/empty when there are none.
+     */
     public Map<String, String> getFieldErrors() {
         return fieldErrors;
     }
 
+    /**
+     * :purpose: Set the per-field validation messages.
+     * :param fieldErrors: a field-name-to-message map.
+     */
     public void setFieldErrors(Map<String, String> fieldErrors) {
         this.fieldErrors = fieldErrors;
     }
@@ -144,11 +246,17 @@ public class ErrorResponse {
         this.fieldErrors.put(field, message);
     }
 
+    /**
+     * :purpose: Render a non-sensitive diagnostic representation for logging.
+     * :output: a string containing the status, labels, codes and metadata fields;
+     *  no PII/PCI values are included.
+     */
     @Override
     public String toString() {
         return "ErrorResponse{timestamp=" + timestamp
                 + ", status=" + status
                 + ", error='" + error + '\''
+                + ", errorCode='" + errorCode + '\''
                 + ", message='" + message + '\''
                 + ", path='" + path + '\''
                 + ", traceId='" + traceId + '\''

@@ -1,11 +1,17 @@
 package com.carddemo.common.domain;
 
+import com.carddemo.common.crypto.CryptoConverter;
+import com.fasterxml.jackson.annotation.JsonIgnore;
 import jakarta.persistence.Column;
+import jakarta.persistence.Convert;
 import jakarta.persistence.Entity;
+import jakarta.persistence.FetchType;
+import jakarta.persistence.ForeignKey;
 import jakarta.persistence.Id;
+import jakarta.persistence.Index;
+import jakarta.persistence.JoinColumn;
+import jakarta.persistence.ManyToOne;
 import jakarta.persistence.Table;
-
-import java.util.Objects;
 
 /**
  * JPA entity mapping the legacy COBOL ``CARD-RECORD`` layout (copybook
@@ -31,7 +37,9 @@ import java.util.Objects;
  * :ivar cardActiveStatus: single-character active-status flag (``card_active_status``).
  */
 @Entity
-@Table(name = "cards")
+@Table(name = "cards", indexes = {
+        @Index(name = "idx_cards_card_acct_id", columnList = "card_acct_id")
+})
 public class Card {
 
     /**
@@ -54,18 +62,37 @@ public class Card {
     private Long cardAcctId;
 
     /**
+     * Read-only association to the owning account, mapped over the same
+     * ``card_acct_id`` column as {@link #cardAcctId}.
+     *
+     * The scalar id remains the single writable mapping; this association is
+     * ``insertable=false``/``updatable=false`` so it never duplicates the
+     * column, and it declares the ``fk_cards_account`` foreign key so the
+     * card-to-account referential-integrity intent is explicit in the schema.
+     */
+    @ManyToOne(fetch = FetchType.LAZY)
+    @JoinColumn(name = "card_acct_id", referencedColumnName = "acct_id",
+            insertable = false, updatable = false,
+            foreignKey = @ForeignKey(name = "fk_cards_account"))
+    @JsonIgnore
+    private Account account;
+
+    /**
      * Sensitive card verification value (CVV), 3 digits.
      *
-     * Stored as text to preserve leading zeros and to support masking and
-     * encryption at rest; never included in {@link #toString()} or logs.
+     * Stored encrypted at rest via {@link CryptoConverter}, never serialized to
+     * clients, and never included in {@link #toString()} or logs. The column is
+     * left nullable so the value can be cleared once authorization completes.
      */
-    @Column(name = "card_cvv_cd", length = 3)
+    @Column(name = "card_cvv_cd", length = 512)
+    @Convert(converter = CryptoConverter.class)
+    @JsonIgnore
     private String cardCvvCd;
 
     /**
      * Name embossed on the physical card, up to 50 characters.
      */
-    @Column(name = "card_embossed_name", length = 50)
+    @Column(name = "card_embossed_name", length = 50, nullable = false)
     private String cardEmbossedName;
 
     /**
@@ -74,13 +101,13 @@ public class Card {
      * The field and column names preserve the legacy source misspelling
      * ``CARD-EXPIRAION-DATE`` (missing the second ``T``) verbatim.
      */
-    @Column(name = "card_expiraion_date", length = 10)
+    @Column(name = "card_expiraion_date", length = 10, nullable = false)
     private String cardExpiraionDate;
 
     /**
      * Single-character active-status flag.
      */
-    @Column(name = "card_active_status", length = 1)
+    @Column(name = "card_active_status", length = 1, nullable = false)
     private String cardActiveStatus;
 
     /**
@@ -121,10 +148,20 @@ public class Card {
     }
 
     /**
-     * :returns: the sensitive card verification value (CVV).
+     * :returns: the sensitive card verification value (CVV); never serialized to
+     *     clients.
      */
+    @JsonIgnore
     public String getCardCvvCd() {
         return cardCvvCd;
+    }
+
+    /**
+     * :returns: the read-only owning-account association, or ``null`` when not
+     *     loaded.
+     */
+    public Account getAccount() {
+        return account;
     }
 
     /**
@@ -187,19 +224,18 @@ public class Card {
         if (this == o) {
             return true;
         }
-        if (o == null || getClass() != o.getClass()) {
+        if (!(o instanceof Card other)) {
             return false;
         }
-        Card card = (Card) o;
-        return Objects.equals(cardNum, card.cardNum);
+        return cardNum != null && cardNum.equals(other.getCardNum());
     }
 
     /**
-     * :returns: a hash code derived from the primary key (``cardNum``).
+     * :returns: a proxy-stable hash code consistent with {@link #equals(Object)}.
      */
     @Override
     public int hashCode() {
-        return Objects.hash(cardNum);
+        return Card.class.hashCode();
     }
 
     /**

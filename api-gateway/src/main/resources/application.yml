@@ -24,8 +24,16 @@ spring:
     redis:
       host: ${SPRING_DATA_REDIS_HOST:localhost}
       port: ${SPRING_DATA_REDIS_PORT:6379}
+  # Boot 4.x auto-detects the Redis session store from spring-session-data-redis
+  # on the classpath; the legacy spring.session.store-type property was removed
+  # and is inert (QA CR-15). Session tuning lives under spring.session.redis.*;
+  # the connection uses spring.data.redis.* above. The shared namespace lets the
+  # gateway and every downstream service read/write the same session.
   session:
-    store-type: redis
+    timeout: ${SPRING_SESSION_TIMEOUT:30m}
+    redis:
+      namespace: ${SPRING_SESSION_REDIS_NAMESPACE:carddemo:session}
+      flush-mode: on-save
 
   # ------------------------------------------------------------------
   # Gateway route table - SERVLET Spring Cloud Gateway Server WebMVC.
@@ -105,9 +113,16 @@ management:
       enabled: true
     readinessstate:
       enabled: true
+  # Distributed tracing export (QA CR-12). The gateway is the trace entry
+  # point, so its sampling DEFAULT stays 1.0, but both the OTLP endpoint and
+  # the probability are environment-driven (QA MN-03) - an operator lowers the
+  # sample under load via the env var without rebuilding the image.
+  otlp:
+    tracing:
+      endpoint: ${MANAGEMENT_OTLP_TRACING_ENDPOINT:http://localhost:4318/v1/traces}
   tracing:
     sampling:
-      probability: 1.0
+      probability: ${MANAGEMENT_TRACING_SAMPLING_PROBABILITY:1.0}
 
 # ====================================================================
 # Docker Compose profile (SPRING_PROFILES_ACTIVE=docker).

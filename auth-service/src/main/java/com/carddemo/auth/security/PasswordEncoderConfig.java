@@ -16,25 +16,33 @@
  */
 package com.carddemo.auth.security;
 
+import com.carddemo.common.security.PasswordEncoderFactory;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
-import org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder;
 import org.springframework.security.crypto.password.PasswordEncoder;
 
 /**
- * :purpose: Exposes the application-wide one-way password encoder (BCrypt)
- *           that replaces the legacy plaintext credential comparison performed
- *           by ``COSGN00C`` against the VSAM ``USRSEC`` security file.
+ * :purpose: Exposes the application-wide one-way password encoder that replaces
+ *           the legacy plaintext credential comparison performed by ``COSGN00C``
+ *           against the VSAM ``USRSEC`` security file.
+ * :note: Delegates to the shared {@link PasswordEncoderFactory} so every CardDemo
+ *        service uses one tuned, upgradeable encoding policy: a
+ *        ``DelegatingPasswordEncoder`` that encodes with ``{bcrypt}`` at the tuned
+ *        strength and stores the algorithm identifier with each hash, enabling
+ *        transparent rehash-on-authentication if the policy changes. Callers must
+ *        enforce the frozen ``PIC X(8)`` password width at the DTO boundary
+ *        (see ``SignonRequestDto``) before invoking the encoder.
  */
 @Configuration
 public class PasswordEncoderConfig {
 
     /**
-     * :returns: the shared ``PasswordEncoder`` (BCrypt) bean used to hash new
+     * :returns: the shared ``PasswordEncoder`` bean (a delegating ``{bcrypt}``
+     *           encoder from {@link PasswordEncoderFactory}) used to hash new
      *           passwords and to verify sign-on credentials.
      */
     @Bean
     public PasswordEncoder passwordEncoder() {
-        return new BCryptPasswordEncoder();
+        return PasswordEncoderFactory.createDelegatingPasswordEncoder();
     }
 }

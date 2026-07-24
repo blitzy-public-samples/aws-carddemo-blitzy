@@ -13,12 +13,13 @@
 # :output:  Two objects: a ``postgres-pvc`` PersistentVolumeClaim (2Gi, RWO)
 #           and a ``postgres`` Deployment scheduling one pod that serves the
 #           PostgreSQL protocol on container port 5432 (named ``postgres``).
-# :notes:   Credentials are not hardcoded here. POSTGRES_USER and
-#           POSTGRES_PASSWORD come from the ``carddemo-secret`` Secret and
-#           POSTGRES_DB from the ``carddemo-config`` ConfigMap. A single replica
-#           with the Recreate strategy keeps exactly one writer against the
-#           ReadWriteOnce volume. Design rationale lives in
-#           docs/decision-log.md.
+# :notes:   Credentials are not hardcoded. The bootstrap owner role
+#           (POSTGRES_USER / POSTGRES_PASSWORD) comes from the
+#           ``carddemo-postgres-bootstrap`` Secret and POSTGRES_DB from the
+#           ``carddemo-config`` ConfigMap; a DB-init step uses the owner to
+#           provision the per-service least-privilege roles (CR-11). A single
+#           replica with the Recreate strategy keeps exactly one writer against
+#           the ReadWriteOnce volume. Rationale: docs/decision-log.md.
 # =============================================================================
 apiVersion: v1
 kind: PersistentVolumeClaim
@@ -62,10 +63,28 @@ spec:
         app.kubernetes.io/part-of: carddemo
         app.kubernetes.io/component: database
     spec:
+      # Datastore hardening (MJ-10). The postgres:18 image's server process
+      # runs as uid 999; running the pod as that non-root user with a matching
+      # fsGroup lets it own the PVC without any elevated capability. A
+      # read-only root filesystem is intentionally NOT set here — PostgreSQL
+      # writes its socket and lock files under the container root at runtime.
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 999
+        runAsGroup: 999
+        fsGroup: 999
+        seccompProfile:
+          type: RuntimeDefault
+      automountServiceAccountToken: false
       containers:
         - name: postgres
           image: postgres:18
           imagePullPolicy: IfNotPresent
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
           ports:
             - containerPort: 5432
               name: postgres
@@ -75,16 +94,18 @@ spec:
                 configMapKeyRef:
                   name: carddemo-config
                   key: POSTGRES_DB
+            # Bootstrap owner role (CR-11) — distinct from the per-service roles
+            # that a DB-init step provisions using this owner.
             - name: POSTGRES_USER
               valueFrom:
                 secretKeyRef:
-                  name: carddemo-secret
-                  key: SPRING_DATASOURCE_USERNAME
+                  name: carddemo-postgres-bootstrap
+                  key: POSTGRES_USER
             - name: POSTGRES_PASSWORD
               valueFrom:
                 secretKeyRef:
-                  name: carddemo-secret
-                  key: SPRING_DATASOURCE_PASSWORD
+                  name: carddemo-postgres-bootstrap
+                  key: POSTGRES_PASSWORD
             # Store the cluster under a subdirectory so PostgreSQL init does not
             # trip over a volume-root "lost+found" directory.
             - name: PGDATA
@@ -99,16 +120,17 @@ spec:
             limits:
               cpu: "1"
               memory: 512Mi
-          # pg_isready confirms the server accepts connections. User/db default
-          # to carddemo (carddemo-config/secret); update args if those change.
+          # pg_isready confirms the server is accepting connections. It is
+          # checked without -U/-d so the probe is independent of the (now
+          # externalized) role and database names.
           readinessProbe:
             exec:
               command:
                 - pg_isready
-                - -U
-                - carddemo
-                - -d
-                - carddemo
+                - -h
+                - 127.0.0.1
+                - -p
+                - "5432"
             initialDelaySeconds: 10
             periodSeconds: 10
             timeoutSeconds: 5
@@ -117,10 +139,10 @@ spec:
             exec:
               command:
                 - pg_isready
-                - -U
-                - carddemo
-                - -d
-                - carddemo
+                - -h
+                - 127.0.0.1
+                - -p
+                - "5432"
             initialDelaySeconds: 30
             periodSeconds: 15
             timeoutSeconds: 5

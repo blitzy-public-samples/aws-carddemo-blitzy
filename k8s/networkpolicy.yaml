@@ -1,0 +1,154 @@
+---
+# ===========================================================================
+# k8s/networkpolicy.yaml — least-privilege pod-to-pod network segmentation.
+# ---------------------------------------------------------------------------
+# Runtime hardening (MJ-10). A namespace-wide default-deny for ingress is
+# combined with explicit allow rules that model the ONLY legitimate traffic
+# flows in the CardDemo topology:
+#
+#   internet ─▶ frontend:80 ─▶ (nginx /api proxy) ─▶ api-gateway:8080
+#                                                     │
+#                              api-gateway:8080 ─▶ backend services:8080
+#                                                     │
+#              backend services ─▶ postgres:5432 (per-service DB roles)
+#              backend services + api-gateway ─▶ redis:6379 (Spring Session)
+#
+# Requires a CNI that enforces NetworkPolicy (Calico, Cilium, etc.). Only
+# ingress is constrained; egress is left open so DNS and outbound calls keep
+# working. Kubelet health probes originate from the node and are not affected.
+# All selectors are namespace-local.
+# ===========================================================================
+
+# --- Default deny: every pod rejects all ingress unless explicitly allowed --
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-ingress
+  labels:
+    app.kubernetes.io/part-of: carddemo
+    app.kubernetes.io/component: network-policy
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+  # No ingress rules => deny all ingress.
+
+# --- Frontend: publicly reachable static UI on :80 --------------------------
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-frontend-ingress
+  labels:
+    app.kubernetes.io/part-of: carddemo
+    app.kubernetes.io/component: network-policy
+spec:
+  podSelector:
+    matchLabels:
+      app: frontend
+  policyTypes:
+    - Ingress
+  ingress:
+    # Public UI entry point: allow HTTP from any source on port 80.
+    - ports:
+        - protocol: TCP
+          port: 80
+
+# --- API gateway: receives only from the frontend nginx /api proxy ----------
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-api-gateway-ingress
+  labels:
+    app.kubernetes.io/part-of: carddemo
+    app.kubernetes.io/component: network-policy
+spec:
+  podSelector:
+    matchLabels:
+      app: api-gateway
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app: frontend
+      ports:
+        - protocol: TCP
+          port: 8080
+
+# --- Backend services: receive only from the api-gateway --------------------
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-backend-ingress
+  labels:
+    app.kubernetes.io/part-of: carddemo
+    app.kubernetes.io/component: network-policy
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/component: backend
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app: api-gateway
+      ports:
+        - protocol: TCP
+          port: 8080
+
+# --- PostgreSQL: reachable only by the DB-owning backend services -----------
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-postgres-ingress
+  labels:
+    app.kubernetes.io/part-of: carddemo
+    app.kubernetes.io/component: network-policy
+spec:
+  podSelector:
+    matchLabels:
+      app: postgres
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/component: backend
+      ports:
+        - protocol: TCP
+          port: 5432
+
+# --- Redis: reachable by the backend services and the gateway (session) -----
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-redis-ingress
+  labels:
+    app.kubernetes.io/part-of: carddemo
+    app.kubernetes.io/component: network-policy
+spec:
+  podSelector:
+    matchLabels:
+      app: redis
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/component: backend
+        - podSelector:
+            matchLabels:
+              app: api-gateway
+      ports:
+        - protocol: TCP
+          port: 6379

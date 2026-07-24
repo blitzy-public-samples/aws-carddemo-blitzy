@@ -1,11 +1,15 @@
 package com.carddemo.common.domain;
 
+import com.fasterxml.jackson.annotation.JsonIgnore;
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
+import jakarta.persistence.FetchType;
+import jakarta.persistence.ForeignKey;
 import jakarta.persistence.Id;
+import jakarta.persistence.Index;
+import jakarta.persistence.JoinColumn;
+import jakarta.persistence.ManyToOne;
 import jakarta.persistence.Table;
-
-import java.util.Objects;
 
 /**
  * Card cross-reference JPA entity.
@@ -21,7 +25,10 @@ import java.util.Objects;
  * source layout is intentionally not mapped.
  */
 @Entity
-@Table(name = "card_xref")
+@Table(name = "card_xref", indexes = {
+        @Index(name = "idx_card_xref_cust_id", columnList = "xref_cust_id"),
+        @Index(name = "idx_card_xref_acct_id", columnList = "xref_acct_id")
+})
 public class CardXref {
 
     /**
@@ -44,6 +51,30 @@ public class CardXref {
      */
     @Column(name = "xref_acct_id", nullable = false)
     private Long xrefAcctId;
+
+    /**
+     * Read-only association to the owning customer over the same
+     * ``xref_cust_id`` column; declares the ``fk_card_xref_customer`` foreign
+     * key without duplicating the scalar mapping.
+     */
+    @ManyToOne(fetch = FetchType.LAZY)
+    @JoinColumn(name = "xref_cust_id", referencedColumnName = "cust_id",
+            insertable = false, updatable = false,
+            foreignKey = @ForeignKey(name = "fk_card_xref_customer"))
+    @JsonIgnore
+    private Customer customer;
+
+    /**
+     * Read-only association to the owning account over the same
+     * ``xref_acct_id`` column; declares the ``fk_card_xref_account`` foreign
+     * key without duplicating the scalar mapping.
+     */
+    @ManyToOne(fetch = FetchType.LAZY)
+    @JoinColumn(name = "xref_acct_id", referencedColumnName = "acct_id",
+            insertable = false, updatable = false,
+            foreignKey = @ForeignKey(name = "fk_card_xref_account"))
+    @JsonIgnore
+    private Account account;
 
     /**
      * Default no-argument constructor required by the JPA provider.
@@ -107,6 +138,22 @@ public class CardXref {
     }
 
     /**
+     * :returns: the read-only owning-customer association, or ``null`` when not
+     *     loaded.
+     */
+    public Customer getCustomer() {
+        return customer;
+    }
+
+    /**
+     * :returns: the read-only owning-account association, or ``null`` when not
+     *     loaded.
+     */
+    public Account getAccount() {
+        return account;
+    }
+
+    /**
      * Compare two cross-references by their primary key.
      *
      * :param o: the object to compare with this instance.
@@ -117,18 +164,18 @@ public class CardXref {
         if (this == o) {
             return true;
         }
-        if (!(o instanceof CardXref that)) {
+        if (!(o instanceof CardXref other)) {
             return false;
         }
-        return Objects.equals(xrefCardNum, that.xrefCardNum);
+        return xrefCardNum != null && xrefCardNum.equals(other.getXrefCardNum());
     }
 
     /**
-     * :returns: a hash code derived from the card-number primary key.
+     * :returns: a proxy-stable hash code consistent with {@link #equals(Object)}.
      */
     @Override
     public int hashCode() {
-        return Objects.hash(xrefCardNum);
+        return CardXref.class.hashCode();
     }
 
     /**

@@ -1,5 +1,7 @@
 ---
-# Non-secret runtime config; credentials live in secret.yaml.
+# Non-secret runtime config shared by every service via envFrom. Credentials
+# live in secret.yaml (per-service DB roles + shared Redis AUTH); this ConfigMap
+# holds only non-sensitive values.
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -9,11 +11,31 @@ metadata:
     app.kubernetes.io/component: config
 data:
   SPRING_PROFILES_ACTIVE: "k8s"
+  # Datasource URL only (no credentials); each service supplies its own
+  # username/password from its per-service Secret (carddemo-<svc>-db).
   SPRING_DATASOURCE_URL: "jdbc:postgresql://postgres:5432/carddemo"
   SPRING_DATA_REDIS_HOST: "redis"
   SPRING_DATA_REDIS_PORT: "6379"
   POSTGRES_DB: "carddemo"
   MANAGEMENT_ENDPOINTS_WEB_EXPOSURE_INCLUDE: "health,info,metrics,prometheus"
   MANAGEMENT_ENDPOINT_HEALTH_PROBES_ENABLED: "true"
-  MANAGEMENT_ENDPOINT_HEALTH_SHOW_DETAILS: "always"
-  MANAGEMENT_TRACING_SAMPLING_PROBABILITY: "1.0"
+  # Health detail is rendered only to an authenticated principal (MJ-16);
+  # anonymous callers still receive the overall UP/DOWN status for probes.
+  MANAGEMENT_ENDPOINT_HEALTH_SHOW_DETAILS: "when-authorized"
+  # Conservative default trace sampling for the backend services (MN-03). The
+  # api-gateway raises this to 1.0 via a Deployment-level env override so every
+  # request entering the stack starts a sampled trace.
+  MANAGEMENT_TRACING_SAMPLING_PROBABILITY: "0.1"
+  # --- api-gateway downstream routes (CR-10) --------------------------------
+  # In-cluster Service DNS URIs consumed by the Spring Cloud Gateway route
+  # definitions (${AUTH_SERVICE_URI} ...). Every service resolves the others by
+  # their Kubernetes Service name on the internal port 8080. Harmless for
+  # non-gateway services (only the gateway reads them).
+  AUTH_SERVICE_URI: "http://auth-service:8080"
+  USER_SERVICE_URI: "http://user-service:8080"
+  ACCOUNT_SERVICE_URI: "http://account-service:8080"
+  CARD_SERVICE_URI: "http://card-service:8080"
+  TRANSACTION_SERVICE_URI: "http://transaction-service:8080"
+  BILLPAY_SERVICE_URI: "http://billpay-service:8080"
+  REPORTING_SERVICE_URI: "http://reporting-service:8080"
+  BATCH_SERVICE_URI: "http://batch-service:8080"

@@ -104,6 +104,11 @@ export interface Page<T> {
  * :field timestamp: ISO-8601 instant at which the error was produced.
  * :field status: HTTP status code.
  * :field error: HTTP reason phrase.
+ * :field errorCode: stable, non-sensitive application/domain error code that is
+ *   decoupled from the HTTP status, mirroring ``ErrorResponse.errorCode``. It
+ *   carries domain reject codes such as the batch posting codes ``100``-``103``
+ *   so callers can branch on a precise code instead of parsing ``message``;
+ *   absent when the error has no domain-specific code.
  * :field message: human-readable error description.
  * :field path: request path that produced the error.
  * :field traceId: MDC correlation id for the request; absent when tracing is
@@ -116,6 +121,7 @@ export interface ApiErrorResponse {
   timestamp: string;
   status: number;
   error: string;
+  errorCode?: string;
   message: string;
   path: string;
   traceId?: string;

@@ -1,81 +1,64 @@
 package com.carddemo.common.domain;
 
-import jakarta.persistence.Column;
-import jakarta.persistence.Entity;
-import jakarta.persistence.Id;
-import jakarta.persistence.Table;
-
 import java.math.BigDecimal;
 import java.util.Objects;
 
 /**
- * JPA entity for the daily-transaction feed (``DALYTRAN``).
+ * Plain batch-input model for the daily-transaction feed (``DALYTRAN``).
  *
- * :purpose: Maps the legacy COBOL ``DALYTRAN-RECORD`` layout
- *     (``app/cpy/CVTRA06Y.cpy``, record length 350) onto the PostgreSQL
- *     ``daily_transactions`` table. It is the batch-posting input feed consumed
- *     by the transaction-posting job and mirrors the posted ``Transaction``
- *     record field-for-field with the ``DALYTRAN-`` prefix preserved.
- * :output: A persistable ``daily_transactions`` row exposing the thirteen mapped
- *     columns; the trailing 20-byte COBOL ``FILLER`` carries no data and is
- *     intentionally not mapped. Monetary and identifier fields retain exact
- *     fixed-point (``BigDecimal``) and integral types so downstream posting
- *     validation (over-limit, cross-reference, and expiry checks) reproduces the
- *     legacy results byte-for-byte.
+ * :purpose: Represents one record of the legacy COBOL ``DALYTRAN-RECORD`` layout
+ *     (``app/cpy/CVTRA06Y.cpy``, record length 350) as read by the
+ *     transaction-posting batch job. This is a sequential feed record, NOT a
+ *     persistent table: the target schema defines exactly ten tables, so this
+ *     type is a non-entity value object (no ``@Entity``/``@Table``/``@Id``
+ *     mapping) consumed by the Spring Batch ``ItemReader``/``ItemProcessor`` and
+ *     never persisted directly.
+ * :output: A mutable carrier exposing the thirteen feed fields (the trailing
+ *     20-byte COBOL ``FILLER`` carries no data and is not modeled). Monetary and
+ *     identifier fields retain exact fixed-point (``BigDecimal``) and integral
+ *     types so downstream posting validation (over-limit, cross-reference, and
+ *     expiry checks) reproduces the legacy results byte-for-byte.
  */
-@Entity
-@Table(name = "daily_transactions")
 public class DailyTransaction {
 
-    /** ``DALYTRAN-ID`` PIC X(16) — natural primary key of the feed record. */
-    @Id
-    @Column(name = "dalytran_id", length = 16, nullable = false)
+    /** ``DALYTRAN-ID`` PIC X(16) — natural identifier of the feed record. */
     private String dalytranId;
 
     /** ``DALYTRAN-TYPE-CD`` PIC X(02) — transaction type code. */
-    @Column(name = "dalytran_type_cd", length = 2)
     private String dalytranTypeCd;
 
     /** ``DALYTRAN-CAT-CD`` PIC 9(04) — transaction category code. */
-    @Column(name = "dalytran_cat_cd")
     private Integer dalytranCatCd;
 
     /** ``DALYTRAN-SOURCE`` PIC X(10) — originating source channel. */
-    @Column(name = "dalytran_source", length = 10)
     private String dalytranSource;
 
     /** ``DALYTRAN-DESC`` PIC X(100) — transaction description. */
-    @Column(name = "dalytran_desc", length = 100)
     private String dalytranDesc;
 
     /**
-     * ``DALYTRAN-AMT`` PIC S9(09)V99 — signed transaction amount stored as
-     * ``NUMERIC(11,2)``. Held as {@link BigDecimal} (never a binary
-     * floating-point type) so the over-limit reject computation
+     * ``DALYTRAN-AMT`` PIC S9(09)V99 — signed transaction amount.
+     *
+     * Held as {@link BigDecimal} (never a binary floating-point type) so the
+     * over-limit reject computation
      * ``WS-TEMP-BAL = ACCT-CURR-CYC-CREDIT - ACCT-CURR-CYC-DEBIT + DALYTRAN-AMT``
      * preserves exact packed-decimal precision and scale.
      */
-    @Column(name = "dalytran_amt", precision = 11, scale = 2)
     private BigDecimal dalytranAmt;
 
     /** ``DALYTRAN-MERCHANT-ID`` PIC 9(09) — merchant identifier. */
-    @Column(name = "dalytran_merchant_id")
     private Long dalytranMerchantId;
 
     /** ``DALYTRAN-MERCHANT-NAME`` PIC X(50) — merchant name. */
-    @Column(name = "dalytran_merchant_name", length = 50)
     private String dalytranMerchantName;
 
     /** ``DALYTRAN-MERCHANT-CITY`` PIC X(50) — merchant city. */
-    @Column(name = "dalytran_merchant_city", length = 50)
     private String dalytranMerchantCity;
 
     /** ``DALYTRAN-MERCHANT-ZIP`` PIC X(10) — merchant postal code. */
-    @Column(name = "dalytran_merchant_zip", length = 10)
     private String dalytranMerchantZip;
 
     /** ``DALYTRAN-CARD-NUM`` PIC X(16) — card number used for cross-reference lookup. */
-    @Column(name = "dalytran_card_num", length = 16)
     private String dalytranCardNum;
 
     /**
@@ -84,32 +67,29 @@ public class DailyTransaction {
      * string because the posting job compares its first ten characters against
      * the account expiration date for the expiry reject check.
      */
-    @Column(name = "dalytran_orig_ts", length = 26)
     private String dalytranOrigTs;
 
     /** ``DALYTRAN-PROC-TS`` PIC X(26) — processing timestamp (26-character form). */
-    @Column(name = "dalytran_proc_ts", length = 26)
     private String dalytranProcTs;
 
     /**
      * Creates an empty daily-transaction record.
      *
-     * :purpose: No-argument constructor required by the JPA provider for entity
-     *     instantiation and hydration.
+     * :purpose: No-argument constructor used by the batch item reader/mapper.
      */
     public DailyTransaction() {
-        // Intentionally empty; JPA populates fields via property access.
+        // Intentionally empty; fields are populated by the batch field-set mapper.
     }
 
     /**
-     * :return: the ``DALYTRAN-ID`` primary key.
+     * :return: the ``DALYTRAN-ID`` record identifier.
      */
     public String getDalytranId() {
         return dalytranId;
     }
 
     /**
-     * :param dalytranId: the ``DALYTRAN-ID`` primary key to set.
+     * :param dalytranId: the ``DALYTRAN-ID`` record identifier to set.
      */
     public void setDalytranId(String dalytranId) {
         this.dalytranId = dalytranId;
@@ -284,26 +264,25 @@ public class DailyTransaction {
     }
 
     /**
-     * Compares two daily-transaction records for identity equality.
+     * Compares two daily-transaction records by their ``DALYTRAN-ID`` value.
      *
      * :param o: the object to compare against.
      * :return: ``true`` when the other object is a ``DailyTransaction`` with an
-     *     equal ``DALYTRAN-ID`` primary key.
+     *     equal ``DALYTRAN-ID`` value.
      */
     @Override
     public boolean equals(Object o) {
         if (this == o) {
             return true;
         }
-        if (o == null || getClass() != o.getClass()) {
+        if (!(o instanceof DailyTransaction other)) {
             return false;
         }
-        DailyTransaction that = (DailyTransaction) o;
-        return Objects.equals(dalytranId, that.dalytranId);
+        return Objects.equals(dalytranId, other.getDalytranId());
     }
 
     /**
-     * :return: a hash code derived from the ``DALYTRAN-ID`` primary key.
+     * :return: a hash code derived from the ``DALYTRAN-ID`` value.
      */
     @Override
     public int hashCode() {

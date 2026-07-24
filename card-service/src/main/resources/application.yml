@@ -26,14 +26,17 @@ spring:
       # Flyway owns the schema; Hibernate only validates entity mapping.
       ddl-auto: validate
 
-  # Flyway schema + seed migrations for the card-owned tables
-  # (cards, card_xref). A per-service history table isolates this
-  # service's migration bookkeeping from the other services sharing the
-  # 'carddemo' database. Reconciliation rationale: docs/decision-log.md.
+  # Flyway is DISABLED for card-service: it owns no db/migration scripts in
+  # this tranche. A single migration owner (batch-service) applies the shared
+  # 'carddemo' schema/history, avoiding multiple concurrent Flyway histories
+  # and baseline gaps in one public schema (QA CR-09/CR-16). The consolidated
+  # business-schema migration (cards, card_xref) is a documented cross-tranche
+  # deliverable; see docs/decision-log.md. Re-enable only when this service
+  # owns versioned migrations under its dedicated history table.
   flyway:
-    enabled: true
+    enabled: false
     locations: classpath:db/migration
-    baseline-on-migrate: true
+    baseline-on-migrate: false
     table: flyway_schema_history_card
 
   data:
@@ -42,8 +45,16 @@ spring:
       port: ${SPRING_DATA_REDIS_PORT:6379}
 
   # Externalized pseudo-conversational session (COMMAREA replacement).
+  # Boot 4.x auto-detects the Redis session store from spring-session-data-redis
+  # on the classpath; the legacy spring.session.store-type property was removed
+  # and is inert (QA CR-15). Session tuning lives under spring.session.redis.*;
+  # the Redis connection uses spring.data.redis.* declared above. A shared
+  # namespace lets every service read/write the same COMMAREA-equivalent session.
   session:
-    store-type: redis
+    timeout: ${SPRING_SESSION_TIMEOUT:30m}
+    redis:
+      namespace: ${SPRING_SESSION_REDIS_NAMESPACE:carddemo:session}
+      flush-mode: on-save
 
 server:
   port: 8080
@@ -61,15 +72,25 @@ management:
     health:
       probes:
         enabled: true
-      show-details: always
+      # Health detail is disclosed only to authenticated principals so an
+      # anonymous caller cannot enumerate datastore/dependency internals
+      # (QA MJ-16). Liveness/readiness aggregate status stays public for probes.
+      show-details: when-authorized
   health:
     livenessstate:
       enabled: true
     readinessstate:
       enabled: true
+  # Distributed tracing export (QA CR-12). The OTLP endpoint and the sampling
+  # probability are environment-driven (QA MN-03): 100% capture is unsafe for
+  # p95/memory NFRs in production, so the default is a 10% sample that each
+  # environment overrides (e.g. 1.0 in dev, lower under load).
+  otlp:
+    tracing:
+      endpoint: ${MANAGEMENT_OTLP_TRACING_ENDPOINT:http://localhost:4318/v1/traces}
   tracing:
     sampling:
-      probability: 1.0
+      probability: ${MANAGEMENT_TRACING_SAMPLING_PROBABILITY:0.1}
 
 # ---------------------------------------------------------------------
 # Docker Compose profile (SPRING_PROFILES_ACTIVE=docker). Compose passes

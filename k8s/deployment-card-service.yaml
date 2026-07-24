@@ -18,7 +18,7 @@
 #             built/loaded image from being re-pulled in a demo cluster.
 #           * Runtime configuration is injected entirely via ``envFrom`` from
 #             the shared ConfigMap ``carddemo-config`` (k8s/configmap.yaml,
-#             non-secret settings) and Secret ``carddemo-secret``
+#             non-secret settings) and Secret ``carddemo-card-service-db``
 #             (k8s/secret.yaml, datasource credentials); nothing is hard-coded
 #             in this manifest. Keys bind 1:1 to Spring Boot relaxed-binding
 #             environment variables (SPRING_DATASOURCE_*, SPRING_DATA_REDIS_*).
@@ -58,6 +58,17 @@ spec:
         app.kubernetes.io/part-of: carddemo
         app.kubernetes.io/component: backend
     spec:
+      # Pod-level runtime hardening (MJ-10): run as a non-root user with a
+      # default seccomp profile and no auto-mounted ServiceAccount token
+      # (these services never call the Kubernetes API).
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      automountServiceAccountToken: false
       containers:
         - name: card-service
           # Built by card-service/Dockerfile (FROM eclipse-temurin:21-jre).
@@ -68,11 +79,28 @@ spec:
               name: http
           # Inject every runtime setting from the shared ConfigMap and Secret;
           # never hard-code datasource/Redis values in this manifest.
+          # Container-level runtime hardening (MJ-10): drop every Linux
+          # capability, forbid privilege escalation, and run on a read-only
+          # root filesystem (writable scratch is the mounted tmp emptyDir).
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
           envFrom:
             - configMapRef:
                 name: carddemo-config
+            # Per-service least-privilege database role (CR-11): each service
+            # authenticates with its own DB principal, not a shared owner.
             - secretRef:
-                name: carddemo-secret
+                name: carddemo-card-service-db
+            # Shared Redis AUTH secret for externalized Spring Session (CR-17).
+            - secretRef:
+                name: carddemo-redis-secret
           resources:
             requests:
               cpu: 250m
@@ -110,3 +138,8 @@ spec:
             periodSeconds: 10
             timeoutSeconds: 3
             failureThreshold: 3
+      # Writable scratch for the read-only root filesystem (MJ-10). A Spring
+      # Boot fat-jar only needs a writable /tmp (Tomcat work dir, JVM temp).
+      volumes:
+        - name: tmp
+          emptyDir: {}

@@ -5,8 +5,6 @@ import jakarta.persistence.Entity;
 import jakarta.persistence.Id;
 import jakarta.persistence.Table;
 
-import java.util.Objects;
-
 /**
  * JPA entity for the transaction-type reference table (``tran_type``).
  *
@@ -97,7 +95,9 @@ public class TranType {
      * Compare two transaction types by their primary-key code.
      *
      * :param o: the object to compare with this entity.
-     * :output: ``true`` when the other object is a {@code TranType} with an equal ``tranType`` code.
+     * :output: ``true`` when the other object is a {@code TranType} with an equal,
+     *     non-null ``tranType`` code. The comparison uses the accessor rather than
+     *     direct field access so that Hibernate lazy proxies are compared correctly.
      */
     @Override
     public boolean equals(Object o) {
@@ -107,17 +107,19 @@ public class TranType {
         if (!(o instanceof TranType other)) {
             return false;
         }
-        return Objects.equals(tranType, other.tranType);
+        return tranType != null && tranType.equals(other.getTranType());
     }
 
     /**
-     * Compute a hash code derived from the primary-key code.
+     * Compute a proxy-stable hash code for this entity.
      *
-     * :output: a hash code consistent with {@link #equals(Object)}.
+     * :output: a constant hash code derived from the entity class so that the value
+     *     never changes across the entity lifecycle (including before the primary key
+     *     is assigned), consistent with {@link #equals(Object)}.
      */
     @Override
     public int hashCode() {
-        return Objects.hash(tranType);
+        return TranType.class.hashCode();
     }
 
     /**

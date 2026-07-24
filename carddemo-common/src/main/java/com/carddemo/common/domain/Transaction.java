@@ -6,7 +6,6 @@ import jakarta.persistence.Id;
 import jakarta.persistence.Table;
 
 import java.math.BigDecimal;
-import java.util.Objects;
 
 /**
  * JPA entity for a posted transaction.
@@ -86,106 +85,236 @@ public class Transaction {
     public Transaction() {
     }
 
+    /**
+     * Return the transaction identifier.
+     *
+     * :output: the 16-character ``tran_id`` primary key.
+     */
     public String getTranId() {
         return tranId;
     }
 
+    /**
+     * Set the transaction identifier.
+     *
+     * :param tranId: the 16-character ``tran_id`` primary key.
+     */
     public void setTranId(String tranId) {
         this.tranId = tranId;
     }
 
+    /**
+     * Return the transaction type code.
+     *
+     * :output: the two-character ``tran_type_cd`` value.
+     */
     public String getTranTypeCd() {
         return tranTypeCd;
     }
 
+    /**
+     * Set the transaction type code.
+     *
+     * :param tranTypeCd: the two-character ``tran_type_cd`` value.
+     */
     public void setTranTypeCd(String tranTypeCd) {
         this.tranTypeCd = tranTypeCd;
     }
 
+    /**
+     * Return the transaction category code.
+     *
+     * :output: the four-digit ``tran_cat_cd`` value.
+     */
     public Integer getTranCatCd() {
         return tranCatCd;
     }
 
+    /**
+     * Set the transaction category code.
+     *
+     * :param tranCatCd: the four-digit ``tran_cat_cd`` value.
+     */
     public void setTranCatCd(Integer tranCatCd) {
         this.tranCatCd = tranCatCd;
     }
 
+    /**
+     * Return the transaction origination source.
+     *
+     * :output: the ``tran_source`` value.
+     */
     public String getTranSource() {
         return tranSource;
     }
 
+    /**
+     * Set the transaction origination source.
+     *
+     * :param tranSource: the ``tran_source`` value.
+     */
     public void setTranSource(String tranSource) {
         this.tranSource = tranSource;
     }
 
+    /**
+     * Return the free-text transaction description.
+     *
+     * :output: the ``tran_desc`` value.
+     */
     public String getTranDesc() {
         return tranDesc;
     }
 
+    /**
+     * Set the free-text transaction description.
+     *
+     * :param tranDesc: the ``tran_desc`` value.
+     */
     public void setTranDesc(String tranDesc) {
         this.tranDesc = tranDesc;
     }
 
+    /**
+     * Return the monetary transaction amount.
+     *
+     * :output: the ``tran_amt`` value as a scale-2 {@link BigDecimal}.
+     */
     public BigDecimal getTranAmt() {
         return tranAmt;
     }
 
+    /**
+     * Set the monetary transaction amount.
+     *
+     * :param tranAmt: the ``tran_amt`` value as a scale-2 {@link BigDecimal}.
+     */
     public void setTranAmt(BigDecimal tranAmt) {
         this.tranAmt = tranAmt;
     }
 
+    /**
+     * Return the merchant identifier.
+     *
+     * :output: the ``tran_merchant_id`` value.
+     */
     public Long getTranMerchantId() {
         return tranMerchantId;
     }
 
+    /**
+     * Set the merchant identifier.
+     *
+     * :param tranMerchantId: the ``tran_merchant_id`` value.
+     */
     public void setTranMerchantId(Long tranMerchantId) {
         this.tranMerchantId = tranMerchantId;
     }
 
+    /**
+     * Return the merchant name.
+     *
+     * :output: the ``tran_merchant_name`` value.
+     */
     public String getTranMerchantName() {
         return tranMerchantName;
     }
 
+    /**
+     * Set the merchant name.
+     *
+     * :param tranMerchantName: the ``tran_merchant_name`` value.
+     */
     public void setTranMerchantName(String tranMerchantName) {
         this.tranMerchantName = tranMerchantName;
     }
 
+    /**
+     * Return the merchant city.
+     *
+     * :output: the ``tran_merchant_city`` value.
+     */
     public String getTranMerchantCity() {
         return tranMerchantCity;
     }
 
+    /**
+     * Set the merchant city.
+     *
+     * :param tranMerchantCity: the ``tran_merchant_city`` value.
+     */
     public void setTranMerchantCity(String tranMerchantCity) {
         this.tranMerchantCity = tranMerchantCity;
     }
 
+    /**
+     * Return the merchant postal code.
+     *
+     * :output: the ``tran_merchant_zip`` value.
+     */
     public String getTranMerchantZip() {
         return tranMerchantZip;
     }
 
+    /**
+     * Set the merchant postal code.
+     *
+     * :param tranMerchantZip: the ``tran_merchant_zip`` value.
+     */
     public void setTranMerchantZip(String tranMerchantZip) {
         this.tranMerchantZip = tranMerchantZip;
     }
 
+    /**
+     * Return the card number associated with this transaction.
+     *
+     * :output: the ``tran_card_num`` scalar foreign-key value.
+     */
     public String getTranCardNum() {
         return tranCardNum;
     }
 
+    /**
+     * Set the card number associated with this transaction.
+     *
+     * :param tranCardNum: the ``tran_card_num`` scalar foreign-key value.
+     */
     public void setTranCardNum(String tranCardNum) {
         this.tranCardNum = tranCardNum;
     }
 
+    /**
+     * Return the origination timestamp.
+     *
+     * :output: the 26-character ``tran_orig_ts`` value (YYYY-MM-DD-HH.MM.SS.mmmmmm).
+     */
     public String getTranOrigTs() {
         return tranOrigTs;
     }
 
+    /**
+     * Set the origination timestamp.
+     *
+     * :param tranOrigTs: the 26-character ``tran_orig_ts`` value (YYYY-MM-DD-HH.MM.SS.mmmmmm).
+     */
     public void setTranOrigTs(String tranOrigTs) {
         this.tranOrigTs = tranOrigTs;
     }
 
+    /**
+     * Return the processing timestamp.
+     *
+     * :output: the 26-character ``tran_proc_ts`` value (YYYY-MM-DD-HH.MM.SS.mmmmmm).
+     */
     public String getTranProcTs() {
         return tranProcTs;
     }
 
+    /**
+     * Set the processing timestamp.
+     *
+     * :param tranProcTs: the 26-character ``tran_proc_ts`` value (YYYY-MM-DD-HH.MM.SS.mmmmmm).
+     */
     public void setTranProcTs(String tranProcTs) {
         this.tranProcTs = tranProcTs;
     }
@@ -203,23 +332,23 @@ public class Transaction {
         if (this == o) {
             return true;
         }
-        if (o == null || getClass() != o.getClass()) {
+        if (!(o instanceof Transaction other)) {
             return false;
         }
-        Transaction that = (Transaction) o;
-        return Objects.equals(tranId, that.tranId);
+        return tranId != null && tranId.equals(other.getTranId());
     }
 
     /**
      * Computes the identity hash for this transaction.
      *
-     * :purpose: Derives the hash code from the ``tran_id`` primary key so it is
-     *     consistent with {@link #equals(Object)}.
-     * :output: the hash code of {@code tranId}.
+     * :purpose: Returns a proxy-stable constant hash derived from the entity class so
+     *     the value never changes across the entity lifecycle (including before the
+     *     primary key is assigned), consistent with {@link #equals(Object)}.
+     * :output: a constant hash code for the {@code Transaction} type.
      */
     @Override
     public int hashCode() {
-        return Objects.hash(tranId);
+        return Transaction.class.hashCode();
     }
 
     /**

@@ -13,6 +13,13 @@
  */
 package com.carddemo.common.dto;
 
+import com.fasterxml.jackson.annotation.JsonCreator;
+import com.fasterxml.jackson.annotation.JsonFormat;
+import com.fasterxml.jackson.annotation.JsonValue;
+
+import jakarta.validation.constraints.Digits;
+import jakarta.validation.constraints.Size;
+
 import java.io.Serializable;
 
 /**
@@ -60,28 +67,35 @@ public class SessionContext implements Serializable {
         }
 
         /**
-         * :purpose: Tolerant lookup of a {@code UserType} from a raw COMMAREA value.
-         *  Session state (unlike request input) may be unset before sign-on, so this
-         *  never throws: it returns {@code null} for a null/blank code and for any code
-         *  that matches neither 'A' nor 'U'.
-         * :param code: the raw value; leading/trailing spaces are trimmed and the first
-         *  character is upper-cased before matching.
-         * :returns: the matching {@code UserType}, or {@code null} when the value is
-         *  null, blank, or unrecognized.
+         * :purpose: Serialize the user type as its exact one-character COMMAREA code so
+         *  the JSON wire value is ``"A"`` or ``"U"`` rather than the Java enum name.
+         * :returns: the single-character code as a one-character string.
          */
+        @JsonValue
+        public String toJsonValue() {
+            return String.valueOf(code);
+        }
+
+        /**
+         * :purpose: Strict lookup of a {@code UserType} from a raw COMMAREA value, used
+         *  both for session hydration and as the Jackson deserialization factory. Only an
+         *  exact one-byte ``"A"`` or ``"U"`` is accepted, preserving the frozen
+         *  ``CDEMO-USER-TYPE`` PIC X(01) contract; the match is case-sensitive and does
+         *  not trim, so ``"a"``, ``"ADMIN"``, ``"unknown"`` and any multi-character value
+         *  are rejected. Session state may be unset before sign-on, so a null, empty, or
+         *  unrecognized value yields {@code null} (fail-closed for authorization guards)
+         *  rather than throwing.
+         * :param code: the raw COMMAREA value.
+         * :returns: {@code CDEMO_USRTYP_ADMIN} for ``"A"``, {@code CDEMO_USRTYP_USER} for
+         *  ``"U"``, or {@code null} for any other value.
+         */
+        @JsonCreator
         public static UserType fromCode(String code) {
-            if (code == null) {
-                return null;
+            if ("A".equals(code)) {
+                return CDEMO_USRTYP_ADMIN;
             }
-            String trimmed = code.trim();
-            if (trimmed.isEmpty()) {
-                return null;
-            }
-            char first = Character.toUpperCase(trimmed.charAt(0));
-            for (UserType type : values()) {
-                if (type.code == first) {
-                    return type;
-                }
+            if ("U".equals(code)) {
+                return CDEMO_USRTYP_USER;
             }
             return null;
         }
@@ -109,18 +123,23 @@ public class SessionContext implements Serializable {
         }
 
         /**
+         * :purpose: Serialize the program context as its numeric COMMAREA code so the
+         *  JSON wire value is ``0`` or ``1`` rather than the Java enum name.
          * :returns: the numeric COMMAREA code (0 for first entry, 1 for re-entry).
          */
+        @JsonValue
         public int getCode() {
             return code;
         }
 
         /**
-         * :purpose: Look up a {@code ProgramContext} from its numeric COMMAREA code.
+         * :purpose: Look up a {@code ProgramContext} from its numeric COMMAREA code, used
+         *  both for session hydration and as the Jackson deserialization factory.
          * :param code: the numeric context flag (0 or 1).
          * :returns: the matching {@code ProgramContext}, or {@code null} for any value
          *  other than 0 or 1.
          */
+        @JsonCreator
         public static ProgramContext fromCode(int code) {
             for (ProgramContext context : values()) {
                 if (context.code == code) {
@@ -132,18 +151,23 @@ public class SessionContext implements Serializable {
     }
 
     /** :purpose: COBOL ``CDEMO-FROM-TRANID`` PIC X(04) — originating transaction id. */
+    @Size(max = 4)
     private String fromTranid;
 
     /** :purpose: COBOL ``CDEMO-FROM-PROGRAM`` PIC X(08) — originating program name. */
+    @Size(max = 8)
     private String fromProgram;
 
     /** :purpose: COBOL ``CDEMO-TO-TRANID`` PIC X(04) — target transaction id. */
+    @Size(max = 4)
     private String toTranid;
 
     /** :purpose: COBOL ``CDEMO-TO-PROGRAM`` PIC X(08) — target program name. */
+    @Size(max = 8)
     private String toProgram;
 
     /** :purpose: COBOL ``CDEMO-USER-ID`` PIC X(08) — signed-on user id. */
+    @Size(max = 8)
     private String userId;
 
     /** :purpose: COBOL ``CDEMO-USER-TYPE`` PIC X(01) + 88-levels — user role. */
@@ -152,22 +176,38 @@ public class SessionContext implements Serializable {
     /** :purpose: COBOL ``CDEMO-PGM-CONTEXT`` PIC 9(01) + 88-levels — entry/re-entry flag. */
     private ProgramContext programContext;
 
-    /** :purpose: COBOL ``CDEMO-CUST-ID`` PIC 9(09) — customer identifier. */
+    /**
+     * :purpose: COBOL ``CDEMO-CUST-ID`` PIC 9(09) — customer identifier. Serialized as a
+     *  JSON string so the frontend receives an exact-width numeric identifier without
+     *  precision loss.
+     */
+    @JsonFormat(shape = JsonFormat.Shape.STRING)
+    @Digits(integer = 9, fraction = 0)
     private Long custId;
 
     /** :purpose: COBOL ``CDEMO-CUST-FNAME`` PIC X(25) — customer first name. */
+    @Size(max = 25)
     private String custFname;
 
     /** :purpose: COBOL ``CDEMO-CUST-MNAME`` PIC X(25) — customer middle name. */
+    @Size(max = 25)
     private String custMname;
 
     /** :purpose: COBOL ``CDEMO-CUST-LNAME`` PIC X(25) — customer last name. */
+    @Size(max = 25)
     private String custLname;
 
-    /** :purpose: COBOL ``CDEMO-ACCT-ID`` PIC 9(11) — account identifier. */
+    /**
+     * :purpose: COBOL ``CDEMO-ACCT-ID`` PIC 9(11) — account identifier. Serialized as a
+     *  JSON string so the frontend receives an exact-width numeric identifier without
+     *  precision loss.
+     */
+    @JsonFormat(shape = JsonFormat.Shape.STRING)
+    @Digits(integer = 11, fraction = 0)
     private Long acctId;
 
     /** :purpose: COBOL ``CDEMO-ACCT-STATUS`` PIC X(01) — account status flag. */
+    @Size(max = 1)
     private String acctStatus;
 
     /**
@@ -175,12 +215,15 @@ public class SessionContext implements Serializable {
      *  {@code String} to preserve leading zeros (frozen-contract identifier, never used
      *  arithmetically).
      */
+    @Size(max = 16)
     private String cardNum;
 
     /** :purpose: COBOL ``CDEMO-LAST-MAP`` PIC X(7) — last BMS map name. */
+    @Size(max = 7)
     private String lastMap;
 
     /** :purpose: COBOL ``CDEMO-LAST-MAPSET`` PIC X(7) — last BMS mapset name. */
+    @Size(max = 7)
     private String lastMapset;
 
     /**

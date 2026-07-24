@@ -1,3 +1,4 @@
+---
 # =============================================================================
 # Redis 8 Deployment — CardDemo externalized Spring Session / cache store.
 #
@@ -7,11 +8,12 @@
 #           ``SPRING_DATA_REDIS_HOST=redis`` and ``SPRING_DATA_REDIS_PORT=6379``.
 # :output:  A Deployment named ``redis`` scheduling one pod that serves the
 #           Redis protocol on container port 6379 (named ``redis``).
-# :notes:   Redis 8 runs without authentication by default, so no
-#           ``--requirepass`` argument and no Secret/ConfigMap environment are
-#           wired here. Session data is transient — losing it only forces users
-#           to re-authenticate — so it is kept on an ephemeral ``emptyDir``
-#           volume rather than a PersistentVolumeClaim.
+# :notes:   Redis requires authentication (CR-17): the server starts with
+#           ``--requirepass`` sourced from the ``carddemo-redis-secret`` Secret,
+#           and every client (all services + the gateway) presents the same
+#           secret. The Service is ClusterIP-only (never host-exposed). Session
+#           data is transient, so it is kept on an ephemeral ``emptyDir`` volume
+#           rather than a PersistentVolumeClaim.
 # =============================================================================
 apiVersion: apps/v1
 kind: Deployment
@@ -33,10 +35,44 @@ spec:
         app.kubernetes.io/part-of: carddemo
         app.kubernetes.io/component: cache
     spec:
+      # Datastore hardening (MJ-10). The redis:8 image runs as uid 999; run the
+      # pod as that non-root user, drop all capabilities, and use a read-only
+      # root filesystem (Redis only writes to the /data volume).
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 999
+        runAsGroup: 999
+        fsGroup: 999
+        seccompProfile:
+          type: RuntimeDefault
+      automountServiceAccountToken: false
       containers:
         - name: redis
           image: redis:8
           imagePullPolicy: IfNotPresent
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+          # Redis AUTH is mandatory (CR-17). The password is injected from the
+          # Secret and referenced in args via the $(VAR) form, which Kubernetes
+          # substitutes from the container environment (so the literal is never
+          # baked into the manifest).
+          env:
+            - name: REDIS_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: carddemo-redis-secret
+                  key: SPRING_DATA_REDIS_PASSWORD
+          command:
+            - redis-server
+          args:
+            - --appendonly
+            - "yes"
+            - --requirepass
+            - $(REDIS_PASSWORD)
           ports:
             - containerPort: 6379
               name: redis
@@ -50,11 +86,15 @@ spec:
           volumeMounts:
             - name: redis-data
               mountPath: /data
+          # Probes authenticate with the same password (via the container env),
+          # so an unauthenticated PING (which now returns NOAUTH) never marks a
+          # healthy pod as failed.
           readinessProbe:
             exec:
               command:
-                - redis-cli
-                - ping
+                - sh
+                - -c
+                - redis-cli -a "$REDIS_PASSWORD" --no-auth-warning ping | grep -q PONG
             initialDelaySeconds: 5
             periodSeconds: 10
             timeoutSeconds: 3
@@ -62,8 +102,9 @@ spec:
           livenessProbe:
             exec:
               command:
-                - redis-cli
-                - ping
+                - sh
+                - -c
+                - redis-cli -a "$REDIS_PASSWORD" --no-auth-warning ping | grep -q PONG
             initialDelaySeconds: 15
             periodSeconds: 15
             timeoutSeconds: 3

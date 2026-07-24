@@ -133,11 +133,29 @@ button {
   cursor: pointer;
 }
 
-button:hover,
-button:focus {
+button:hover {
   color: var(--term-bg);
   background: var(--term-neutral);
-  outline: none;
+}
+
+/* Pressed state uses the green "action" reverse video. */
+button:active {
+  color: var(--term-bg);
+  background: var(--term-green);
+}
+
+/* Keyboard focus ring, distinct from the mouse hover treatment. */
+button:focus-visible {
+  outline: 2px solid var(--term-yellow);
+  outline-offset: 1px;
+}
+
+/* Disabled keys are dimmed and non-interactive. */
+button:disabled {
+  color: var(--term-neutral-dim);
+  border-color: var(--term-neutral-dim);
+  background: transparent;
+  cursor: not-allowed;
 }
 
 /* ------------------------------------------------------------------ */
@@ -170,6 +188,19 @@ button:focus {
 
 .appHeader__right {
   justify-self: end;
+}
+
+/*
+ * Screen titles are semantic headings (h1 = title01, h2 = title02) for
+ * assistive technology, but must still render as plain 3270 title text: no
+ * default browser margin, size, or bold weight.
+ */
+.appHeader__center h1,
+.appHeader__center h2 {
+  margin: 0;
+  font: inherit;
+  font-weight: normal;
+  color: inherit;
 }
 
 /* ------------------------------------------------------------------ */
@@ -257,9 +288,14 @@ button:focus {
   text-align: right;
 }
 
-/* Selectable / highlighted rows use reverse video. */
+/*
+ * Selectable / highlighted rows use reverse video. ``:focus-within`` gives
+ * keyboard users the same highlight as mouse ``:hover`` when a control inside
+ * the row (or the focusable row itself) receives focus.
+ */
 .dataTable tbody tr.selected,
-.dataTable tbody tr:hover {
+.dataTable tbody tr:hover,
+.dataTable tbody tr:focus-within {
   color: var(--term-bg);
   background: var(--term-green);
 }

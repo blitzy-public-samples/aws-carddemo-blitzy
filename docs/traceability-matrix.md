@@ -1,12 +1,22 @@
 # CardDemo Modernization — Bidirectional Traceability Matrix
 
-This matrix provides **100% bidirectional coverage** between the legacy AWS CardDemo
-mainframe application (COBOL / CICS / VSAM / BMS / JCL / RACF) and its cloud-native
-Java 21 / Spring Boot 4.1.0 + React 19 target, as mandated by the **Explainability rule**
-(AAP 0.7.2, 0.7.4). Every legacy source construct maps *forward* to a target
-implementation, and every target implementation traces *back* to a source construct — or
-is explicitly flagged as rule-mandated infrastructure or as a derived pattern with no 1:1
-legacy field.
+This matrix maps the legacy AWS CardDemo mainframe application (COBOL / CICS / VSAM /
+BMS / JCL / RACF) to its cloud-native Java 21 / Spring Boot 4.1.0 + React 19 target
+design, as mandated by the **Explainability rule** (AAP 0.7.2, 0.7.4). Every legacy
+source construct maps *forward* to its target implementation, and every target
+implementation traces *back* to a source construct — or is explicitly flagged as
+rule-mandated infrastructure or as a derived pattern with no 1:1 legacy field.
+
+> **Scope of this matrix.** The forward direction enumerates the COMPLETE legacy
+> inventory and the target it maps to in the end-state design. The migration is
+> delivered across multiple tranches, so the *target* implementations are a mix of
+> **delivered** (present in this foundation tranche — the shared `carddemo-common`
+> library, per-service configuration, observability, containers/orchestration, and
+> governance docs) and **planned** (services, controllers, repositories, per-screen
+> pages, and the business-schema migrations delivered in later tranches). A bare
+> "100% of files already present on disk" claim is therefore **not** asserted here;
+> coverage is verified per tranche as the target files land. Section 11 enumerates
+> exactly what this tranche delivers.
 
 Rationale for each non-trivial decision lives in `docs/decision-log.md`; this matrix maps
 constructs only and keeps every cell terse. Legacy identifiers and paths are written
@@ -89,7 +99,7 @@ The legacy inventory reconciled against the repository (AAP 0.1.3) and covered i
 | `CVACT02Y` `[app/cpy/CVACT02Y.cpy]` | `domain/Card.java` + `cards` table (`CARD-NUM` `X(16)` → `@Id`; FK to account; `CARD-EXPIRAION-DATE` preserved) | `source → target` |
 | `CVACT03Y` `[app/cpy/CVACT03Y.cpy]` | `domain/CardXref.java` + `card_xref` table (CXACAIX `CARD-NUM` ↔ `CUST-ID` ↔ `ACCT-ID` linkage) | `source → target` |
 | `CVTRA05Y` `[app/cpy/CVTRA05Y.cpy]` | `domain/Transaction.java` + `transactions` table (`TRAN-AMT` COMP-3 → `NUMERIC(11,2)`) | `source → target` |
-| `CVTRA06Y` `[app/cpy/CVTRA06Y.cpy]` | `domain/DailyTransaction.java` (daily feed layout) | `source → target` |
+| `CVTRA06Y` `[app/cpy/CVTRA06Y.cpy]` | `domain/DailyTransaction.java` — plain POJO batch read model, **NOT** a JPA `@Entity`/table (the daily feed is consumed by the posting job, which writes `Transaction` rows; deviation logged in decision-log §6) | `source → target` |
 | `CVTRA01Y` `[app/cpy/CVTRA01Y.cpy]` | `domain/TranCatBal.java` (compound key → `@IdClass`: acct + type + cat) | `source → target` |
 | `CVTRA02Y` `[app/cpy/CVTRA02Y.cpy]` | `domain/DiscGroup.java` (compound key → `@IdClass`; `DIS-INT-RATE` COMP-3) | `source → target` |
 | `CVTRA03Y` `[app/cpy/CVTRA03Y.cpy]` | `domain/TranType.java` (reference entity, 7 rows) | `source → target` |
@@ -97,7 +107,7 @@ The legacy inventory reconciled against the repository (AAP 0.1.3) and covered i
 | `CSUSR01Y` `[app/cpy/CSUSR01Y.cpy]` | `domain/SecurityUser.java` + `security_users` table (`SEC-USR-PWD` plaintext → encoded hash; `SEC-USR-TYPE` → role) | `source → target` |
 | `CUSTREC` `[app/cpy/CUSTREC.cpy]` | `domain/Customer.java` (alternate / flat customer layout; covered by `Customer` entity) | `source → target` |
 | `CVCRD01Y` `[app/cpy/CVCRD01Y.cpy]` | `domain/Card.java` (alternate card view; not a distinct entity — covered by `Card`) | `source → target` |
-| `CVTRA07Y` `[app/cpy/CVTRA07Y.cpy]` | `domain/Transaction.java` (transaction-related reference view; statement usage) | `source → target` |
+| `CVTRA07Y` `[app/cpy/CVTRA07Y.cpy]` | `reporting-service` transaction-report layout — `REPORT-NAME-HEADER` / `TRANSACTION-DETAIL-REPORT` (`DALYREPT`, "Daily Transaction Report") → `ReportMapper` + `batch-service` `TransactionReportItem` report row + report DTOs. NOT the `Transaction` entity (it is a report-formatting structure, not a persisted record) | `source → target` |
 | Persistent-entity repositories (each copybook + file-access COBOL, e.g. `[app/cbl/COCRDLIC.cbl]`) | `repository/*Repository.java` per entity (Spring Data JPA; AIX browses → derived queries `findByAccountId`, `findByOrigTsBetween`) | `source → target` |
 
 ## 4. Shared / Session / Message Copybooks → Common Types
@@ -232,7 +242,9 @@ The legacy inventory reconciled against the repository (AAP 0.1.3) and covered i
 | Respecting-.gitignore rule (AAP 0.7.2) | `.gitignore` (Java + Node ignore patterns) | `target → rule` |
 | Standalone build (AAP 0.5) | root `pom.xml` (aggregator / parent BOM) + per-module `pom.xml` (×10: `carddemo-common`, `auth-service`, `user-service`, `account-service`, `card-service`, `transaction-service`, `billpay-service`, `reporting-service`, `batch-service`, `api-gateway`) | `target → rule` |
 | Standalone build (React 19 / Node 24) | `frontend/package.json` | `target → rule` |
-| Containerization + orchestration (standalone operation) | `Dockerfile` (per service + frontend), `docker-compose.yml`, `k8s/*.yaml` (`deployment-*`, `service-*`, `configmap`, `secret`) | `target → rule` |
+| Containerization + orchestration (standalone operation) | `docker-compose.yml`; `k8s/configmap.yaml`, `k8s/secret.yaml` (per-service DB-role Secrets + shared Redis + postgres bootstrap), `k8s/deployment-{api-gateway,auth-service,user-service,account-service,card-service,transaction-service,billpay-service,reporting-service,batch-service,postgres,redis,frontend}.yaml`, `k8s/service-frontend.yaml`, `k8s/service-redis.yaml`; per-service `Dockerfile`s delivered with the services | `target → rule` |
+| Container/pod hardening rule (MJ-10) | `k8s/networkpolicy.yaml` (default-deny + least-privilege ingress), `k8s/poddisruptionbudget.yaml` (per-workload PDBs), pod/container `securityContext` across all Deployments | `target → rule` |
+| Respecting-.gitignore + externalized-secrets (CR-11) | `.env.example` (required-env template consumed by `docker-compose.yml`; real `.env` git-ignored) | `target → rule` |
 | Observability rule (AAP 0.7.5) | `application.yml` (Actuator health / readiness / liveness + `/actuator/prometheus`) | `target → rule` |
 | Observability rule (AAP 0.7.5) | `logback-spring.xml` (structured JSON logging + correlation ids via MDC) | `target → rule` |
 | Observability rule (distributed tracing) | Micrometer Tracing + OpenTelemetry bridge configuration | `target → rule` |
@@ -243,9 +255,44 @@ The legacy inventory reconciled against the repository (AAP 0.1.3) and covered i
 | Standalone-operation documentation | `README-target.md` | `target → rule` |
 | Observability rule / cross-cutting infra | `carddemo-common` `config/` (observability, tracing, exception handling) + `exception/` handlers | `target → rule` |
 
+## 11. Delivered in This Tranche (Foundation) — Present-on-Disk Targets
+
+The following target artifacts are delivered and present on disk in this foundation
+tranche. They are listed here explicitly so the reverse direction is verifiable today
+(not merely against the end-state design).
+
+| Target Implementation (delivered) | Source Construct / Mandate | Direction |
+|-----------------------------------|----------------------------|-----------|
+| `carddemo-common` `dto/ErrorResponse.java` (with `errorCode`, carrying reject codes 100–103) | `CBTRN02C` reject-code / error-message handling + REST error-contract | `source → target` |
+| `carddemo-common` `dto/ReportRequestDto.java`, `dto/ReportResponseDto.java` | `CORPT00C` report request + `CVTRA07Y` report layout | `source → target` |
+| `reporting-service` `mapper/ReportMapper.java` | `CVTRA07Y` `TRANSACTION-DETAIL-REPORT` → report-DTO assembly | `source → target` |
+| `batch-service` `TransactionReportItem` (report row model) | `CVTRA07Y` transaction-detail report row | `source → target` |
+| `carddemo-common` `util/DateUtil.java` | `CSUTLDTC` CEEDAYS / Lillian (see §2) | `source → target` |
+| `carddemo-common` `exception/CardDemoException.java` + handlers | RESP / file-status error handling → exceptions | `target → source (derived)` |
+| `carddemo-common` `domain/TranCatBalId.java`, `DiscGroupId.java`, `TranCatgId.java` | Compound VSAM keys of `CVTRA01Y` / `CVTRA02Y` / `CVTRA04Y` (`@IdClass`) | `source → target` |
+| `carddemo-common` `domain/FinancialPrecisionTest.java` | Interest `COMPUTE` truncation pattern `[app/cbl/CBACT04C.cbl:L464-465]` | `target → source (derived)` |
+| `carddemo-common` `config/CorrelationIdContext.java`, `CorrelationIdFilter`, `WebObservabilityConfig`, `ObservabilityConfig` | Observability rule (structured logging + correlation ids) | `target → rule` |
+| `carddemo-common` `config/SessionRedisConfig.java` (strict allowlisted JSON serializer) | COMMAREA session externalization + CWE-502 hardening (decision-log §6) | `target → source (derived)` |
+| `carddemo-common` security password-encoder factory (BCrypt `DelegatingPasswordEncoder`) | `COSGN00C` credential check → encoder (see §8) | `source → target` |
+| `transaction-service` `PostingJobCompletionListener` | `CBTRN02C` batch result codes 0/4/8/12 + rejected tally | `source → target` |
+| `batch-service` `db/migration/V1__batch_metadata.sql` | Spring Batch metadata schema (framework requirement) | `target → rule` |
+| Per-service `application.yml` + `logback-spring.xml` (9 services) | Observability rule (Actuator health/readiness/liveness/prometheus + JSON logs) | `target → rule` |
+| `observability/prometheus.yml`, `observability/grafana-dashboard.json` | Observability rule (scrape config + dashboard) | `target → rule` |
+| Frontend foundation (`package.json`, `vite.config.ts`, `tsconfig*.json`, `index.css`, `nginx.conf`, `components/Header.tsx`, `types/{common,session}.ts`) | BMS screen shell + REST field contracts + standalone build/serve | `source → target` / `target → rule` |
+| `frontend/package-lock.json` (`lockfileVersion 3`, 491 locked entries, consistent with `package.json`) | AAP §0.5.1 "lock-pinned at scaffold" + `npm ci` reproducible-build requirement (decision-log §6) | `target → rule` |
+
+> The per-screen `*RequestDto` / `*ResponseDto` classes, `frontend/src/api`,
+> `frontend/src/types/*`, the 17 page components, the business-schema migrations
+> (`V1__create_schema`, `V2__seed_reference_data`, `V3__seed_test_data`), the
+> services / controllers / repositories, and the per-service `Dockerfile`s are mapped
+> above in the end-state design and are **delivered in later tranches**.
+
 ## Coverage Assertion
 
-This matrix asserts **100% bidirectional coverage**:
+This matrix enumerates the COMPLETE legacy inventory and maps it to the target design.
+It does **not** assert that every target file is already present on disk — the migration
+lands across multiple tranches (see *Scope of this matrix* above; Section 11 lists what
+this tranche delivers):
 
 - **Forward (`source → target`):** every legacy source construct appears exactly once as a
   Source Construct — all 28 COBOL programs (17 online + 10 batch + `CSUTLDTC`), all 28

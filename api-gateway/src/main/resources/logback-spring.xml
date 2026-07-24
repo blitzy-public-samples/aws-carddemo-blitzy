@@ -23,6 +23,19 @@
         </encoder>
     </appender>
 
+    <!-- Async wrapper for deployed profiles (QA MN-03): decouples request
+         threads from console I/O so structured JSON logging does not inflate
+         p95 latency or memory. neverBlock drops rather than blocks when the
+         ring buffer saturates, protecting the sub-200ms p95 NFR; a 0
+         discardingThreshold keeps INFO/WARN/ERROR until that point. -->
+    <appender name="ASYNC_JSON" class="ch.qos.logback.classic.AsyncAppender">
+        <appender-ref ref="JSON_CONSOLE"/>
+        <queueSize>4096</queueSize>
+        <discardingThreshold>0</discardingThreshold>
+        <neverBlock>true</neverBlock>
+        <includeCallerData>false</includeCallerData>
+    </appender>
+
     <!-- Human-readable console for local development. Correlation/trace/span
          ids are rendered explicitly from the MDC. -->
     <appender name="TEXT_CONSOLE" class="ch.qos.logback.core.ConsoleAppender">
@@ -34,7 +47,7 @@
 
     <springProfile name="docker,k8s,prod">
         <root level="INFO">
-            <appender-ref ref="JSON_CONSOLE"/>
+            <appender-ref ref="ASYNC_JSON"/>
         </root>
     </springProfile>
 

@@ -29,6 +29,10 @@ import java.util.UUID;
  *     ``java.util.UUID``.
  * :note: Micrometer Tracing independently manages ``%X{traceId}`` and
  *     ``%X{spanId}``; this helper does not touch those keys.
+ * :note: Every value that reaches the MDC is passed through {@link #sanitize}
+ *     first, so caller- or client-supplied ids cannot inject CR/LF control
+ *     characters (log forging) or unbounded high-cardinality tokens into the
+ *     log stream.
  */
 public final class CorrelationIdContext {
 
@@ -39,9 +43,45 @@ public final class CorrelationIdContext {
     public static final String CORRELATION_ID_KEY = "correlationId";
 
     /**
+     * :purpose: Maximum retained length of a correlation id. Bounds cardinality
+     *     and log-line width; a W3C trace-id (32 hex) and a UUID (36 chars) both
+     *     fit well within this limit.
+     */
+    public static final int MAX_CORRELATION_ID_LENGTH = 64;
+
+    /**
      * :purpose: Prevent instantiation of this stateless utility class.
      */
     private CorrelationIdContext() {
+    }
+
+    /**
+     * :purpose: Reduce an arbitrary, possibly client-supplied value to a bounded,
+     *     trace-safe correlation id fit for the MDC and the log stream.
+     * :param raw: the candidate value (may be ``null``, blank, overlong, or
+     *     contain control characters such as CR/LF).
+     * :returns: a value containing only ``[A-Za-z0-9._-]`` and no longer than
+     *     {@link #MAX_CORRELATION_ID_LENGTH}, or ``null`` when nothing safe
+     *     remains. Any disallowed character (including CR, LF, TAB and other ISO
+     *     control characters, spaces and log-delimiter punctuation) is dropped,
+     *     which neutralizes log-forging injection and caps cardinality.
+     */
+    public static String sanitize(String raw) {
+        if (raw == null) {
+            return null;
+        }
+        StringBuilder builder = new StringBuilder(Math.min(raw.length(), MAX_CORRELATION_ID_LENGTH));
+        for (int i = 0; i < raw.length() && builder.length() < MAX_CORRELATION_ID_LENGTH; i++) {
+            char c = raw.charAt(i);
+            boolean safe = (c >= 'a' && c <= 'z')
+                    || (c >= 'A' && c <= 'Z')
+                    || (c >= '0' && c <= '9')
+                    || c == '.' || c == '_' || c == '-';
+            if (safe) {
+                builder.append(c);
+            }
+        }
+        return builder.isEmpty() ? null : builder.toString();
     }
 
     /**
@@ -53,15 +93,19 @@ public final class CorrelationIdContext {
     }
 
     /**
-     * :purpose: Store a correlation id in the MDC, clearing it when blank.
-     * :param correlationId: the value to store; a ``null`` or blank value
-     *     removes any existing correlation id from the MDC.
+     * :purpose: Store a correlation id in the MDC after sanitizing it, clearing
+     *     the key when nothing safe remains.
+     * :param correlationId: the value to store; it is passed through
+     *     {@link #sanitize} first. A ``null``, blank, or fully-stripped value
+     *     removes any existing correlation id from the MDC rather than storing an
+     *     empty or unsafe token.
      */
     public static void setCorrelationId(String correlationId) {
-        if (correlationId == null || correlationId.isBlank()) {
+        String safe = sanitize(correlationId);
+        if (safe == null) {
             MDC.remove(CORRELATION_ID_KEY);
         } else {
-            MDC.put(CORRELATION_ID_KEY, correlationId);
+            MDC.put(CORRELATION_ID_KEY, safe);
         }
     }
 
@@ -102,15 +146,15 @@ public final class CorrelationIdContext {
      * :purpose: Run an action with the given correlation id in scope, then
      *     restore the previous MDC value afterward so the call is
      *     reentrant-safe on reused threads.
-     * :param correlationId: the id to use for the scope; when ``null`` or blank
-     *     a fresh correlation id is generated for the scope.
+     * :param correlationId: the id to use for the scope; when ``null``, blank, or
+     *     reduced to nothing by {@link #sanitize} a fresh correlation id is
+     *     generated for the scope.
      * :param action: the work to execute with the correlation id in scope.
      */
     public static void runWithCorrelationId(String correlationId, Runnable action) {
         String previous = MDC.get(CORRELATION_ID_KEY);
-        setCorrelationId(correlationId != null && !correlationId.isBlank()
-                ? correlationId
-                : generateCorrelationId());
+        String scoped = sanitize(correlationId);
+        setCorrelationId(scoped != null ? scoped : generateCorrelationId());
         try {
             action.run();
         } finally {

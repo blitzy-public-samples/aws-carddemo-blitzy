@@ -16,6 +16,7 @@
 package com.carddemo.auth.dto;
 
 import jakarta.validation.constraints.NotBlank;
+import jakarta.validation.constraints.Size;
 
 /**
  * :purpose: Request body for the CardDemo Authentication service endpoint
@@ -23,15 +24,20 @@ import jakarta.validation.constraints.NotBlank;
  *           ``COSGN0A`` map (mapset ``COSGN00``) received by legacy program
  *           ``COSGN00C`` (transaction ``CC00``); carries the user id and
  *           password entered on the sign-on screen.
- * :param userId:   user id entered on the sign-on screen; must not be blank.
- * :param password: password entered on the sign-on screen; must not be blank.
+ * :param userId:   user id entered on the sign-on screen; must not be blank and
+ *                  is bounded to the frozen ``SEC-USR-ID PIC X(08)`` width.
+ * :param password: password entered on the sign-on screen; must not be blank and
+ *                  is bounded to the frozen ``SEC-USR-PWD PIC X(08)`` width so an
+ *                  oversized value can never reach the adaptive password hasher.
  */
 public class SignonRequestDto {
 
     @NotBlank(message = "Please enter User ID ...")
+    @Size(max = 8, message = "User ID must be at most 8 characters")
     private String userId;
 
     @NotBlank(message = "Please enter Password ...")
+    @Size(max = 8, message = "Password must be at most 8 characters")
     private String password;
 
     /**

@@ -1,11 +1,12 @@
 package com.carddemo.common.domain;
 
+import com.fasterxml.jackson.annotation.JsonIgnore;
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
 import jakarta.persistence.Id;
 import jakarta.persistence.Table;
-
-import java.util.Objects;
+import jakarta.validation.constraints.NotBlank;
+import jakarta.validation.constraints.Size;
 
 /**
  * JPA entity mapping the legacy COBOL ``SEC-USER-DATA`` record (copybook
@@ -30,6 +31,8 @@ public class SecurityUser {
      * :purpose: Maps the legacy ``SEC-USR-ID`` ``PIC X(08)`` key field.
      */
     @Id
+    @NotBlank
+    @Size(max = 8)
     @Column(name = "sec_usr_id", length = 8, nullable = false)
     private String secUsrId;
 
@@ -38,7 +41,8 @@ public class SecurityUser {
      *
      * :purpose: Maps the legacy ``SEC-USR-FNAME`` ``PIC X(20)`` field.
      */
-    @Column(name = "sec_usr_fname", length = 20)
+    @Size(max = 20)
+    @Column(name = "sec_usr_fname", length = 20, nullable = false)
     private String secUsrFname;
 
     /**
@@ -46,7 +50,8 @@ public class SecurityUser {
      *
      * :purpose: Maps the legacy ``SEC-USR-LNAME`` ``PIC X(20)`` field.
      */
-    @Column(name = "sec_usr_lname", length = 20)
+    @Size(max = 20)
+    @Column(name = "sec_usr_lname", length = 20, nullable = false)
     private String secUsrLname;
 
     /**
@@ -56,7 +61,8 @@ public class SecurityUser {
      *     to hold an encoded hash rather than the legacy plaintext value. Stores
      *     only the encoded credential and is excluded from ``toString``.
      */
-    @Column(name = "sec_usr_pwd", length = 100)
+    @NotBlank
+    @Column(name = "sec_usr_pwd", length = 100, nullable = false)
     private String secUsrPwd;
 
     /**
@@ -66,7 +72,8 @@ public class SecurityUser {
      *     kept as the raw character; role resolution is performed by the security
      *     layer, not by this entity.
      */
-    @Column(name = "sec_usr_type", length = 1)
+    @Size(max = 1)
+    @Column(name = "sec_usr_type", length = 1, nullable = false)
     private String secUsrType;
 
     /**
@@ -132,8 +139,10 @@ public class SecurityUser {
     /**
      * Returns the encoded password hash.
      *
-     * :returns: the encoded credential, or ``null`` when unset.
+     * :returns: the encoded credential, or ``null`` when unset; never serialized
+     *     to clients.
      */
+    @JsonIgnore
     public String getSecUsrPwd() {
         return secUsrPwd;
     }
@@ -176,21 +185,20 @@ public class SecurityUser {
         if (this == o) {
             return true;
         }
-        if (o == null || getClass() != o.getClass()) {
+        if (!(o instanceof SecurityUser other)) {
             return false;
         }
-        SecurityUser that = (SecurityUser) o;
-        return Objects.equals(secUsrId, that.secUsrId);
+        return secUsrId != null && secUsrId.equals(other.getSecUsrId());
     }
 
     /**
-     * Computes a hash code from the primary-key identifier.
+     * Computes a proxy-stable hash code consistent with {@link #equals(Object)}.
      *
-     * :returns: a hash code consistent with ``equals``.
+     * :returns: a constant, identity-consistent hash code.
      */
     @Override
     public int hashCode() {
-        return Objects.hash(secUsrId);
+        return SecurityUser.class.hashCode();
     }
 
     /**

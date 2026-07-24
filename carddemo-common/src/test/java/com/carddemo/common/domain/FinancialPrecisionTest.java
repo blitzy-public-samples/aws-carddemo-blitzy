@@ -14,11 +14,13 @@ import org.junit.jupiter.api.Test;
  * :purpose: Lock the fixed-scale ``java.math.BigDecimal`` arithmetic that reproduces the
  *     COBOL ``CBACT04C`` paragraph ``1300-COMPUTE-INTEREST`` formula
  *     ``COMPUTE WS-MONTHLY-INT = (TRAN-CAT-BAL * DIS-INT-RATE) / 1200`` where
- *     ``WS-MONTHLY-INT PIC S9(09)V99`` carries scale 2. The rule multiplies the
- *     transaction-category balance by the disclosure-group interest rate, divides by
- *     1200, and normalizes to scale 2 with ``RoundingMode.HALF_UP`` so that the modern
- *     ``batch-service`` interest service yields byte-identical financial output for
- *     the domain money fields ``TranCatBal.tranCatBal`` and ``DiscGroup.disIntRate``.
+ *     ``WS-MONTHLY-INT PIC S9(09)V99`` carries scale 2. The COBOL statement has no
+ *     ``ROUNDED`` phrase, so the excess fractional digits are truncated toward zero;
+ *     the Java equivalent multiplies the transaction-category balance by the
+ *     disclosure-group interest rate, divides by 1200, and normalizes to scale 2 with
+ *     ``RoundingMode.DOWN`` so that the modern ``batch-service`` interest service yields
+ *     byte-identical financial output for the domain money fields
+ *     ``TranCatBal.tranCatBal`` and ``DiscGroup.disIntRate``.
  * :output: JUnit 5 / AssertJ assertions only; the class holds no state and touches no
  *     database, Spring context, or other external resource (pure JDK arithmetic).
  */
@@ -29,32 +31,36 @@ final class FinancialPrecisionTest {
      *
      * :param tranCatBal: transaction-category balance (COBOL ``TRAN-CAT-BAL``, scale 2).
      * :param disIntRate: disclosure-group interest rate (COBOL ``DIS-INT-RATE``, scale 2).
-     * :return: ``(tranCatBal * disIntRate) / 1200`` as a scale-2 ``BigDecimal`` rounded HALF_UP.
+     * :return: ``(tranCatBal * disIntRate) / 1200`` as a scale-2 ``BigDecimal`` truncated
+     *     toward zero (``RoundingMode.DOWN``), matching the COBOL ``COMPUTE`` without
+     *     a ``ROUNDED`` phrase.
      */
     private static BigDecimal monthlyInterest(BigDecimal tranCatBal, BigDecimal disIntRate) {
         return tranCatBal.multiply(disIntRate)
-                         .divide(BigDecimal.valueOf(1200), 2, RoundingMode.HALF_UP);
+                         .divide(BigDecimal.valueOf(1200), 2, RoundingMode.DOWN);
     }
 
     @Test
-    @DisplayName("Canonical example: 100.00 x 5.00 / 1200 = 0.42 at scale 2")
-    void canonicalExampleIsZeroPoint42() {
-        // 100.00 * 5.00 / 1200 = 0.41666... -> HALF_UP at scale 2 -> 0.42
+    @DisplayName("Canonical example: 100.00 x 5.00 / 1200 = 0.41 at scale 2 (truncated)")
+    void canonicalExampleIsZeroPoint41() {
+        // 100.00 * 5.00 / 1200 = 0.41666... -> truncate (DOWN) at scale 2 -> 0.41
+        // (COBOL COMPUTE has no ROUNDED phrase; HALF_UP would incorrectly yield 0.42)
         BigDecimal r = monthlyInterest(new BigDecimal("100.00"), new BigDecimal("5.00"));
 
-        assertThat(r).isEqualByComparingTo("0.42");
+        assertThat(r).isEqualByComparingTo("0.41");
+        assertThat(r).isNotEqualByComparingTo("0.42");
         assertThat(r.scale()).isEqualTo(2);
     }
 
     @Test
-    @DisplayName("Rounding is HALF_UP at the .005 boundary (0.125 -> 0.13, not 0.12)")
-    void roundsHalfUpAtBoundary() {
-        // 30.00 * 5.00 / 1200 = 0.125 exactly -> HALF_UP at scale 2 -> 0.13
-        // (truncation / RoundingMode.DOWN would incorrectly yield 0.12)
+    @DisplayName("Truncation toward zero at the .005 boundary (0.125 -> 0.12, not 0.13)")
+    void truncatesTowardZeroAtBoundary() {
+        // 30.00 * 5.00 / 1200 = 0.125 exactly -> truncate (DOWN) at scale 2 -> 0.12
+        // (HALF_UP would incorrectly yield 0.13; the COBOL COMPUTE has no ROUNDED phrase)
         BigDecimal r = monthlyInterest(new BigDecimal("30.00"), new BigDecimal("5.00"));
 
-        assertThat(r).isEqualByComparingTo("0.13");
-        assertThat(r).isNotEqualByComparingTo("0.12");
+        assertThat(r).isEqualByComparingTo("0.12");
+        assertThat(r).isNotEqualByComparingTo("0.13");
     }
 
     @Test

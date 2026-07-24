@@ -9,25 +9,18 @@
 #           legacy CICS menu-navigation programs COMEN01C (main menu, tran-id
 #           CM00) and COADM01C (admin menu, tran-id CA00) into role-gated menu
 #           routing, and forwards REST traffic to the backend Spring Boot
-#           services by their in-cluster Kubernetes Service DNS names
-#           (auth-service, user-service, account-service, card-service,
-#           transaction-service, billpay-service, reporting-service,
-#           batch-service), all on port 8080. Route definitions are baked into
-#           the application image (Spring Cloud Gateway, Spring Cloud BOM
-#           2025.1.2), not declared in this Deployment manifest.
+#           services by their in-cluster Kubernetes Service DNS names. The
+#           downstream URIs are injected from the carddemo-config ConfigMap
+#           (${AUTH_SERVICE_URI} ... ${BATCH_SERVICE_URI}, CR-10).
 # :output:  A Deployment named ``api-gateway`` scheduling one pod that serves
 #           HTTP on container port 8080 (named ``http``). The companion
 #           ``service-api-gateway.yaml`` (type LoadBalancer) selects these pods
 #           via ``app: api-gateway`` and exposes the gateway externally.
 # :notes:   The container image ``carddemo/api-gateway:1.0.0`` is built by
 #           ``api-gateway/Dockerfile`` FROM ``eclipse-temurin:21-jre`` (AAP
-#           0.5.1). Runtime configuration and datasource credentials are
-#           injected via ``envFrom`` from the ``carddemo-config`` ConfigMap and
-#           the ``carddemo-secret`` Secret. Actuator health probes
-#           (Observability rule, AAP 0.7.5) depend on
-#           ``MANAGEMENT_ENDPOINT_HEALTH_PROBES_ENABLED=true`` supplied by
-#           ``carddemo-config`` to expose the ``/actuator/health/liveness`` and
-#           ``/actuator/health/readiness`` probe groups.
+#           0.5.1). The gateway owns NO database (AAP 0.3.1), so it receives NO
+#           database Secret (CR-11) — only the shared Redis AUTH secret for
+#           Spring Session. Non-secret config comes from carddemo-config.
 # ===========================================================================
 apiVersion: apps/v1
 kind: Deployment
@@ -54,6 +47,15 @@ spec:
         app.kubernetes.io/part-of: carddemo
         app.kubernetes.io/component: gateway
     spec:
+      # Pod-level runtime hardening (MJ-10).
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      automountServiceAccountToken: false
       containers:
         - name: api-gateway
           # Built by api-gateway/Dockerfile FROM eclipse-temurin:21-jre
@@ -63,15 +65,33 @@ spec:
           ports:
             - name: http
               containerPort: 8080
-          # Non-secret runtime config from carddemo-config plus datasource
-          # credentials from carddemo-secret. carddemo-config supplies
-          # MANAGEMENT_ENDPOINT_HEALTH_PROBES_ENABLED=true, which the
-          # liveness/readiness probe sub-paths below require.
+          # Container-level runtime hardening (MJ-10): drop all capabilities,
+          # forbid privilege escalation, read-only root filesystem + tmp scratch.
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+          # Non-secret runtime config from carddemo-config (including the
+          # downstream *_SERVICE_URI routes, CR-10) plus ONLY the shared Redis
+          # AUTH secret. The gateway owns no database, so no DB Secret is
+          # attached (CR-11).
           envFrom:
             - configMapRef:
                 name: carddemo-config
             - secretRef:
-                name: carddemo-secret
+                name: carddemo-redis-secret
+          # Gateway-level trace sampling override (MN-03): the entry point
+          # samples every request so each trace originates here, overriding the
+          # 0.1 backend default supplied by carddemo-config (explicit env wins
+          # over envFrom).
+          env:
+            - name: MANAGEMENT_TRACING_SAMPLING_PROBABILITY
+              value: "1.0"
           resources:
             requests:
               cpu: 250m
@@ -109,3 +129,7 @@ spec:
             periodSeconds: 10
             timeoutSeconds: 3
             failureThreshold: 3
+      # Writable scratch for the read-only root filesystem (MJ-10).
+      volumes:
+        - name: tmp
+          emptyDir: {}

@@ -7,20 +7,36 @@
 # service name via Docker's embedded DNS.
 #
 # Usage:
+#   cp .env.example .env        # then edit .env and set STRONG unique secrets
 #   docker compose up --build   # build images and start the stack
-#   docker compose config         # render/validate the effective configuration
-#   docker compose down -v        # stop and remove containers + named volumes
+#   docker compose config       # render/validate the effective configuration
+#   docker compose down -v      # stop and remove containers + named volumes
 #
-# The credentials below are non-production, local-only placeholders. Real
-# secrets must never be committed (see .gitignore); override them for any
-# non-local deployment.
+# SECURITY MODEL (QA CR-08, CR-11, CR-17, MJ-10):
+#   * No credential is hard-coded. Every secret is read from the environment as
+#     ${VAR:?...}, so `docker compose` fails fast if .env is missing a value —
+#     there is deliberately no insecure built-in default.
+#   * Datastores (postgres, redis) and internal microservices publish NO host
+#     ports. Only the api-gateway (8080) and the frontend (3000) are reachable
+#     from the host; the observability UIs bind to loopback only. All service-
+#     to-service and scrape traffic stays on the private carddemo-net bridge.
+#   * Redis requires authentication (--requirepass); Spring Session traffic
+#     authenticates with the same secret.
+#   * Every application container runs hardened: no-new-privileges, all Linux
+#     capabilities dropped (backends), a read-only root filesystem, and a
+#     tmpfs for writable scratch space.
+#
+# NOTE: the per-service Dockerfiles are delivered with the bootable services in
+# a later tranche, so `--build` is not yet runnable; `docker compose config`
+# validates this topology today. See docs/decision-log.md.
 
 name: carddemo
 
 # ---------------------------------------------------------------------------
-# Shared definition for every runnable Spring Boot service. Each service block
-# merges this anchor and then supplies only its own build context and the
-# distinct host port it publishes. All services listen on 8080 internally.
+# Shared definition for every runnable Spring Boot service. Each backend block
+# merges this anchor and then supplies only its own build context. Services do
+# NOT publish host ports (CR-08): traffic flows through the api-gateway. All
+# services listen on 8080 internally.
 # ---------------------------------------------------------------------------
 x-backend-service: &backend-service
   # Gate startup on the datastores being fully ready, not merely started.
@@ -32,24 +48,46 @@ x-backend-service: &backend-service
   environment:
     # Activates each service's application-docker.yml profile.
     SPRING_PROFILES_ACTIVE: docker
-    # Force a consistent internal port so the published mapping holds.
+    # Force a consistent internal port.
     SERVER_PORT: "8080"
     # Datasource points at the postgres service by its compose DNS name.
-    SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/carddemo
-    SPRING_DATASOURCE_USERNAME: carddemo
-    SPRING_DATASOURCE_PASSWORD: carddemo
-    # Spring Session state store (externalized COMMAREA equivalent).
+    # Credentials are externalized (CR-11); no in-file default.
+    SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/${POSTGRES_DB:?set POSTGRES_DB in .env}
+    SPRING_DATASOURCE_USERNAME: ${POSTGRES_USER:?set POSTGRES_USER in .env}
+    SPRING_DATASOURCE_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+    # Spring Session state store (externalized COMMAREA equivalent). Redis
+    # requires authentication (CR-17); the same secret is presented here.
     SPRING_DATA_REDIS_HOST: redis
     SPRING_DATA_REDIS_PORT: "6379"
-  # Liveness/readiness via the Spring Boot Actuator health endpoint.
+    SPRING_DATA_REDIS_PASSWORD: ${REDIS_PASSWORD:?set REDIS_PASSWORD in .env}
+    # Actuator health details are only rendered to authenticated principals
+    # (MJ-16); anonymous callers still receive the overall UP/DOWN status.
+    MANAGEMENT_ENDPOINT_HEALTH_SHOW_DETAILS: when-authorized
+  # Liveness/readiness via the Spring Boot Actuator health endpoint. The base
+  # image (eclipse-temurin:21-jre) ships neither curl nor wget, so the probe
+  # uses bash's /dev/tcp pseudo-device to issue a minimal HTTP request and
+  # asserts the payload reports UP (MJ-01).
   healthcheck:
     test:
       - CMD-SHELL
-      - curl -f http://localhost:8080/actuator/health || exit 1
+      - >-
+        bash -c 'exec 3<>/dev/tcp/127.0.0.1/8080 &&
+        printf "GET /actuator/health HTTP/1.0\r\n\r\n" >&3 &&
+        cat <&3 | grep -q UP'
     interval: 15s
     timeout: 5s
     retries: 5
     start_period: 60s
+  # Runtime hardening (MJ-10). The read-only root filesystem forces all writable
+  # state onto the tmpfs mount; a Spring Boot fat-jar only needs /tmp.
+  security_opt:
+    - no-new-privileges:true
+  cap_drop:
+    - ALL
+  read_only: true
+  tmpfs:
+    - /tmp
+  user: "1000:1000"
   networks:
     - carddemo-net
   restart: unless-stopped
@@ -63,41 +101,53 @@ services:
   postgres:
     image: postgres:18
     environment:
-      POSTGRES_DB: carddemo
-      POSTGRES_USER: carddemo
-      POSTGRES_PASSWORD: carddemo
-    ports:
-      - "5432:5432"
+      POSTGRES_DB: ${POSTGRES_DB:?set POSTGRES_DB in .env}
+      POSTGRES_USER: ${POSTGRES_USER:?set POSTGRES_USER in .env}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+    # No host port (CR-11): only containers on carddemo-net reach the database.
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
       test:
         - CMD-SHELL
-        - pg_isready -U carddemo -d carddemo
+        - pg_isready -U "$$POSTGRES_USER" -d "$$POSTGRES_DB"
       interval: 10s
       timeout: 5s
       retries: 5
       start_period: 30s
+    # The official image's entrypoint chowns the data dir and drops to the
+    # unprivileged postgres user on its own, so only no-new-privileges is added
+    # here (dropping all caps would break first-run initialization).
+    security_opt:
+      - no-new-privileges:true
     networks:
       - carddemo-net
     restart: unless-stopped
 
   redis:
     image: redis:8
-    command: ["redis-server", "--appendonly", "yes"]
-    ports:
-      - "6379:6379"
+    environment:
+      # Consumed by both the server (--requirepass) and the healthcheck. The
+      # $$ escaping keeps the literal out of the rendered config; the value is
+      # expanded inside the container from its own environment (CR-17).
+      REDIS_PASSWORD: ${REDIS_PASSWORD:?set REDIS_PASSWORD in .env}
+    command:
+      - sh
+      - -c
+      - exec redis-server --appendonly yes --requirepass "$$REDIS_PASSWORD"
+    # No host port (CR-11): Redis is reachable only on carddemo-net.
     volumes:
       - redisdata:/data
     healthcheck:
       test:
-        - CMD
-        - redis-cli
-        - ping
+        - CMD-SHELL
+        - redis-cli -a "$$REDIS_PASSWORD" --no-auth-warning ping | grep -q PONG
       interval: 10s
       timeout: 5s
       retries: 5
       start_period: 10s
+    security_opt:
+      - no-new-privileges:true
     networks:
       - carddemo-net
     restart: unless-stopped
@@ -106,99 +156,112 @@ services:
   # Backend microservices (built from each module's Dockerfile on
   # eclipse-temurin:21-jre). carddemo-common is a shared library and is
   # intentionally NOT run as a container — it is built into these services.
-  # api-gateway is the only service the frontend talks to; the rest publish a
-  # host port purely for local debugging.
+  # None of these publish a host port (CR-08); all traffic is routed through
+  # the api-gateway on the private network.
   # =========================================================================
 
   api-gateway:
     <<: *backend-service
     build:
       context: ./api-gateway
+    # The gateway is the single public entrypoint for the backend.
     ports:
       - "8080:8080"
+    # The gateway owns NO database (CR-11) — its environment intentionally omits
+    # every SPRING_DATASOURCE_* variable and instead injects the downstream
+    # service routes as compose-DNS URIs on the internal 8080 port (CR-10).
+    environment:
+      SPRING_PROFILES_ACTIVE: docker
+      SERVER_PORT: "8080"
+      SPRING_DATA_REDIS_HOST: redis
+      SPRING_DATA_REDIS_PORT: "6379"
+      SPRING_DATA_REDIS_PASSWORD: ${REDIS_PASSWORD:?set REDIS_PASSWORD in .env}
+      MANAGEMENT_ENDPOINT_HEALTH_SHOW_DETAILS: when-authorized
+      AUTH_SERVICE_URI: http://auth-service:8080
+      USER_SERVICE_URI: http://user-service:8080
+      ACCOUNT_SERVICE_URI: http://account-service:8080
+      CARD_SERVICE_URI: http://card-service:8080
+      TRANSACTION_SERVICE_URI: http://transaction-service:8080
+      BILLPAY_SERVICE_URI: http://billpay-service:8080
+      REPORTING_SERVICE_URI: http://reporting-service:8080
+      BATCH_SERVICE_URI: http://batch-service:8080
 
   auth-service:
     <<: *backend-service
     build:
       context: ./auth-service
-    ports:
-      - "8081:8080"
 
   user-service:
     <<: *backend-service
     build:
       context: ./user-service
-    ports:
-      - "8082:8080"
 
   account-service:
     <<: *backend-service
     build:
       context: ./account-service
-    ports:
-      - "8083:8080"
 
   card-service:
     <<: *backend-service
     build:
       context: ./card-service
-    ports:
-      - "8084:8080"
 
   transaction-service:
     <<: *backend-service
     build:
       context: ./transaction-service
-    ports:
-      - "8085:8080"
 
   billpay-service:
     <<: *backend-service
     build:
       context: ./billpay-service
-    ports:
-      - "8086:8080"
 
   reporting-service:
     <<: *backend-service
     build:
       context: ./reporting-service
-    ports:
-      - "8087:8080"
 
   batch-service:
     <<: *backend-service
     build:
       context: ./batch-service
-    ports:
-      - "8088:8080"
 
   # =========================================================================
-  # Frontend (React 19 SPA served by nginx). VITE_* variables are baked into
-  # the bundle at build time, so the gateway URL is supplied as a build arg;
-  # it is also exposed at runtime for any runtime-config consumers. The browser
-  # reaches the gateway on the host-published port, hence localhost:8080.
+  # Frontend (React 19 SPA served by nginx). The bundle talks to the backend
+  # through a SAME-ORIGIN path (/api), which nginx reverse-proxies to the
+  # api-gateway on the private network (CR-10). No absolute gateway URL is
+  # baked into the bundle, so no host port of the gateway is assumed.
   # =========================================================================
 
   frontend:
     build:
       context: ./frontend
       args:
-        VITE_API_BASE_URL: http://localhost:8080
+        VITE_API_BASE_URL: /api
     environment:
-      VITE_API_BASE_URL: http://localhost:8080
+      VITE_API_BASE_URL: /api
     ports:
       - "3000:80"
     depends_on:
       - api-gateway
+    # nginx needs a few writable paths; everything else is read-only (MJ-10).
+    security_opt:
+      - no-new-privileges:true
+    read_only: true
+    tmpfs:
+      - /tmp
+      - /var/cache/nginx
+      - /var/run
     networks:
       - carddemo-net
     restart: unless-stopped
 
   # =========================================================================
-  # Observability — Prometheus scrapes each service's /actuator/prometheus
-  # endpoint; Grafana is auto-provisioned (datasource + dashboard) from inline
-  # configs and the dashboard template under observability/.
+  # Observability — Prometheus scrapes each service's authenticated
+  # /actuator/prometheus endpoint; Grafana is auto-provisioned (datasource +
+  # dashboard) from inline configs and the dashboard template under
+  # observability/. Both UIs bind to the host loopback only (CR-08/CR-11), so
+  # they are never exposed on a routable interface.
   # =========================================================================
 
   prometheus:
@@ -206,8 +269,17 @@ services:
     volumes:
       - ./observability/prometheus.yml:/etc/prometheus/prometheus.yml:ro
       - prometheusdata:/prometheus
+    # The scrape config authenticates with a monitoring principal whose password
+    # is supplied at runtime from the environment (CR-11); Prometheus reads it
+    # from this mounted file (password_file) rather than any committed value.
+    configs:
+      - source: monitoring_password
+        target: /etc/prometheus/secrets/monitoring-password
+        mode: 0440
     ports:
-      - "9090:9090"
+      - "127.0.0.1:9090:9090"
+    security_opt:
+      - no-new-privileges:true
     networks:
       - carddemo-net
     restart: unless-stopped
@@ -215,8 +287,9 @@ services:
   grafana:
     image: grafana/grafana
     environment:
-      GF_SECURITY_ADMIN_USER: admin
-      GF_SECURITY_ADMIN_PASSWORD: admin
+      # Admin credentials are externalized (CR-11); no admin/admin default.
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:?set GRAFANA_ADMIN_USER in .env}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:?set GRAFANA_ADMIN_PASSWORD in .env}
       GF_USERS_ALLOW_SIGN_UP: "false"
     configs:
       - source: grafana_datasource
@@ -227,9 +300,11 @@ services:
       # The provider above loads every dashboard JSON from this directory.
       - ./observability/grafana-dashboard.json:/var/lib/grafana/dashboards/carddemo-dashboard.json:ro
       - grafanadata:/var/lib/grafana
-    # Container port 3000; published on 3001 (frontend uses 3000).
+    # Container port 3000; published on loopback 3001 (frontend uses 3000).
     ports:
-      - "3001:3000"
+      - "127.0.0.1:3001:3000"
+    security_opt:
+      - no-new-privileges:true
     depends_on:
       - prometheus
     networks:
@@ -247,11 +322,15 @@ volumes:
   grafanadata:
 
 # ---------------------------------------------------------------------------
-# Inline Grafana provisioning. Keeping this content in the compose file avoids
-# adding provisioning files to the observability/ module while still wiring the
-# Prometheus datasource and the dashboard provider on first boot.
+# Inline config content. The Grafana entries wire the Prometheus datasource and
+# the dashboard provider on first boot; the monitoring_password entry projects
+# the ${MONITORING_PASSWORD} secret into the Prometheus container at the path
+# its scrape config expects. Keeping this inline avoids adding provisioning or
+# secret files to the repository.
 # ---------------------------------------------------------------------------
 configs:
+  monitoring_password:
+    content: "${MONITORING_PASSWORD:?set MONITORING_PASSWORD in .env}"
   grafana_datasource:
     content: |
       apiVersion: 1
