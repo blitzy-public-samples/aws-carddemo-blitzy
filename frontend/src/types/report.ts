@@ -10,9 +10,6 @@
  *   exactly, so axios request bodies serialize and REST responses deserialize
  *   without field remapping. Field widths and semantics derive from the
  *   symbolic map ``app/cpy-bms/CORPT00.CPY``.
- * :note: Types-only module. The single runtime value is the read-only
- *   ``REPORT_TYPES`` tuple; there is no ``import.meta`` usage and no environment
- *   evaluation, so the module is safe to import from Jest (jsdom).
  */
 
 import type { ErrMsg } from './common';

@@ -10,19 +10,15 @@
  *   and :ts:type:`AccountUpdateResponseDto` wire contracts, plus the optional
  *   page helpers :ts:type:`AccountUpdateFormParts` and
  *   :ts:type:`OptimisticLockConflict`.
- * :note: Member names mirror the frozen backend JSON contracts
- *   ``com.carddemo.common.dto.AccountViewResponseDto`` /
- *   ``AccountUpdateRequestDto`` / ``AccountUpdateResponseDto`` (camelCase) exactly,
- *   so REST payloads bind without field remapping. Monetary and identifier fields
- *   are typed ``string`` to preserve ``NUMERIC(p,s)`` scale and zero-padded field
- *   width on the wire, as reflected by the symbolic maps ``COACTVW.CPY`` and
- *   ``COACTUP.CPY``.
+ * :note: Member names use the backend camelCase JSON property names so REST
+ *   payloads bind without field remapping. Per the account optimistic-locking
+ *   design (AAP 0.6.2) the contract carries the ``version`` snapshot and the
+ *   read-only ``acctAddrZip``. Monetary and identifier fields are typed ``string``
+ *   to preserve ``NUMERIC(p,s)`` scale and zero-padded field width on the wire.
  * :note: The identifier ``acctExpiraionDate`` retains the legacy copybook
  *   misspelling (missing the second ``T``, from COBOL ``ACCT-EXPIRAION-DATE``)
  *   verbatim as a frozen contract; it must NOT be "corrected" by inserting the
  *   missing ``T``.
- * :note: Type-only import of ``ActiveStatus``; the module declares no runtime
- *   values and has no side effects, so it is safe to import from Jest (jsdom).
  */
 
 import type { ActiveStatus } from './common';

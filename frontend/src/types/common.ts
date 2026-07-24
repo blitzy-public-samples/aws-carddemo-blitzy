@@ -6,9 +6,6 @@
  *   pagination shapes, the standardized API error-response contract, and the
  *   shared active-status flag consumed by every other ``frontend/src/types``
  *   module and by the ``api``, ``hooks``, ``components``, and ``pages`` folders.
- * :note: Import-free with no runtime side effects other than the ``PfKeyAction``
- *   string enum, so the module is safe to import from Jest (jsdom) without
- *   triggering environment evaluation.
  */
 
 /**

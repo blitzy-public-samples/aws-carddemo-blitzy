@@ -14,8 +14,7 @@
  *   across those modules is unique, so the wildcard re-exports combine into one
  *   collision-free namespace.
  * :note: Pure ES-module re-export file — no runtime logic, no default export,
- *   and no side effects — so it is safe to import from Jest (jsdom) without
- *   triggering any environment evaluation.
+ *   and no side effects.
  */
 
 export * from './common';

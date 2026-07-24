@@ -14,9 +14,6 @@
  * ``com.carddemo.common.dto.SessionContext`` (camelCase JSON properties) exactly,
  * so REST responses bind without field remapping. The verbatim COBOL 88-level
  * condition names are preserved per the spec-literal fidelity rule.
- *
- * :consumed by: ``App.tsx`` route guards (``RequireAuth`` / ``RequireAdmin``), the
- *   ``useSession`` hook, and any page needing the current session.
  */
 
 /**

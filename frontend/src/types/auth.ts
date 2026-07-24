@@ -8,10 +8,8 @@
  *   ``POST /auth/signon`` (``com.carddemo.auth.dto.SignonRequestDto`` /
  *   ``com.carddemo.auth.dto.SignonResponseDto``) so axios responses deserialize
  *   without field remapping.
- * :note: Types-only module — no runtime code and no environment access, so it is
- *   safe to import from Jest (jsdom). The single-character ``Role`` wire code is
- *   reused from :ts:module:`./session` and the ``ErrMsg`` alias from
- *   :ts:module:`./common`; neither is redefined here.
+ * :note: The single-character ``Role`` wire code is reused from
+ *   :ts:module:`./session` and the ``ErrMsg`` alias from :ts:module:`./common`.
  */
 
 import type { Role } from './session';
@@ -25,11 +23,6 @@ import type { ErrMsg } from './common';
  *   (``PIC X(08)``), bounded to the frozen ``SEC-USR-ID`` width of 8 characters.
  * :field password: password captured from the ``COSGN00`` ``PASSWDI`` field
  *   (``PIC X(08)``), bounded to the frozen ``SEC-USR-PWD`` width of 8 characters.
- * :note: Legacy ``COSGN00C`` upper-cases both values before a plaintext compare
- *   (effectively case-insensitive); the BCrypt-based target is case-sensitive.
- *   This type applies no upper-casing; the deviation rationale is recorded in
- *   ``docs/decision-log.md``. The ``PIC X(08)`` widths are documented for
- *   reference and cannot be enforced on a TypeScript ``string``.
  */
 export interface SignonRequestDto {
   userId: string;
@@ -64,8 +57,6 @@ export interface SignonResponseDto {
  * :field errMsg: error text rendered beneath the sign-on form, mirroring the
  *   ``COSGN00`` ``ERRMSG`` field (:ts:type:`ErrMsg`; ``PIC X(78)``). The empty
  *   string denotes no error.
- * :note: Deliberately minimal; broader form / field-highlight state reuses the
- *   :ts:module:`./common` primitives rather than redefining them here.
  */
 export interface SignonScreenState {
   errMsg: ErrMsg;

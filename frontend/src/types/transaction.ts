@@ -1,103 +1,100 @@
 /**
  * :module: transaction
- * :purpose: Declares the request / response DTO interfaces exchanged between the
- *   CardDemo React SPA and the ``transaction-service`` REST API for the three
- *   online transaction screens — ``TranListPage`` (list), ``TranViewPage``
- *   (detail), and ``TranAddPage`` (add). Types-only module: it contributes no
- *   runtime code beyond the type layer and is therefore safe to import from Jest
- *   (jsdom) without triggering environment evaluation.
- * :note: Field names and value formats mirror the frozen backend
- *   ``com.carddemo.common.domain.Transaction`` JSON contract (camelCase) so axios
- *   responses deserialize without field remapping. The screen field inventory is
- *   derived from the BMS symbolic-map copybooks ``COTRN00.CPY`` (list, program
- *   ``COTRN00C``, transaction ``CT00``), ``COTRN01.CPY`` (view, ``COTRN01C``,
- *   ``CT01``), and ``COTRN02.CPY`` (add, ``COTRN02C``, ``CT02``); the BMS attribute
- *   bytes (length / flag / colour sub-fields) are ignored.
- * :note: Monetary values (``tranAmt``) are carried as ``string`` to preserve the
- *   COBOL ``S9(09)V99`` packed-decimal scale (``NUMERIC(11,2)``) exactly and avoid
- *   IEEE-754 rounding; identifier fields (transaction id, card number, account id,
- *   merchant id) are carried as ``string`` to preserve their fixed field widths and
- *   leading zeros; the 26-character timestamps are carried as ``string``. The
- *   numeric category code (``tranCatCd``) is the sole ``number`` field. Rationale is
- *   recorded in ``docs/decision-log.md``.
- * :note: The add flow never supplies ``tranId``: the server assigns the 16-digit
- *   zero-padded identifier from a database sequence. This replaces the legacy
- *   browse-last-then-increment mechanism (``COTRN02C``); the observable id format is
- *   preserved (see ``docs/decision-log.md`` and AAP 0.6.5).
+ * :purpose: Request/response DTO types exchanged with the ``transaction-service``
+ *   REST API for the three online transaction screens — ``TranListPage`` (list,
+ *   ``COTRN00`` / ``CT00``), ``TranViewPage`` (detail, ``COTRN01`` / ``CT01``), and
+ *   ``TranAddPage`` (add, ``COTRN02`` / ``CT02``).
+ * :output: The list item / request / response DTOs, the view response DTO, and the
+ *   add request / response DTOs.
+ * :note: Member names mirror the backend ``Transaction*Dto`` JSON contracts
+ *   (camelCase) so axios payloads bind without field remapping.
+ * :note: Monetary amounts (``tranAmt``) and identifier fields (transaction id, card
+ *   number, account id, merchant id) are carried as ``string`` to preserve packed-
+ *   decimal scale and fixed field widths / leading zeros; 26-character timestamps are
+ *   ``string``. The numeric category code (``tranCatCd``) is the sole ``number`` field.
  */
 
-import type { Page } from './common';
-
 /**
- * :purpose: One row of the transaction list screen ``COTRN00`` (``TranListPage``),
- *   assembled from the per-row symbolic-map fields ``TRNID<nn>`` (X16),
- *   ``TDATE<nn>`` (X8), ``TDESC<nn>`` (X26), and ``TAMT<nnn>`` (X12).
- * :field tranId: 16-character transaction identifier (``TRNID<nn>``; backend
- *   ``Transaction.tranId``).
- * :field tranProcessDate: display date rendered in the list ``TDATE<nn>`` column.
- *   Program ``COTRN00C`` derives it from the transaction origination timestamp
- *   (``TRAN-ORIG-TS`` date portion, formatted ``MM/DD/YY``); optional because a row
- *   is blank-padded when fewer than ten transactions remain on the page.
- * :field tranDesc: transaction description (``TDESC<nn>``; backend
- *   ``Transaction.tranDesc``).
- * :field tranAmt: signed monetary amount as a decimal string (``TAMT<nnn>``;
- *   backend ``Transaction.tranAmt``, ``NUMERIC(11,2)``).
+ * :purpose: One row of the transaction list screen ``COTRN00``. Mirrors the backend
+ *   ``TransactionListItemDto``.
+ * :field tranId: 16-character transaction identifier.
+ * :field tranDate: display date (``MM/DD/YY``) derived from the origination
+ *   timestamp date portion.
+ * :field tranDesc: transaction description.
+ * :field tranAmt: signed monetary amount as a decimal string (``NUMERIC(11,2)``).
  */
 export interface TranListItemDto {
   tranId: string;
-  tranProcessDate?: string;
+  tranDate: string;
   tranDesc: string;
   tranAmt: string;
 }
 
 /**
- * :purpose: Query parameters for the transaction list screen ``COTRN00``.
- * :field tranId: optional starting transaction-id filter, mirroring the BMS
- *   ``TRNIDIN`` (X16) entry field; when present the list is positioned at or after
- *   this identifier.
- * :field page: optional one-based page number driving PF7 (page-back) / PF8
- *   (page-forward) paging at ten rows per page; the first page is served when
- *   omitted.
+ * :purpose: Query/paging parameters for the transaction list screen ``COTRN00``.
+ *   Mirrors the backend ``TransactionListRequestDto``; every field is optional
+ *   because the initial load, PF7 / PF8 paging, and row selection each supply a
+ *   different subset.
+ * :field action: paging/selection action indicator.
+ * :field tranIdFilter: starting transaction-id filter positioning the browse.
+ * :field pageNumber: one-based page index.
+ * :field tranIdFirst: first transaction id on the current page (paging anchor).
+ * :field tranIdLast: last transaction id on the current page (paging anchor).
+ * :field nextPage: true when a forward page (PF8) is requested.
+ * :field selectionFlag: single-character row-selection flag.
+ * :field selectedTranId: transaction id chosen for drill-through to the view screen.
  */
 export interface TranListRequestDto {
-  tranId?: string;
-  page?: number;
+  action?: string;
+  tranIdFilter?: string;
+  pageNumber?: number;
+  tranIdFirst?: string;
+  tranIdLast?: string;
+  nextPage?: boolean;
+  selectionFlag?: string;
+  selectedTranId?: string;
 }
 
 /**
- * :purpose: Paged response for the transaction list screen ``COTRN00``, reusing the
- *   shared :ts:type:`Page` wrapper from ``./common``. Each page holds up to ten
- *   :ts:type:`TranListItemDto` rows together with the pagination state that enables
- *   the PF7 / PF8 controls.
+ * :purpose: Response for the transaction list screen ``COTRN00``. Mirrors the
+ *   backend ``TransactionListResponseDto``: up to ten rows plus the pagination state
+ *   driving the PF7 / PF8 controls.
+ * :field transactions: the page of :ts:type:`TranListItemDto` rows.
+ * :field pageNumber: one-based index of the returned page.
+ * :field tranIdFirst: first transaction id on the page, or ``null`` when empty.
+ * :field tranIdLast: last transaction id on the page, or ``null`` when empty.
+ * :field nextPage: true when a further forward page exists.
+ * :field selectedTranId: echoed selected transaction id, or ``null``.
+ * :field message: informational / error banner text, or ``null``.
  */
-export type TranListResponseDto = Page<TranListItemDto>;
+export interface TranListResponseDto {
+  transactions: TranListItemDto[];
+  pageNumber: number;
+  tranIdFirst: string | null;
+  tranIdLast: string | null;
+  nextPage: boolean;
+  selectedTranId: string | null;
+  message: string | null;
+}
 
 /**
- * :purpose: Full transaction detail returned by the view screen ``COTRN01``
- *   (``TranViewPage``), mirroring every persisted
- *   ``com.carddemo.common.domain.Transaction`` field with its exact backend
- *   camelCase name.
- * :field tranId: 16-character transaction identifier (``TRNID`` X16).
- * :field tranCardNum: 16-character card number / PAN (``CARDNUM`` X16).
- * :field tranTypeCd: two-character transaction type code (``TTYPCD`` X2).
- * :field tranCatCd: numeric transaction category code (``TCATCD`` X4; backend
- *   ``Integer``).
- * :field tranSource: origination source of the transaction (``TRNSRC`` X10).
- * :field tranDesc: transaction description (``TDESC`` X60 on screen; backend
- *   ``X(100)``).
- * :field tranAmt: signed monetary amount as a decimal string (``TRNAMT`` X12;
- *   ``NUMERIC(11,2)``).
+ * :purpose: Full transaction detail returned by the view screen ``COTRN01``,
+ *   mirroring every persisted ``Transaction`` field under its backend camelCase name.
+ * :field tranId: 16-character transaction identifier.
+ * :field tranCardNum: 16-character card number / PAN.
+ * :field tranTypeCd: two-character transaction type code.
+ * :field tranCatCd: numeric transaction category code.
+ * :field tranSource: origination source of the transaction.
+ * :field tranDesc: transaction description.
+ * :field tranAmt: signed monetary amount as a decimal string (``NUMERIC(11,2)``).
  * :field tranOrigTs: 26-character origination timestamp
- *   (``YYYY-MM-DD-HH.MM.SS.mmmmmm``); the screen field ``TORIGDT`` (X10) shows its
- *   ``YYYY-MM-DD`` date portion.
+ *   (``YYYY-MM-DD-HH.MM.SS.mmmmmm``).
  * :field tranProcTs: 26-character processing timestamp
- *   (``YYYY-MM-DD-HH.MM.SS.mmmmmm``); the screen field ``TPROCDT`` (X10) shows its
- *   ``YYYY-MM-DD`` date portion.
- * :field tranMerchantId: 9-digit merchant identifier as a string (``MID`` X9;
- *   backend ``Long``, carried as ``string`` to preserve the fixed width).
- * :field tranMerchantName: merchant name (``MNAME`` X30).
- * :field tranMerchantCity: merchant city (``MCITY`` X25).
- * :field tranMerchantZip: merchant postal code (``MZIP`` X10).
+ *   (``YYYY-MM-DD-HH.MM.SS.mmmmmm``).
+ * :field tranMerchantId: 9-digit merchant identifier as a string.
+ * :field tranMerchantName: merchant name.
+ * :field tranMerchantCity: merchant city.
+ * :field tranMerchantZip: merchant postal code.
  */
 export interface TranViewResponseDto {
   tranId: string;
@@ -116,36 +113,32 @@ export interface TranViewResponseDto {
 }
 
 /**
- * :purpose: Entry payload for the add-transaction screen ``COTRN02``
- *   (``TranAddPage``, transaction ``CT02``). Carries the operator-entered fields;
- *   ``tranId`` is intentionally absent because the server assigns it on creation.
- * :field accountId: 11-digit account identifier (``ACTIDIN`` X11). Optional:
- *   program ``COTRN02C`` requires *either* ``accountId`` *or* ``cardNum`` to be
- *   supplied ("Account or Card Number must be entered").
- * :field cardNum: 16-character card number (``CARDNIN`` X16). Optional under the
- *   same account-or-card rule as ``accountId``.
- * :field tranTypeCd: two-character transaction type code (``TTYPCD`` X2).
- * :field tranCatCd: numeric transaction category code (``TCATCD`` X4).
- * :field tranSource: origination source of the transaction (``TRNSRC`` X10).
- * :field tranDesc: transaction description (``TDESC`` X60).
- * :field tranAmt: signed monetary amount as a decimal string (``TRNAMT`` X12;
- *   ``NUMERIC(11,2)``).
- * :field tranOrigTs: origination timestamp. The screen collects the ``YYYY-MM-DD``
- *   date portion (``TORIGDT`` X10); the value is carried under the backend
- *   26-character field name and expanded server-side.
+ * :purpose: Entry payload for the add-transaction screen ``COTRN02``. ``tranId`` is
+ *   intentionally absent because the server assigns the 16-digit zero-padded id.
+ * :field acctId: 11-digit account identifier. Optional: the service requires
+ *   *either* ``acctId`` *or* ``tranCardNum`` ("Account or Card Number must be
+ *   entered").
+ * :field tranCardNum: 16-character card number. Optional under the same
+ *   account-or-card rule as ``acctId``.
+ * :field tranTypeCd: two-character transaction type code.
+ * :field tranCatCd: numeric transaction category code.
+ * :field tranSource: origination source of the transaction.
+ * :field tranDesc: transaction description.
+ * :field tranAmt: signed monetary amount as a decimal string (``NUMERIC(11,2)``).
+ * :field tranOrigTs: origination timestamp; the screen collects the ``YYYY-MM-DD``
+ *   date portion and it is expanded server-side.
  * :field tranProcTs: processing timestamp, collected as the ``YYYY-MM-DD`` date
- *   portion (``TPROCDT`` X10) and carried under the backend 26-character field name.
- * :field tranMerchantId: 9-digit merchant identifier as a string (``MID`` X9).
- * :field tranMerchantName: merchant name (``MNAME`` X30).
- * :field tranMerchantCity: merchant city (``MCITY`` X25).
- * :field tranMerchantZip: merchant postal code (``MZIP`` X10).
- * :field confirm: single-character confirmation flag (``CONFIRM`` X1, ``'Y'`` /
- *   ``'N'``); optional, supplied on the confirmation pass before the record is
- *   written.
+ *   portion.
+ * :field tranMerchantId: 9-digit merchant identifier as a string.
+ * :field tranMerchantName: merchant name.
+ * :field tranMerchantCity: merchant city.
+ * :field tranMerchantZip: merchant postal code.
+ * :field confirm: single-character confirmation flag (``'Y'`` / ``'N'``); optional,
+ *   supplied on the confirmation pass.
  */
 export interface TranAddRequestDto {
-  accountId?: string;
-  cardNum?: string;
+  acctId?: string;
+  tranCardNum?: string;
   tranTypeCd: string;
   tranCatCd: number;
   tranSource: string;
@@ -161,14 +154,11 @@ export interface TranAddRequestDto {
 }
 
 /**
- * :purpose: Response for a successful add on screen ``COTRN02``, returning the
- *   server-generated identifier of the newly created transaction.
- * :field tranId: 16-digit zero-padded transaction identifier assigned by the
- *   database sequence. The generation mechanism replaces the legacy
- *   browse-last-then-increment approach (``COTRN02C``); the observable 16-digit
- *   zero-padded string format is preserved (see ``docs/decision-log.md``, AAP
- *   0.6.5).
+ * :purpose: Response for a successful add on screen ``COTRN02``.
+ * :field tranId: 16-digit zero-padded transaction identifier assigned by the server.
+ * :field message: informational / error banner text, or ``null``.
  */
 export interface TranAddResponseDto {
   tranId: string;
+  message: string | null;
 }
