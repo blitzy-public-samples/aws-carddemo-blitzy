@@ -1,0 +1,51 @@
+/*
+ * Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License").
+ * You may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *    http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+package com.carddemo.batch;
+
+import com.carddemo.common.config.ObservabilityConfig;
+
+import org.springframework.boot.SpringApplication;
+import org.springframework.boot.autoconfigure.SpringBootApplication;
+import org.springframework.boot.persistence.autoconfigure.EntityScan;
+import org.springframework.context.annotation.Import;
+import org.springframework.data.jpa.repository.config.EnableJpaRepositories;
+
+/**
+ * Spring Boot entry point for the ``batch-service`` microservice.
+ *
+ * :purpose: Bootstraps the CardDemo batch tier (interest calculation and
+ *     data-management jobs) as a resident Spring Boot application that also
+ *     exposes Actuator HTTP endpoints for health and metrics.
+ * :output: A running application context with Spring Batch auto-configuration,
+ *     JPA repositories under ``com.carddemo.batch.repository`` and shared
+ *     entities under ``com.carddemo.common.domain``.
+ */
+@SpringBootApplication
+@EntityScan("com.carddemo.common.domain")
+@EnableJpaRepositories("com.carddemo.batch.repository")
+@Import(ObservabilityConfig.class)
+public class BatchServiceApplication {
+
+    /**
+     * Application entry point.
+     *
+     * :param args: standard Java command-line arguments forwarded to
+     *     :class:`SpringApplication` to bootstrap the Spring context.
+     */
+    public static void main(String[] args) {
+        SpringApplication.run(BatchServiceApplication.class, args);
+    }
+}

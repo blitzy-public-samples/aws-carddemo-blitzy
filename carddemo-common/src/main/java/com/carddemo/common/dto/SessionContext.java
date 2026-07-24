@@ -77,25 +77,27 @@ public class SessionContext implements Serializable {
         }
 
         /**
-         * :purpose: Strict lookup of a {@code UserType} from a raw COMMAREA value, used
-         *  both for session hydration and as the Jackson deserialization factory. Only an
-         *  exact one-byte ``"A"`` or ``"U"`` is accepted, preserving the frozen
-         *  ``CDEMO-USER-TYPE`` PIC X(01) contract; the match is case-sensitive and does
-         *  not trim, so ``"a"``, ``"ADMIN"``, ``"unknown"`` and any multi-character value
-         *  are rejected. Session state may be unset before sign-on, so a null, empty, or
-         *  unrecognized value yields {@code null} (fail-closed for authorization guards)
-         *  rather than throwing.
-         * :param code: the raw COMMAREA value.
-         * :returns: {@code CDEMO_USRTYP_ADMIN} for ``"A"``, {@code CDEMO_USRTYP_USER} for
-         *  ``"U"``, or {@code null} for any other value.
+         * :purpose: Tolerant lookup of a {@code UserType} from a raw COMMAREA value, used
+         *  both for session hydration and as the Jackson deserialization factory. The
+         *  COMMAREA ``CDEMO-USER-TYPE`` field is spaces before sign-on, so a {@code null}
+         *  or blank value yields {@code null} (fail-closed for authorization guards)
+         *  rather than throwing; otherwise the value is trimmed, its first character is
+         *  upper-cased, and matched against ``'A'`` ({@code CDEMO_USRTYP_ADMIN}) or ``'U'``
+         *  ({@code CDEMO_USRTYP_USER}). An unrecognized character also yields {@code null}.
+         * :param code: the raw COMMAREA value (may be null, blank, or mixed case).
+         * :returns: {@code CDEMO_USRTYP_ADMIN} for ``'A'``, {@code CDEMO_USRTYP_USER} for
+         *  ``'U'``, or {@code null} for null/blank/unrecognized input.
          */
         @JsonCreator
         public static UserType fromCode(String code) {
-            if ("A".equals(code)) {
-                return CDEMO_USRTYP_ADMIN;
+            if (code == null || code.isBlank()) {
+                return null;
             }
-            if ("U".equals(code)) {
-                return CDEMO_USRTYP_USER;
+            char first = Character.toUpperCase(code.trim().charAt(0));
+            for (UserType type : values()) {
+                if (type.code == first) {
+                    return type;
+                }
             }
             return null;
         }

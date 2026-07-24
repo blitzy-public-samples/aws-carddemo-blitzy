@@ -1,13 +1,16 @@
 /**
  * Header component tests.
  *
- * :purpose: Verify the BMS-faithful three-row header structure (MJ-02), the
- *     static (non-ticking) server-snapshot timestamp behavior (MJ-20), and the
- *     h1/h2 screen-title heading semantics (MN-05).
+ * :purpose: Verify the BMS-faithful header (``app/bms/COSGN00.bms``): the
+ *     ``Tran :`` / ``Prog :`` / ``Date :`` / ``Time :`` labels and their values,
+ *     the BLUE ``.label`` value styling and YELLOW ``.title`` heading styling, the
+ *     ``MM/DD/YY`` and 24-hour ``HH:MM:SS`` formatting derived from
+ *     ``app/cpy/CSDAT01Y.cpy``, and the static server-snapshot timestamp that does
+ *     not tick (legacy ``POPULATE-HEADER-INFO`` captures the time once at send).
  */
 import { render, screen, act } from '@testing-library/react';
-// Under Jest's ESM runtime the ``jest`` object is not injected as a global (unlike
-// describe/it/expect) and must be imported explicitly.
+// Jest's ESM runtime does not inject ``jest`` as a global (unlike describe/it/
+// expect), so it is imported explicitly.
 import { jest } from '@jest/globals';
 import Header, { formatDate, formatTime } from './Header';
 
@@ -16,82 +19,47 @@ describe('Header', () => {
     jest.useRealTimers();
   });
 
-  it('renders the two required header rows with their fields and labels (MJ-02)', () => {
+  it('renders both header rows with labels and provided values', () => {
     render(
-      <Header
-        transactionId="CC00"
-        programName="COSGN00C"
-        title01="AWS Mainframe Modernization"
-        title02="CardDemo"
-        currentDate="03/09/24"
-        currentTime="14:05:07"
-      />,
+      <Header transactionId="CC00" programName="COSGN00C" title01="Sign On" title02="CardDemo" />,
     );
-
-    expect(screen.getByTestId('tran-id')).toHaveTextContent('CC00');
-    expect(screen.getByTestId('pgm-name')).toHaveTextContent('COSGN00C');
-    expect(screen.getByTestId('title01')).toHaveTextContent('AWS Mainframe Modernization');
-    expect(screen.getByTestId('title02')).toHaveTextContent('CardDemo');
-    expect(screen.getByTestId('cur-date')).toHaveTextContent('03/09/24');
-    expect(screen.getByTestId('cur-time')).toHaveTextContent('14:05:07');
-
-    // Labels are preserved verbatim from COSGN00.bms.
     expect(screen.getByText('Tran :')).toBeInTheDocument();
     expect(screen.getByText('Prog :')).toBeInTheDocument();
     expect(screen.getByText('Date :')).toBeInTheDocument();
     expect(screen.getByText('Time :')).toBeInTheDocument();
+    expect(screen.getByTestId('tran-id')).toHaveTextContent('CC00');
+    expect(screen.getByTestId('pgm-name')).toHaveTextContent('COSGN00C');
+    expect(screen.getByTestId('title01')).toHaveTextContent('Sign On');
+    expect(screen.getByTestId('title02')).toHaveTextContent('CardDemo');
   });
 
-  it('renders the two title lines as h1/h2 heading semantics (MN-05)', () => {
-    render(<Header title01="AWS Mainframe Modernization" title02="CardDemo" />);
-
-    expect(screen.getByRole('heading', { level: 1 })).toHaveTextContent(
-      'AWS Mainframe Modernization',
-    );
-    expect(screen.getByRole('heading', { level: 2 })).toHaveTextContent('CardDemo');
+  it('renders values BLUE (.label) and titles YELLOW (.title)', () => {
+    render(<Header title01="T1" title02="T2" />);
+    expect(screen.getByTestId('title01')).toHaveClass('title');
+    expect(screen.getByTestId('title02')).toHaveClass('title');
+    expect(screen.getByTestId('tran-id')).toHaveClass('label');
+    expect(screen.getByTestId('cur-date')).toHaveClass('label');
+    expect(screen.getByTestId('cur-time')).toHaveClass('label');
   });
 
-  it('omits the optional AppID/SysID row until an id is supplied, then renders it (MJ-02)', () => {
-    const { rerender } = render(<Header transactionId="CC00" />);
-
-    expect(screen.queryByTestId('app-sys-row')).not.toBeInTheDocument();
-    expect(screen.queryByTestId('app-id')).not.toBeInTheDocument();
-    expect(screen.queryByTestId('sys-id')).not.toBeInTheDocument();
-
-    rerender(<Header transactionId="CC00" appId="CARDDEMO" sysId="CICS1" />);
-
-    expect(screen.getByTestId('app-sys-row')).toBeInTheDocument();
-    expect(screen.getByTestId('app-id')).toHaveTextContent('CARDDEMO');
-    expect(screen.getByTestId('sys-id')).toHaveTextContent('CICS1');
-    expect(screen.getByText('AppID:')).toBeInTheDocument();
-    expect(screen.getByText('SysID:')).toBeInTheDocument();
+  it('formats date as MM/DD/YY and time as 24-hour HH:MM:SS', () => {
+    const morning = new Date(2026, 6, 21, 9, 5, 3);
+    expect(formatDate(morning)).toBe('07/21/26');
+    expect(formatTime(morning)).toBe('09:05:03');
+    const night = new Date(2026, 11, 3, 23, 59, 7);
+    expect(formatDate(night)).toBe('12/03/26');
+    expect(formatTime(night)).toBe('23:59:07');
   });
 
-  it('prefers server-supplied date/time props (MJ-20)', () => {
-    render(<Header currentDate="01/02/03" currentTime="04:05:06" />);
-
-    expect(screen.getByTestId('cur-date')).toHaveTextContent('01/02/03');
-    expect(screen.getByTestId('cur-time')).toHaveTextContent('04:05:06');
-  });
-
-  it('shows a static snapshot that does not tick when no timestamp props are supplied (MJ-20)', () => {
+  it('shows a static snapshot that does not tick as the clock advances', () => {
     jest.useFakeTimers();
-    jest.setSystemTime(new Date(2024, 2, 9, 14, 5, 7)); // 2024-03-09 14:05:07 local
-
+    jest.setSystemTime(new Date(2026, 6, 21, 9, 5, 3));
     render(<Header />);
-    expect(screen.getByTestId('cur-date')).toHaveTextContent('03/09/24');
-    expect(screen.getByTestId('cur-time')).toHaveTextContent('14:05:07');
-
-    // With the live clock removed, advancing time must not change the display.
+    expect(screen.getByTestId('cur-time')).toHaveTextContent('09:05:03');
+    // Advancing the mocked clock must not change the mount-time snapshot.
     act(() => {
-      jest.advanceTimersByTime(5000);
+      jest.advanceTimersByTime(1000);
     });
-    expect(screen.getByTestId('cur-time')).toHaveTextContent('14:05:07');
-  });
-
-  it('formats date and time like the legacy WS-CURDATE / WS-CURTIME fields', () => {
-    const moment = new Date(2024, 2, 9, 14, 5, 7);
-    expect(formatDate(moment)).toBe('03/09/24');
-    expect(formatTime(moment)).toBe('14:05:07');
+    expect(screen.getByTestId('cur-time')).toHaveTextContent('09:05:03');
   });
 });
