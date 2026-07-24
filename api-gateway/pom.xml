@@ -119,6 +119,20 @@
             <scope>test</scope>
         </dependency>
 
+        <!--
+          Spring MVC test slice (@WebMvcTest, MockMvc auto-configuration). As of
+          Spring Boot 4.0 the Web MVC test slice was extracted from the
+          catch-all spring-boot-test-autoconfigure module into its own
+          spring-boot-webmvc-test module, surfaced through this starter; it is no
+          longer transitively provided by spring-boot-starter-test. The version is
+          managed by the Spring Boot BOM (no explicit pin).
+        -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-webmvc-test</artifactId>
+            <scope>test</scope>
+        </dependency>
+
     </dependencies>
 
     <build>

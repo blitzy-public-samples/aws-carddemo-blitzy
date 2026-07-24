@@ -1,0 +1,35 @@
+# Test profile for reporting-service: boots slice/context/integration tests without a live Redis,
+# against a throwaway Testcontainers PostgreSQL. Activated via @ActiveProfiles("test").
+spring:
+  autoconfigure:
+    # Neutralize Redis + Spring Session auto-config so the context loads without a running Redis.
+    exclude:
+      - org.springframework.boot.data.redis.autoconfigure.DataRedisAutoConfiguration
+      - org.springframework.boot.data.redis.autoconfigure.DataRedisRepositoriesAutoConfiguration
+      - org.springframework.boot.session.autoconfigure.SessionAutoConfiguration
+      - org.springframework.boot.session.data.redis.autoconfigure.SessionDataRedisAutoConfiguration
+  datasource:
+    # Testcontainers JDBC-URL scheme: auto-provisions an ephemeral postgres:18 container.
+    # Overridable by ITs via @ServiceConnection / @DynamicPropertySource.
+    url: jdbc:tc:postgresql:18:///carddemo
+    driver-class-name: org.testcontainers.jdbc.ContainerDatabaseDriver
+    username: test
+    password: test
+  jpa:
+    open-in-view: false
+    hibernate:
+      # reporting owns no tables and ships no migrations; the throwaway container is empty,
+      # so Hibernate performs no schema action (ITs provision any needed schema themselves).
+      ddl-auto: none
+  # reporting-service shares the carddemo database and ships no migrations; keep Flyway disabled (matches prod).
+  flyway:
+    enabled: false
+  # Statement/report jobs run on demand via JobLauncher (CICS TDQ 'JOBS' -> JES async submission), never at startup.
+  batch:
+    job:
+      enabled: false
+logging:
+  level:
+    com.carddemo: INFO
+    org.testcontainers: WARN
+    com.github.dockerjava: WARN

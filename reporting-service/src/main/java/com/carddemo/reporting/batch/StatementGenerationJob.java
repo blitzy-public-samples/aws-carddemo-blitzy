@@ -70,7 +70,7 @@ import java.util.Map;
  *  step, launched on demand by the reporting-service job scheduler; the step
  *  writes the concatenated text and HTML statement files.
  */
-@Configuration
+@Configuration("statementGenerationJobConfig")
 public class StatementGenerationJob {
 
     /** :purpose: Frozen bean name of the on-demand statement-generation job. */

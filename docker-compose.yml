@@ -218,8 +218,12 @@ services:
 
   reporting-service:
     <<: *backend-service
+    # Root build context: reporting-service inherits the root parent POM and
+    # depends on the sibling carddemo-common module, so its Dockerfile builds
+    # the reactor from the repository root (see reporting-service/Dockerfile).
     build:
-      context: ./reporting-service
+      context: .
+      dockerfile: reporting-service/Dockerfile
 
   batch-service:
     <<: *backend-service
