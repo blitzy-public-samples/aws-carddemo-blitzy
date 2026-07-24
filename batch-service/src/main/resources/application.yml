@@ -99,6 +99,18 @@ management:
     sampling:
       probability: ${MANAGEMENT_TRACING_SAMPLING_PROBABILITY:0.1}
 
+# Data-management batch file roots (QA MJ-08 / CWE-22). Every job-parameter
+# file name is confined to these allowlisted roots by BatchOutputPathResolver:
+# 'output-dir' bounds files the jobs write (record dumps, category-balance and
+# transaction-detail reports, the combined transaction file); 'input-dir' bounds
+# the daily-transaction feed the validation-read job reads. Absolute paths,
+# '..' traversal, and symlink escapes outside these roots are rejected. When a
+# value is blank a <java.io.tmpdir>/carddemo-batch/{output,input} default is used.
+carddemo:
+  batch:
+    output-dir: ${CARDDEMO_BATCH_OUTPUT_DIR:}
+    input-dir: ${CARDDEMO_BATCH_INPUT_DIR:}
+
 # ---------------------------------------------------------------------
 # Docker Compose profile (SPRING_PROFILES_ACTIVE=docker). Compose passes
 # explicit env vars; these defaults resolve the compose service

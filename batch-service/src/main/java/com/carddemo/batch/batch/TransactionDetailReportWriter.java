@@ -112,8 +112,11 @@ public class TransactionDetailReportWriter implements ItemStreamWriter<Transacti
     /** Report end date, ``YYYY-MM-DD`` (``REPT-END-DATE`` X(10)); bound from the ``endDate`` job parameter. */
     private final String endDate;
 
-    /** Filesystem path of the report output file; bound from the ``reportFile`` job parameter. */
+    /** Requested report file name (``reportFile`` job parameter); retained for diagnostics. */
     private final String reportFile;
+
+    /** Canonical report path confined to the allowlisted output root; opened in {@link #open}. */
+    private final Path resolvedReportFile;
 
     /** Open handle to the report file; created in {@link #open} and released in {@link #close}. */
     private BufferedWriter out;
@@ -143,23 +146,31 @@ public class TransactionDetailReportWriter implements ItemStreamWriter<Transacti
      *  (``startDate`` job parameter, rendered as ``REPT-START-DATE``).
      * :param endDate: report range end date in ``YYYY-MM-DD`` form
      *  (``endDate`` job parameter, rendered as ``REPT-END-DATE``).
-     * :param reportFile: filesystem path of the report file to create
-     *  (``reportFile`` job parameter).
+     * :param reportFile: report file name to create (``reportFile`` job
+     *  parameter); resolved and confined to the configured output root by
+     *  {@code pathResolver}.
+     * :param pathResolver: resolver that confines the report file to the
+     *  allowlisted batch output root, rejecting absolute, ``..`` traversal, and
+     *  symlink-escape paths (CWE-22).
      */
     public TransactionDetailReportWriter(
             @Value("#{jobParameters['startDate']}") String startDate,
             @Value("#{jobParameters['endDate']}") String endDate,
-            @Value("#{jobParameters['reportFile']}") String reportFile) {
+            @Value("#{jobParameters['reportFile']}") String reportFile,
+            BatchOutputPathResolver pathResolver) {
         this.startDate = startDate;
         this.endDate = endDate;
         this.reportFile = reportFile;
+        this.resolvedReportFile = pathResolver.resolveOutput(reportFile);
     }
 
     /**
      * :purpose: Initialize report state and open the output file at the start of
-     *  the step, before any chunk is written.
-     * :param executionContext: the step execution context (not used; this report
-     *  is not restartable).
+     *  the step, before any chunk is written. The file is opened with truncation
+     *  so a restart regenerates the whole report from the first record.
+     * :param executionContext: the step execution context (not used; the report
+     *  is regenerated wholesale on restart because the owning reader disables
+     *  state saving, so no partial writer state is resumed).
      */
     @Override
     public void open(ExecutionContext executionContext) throws ItemStreamException {
@@ -171,7 +182,7 @@ public class TransactionDetailReportWriter implements ItemStreamWriter<Transacti
         accountTotal = BigDecimal.ZERO;
         grandTotal = BigDecimal.ZERO;
         try {
-            out = Files.newBufferedWriter(Path.of(reportFile), StandardCharsets.UTF_8);
+            out = Files.newBufferedWriter(resolvedReportFile, StandardCharsets.UTF_8);
         } catch (IOException e) {
             throw new ItemStreamException(
                     "Failed to open the daily transaction report file: " + reportFile, e);
@@ -179,13 +190,15 @@ public class TransactionDetailReportWriter implements ItemStreamWriter<Transacti
     }
 
     /**
-     * :purpose: Persist writer state to the step execution context. This report
-     *  is not restartable, so no state is stored.
+     * :purpose: Persist writer state to the step execution context. The report is
+     *  regenerated wholesale on restart (the owning reader disables state saving
+     *  and {@link #open} truncates the file), so no partial writer state is
+     *  stored here.
      * :param executionContext: the step execution context (unused).
      */
     @Override
     public void update(ExecutionContext executionContext) throws ItemStreamException {
-        // No restart state is maintained for this report.
+        // The report is regenerated in full on restart; no partial state persists.
     }
 
     /**

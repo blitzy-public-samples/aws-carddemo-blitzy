@@ -16,10 +16,14 @@
 
 package com.carddemo.batch.config;
 
+import com.carddemo.batch.batch.BatchOutputPathResolver;
 import com.carddemo.batch.batch.CategoryBalanceReportWriter;
+import com.carddemo.batch.batch.CobolRecordFormatter;
 import com.carddemo.batch.batch.CombineTransactionsTasklet;
+import com.carddemo.batch.batch.DailyTransactionRecordMapper;
 import com.carddemo.batch.batch.DailyTransactionValidationProcessor;
 import com.carddemo.batch.batch.LoggingItemWriter;
+import com.carddemo.batch.batch.RecordDumpItemWriter;
 import com.carddemo.batch.batch.TransactionDetailReportWriter;
 import com.carddemo.batch.batch.TransactionReportItem;
 import com.carddemo.batch.batch.TransactionReportItemProcessor;
@@ -51,12 +55,17 @@ import org.springframework.batch.infrastructure.item.data.RepositoryItemReader;
 import org.springframework.batch.infrastructure.item.data.builder.RepositoryItemReaderBuilder;
 import org.springframework.batch.infrastructure.item.database.JpaPagingItemReader;
 import org.springframework.batch.infrastructure.item.database.builder.JpaPagingItemReaderBuilder;
+import org.springframework.batch.infrastructure.item.file.FlatFileItemReader;
+import org.springframework.batch.infrastructure.item.file.builder.FlatFileItemReaderBuilder;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.core.io.FileSystemResource;
 import org.springframework.data.domain.Sort;
 import org.springframework.transaction.PlatformTransactionManager;
 
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Path;
 import java.util.LinkedHashMap;
 import java.util.Map;
 
@@ -149,22 +158,46 @@ public class DataManagementJobConfig {
     }
 
     /**
-     * :purpose: Chunk-oriented step that reads every account and hands each chunk
-     *  to a count-only logging writer; mirrors the ``CBACT01C`` read/``DISPLAY``
+     * :purpose: Build the ``@StepScope`` record-dump writer for the account
+     *  read-and-print job, resolving and confining the requested ``outputFile``
+     *  job parameter to the configured batch output root and reproducing the
+     *  ``CBACT01C`` labelled ``DISPLAY`` dump with its start and end banners.
+     * :param outputFile: the requested output file, bound late from the
+     *  ``outputFile`` job parameter.
+     * :param pathResolver: resolver that confines the path to the output root.
+     * :returns: a ``RecordDumpItemWriter`` writing the account dump.
+     */
+    @Bean
+    @StepScope
+    public RecordDumpItemWriter<Account> accountDumpWriter(
+            @Value("#{jobParameters['outputFile']}") String outputFile,
+            BatchOutputPathResolver pathResolver) {
+        Path resolved = pathResolver.resolveOutput(outputFile);
+        return new RecordDumpItemWriter<>("accountDumpWriter", resolved,
+                "START OF EXECUTION OF PROGRAM CBACT01C",
+                "END OF EXECUTION OF PROGRAM CBACT01C",
+                CobolRecordFormatter::accountDump);
+    }
+
+    /**
+     * :purpose: Chunk-oriented step that reads every account and prints each to
+     *  the account dump output file; mirrors the ``CBACT01C`` read/``DISPLAY``
      *  loop with no mutation.
      * :param jobRepository: batch job repository (Boot auto-configured).
      * :param transactionManager: batch transaction manager (Boot auto-configured).
      * :param accountReader: reader streaming accounts in ``acctId`` order.
+     * :param accountDumpWriter: writer printing each account to the dump file.
      * :returns: the ``accountReadStep`` ``Step``.
      */
     @Bean
     public Step accountReadStep(JobRepository jobRepository,
                                 PlatformTransactionManager transactionManager,
-                                RepositoryItemReader<Account> accountReader) {
+                                RepositoryItemReader<Account> accountReader,
+                                RecordDumpItemWriter<Account> accountDumpWriter) {
         return new StepBuilder("accountReadStep", jobRepository)
-                .<Account, Account>chunk(PAGE_SIZE, transactionManager)
+                .<Account, Account>chunk(PAGE_SIZE).transactionManager(transactionManager)
                 .reader(accountReader)
-                .writer(new LoggingItemWriter<>("account"))
+                .writer(accountDumpWriter)
                 .build();
     }
 
@@ -207,22 +240,47 @@ public class DataManagementJobConfig {
     }
 
     /**
-     * :purpose: Chunk-oriented step that reads every card and hands each chunk to
-     *  a count-only logging writer; mirrors the ``CBACT02C`` read/``DISPLAY`` loop
-     *  with no mutation.
+     * :purpose: Build the ``@StepScope`` record-dump writer for the card
+     *  read-and-print job, resolving and confining the requested ``outputFile``
+     *  job parameter to the configured batch output root and reproducing the
+     *  ``CBACT02C`` whole-record ``DISPLAY CARD-RECORD`` dump with its start and
+     *  end banners.
+     * :param outputFile: the requested output file, bound late from the
+     *  ``outputFile`` job parameter.
+     * :param pathResolver: resolver that confines the path to the output root.
+     * :returns: a ``RecordDumpItemWriter`` writing the card dump.
+     */
+    @Bean
+    @StepScope
+    public RecordDumpItemWriter<Card> cardDumpWriter(
+            @Value("#{jobParameters['outputFile']}") String outputFile,
+            BatchOutputPathResolver pathResolver) {
+        Path resolved = pathResolver.resolveOutput(outputFile);
+        return new RecordDumpItemWriter<>("cardDumpWriter", resolved,
+                "START OF EXECUTION OF PROGRAM CBACT02C",
+                "END OF EXECUTION OF PROGRAM CBACT02C",
+                CobolRecordFormatter::cardRecord);
+    }
+
+    /**
+     * :purpose: Chunk-oriented step that reads every card and prints each to the
+     *  card dump output file; mirrors the ``CBACT02C`` read/``DISPLAY`` loop with
+     *  no mutation.
      * :param jobRepository: batch job repository (Boot auto-configured).
      * :param transactionManager: batch transaction manager (Boot auto-configured).
      * :param cardReader: reader streaming cards in ``cardNum`` order.
+     * :param cardDumpWriter: writer printing each card to the dump file.
      * :returns: the ``cardReadStep`` ``Step``.
      */
     @Bean
     public Step cardReadStep(JobRepository jobRepository,
                              PlatformTransactionManager transactionManager,
-                             RepositoryItemReader<Card> cardReader) {
+                             RepositoryItemReader<Card> cardReader,
+                             RecordDumpItemWriter<Card> cardDumpWriter) {
         return new StepBuilder("cardReadStep", jobRepository)
-                .<Card, Card>chunk(PAGE_SIZE, transactionManager)
+                .<Card, Card>chunk(PAGE_SIZE).transactionManager(transactionManager)
                 .reader(cardReader)
-                .writer(new LoggingItemWriter<>("card"))
+                .writer(cardDumpWriter)
                 .build();
     }
 
@@ -265,23 +323,49 @@ public class DataManagementJobConfig {
     }
 
     /**
+     * :purpose: Build the ``@StepScope`` record-dump writer for the card
+     *  cross-reference read-and-print job, resolving and confining the requested
+     *  ``outputFile`` job parameter to the configured batch output root and
+     *  reproducing the ``CBACT03C`` whole-record ``DISPLAY CARD-XREF-RECORD`` dump
+     *  with its start and end banners.
+     * :param outputFile: the requested output file, bound late from the
+     *  ``outputFile`` job parameter.
+     * :param pathResolver: resolver that confines the path to the output root.
+     * :returns: a ``RecordDumpItemWriter`` writing the card cross-reference dump.
+     */
+    @Bean
+    @StepScope
+    public RecordDumpItemWriter<CardXref> cardXrefDumpWriter(
+            @Value("#{jobParameters['outputFile']}") String outputFile,
+            BatchOutputPathResolver pathResolver) {
+        Path resolved = pathResolver.resolveOutput(outputFile);
+        return new RecordDumpItemWriter<>("cardXrefDumpWriter", resolved,
+                "START OF EXECUTION OF PROGRAM CBACT03C",
+                "END OF EXECUTION OF PROGRAM CBACT03C",
+                CobolRecordFormatter::cardXrefRecord);
+    }
+
+    /**
      * :purpose: Chunk-oriented step that reads every card cross-reference record
-     *  and hands each chunk to a count-only logging writer; mirrors the
+     *  and prints each to the cross-reference dump output file; mirrors the
      *  ``CBACT03C`` read/``DISPLAY`` loop with no mutation.
      * :param jobRepository: batch job repository (Boot auto-configured).
      * :param transactionManager: batch transaction manager (Boot auto-configured).
      * :param cardXrefReader: reader streaming cross-reference records in
      *  ``xrefCardNum`` order.
+     * :param cardXrefDumpWriter: writer printing each cross-reference record to
+     *  the dump file.
      * :returns: the ``cardXrefReadStep`` ``Step``.
      */
     @Bean
     public Step cardXrefReadStep(JobRepository jobRepository,
                                  PlatformTransactionManager transactionManager,
-                                 RepositoryItemReader<CardXref> cardXrefReader) {
+                                 RepositoryItemReader<CardXref> cardXrefReader,
+                                 RecordDumpItemWriter<CardXref> cardXrefDumpWriter) {
         return new StepBuilder("cardXrefReadStep", jobRepository)
-                .<CardXref, CardXref>chunk(PAGE_SIZE, transactionManager)
+                .<CardXref, CardXref>chunk(PAGE_SIZE).transactionManager(transactionManager)
                 .reader(cardXrefReader)
-                .writer(new LoggingItemWriter<>("cardXref"))
+                .writer(cardXrefDumpWriter)
                 .build();
     }
 
@@ -325,22 +409,47 @@ public class DataManagementJobConfig {
     }
 
     /**
-     * :purpose: Chunk-oriented step that reads every customer and hands each chunk
-     *  to a count-only logging writer; mirrors the ``CBCUS01C`` read/``DISPLAY``
+     * :purpose: Build the ``@StepScope`` record-dump writer for the customer
+     *  read-and-print job, resolving and confining the requested ``outputFile``
+     *  job parameter to the configured batch output root and reproducing the
+     *  ``CBCUS01C`` whole-record ``DISPLAY CUSTOMER-RECORD`` dump with its start
+     *  and end banners.
+     * :param outputFile: the requested output file, bound late from the
+     *  ``outputFile`` job parameter.
+     * :param pathResolver: resolver that confines the path to the output root.
+     * :returns: a ``RecordDumpItemWriter`` writing the customer dump.
+     */
+    @Bean
+    @StepScope
+    public RecordDumpItemWriter<Customer> customerDumpWriter(
+            @Value("#{jobParameters['outputFile']}") String outputFile,
+            BatchOutputPathResolver pathResolver) {
+        Path resolved = pathResolver.resolveOutput(outputFile);
+        return new RecordDumpItemWriter<>("customerDumpWriter", resolved,
+                "START OF EXECUTION OF PROGRAM CBCUS01C",
+                "END OF EXECUTION OF PROGRAM CBCUS01C",
+                CobolRecordFormatter::customerRecord);
+    }
+
+    /**
+     * :purpose: Chunk-oriented step that reads every customer and prints each to
+     *  the customer dump output file; mirrors the ``CBCUS01C`` read/``DISPLAY``
      *  loop with no mutation.
      * :param jobRepository: batch job repository (Boot auto-configured).
      * :param transactionManager: batch transaction manager (Boot auto-configured).
      * :param customerReader: reader streaming customers in ``custId`` order.
+     * :param customerDumpWriter: writer printing each customer to the dump file.
      * :returns: the ``customerReadStep`` ``Step``.
      */
     @Bean
     public Step customerReadStep(JobRepository jobRepository,
                                  PlatformTransactionManager transactionManager,
-                                 RepositoryItemReader<Customer> customerReader) {
+                                 RepositoryItemReader<Customer> customerReader,
+                                 RecordDumpItemWriter<Customer> customerDumpWriter) {
         return new StepBuilder("customerReadStep", jobRepository)
-                .<Customer, Customer>chunk(PAGE_SIZE, transactionManager)
+                .<Customer, Customer>chunk(PAGE_SIZE).transactionManager(transactionManager)
                 .reader(customerReader)
-                .writer(new LoggingItemWriter<>("customer"))
+                .writer(customerDumpWriter)
                 .build();
     }
 
@@ -364,23 +473,41 @@ public class DataManagementJobConfig {
     // -----------------------------------------------------------------------
 
     /**
-     * :purpose: Page through the daily-transaction feed ordered by ``dalytranId``
-     *  for the validation-read pass, reproducing the sequential read of the
-     *  ``DALYTRAN`` feed in ``CBTRN01C``. A JPQL paging reader is used because the
-     *  feed has no dedicated repository.
-     * :param entityManagerFactory: JPA entity-manager factory backing the paging
-     *  query.
-     * :returns: a ``JpaPagingItemReader`` streaming every ``DailyTransaction`` in
-     *  ascending ``dalytranId`` order.
+     * :purpose: Read the daily-transaction feed (``DALYTRAN``, copybook
+     *  ``CVTRA06Y``, RECLN 350) sequentially for the validation-read pass,
+     *  reproducing the sequential ``READ DALYTRAN-FILE`` of ``CBTRN01C``. The feed
+     *  is a fixed-length flat file rather than a database table, so a restartable
+     *  ``FlatFileItemReader`` parses each 350-character record through
+     *  ``DailyTransactionRecordMapper``; the reader records its line position in
+     *  the step execution context so a restart resumes after the last committed
+     *  chunk.
+     * :param inputFile: feed file name bound late from the ``inputFile`` job
+     *  parameter; resolved and confined to the configured input root by
+     *  ``pathResolver``.
+     * :param pathResolver: resolver that confines the feed file to the allowlisted
+     *  batch input root, rejecting absolute, ``..`` traversal, and symlink-escape
+     *  paths (CWE-22).
+     * :returns: a ``FlatFileItemReader`` streaming every ``DailyTransaction`` in
+     *  the physical order of the feed file.
+     * :note: The feed is read in file order, matching the sequential feed read of
+     *  ``CBTRN01C``; the feed is produced in ascending ``DALYTRAN-ID`` order. It is
+     *  decoded with a single-byte charset so each byte maps to exactly one
+     *  character and the fixed field offsets stay aligned. ``@StepScope`` is
+     *  required so the ``inputFile`` job parameter binds per step execution.
      */
     @Bean
-    public JpaPagingItemReader<DailyTransaction> dailyTransactionValidationReader(
-            EntityManagerFactory entityManagerFactory) {
-        return new JpaPagingItemReaderBuilder<DailyTransaction>()
+    @StepScope
+    public FlatFileItemReader<DailyTransaction> dailyTransactionValidationReader(
+            @Value("#{jobParameters['inputFile']}") String inputFile,
+            BatchOutputPathResolver pathResolver) {
+        Path resolved = pathResolver.resolveInput(inputFile);
+        return new FlatFileItemReaderBuilder<DailyTransaction>()
                 .name("dailyTransactionValidationReader")
-                .entityManagerFactory(entityManagerFactory)
-                .queryString("SELECT d FROM DailyTransaction d ORDER BY d.dalytranId")
-                .pageSize(PAGE_SIZE)
+                .resource(new FileSystemResource(resolved))
+                .encoding(StandardCharsets.ISO_8859_1.name())
+                .lineMapper(new DailyTransactionRecordMapper())
+                .strict(true)
+                .saveState(true)
                 .build();
     }
 
@@ -395,7 +522,7 @@ public class DataManagementJobConfig {
      * :param jobRepository: batch job repository (Boot auto-configured).
      * :param transactionManager: batch transaction manager (Boot auto-configured).
      * :param dailyTransactionValidationReader: reader streaming the
-     *  daily-transaction feed in ``dalytranId`` order.
+     *  daily-transaction feed in file order.
      * :param dailyTransactionValidationProcessor: pass-through validator that logs
      *  cross-reference and account lookup outcomes and returns the record
      *  unchanged.
@@ -405,10 +532,10 @@ public class DataManagementJobConfig {
     public Step dailyTransactionValidationStep(
             JobRepository jobRepository,
             PlatformTransactionManager transactionManager,
-            JpaPagingItemReader<DailyTransaction> dailyTransactionValidationReader,
+            FlatFileItemReader<DailyTransaction> dailyTransactionValidationReader,
             DailyTransactionValidationProcessor dailyTransactionValidationProcessor) {
         return new StepBuilder("dailyTransactionValidationStep", jobRepository)
-                .<DailyTransaction, DailyTransaction>chunk(PAGE_SIZE, transactionManager)
+                .<DailyTransaction, DailyTransaction>chunk(PAGE_SIZE).transactionManager(transactionManager)
                 .reader(dailyTransactionValidationReader)
                 .processor(dailyTransactionValidationProcessor)
                 .writer(new LoggingItemWriter<>("dailyTransactionValidation"))
@@ -423,6 +550,9 @@ public class DataManagementJobConfig {
      * :param dailyTransactionValidationStep: the single step of this job.
      * :returns: the ``dailyTransactionValidationJob`` ``Job`` with the
      *  correlation-id listener attached.
+     * :note: Requires the ``inputFile`` job parameter naming the daily-transaction
+     *  feed file (confined to the configured batch input root), consumed by
+     *  ``dailyTransactionValidationReader``.
      */
     @Bean
     public Job dailyTransactionValidationJob(JobRepository jobRepository,
@@ -482,7 +612,7 @@ public class DataManagementJobConfig {
                                           RepositoryItemReader<TranCatBal> categoryBalanceReader,
                                           CategoryBalanceReportWriter categoryBalanceReportWriter) {
         return new StepBuilder("categoryBalanceReportStep", jobRepository)
-                .<TranCatBal, TranCatBal>chunk(PAGE_SIZE, transactionManager)
+                .<TranCatBal, TranCatBal>chunk(PAGE_SIZE).transactionManager(transactionManager)
                 .reader(categoryBalanceReader)
                 .writer(categoryBalanceReportWriter)
                 .build();
@@ -568,6 +698,13 @@ public class DataManagementJobConfig {
      *  ``endDate`` job parameter.
      * :returns: a ``JpaPagingItemReader`` streaming the in-range transactions in
      *  ascending ``tranCardNum`` order.
+     * :note: State saving is disabled (``saveState(false)``) so that a restart
+     *  re-reads the range from the beginning. ``TransactionDetailReportWriter``
+     *  truncates and regenerates the whole report on ``open``, and its
+     *  control-break, pagination, and running-total state are not persisted; a
+     *  restart therefore regenerates the complete report rather than resuming
+     *  mid-file, which would otherwise drop the already-read rows. This matches
+     *  the wholesale full-report regeneration of the legacy ``CBTRN03C`` run.
      */
     @Bean
     @StepScope
@@ -584,6 +721,7 @@ public class DataManagementJobConfig {
                         + "ORDER BY t.tranCardNum")
                 .parameterValues(Map.of("startDate", startDate, "endDate", endDate))
                 .pageSize(PAGE_SIZE)
+                .saveState(false)
                 .build();
     }
 
@@ -614,7 +752,7 @@ public class DataManagementJobConfig {
             TransactionReportItemProcessor transactionReportItemProcessor,
             TransactionDetailReportWriter transactionDetailReportWriter) {
         return new StepBuilder("transactionDetailReportStep", jobRepository)
-                .<Transaction, TransactionReportItem>chunk(PAGE_SIZE, transactionManager)
+                .<Transaction, TransactionReportItem>chunk(PAGE_SIZE).transactionManager(transactionManager)
                 .reader(transactionDetailReportReader)
                 .processor(transactionReportItemProcessor)
                 .writer(transactionDetailReportWriter)

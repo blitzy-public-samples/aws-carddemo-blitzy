@@ -31,6 +31,7 @@ import com.carddemo.common.config.CorrelationIdContext;
 import com.carddemo.common.domain.TranCatBal;
 
 import java.math.BigDecimal;
+import java.nio.file.Path;
 import java.text.DecimalFormat;
 import java.text.DecimalFormatSymbols;
 import java.util.Locale;
@@ -76,15 +77,21 @@ public class CategoryBalanceReportWriter implements ItemStreamWriter<TranCatBal>
     /**
      * :purpose: Construct the writer and build the delegating
      *  {@link FlatFileItemWriter} bound to the report output path.
-     * :param outputFile: filesystem path of the report file to create,
-     *  supplied by the ``outputFile`` job parameter (the ``PRTCATBL``
-     *  ``SORTOUT`` / ``AWS.M2.CARDDEMO.TCATBALF.REPT`` sink equivalent).
+     * :param outputFile: report file name supplied by the ``outputFile`` job
+     *  parameter (the ``PRTCATBL`` ``SORTOUT`` /
+     *  ``AWS.M2.CARDDEMO.TCATBALF.REPT`` sink equivalent); resolved and confined
+     *  to the configured output root by {@code pathResolver}.
+     * :param pathResolver: resolver that confines the report file to the
+     *  allowlisted batch output root, rejecting absolute, ``..`` traversal, and
+     *  symlink-escape paths (CWE-22).
      */
     public CategoryBalanceReportWriter(
-            @Value("#{jobParameters['outputFile']}") String outputFile) {
+            @Value("#{jobParameters['outputFile']}") String outputFile,
+            BatchOutputPathResolver pathResolver) {
+        Path resolved = pathResolver.resolveOutput(outputFile);
         this.delegate = new FlatFileItemWriterBuilder<TranCatBal>()
                 .name("categoryBalanceReportWriter")
-                .resource(new FileSystemResource(outputFile))
+                .resource(new FileSystemResource(resolved))
                 .lineAggregator(this::toLine)
                 .build();
     }

@@ -43,8 +43,8 @@ import java.util.Optional;
  * :output: A Spring {@link Component} implementing
  *  {@link ItemProcessor}&lt;{@link DailyTransaction}, {@link DailyTransaction}&gt;;
  *  each invocation returns the input record (never {@code null}). The sibling
- *  {@code config} package wires a JPQL {@code JpaPagingItemReader<DailyTransaction>}
- *  ordered by {@code dalytranId} to this processor and forwards the returned
+ *  {@code config} package wires a fixed-width {@code FlatFileItemReader<DailyTransaction>}
+ *  over the daily-transaction feed to this processor and forwards the returned
  *  record to a {@code LoggingItemWriter<DailyTransaction>} count-only sink; there
  *  is no {@code DailyTransactionRepository}.
  */

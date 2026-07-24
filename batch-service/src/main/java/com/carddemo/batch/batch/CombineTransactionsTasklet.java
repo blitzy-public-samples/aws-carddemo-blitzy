@@ -29,23 +29,31 @@ import org.springframework.batch.infrastructure.repeat.RepeatStatus;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.stereotype.Component;
 
+import java.io.BufferedWriter;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.List;
 
 /**
- * :purpose: Idempotent, ordered reconciliation pass over the unified
- *  ``transactions`` table; the Java analogue of the legacy ``COMBTRAN`` job
+ * :purpose: Idempotent, ordered combine pass over the unified ``transactions``
+ *  table; the Java analogue of the legacy ``COMBTRAN`` job
  *  (``app/jcl/COMBTRAN.jcl``). The legacy ``STEP05R`` sorts the transaction
  *  backup concatenated with the system-generated interest transactions by
- *  ``SORT FIELDS=(TRAN-ID,A)`` into a combined file, and ``STEP10`` reloads that
- *  combined file into the transaction master via IDCAMS ``REPRO``. In the
- *  relational target there is a single ``transactions`` table and the interest
- *  transactions are already persisted into it by the interest-calculation job,
- *  so this tasklet performs no INSERT, UPDATE, or DELETE: it walks the table
- *  once in ``tranId`` ascending order (the ``SORT FIELDS=(TRAN-ID,A)``
- *  semantics), counts the reconciled rows, and logs the total.
- * :output: A single INFO log line reporting the count of transactions verified
- *  in ``tranId`` order — the count only, never any transaction content, card
- *  number, amount, or other record field (PII safety).
+ *  ``SORT FIELDS=(TRAN-ID,A)`` into a combined ``SORTOUT`` file, and ``STEP10``
+ *  reloads that combined file into the transaction master via IDCAMS ``REPRO``.
+ *  In the relational target there is a single ``transactions`` table and the
+ *  interest transactions are already persisted into it by the
+ *  interest-calculation job, so the reload is idempotent and this tasklet
+ *  performs no INSERT, UPDATE, or DELETE. It walks the table once in ``tranId``
+ *  ascending order (the ``SORT FIELDS=(TRAN-ID,A)`` semantics) and writes each
+ *  transaction as a fixed-width ``CVTRA05Y`` record to the combined output file,
+ *  reproducing the ``STEP05R`` ``SORTOUT`` artifact.
+ * :output: The combined output file at the resolved ``outputFile`` path holding
+ *  every transaction as a 350-character fixed-width record in ``tranId`` order,
+ *  and a single INFO log line reporting the combined row count — the count only,
+ *  never any transaction content, card number, amount, or other record field
+ *  (PII safety).
  * :note: The batch ``config`` package wires this tasklet into a single-step
  *  ``Job`` via ``new StepBuilder(name, jobRepository).tasklet(tasklet,
  *  transactionManager).build()``, sets the job-level correlation id, and
@@ -72,44 +80,66 @@ public class CombineTransactionsTasklet implements Tasklet {
     /** Repository over the unified ``transactions`` table (copybook ``CVTRA05Y``). */
     private final TransactionRepository transactionRepository;
 
+    /** Resolver confining the combined output path to the configured output root. */
+    private final BatchOutputPathResolver pathResolver;
+
     /**
      * :purpose: Construct the tasklet with the repository used for the ordered
-     *  reconciliation scan.
+     *  combine scan and the resolver that confines the combined output path.
      * :param transactionRepository: Spring Data JPA repository exposing the
      *  ``findAllByOrderByTranIdAsc(Pageable)`` key-ordered finder over the
      *  unified ``transactions`` table.
+     * :param pathResolver: resolver that normalizes the requested ``outputFile``
+     *  and confines it to the configured batch output root.
      */
-    public CombineTransactionsTasklet(TransactionRepository transactionRepository) {
+    public CombineTransactionsTasklet(TransactionRepository transactionRepository,
+                                      BatchOutputPathResolver pathResolver) {
         this.transactionRepository = transactionRepository;
+        this.pathResolver = pathResolver;
     }
 
     /**
      * :purpose: Walk the unified ``transactions`` table once in ``tranId``
-     *  ascending order, paging through the rows, counting them, and emitting a
-     *  single aggregate INFO log line with the reconciled total; performs no
-     *  persistence or mutation.
+     *  ascending order, paging through the rows, and write each transaction as a
+     *  fixed-width ``CVTRA05Y`` record to the combined output file (the
+     *  ``STEP05R`` ``SORTOUT`` artifact); emit a single aggregate INFO log line
+     *  with the combined row count. Performs no persistence or mutation of the
+     *  table.
      * :param contribution: the step contribution for the current step execution
-     *  (not modified; this verification pass contributes no read or write count).
-     * :param chunkContext: the chunk context for the current step execution
-     *  (unused; the entire scan runs within this single tasklet invocation).
+     *  (not modified; this combine pass contributes no read or write count).
+     * :param chunkContext: the chunk context for the current step execution,
+     *  supplying the ``outputFile`` job parameter for the combined file path.
      * :returns: {@link RepeatStatus#FINISHED}, signalling that the tasklet
      *  completed its work in a single invocation.
+     * :note: An I/O failure while writing the combined file propagates out of
+     *  ``execute`` so the step ends ``FAILED`` (the batch analogue of the legacy
+     *  non-zero completion code); a clean run ends ``COMPLETED``.
      */
     @Override
-    public RepeatStatus execute(StepContribution contribution, ChunkContext chunkContext) {
+    public RepeatStatus execute(StepContribution contribution, ChunkContext chunkContext) throws Exception {
         CorrelationIdContext.getOrCreateCorrelationId();
 
-        long reconciledCount = 0;
-        int pageIndex = 0;
-        List<Transaction> page;
-        do {
-            page = transactionRepository.findAllByOrderByTranIdAsc(PageRequest.of(pageIndex, PAGE_SIZE));
-            reconciledCount += page.size();
-            pageIndex++;
-        } while (page.size() == PAGE_SIZE);
+        Object outputFileParam = chunkContext.getStepContext().getJobParameters().get("outputFile");
+        String outputFile = (outputFileParam == null) ? null : outputFileParam.toString();
+        Path resolved = pathResolver.resolveOutput(outputFile);
 
-        log.info("Combined transaction reconciliation complete: {} transactions verified in TRAN-ID order",
-                reconciledCount);
+        long combinedCount = 0;
+        try (BufferedWriter writer = Files.newBufferedWriter(resolved, StandardCharsets.ISO_8859_1)) {
+            int pageIndex = 0;
+            List<Transaction> page;
+            do {
+                page = transactionRepository.findAllByOrderByTranIdAsc(PageRequest.of(pageIndex, PAGE_SIZE));
+                for (Transaction transaction : page) {
+                    writer.write(CobolRecordFormatter.transactionRecord(transaction));
+                    writer.write('\n');
+                    combinedCount++;
+                }
+                pageIndex++;
+            } while (page.size() == PAGE_SIZE);
+        }
+
+        log.info("Combined transaction file complete: {} transactions written in TRAN-ID order",
+                combinedCount);
 
         return RepeatStatus.FINISHED;
     }
