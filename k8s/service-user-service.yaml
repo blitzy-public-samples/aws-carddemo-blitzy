@@ -1,0 +1,52 @@
+---
+# =============================================================================
+# k8s/service-user-service.yaml
+# -----------------------------------------------------------------------------
+# Internal ClusterIP Service for the CardDemo user-service.
+# Companion to deployment-user-service.yaml.
+#
+# :purpose: Publish the ``user-service`` Deployment
+#           (deployment-user-service.yaml) behind a stable cluster-internal
+#           virtual IP and DNS name ``user-service`` so the api-gateway can
+#           route the administrator-only user-management calls (re-platformed
+#           COBOL programs COUSR00C-COUSR03C, CICS tran-ids CU00-CU03) to it
+#           at ``user-service:8080``.
+# :output:  A ClusterIP Service named ``user-service`` reachable in-cluster at
+#           ``user-service:8080`` that load-balances TCP traffic on port 8080
+#           to every Ready pod carrying the ``app: user-service`` label.
+# :notes:   Type ClusterIP is internal only — user-service is never exposed
+#           outside the cluster; external traffic enters through the frontend
+#           LoadBalancer and the api-gateway. The ``app: user-service`` selector
+#           is a subset of the Deployment pod-template labels, so it resolves
+#           exactly the user-service pods; service port 8080 forwards to
+#           ``targetPort: 8080``, the container's named ``http`` port. The
+#           ``app.kubernetes.io/component: backend`` label is what
+#           networkpolicy.yaml (allow-backend-ingress) uses to admit gateway
+#           ingress on :8080. Endpoints populate only after a pod passes its
+#           Actuator readiness probe (/actuator/health/readiness).
+# =============================================================================
+apiVersion: v1
+kind: Service
+metadata:
+  name: user-service
+  labels:
+    app: user-service
+    app.kubernetes.io/name: user-service
+    app.kubernetes.io/part-of: carddemo
+    app.kubernetes.io/component: backend
+spec:
+  # ClusterIP keeps user-service reachable only from inside the cluster; the
+  # user CRUD endpoints must not be published via an external LoadBalancer or
+  # NodePort. External access is mediated by the frontend and api-gateway.
+  type: ClusterIP
+  # Selects the user-service Deployment pods, whose pod template carries the
+  # app: user-service label (deployment-user-service.yaml).
+  selector:
+    app: user-service
+  ports:
+    # Named port 'http'; service port 8080 forwards to targetPort 8080, the
+    # user-service container's named 'http' port (deployment-user-service.yaml).
+    - name: http
+      port: 8080
+      targetPort: 8080
+      protocol: TCP

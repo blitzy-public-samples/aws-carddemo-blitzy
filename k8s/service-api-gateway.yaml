@@ -1,0 +1,52 @@
+---
+# ===========================================================================
+# k8s/service-api-gateway.yaml
+# ---------------------------------------------------------------------------
+# External Service for the CardDemo API gateway (Spring Cloud Gateway).
+# Companion to deployment-api-gateway.yaml.
+#
+# :purpose: Publish the ``api-gateway`` Deployment as the PRIMARY EXTERNAL
+#           ENTRY POINT of the CardDemo stack (AAP 0.3.1). All REST traffic
+#           from external clients enters through this Service; the gateway then
+#           re-platforms the legacy CICS menu-navigation programs COMEN01C
+#           (main menu, tran-id CM00) and COADM01C (admin menu, tran-id CA00)
+#           into role-gated routing and forwards each request to the backend
+#           Spring Boot services by their in-cluster Kubernetes Service DNS
+#           names (e.g. ``auth-service``, ``account-service``).
+# :output:  A Service named ``api-gateway`` of type LoadBalancer that selects
+#           every Ready pod carrying ``app: api-gateway`` and load-balances TCP
+#           port 8080 -> targetPort 8080 (the container's named ``http`` port).
+# :notes:   Type LoadBalancer requests an external address on cloud clusters;
+#           on a bare cluster lacking a cloud load-balancer controller it
+#           degrades to a NodePort reachable on every node (acceptable per AAP
+#           0.3.2). The ``app: api-gateway`` selector is a subset of the
+#           Deployment pod-template labels, so it resolves exactly the gateway
+#           pods; endpoints populate only after a pod passes its
+#           ``/actuator/health/readiness`` probe. The backend services are
+#           reached in-cluster by DNS name and are deliberately NOT published
+#           through this external LoadBalancer.
+# ===========================================================================
+apiVersion: v1
+kind: Service
+metadata:
+  name: api-gateway
+  labels:
+    app: api-gateway
+    app.kubernetes.io/name: api-gateway
+    app.kubernetes.io/part-of: carddemo
+    app.kubernetes.io/component: gateway
+spec:
+  # LoadBalancer exposes the gateway externally; degrades to NodePort on bare
+  # clusters that lack a cloud load-balancer controller (AAP 0.3.2).
+  type: LoadBalancer
+  # Must match the pod template labels in deployment-api-gateway.yaml so this
+  # Service resolves the gateway pods.
+  selector:
+    app: api-gateway
+  ports:
+    # The gateway's Spring Boot server listens on container port 8080 (named
+    # 'http' in the Deployment); service port 8080 forwards to targetPort 8080.
+    - name: http
+      port: 8080
+      targetPort: 8080
+      protocol: TCP

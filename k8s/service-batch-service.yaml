@@ -1,0 +1,55 @@
+---
+# =============================================================================
+# k8s/service-batch-service.yaml
+# -----------------------------------------------------------------------------
+# Internal ClusterIP Service for the CardDemo batch-service.
+# Companion to deployment-batch-service.yaml.
+#
+# :purpose: Publish the single-replica ``batch-service`` Deployment
+#           (deployment-batch-service.yaml) behind a stable virtual IP and the
+#           cluster-internal DNS name ``batch-service`` so in-cluster callers
+#           reach it at ``batch-service:8080``. This address triggers Spring
+#           Batch jobs through the JobLauncher endpoint and lets Prometheus
+#           scrape Actuator metrics at ``/actuator/prometheus`` (AAP 0.7.5
+#           Observability). The re-platformed COBOL batch programs CBACT01C
+#           through CBACT04C and CBCUS01C run behind this Service.
+# :output:  A ClusterIP Service named ``batch-service`` reachable in-cluster at
+#           ``batch-service:8080`` that forwards TCP traffic on port 8080 to the
+#           named ``http`` container port (8080) of every Ready pod carrying the
+#           ``app: batch-service`` label.
+# :notes:   Type ClusterIP is internal only — the batch runner exposes a
+#           JobLauncher trigger and Actuator endpoints that must never be
+#           published outside the cluster via a LoadBalancer or NodePort. The
+#           ``app: batch-service`` selector is a subset of the Deployment
+#           pod-template labels, so it resolves exactly the batch pods;
+#           ``targetPort: 8080`` matches the container's named ``http`` port.
+#           Because the Deployment is a pinned single replica using a Recreate
+#           strategy, this Service normally fronts exactly one endpoint, which
+#           populates only after that pod passes its Actuator readiness probe.
+# =============================================================================
+apiVersion: v1
+kind: Service
+metadata:
+  name: batch-service
+  labels:
+    app: batch-service
+    app.kubernetes.io/name: batch-service
+    app.kubernetes.io/part-of: carddemo
+    app.kubernetes.io/component: backend
+spec:
+  # ClusterIP keeps the batch runner reachable only from inside the cluster;
+  # its JobLauncher trigger and Actuator endpoints must not be exposed
+  # externally via a LoadBalancer or NodePort.
+  type: ClusterIP
+  # Selects the batch-service Deployment pods (their pod template carries
+  # app: batch-service in deployment-batch-service.yaml).
+  selector:
+    app: batch-service
+  ports:
+    # Named port 'http' permits by-name references; service port 8080 forwards
+    # to targetPort 8080, the container's named 'http' port. Prometheus scrapes
+    # /actuator/prometheus and job triggers POST through this same port.
+    - name: http
+      port: 8080
+      targetPort: 8080
+      protocol: TCP

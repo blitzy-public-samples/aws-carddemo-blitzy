@@ -1,0 +1,53 @@
+---
+# =============================================================================
+# k8s/service-auth-service.yaml
+# -----------------------------------------------------------------------------
+# Internal ClusterIP Service for the CardDemo **auth-service** microservice —
+# the cloud-native re-platforming of the legacy COBOL sign-on program COSGN00C
+# (CICS transaction CC00), exposed as REST `POST /auth/signon`
+# (AAP 0.3.1, 0.3.2, 0.4.2, 0.6.7).
+#
+# :purpose: Publish the ``auth-service`` Deployment
+#           (deployment-auth-service.yaml) behind a stable cluster-internal
+#           virtual IP and DNS name so the api-gateway routes
+#           credential-verification traffic to it at
+#           ``http://auth-service:8080`` (the value carried by the
+#           ``AUTH_SERVICE_URI`` key of the ``carddemo-config`` ConfigMap).
+# :output:  A ClusterIP Service named ``auth-service`` reachable in-cluster at
+#           ``auth-service:8080`` that load-balances TCP traffic on port 8080 to
+#           every Ready pod carrying the ``app: auth-service`` label.
+# :notes:   Type ClusterIP is internal only — external traffic never reaches a
+#           backend service directly; it enters through the frontend/api-gateway
+#           edge (see networkpolicy.yaml). The ``app: auth-service`` selector is
+#           a subset of the Deployment's pod-template labels, so it resolves
+#           exactly the auth-service pods; service port 8080 forwards to
+#           ``targetPort: 8080``, the container's named ``http`` port
+#           (deployment-auth-service.yaml). Endpoints populate only after a pod
+#           passes its Actuator ``/actuator/health/readiness`` probe.
+# =============================================================================
+apiVersion: v1
+kind: Service
+metadata:
+  name: auth-service
+  labels:
+    app: auth-service
+    app.kubernetes.io/name: auth-service
+    app.kubernetes.io/part-of: carddemo
+    app.kubernetes.io/component: backend
+spec:
+  # ClusterIP keeps auth-service reachable only from inside the cluster; the
+  # only ingress path is frontend -> api-gateway -> backend
+  # (networkpolicy.yaml).
+  type: ClusterIP
+  # Must match the pod template labels in deployment-auth-service.yaml so the
+  # Service resolves the auth-service pods and their endpoints populate.
+  selector:
+    app: auth-service
+  ports:
+    # Named port 'http' permits by-name references; service port 8080 forwards
+    # to targetPort 8080, the auth-service container's port (named 'http' there
+    # too, where Spring Boot / Tomcat listens).
+    - name: http
+      port: 8080
+      targetPort: 8080
+      protocol: TCP

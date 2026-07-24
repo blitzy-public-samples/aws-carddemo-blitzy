@@ -1,0 +1,54 @@
+---
+# =============================================================================
+# k8s/service-postgres.yaml
+# -----------------------------------------------------------------------------
+# PostgreSQL ClusterIP Service — stable in-cluster address for the postgres
+# Deployment (deployment-postgres.yaml).
+#
+# :purpose: Publish the single-replica ``postgres`` Deployment behind a stable
+#           virtual IP and the cluster-internal DNS name ``postgres`` so every
+#           CardDemo backend Spring Boot service reaches the PostgreSQL 18
+#           datastore — which replaces the legacy VSAM KSDS / sequential data
+#           sets (AAP 0.1.2) — using
+#           ``SPRING_DATASOURCE_URL=jdbc:postgresql://postgres:5432/carddemo``.
+#           The Service name MUST remain ``postgres`` because it is the host
+#           component of that JDBC URL; renaming it breaks every datasource.
+# :output:  A ClusterIP Service named ``postgres`` reachable in-cluster at
+#           ``postgres:5432`` that load-balances TCP traffic on port 5432 to
+#           every Ready pod carrying the ``app: postgres`` label. Its Endpoints
+#           object is populated only after a postgres pod passes the
+#           ``pg_isready`` readiness probe defined in deployment-postgres.yaml.
+# :notes:   Type ClusterIP is internal only — a database must never be exposed
+#           outside the cluster via a NodePort or LoadBalancer. The
+#           ``app: postgres`` selector is a subset of the Deployment
+#           pod-template labels, so it resolves exactly the postgres pods;
+#           ``targetPort: 5432`` matches the container's named ``postgres``
+#           port. A single writer serves the ReadWriteOnce volume, so this
+#           Service normally fronts exactly one endpoint. Rationale:
+#           docs/decision-log.md.
+# =============================================================================
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres
+  labels:
+    app: postgres
+    app.kubernetes.io/part-of: carddemo
+    app.kubernetes.io/component: database
+spec:
+  # ClusterIP keeps PostgreSQL reachable only from inside the cluster; the
+  # datastore must not be published via an external LoadBalancer or NodePort.
+  type: ClusterIP
+  # Selects the postgres Deployment pods (their pod template carries
+  # app: postgres). Must match the pod template labels in
+  # deployment-postgres.yaml.
+  selector:
+    app: postgres
+  ports:
+    # Named port 'postgres' permits by-name references; service port 5432
+    # forwards to targetPort 5432, the postgres container's port (named
+    # 'postgres' there too).
+    - name: postgres
+      port: 5432
+      targetPort: 5432
+      protocol: TCP

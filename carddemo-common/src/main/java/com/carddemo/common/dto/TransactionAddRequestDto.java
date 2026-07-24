@@ -80,6 +80,21 @@ public class TransactionAddRequestDto {
     private String tranProcTs;
 
     /**
+     * :purpose: Account id key input (COTRN02 ``ACTIDINI``). When supplied it takes
+     *  priority over ``tranCardNum`` and drives the account-to-card cross-reference
+     *  lookup that resolves the card number; it is validated but not persisted.
+     */
+    @Size(max = 11)
+    private String acctId;
+
+    /**
+     * :purpose: Add confirmation flag (COTRN02 ``CONFIRMI``). ``Y``/``y`` confirms the
+     *  add; ``N``/``n``/blank/absent requests confirmation; any other value is invalid.
+     */
+    @Size(max = 1)
+    private String confirm;
+
+    /**
      * :purpose: Create an empty request. Required for JSON (Jackson) deserialization.
      */
     public TransactionAddRequestDto() {
@@ -275,5 +290,37 @@ public class TransactionAddRequestDto {
      */
     public void setTranProcTs(String tranProcTs) {
         this.tranProcTs = tranProcTs;
+    }
+
+    /**
+     * :purpose: Return the account id key input.
+     * :output: the ``acctId`` value.
+     */
+    public String getAcctId() {
+        return acctId;
+    }
+
+    /**
+     * :purpose: Set the account id key input.
+     * :param acctId: the ``acctId`` value.
+     */
+    public void setAcctId(String acctId) {
+        this.acctId = acctId;
+    }
+
+    /**
+     * :purpose: Return the add confirmation flag.
+     * :output: the ``confirm`` value.
+     */
+    public String getConfirm() {
+        return confirm;
+    }
+
+    /**
+     * :purpose: Set the add confirmation flag.
+     * :param confirm: the ``confirm`` value.
+     */
+    public void setConfirm(String confirm) {
+        this.confirm = confirm;
     }
 }
