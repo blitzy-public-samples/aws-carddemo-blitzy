@@ -102,6 +102,35 @@
             <scope>test</scope>
         </dependency>
 
+        <!--
+          Spring Boot 4.x modularized the sliced-test support: @DataJpaTest and
+          @AutoConfigureTestDatabase are no longer transitively provided by
+          spring-boot-starter-test. This starter aggregates the JPA test slice
+          (spring-boot-data-jpa-test) and the test-datasource support
+          (spring-boot-starter-jdbc-test) required by the repository integration
+          tests (AccountRepositoryIT, CardXrefRepositoryIT, CustomerRepositoryIT).
+          Version managed by the Spring Boot BOM.
+        -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-data-jpa-test</artifactId>
+            <scope>test</scope>
+        </dependency>
+
+        <!--
+          Spring MVC test slice (@WebMvcTest / @AutoConfigureMockMvc). As of Spring
+          Boot 4.0 the Web MVC test support was extracted from the catch-all
+          spring-boot-test-autoconfigure module into its own module surfaced through
+          this starter; it is no longer transitively provided by
+          spring-boot-starter-test. Backs AccountControllerTest and the full-context
+          optimistic-lock conflict MockMvc test. Version managed by the Spring Boot BOM.
+        -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-webmvc-test</artifactId>
+            <scope>test</scope>
+        </dependency>
+
         <!-- Testcontainers integration tests against real PostgreSQL (backs the optimistic-lock conflict test). -->
         <dependency>
             <groupId>org.testcontainers</groupId>
@@ -118,6 +147,35 @@
 
     <build>
         <plugins>
+            <!--
+              Run the JUnit 5 unit tests (default patterns) AND the Testcontainers-backed
+              repository/integration tests (suffix *IT) together in the test phase. Surefire's
+              default include set does not match "*IT", so the standard unit-test patterns are
+              restated together with **/*IT.java. A deterministic, NON-PRODUCTION AES-256 key is
+              supplied to the forked test JVM so the carddemo-common CryptoConverter can round-trip
+              encrypted PII columns during the repository integration tests; CryptoConverter fails
+              fast when no key is configured, so production deployments MUST still provide the real
+              key via the CARDDEMO_PII_KEY environment variable (see docs/decision-log.md). This
+              value is an obviously-fake, test-only fixture and is never used outside the test phase.
+              Plugin version inherited from the Spring Boot parent plugin management.
+            -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-surefire-plugin</artifactId>
+                <configuration>
+                    <includes>
+                        <include>**/Test*.java</include>
+                        <include>**/*Test.java</include>
+                        <include>**/*Tests.java</include>
+                        <include>**/*TestCase.java</include>
+                        <include>**/*IT.java</include>
+                    </includes>
+                    <systemPropertyVariables>
+                        <carddemo.pii.key>Y2FyZGRlbW8tdGVzdC1waWkta2V5LTMyYnl0ZXMhISE=</carddemo.pii.key>
+                    </systemPropertyVariables>
+                </configuration>
+            </plugin>
+
             <!-- Repackage into an executable Spring Boot jar (target/account-service-*.jar). -->
             <plugin>
                 <groupId>org.springframework.boot</groupId>

@@ -27,6 +27,7 @@ import com.carddemo.common.dto.CardUpdateRequestDto;
 import com.carddemo.common.dto.CardUpdateResponseDto;
 import com.carddemo.common.dto.SessionContext;
 import com.carddemo.common.exception.CardDemoException;
+import com.carddemo.common.exception.OptimisticLockConflictException;
 import com.carddemo.common.exception.RecordNotFoundException;
 import java.util.Comparator;
 import java.util.List;
@@ -282,10 +283,16 @@ public class CardService {
      * :raises CardDemoException: when a validation edit fails (name, active status,
      *  expiry month or expiry year).
      * :raises RecordNotFoundException: when no card matches the card number.
-     * :note: The legacy display-time snapshot compare (``9300-CHECK-CHANGE-IN-REC``)
-     *  is not reproducible because the update request carries no snapshot and the card
-     *  entity has no version column; the update is guarded by an in-transaction re-read
-     *  and a no-change short-circuit. See ``docs/decision-log.md``.
+     * :raises OptimisticLockConflictException: when the request carries a display-time
+     *  snapshot (``CCUP-OLD-*``) that no longer matches the re-read card, signalling a
+     *  concurrent modification (``9300-CHECK-CHANGE-IN-REC``).
+     * :note: ``Card`` has no version column, so the legacy read-snapshot-compare-rewrite
+     *  concurrency check (``9300-CHECK-CHANGE-IN-REC``) is reproduced at the service layer:
+     *  when the request carries the display-time snapshot (``CCUP-OLD-*``) the re-read card
+     *  is compared field-by-field against it and a mismatch throws
+     *  ``OptimisticLockConflictException``; when no snapshot is supplied the check is skipped
+     *  and the update is guarded only by the in-transaction re-read and no-change
+     *  short-circuit. See ``docs/decision-log.md``.
      */
     @Transactional
     public CardUpdateResponseDto updateCard(String cardNumber,
@@ -306,6 +313,17 @@ public class CardService {
         Card card = cardRepository.findById(cardNumber)
                 .orElseThrow(() -> new RecordNotFoundException(MSG_DETAIL_NOT_FOUND));
         CardXref xref = cardXrefRepository.findById(cardNumber).orElse(null);
+
+        // Step D -- read-snapshot-compare-rewrite concurrency check (COBOL 9300-CHECK-CHANGE-IN-REC).
+        // Reproduced at the service layer because Card has no version column: when the request
+        // carries the display-time snapshot (CCUP-OLD-*), the re-read card is compared field-by-field
+        // against it, and any difference signals a concurrent modification. When no snapshot is
+        // supplied the check is skipped, preserving the behaviour of callers that omit it.
+        if (snapshotPresent(request) && hasDataChangedSinceSnapshot(request, card)) {
+            log.debug("card update conflict for account {}: {}",
+                    card.getCardAcctId(), MSG_DATA_WAS_CHANGED);
+            throw new OptimisticLockConflictException();
+        }
 
         // Step B -- NO-CHANGES-DETECTED short-circuit (COBOL 1200): nothing to rewrite.
         if (isUnchanged(request, card)) {
@@ -425,6 +443,63 @@ public class CardService {
                 && equalsExact(request.getCardActiveStatus(), card.getCardActiveStatus())
                 && equalsExact(request.getCardExpiraionDate(), card.getCardExpiraionDate())
                 && equalsExact(request.getCardCvvCd(), card.getCardCvvCd());
+    }
+
+    /**
+     * :purpose: Determine whether the request carries the display-time snapshot
+     *  (``CCUP-OLD-*``), enabling the ``9300`` concurrent-change check. The snapshot is
+     *  considered present when at least one snapshot field is non-null.
+     * :param request: the submitted editable card fields.
+     * :returns: ``true`` when at least one ``CCUP-OLD-*`` snapshot field is present.
+     */
+    private static boolean snapshotPresent(CardUpdateRequestDto request) {
+        return request.getOldCardEmbossedName() != null
+                || request.getOldCardActiveStatus() != null
+                || request.getOldCardExpiraionDate() != null
+                || request.getOldCardCvvCd() != null;
+    }
+
+    /**
+     * :purpose: Determine whether the re-read card differs from the display-time snapshot
+     *  carried in the request (``COCRDUPC 9300-CHECK-CHANGE-IN-REC``), signalling that the
+     *  record was changed by someone else since it was displayed. Six fields are compared:
+     *  CVV (``CCUP-OLD-CVV-CD``), embossed name (``CCUP-OLD-CRDNAME``, case-insensitive to
+     *  mirror the COBOL upper-case ``INSPECT ... CONVERTING`` compare), expiry year
+     *  (``CARD-EXPIRAION-DATE(1:4)``), expiry month (``(6:2)``), expiry day (``(9:2)``) and
+     *  active status (``CCUP-OLD-CRDSTCD``).
+     * :param request: the submitted card fields carrying the ``CCUP-OLD-*`` snapshot.
+     * :param card: the current managed card re-read inside the update transaction.
+     * :returns: ``true`` when any compared field differs (the record changed since display).
+     */
+    private boolean hasDataChangedSinceSnapshot(CardUpdateRequestDto request, Card card) {
+        String snapshotExpiry = request.getOldCardExpiraionDate();
+        String currentExpiry = card.getCardExpiraionDate();
+        boolean matches =
+                equalsExact(request.getOldCardCvvCd(), card.getCardCvvCd())
+                        && equalsIgnoreCase(request.getOldCardEmbossedName(),
+                                card.getCardEmbossedName())
+                        && equalsExact(slice(snapshotExpiry, 0, 4), slice(currentExpiry, 0, 4))
+                        && equalsExact(slice(snapshotExpiry, 5, 7), slice(currentExpiry, 5, 7))
+                        && equalsExact(slice(snapshotExpiry, 8, 10), slice(currentExpiry, 8, 10))
+                        && equalsExact(request.getOldCardActiveStatus(),
+                                card.getCardActiveStatus());
+        return !matches;
+    }
+
+    /**
+     * :purpose: Return the substring ``[beginIndex, endIndex)`` of a value, or ``null`` when
+     *  the value is ``null`` or too short; used by the ``9300`` expiry year/month/day slice
+     *  compare (``CARD-EXPIRAION-DATE(1:4)/(6:2)/(9:2)``).
+     * :param value: the source string, or ``null``.
+     * :param beginIndex: the inclusive start index of the slice.
+     * :param endIndex: the exclusive end index of the slice.
+     * :returns: the requested slice, or ``null`` when the value is too short.
+     */
+    private static String slice(String value, int beginIndex, int endIndex) {
+        if (value == null || value.length() < endIndex) {
+            return null;
+        }
+        return value.substring(beginIndex, endIndex);
     }
 
     /**

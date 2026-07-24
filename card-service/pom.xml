@@ -94,11 +94,47 @@
             <groupId>org.flywaydb</groupId>
             <artifactId>flyway-database-postgresql</artifactId>
         </dependency>
+        <!--
+          Spring Boot 4 modularized auto-configuration: FlywayAutoConfiguration lives in the
+          spring-boot-flyway module (it is NOT bundled with flyway-core). Without it, the
+          migrations never run and Hibernate `validate` fails on the missing card tables. It
+          is gated by `spring.flyway.enabled`, so it remains inert wherever Flyway is disabled.
+        -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-flyway</artifactId>
+        </dependency>
 
         <!-- Test stack: JUnit 5 (Jupiter), AssertJ, Mockito, Spring Test. -->
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-test</artifactId>
+            <scope>test</scope>
+        </dependency>
+
+        <!--
+          Spring MVC test slice (Spring Boot 4 modularized MockMvc support): supplies
+          @AutoConfigureMockMvc and the MockMvc auto-configuration (transitively including
+          spring-boot-webmvc-test), which are no longer part of spring-boot-starter-test.
+          Required by the card REST controller and end-to-end MockMvc integration tests.
+          Version managed by the Spring Boot BOM.
+        -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-webmvc-test</artifactId>
+            <scope>test</scope>
+        </dependency>
+
+        <!--
+          @DataJpaTest / @AutoConfigureTestDatabase persistence-slice support. In Spring Boot 4.x
+          these annotations live in the modular spring-boot-data-jpa-test / spring-boot-jdbc-test
+          jars, which this starter pulls in transitively (spring-boot-data-jpa-test and
+          spring-boot-starter-jdbc-test). Backs CardRepositoryTest and CardXrefRepositoryTest.
+          Versions managed by the parent BOM.
+        -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-data-jpa-test</artifactId>
             <scope>test</scope>
         </dependency>
 
@@ -122,6 +158,26 @@
             <plugin>
                 <groupId>org.springframework.boot</groupId>
                 <artifactId>spring-boot-maven-plugin</artifactId>
+            </plugin>
+
+            <!--
+              Runs *IT integration tests (e.g. OptimisticLockConflictIT, CardViewUpdateIT) in the
+              Failsafe integration-test/verify phases, separate from the Surefire unit-test phase.
+              The plugin version and the managed integration-test + verify goal bindings are
+              inherited from the Spring Boot parent BOM.
+            -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-failsafe-plugin</artifactId>
+                <executions>
+                    <execution>
+                        <id>integration-tests</id>
+                        <goals>
+                            <goal>integration-test</goal>
+                            <goal>verify</goal>
+                        </goals>
+                    </execution>
+                </executions>
             </plugin>
         </plugins>
     </build>

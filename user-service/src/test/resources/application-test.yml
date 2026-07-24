@@ -1,0 +1,45 @@
+# =====================================================================
+# user-service - 'test' profile (JUnit 5 + Testcontainers).
+#
+# Activated by @ActiveProfiles("test"). Supplies only static, container-
+# agnostic settings; the JDBC url/username/password (PostgreSQLContainer
+# "postgres:18") are injected at runtime by the tests via
+# @DynamicPropertySource - they are deliberately NOT set here.
+#
+# Unlike auth-service, user-service owns NO Flyway migrations (the
+# security_users schema is owned by auth-service). Hibernate therefore
+# builds security_users from the shared
+# com.carddemo.common.domain.SecurityUser entity (ddl-auto: create-drop)
+# in the isolated test database, and Flyway is disabled. user-service is
+# stateless, so no Redis / Spring Session store is configured.
+# =====================================================================
+spring:
+  # Hibernate owns the schema in tests (this module ships no Flyway
+  # migrations). create-drop builds security_users from the SecurityUser
+  # entity in the isolated Testcontainers database and drops it after.
+  jpa:
+    hibernate:
+      ddl-auto: create-drop
+
+  # No Flyway migrations in this module - disable so the test context
+  # does not attempt to run or verify migrations.
+  flyway:
+    enabled: false
+
+  # Stateless service: neutralize the base 'redis' session store so
+  # full-context tests need no Redis container.
+  session:
+    store-type: none
+
+# Keep tests hermetic: 0.0 sampling means no spans are recorded, so
+# nothing is exported over the network (modern Spring Boot 4 key).
+management:
+  tracing:
+    sampling:
+      probability: 0.0
+
+# Logging to aid debugging of the repository CRUD/paging verification.
+logging:
+  level:
+    com.carddemo.user: DEBUG
+    org.hibernate.SQL: DEBUG
