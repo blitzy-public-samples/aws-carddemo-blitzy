@@ -127,6 +127,37 @@
                 <groupId>org.springframework.boot</groupId>
                 <artifactId>spring-boot-maven-plugin</artifactId>
             </plugin>
+
+            <!--
+              Failsafe binds the Testcontainers-backed integration-test (*IT) suite to the
+              integration-test/verify phases so the monthly interest-calculation job test
+              (InterestCalculationJobIT) runs against a real PostgreSQL under `mvn verify`,
+              separate from the fast Surefire unit tests in the `test` phase. A deterministic,
+              NON-PRODUCTION AES-256 key is supplied to the forked test JVM so the
+              carddemo-common CryptoConverter can initialize for the Customer entity used by the
+              batch data-management flows; CryptoConverter fails fast when no key is configured,
+              so production deployments MUST still provide the real key via the CARDDEMO_PII_KEY
+              environment variable (see docs/decision-log.md). This value is an obviously-fake,
+              test-only fixture and is never used outside the test phase. Plugin version inherited
+              from the parent BOM.
+            -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-failsafe-plugin</artifactId>
+                <configuration>
+                    <systemPropertyVariables>
+                        <carddemo.pii.key>Y2FyZGRlbW8tdGVzdC1waWkta2V5LTMyYnl0ZXMhISE=</carddemo.pii.key>
+                    </systemPropertyVariables>
+                </configuration>
+                <executions>
+                    <execution>
+                        <goals>
+                            <goal>integration-test</goal>
+                            <goal>verify</goal>
+                        </goals>
+                    </execution>
+                </executions>
+            </plugin>
         </plugins>
     </build>
 
