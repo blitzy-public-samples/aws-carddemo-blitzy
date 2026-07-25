@@ -181,6 +181,7 @@ export default function UsersPage() {
                         size="small"
                         variant="outlined"
                         onClick={() => HandleEditUser(row.user_id)}
+                        aria-label={`Update user ${row.user_id}`}
                     >
                         Update
                     </Button>
@@ -189,6 +190,7 @@ export default function UsersPage() {
                         variant="outlined"
                         color="error"
                         onClick={() => HandleDeleteUser(row.user_id)}
+                        aria-label={`Delete user ${row.user_id}`}
                     >
                         Delete
                     </Button>

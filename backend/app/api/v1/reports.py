@@ -8,9 +8,20 @@ partition TDQ"), CICS transaction id ``CR00``, BMS map ``CORPT00``
 Authorized reporting redesign (AAP 0.4.4 / 0.8.4): the legacy program wrote its
 output to a TDQ/GDG text+HTML statement dataset submitted as a batch job to the
 internal reader. This single, explicitly authorized behavior-adjacent change
-replaces that channel with three synchronous representations of the *same*
-report payload -- an on-screen table (JSON, the default), a downloadable CSV,
-and a downloadable PDF -- selected by the ``format`` query parameter.
+replaces that channel with three representations of the *same* report payload --
+an on-screen table (JSON, the default), a downloadable CSV, and a downloadable
+PDF -- selected by the ``format`` query parameter.
+
+Event-loop safety: the CSV and PDF renderers are CPU-bound, fully synchronous
+functions (``reportlab`` in particular does significant blocking work laying out
+a large table). Calling them directly on the event loop would monopolize the
+single worker thread and stall every other in-flight request -- including the
+liveness probe -- until the document finished. They are therefore dispatched to
+a worker thread with :func:`anyio.to_thread.run_sync`, so the event loop stays
+responsive while a large report renders. The renderers are pure functions of the
+already-materialized ``ReportResponse`` (they touch no database session), so
+running them off-thread is safe and returns byte-identical output; any exception
+they raise is re-raised in the awaiting coroutine, preserving error semantics.
 
 Layering (AAP 0.4.1): this module is a THIN router. It performs no business
 logic and touches no database. Report-type resolution (the MONTHLY / YEARLY /
@@ -46,6 +57,7 @@ decision -- see ``app.api.v1.cards`` and the resolution report).
 
 from enum import Enum
 
+import anyio
 from fastapi import APIRouter, Depends, Query
 from fastapi.responses import Response, StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -159,14 +171,14 @@ async def GetTransactionReport(
     reportService = ReportService()
     report = await reportService.GenerateReport(session, reportRequest)
     if reportFormat is ReportFormat.CSV:
-        csvText = reportService.RenderCsv(report)
+        csvText = await anyio.to_thread.run_sync(reportService.RenderCsv, report)
         return StreamingResponse(
             iter([csvText]),
             media_type=CSV_MEDIA_TYPE,
             headers={CONTENT_DISPOSITION_HEADER: CSV_CONTENT_DISPOSITION},
         )
     elif reportFormat is ReportFormat.PDF:
-        pdfBytes = reportService.RenderPdf(report)
+        pdfBytes = await anyio.to_thread.run_sync(reportService.RenderPdf, report)
         return Response(
             content=pdfBytes,
             media_type=PDF_MEDIA_TYPE,

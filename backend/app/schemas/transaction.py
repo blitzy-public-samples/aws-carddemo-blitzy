@@ -90,6 +90,10 @@ MSG_TRAN_AMT_NOT_DECIMAL = (
     "Transaction amount must be an exact decimal value (floating point is not "
     "accepted)."
 )
+MSG_TRAN_AMT_OVER_SCALE = (
+    "Transaction amount must have at most two decimal places (cents); a "
+    "finer-grained value would be silently rounded."
+)
 MSG_TIMESTAMP_INVALID = "Timestamp must be a valid date or timestamp value."
 MSG_ACCOUNT_IDENTIFIER_REQUIRED = (
     "Either acct_id or card_num must be supplied to identify the account."
@@ -222,6 +226,46 @@ def _CoerceAmount(value: object) -> Decimal:
         return decimal_utils.ToDecimal(value)
     except (TypeError, ValueError, InvalidOperation) as conversionError:
         raise ValueError(MSG_TRAN_AMT_NOT_DECIMAL) from conversionError
+
+
+def _RejectOverScale(amountDecimal: Decimal) -> Decimal:
+    """Reject a monetary input carrying genuine sub-cent precision.
+
+    ``TRAN-AMT`` is ``PIC S9(09)V99`` -- exactly two fractional digits -- and
+    the column is ``NUMERIC(11,2)``. A finer-grained input (for example
+    ``0.005``) is otherwise accepted and then SILENTLY rounded by the database
+    to two places, corrupting the amount without the caller's knowledge (QA
+    finding M-01). Rejecting it up front with a clear error (surfaced by
+    FastAPI/Pydantic as HTTP 422) sanitizes user-supplied input per Ochs Rule
+    #3 and preserves the legacy two-decimal contract.
+
+    Only genuine sub-cent precision is rejected. A value that is exactly
+    representable at two decimal places -- including one written with redundant
+    trailing zeros (``12.340``) or a coarser scale (``12.3``, ``12``) -- is
+    accepted unchanged, because storing it never alters its value. The scale is
+    inspected with :meth:`~decimal.Decimal.as_tuple` (no arithmetic), so this
+    check never raises :class:`decimal.InvalidOperation` and never inspects the
+    magnitude of the integer part.
+
+    Args:
+        amountDecimal: The already-coerced exact :class:`~decimal.Decimal`.
+
+    Returns:
+        The same :class:`~decimal.Decimal`, unchanged, when it is within scale.
+
+    Raises:
+        ValueError: When a nonzero digit occupies a sub-cent decimal place.
+    """
+    if not amountDecimal.is_finite():
+        return amountDecimal
+    exponent = amountDecimal.as_tuple().exponent
+    if exponent >= -decimal_utils.MONEY_SCALE:
+        return amountDecimal
+    subCentPlaces = -exponent - decimal_utils.MONEY_SCALE
+    subCentDigits = amountDecimal.as_tuple().digits[-subCentPlaces:]
+    if any(digit != 0 for digit in subCentDigits):
+        raise ValueError(MSG_TRAN_AMT_OVER_SCALE)
+    return amountDecimal
 
 
 def _ParseTimestampInput(value: object) -> object:
@@ -739,8 +783,17 @@ class TransactionCreate(RequestBase):
     @field_validator("tran_amt", mode="before")
     @classmethod
     def CoerceTranAmount(cls, value: object) -> Decimal:
-        """Coerce ``tran_amt`` to an exact ``Decimal`` and reject float input."""
-        return _CoerceAmount(value)
+        """Coerce ``tran_amt`` to an exact ``Decimal``; reject float and sub-cent.
+
+        The amount arrives from the COTRN02 add screen / POST body, so it is
+        sanitized here (Ochs Rule #3): the value is coerced to an exact
+        :class:`~decimal.Decimal` (floating point rejected by
+        :func:`_CoerceAmount`) and then screened by :func:`_RejectOverScale` so
+        it carries at most two decimal places. This closes QA finding M-01,
+        where a finer-grained amount (e.g. ``0.005``) was accepted and then
+        SILENTLY rounded by the ``NUMERIC(11,2)`` column.
+        """
+        return _RejectOverScale(_CoerceAmount(value))
 
     @field_validator("orig_ts", "proc_ts", mode="before")
     @classmethod

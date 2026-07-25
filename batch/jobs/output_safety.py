@@ -55,12 +55,13 @@ import re
 import uuid
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, Iterable, Iterator
+from typing import Any, Callable, Iterable, Iterator
 
 __all__ = [
     "NeutralizeCsvCell",
     "SafeCsvWriter",
     "AtomicWritePath",
+    "AtomicVersionedWritePath",
     "SecureDirectory",
     "SECURE_DIR_MODE",
     "SECURE_FILE_MODE",
@@ -98,6 +99,15 @@ TEMP_FILE_SUFFIX = ".tmp"
 # SECURE_FILE_MODE (0600) grants the owner rw and nobody else.
 SECURE_DIR_MODE = 0o700
 SECURE_FILE_MODE = 0o600
+
+# Upper bound on consecutive generation-claim attempts made by
+# AtomicVersionedWritePath before it fails loudly. Each attempt reserves one
+# candidate generation number via an atomic O_EXCL create; a collision (another
+# concurrent writer already reserved that number) advances to the next number.
+# The ceiling is far larger than any realistic number of concurrent backup
+# writers, so it never limits legitimate use, yet it guarantees the claim loop
+# can never spin forever on a pathological directory.
+MAX_GENERATION_CLAIM_ATTEMPTS = 10000
 
 
 def _IsNumericLiteral(text: str) -> bool:
@@ -290,3 +300,131 @@ def _RemoveTemporaryFile(temporaryPath: Path) -> None:
         # replace the original, more meaningful exception. Leave the stale temp
         # file in place rather than raising from the cleanup path.
         pass
+
+
+def _ReserveVersionedPath(
+    candidatePathFor: Callable[[int], Path],
+    startNumber: int,
+    maxAttempts: int,
+) -> tuple[Path, int, int]:
+    """Atomically reserve the first free versioned path at or after ``startNumber``.
+
+    Starting at ``startNumber`` the candidate destination path for each
+    generation number ``n`` is computed by ``candidatePathFor(n)`` and an attempt
+    is made to create it with ``O_CREAT | O_EXCL | O_WRONLY``. That flag
+    combination is an atomic, all-or-nothing filesystem operation: exactly one of
+    any number of concurrent processes can succeed for a given path; every other
+    process receives :class:`FileExistsError` and advances to the next number.
+    The first number whose file is created successfully is the reservation.
+
+    Args:
+        candidatePathFor: Maps a generation number to its destination
+            :class:`~pathlib.Path`.
+        startNumber: The first generation number to attempt.
+        maxAttempts: Upper bound on consecutive attempts before failing loudly.
+
+    Returns:
+        A ``(reservedPath, reservedNumber, openFileDescriptor)`` tuple. The caller
+        owns ``openFileDescriptor`` and must close it.
+
+    Raises:
+        OSError: If no free generation can be reserved within ``maxAttempts``
+            attempts, or if a create attempt fails for any reason other than the
+            candidate path already existing.
+    """
+    candidateNumber = startNumber
+    for _ in range(maxAttempts):
+        candidatePath = candidatePathFor(candidateNumber)
+        try:
+            fileDescriptor = os.open(
+                candidatePath, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600
+            )
+        except FileExistsError:
+            # Another concurrent writer already reserved this generation number.
+            # Advance to the next candidate and try again -- this is the entire
+            # point of the O_EXCL claim, so collisions are expected, not errors.
+            candidateNumber += 1
+            continue
+        return candidatePath, candidateNumber, fileDescriptor
+    raise OSError(
+        f"Could not reserve a free output generation after {maxAttempts} "
+        f"attempts starting at generation {startNumber}"
+    )
+
+
+@contextmanager
+def AtomicVersionedWritePath(
+    candidatePathFor: Callable[[int], Path],
+    startNumber: int,
+    maxAttempts: int = MAX_GENERATION_CLAIM_ATTEMPTS,
+    mode: int = SECURE_FILE_MODE,
+) -> Iterator[tuple[Path, int]]:
+    """Race-safely reserve the next free versioned path, then publish atomically.
+
+    This is the concurrency-hardened counterpart to :func:`AtomicWritePath` for
+    *versioned* (generation-numbered) outputs such as transaction backups. It
+    closes the scan-then-write time-of-check/time-of-use race in which two
+    concurrent writers both computed the same "highest generation plus one" and
+    then silently overwrote one another's file (QA finding F-4, AAP 0.7.5 GDG
+    ``(+1)`` semantics: a new generation must never overwrite a prior one).
+
+    Starting at ``startNumber`` (typically the highest existing generation plus
+    one, supplied as a fast starting hint), the first free generation is
+    RESERVED by creating its destination file with ``O_CREAT | O_EXCL`` -- an
+    atomic operation that at most one process can win for a given number, so
+    concurrent writers are guaranteed to receive *distinct* generation numbers.
+    The reserved (initially empty) file also marks the number as taken so other
+    concurrent writers scanning the directory skip past it.
+
+    The caller writes its content to the yielded temporary sibling path. On clean
+    completion that temporary file is atomically :func:`os.replace`-d onto the
+    reserved path, so publication is crash-safe (a mid-write failure never leaves
+    a truncated file at the destination). On any exception both the temporary
+    file and the reserved (empty) destination file are removed and the exception
+    is re-raised, so a failed run leaves neither a partial file nor a stray empty
+    reservation behind.
+
+    Args:
+        candidatePathFor: Maps a generation number to its destination
+            :class:`~pathlib.Path`.
+        startNumber: The first generation number to attempt.
+        maxAttempts: Upper bound on consecutive claim attempts before failing
+            loudly (defaults to :data:`MAX_GENERATION_CLAIM_ATTEMPTS`), so a
+            pathological directory can never cause an infinite loop.
+        mode: The permission bits applied to the published file *before* the
+            atomic rename (default :data:`SECURE_FILE_MODE`, ``0600`` -- owner
+            rw only, QA finding M13). Because :func:`os.replace` promotes the
+            staged inode onto the reserved destination, the destination inherits
+            this owner-only mode regardless of the process umask.
+
+    Yields:
+        A ``(temporaryPath, reservedNumber)`` tuple. Write output to
+        ``temporaryPath``; ``reservedNumber`` is the generation number that was
+        atomically claimed for this write.
+
+    Raises:
+        OSError: Propagated unchanged if no generation can be reserved, if
+            writing fails, or if the final rename fails; the temporary file and
+            the reserved destination are removed first.
+    """
+    reservedPath, reservedNumber, reservedFd = _ReserveVersionedPath(
+        candidatePathFor, startNumber, maxAttempts
+    )
+    # The reservation only needs to exist on disk as a marker; content is written
+    # through the temporary sibling and promoted with os.replace, so the reserved
+    # descriptor itself is not used for writing and is closed immediately.
+    os.close(reservedFd)
+    temporaryName = f".{reservedPath.name}.{os.getpid()}.{uuid.uuid4().hex}{TEMP_FILE_SUFFIX}"
+    temporaryPath = reservedPath.parent / temporaryName
+    try:
+        yield temporaryPath, reservedNumber
+    except BaseException:
+        _RemoveTemporaryFile(temporaryPath)
+        _RemoveTemporaryFile(reservedPath)
+        raise
+    # Publish owner-only (0600) before the rename so full-PAN backup data is
+    # never group- or world-readable (QA finding M13); os.replace moves the
+    # staged inode onto the reserved destination, which inherits this mode.
+    os.chmod(temporaryPath, mode)
+    os.replace(temporaryPath, reservedPath)
+

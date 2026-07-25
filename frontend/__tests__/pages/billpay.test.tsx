@@ -266,6 +266,31 @@ describe('BillPayPage', () => {
                 screen.getByRole('button', { name: PAY_BUTTON_LABEL }),
             ).toBeEnabled();
         });
+
+        it('marks the Account ID field aria-invalid and links its message via aria-describedby when Look Up is clicked empty (FINDING-10)', async () => {
+            const user = SetupUser();
+            RenderWithProviders(<BillPayPage />);
+
+            // Click Look Up with an empty account id — the COBIL00C empty-id edit.
+            await user.click(
+                screen.getByRole('button', { name: LOOKUP_BUTTON_LABEL }),
+            );
+
+            // FINDING-10 (WCAG 3.3.1 / 4.1.2): the Account ID field is marked
+            // programmatically, in addition to the verbatim COBIL00C toast, and
+            // its helper text is deliberately distinct from that toast.
+            const accountIdInput = GetAccountIdInput();
+            expect(accountIdInput).toHaveAttribute('aria-invalid', 'true');
+
+            const describedById = accountIdInput.getAttribute('aria-describedby');
+            expect(describedById).toBeTruthy();
+            expect(
+                document.getElementById(describedById as string),
+            ).toHaveTextContent('Account ID is required');
+
+            // The empty-id edit blocks the network call entirely.
+            expect(mockGetBillPayInfo).not.toHaveBeenCalled();
+        });
     });
 
     // Scenario 3 — CRITICAL: available_credit is the SERVER string (F-006) ------

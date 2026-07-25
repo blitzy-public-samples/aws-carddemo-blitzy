@@ -95,7 +95,7 @@ const SAMPLE_USER_ID = 'USER0001';
 /** Route a non-admin (or a 403) is redirected to. */
 const MENU_ROUTE = '/menu';
 
-/** Admin user-list route the page returns to after a successful delete. */
+/** Admin user-list route — the Back-button target (NOT auto-navigated on delete). */
 const USERS_LIST_ROUTE = '/users';
 
 /** Page heading and ConfirmDialog title (they share this text). */
@@ -313,8 +313,12 @@ describe('UsersDeletePage', () => {
         await waitFor(() => {
             expect(screen.queryByText('Test')).not.toBeInTheDocument();
         });
-        // The page returns to the admin user list.
-        expect(mockPush).toHaveBeenCalledWith(USERS_LIST_ROUTE);
+        // FINDING-04: the page STAYS on the Delete User screen so the green
+        // success message is actually seen — it must NOT auto-navigate to the
+        // admin user list (that instantaneous redirect is exactly why the old
+        // success message never painted) and must not silently refresh.
+        expect(mockPush).not.toHaveBeenCalledWith(USERS_LIST_ROUTE);
+        expect(mockRefresh).not.toHaveBeenCalled();
     });
 
     // ----------------------------------------------------------------------

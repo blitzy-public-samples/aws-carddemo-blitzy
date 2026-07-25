@@ -21,6 +21,7 @@ import { FormField } from '@/components/FormField';
 import { ConfirmDialog } from '@/components/ConfirmDialog';
 import { ErrorAlert } from '@/components/ErrorAlert';
 import { TransactionsApi } from '@/lib/apiClient';
+import { FocusFirstInvalidField } from '@/lib/keyboard';
 
 import type { TransactionCreate } from '@/types';
 
@@ -149,6 +150,18 @@ const GRID_FIELDS: readonly FieldDescriptor[] = [
     { name: 'merchant_name', label: 'Merchant Name:', maxLength: 30 },
     { name: 'merchant_city', label: 'Merchant City:', maxLength: 25 },
     { name: 'merchant_zip', label: 'Merchant Zip:', maxLength: 10 },
+];
+
+/**
+ * Field names in on-screen order — the account/card key row followed by the
+ * grid fields — used to move focus to the FIRST field in error after a failed
+ * submit (QA Issue 5). Derived from {@link GRID_FIELDS} so it stays in sync
+ * with the rendered order automatically.
+ */
+const FIELD_FOCUS_ORDER: readonly string[] = [
+    'acct_id',
+    'card_num',
+    ...GRID_FIELDS.map((field) => field.name),
 ];
 
 /** A required-field rule; `numericError` also enforces a numeric edit. */
@@ -309,7 +322,11 @@ export default function TransactionsAddPage() {
     const HandleSubmit = () => {
         const errors = ValidateForm();
         setFieldErrors(errors);
-        if (Object.keys(errors).length > 0) {
+        const invalidFieldNames = new Set(Object.keys(errors));
+        if (invalidFieldNames.size > 0) {
+            // Park the cursor on the first field in error, in on-screen order
+            // (QA Issue 5).
+            FocusFirstInvalidField(FIELD_FOCUS_ORDER, invalidFieldNames);
             return;
         }
         setIsConfirmOpen(true);

@@ -251,7 +251,7 @@ single intentional behavior-adjacent change is the statement output format.
 Posting validates each daily transaction and either posts it or writes a reject
 record. It enforces the following reason codes (see the shared definitions in
 [`backend/app/core/exceptions.py`](../backend/app/core/exceptions.py) and the
-[API reference](./api-reference.md#error-codes)):
+[API reference](./api-reference.md#transaction-posting-reason-codes)):
 
 | Code | Description | Condition |
 | :--- | :---------- | :-------- |

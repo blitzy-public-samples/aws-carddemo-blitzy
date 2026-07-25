@@ -30,9 +30,9 @@
 import asyncio
 from logging.config import fileConfig
 
-from sqlalchemy import pool
+from sqlalchemy import pool, text
 from sqlalchemy.engine import Connection
-from sqlalchemy.ext.asyncio import async_engine_from_config
+from sqlalchemy.ext.asyncio import AsyncConnection, async_engine_from_config
 
 from alembic import context
 
@@ -63,6 +63,60 @@ if config.config_file_name is not None:
 # it carries the deterministic constraint-naming convention defined in
 # ``app.db.base``, so generated migrations use stable pk_/fk_/ix_/uq_/ck_ names.
 target_metadata = Base.metadata
+
+# QA finding #11 -- concurrent-migration serialization.
+#
+# Two ``alembic upgrade head`` processes racing against the SAME fresh database
+# previously let the loser run its DDL concurrently and surface a raw
+# asyncpg ``UniqueViolationError`` (exit 1) once the winner had already created a
+# table. To make a concurrent invocation a graceful no-op instead, online
+# migrations take a PostgreSQL SESSION-LEVEL advisory lock on this fixed,
+# application-wide key BEFORE running any migration and release it afterwards.
+# A second process BLOCKS on the lock until the first COMMITS, then proceeds,
+# reads the already-current schema version, finds no pending revisions, and exits
+# 0. The key is an arbitrary but STABLE signed 63-bit integer; the ``carddemo``
+# database is single-tenant, so there is no risk of colliding with an unrelated
+# advisory lock. Offline mode (SQL script emission, no live connection) never
+# takes the lock -- there is no concurrent DDL to serialize there.
+MIGRATION_ADVISORY_LOCK_KEY = 6_442_509_913_017_442_311
+
+
+async def _AcquireMigrationLock(connection: AsyncConnection) -> None:
+    """Take the session-level advisory lock that serializes online migrations.
+
+    Blocks until the lock is granted (a concurrent migration holds it until that
+    process commits). The lock is acquired in its own committed statement so it
+    is held at the SESSION level -- independent of, and surviving, the migration
+    transaction that Alembic opens next via ``context.begin_transaction()``.
+    Session-level advisory locks are NOT released by ``COMMIT`` (only by an
+    explicit unlock or session end), so committing here does not drop it.
+
+    Args:
+        connection: The live async connection driving the migration; the lock
+            and the migrations MUST share this one connection to serialize.
+    """
+    await connection.execute(
+        text("SELECT pg_advisory_lock(:lockKey)"),
+        {"lockKey": MIGRATION_ADVISORY_LOCK_KEY},
+    )
+    await connection.commit()
+
+
+async def _ReleaseMigrationLock(connection: AsyncConnection) -> None:
+    """Release the session-level advisory lock taken by :func:`_AcquireMigrationLock`.
+
+    Explicit release lets a waiting migration proceed immediately rather than
+    waiting for connection teardown. The lock would also auto-release when the
+    session ends (engine dispose), so this is best-effort, deterministic cleanup.
+
+    Args:
+        connection: The same connection the lock was acquired on.
+    """
+    await connection.execute(
+        text("SELECT pg_advisory_unlock(:lockKey)"),
+        {"lockKey": MIGRATION_ADVISORY_LOCK_KEY},
+    )
+    await connection.commit()
 
 
 def run_migrations_offline() -> None:
@@ -115,6 +169,12 @@ async def run_migrations_online() -> None:
     ``NullPool`` (no connection reuse is wanted for a short-lived migration
     process), opens a connection, and drives the synchronous migration routine
     through ``run_sync``. The engine is always disposed before returning.
+
+    Concurrency (QA finding #11): a session-level advisory lock is taken on the
+    connection BEFORE the migrations run and released in a ``finally`` after, so
+    two racing ``alembic upgrade`` processes serialize -- the loser blocks until
+    the winner commits, then finds no pending revisions and exits cleanly instead
+    of racing the DDL. See :data:`MIGRATION_ADVISORY_LOCK_KEY`.
     """
     connectable = async_engine_from_config(
         config.get_section(config.config_ini_section, {}),
@@ -122,7 +182,11 @@ async def run_migrations_online() -> None:
         poolclass=pool.NullPool,
     )
     async with connectable.connect() as connection:
-        await connection.run_sync(do_run_migrations)
+        await _AcquireMigrationLock(connection)
+        try:
+            await connection.run_sync(do_run_migrations)
+        finally:
+            await _ReleaseMigrationLock(connection)
     await connectable.dispose()
 
 

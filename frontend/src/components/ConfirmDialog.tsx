@@ -35,8 +35,18 @@ import {
     Button,
     Box,
 } from '@mui/material';
-import { useRef } from 'react';
+import { useEffect, useLayoutEffect, useRef } from 'react';
 import type { ReactNode } from 'react';
+
+/**
+ * Isomorphic layout effect — `useLayoutEffect` in the browser (so it runs in the
+ * commit phase, BEFORE MUI's Modal applies its background `aria-hidden` in a
+ * passive effect) and `useEffect` during SSR (avoids React's server-side
+ * `useLayoutEffect` warning). The dialog only ever opens from a client
+ * interaction, so the browser branch is what matters (QA Issue 7d).
+ */
+const useIsomorphicLayoutEffect =
+    typeof window !== 'undefined' ? useLayoutEffect : useEffect;
 
 /** Default label for the confirm (primary) action button. */
 const DEFAULT_CONFIRM_LABEL = 'Confirm';
@@ -160,6 +170,14 @@ export function ConfirmDialog(props: ConfirmDialogProps) {
      */
     const triggerRef = useRef<HTMLElement | null>(null);
     const wasOpenRef = useRef<boolean>(false);
+    // Refs to the two action buttons so the initial focus can be applied AFTER
+    // the open transition completes (see HandleDialogEntered) rather than via
+    // `autoFocus`. Under MUI v9 + React 19, `autoFocus` focuses a button while
+    // the Modal is still applying aria-hidden to the rest of the page, producing
+    // a transient "Blocked aria-hidden … descendant retained focus" console
+    // warning (QA Issue 7d).
+    const cancelButtonRef = useRef<HTMLButtonElement>(null);
+    const confirmButtonRef = useRef<HTMLButtonElement>(null);
     // N02 accessibility (chrome-verified): capture the opener's focused element
     // at the render where `open` flips false -> true, BEFORE MUI's focus-trap
     // layout effect (a CHILD effect, which React runs before THIS parent
@@ -177,6 +195,31 @@ export function ConfirmDialog(props: ConfirmDialogProps) {
     }
     wasOpenRef.current = props.open;
     /* eslint-enable react-hooks/refs */
+
+    // QA Issue 7d — eliminate the OPEN-time half of the "Blocked aria-hidden …
+    // descendant retained focus" warning at its ROOT CAUSE. When the dialog
+    // opens, MUI's Modal marks the background page content `aria-hidden` inside a
+    // PASSIVE effect. If the TRIGGER button that opened the dialog is still
+    // focused at that moment, Chrome refuses to hide its focused ancestor and
+    // logs the warning. Because this runs as a LAYOUT effect (client), it fires
+    // in the commit phase BEFORE MUI's passive effect, so blurring the trigger
+    // here moves focus to <body> (an ancestor, never a descendant of the hidden
+    // wrapper) before the background is hidden. The trigger has already been
+    // captured into `triggerRef` above (at render, before this blur), so the
+    // cancel path can still restore focus to it via {@link HandleExited}. MUI's
+    // focus trap and HandleDialogEntered then place focus correctly INSIDE the
+    // dialog, so the net user-visible focus is unchanged — only the transient
+    // race is removed. (The CLOSE-time half is handled by disableRestoreFocus +
+    // BlurActiveDialogElement + HandleExited below.)
+    useIsomorphicLayoutEffect(() => {
+        if (!props.open) {
+            return;
+        }
+        const active = document.activeElement;
+        if (active instanceof HTMLElement) {
+            active.blur();
+        }
+    }, [props.open]);
 
     /**
      * Moves focus off the currently-focused dialog descendant BEFORE the parent
@@ -262,6 +305,22 @@ export function ConfirmDialog(props: ConfirmDialogProps) {
     // destructive confirmations keep initial focus on the confirm action.
     const focusCancel = confirmColor === 'error';
 
+    /**
+     * Applies the initial focus once the open transition has fully entered, so
+     * the page's aria-hidden bookkeeping has settled first (QA Issue 7d). Focus
+     * still lands on the SAFE control — Cancel for a destructive dialog, the
+     * confirm action otherwise (preserving QA M-29). MUI's focus trap and the
+     * Escape-to-cancel behavior are unaffected.
+     */
+    function HandleDialogEntered(): void {
+        const target = focusCancel
+            ? cancelButtonRef.current
+            : confirmButtonRef.current;
+        if (target) {
+            target.focus();
+        }
+    }
+
     return (
         <Dialog
             open={props.open}
@@ -269,7 +328,12 @@ export function ConfirmDialog(props: ConfirmDialogProps) {
             aria-labelledby={TITLE_ID}
             aria-describedby={describedById}
             disableRestoreFocus
-            slotProps={{ transition: { onExited: HandleExited } }}
+            slotProps={{
+                transition: {
+                    onEntered: HandleDialogEntered,
+                    onExited: HandleExited,
+                },
+            }}
         >
             <DialogTitle id={TITLE_ID}>{props.title}</DialogTitle>
             <DialogContent>
@@ -284,19 +348,19 @@ export function ConfirmDialog(props: ConfirmDialogProps) {
             </DialogContent>
             <DialogActions>
                 <Button
+                    ref={cancelButtonRef}
                     variant="outlined"
                     onClick={HandleCancel}
                     disabled={loading}
-                    autoFocus={focusCancel}
                 >
                     {cancelLabel}
                 </Button>
                 <Button
+                    ref={confirmButtonRef}
                     variant="contained"
                     color={confirmColor}
                     onClick={HandleConfirm}
                     disabled={loading}
-                    autoFocus={!focusCancel}
                 >
                     {confirmLabel}
                 </Button>

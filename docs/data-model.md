@@ -111,6 +111,9 @@ erDiagram
     transaction_type     ||..o{ transaction_category : "classifies"
     transaction_type     ||..o{ transactions         : "types"
     transaction_category ||..o{ transactions         : "categorizes"
+    users {
+        string user_id PK
+    }
 ```
 
 Relationship notes:
@@ -128,6 +131,11 @@ Relationship notes:
   is nullable (the seed leaves it blank in every row).
 - `transactions.tran_type_cd` / `tran_cat_cd` and `transaction_category` →
   `transaction_type` are logical lookups, not enforced FKs (matches the models).
+- `users` is the standalone sign-on table; it has no foreign-key relationship to
+  any other entity, so it appears as an unconnected box in the diagram. Identity
+  and role are carried by the session/JWT layer (see the [Authentication and
+  Session Model](./architecture.md#6-authentication-and-session-model) in the
+  architecture guide), not by a database relationship.
 
 ## 5. Table Catalog
 
@@ -150,11 +158,20 @@ RECLN 80). Application sign-on identities and roles, replacing the legacy VSAM
 | `last_name` | `VARCHAR(20)` | | `SEC-USR-LNAME X(20)` |
 | `password_hash` | `VARCHAR(255)` | | `SEC-USR-PWD X(08)` — plaintext replaced by a bcrypt **hash** |
 | `user_type` | `CHAR(1)` | | `SEC-USR-TYPE X(01)` — `'A'` = admin, `'U'` = regular |
+| `session_version` | `INTEGER` | NOT NULL, default `1` | — none (modern token-revocation counter; migration 0005) |
 
 `FILLER X(23)` dropped (padding to RECLN 80). The legacy 8-character plaintext
 `SEC-USR-PWD` is **never** stored or returned; it becomes a one-way
 `password_hash`. Users are seeded from the EBCDIC-only `USRSEC` dataset (there is
 no ASCII copy), with passwords hashed on load.
+
+`session_version` has no copybook lineage: it is a modern security-infrastructure
+column added by migration 0005 (`server_default` `1` backfills existing rows). It
+anchors **server-side token revocation** — each minted session/JWT embeds the
+user's current `session_version` in its `sver` claim, and authentication rejects
+any token whose claim no longer matches the stored value. Incrementing it (on
+logout, or a role or password change) therefore invalidates every outstanding
+token for that user (see [Authentication and Session Model](./architecture.md#6-authentication-and-session-model) in the architecture guide).
 
 ### `accounts`
 
@@ -382,7 +399,8 @@ centralized in
 
 ## 7. Indexes and Keys Summary
 
-**Primary keys.** Every table has an explicit primary key; four are composite.
+**Primary keys.** Every table has an explicit primary key; three are composite
+(`tran_category_balance`, `disclosure_group`, and `transaction_category`).
 
 | Table | Primary key |
 |-------|-------------|

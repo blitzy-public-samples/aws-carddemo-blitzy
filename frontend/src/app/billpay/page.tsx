@@ -51,6 +51,15 @@ const CONFIRM_YES = 'Y';
 /** Empty-account edit message, verbatim from COBIL00C (L161). */
 const EMPTY_ACCT_MESSAGE = 'Acct ID can NOT be empty...';
 
+/**
+ * Field-level helper text shown beneath the Account ID input when the empty-id
+ * edit fires. Kept intentionally distinct from the verbatim toast text
+ * ({@link EMPTY_ACCT_MESSAGE}) so the field marking and the toast are two
+ * separate channels; MUI wires it to `aria-invalid` + `aria-describedby`
+ * (WCAG 3.3.1 / 4.1.2).
+ */
+const REQUIRED_ACCOUNT_HELPER = 'Account ID is required';
+
 /** Page heading text. */
 const PAGE_TITLE = 'Bill Payment';
 
@@ -81,6 +90,7 @@ const PAYMENT_SUCCESS_MESSAGE = 'Bill payment processed successfully.';
  */
 function BillPayPage() {
     const [accountId, setAccountId] = useState<string>('');
+    const [accountIdError, setAccountIdError] = useState<string>('');
     const [billPayInfo, setBillPayInfo] = useState<BillPayResponse | null>(null);
     const [confirmOpen, setConfirmOpen] = useState<boolean>(false);
     const [errorOpen, setErrorOpen] = useState<boolean>(false);
@@ -108,6 +118,9 @@ function BillPayPage() {
         setAccountId(value);
         setBillPayInfo(null);
         setSuccessMessage(null);
+        // Editing the field clears its validation marking (aria-invalid +
+        // helper) so it disappears as soon as the user starts correcting it.
+        setAccountIdError('');
     }
 
     /**
@@ -118,10 +131,14 @@ function BillPayPage() {
      */
     async function HandleLookup(): Promise<void> {
         if (accountId.trim() === '') {
+            // Mark the field (aria-invalid + aria-describedby via helperText) in
+            // addition to raising the verbatim COBIL00C toast.
+            setAccountIdError(REQUIRED_ACCOUNT_HELPER);
             setErrorValue(EMPTY_ACCT_MESSAGE);
             setErrorOpen(true);
             return;
         }
+        setAccountIdError('');
         setIsLoading(true);
         setSuccessMessage(null);
         try {
@@ -142,6 +159,11 @@ function BillPayPage() {
      */
     function HandleSubmit(): void {
         if (accountId.trim() === '' || billPayInfo === null) {
+            // Only the empty-id case marks the field; a missing lookup with a
+            // non-empty id is not a field-value error.
+            if (accountId.trim() === '') {
+                setAccountIdError(REQUIRED_ACCOUNT_HELPER);
+            }
             setErrorValue(EMPTY_ACCT_MESSAGE);
             setErrorOpen(true);
             return;
@@ -212,11 +234,19 @@ function BillPayPage() {
                         maxLength={ACCOUNT_ID_MAX_LENGTH}
                         required
                         autoFocus
+                        error={Boolean(accountIdError)}
+                        helperText={accountIdError || undefined}
                     />
                     <Button
                         variant="outlined"
                         onClick={HandleLookup}
                         disabled={isLoading}
+                        // QA Area of Concern 2 (INFO): keep the short "Look Up"
+                        // label on a single line at the 375px breakpoint. The
+                        // narrow flex row previously allowed the label to wrap
+                        // to two lines. `nowrap` is a CSS keyword (not a
+                        // hardcoded dimension), so it stays Ochs-compliant.
+                        sx={{ whiteSpace: 'nowrap' }}
                     >
                         {LOOKUP_BUTTON_LABEL}
                     </Button>

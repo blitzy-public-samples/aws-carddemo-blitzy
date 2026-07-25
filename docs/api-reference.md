@@ -65,8 +65,11 @@ curl http://localhost:8000/health
 
 The legacy application propagated the signed-on user's identity and role from
 program to program through the CICS `COCOM01Y` COMMAREA. The modern backend
-replaces that in-region propagation with **stateless, server-side
-authentication** established once at sign-on.
+replaces that in-region propagation with **token-carried, server-side
+authentication** established once at sign-on. Identity travels statelessly in a
+signed token, but token validity is anchored server-side by a `session_version`
+claim that is re-checked on every request, so a call to `POST /auth/logout` (or
+a role or password change) revokes every outstanding token for that user.
 
 **Session-based authentication is the baseline.** A successful
 `POST /auth/login` sets an HTTP-only cookie named by `SESSION_COOKIE_NAME`
@@ -86,6 +89,22 @@ Authorization: Bearer <token>
 JWTs are signed with the `ALGORITHM` (default `HS256`) and expire after
 `ACCESS_TOKEN_EXPIRE_MINUTES`. Under both modes the token lifetime and signing
 key come from configuration (`SECRET_KEY`), never from source code.
+
+**Login throttling.** `POST /auth/login` is brute-force protected. After
+`LOGIN_MAX_ATTEMPTS` (default 5) consecutive failed sign-ons for the same
+`(user_id, client IP)` pair, the endpoint returns `429 Too Many Requests` for
+`LOGIN_LOCKOUT_SECONDS` (default 900) **without verifying the password** — so a
+correct password presented during the lockout is still rejected — until the
+window elapses or a successful sign-on clears the counter.
+
+**Session revocation and logout.** Identity is token-carried, but each token
+embeds the subject's `session_version` (an `sver` claim) that the server
+re-checks on every request. `POST /auth/logout` increments `session_version`,
+which immediately invalidates every outstanding token for that user; a role or
+password change increments it for the same reason. Logout is idempotent and
+requires no authentication, so it always succeeds — even with an already-missing
+or expired token — and, under the session baseline, also clears the session
+cookie.
 
 ### Authorization
 
@@ -121,13 +140,16 @@ user), or *admin* (`user_type='A'`).
 | Method | Path | Purpose | Legacy Tx / Program | Auth |
 | :----- | :--- | :------ | :------------------ | :--- |
 | `POST` | `/auth/login` | Sign on and establish a session (or receive a token) | CC00 / `COSGN00C` | public |
+| `POST` | `/auth/logout` | Sign out and revoke the session server-side (increments `session_version`) | CC00 / `COSGN00C` | public |
 | `GET` | `/menu` | Regular-user main menu options | CM00 / `COMEN01C` | user |
 | `GET` | `/admin/menu` | Admin menu options | CA00 / `COADM01C` | admin |
 | `GET` | `/accounts/{acctId}` | View account with linked customer | CAVW / `COACTVWC` | user |
 | `PUT` | `/accounts/{acctId}` | Update account (optimistic locking) | CAUP / `COACTUPC` | user |
 | `GET` | `/cards` | List cards (paginated, ≤ 7 per page) | CCLI / `COCRDLIC` | user |
-| `GET` | `/cards/{cardNum}` | View a card | CCDL / `COCRDSLC` | user |
-| `PUT` | `/cards/{cardNum}` | Update a card | CCUP / `COCRDUPC` | user |
+| `GET` | `/cards/by-account/{acctId}` | View a card by its owning account (used by the `/cards/view` screen) | CCDL / `COCRDSLC` | user |
+| `PUT` | `/cards/by-account/{acctId}` | Update a card by its owning account (used by the `/cards/update` screen) | CCUP / `COCRDUPC` | user |
+| `GET` | `/cards/{cardNum}` | View a card by card number | CCDL / `COCRDSLC` | user |
+| `PUT` | `/cards/{cardNum}` | Update a card by card number | CCUP / `COCRDUPC` | user |
 | `GET` | `/transactions` | List transactions (paginated) | CT00 / `COTRN00C` | user |
 | `GET` | `/transactions/{tranId}` | View a transaction | CT01 / `COTRN01C` | user |
 | `POST` | `/transactions` | Add a transaction | CT02 / `COTRN02C` | user |
@@ -140,10 +162,15 @@ user), or *admin* (`user_type='A'`).
 | `PUT` | `/admin/users/{userId}` | Update a user | CU02 / `COUSR02C` | admin |
 | `DELETE` | `/admin/users/{userId}` | Delete a user | CU03 / `COUSR03C` | admin |
 
-> **Reconciled to code.** This table reflects the routers as implemented in
-> [`backend/app/api/v1/`](../backend/app/api/v1). Two convenience read routes —
-> `GET /billpay/{acctId}` and `GET /admin/users/{userId}` — are present in the
-> code in addition to the core actions and are documented here accordingly.
+> **Reconciled to code.** This table lists all **22** operations implemented in
+> [`backend/app/api/v1/`](../backend/app/api/v1) and served under `/api/v1`.
+> Alongside the core actions it includes the two convenience read routes
+> `GET /billpay/{acctId}` and `GET /admin/users/{userId}`; `POST /auth/logout`
+> (server-side session revocation); and the account-keyed card routes
+> `GET`/`PUT /cards/by-account/{acctId}`, which the `/cards/view` and
+> `/cards/update` screens call because the card list masks `card_num`, so the UI
+> addresses a card by its unmasked owning account id. The PAN-keyed
+> `GET`/`PUT /cards/{cardNum}` routes are retained per the AAP.
 
 
 ## Endpoints
@@ -188,8 +215,8 @@ cookie is set.
 ```json
 {
   "user_id": "ADMIN001",
-  "first_name": "Admin",
-  "last_name": "User",
+  "first_name": "MARGARET",
+  "last_name": "GOLD",
   "user_type": "A",
   "access_token": null,
   "token_type": null
@@ -201,6 +228,7 @@ cookie is set.
 | `200 OK` | Credentials valid; session established (or token issued). |
 | `401 Unauthorized` | Invalid user id or password (`AuthenticationError`). |
 | `422 Unprocessable Entity` | Request body fails schema validation (for example, `user_id` longer than 8 characters). |
+| `429 Too Many Requests` | Login throttled (brute-force protection). After `LOGIN_MAX_ATTEMPTS` (default 5) consecutive failed sign-ons for the same `(user_id, client IP)` pair, further attempts are rejected for `LOGIN_LOCKOUT_SECONDS` (default 900) — even with a correct password — until the window resets or a successful sign-on clears the counter. Detail: `Too many failed sign-on attempts. Try again later.` |
 
 > The demo credentials `ADMIN001` / `USER0001` (password `PASSWORD`) are
 > **non-production seed accounts only**. They are stored hashed at rest and must
@@ -209,18 +237,22 @@ cookie is set.
 #### `POST /auth/logout`
 
 Sign out the caller and revoke the session server-side (the `COSGN00C` exit
-path). Unlike every other endpoint, logout takes **no authentication
-dependency**: it is idempotent and always succeeds — even when the session
-cookie is already missing or expired — so it never itself returns `401`.
+path; CICS transaction **CC00**). Unlike every other endpoint, logout takes **no
+authentication dependency**: it is idempotent and always succeeds — even when the
+session cookie or bearer token is already missing or expired — so it never itself
+returns `401`.
 
 Logout performs **both** halves of a real sign-off:
 
 1. **Server-side revocation** — the caller's `session_version` is advanced, so
-   any token minted before this call is rejected by `get_current_user` on its
-   next use. This closes the gap where a captured pre-logout cookie would remain
-   valid if only the client copy were deleted.
-2. **Client-side deletion** — the browser is instructed to delete the
-   `carddemo_session` cookie so it stops presenting the now-revoked credential.
+   any token minted before this call (whose `sver` claim no longer matches the
+   stored value) is rejected by `get_current_user` on its next use. This closes
+   the gap where a captured pre-logout cookie would remain valid if only the
+   client copy were deleted.
+2. **Client-side deletion** — under the session baseline the browser is
+   instructed to delete the `carddemo_session` cookie; under `AUTH_MODE=jwt` the
+   client discards its bearer token, so it stops presenting the now-revoked
+   credential.
 
 ```http
 POST /api/v1/auth/logout
@@ -236,7 +268,7 @@ POST /api/v1/auth/logout
 
 | Status | Meaning |
 | :----- | :------ |
-| `200 OK` | Session revoked server-side and the session cookie cleared. Returned even when no valid session was present (idempotent). |
+| `200 OK` | Session revoked server-side and the session cookie cleared. Returned whether or not a valid session cookie or token was present (idempotent). |
 
 ### Menu
 
@@ -310,29 +342,45 @@ Cookie: carddemo_session=<token>
 ```
 
 **Response** (`AccountDetail`, `200 OK`): the account fields plus a nested
-`customer` object. Balances and limits are decimal strings. The customer's
-`ssn` is masked and the customer's `cvv` is never present.
+`customer` object carrying all **18** customer fields (shown in full below).
+Balances and limits are decimal strings. The customer's `ssn` is **masked** to
+its last four digits and no `cvv` is ever present; the object also returns PII
+fields — `date_of_birth`, `govt_issued_id`, and the two phone numbers
+(`phone_num_1`, `phone_num_2`) — which callers must handle accordingly.
 
 ```json
 {
   "acct_id": "00000000011",
   "active_status": "Y",
-  "curr_bal": "1250.00",
-  "credit_limit": "5000.00",
-  "cash_credit_limit": "1000.00",
-  "open_date": "2015-06-01",
-  "expiration_date": "2027-05-31",
-  "reissue_date": "2023-06-01",
-  "curr_cyc_credit": "300.00",
-  "curr_cyc_debit": "150.00",
-  "addr_zip": "20171",
+  "curr_bal": "212.00",
+  "credit_limit": "4998.00",
+  "cash_credit_limit": "3175.00",
+  "open_date": "2014-09-12",
+  "expiration_date": "2025-03-12",
+  "reissue_date": "2025-03-12",
+  "curr_cyc_credit": "0.00",
+  "curr_cyc_debit": "0.00",
+  "addr_zip": "A000000000",
   "group_id": null,
   "customer": {
     "cust_id": "000000011",
-    "first_name": "Jane",
-    "last_name": "Doe",
-    "ssn": "***-**-6789",
-    "fico_credit_score": 720
+    "first_name": "Hayden",
+    "middle_name": "Ressie",
+    "last_name": "Pfannerstill",
+    "addr_line_1": "14895 Everette Ridges",
+    "addr_line_2": "Apt. 443",
+    "addr_line_3": "Julianneburgh",
+    "addr_state_cd": "WA",
+    "addr_country_cd": "USA",
+    "addr_zip": "24984",
+    "phone_num_1": "(002)533-6980",
+    "phone_num_2": "(553)586-7718",
+    "ssn": "***-**-8586",
+    "govt_issued_id": "00000000000111190855",
+    "date_of_birth": "1986-11-03",
+    "eft_account_id": "0002650577",
+    "pri_card_holder_ind": "Y",
+    "fico_credit_score": 209
   }
 }
 ```
@@ -353,20 +401,44 @@ overwriting the other change.
 
 **Path parameters:** `acctId` — 11-digit account identifier.
 
-**Request body** (`AccountUpdate`): all fields optional; only the fields present
-are updated. Monetary fields are decimal strings.
+**Request body** (`AccountUpdate`): the optimistic-lock control field
+`before_image` is **required**; the editable account fields are each optional and
+only those supplied are written. Monetary fields are decimal strings.
 
-| Field | Type | Description |
-| :---- | :--- | :---------- |
-| `active_status` | string(1) | Account active flag (`Y`/`N`). |
-| `curr_bal` | decimal string | Current balance. |
-| `credit_limit` | decimal string | Credit limit. |
-| `cash_credit_limit` | decimal string | Cash credit limit. |
-| `expiration_date` | date | ISO `YYYY-MM-DD`. |
-| `reissue_date` | date | ISO `YYYY-MM-DD`. |
-| `curr_cyc_credit` | decimal string | Current-cycle credit. |
-| `curr_cyc_debit` | decimal string | Current-cycle debit. |
-| `group_id` | string | Disclosure group id. |
+`before_image` is an `AccountBeforeImage` object — the values the client last
+read for the editable fields — which the service compares field-for-field
+against the freshly locked row before writing, reproducing the legacy
+READ-for-UPDATE → REWRITE optimistic lock. It is a control field, not an edited
+value, so it is never written to the record.
+
+| Field | Type | Required | Description |
+| :---- | :--- | :------- | :---------- |
+| `before_image` | `AccountBeforeImage` | **yes** | Last-read image of the editable fields, used for the optimistic-lock check (fields below). |
+| `active_status` | string(1) | no | Account active flag (`Y`/`N`). |
+| `curr_bal` | decimal string | no | Current balance. |
+| `credit_limit` | decimal string | no | Credit limit. |
+| `cash_credit_limit` | decimal string | no | Cash credit limit. |
+| `expiration_date` | date | no | ISO `YYYY-MM-DD`. |
+| `reissue_date` | date | no | ISO `YYYY-MM-DD`. |
+| `curr_cyc_credit` | decimal string | no | Current-cycle credit. |
+| `curr_cyc_debit` | decimal string | no | Current-cycle debit. |
+| `group_id` | string | no | Disclosure group id. |
+
+`AccountBeforeImage` fields (the five monetary fields and `active_status` are
+required; the two dates and `group_id` are optional and compared only when
+supplied):
+
+| Field | Type | Required | Description |
+| :---- | :--- | :------- | :---------- |
+| `active_status` | string(1) | **yes** | Last-read active flag. |
+| `curr_bal` | decimal string | **yes** | Last-read current balance. |
+| `credit_limit` | decimal string | **yes** | Last-read credit limit. |
+| `cash_credit_limit` | decimal string | **yes** | Last-read cash credit limit. |
+| `curr_cyc_credit` | decimal string | **yes** | Last-read current-cycle credit. |
+| `curr_cyc_debit` | decimal string | **yes** | Last-read current-cycle debit. |
+| `expiration_date` | date | no | Last-read expiration date. |
+| `reissue_date` | date | no | Last-read reissue date. |
+| `group_id` | string | no | Last-read disclosure group id. |
 
 ```http
 PUT /api/v1/accounts/00000000011
@@ -374,6 +446,14 @@ Content-Type: application/json
 Cookie: carddemo_session=<token>
 
 {
+  "before_image": {
+    "active_status": "Y",
+    "curr_bal": "212.00",
+    "credit_limit": "4998.00",
+    "cash_credit_limit": "3175.00",
+    "curr_cyc_credit": "0.00",
+    "curr_cyc_debit": "0.00"
+  },
   "credit_limit": "6000.00",
   "active_status": "Y"
 }
@@ -387,8 +467,8 @@ customer (same shape as `GET /accounts/{acctId}`).
 | `200 OK` | Account updated. |
 | `401 Unauthorized` | No valid session or token. |
 | `404 Not Found` | No account exists for `acctId`. |
-| `409 Conflict` | The account changed concurrently between read and write (`OptimisticLockError`). |
-| `422 Unprocessable Entity` | Request body fails schema validation. |
+| `409 Conflict` | The supplied `before_image` no longer matches the locked row — the account changed concurrently between read and write (`OptimisticLockError`). Re-read and retry. |
+| `422 Unprocessable Entity` | Request body fails schema validation — most commonly a missing `before_image` (the field is required), or a malformed value. |
 
 
 ### Cards
@@ -575,7 +655,7 @@ Cookie: carddemo_session=<token>
   "tran_source": "POS",
   "tran_desc": "PURCHASE",
   "tran_amt": "42.50",
-  "merchant_id": "000000000012345",
+  "merchant_id": "000012345",
   "merchant_name": "ACME STORE",
   "merchant_city": "RESTON",
   "merchant_zip": "20191",
@@ -638,8 +718,9 @@ shape as `GET /transactions/{tranId}`).
 | :----- | :------ |
 | `201 Created` | Transaction posted. |
 | `401 Unauthorized` | No valid session or token. |
-| `409 Conflict` | Posting rejected by an over-limit or concurrency check (codes 102 / 109). |
-| `422 Unprocessable Entity` | Schema validation failure, or a posting reject (codes 100, 101, 103). |
+| `404 Not Found` | The `card_num` (or `acct_id`) does not resolve to a card cross-reference (`NotFoundError`) — how reason codes 100/101 surface online. |
+| `409 Conflict` | A generated transaction id collided with an existing record (`ConflictError`); retry the request. This 409 is never a posting/over-limit result. |
+| `422 Unprocessable Entity` | Schema/field validation failure, or a posting reject (over-limit 102, after-expiration 103, or rewrite-failure 109) carrying the numeric `code` and `description` in the body. |
 
 
 ### Reports
@@ -662,12 +743,20 @@ downloadable **CSV** or **PDF** (the single authorized behavior-adjacent change)
 | `confirm` | string | no | Optional confirmation flag (`Y`/`N`). |
 | `format` | string | no | Output format: `json` (default), `csv`, or `pdf`. |
 
-Request a monthly report as JSON (the default format). Set the base URL and
+**Effective date range by report type.** `start_date` and `end_date` are always
+required and validated, but only `Custom` reports use them as the reporting
+window verbatim. `Monthly` and `Yearly` reports derive their effective window
+from the **current period** — the current calendar month or year on the server —
+so the response echoes that derived range rather than the supplied dates. The
+`report_name` is likewise derived from `report_type` (`Monthly Transaction
+Report`, `Yearly Transaction Report`, or `Custom Transaction Report`).
+
+Request a custom-range report as JSON (the default format). Set the base URL and
 date range as shell variables so no command line exceeds the recommended width:
 
 ```bash
 BASE="http://localhost:8000/api/v1/reports/transactions"
-RANGE="report_type=Monthly&start_date=2026-05-01&end_date=2026-05-31"
+RANGE="report_type=Custom&start_date=2026-05-01&end_date=2026-05-31"
 curl "$BASE?$RANGE" --cookie "carddemo_session=<token>"
 ```
 
@@ -677,10 +766,10 @@ totals. Every amount and total is a decimal string.
 
 ```json
 {
-  "report_type": "Monthly",
+  "report_type": "Custom",
   "start_date": "2026-05-01",
   "end_date": "2026-05-31",
-  "report_name": "Daily Transaction Report",
+  "report_name": "Custom Transaction Report",
   "rows": [
     {
       "tran_id": "0000000000000123",
@@ -706,7 +795,7 @@ add the `format` parameter (`-OJ` keeps the server-provided filename):
 
 ```bash
 BASE="http://localhost:8000/api/v1/reports/transactions"
-RANGE="report_type=Monthly&start_date=2026-05-01&end_date=2026-05-31"
+RANGE="report_type=Custom&start_date=2026-05-01&end_date=2026-05-31"
 curl -OJ "$BASE?$RANGE&format=pdf" --cookie "carddemo_session=<token>"
 ```
 
@@ -1047,13 +1136,26 @@ share the same description text but remain distinct codes.
 
 When posting is rejected in batch, the reason code (`PIC 9(04)`) and description
 (`PIC X(76)`) are written to the fixed-width **430-byte** `DALYREJS` reject
-record for golden-master parity with the mainframe output. The four online
-message codes 100–103 correspond to the user-facing messages defined in the
-legacy `CSMSG01Y` / `CSMSG02Y` copybooks. In the REST API these domain
-conditions map to HTTP responses as follows: not-found lookups (100 / 101) →
-`404` when addressed as a direct resource lookup, over-limit and rewrite
-conflicts (102 / 109) → `409`, and remaining validation rejects (103) → `422`,
-each carrying the numeric code and description in the response body.
+record for golden-master parity with the mainframe output. The online message
+codes 100–103 correspond to the user-facing messages defined in the legacy
+`CSMSG01Y` / `CSMSG02Y` copybooks. In the REST API these conditions map to HTTP
+responses as follows:
+
+- **`POST /transactions` (online add).** A `card_num` or `acct_id` that does not
+  resolve to a card cross-reference is reported as **`404 Not Found`**
+  (`NotFoundError`, a plain `detail` message) — this is how reason codes 100/101
+  surface online. Posting rejects raised after the card and account resolve —
+  over-limit (102), after-expiration (103), and the account rewrite failure
+  (109) — surface as **`422 Unprocessable Entity`**, each carrying the numeric
+  `code` and `description` in the response body.
+- **`post_transactions` (batch).** All five reason codes (100–103, 109) are
+  written to the 430-byte `DALYREJS` reject record described above.
+- **`409 Conflict`** is *not* a posting result. It is reserved for the
+  optimistic-lock check on `PUT /accounts` and `PUT /cards` (`OptimisticLockError`
+  when a `before_image` no longer matches the locked row) and for a
+  transaction-id collision on `POST /transactions` (`ConflictError`). In
+  particular, the over-limit (102) and rewrite (109) rejects are **`422`**, never
+  `409`.
 
 ## Conventions
 

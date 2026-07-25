@@ -120,12 +120,13 @@ export interface FormFieldProps {
      * Browser autofill hint forwarded to the native `<input autocomplete>`
      * attribute (QA N-01). Identity screens pass semantic tokens so password
      * managers behave correctly (`"username"` / `"current-password"` on
-     * `/signon`); transient business-key lookups pass `"off"` so the browser
-     * does not offer to autofill an account/card/transaction key with the
-     * operator's own saved data. Applies to the text/password/number/date
-     * shapes only (a `select` has no autofill semantics). Defaults to
-     * `undefined` (the browser heuristic default) so existing fields are
-     * unchanged unless a caller opts in.
+     * `/signon`); create-user password fields pass `"new-password"` so browsers
+     * offer to generate a strong password rather than autofilling an existing
+     * one; transient business-key lookups pass `"off"` so the browser does not
+     * offer to autofill an account/card/transaction key with the operator's own
+     * saved data. Applies to the text/password/number/date shapes only (a
+     * `select` has no autofill semantics). Defaults to `undefined` (the browser
+     * heuristic default) so existing fields are unchanged unless a caller opts in.
      */
     autoComplete?: string;
 }
@@ -174,6 +175,14 @@ export function FormField(props: FormFieldProps) {
     // Dropdown mode: FormControl + InputLabel + Select + MenuItem[] (+ helper).
     // `label` on BOTH InputLabel and Select drives the MD3 outlined-notch behavior.
     if (type === 'select') {
+        // MUI's all-in-one TextField auto-associates its helper text with the
+        // input via aria-describedby, but the composed FormControl + Select +
+        // FormHelperText does NOT. Wire it explicitly so a validation message on
+        // a select (e.g. the User Type field) is programmatically announced to
+        // assistive tech, not just shown visually (WCAG 3.3.1 / 4.1.2).
+        const helperTextId = props.helperText
+            ? `${props.name}-helper-text`
+            : undefined;
         return (
             <FormControl
                 fullWidth={fullWidth}
@@ -189,6 +198,17 @@ export function FormField(props: FormFieldProps) {
                     value={props.value}
                     label={props.label}
                     onChange={HandleSelectChange}
+                    aria-describedby={helperTextId}
+                    // QA Issue 7a: the visible InputLabel is associated with the
+                    // combobox via `labelId`, but MUI's Select ALSO renders a
+                    // hidden native <input> (it carries `name`, aria-hidden,
+                    // tabIndex=-1) for form submission that has no accessible
+                    // name — which Chrome's "No label associated with a form
+                    // field" audit flags. `aria-labelledby` passes through MUI's
+                    // `...other` onto that hidden input (an `aria-label` here is
+                    // intercepted for the combobox and never reaches it),
+                    // associating the hidden input with the SAME visible label.
+                    inputProps={{ 'aria-labelledby': labelId }}
                 >
                     {(props.options ?? []).map((option) => (
                         <MenuItem key={option.value} value={option.value}>
@@ -197,7 +217,7 @@ export function FormField(props: FormFieldProps) {
                     ))}
                 </Select>
                 {props.helperText ? (
-                    <FormHelperText>{props.helperText}</FormHelperText>
+                    <FormHelperText id={helperTextId}>{props.helperText}</FormHelperText>
                 ) : null}
             </FormControl>
         );
@@ -234,6 +254,7 @@ export function FormField(props: FormFieldProps) {
                 htmlInput: {
                     maxLength: props.maxLength,
                     readOnly: props.readOnly,
+                    autoComplete: props.autoComplete,
                 },
                 inputLabel: type === 'date' ? { shrink: true } : undefined,
             }}

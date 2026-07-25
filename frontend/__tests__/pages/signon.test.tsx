@@ -131,6 +131,16 @@ describe('SignonPage', () => {
         expect(userIdInput).toHaveAttribute('maxlength', '8');
         expect(passwordInput).toHaveAttribute('maxlength', '8');
 
+        // Accessibility / autofill (QA a11y advisory): the autocomplete tokens are
+        // forwarded to the DOM inputs via FormField's slotProps.htmlInput so the
+        // browser / password manager offers correct autofill (username / current
+        // password) and Chrome DevTools' verbose audit advisory is cleared.
+        expect(userIdInput).toHaveAttribute('autocomplete', 'username');
+        expect(passwordInput).toHaveAttribute(
+            'autocomplete',
+            'current-password',
+        );
+
         // The Password field must be masked (type="password"); a masked input
         // deliberately exposes NO textbox role.
         expect(passwordInput).toHaveAttribute('type', 'password');
@@ -179,6 +189,29 @@ describe('SignonPage', () => {
 
         // With no credentials the server-side Login helper is never invoked.
         expect(Login).not.toHaveBeenCalled();
+    });
+
+    it('marks the User ID field aria-invalid and links its message via aria-describedby on empty submit (FINDING-10)', async () => {
+        const user = SetupUser();
+        RenderWithProviders(<SignonPage />);
+
+        await user.click(
+            screen.getByRole('button', { name: SIGN_ON_BUTTON_NAME }),
+        );
+
+        // FINDING-10 (WCAG 3.3.1 / 4.1.2): the offending field is marked
+        // programmatically, not merely announced by the top-center toast, so a
+        // screen-reader user navigating the form afterward is told which field
+        // is invalid. The field helper text is deliberately distinct from the
+        // verbatim toast message.
+        const userIdInput = screen.getByLabelText(/user id/i);
+        expect(userIdInput).toHaveAttribute('aria-invalid', 'true');
+
+        const describedById = userIdInput.getAttribute('aria-describedby');
+        expect(describedById).toBeTruthy();
+        expect(
+            document.getElementById(describedById as string),
+        ).toHaveTextContent('User ID is required');
     });
 
     it('routes an administrator to /admin after a successful login', async () => {

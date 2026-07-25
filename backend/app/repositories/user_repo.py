@@ -10,7 +10,7 @@ performed in the service layer (app/core/security.py), never here.
 
 from __future__ import annotations
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.user import User
@@ -76,6 +76,7 @@ class UserRepository:
         session: AsyncSession,
         startUserId: str | None = None,
         limit: int = DEFAULT_PAGE_SIZE,
+        offset: int = 0,
     ) -> list[User]:
         """Return an ordered page of users, optionally starting at a key.
 
@@ -84,10 +85,22 @@ class UserRepository:
         start key is supplied, restricted to ids greater than or equal to it,
         emulating the VSAM ``GTEQ`` browse position.
 
+        ``offset`` skips a fixed number of leading rows in the ordered result so
+        the caller can request one page directly at the database (``ORDER BY
+        user_id OFFSET n LIMIT page_size``) instead of fetching the whole table
+        and slicing it in Python. Because the ordering is the stable ``user_id``
+        primary key, ``OFFSET (page-1)*page_size LIMIT page_size`` returns the
+        exact same rows the former whole-table fetch-then-slice produced; only
+        the number of rows transferred and materialized changes. ``offset`` and
+        ``startUserId`` are independent positioning tools; the service uses one
+        or the other.
+
         Args:
             session: Active async unit-of-work session.
             startUserId: Optional inclusive lower-bound user id (``GTEQ``).
             limit: Maximum number of rows to return (page size).
+            offset: Number of leading ordered rows to skip before the page;
+                ``0`` (the default) starts at the first row.
 
         Returns:
             A list of :class:`~app.models.user.User` in ascending ``user_id``
@@ -96,8 +109,31 @@ class UserRepository:
         stmt = select(User).order_by(User.user_id).limit(limit)
         if startUserId is not None:
             stmt = stmt.where(User.user_id >= startUserId)
+        if offset > 0:
+            stmt = stmt.offset(offset)
         result = await session.execute(stmt)
         return list(result.scalars().all())
+
+    async def CountUsers(self, session: AsyncSession) -> int:
+        """Return the total number of users for pagination metadata.
+
+        Backs the exact ``total_items`` / ``total_pages`` figures the admin
+        browse screen (COUSR00C) reports. Composed as a bounded, parameterless
+        ``COUNT(*)`` so the paginated list no longer has to fetch the whole
+        table merely to learn its size: the service pairs this count with a
+        single ``OFFSET``/``LIMIT`` page fetch, transferring only the page. The
+        aggregate is an ORM expression (never string SQL), so it is
+        injection-safe.
+
+        Args:
+            session: Active async unit-of-work session.
+
+        Returns:
+            The total number of rows in the ``users`` table.
+        """
+        stmt = select(func.count()).select_from(User)
+        result = await session.execute(stmt)
+        return int(result.scalar_one())
 
     async def CountAdminsForUpdate(self, session: AsyncSession) -> int:
         """Count administrator users, locking their rows ``FOR UPDATE``.

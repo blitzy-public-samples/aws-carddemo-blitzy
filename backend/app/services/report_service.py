@@ -89,6 +89,17 @@ CONFIRM_NO = "N"
 # data is tiny; this bound only guards against a pathological range.
 MAX_REPORT_ROWS = 100000
 
+# Upper bounds used to batch-load the two small reference tables (transaction
+# types and transaction categories) up front, once per report, instead of one
+# lookup per distinct code inside the row-build loop. Both tables are bounded by
+# tiny code spaces (``tran_type`` is CHAR(2); a category is that type plus a
+# 4-char code), so these limits sit far above any real row count and simply mean
+# "load every reference row in a single query". Should a table ever exceed its
+# bound, the per-row resolvers still fall back to a keyed lookup, so correctness
+# never depends on these numbers -- only the query count does.
+REFERENCE_TYPE_LIMIT = 1000
+REFERENCE_CATEGORY_LIMIT = 10000
+
 # Column headings for the CSV rendering (stdlib csv). One entry per exported
 # TransactionReportRow field, in report order.
 CSV_HEADER = (
@@ -387,9 +398,10 @@ class ReportService:
         startDate, endDate = self.ResolveDateRange(reportRequest)
         transactions = await self._FetchTransactionsInRange(session, startDate, endDate)
         lookups = _ReportLookups()
+        await self._PreloadDescriptions(session, lookups)
         reportRows: list[TransactionReportRow] = []
         for transaction in transactions:
-            reportRows.append(await self._BuildRow(session, transaction, lookups))
+            reportRows.append(self._BuildRow(transaction, lookups))
         # Order rows by owning account (then transaction id) so the CVTRA07Y
         # account control break groups each account's rows contiguously. This
         # makes the account subtotal deterministic (each account forms exactly
@@ -408,6 +420,43 @@ class ReportService:
             account_total=accountTotal,
             grand_total=grandTotal,
         )
+
+    async def _PreloadDescriptions(
+        self, session: AsyncSession, lookups: _ReportLookups
+    ) -> None:
+        """Batch-load the type/category reference tables into the row caches.
+
+        The transaction-type and transaction-category tables are tiny fixed
+        reference sets (``TRANTYPE`` / ``TRANCATG``). Loading each in full with a
+        single ``SELECT`` and seeding the per-request caches here means every
+        :meth:`_ResolveTypeDesc` / :meth:`_ResolveCatDesc` call in the row-build
+        loop is a pure in-memory hit, rather than issuing one keyed query per
+        distinct code the first time it is seen (the report N+1). This changes
+        only the query count, not the result: the caches hold exactly the
+        descriptions the per-row resolvers would have fetched, and a code that is
+        somehow absent from its reference table still falls through to the
+        resolver's keyed lookup and yields the same ``None`` it always did.
+
+        The owning account id (per card) is not preloaded here -- it is supplied
+        by the :func:`~sqlalchemy.orm.selectinload` eager load on the report
+        query (:meth:`TransactionRepository.ListPostedInDateRange`), which
+        batch-loads every card in one round-trip.
+
+        Args:
+            session: The caller-owned async database session.
+            lookups: The per-request caches to seed in place.
+        """
+        typeRows = await self.transactionTypeRepository.ListTransactionTypes(
+            session, limit=REFERENCE_TYPE_LIMIT
+        )
+        for typeRow in typeRows:
+            lookups.typeDescByCode[typeRow.tran_type] = typeRow.tran_type_desc
+        categoryRows = await self.transactionCategoryRepository.ListTransactionCategories(
+            session, limit=REFERENCE_CATEGORY_LIMIT
+        )
+        for categoryRow in categoryRows:
+            categoryKey = (categoryRow.tran_type_cd, categoryRow.tran_cat_cd)
+            lookups.catDescByKey[categoryKey] = categoryRow.tran_cat_type_desc
 
     def _CheckConfirmation(self, reportRequest: ReportRequest) -> None:
         """Enforce the CORPT00C print-confirm gesture (SUBMIT-JOB-TO-INTRDR).
@@ -510,28 +559,30 @@ class ReportService:
             return None
         return effectiveTimestamp.date()
 
-    async def _BuildRow(
-        self, session: AsyncSession, transaction: Transaction, lookups: _ReportLookups
+    def _BuildRow(
+        self, transaction: Transaction, lookups: _ReportLookups
     ) -> TransactionReportRow:
         """Build one report row from a transaction plus its reference lookups.
 
-        Resolves the owning account id and the type/category descriptions
-        (each memoized in ``lookups``), then assembles a
-        :class:`~app.schemas.report.TransactionReportRow`. The description widths
-        (<=15 / <=29) and the exact-``Decimal`` amount are enforced by the schema
-        validators, so this method passes the raw values straight through.
+        Resolves the owning account id and the type/category descriptions from
+        the per-request caches, all populated before the row-build loop -- the
+        card via the report query's ``selectinload`` eager load and the
+        type/category descriptions via :meth:`_PreloadDescriptions`. Every
+        resolve is therefore a pure in-memory read, so the loop issues no
+        database queries at all (the report N+1 is eliminated). The description
+        widths (<=15 / <=29) and the exact-``Decimal`` amount are enforced by the
+        schema validators, so this method passes the raw values straight through.
 
         Args:
-            session: The caller-owned async database session.
-            transaction: The source transaction row.
-            lookups: The per-request memoization caches.
+            transaction: The source transaction row (with ``card`` eager-loaded).
+            lookups: The per-request lookup caches, fully populated up front.
 
         Returns:
             The assembled report row.
         """
-        acctId = await self._ResolveAcctId(session, transaction, lookups)
-        typeDesc = await self._ResolveTypeDesc(session, transaction, lookups)
-        catDesc = await self._ResolveCatDesc(session, transaction, lookups)
+        acctId = self._ResolveAcctId(transaction, lookups)
+        typeDesc = self._ResolveTypeDesc(transaction, lookups)
+        catDesc = self._ResolveCatDesc(transaction, lookups)
         return TransactionReportRow(
             tran_id=transaction.tran_id,
             acct_id=acctId,
@@ -543,114 +594,94 @@ class ReportService:
             tran_amt=transaction.tran_amt,
         )
 
-    async def _ResolveAcctId(
-        self, session: AsyncSession, transaction: Transaction, lookups: _ReportLookups
+    def _ResolveAcctId(
+        self, transaction: Transaction, lookups: _ReportLookups
     ) -> str:
         """Resolve (and cache) the account id owning a transaction's card.
 
         The transaction record carries ``card_num`` but not the account id (the
         legacy report joined it through the sort/symbol file). The owning account
-        is reached via the transaction's ``card`` relationship; results are
-        memoized by card number so each distinct card is loaded at most once.
+        is read from the transaction's eager-loaded ``card`` relationship: the
+        report query batch-loads every card in a single round-trip with
+        :func:`~sqlalchemy.orm.selectinload`
+        (:meth:`TransactionRepository.ListPostedInDateRange`), so the related row
+        is already present and is read here as a plain attribute access -- no
+        per-card ``SELECT`` and no forbidden async lazy-load. This replaces the
+        former per-transaction :meth:`AsyncSession.refresh`, which issued one
+        query for every distinct card (the report N+1); the resolved
+        ``card.acct_id`` is identical, only the query count changes. The value is
+        still memoized by card number so each card's attribute is touched once.
 
         Args:
-            session: The caller-owned async database session.
             transaction: The transaction whose owning account is resolved.
             lookups: The per-request memoization caches.
 
         Returns:
             The 11-character ``acct_id`` owning the transaction's card.
-        """
-        cardNum = transaction.card_num
-        if cardNum in lookups.acctIdByCardNum:
-            return lookups.acctIdByCardNum[cardNum]
-        acctId = await self._LoadAcctIdFromCard(session, transaction)
-        lookups.acctIdByCardNum[cardNum] = acctId
-        return acctId
-
-    async def _LoadAcctIdFromCard(
-        self, session: AsyncSession, transaction: Transaction
-    ) -> str:
-        """Load a transaction's ``card`` relationship and return its account id.
-
-        The ORM ``Base`` is a plain ``DeclarativeBase`` (no ``AsyncAttrs``), so
-        the many-to-one ``card`` relationship is loaded explicitly with
-        :meth:`AsyncSession.refresh`, which performs the load safely inside the
-        session's greenlet rather than triggering a forbidden async lazy-load.
-
-        Args:
-            session: The caller-owned async database session.
-            transaction: The transaction whose card is loaded.
-
-        Returns:
-            The owning account id.
 
         Raises:
             DomainValidationError: When the card (and therefore the account id)
                 cannot be resolved -- a foreign-key-guaranteed impossibility that
                 is nonetheless handled defensively.
         """
-        await session.refresh(transaction, ["card"])
+        cardNum = transaction.card_num
+        if cardNum in lookups.acctIdByCardNum:
+            return lookups.acctIdByCardNum[cardNum]
         card = transaction.card
         if card is None:
             raise DomainValidationError(
                 f"{MSG_ACCT_UNRESOLVED_PREFIX}{transaction.tran_id}"
             )
+        lookups.acctIdByCardNum[cardNum] = card.acct_id
         return card.acct_id
 
-    async def _ResolveTypeDesc(
-        self, session: AsyncSession, transaction: Transaction, lookups: _ReportLookups
+    def _ResolveTypeDesc(
+        self, transaction: Transaction, lookups: _ReportLookups
     ) -> Optional[str]:
-        """Resolve (and cache) a transaction's type description.
+        """Return a transaction's type description from the preloaded cache.
 
-        Reads the description from ``transaction_type`` via
-        :meth:`TransactionTypeRepository.GetByTranType`, memoized by type code.
-        Returns ``None`` when the code has no reference row (the schema renders a
-        blank description column, matching an unlabeled legacy code).
+        :meth:`_PreloadDescriptions` loads the whole ``transaction_type``
+        reference table into ``lookups.typeDescByCode`` before the row-build
+        loop, so this is a pure dict read: a known code yields its description
+        and an unknown code yields ``None`` (the schema renders a blank
+        description column, matching an unlabeled legacy code). Because the cache
+        already holds every reference row, no per-row query is issued -- the
+        previous per-distinct-code ``GetByTranType`` fallback is gone while the
+        returned value is unchanged.
 
         Args:
-            session: The caller-owned async database session.
             transaction: The transaction whose type description is resolved.
-            lookups: The per-request memoization caches.
+            lookups: The per-request caches, preloaded with all type rows.
 
         Returns:
-            The type description, or ``None`` when the code is unknown.
+            The type description, or ``None`` when the code has no reference row.
         """
-        typeCode = transaction.tran_type_cd
-        if typeCode in lookups.typeDescByCode:
-            return lookups.typeDescByCode[typeCode]
-        typeRow = await self.transactionTypeRepository.GetByTranType(session, typeCode)
-        typeDesc = typeRow.tran_type_desc if typeRow is not None else None
-        lookups.typeDescByCode[typeCode] = typeDesc
-        return typeDesc
+        return lookups.typeDescByCode.get(transaction.tran_type_cd)
 
-    async def _ResolveCatDesc(
-        self, session: AsyncSession, transaction: Transaction, lookups: _ReportLookups
+    def _ResolveCatDesc(
+        self, transaction: Transaction, lookups: _ReportLookups
     ) -> Optional[str]:
-        """Resolve (and cache) a transaction's category description.
+        """Return a transaction's category description from the preloaded cache.
 
-        Reads the description from ``transaction_category`` via
-        :meth:`TransactionCategoryRepository.GetByKey` on the composite
-        ``(tran_type_cd, tran_cat_cd)`` key, memoized by that key. Returns
-        ``None`` when the pairing has no reference row.
+        :meth:`_PreloadDescriptions` loads the whole ``transaction_category``
+        reference table into ``lookups.catDescByKey`` (keyed by the composite
+        ``(tran_type_cd, tran_cat_cd)``) before the row-build loop, so this is a
+        pure dict read: a known pairing yields its description and an unknown
+        pairing yields ``None``. Because the cache already holds every reference
+        row, no per-row query is issued -- the previous per-distinct-pairing
+        ``GetByKey`` fallback is gone while the returned value is unchanged.
 
         Args:
-            session: The caller-owned async database session.
             transaction: The transaction whose category description is resolved.
-            lookups: The per-request memoization caches.
+            lookups: The per-request caches, preloaded with all category rows.
 
         Returns:
-            The category description, or ``None`` when the key is unknown.
+            The category description, or ``None`` when the pairing has no
+            reference row.
         """
-        categoryKey = (transaction.tran_type_cd, transaction.tran_cat_cd)
-        if categoryKey in lookups.catDescByKey:
-            return lookups.catDescByKey[categoryKey]
-        categoryRow = await self.transactionCategoryRepository.GetByKey(
-            session, transaction.tran_type_cd, transaction.tran_cat_cd
+        return lookups.catDescByKey.get(
+            (transaction.tran_type_cd, transaction.tran_cat_cd)
         )
-        catDesc = categoryRow.tran_cat_type_desc if categoryRow is not None else None
-        lookups.catDescByKey[categoryKey] = catDesc
-        return catDesc
 
     def _ControlBreakSortKey(
         self, row: TransactionReportRow

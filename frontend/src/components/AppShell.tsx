@@ -73,7 +73,7 @@ import {
 } from '@mui/icons-material';
 import { usePathname, useRouter } from 'next/navigation';
 import Link from 'next/link';
-import { Fragment, useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import type { KeyboardEvent as ReactKeyboardEvent, ReactNode } from 'react';
 
 import { GetCurrentUser, IsAdmin, Logout } from '@/lib/auth';
@@ -333,56 +333,89 @@ export function AppShell(props: AppShellProps) {
     }
 
     /**
+     * Renders one navigation entry as a `ListItem` → `ListItemButton` linked via
+     * `next/link`. Extracted so the regular-options list and the admin-options
+     * list (rendered as two separate `<ul>`s, see `RenderNavList`) share a single
+     * definition (Ochs small-method / DRY rule) with no behavioral difference.
+     *
+     * @param item - The navigation entry to render.
+     * @returns The list-item element for `item`.
+     */
+    function RenderNavItem(item: NavItem): ReactNode {
+        // Highlight by route family so sibling sub-routes keep the same item
+        // selected (QA #8): e.g. /accounts/update matches the "Accounts" item
+        // linked to /accounts/view.
+        const isActive =
+            GetRouteFamily(pathname) === GetRouteFamily(item.path);
+        return (
+            <ListItem key={item.path} disablePadding>
+                <ListItemButton
+                    component={Link}
+                    href={item.path}
+                    selected={isActive}
+                    // FINDING-07 (WCAG 4.1.2): `selected` only supplies the
+                    // Mui-selected visual highlight. `aria-current="page"`
+                    // programmatically exposes the active destination to
+                    // assistive technology so screen-reader users know which nav
+                    // item is the current page; omitted (undefined) on inactive
+                    // items.
+                    aria-current={isActive ? 'page' : undefined}
+                    onClick={HandleDrawerClose}
+                >
+                    <ListItemIcon>{item.icon}</ListItemIcon>
+                    <ListItemText primary={item.label} />
+                </ListItemButton>
+            </ListItem>
+        );
+    }
+
+    /**
      * Renders the drawer's inner content: a spacer `Toolbar` that offsets the
-     * fixed AppBar, followed by the scrollable navigation `List`. A `Divider` is
-     * inserted before the first admin-only entry to separate it from the regular
-     * options. Extracted as a small helper (Ochs small-method rule) and reused by
-     * both the temporary and permanent drawers.
+     * fixed AppBar, followed by the scrollable navigation. The regular options
+     * and the admin-only options are rendered as TWO separate `List` (`<ul>`)
+     * elements with a `Divider` placed BETWEEN them, not inside either one.
+     *
+     * QA #13 accessibility fix: a `Divider` carries `role="separator"`, so
+     * placing it inside a `<List>` (even as `component="li"`) gives that `<ul>` a
+     * direct child whose role is not `listitem`, which fails the axe `list` rule.
+     * Keeping the separator OUTSIDE every `<ul>` means each list contains only
+     * `listitem` children. The layout is preserved byte-for-byte: the 8px
+     * top/bottom padding that the single `List` used to contribute is moved onto
+     * the wrapping `Box` (`py: 1` === `theme.spacing(1)` === 8px) and both lists
+     * use `disablePadding`, so the divider still sits flush between the groups
+     * exactly as before. Extracted as a small helper (Ochs small-method rule) and
+     * reused by both the temporary and permanent drawers.
      *
      * @returns The drawer content element.
      */
     function RenderNavList(): ReactNode {
+        const regularItems = visibleItems.filter((item) => {
+            return !item.adminOnly;
+        });
+        const adminItems = visibleItems.filter((item) => {
+            return item.adminOnly;
+        });
         return (
             <>
                 <Toolbar />
-                <Box sx={{ overflow: 'auto' }}>
-                    <List>
-                        {visibleItems.map((item, index) => {
-                            // Highlight by route family so sibling sub-routes keep
-                            // the same item selected (QA #8): e.g. /accounts/update
-                            // matches the "Accounts" item linked to /accounts/view.
-                            const isActive =
-                                GetRouteFamily(pathname) ===
-                                GetRouteFamily(item.path);
-                            const needsDivider =
-                                item.adminOnly &&
-                                (index === 0 || !visibleItems[index - 1].adminOnly);
-                            return (
-                                <Fragment key={item.path}>
-                                    {/*
-                                     * QA #13: a bare <Divider> renders an <hr>,
-                                     * which is invalid as a direct child of the
-                                     * <List>'s <ul>. `component="li"` makes it a
-                                     * valid list item (role="separator" preserved).
-                                     */}
-                                    {needsDivider ? <Divider component="li" /> : null}
-                                    <ListItem disablePadding>
-                                        <ListItemButton
-                                            component={Link}
-                                            href={item.path}
-                                            selected={isActive}
-                                            onClick={HandleDrawerClose}
-                                        >
-                                            <ListItemIcon>
-                                                {item.icon}
-                                            </ListItemIcon>
-                                            <ListItemText primary={item.label} />
-                                        </ListItemButton>
-                                    </ListItem>
-                                </Fragment>
-                            );
-                        })}
-                    </List>
+                <Box sx={{ overflow: 'auto', py: 1 }}>
+                    {regularItems.length > 0 ? (
+                        <List disablePadding>
+                            {regularItems.map((item) => {
+                                return RenderNavItem(item);
+                            })}
+                        </List>
+                    ) : null}
+                    {adminItems.length > 0 ? (
+                        <>
+                            {regularItems.length > 0 ? <Divider /> : null}
+                            <List disablePadding>
+                                {adminItems.map((item) => {
+                                    return RenderNavItem(item);
+                                })}
+                            </List>
+                        </>
+                    ) : null}
                 </Box>
             </>
         );

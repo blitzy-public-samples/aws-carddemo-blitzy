@@ -40,13 +40,15 @@ ALL_UPPERCASE. Every test carries a comment citing the COBOL program
 
 import base64
 import csv
+import os
 import re
 import zlib
 from decimal import Decimal
 from pathlib import Path
+from types import SimpleNamespace
 
 from app.models import STATUS_PENDING, STATUS_POSTED
-from batch.jobs.statement_gen import GenerateStatements
+from batch.jobs.statement_gen import GenerateStatements, _BuildStatementFilename
 
 # --------------------------------------------------------------------------- #
 # Module constants (Ochs ALL_UPPERCASE). Distinct primary-key values per card
@@ -365,6 +367,37 @@ def test_statement_generation_increments_on_rerun(db_session, record_builder, tm
     # Both generations coexist (no overwrite): 2 CSV + 2 PDF files remain.
     assert len(list(tmp_path.glob(f"statement_{ACCT_ONE}_{CARD_ONE_LAST4}_*.csv"))) == 2
     assert len(list(tmp_path.glob(f"statement_{ACCT_ONE}_{CARD_ONE_LAST4}_*.pdf"))) == 2
+
+
+def test_statement_filename_is_basename_safe_against_path_traversal():
+    # QA finding F-5 (defense-in-depth): even if a hostile account id carrying
+    # path separators reached statement generation through some other code path
+    # (the loader itself now rejects such an id -- see test_loaders.py), the
+    # composed statement file name must remain a SINGLE path component so the
+    # write can never escape the caller's output directory. _BuildStatementFilename
+    # runs the composed name through os.path.basename, so a "../../../" prefix is
+    # explicitly discarded rather than the traversal merely failing closed by
+    # accident on the incidental "statement_" prefix.
+    hostileAcctId = "../../../etc/passwd"
+    # `generation` is part of the file name (QA finding M19, GDG (+1)); supply a
+    # representative zero-padded run generation so the crafted context matches
+    # the StatementContext shape _BuildStatementFilename consumes.
+    craftedGeneration = "0001"
+    craftedContext = SimpleNamespace(
+        account=SimpleNamespace(acct_id=hostileAcctId),
+        xref=SimpleNamespace(acct_id=hostileAcctId, xref_card_num=CARD_ONE),
+        generation=craftedGeneration,
+    )
+    for suffix in (".csv", ".pdf"):
+        fileName = _BuildStatementFilename(craftedContext, suffix)
+        # No directory component survives: the name is its own basename.
+        assert "/" not in fileName
+        assert os.sep not in fileName
+        assert ".." not in Path(fileName).parts
+        assert fileName == os.path.basename(fileName)
+        # The masked last-4, the run generation, and the suffix are preserved;
+        # the full PAN never is.
+        assert fileName.endswith(f"_{CARD_ONE_LAST4}_{craftedGeneration}{suffix}")
 
 
 def test_no_card_xref_yields_no_statements(db_session, tmp_path):

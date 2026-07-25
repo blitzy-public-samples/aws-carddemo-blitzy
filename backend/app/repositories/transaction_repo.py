@@ -20,8 +20,9 @@ from __future__ import annotations
 
 from datetime import date
 
-from sqlalchemy import Date, cast, func, select
+from sqlalchemy import Date, cast, func, literal_column, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from app.models.transaction import STATUS_POSTED, Transaction
 
@@ -68,6 +69,7 @@ class TransactionRepository:
         session: AsyncSession,
         startTranId: str | None = None,
         limit: int = DEFAULT_PAGE_SIZE,
+        offset: int = 0,
     ) -> list[Transaction]:
         """Browse transactions forward by ascending id (page-forward).
 
@@ -76,18 +78,33 @@ class TransactionRepository:
         resumes at the first id greater than or equal to it, matching the
         ``RIDFLD(TRAN-ID)`` positioning of the legacy start-browse.
 
+        ``offset`` skips a fixed number of leading rows in the ordered result so
+        the caller can request one page directly at the database (``ORDER BY
+        tran_id OFFSET n LIMIT page_size``) instead of fetching every row up to
+        the page and slicing in Python. Because the ordering is the stable
+        ``tran_id`` key, ``OFFSET (page-1)*page_size LIMIT page_size`` returns the
+        exact same rows the former fetch-then-slice produced -- only the number
+        of rows transferred and materialized changes (the deep-pagination
+        amplification is removed). ``offset`` and ``startTranId`` are independent
+        positioning tools; the service uses one or the other.
+
         Args:
             session: Active async database session.
             startTranId: Inclusive lower-bound id to resume the browse from, or
                 ``None`` to start at the first row.
             limit: Maximum number of rows to return (page size).
+            offset: Number of leading ordered rows to skip before the page;
+                ``0`` (the default) starts at the first row.
 
         Returns:
-            Transactions ordered by ``tran_id``, at most ``limit`` rows.
+            Transactions ordered by ``tran_id``, at most ``limit`` rows, after
+            skipping ``offset`` leading rows.
         """
         stmt = select(Transaction).order_by(Transaction.tran_id).limit(limit)
         if startTranId is not None:
             stmt = stmt.where(Transaction.tran_id >= startTranId)
+        if offset > 0:
+            stmt = stmt.offset(offset)
         result = await session.execute(stmt)
         return list(result.scalars().all())
 
@@ -108,18 +125,36 @@ class TransactionRepository:
           REJECTED rows, matching the legacy report that read only the posted
           ``TRANSACT`` ledger (the daily/pending rows live in the staging
           lifecycle, AAP 0.7.5).
-        * ``COALESCE(proc_ts, orig_ts)::date`` BETWEEN ``startDate`` and
-          ``endDate`` (inclusive) -- the effective-date selection ported from
-          the legacy TRAN-PROC-DT window. ``proc_ts`` is preferred and
-          ``orig_ts`` is the fallback, mirroring the service's effective-date
-          rule. The cast to ``DATE`` resolves under the session time zone
-          (UTC in every deployment here), so it agrees with the Python
-          ``datetime.date()`` the service uses as its inclusive-window backstop.
+        * ``CAST(timezone('UTC', COALESCE(proc_ts, orig_ts)) AS date)`` BETWEEN
+          ``startDate`` and ``endDate`` (inclusive) -- the effective-date
+          selection ported from the legacy TRAN-PROC-DT window. ``proc_ts`` is
+          preferred and ``orig_ts`` is the fallback, mirroring the service's
+          effective-date rule. The UTC calendar date is taken explicitly (rather
+          than via a bare, session-time-zone-dependent ``::date`` cast) so the
+          expression is IMMUTABLE and can be served by the composite index added
+          in migration 0006; under this UTC deployment it agrees, byte for byte,
+          with both the former ``::date`` cast and the Python ``datetime.date()``
+          the service uses as its inclusive-window backstop.
 
         Rows are ordered by ``tran_id`` for a stable, deterministic result and
         bounded by ``limit`` so a pathological range cannot materialize an
         unbounded number of rows (M-08). Every predicate is a parameterized
         expression construct (never string SQL), so the query is injection-safe.
+
+        The owning :class:`~app.models.card.Card` of each transaction is
+        eager-loaded with :func:`~sqlalchemy.orm.selectinload`. The report
+        (CORPT00C) labels every line with the account id reached through the
+        transaction's ``card`` relationship; without eager loading that
+        relationship would be fetched one row at a time (a per-card ``SELECT``
+        for every distinct card in the window -- the classic N+1). ``selectinload``
+        instead issues a single additional ``SELECT ... WHERE card_num IN (...)``
+        that batch-loads every needed card, collapsing up to hundreds of
+        per-card round-trips into one while returning the identical
+        ``card.acct_id`` values (behavior-preserving; only the query count
+        changes). It is also the async-safe eager strategy: the related rows are
+        loaded inside the session's greenlet, so the service reads
+        ``transaction.card`` as a plain attribute access with no forbidden async
+        lazy-load.
 
         Args:
             session: Active async database session.
@@ -129,10 +164,33 @@ class TransactionRepository:
 
         Returns:
             The matching POSTED transactions ordered by ``tran_id``, at most
-            ``limit`` rows.
+            ``limit`` rows, each with its ``card`` relationship eager-loaded.
         """
+        # Effective report date == the UTC calendar date of COALESCE(proc_ts,
+        # orig_ts). The UTC normalization is written explicitly as
+        # ``timezone('UTC', ...)`` (equivalently ``... AT TIME ZONE 'UTC'``)
+        # rather than a bare ``::date`` cast for two reasons, both preserving the
+        # exact result under this UTC deployment: (1) it makes the expression
+        # IMMUTABLE, which a bare ``timestamptz::date`` is not (it is only
+        # STABLE, resolving under the session time zone), so it can back a
+        # functional index; and (2) it matches the composite index
+        # ``ix_transactions_status_effdate`` (status, this expression) added in
+        # migration 0006, letting the planner satisfy the posted-plus-date-window
+        # filter with an index range scan instead of a full sequential scan and
+        # external-disk sort (QA finding H1 / MINOR-5). Because the server and
+        # every connection run at UTC, this yields byte-identical dates to the
+        # former ``COALESCE(...)::date`` for every row.
+        # ``literal_column("'UTC'")`` emits the zone as a SQL literal (``timezone(
+        # 'UTC', ...)``) rather than a bound parameter, so the expression is
+        # textually identical to the indexed expression in migration 0006 and the
+        # planner can match it to ``ix_transactions_status_effdate``. 'UTC' is a
+        # fixed constant (not user input), so this introduces no injection risk.
         effectiveDate = cast(
-            func.coalesce(Transaction.proc_ts, Transaction.orig_ts), Date
+            func.timezone(
+                literal_column("'UTC'"),
+                func.coalesce(Transaction.proc_ts, Transaction.orig_ts),
+            ),
+            Date,
         )
         stmt = (
             select(Transaction)
@@ -141,6 +199,7 @@ class TransactionRepository:
             .where(effectiveDate <= endDate)
             .order_by(Transaction.tran_id)
             .limit(limit)
+            .options(selectinload(Transaction.card))
         )
         result = await session.execute(stmt)
         return list(result.scalars().all())
@@ -150,6 +209,7 @@ class TransactionRepository:
         session: AsyncSession,
         cardNum: str,
         limit: int = DEFAULT_PAGE_SIZE,
+        offset: int = 0,
     ) -> list[Transaction]:
         """List a card's transactions via the card-number alternate index.
 
@@ -158,14 +218,22 @@ class TransactionRepository:
         predicate targets the indexed ``card_num`` column so the browse rides
         the secondary index just as the legacy VSAM AIX did.
 
+        ``offset`` skips a fixed number of leading rows in the ordered result so
+        one page can be fetched directly (``ORDER BY tran_id OFFSET n LIMIT
+        page_size``) rather than fetching every row up to the page and slicing in
+        Python; on the stable ``tran_id`` ordering this returns the identical
+        rows the former fetch-then-slice produced.
+
         Args:
             session: Active async database session.
             cardNum: 16-character card number (``TRAN-CARD-NUM``).
             limit: Maximum number of rows to return (page size).
+            offset: Number of leading ordered rows to skip before the page;
+                ``0`` (the default) starts at the first row.
 
         Returns:
             The card's transactions ordered by ``tran_id``, at most ``limit``
-            rows.
+            rows, after skipping ``offset`` leading rows.
         """
         stmt = (
             select(Transaction)
@@ -173,6 +241,8 @@ class TransactionRepository:
             .order_by(Transaction.tran_id)
             .limit(limit)
         )
+        if offset > 0:
+            stmt = stmt.offset(offset)
         result = await session.execute(stmt)
         return list(result.scalars().all())
 

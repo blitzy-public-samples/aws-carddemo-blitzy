@@ -215,17 +215,23 @@ class TransactionService:
             (``card_num`` masked on serialization) with accurate page metadata.
         """
         totalItems = await self._CountTransactions(session, cardNum)
-        fetchLimit = params.page * params.page_size
+        # Fetch exactly one page directly from the database with OFFSET/LIMIT,
+        # instead of fetching every row up to the page and slicing in Python.
+        # On the stable ``tran_id`` ordering, ``OFFSET (page-1)*page_size LIMIT
+        # page_size`` returns the identical rows the former fetch-then-slice
+        # produced, but transfers and materializes only ``page_size`` rows -- so
+        # a deep page (e.g. page 5000) no longer loads tens of thousands of ORM
+        # instances to return seven (H2). The COUNT above still supplies the
+        # exact ``total_items`` for the envelope.
+        pageOffset = (params.page - 1) * params.page_size
         if cardNum:
-            fetchedRows = await self.transactionRepository.ListByCardNum(
-                session, cardNum, limit=fetchLimit
+            pageRows = await self.transactionRepository.ListByCardNum(
+                session, cardNum, limit=params.page_size, offset=pageOffset
             )
         else:
-            fetchedRows = await self.transactionRepository.ListTransactions(
-                session, startTranId=None, limit=fetchLimit
+            pageRows = await self.transactionRepository.ListTransactions(
+                session, startTranId=None, limit=params.page_size, offset=pageOffset
             )
-        startIndex = (params.page - 1) * params.page_size
-        pageRows = fetchedRows[startIndex:fetchLimit]
         summaryItems = [
             TransactionSummary.model_validate(txRecord) for txRecord in pageRows
         ]

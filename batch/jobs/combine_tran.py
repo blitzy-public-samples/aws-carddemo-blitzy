@@ -75,6 +75,7 @@ from __future__ import annotations
 
 import csv
 import logging
+from collections.abc import Iterable, Iterator
 from datetime import datetime
 from pathlib import Path
 
@@ -105,6 +106,13 @@ COMBINED_FILE_NAME = "transact_combined.csv"
 # Text encoding for the combined CSV. UTF-8 is the modern default; the stored
 # values are ordinary text decoded at load time from the ASCII/EBCDIC seeds.
 FILE_ENCODING = "utf-8"
+
+# Server-side fetch size for the ordered master scan. The walk is streamed in
+# fixed batches via ``yield_per`` (QA finding MODERATE-6) so the full ledger is
+# never materialized in memory at once; streaming changes only the fetch
+# granularity -- the ordered rows visited and the rows written are identical to
+# a full materialization.
+STREAM_CHUNK_SIZE = 1000
 
 # Default combined-output location, relative to the repository root, used when
 # the caller does not pass an explicit ``outputDir``. Kept as path segments so
@@ -155,33 +163,36 @@ def _ResolveOutputDir(outputDir: str | Path | None) -> Path:
     return repositoryRoot.joinpath(*DEFAULT_COMBINED_SUBDIR)
 
 
-def _IterateOrdered(session: Session) -> list[Transaction]:
-    """Return the POSTED transactions ordered by ``tran_id`` ascending.
+def _IterateOrdered(session: Session) -> Iterator[Transaction]:
+    """Yield the POSTED transactions ordered by ``tran_id`` ascending.
 
     Preserves the legacy ``SORT FIELDS=(TRAN-ID,A)`` key by ordering on the
     primary key ``tran_id`` ascending, restricted to POSTED rows so PENDING
     daily-staging rows and validation-REJECTED rows are excluded from the
-    combined master (QA finding M16). The ordered result is walked once to assert
-    a duplicate-free sequence; because ``tran_id`` is the primary key a physical
-    duplicate cannot actually occur, so the guard only documents the SORT/merge
-    intent and logs a warning (never raises) to keep the pass safe to re-run.
+    combined master (QA finding M16). The scan is streamed server-side in fixed
+    batches via ``yield_per`` (QA finding MODERATE-6) so the full ledger is never
+    materialized in memory at once; the ordered rows delivered are identical to a
+    full materialization. Each row is walked once to assert a duplicate-free
+    sequence; because ``tran_id`` is the primary key a physical duplicate cannot
+    actually occur, so the guard only documents the SORT/merge intent and logs a
+    warning (never raises) to keep the pass safe to re-run.
 
     Args:
         session: An open, caller-owned SQLAlchemy session. Used read-only.
 
-    Returns:
-        The list of POSTED :class:`~app.models.transaction.Transaction` rows in
-        ascending ``tran_id`` order.
+    Yields:
+        The POSTED :class:`~app.models.transaction.Transaction` rows in ascending
+        ``tran_id`` order.
     """
     statement = (
         select(Transaction)
         .where(Transaction.status == STATUS_POSTED)
         .order_by(Transaction.tran_id.asc())
+        .execution_options(yield_per=STREAM_CHUNK_SIZE)
     )
-    orderedTransactions = list(session.execute(statement).scalars().all())
 
     previousTranId = None
-    for currentTransaction in orderedTransactions:
+    for currentTransaction in session.execute(statement).scalars():
         currentTranId = currentTransaction.tran_id
         if previousTranId is not None and currentTranId == previousTranId:
             LOGGER.warning(
@@ -189,8 +200,7 @@ def _IterateOrdered(session: Session) -> list[Transaction]:
                 currentTranId,
             )
         previousTranId = currentTranId
-
-    return orderedTransactions
+        yield currentTransaction
 
 
 def _FormatTimestamp(value: datetime | None) -> str:
@@ -247,19 +257,21 @@ def _BuildCombinedRow(transaction: Transaction) -> list[str]:
     ]
 
 
-def _WriteCombinedCsv(combinedPath: Path, transactions: list[Transaction]) -> int:
+def _WriteCombinedCsv(combinedPath: Path, transactions: Iterable[Transaction]) -> int:
     """Write the merged, ordered transaction ledger to ``combinedPath`` as CSV.
 
     Emits the :data:`CSV_HEADER` row followed by one Decimal-faithful row per
     transaction (already ordered ascending by ``tran_id`` by the caller). The
     file is published atomically and restricted to owner-only ``0600`` (QA
     findings M13 / atomic publication); a mid-write failure leaves no partial
-    file at ``combinedPath``.
+    file at ``combinedPath``. The ``transactions`` iterable is consumed once and
+    streamed straight to the CSV writer, so a ``yield_per`` generator (QA finding
+    MODERATE-6) is serialized without materializing the whole ledger in memory.
 
     Args:
         combinedPath: The full path of the combined file to create.
         transactions: The POSTED transactions to serialize, ordered by the
-            caller.
+            caller. Consumed once; may be a streaming generator.
 
     Returns:
         The number of transaction rows written (excluding the header).
@@ -267,6 +279,7 @@ def _WriteCombinedCsv(combinedPath: Path, transactions: list[Transaction]) -> in
     Raises:
         OSError: If the combined file cannot be opened or written.
     """
+    rowsWritten = 0
     try:
         with AtomicWritePath(combinedPath) as stagingPath:
             with stagingPath.open("w", encoding=FILE_ENCODING, newline="") as combinedFile:
@@ -274,10 +287,11 @@ def _WriteCombinedCsv(combinedPath: Path, transactions: list[Transaction]) -> in
                 csvWriter.writerow(CSV_HEADER)
                 for transaction in transactions:
                     csvWriter.writerow(_BuildCombinedRow(transaction))
+                    rowsWritten += 1
     except OSError:
         LOGGER.exception("Failed writing combined transaction ledger to %s", combinedPath)
         raise
-    return len(transactions)
+    return rowsWritten
 
 
 def CombineTransactions(session: Session, outputDir: str | Path | None = None) -> int:

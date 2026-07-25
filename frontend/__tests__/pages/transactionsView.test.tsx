@@ -88,6 +88,14 @@ const EXPECTED_MASKED_PAN = '************1111';
 /** Signed decimal amount — must render verbatim (never numeric-coerced). */
 const FIXTURE_TRAN_AMT = '-100.00';
 
+/**
+ * The amount as displayed on screen: the raw Decimal prefixed with the shared
+ * '$' currency symbol (QA Issue 1 — the detail view now renders monetary values
+ * through {@link FormatMoney}, matching accounts-view / bill-pay). The decimal
+ * is still preserved verbatim behind the prefix (no numeric coercion).
+ */
+const FIXTURE_TRAN_AMT_DISPLAY = '$-100.00';
+
 /** Full 26-char origination timestamp; the page slices it to YYYY-MM-DD. */
 const FIXTURE_ORIG_TS = '2024-01-15-12.30.00.000000';
 
@@ -250,7 +258,7 @@ describe('TransactionsViewPage', () => {
             // rendered verbatim as read-only text.
             expect(screen.getByText(DEFAULT_TRAN_ID)).toBeInTheDocument();
             expect(screen.getByText(EXPECTED_MASKED_PAN)).toBeInTheDocument();
-            expect(screen.getByText(FIXTURE_TRAN_AMT)).toBeInTheDocument();
+            expect(screen.getByText(FIXTURE_TRAN_AMT_DISPLAY)).toBeInTheDocument();
             expect(screen.getByText(EXPECTED_ORIG_DATE)).toBeInTheDocument();
             expect(screen.getByText(EXPECTED_PROC_DATE)).toBeInTheDocument();
         });
@@ -294,7 +302,11 @@ describe('TransactionsViewPage', () => {
 
             RenderWithProviders(<TransactionsViewPage />);
 
-            expect(await screen.findByText(FIXTURE_TRAN_AMT)).toBeInTheDocument();
+            // Rendered with the shared '$' prefix (QA Issue 1); the signed
+            // decimal is preserved verbatim behind it.
+            expect(
+                await screen.findByText(FIXTURE_TRAN_AMT_DISPLAY),
+            ).toBeInTheDocument();
         });
 
         it('preserves trailing-zero precision without numeric coercion', async () => {
@@ -305,8 +317,9 @@ describe('TransactionsViewPage', () => {
             RenderWithProviders(<TransactionsViewPage />);
 
             // A coerced number would collapse to 1234.5; the exact string proves
-            // the value is passed through untouched.
-            expect(await screen.findByText('1234.50')).toBeInTheDocument();
+            // the value is passed through untouched (behind the '$' prefix added
+            // by FormatMoney for consistent presentation — QA Issue 1).
+            expect(await screen.findByText('$1234.50')).toBeInTheDocument();
         });
     });
 

@@ -199,7 +199,7 @@ configuration are added **alongside** the untouched legacy `app/` tree.
 │   │   ├── db/                  Async engine + session + declarative Base
 │   │   └── utils/               date_utils, decimal_utils (zoned-decimal decode), validators
 │   ├── alembic/                 Migration environment
-│   │   └── versions/            0001_initial_schema … 0007 (seven migrations)
+│   │   └── versions/            0001_initial_schema … 0008 (eight migrations)
 │   ├── tests/                   Unit + integration + golden-master parity tests
 │   ├── pyproject.toml           PEP 621 manifest (dependency pins)
 │   ├── requirements.txt         pip manifest (dependency pins)
@@ -352,15 +352,15 @@ carddemo-batch --help           # installed console-script form (equivalent)
 
 The schema comprises **10 tables** (users, accounts, customers, cards, card
 cross-reference, transactions, transaction-category balances, disclosure groups,
-transaction types, transaction categories) with primary keys, unique constraints,
-secondary indexes, and foreign keys.
+transaction types, transaction categories) with primary keys, unique
+constraints, secondary indexes, and foreign keys.
 
 1. Ensure PostgreSQL 17 is reachable via `SYNC_DATABASE_URL` — Alembic and the
    batch loaders use the sync (psycopg2) DSN, while the app runtime uses the
    async `DATABASE_URL` (see [Configuration](#configuration)).
 2. Apply migrations with Alembic. Use **either** the host command **or** the
-   containerized command below — both apply the same seven migrations
-   (`0001`–`0007`):
+   containerized command below — both apply the same eight migrations
+   (`0001`–`0008`):
 
    **Host (local development):** run from `backend/`, where the sibling
    repo-root `app/data` is on disk and resolved automatically:
@@ -385,6 +385,28 @@ secondary indexes, and foreign keys.
      loader locates the data via `CARDDEMO_ASCII_DIR` / `CARDDEMO_EBCDIC_DIR`
      when set, else the repo-root `app/data`, else the container mount at
      `/app/data`.
+   - `0003_drop_card_cvv` drops the sensitive `cards.cvv_cd` column so the card
+     verification value is never persisted or returned (idempotent — it drops
+     the column only if it is still present).
+   - `0004_add_account_group_fk` adds an `account_groups` registry table and an
+     `accounts.group_id → account_groups.group_id` foreign key. This table is
+     later removed by `0006` (see below), so it does not persist in the final
+     schema; the add-then-drop pair is retained as ordered, reversible history
+     rather than rewritten.
+   - `0005_add_user_session_version` adds the `users.session_version` integer
+     column, the server-side token-revocation anchor that is incremented on
+     logout and on a role or password change to invalidate outstanding tokens.
+   - `0006_drop_account_groups` drops the `account_groups` table and the
+     `accounts.group_id` foreign key added by `0004`, leaving `group_id` as a
+     plain indexed `VARCHAR(10)`. The final schema therefore has exactly the 10
+     tables listed above (idempotent — it drops the objects only if present).
+   - `0007_repair_daily_staging_status` corrects any daily-staging transaction
+     rows mislabeled `POSTED` back to `PENDING`, so posting and reporting observe
+     the intended staging state.
+   - `0008_add_transaction_report_range_index` adds the composite
+     `ix_transactions_status_effdate` index on `status` plus the UTC effective
+     date (`COALESCE(proc_ts, orig_ts)`), so the date-range transaction report is
+     served by an index range scan instead of a full table scan (idempotent).
 
 3. Alternatively (or to reload individual datasets), run the batch loaders under
    [`batch/loaders/`](batch/loaders). They load accounts, cards, customers, the

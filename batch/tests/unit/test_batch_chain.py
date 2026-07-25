@@ -8,12 +8,14 @@ Synchronous; stdlib + sqlalchemy.exc only; never imports app.db.session.
 """
 
 import dataclasses
+import os
 from contextlib import contextmanager
 from unittest.mock import Mock, patch
 
 import pytest
 from sqlalchemy.exc import SQLAlchemyError
 
+import batch.config as batch_config
 import batch.orchestration.batch_chain as batch_chain
 
 # Contractual legacy chain order (README.md L165-183 / AAP 0.7.6): TRANBKP twice; TRANCATG absent.
@@ -25,9 +27,9 @@ EXPECTED_CHAIN_STEPS = (
 
 # FK-safe seed order (batch/loaders contract): parents before children, users last.
 EXPECTED_SEED_STEPS = (
-    "disclosure_group", "customers", "accounts", "cards", "card_xref",
-    "transaction_type", "transaction_category", "tran_category_balance",
-    "transactions", "users",
+    "disclosure_group", "customers", "accounts", "cards",
+    "card_xref", "transaction_type", "transaction_category",
+    "tran_category_balance", "transactions", "users",
 )
 
 
@@ -126,7 +128,8 @@ def test_chain_steps_tranbkp_twice_and_no_trancatg():
 
 
 def test_seed_step_count():
-    # FK-safe seed order has exactly 10 loader steps.
+    # FK-safe seed order has exactly 10 loader steps: one per table in dependency
+    # order, ending with the user seed.
     assert len(batch_chain.SEED_STEPS) == 10
 
 
@@ -190,3 +193,83 @@ def test_seed_all_runs_every_loader():
     with patch.object(batch_chain, "SEED_STEPS", neutralizedSeed):
         seedResult = batch_chain.SeedAll(sessionFactory=sessionFactory)
     assert seedResult is None
+
+
+# ---------------------------------------------------------------------------
+# F-1: user-seed security preflight + CWD-independent SECRET_KEY hydration.
+# The orchestrator must resolve/validate the backend SECRET_KEY BEFORE any step
+# commits, so a misconfigured secret can never leave a non-atomic partial seed.
+# ---------------------------------------------------------------------------
+
+# A signing key comfortably above the backend MINIMUM_SECRET_KEY_LENGTH (32).
+_VALID_KEY = "unit-test-secret-key-0123456789-abcdefghij"
+
+
+def test_validate_user_seed_security_is_noop_without_user_step():
+    # A step tuple with no InitializeUsers action must not touch the backend
+    # secret at all: batch runs that never seed users stay free of SECRET_KEY.
+    noUserSteps = (
+        batch_chain.ChainStep("CLOSEFIL", batch_chain.StepKind.NOOP, None, "noop"),
+        batch_chain.ChainStep(
+            "ACCTFILE", batch_chain.StepKind.WITH_DATA_DIR, Mock(), "loader"
+        ),
+    )
+    with patch.object(batch_chain, "EnsureBackendSecretAvailable") as ensureSpy:
+        batch_chain._ValidateUserSeedSecurity(noUserSteps)
+    ensureSpy.assert_not_called()
+
+
+def test_validate_user_seed_security_hydrates_and_passes_with_user_step():
+    # SEED_STEPS carries the real InitializeUsers action, so the preflight must
+    # invoke the hydration helper and (SECRET_KEY present in the test env) pass.
+    with patch.object(batch_chain, "EnsureBackendSecretAvailable") as ensureSpy:
+        batch_chain._ValidateUserSeedSecurity(batch_chain.SEED_STEPS)
+    ensureSpy.assert_called_once_with()
+
+
+def test_validate_user_seed_security_raises_when_hash_unavailable():
+    # When the backend security dependency cannot be satisfied, the preflight
+    # raises BatchChainError naming the user step -- the abort that keeps the seed
+    # atomic (no earlier step ever committed). Here the failure is forced by
+    # replacing HashPassword with a non-callable so the preflight's own contract
+    # check trips, standing in for the runtime "SECRET_KEY unset" path proven by
+    # the F-1 runtime re-verification.
+    import app.core.security as backendSecurity
+
+    with patch.object(batch_chain, "EnsureBackendSecretAvailable"):
+        with patch.object(backendSecurity, "HashPassword", None):
+            with pytest.raises(batch_chain.BatchChainError) as excInfo:
+                batch_chain._ValidateUserSeedSecurity(batch_chain.SEED_STEPS)
+    assert excInfo.value.stepName == "users"
+
+
+def test_ensure_backend_secret_respects_existing_env(tmp_path, monkeypatch):
+    # An explicit SECRET_KEY in the environment must never be overwritten by the
+    # .env file value (environment has the highest precedence).
+    envFile = tmp_path / ".env"
+    envFile.write_text("SECRET_KEY=file-value-should-not-win-000000000\n", encoding="utf-8")
+    monkeypatch.setattr(batch_config, "_BACKEND_ENV_FILE", envFile)
+    monkeypatch.setenv("SECRET_KEY", _VALID_KEY)
+    batch_config.EnsureBackendSecretAvailable()
+    assert os.environ["SECRET_KEY"] == _VALID_KEY
+
+
+def test_ensure_backend_secret_hydrates_from_env_file_when_unset(tmp_path, monkeypatch):
+    # With SECRET_KEY unset in the environment, the value is sourced from the
+    # anchored backend/.env so a repo-root launch resolves it (QA finding F-1).
+    envFile = tmp_path / ".env"
+    envFile.write_text(f"SECRET_KEY={_VALID_KEY}\n", encoding="utf-8")
+    monkeypatch.setattr(batch_config, "_BACKEND_ENV_FILE", envFile)
+    monkeypatch.delenv("SECRET_KEY", raising=False)
+    batch_config.EnsureBackendSecretAvailable()
+    assert os.environ["SECRET_KEY"] == _VALID_KEY
+
+
+def test_ensure_backend_secret_leaves_unset_when_env_file_missing(tmp_path, monkeypatch):
+    # No env var and no .env file: the secret stays unset so the downstream
+    # security import fails fast (which the preflight turns into an atomic abort).
+    missingEnvFile = tmp_path / "nonexistent" / ".env"
+    monkeypatch.setattr(batch_config, "_BACKEND_ENV_FILE", missingEnvFile)
+    monkeypatch.delenv("SECRET_KEY", raising=False)
+    batch_config.EnsureBackendSecretAvailable()
+    assert "SECRET_KEY" not in os.environ

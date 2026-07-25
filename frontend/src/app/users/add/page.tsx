@@ -29,6 +29,7 @@ import type { FieldOption } from '@/components/FormField';
 import { ErrorAlert } from '@/components/ErrorAlert';
 import { UsersApi, IsApiError } from '@/lib/apiClient';
 import { IsAdmin } from '@/lib/auth';
+import { FocusFirstInvalidField } from '@/lib/keyboard';
 import type { UserCreate } from '@/types';
 
 /* ------------------------------------------------------------------------- */
@@ -51,6 +52,44 @@ const HTTP_FORBIDDEN = 403;
 const USER_TYPE_OPTIONS: FieldOption[] = [
     { value: 'A', label: 'Admin' },
     { value: 'U', label: 'User' },
+];
+
+/**
+ * Exact width of SEC-USR-ID (COUSR01 USERIDI PIC X(8)). The user id is a
+ * fixed-width key, so it must be EXACTLY this many characters — mirrored from
+ * the backend LoginRequest / UserCreate edits so the client rejects the same
+ * short ids the server does (QA Issue 2: a <8-char id used to be accepted at
+ * create but rejected at sign-on, yielding an unusable "dead" credential).
+ */
+const USER_ID_LENGTH = 8;
+
+/**
+ * Allowed user-id characters: letters, digits, and spaces — identical to the
+ * backend ALPHANUMERIC_PATTERN so accept/reject parity holds on both tiers.
+ */
+const USER_ID_ALPHANUMERIC_PATTERN = /^[A-Za-z0-9 ]+$/;
+
+/* Per-field validation messages. The User ID length/format text matches the
+ * backend messages verbatim so the client and server report the same failure. */
+const FIRST_NAME_REQUIRED_ERROR = 'First Name is required.';
+const LAST_NAME_REQUIRED_ERROR = 'Last Name is required.';
+const USER_ID_REQUIRED_ERROR = 'User ID is required.';
+const USER_ID_LENGTH_ERROR = 'User ID must be exactly 8 characters.';
+const USER_ID_ALPHANUMERIC_ERROR = 'User ID can have numbers or alphabets only.';
+const PASSWORD_REQUIRED_ERROR = 'Password is required.';
+const USER_TYPE_INVALID_ERROR = 'User Type must be Admin or User.';
+
+/**
+ * Field names in on-screen order (First/Last row, then User ID/Password row,
+ * then User Type). Used to move focus to the FIRST field in error after a
+ * failed submit (QA Issue 5).
+ */
+const FIELD_FOCUS_ORDER: readonly string[] = [
+    'firstName',
+    'lastName',
+    'userId',
+    'password',
+    'userType',
 ];
 
 /**
@@ -97,6 +136,10 @@ export default function UsersAddPage() {
     // Form + submission state.
     const [formValues, setFormValues] = useState<AddUserFormState>(INITIAL_FORM_STATE);
     const [submitting, setSubmitting] = useState(false);
+    // Per-field inline validation errors (field name -> message), matching the
+    // transactions/add pattern (QA Issue 6). Server-side failures still surface
+    // through the ErrorAlert snackbar (errorValue/alertOpen) below.
+    const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
     const [errorValue, setErrorValue] = useState<unknown>(null);
     const [alertOpen, setAlertOpen] = useState(false);
 
@@ -113,14 +156,18 @@ export default function UsersAddPage() {
     }, [router]);
 
     // FormField invokes onChange(name, value); `name` matches an
-    // AddUserFormState key, so the computed-key spread stays a string map.
+    // AddUserFormState key, so the computed-key spread stays a string map. The
+    // edited field's inline error is cleared so it disappears as the user types.
     const HandleChange = (name: string, value: string): void => {
         setFormValues((previous) => ({ ...previous, [name]: value }));
+        setFieldErrors((previous) => ({ ...previous, [name]: '' }));
     };
 
-    // F4 = Clear: reset every field to its empty starting value.
+    // F4 = Clear: reset every field to its empty starting value and drop all
+    // inline field errors.
     const HandleClear = (): void => {
         setFormValues(INITIAL_FORM_STATE);
+        setFieldErrors({});
     };
 
     // F3 / F12 = Back: return to the user list (push, so Back is available).
@@ -134,28 +181,41 @@ export default function UsersAddPage() {
     };
 
     /**
-     * Validates the five required fields, mirroring the legacy COUSR01C edits.
+     * Validates the five required fields, mirroring the legacy COUSR01C edits,
+     * and returns a field-name -> message map (empty when the form is clean).
+     * The User ID additionally must be EXACTLY 8 alphanumeric characters,
+     * matching the backend so a created id can always be used to sign on
+     * (QA Issue 2). Errors are reported per field (QA Issue 6) rather than as a
+     * single aggregate banner.
      *
      * @param values - The current form state.
-     * @returns A user-facing message when invalid, otherwise `null`.
+     * @returns A map of field name to error message; empty when every field is valid.
      */
-    const ValidateForm = (values: AddUserFormState): string | null => {
+    const ValidateForm = (values: AddUserFormState): Record<string, string> => {
+        const errors: Record<string, string> = {};
         if (!values.firstName.trim()) {
-            return 'First Name is required.';
+            errors.firstName = FIRST_NAME_REQUIRED_ERROR;
         }
         if (!values.lastName.trim()) {
-            return 'Last Name is required.';
+            errors.lastName = LAST_NAME_REQUIRED_ERROR;
         }
-        if (!values.userId.trim()) {
-            return 'User ID is required.';
+        // Trim first so the length/format edits see what the server sees
+        // (UserCreate has str_strip_whitespace=True).
+        const trimmedUserId = values.userId.trim();
+        if (!trimmedUserId) {
+            errors.userId = USER_ID_REQUIRED_ERROR;
+        } else if (trimmedUserId.length !== USER_ID_LENGTH) {
+            errors.userId = USER_ID_LENGTH_ERROR;
+        } else if (!USER_ID_ALPHANUMERIC_PATTERN.test(trimmedUserId)) {
+            errors.userId = USER_ID_ALPHANUMERIC_ERROR;
         }
         if (!values.password) {
-            return 'Password is required.';
+            errors.password = PASSWORD_REQUIRED_ERROR;
         }
         if (values.userType !== 'A' && values.userType !== 'U') {
-            return 'User Type must be Admin or User.';
+            errors.userType = USER_TYPE_INVALID_ERROR;
         }
-        return null;
+        return errors;
     };
 
     /**
@@ -167,10 +227,12 @@ export default function UsersAddPage() {
      */
     const HandleSubmit = async (event: FormEvent<HTMLFormElement>): Promise<void> => {
         event.preventDefault();
-        const validationError = ValidateForm(formValues);
-        if (validationError) {
-            setErrorValue(validationError);
-            setAlertOpen(true);
+        const validationErrors = ValidateForm(formValues);
+        setFieldErrors(validationErrors);
+        const invalidFieldNames = new Set(Object.keys(validationErrors));
+        if (invalidFieldNames.size > 0) {
+            // Park the cursor on the first field in error (QA Issue 5).
+            FocusFirstInvalidField(FIELD_FOCUS_ORDER, invalidFieldNames);
             return;
         }
         // The plaintext password lives ONLY here and in the request body; it is
@@ -225,6 +287,8 @@ export default function UsersAddPage() {
                             maxLength={20}
                             required
                             autoFocus
+                            error={Boolean(fieldErrors.firstName)}
+                            helperText={fieldErrors.firstName || ''}
                         />
                         <FormField
                             name="lastName"
@@ -233,6 +297,8 @@ export default function UsersAddPage() {
                             onChange={HandleChange}
                             maxLength={20}
                             required
+                            error={Boolean(fieldErrors.lastName)}
+                            helperText={fieldErrors.lastName || ''}
                         />
                     </Stack>
 
@@ -244,6 +310,8 @@ export default function UsersAddPage() {
                             onChange={HandleChange}
                             maxLength={8}
                             required
+                            error={Boolean(fieldErrors.userId)}
+                            helperText={fieldErrors.userId || ''}
                         />
                         <FormField
                             name="password"
@@ -253,6 +321,9 @@ export default function UsersAddPage() {
                             onChange={HandleChange}
                             maxLength={8}
                             required
+                            autoComplete="new-password"
+                            error={Boolean(fieldErrors.password)}
+                            helperText={fieldErrors.password || ''}
                         />
                     </Stack>
 
@@ -264,6 +335,8 @@ export default function UsersAddPage() {
                         onChange={HandleChange}
                         options={USER_TYPE_OPTIONS}
                         required
+                        error={Boolean(fieldErrors.userType)}
+                        helperText={fieldErrors.userType || ''}
                     />
 
                     <Stack direction="row" spacing={2}>

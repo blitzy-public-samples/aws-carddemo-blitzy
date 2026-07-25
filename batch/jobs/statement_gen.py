@@ -82,6 +82,7 @@ from __future__ import annotations
 
 import csv
 import logging
+import os
 from dataclasses import dataclass, field
 from decimal import Decimal
 from pathlib import Path
@@ -446,14 +447,28 @@ def _BuildStatementFilename(context: _StatementContext, suffix: str) -> str:
             ``".pdf"``).
 
     Returns:
-        A file name such as ``statement_00000000010_1234_0001.csv``.
+        A file name such as ``statement_00000000010_1234_0001.csv`` (the
+        trailing ``_0001`` is the run generation), guaranteed to be a single
+        path component (no directory separators).
     """
     if context.account is not None:
         acctId = _SafeText(context.account.acct_id)
     else:
         acctId = _SafeText(context.xref.acct_id)
     lastDigits = _CardLastDigits(context.xref.xref_card_num)
-    return f"{STATEMENT_FILE_PREFIX}{acctId}_{lastDigits}_{context.generation}{suffix}"
+    rawFileName = (
+        f"{STATEMENT_FILE_PREFIX}{acctId}_{lastDigits}"
+        f"_{context.generation}{suffix}"
+    )
+    # Defense-in-depth (QA finding F-5): collapse the composed name to a single
+    # path component so a data-derived value (the account id) that contains a
+    # path separator can never redirect the write outside the caller's output
+    # directory. os.path.basename discards everything up to and including the
+    # final separator, so the returned name is always a plain file name. The
+    # safety is now EXPLICIT rather than relying on the incidental "statement_"
+    # prefix that previously made a crafted path fail closed only by accident.
+    # The run generation suffix (QA finding M19, GDG (+1)) is preserved.
+    return os.path.basename(rawFileName)
 
 
 

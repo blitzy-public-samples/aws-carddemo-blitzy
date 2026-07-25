@@ -48,6 +48,9 @@ Design boundaries:
       registers no process-exit shutdown hooks.
 """
 
+import asyncio
+
+import asyncpg
 from sqlalchemy.ext.asyncio import (
     AsyncSession,
     async_sessionmaker,
@@ -69,6 +72,25 @@ from app.core.config import settings
 # stated explicitly for clarity). ``echo=False`` keeps SQL statement logging off
 # by default (there is no dedicated echo setting in ``config.py``).
 #
+# ``connect_args`` supplies asyncpg-level, environment-tunable timeouts (QA
+# finding #7 — bounded behavior under a slow/frozen PostgreSQL "grey failure")
+# for the NORMAL request path that borrows pooled connections:
+#   * ``timeout``         bounds connection establishment, so opening a socket to
+#                         an unreachable or frozen server cannot hang
+#                         (settings.DB_CONNECT_TIMEOUT_SECONDS).
+#   * ``command_timeout`` bounds every statement, so a query issued to a frozen
+#                         server is aborted with a ``TimeoutError`` rather than
+#                         blocking indefinitely (settings.DB_COMMAND_TIMEOUT_SECONDS).
+# These protect ordinary request handlers from an indefinitely blocked worker.
+#
+# The ``/health/ready`` probe deliberately does NOT rely on the pool: a socket
+# frozen inside ``pool_pre_ping``'s checkout is bridged through SQLAlchemy's
+# greenlet<->asyncpg adapter, and a blocking read there is NOT cancellable by
+# ``asyncio.wait_for`` (empirically it hung indefinitely under ``docker pause``).
+# Readiness therefore uses its own dedicated, driver-bounded connection — see
+# :func:`CheckDatabaseReady` below. The values are never hardcoded (Ochs Rule
+# #3) and are validated as strictly positive at startup by ``app.core.config``.
+#
 # IMPORT-SAFE: this call does not open a socket — the pool connects lazily on
 # first use, so importing this module never requires a running PostgreSQL.
 engine = create_async_engine(
@@ -76,6 +98,10 @@ engine = create_async_engine(
     pool_pre_ping=True,
     future=True,
     echo=False,
+    connect_args={
+        "timeout": settings.DB_CONNECT_TIMEOUT_SECONDS,
+        "command_timeout": settings.DB_COMMAND_TIMEOUT_SECONDS,
+    },
 )
 
 # Async session factory bound to :data:`engine`. Callers open a unit of work with
@@ -93,5 +119,116 @@ AsyncSessionLocal = async_sessionmaker(
     autoflush=False,
 )
 
-# Public API of this module: exactly the two names other layers import.
-__all__ = ["engine", "AsyncSessionLocal"]
+# ---------------------------------------------------------------------------
+# Readiness probe (QA findings #6 and #7)
+# ---------------------------------------------------------------------------
+# The readiness probe deliberately BYPASSES the shared pool above and opens its
+# own dedicated, short-lived asyncpg connection. This is a correctness
+# requirement, not an optimization: under a frozen ("grey failure") database the
+# pooled path runs ``pool_pre_ping`` through SQLAlchemy's greenlet<->asyncpg
+# bridge, and a socket read that blocks there is NOT cancellable by
+# ``asyncio.wait_for`` — a ``docker pause``d server froze ``/health/ready``
+# indefinitely (verified: a wrapped pooled probe hung for >300s). A native
+# asyncpg connection is bounded by the driver's OWN ``timeout`` (connect phase)
+# and ``command_timeout`` (query phase), so it returns a prompt failure instead
+# of hanging (verified: a paused server yields ``TimeoutError`` in ~the timeout).
+#
+# The probe query targets the core ``users`` table rather than a bare
+# ``SELECT 1`` (QA finding #6): a reachable-but-unmigrated database MUST report
+# NOT ready, and ``users`` exists under both the Alembic-migrated runtime schema
+# and the ``create_all`` test schema, so the check is valid in every environment.
+READINESS_PROBE_SQL = "SELECT 1 FROM users LIMIT 1"
+
+# SQLAlchemy async dialect marker stripped to turn the configured URL
+# (``postgresql+asyncpg://...``) into the libpq-style URI that
+# :func:`asyncpg.connect` accepts (``postgresql://...``).
+_ASYNCPG_DIALECT_SUFFIX = "+asyncpg"
+
+# Upper bound, in seconds, for closing the short-lived readiness connection.
+# A graceful close issues a terminate handshake; against a frozen server even
+# that can block, so it is bounded and falls back to a forceful, local-only
+# ``terminate()``. One second is ample for a healthy close and negligible when
+# the server is already gone.
+CONNECTION_CLOSE_TIMEOUT_SECONDS = 1.0
+
+
+class DatabaseNotReadyError(RuntimeError):
+    """Raised when the readiness probe cannot confirm a ready database.
+
+    Carries only a short, sanitized reason (the driver exception's type name),
+    never the connection string, credentials, or query values, so the caller can
+    log it and return a 503 without leaking configuration (Ochs Rule #3).
+    """
+
+
+def _BuildReadinessDsn() -> str:
+    """Return a native asyncpg DSN derived from the configured async URL.
+
+    Strips the ``+asyncpg`` SQLAlchemy dialect marker so the value is the plain
+    ``postgresql://`` URI that :func:`asyncpg.connect` parses. The URL is read
+    from the environment via ``settings`` and never hardcoded (Ochs Rule #3).
+    """
+    asyncUrl = settings.DATABASE_URL.get_secret_value()
+    return asyncUrl.replace(_ASYNCPG_DIALECT_SUFFIX, "", 1)
+
+
+async def _CloseReadinessConnection(connection: asyncpg.Connection) -> None:
+    """Close the short-lived readiness connection without ever hanging.
+
+    A graceful close issues I/O and can itself block against a frozen server, so
+    it is bounded by ``CONNECTION_CLOSE_TIMEOUT_SECONDS`` and falls back to a
+    non-blocking ``terminate()`` (which drops the socket locally).
+
+    Args:
+        connection: The asyncpg connection opened by :func:`CheckDatabaseReady`.
+    """
+    try:
+        await asyncio.wait_for(
+            connection.close(),
+            timeout=CONNECTION_CLOSE_TIMEOUT_SECONDS,
+        )
+    except (OSError, TimeoutError, asyncpg.PostgresError):
+        connection.terminate()
+
+
+async def CheckDatabaseReady() -> None:
+    """Assert the database is reachable AND migrated, within a bounded time.
+
+    Opens a dedicated short-lived asyncpg connection that BYPASSES the shared
+    pool (see the module note above) with ``settings.HEALTH_READY_TIMEOUT_SECONDS``
+    applied as BOTH the connect and command timeout, then runs the schema-aware
+    probe query. Returns ``None`` when the database is ready.
+
+    Raises:
+        DatabaseNotReadyError: If the server is unreachable or frozen (the
+            connect/command timeout elapses), the connection is refused, or the
+            schema is missing (the ``users`` table does not exist). The original
+            driver error is chained (``from``) but only its type name is carried
+            in the message, so no connection string or credential is exposed.
+    """
+    readyTimeout = settings.HEALTH_READY_TIMEOUT_SECONDS
+    try:
+        connection = await asyncpg.connect(
+            dsn=_BuildReadinessDsn(),
+            timeout=readyTimeout,
+            command_timeout=readyTimeout,
+        )
+    except (OSError, TimeoutError, asyncpg.PostgresError) as connectError:
+        raise DatabaseNotReadyError(type(connectError).__name__) from connectError
+    try:
+        await connection.fetchval(READINESS_PROBE_SQL)
+    except (OSError, TimeoutError, asyncpg.PostgresError) as queryError:
+        raise DatabaseNotReadyError(type(queryError).__name__) from queryError
+    finally:
+        await _CloseReadinessConnection(connection)
+
+
+# Public API of this module: the engine/session factory plus the readiness
+# probe that ``app.main`` calls from its ``/health/ready`` handler.
+__all__ = [
+    "READINESS_PROBE_SQL",
+    "AsyncSessionLocal",
+    "CheckDatabaseReady",
+    "DatabaseNotReadyError",
+    "engine",
+]

@@ -37,6 +37,7 @@ import type {
 } from '@/types';
 
 import { ReportsApi } from '@/lib/apiClient';
+import { FormatMoney } from '@/lib/format';
 
 import { FormField } from '@/components/FormField';
 import type { FieldOption } from '@/components/FormField';
@@ -221,6 +222,9 @@ export default function ReportsPage() {
     const [endDate, setEndDate] = useState<string>('');
     const [reportData, setReportData] = useState<ReportResponse | null>(null);
     const [loading, setLoading] = useState<boolean>(false);
+    // Tracks an in-flight CSV/PDF blob fetch so the download buttons can show
+    // in-app progress and guard against a concurrent second download (QA Issue 3).
+    const [downloading, setDownloading] = useState<boolean>(false);
     const [errorOpen, setErrorOpen] = useState<boolean>(false);
     const [errorValue, setErrorValue] = useState<unknown>(null);
 
@@ -374,6 +378,12 @@ export default function ReportsPage() {
      * @param format - The download format ('csv' or 'pdf').
      */
     async function DownloadReport(format: 'csv' | 'pdf'): Promise<void> {
+        // In-flight guard (QA Issue 3): ignore a second invocation while a
+        // download fetch is already running, so a rapid double-click on
+        // "Download CSV"/"Download PDF" cannot start two concurrent downloads.
+        if (downloading) {
+            return;
+        }
         const request = BuildReportRequest();
         const validationError = ValidateReportRequest(request);
         if (validationError) {
@@ -381,6 +391,11 @@ export default function ReportsPage() {
             setErrorOpen(true);
             return;
         }
+        // Give in-app feedback for the blob fetch (QA Issue 3): `downloading`
+        // disables both download buttons and drives the action-row
+        // CircularProgress, rather than relying solely on the browser's own
+        // native download indicator.
+        setDownloading(true);
         try {
             const blob = await ReportsApi.DownloadTransactionReport(
                 request,
@@ -390,6 +405,8 @@ export default function ReportsPage() {
         } catch (caughtError) {
             setErrorValue(caughtError);
             setErrorOpen(true);
+        } finally {
+            setDownloading(false);
         }
     }
 
@@ -425,9 +442,11 @@ export default function ReportsPage() {
 
     /**
      * Renders the table body: a single "no rows" message row when the report is
-     * empty, otherwise one row per transaction. `tran_amt` is rendered verbatim
-     * as a Decimal string — never coerced to a number (float rounding would be a
-     * compliance failure, AAP §0.7.1).
+     * empty, otherwise one row per transaction. Monetary columns are routed
+     * through the shared {@link FormatMoney} so the report shows the same "$"
+     * currency presentation as every other screen (QA Issue 1); FormatMoney only
+     * prepends the symbol and never coerces the exact Decimal string to a number
+     * (float rounding would be a compliance failure, AAP §0.7.1).
      *
      * @returns The table-body row element(s).
      */
@@ -453,7 +472,9 @@ export default function ReportsPage() {
                         key={column.key}
                         align={column.numeric ? 'right' : 'left'}
                     >
-                        {row[column.key]}
+                        {column.numeric
+                            ? FormatMoney(row[column.key])
+                            : row[column.key]}
                     </TableCell>
                 ))}
             </TableRow>
@@ -461,8 +482,10 @@ export default function ReportsPage() {
     }
 
     /**
-     * Renders the running totals beneath the table. All totals are Decimal
-     * strings rendered verbatim (never coerced to a number, AAP §0.7.1).
+     * Renders the running totals beneath the table. All totals are exact Decimal
+     * strings displayed through the shared {@link FormatMoney} for a consistent
+     * "$" presentation (QA Issue 1); the value is never coerced to a number
+     * (AAP §0.7.1).
      *
      * @returns The totals element, or `null` when there is no report.
      */
@@ -474,13 +497,13 @@ export default function ReportsPage() {
             <Box sx={{ p: 2 }}>
                 <Stack spacing={0.5} sx={{ alignItems: 'flex-end' }}>
                     <Typography variant="body2">
-                        Page Total: {reportData.page_total}
+                        Page Total: {FormatMoney(reportData.page_total)}
                     </Typography>
                     <Typography variant="body2">
-                        Account Total: {reportData.account_total}
+                        Account Total: {FormatMoney(reportData.account_total)}
                     </Typography>
                     <Typography variant="subtitle2">
-                        Grand Total: {reportData.grand_total}
+                        Grand Total: {FormatMoney(reportData.grand_total)}
                     </Typography>
                 </Stack>
             </Box>
@@ -585,23 +608,35 @@ export default function ReportsPage() {
                         <Button
                             variant="outlined"
                             onClick={HandleDownloadCsv}
-                            disabled={loading || !reportData}
+                            disabled={loading || downloading || !reportData}
                         >
                             Download CSV
                         </Button>
                         <Button
                             variant="outlined"
                             onClick={HandleDownloadPdf}
-                            disabled={loading || !reportData}
+                            disabled={loading || downloading || !reportData}
                         >
                             Download PDF
                         </Button>
-                        {loading ? <CircularProgress /> : null}
+                        {loading || downloading ? <CircularProgress /> : null}
                     </Stack>
                 </Stack>
             </Paper>
 
-            {RenderResultsTable()}
+            {/*
+              * Live region (WCAG 2.1 SC 4.1.3 Status Messages, QA FINDING-09).
+              * This Box is ALWAYS present in the DOM — even before the first
+              * Generate, when RenderResultsTable() returns null — so that when a
+              * report completes, the newly rendered results (a populated table OR
+              * the "no transactions found" empty message) are announced by
+              * assistive technology WITHOUT the user moving focus. `role="status"`
+              * carries an implicit `aria-live="polite"`; the explicit attribute is
+              * kept for maximum screen-reader / browser compatibility.
+              */}
+            <Box role="status" aria-live="polite">
+                {RenderResultsTable()}
+            </Box>
 
             <ErrorAlert
                 open={errorOpen}

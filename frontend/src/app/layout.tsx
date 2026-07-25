@@ -33,6 +33,8 @@
 import type { Metadata } from 'next';
 import type { ReactNode } from 'react';
 
+import { Roboto } from 'next/font/google';
+
 // Subpath is version-matched to Next.js 16 (repo pins next@16.2.11); the installed
 // @mui/material-nextjs@9.1.1 exposes v13–v16 subpaths, all re-exporting the same
 // AppRouterCacheProvider ("use v1X-appRouter with Next.js v1X" per MUI docs).
@@ -42,6 +44,30 @@ import CssBaseline from '@mui/material/CssBaseline';
 
 import theme from './theme';
 import { AppShell } from '@/components/AppShell';
+
+/**
+ * Self-hosted Roboto typeface, loaded and optimized by `next/font/google`.
+ *
+ * FINDING-01 fix: `next/font` downloads Roboto at build time and serves it from
+ * the SAME ORIGIN (`/_next/static/media/…`). The font therefore loads with no
+ * runtime dependency on the external Google Fonts CDN — it works offline and
+ * under any Content-Security-Policy — replacing the previous cross-origin
+ * `<link rel="stylesheet" href="https://fonts.googleapis.com/…">` that failed
+ * whenever that host was unreachable or blocked.
+ *
+ * It exposes the CSS custom property `--font-roboto`, which the MUI theme
+ * (`./theme`) references FIRST in `typography.fontFamily`, falling back to the
+ * literal `Roboto`, then Helvetica/Arial/sans-serif. Weights 300/400/500/700
+ * cover the MUI variant scale (light/regular/medium/bold); `display: 'swap'`
+ * avoids a blocking flash of invisible text.
+ */
+const roboto = Roboto({
+    weight: ['300', '400', '500', '700'],
+    subsets: ['latin'],
+    display: 'swap',
+    variable: '--font-roboto',
+    fallback: ['Helvetica', 'Arial', 'sans-serif'],
+});
 
 /**
  * Static page metadata for the App Router. The title text derives from the legacy
@@ -63,37 +89,23 @@ interface RootLayoutProps {
 }
 
 /**
- * The application's root layout. Establishes the HTML document, loads the Roboto
- * font family that the theme references, and mounts the mandatory MUI + AppShell
- * provider tree around every page.
+ * The application's root layout. Establishes the HTML document, activates the
+ * self-hosted Roboto font that the theme references, and mounts the mandatory
+ * MUI + AppShell provider tree around every page.
  *
- * The Roboto stylesheet is registered via a Google Fonts `<link>` so the theme's
- * literal `Roboto` family (`typography.fontFamily` in `./theme`) resolves to the
- * real typeface, with graceful fallback to Helvetica/Arial when the font is
- * unavailable. This keeps the font choice zero-coupling — no extra dependency and
- * no edit to the theme's font-family contract.
+ * The `roboto.variable` class name is applied to `<html>` so the CSS custom
+ * property `--font-roboto` is defined document-wide; the MUI theme's
+ * `typography.fontFamily` (`./theme`) consumes it first, with graceful fallback
+ * to Helvetica/Arial. Because `next/font` self-hosts the typeface from the same
+ * origin, no external stylesheet `<link>` is required (FINDING-01), and no `<head>`
+ * element is declared here — the App Router injects head content from `metadata`.
  *
  * @param props - The {@link RootLayoutProps} carrying the active page content.
  * @returns The full HTML document with the global provider tree and app chrome.
  */
 export default function RootLayout({ children }: RootLayoutProps) {
     return (
-        <html lang="en">
-            <head>
-                {/*
-                  eslint-disable-next-line @next/next/no-page-custom-font --
-                  The rule discourages custom-font <link> tags in individual
-                  PAGE components (they load per-page and hurt performance). Here
-                  the Roboto stylesheet is declared ONCE in the App Router ROOT
-                  layout -- the document-level, centralized location the rule
-                  actually wants -- so the theme's `Roboto` family resolves for
-                  every route with zero coupling and no extra dependency.
-                */}
-                <link
-                    rel="stylesheet"
-                    href="https://fonts.googleapis.com/css2?family=Roboto:wght@300;400;500;700&display=swap"
-                />
-            </head>
+        <html lang="en" className={roboto.variable}>
             <body>
                 <AppRouterCacheProvider>
                     <ThemeProvider theme={theme}>

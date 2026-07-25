@@ -70,6 +70,9 @@ from app.core.correlation import (
     SanitizeCorrelationId,
 )
 
+# Package version, surfaced by the ``--version`` root option (QA finding F-3).
+from batch import __version__
+
 # --- Batch module public contract (imports restricted to the batch package) ---
 # Transactional session factory (owns commit/rollback per unit of work) and the
 # shared concise-error formatter (strips SQLAlchemy's SQL/parameter dump).
@@ -592,10 +595,32 @@ def SeedAllCommand(
 # --------------------------------------------------------------------------- #
 # Root callback (logging setup) and module entrypoint.
 # --------------------------------------------------------------------------- #
+def _VersionCallback(value: bool) -> None:
+    """Print the batch package version and exit when ``--version`` is supplied.
+
+    Registered as an EAGER option callback so it runs before any subcommand
+    processing: ``python -m batch.cli --version`` prints :data:`batch.__version__`
+    and exits 0 without requiring a database connection (QA finding F-3).
+
+    Args:
+        value: ``True`` when ``--version`` was passed on the command line.
+
+    Raises:
+        typer.Exit: With the default exit code 0, to terminate after printing.
+    """
+    if value:
+        typer.echo(__version__)
+        raise typer.Exit()
+
+
 @app.callback()
 def Main(
     verbose: bool = typer.Option(
         False, "--verbose", "-v", help="Enable DEBUG-level logging."
+    ),
+    version: bool = typer.Option(
+        False, "--version", help="Show the batch package version and exit.",
+        is_eager=True, callback=_VersionCallback,
     ),
 ) -> None:
     """CardDemo batch CLI -- configure logging, then dispatch to a subcommand."""

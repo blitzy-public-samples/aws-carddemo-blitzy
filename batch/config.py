@@ -17,24 +17,40 @@ loaders). It also exposes the module-level singleton :data:`batchSettings`::
 
 Why a batch-owned settings model (QA finding #60):
     The batch CLI is launched from the repository root as ``python -m
-    batch.cli`` (AAP 0.4.1). The backend's :class:`app.core.config.Settings`
-    resolves its ``.env`` file *relative to the current working directory*, so
-    from the repository root it never finds ``backend/.env``; worse, importing
-    that model requires the backend-only ``SECRET_KEY``, which is irrelevant to
-    batch data processing and would make every batch command fail fast on an
-    unset secret. This module therefore:
+    batch.cli`` (AAP 0.4.1). Most batch work -- the pure data loaders and the
+    reporting/posting jobs -- needs only a database connection, so coupling every
+    batch command to the backend's authentication secret would be unnecessary.
+    This module therefore declares its own minimal settings and:
 
         * declares ONLY ``SYNC_DATABASE_URL`` -- no ``SECRET_KEY`` and no other
-          backend-only field is required to run a batch job;
+          backend-only field is required to run a data loader or reporting job;
         * anchors its ``.env`` file to the *absolute* ``backend/.env`` path so a
           root-launched CLI reads the same database URL the backend uses;
         * sets ``extra="ignore"`` so the backend's other variables (``SECRET_KEY``,
-          ``DATABASE_URL`` ...) present in ``backend/.env`` are silently skipped
-          rather than raising.
+          ``DATABASE_URL``, ``BCRYPT_ROUNDS`` ...) present in ``backend/.env`` are
+          silently skipped rather than raising.
 
     It deliberately does NOT import :mod:`app.core.config`: doing so would
-    instantiate the backend singleton and reintroduce the ``SECRET_KEY``
-    requirement this split removes.
+    instantiate the backend singleton and impose that model's ``SECRET_KEY``
+    requirement on *every* batch command, not just the ones that need it.
+
+    Important -- ``SECRET_KEY`` is NOT universally irrelevant to batch: one step
+    genuinely requires it. The user seed (``load init-users`` / the ``DUSRSECJ``
+    chain step) hashes the seed passwords with bcrypt and therefore transitively
+    imports :mod:`app.core.security` (and thus :class:`app.core.config.Settings`,
+    which requires ``SECRET_KEY``). That import is deliberately performed lazily,
+    at hashing time, so the requirement applies only to that one step and only
+    when it actually runs; every other batch command stays free of it. The
+    backend model resolves its own ``.env`` relative to the working directory, so
+    to keep the user seed working when the CLI is launched from the repository
+    root, :func:`EnsureBackendSecretAvailable` reads the anchored ``backend/.env``
+    and exports ``SECRET_KEY`` into the environment (unless already set) -- the
+    same anchored-file strategy this module uses for ``SYNC_DATABASE_URL`` (QA
+    finding F-1). The orchestrator invokes that helper and then validates the
+    secret up front (see
+    :func:`batch.orchestration.batch_chain._ValidateUserSeedSecurity`) so a seed
+    run that includes the user step fails fast, before any data is committed,
+    rather than part way through.
 
 Import safety: constructing :class:`BatchSettings` reads environment variables
 and an optional ``.env`` file only -- it never opens a database connection, so
@@ -42,9 +58,11 @@ importing this module (and therefore ``batch.db``) stays side-effect free apart
 from configuration parsing.
 """
 
+import os
 from functools import lru_cache
 from pathlib import Path
 
+from dotenv import dotenv_values
 from pydantic import SecretStr, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -57,6 +75,15 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 # database URL from ``backend/.env`` (QA finding #60). ``batch/config.py`` lives
 # at ``<repo>/batch/config.py``; ``.parent.parent`` is the repository root.
 _BACKEND_ENV_FILE = Path(__file__).resolve().parent.parent / "backend" / ".env"
+
+# Backend-only secrets that ONE batch operation -- the user seed (``load
+# init-users`` / the ``DUSRSECJ`` chain step) -- needs resolved before it hashes
+# passwords. Only ``SECRET_KEY`` is required today; kept as a tuple so the set is
+# single-sourced and trivially extensible. Used by
+# :func:`EnsureBackendSecretAvailable` to make these discoverable from the
+# anchored ``backend/.env`` regardless of the process working directory (QA
+# finding F-1), the same way :class:`BatchSettings` resolves the database URL.
+_USER_SEED_REQUIRED_SECRETS = ("SECRET_KEY",)
 
 # Development-only default that matches ``backend/.env.example`` so a fresh
 # checkout can run against the docker-compose ``postgres:17`` service without
@@ -164,8 +191,51 @@ def GetBatchSettings() -> BatchSettings:
     return BatchSettings()
 
 
+def EnsureBackendSecretAvailable() -> None:
+    """Export the backend secret(s) the user seed needs, CWD-independently (F-1).
+
+    The batch user seed (``load init-users`` / the ``DUSRSECJ`` chain step) hashes
+    passwords through the backend security module, which builds
+    :class:`app.core.config.Settings` and requires ``SECRET_KEY``. That backend
+    model resolves its ``.env`` file relative to the process working directory,
+    so a batch command launched from the repository root would not discover
+    ``backend/.env`` and would fail even though the file defines the secret (QA
+    finding F-1). This helper closes that gap exactly the way :class:`BatchSettings`
+    already resolves ``SYNC_DATABASE_URL``: it reads the ANCHORED, absolute
+    ``backend/.env`` and, for each required secret not ALREADY present in the
+    process environment, exports the file's value into ``os.environ`` so the
+    backend model -- whose environment source has the highest precedence --
+    resolves it no matter which directory the CLI was launched from.
+
+    A real environment variable always wins (an already-set, non-blank value is
+    never overwritten), and a missing or incomplete ``backend/.env`` simply leaves
+    the variable unset, so the downstream security import still fails fast -- which
+    the orchestrator's preflight converts into a clean, atomic abort before any
+    data is written. This function only reads a local file and sets environment
+    variables; it never opens a database connection.
+    """
+    backendEnvValues = None
+    for secretName in _USER_SEED_REQUIRED_SECRETS:
+        existingValue = os.environ.get(secretName, "").strip()
+        if existingValue:
+            # An explicit environment variable takes precedence and is preserved.
+            continue
+        if backendEnvValues is None:
+            # dotenv_values returns {} for a missing file (no error), so a fresh
+            # checkout without backend/.env degrades to a clean fail-fast later.
+            backendEnvValues = dotenv_values(_BACKEND_ENV_FILE)
+        fileValue = backendEnvValues.get(secretName)
+        if fileValue is not None and fileValue.strip():
+            os.environ[secretName] = fileValue
+
+
 # Module-level singleton imported directly by ``batch.db`` (and any other batch
 # module needing the database URL), mirroring the backend's ``settings`` export.
 batchSettings = GetBatchSettings()
 
-__all__ = ["BatchSettings", "GetBatchSettings", "batchSettings"]
+__all__ = [
+    "BatchSettings",
+    "GetBatchSettings",
+    "batchSettings",
+    "EnsureBackendSecretAvailable",
+]

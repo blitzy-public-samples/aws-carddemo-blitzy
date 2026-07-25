@@ -28,6 +28,12 @@ from pathlib import Path
 
 import pytest
 
+# Package version string for the --version assertion (QA finding F-3). Importing
+# ``batch`` only sets ``__version__`` and a sys.path shim -- it does NOT import
+# the ``settings`` singleton or open a database, so it respects this module's
+# "no heavy import into the pytest process" contract.
+from batch import __version__
+
 # --------------------------------------------------------------------------- #
 # Module constants (ALL_UPPERCASE per the Ochs Rule).
 # --------------------------------------------------------------------------- #
@@ -163,4 +169,35 @@ def test_no_args_renders_help_without_crash() -> None:
     )
     assert "Traceback" not in combinedOutput, (
         f"no-args help rendering emitted a traceback:\n{combinedOutput}"
+    )
+
+
+def test_version_flag_prints_version_and_exits_zero() -> None:
+    """``--version`` prints ``batch.__version__`` and exits 0 without a DB.
+
+    QA finding F-3: the batch CLI historically exposed no ``--version`` flag. It
+    is now an EAGER root option whose callback echoes :data:`batch.__version__`
+    and raises ``typer.Exit()`` (exit code 0) BEFORE any subcommand dispatch or
+    database access, so this subprocess needs no reachable database. The printed
+    line must equal the package version exactly, with no usage banner and no
+    traceback.
+    """
+    completed = _RunCli(("--version",))
+    combinedOutput = completed.stdout + completed.stderr
+    assert completed.returncode == 0, (
+        f"`python -m batch.cli --version` exited {completed.returncode}; "
+        f"output:\n{combinedOutput}"
+    )
+    assert completed.stdout.strip() == __version__, (
+        f"--version printed {completed.stdout.strip()!r}, expected "
+        f"{__version__!r}:\n{combinedOutput}"
+    )
+    assert "Usage" not in completed.stdout, (
+        f"--version must not render a usage banner:\n{combinedOutput}"
+    )
+    assert MAKE_METAVAR_ERROR_SIGNATURE not in combinedOutput, (
+        f"Finding B crash signature re-appeared on --version:\n{combinedOutput}"
+    )
+    assert "Traceback" not in combinedOutput, (
+        f"--version emitted a traceback:\n{combinedOutput}"
     )

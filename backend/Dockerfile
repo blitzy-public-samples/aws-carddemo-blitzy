@@ -127,6 +127,24 @@ USER appuser
 EXPOSE 8000
 
 # -----------------------------------------------------------------------------
+# Image-level container healthcheck (QA finding F5: defense-in-depth).
+#
+# Mirrors the readiness gate the root docker-compose.yml already defines for this
+# service, lifted into the IMAGE so a plain `docker run` (no compose) still gets a
+# health signal. Docker derives container health from this probe's exit code but
+# does NOT itself restart on failure, so pointing it at the DB-backed
+# /health/ready is safe: a DB blip marks the container unhealthy (accurate)
+# without triggering a restart storm. When run under compose, the compose-level
+# healthcheck overrides this one. Uses python + urllib (already in the image) so
+# no curl/wget need be added to python-slim. urllib.request.urlopen raises on any
+# non-2xx (HTTPError) or connection failure (URLError) -> non-zero exit ->
+# unhealthy; a 200 returns normally -> exit 0 -> healthy. `--start-period` covers
+# uvicorn/app startup so early polls do not count as failures.
+# -----------------------------------------------------------------------------
+HEALTHCHECK --interval=10s --timeout=5s --start-period=20s --retries=5 \
+    CMD ["python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health/ready', timeout=3)"]
+
+# -----------------------------------------------------------------------------
 # Default command (exec form for correct PID 1 signal handling).
 # Serves the FastAPI app factory result `app.main:app` on 0.0.0.0:8000 — this
 # matches docker-compose.yml and the README exactly.

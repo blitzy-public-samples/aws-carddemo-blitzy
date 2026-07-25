@@ -30,6 +30,7 @@ import {
     Button,
     CircularProgress,
 } from '@mui/material';
+import type { AlertColor } from '@mui/material';
 
 import { ConfirmDialog } from '@/components/ConfirmDialog';
 import { ErrorAlert } from '@/components/ErrorAlert';
@@ -139,6 +140,9 @@ function UsersDeleteContent() {
     const [infoMessage, setInfoMessage] = useState<string>('');
     const [errorState, setErrorState] = useState<unknown>(null);
     const [alertOpen, setAlertOpen] = useState<boolean>(false);
+    // ErrorAlert is reused for the delete-success message via `alertSeverity`
+    // (mirrors /users/update). Defaults to 'error'; ShowAlert sets it per call.
+    const [alertSeverity, setAlertSeverity] = useState<AlertColor>('error');
     const [dialogOpen, setDialogOpen] = useState<boolean>(false);
     const [fetchLoading, setFetchLoading] = useState<boolean>(false);
     const [deleteLoading, setDeleteLoading] = useState<boolean>(false);
@@ -146,6 +150,25 @@ function UsersDeleteContent() {
 
     // Fires the deep-link auto-fetch exactly once (survives re-renders).
     const deepLinkHandledRef = useRef<boolean>(false);
+
+    /**
+     * Surfaces a message through the shared ErrorAlert at the given severity.
+     * Routing EVERY alert through this helper guarantees the severity is set on
+     * each open, so a prior green success alert can never bleed its color into a
+     * subsequent error (and vice versa). Setters are stable, so the callback has
+     * no dependencies and stays referentially constant.
+     *
+     * @param content - The message/error to display (string or caught error).
+     * @param severity - The MUI alert color ('error' | 'success' | ...).
+     */
+    const ShowAlert = useCallback(
+        (content: unknown, severity: AlertColor): void => {
+            setErrorState(content);
+            setAlertSeverity(severity);
+            setAlertOpen(true);
+        },
+        [],
+    );
 
     /**
      * Maps a caught error to the correct UX: an admin 403 redirects to the menu
@@ -164,14 +187,12 @@ function UsersDeleteContent() {
             if (IsApiError(err) && err.status === HTTP_NOT_FOUND) {
                 setFetchedUser(null);
                 setInfoMessage('');
-                setErrorState(MSG_USER_NOT_FOUND);
-                setAlertOpen(true);
+                ShowAlert(MSG_USER_NOT_FOUND, 'error');
                 return;
             }
-            setErrorState(err);
-            setAlertOpen(true);
+            ShowAlert(err, 'error');
         },
-        [router],
+        [router, ShowAlert],
     );
 
     /**
@@ -202,8 +223,7 @@ function UsersDeleteContent() {
             if (lookupId.length === 0) {
                 setInfoMessage('');
                 setFetchedUser(null);
-                setErrorState(MSG_EMPTY_USER_ID);
-                setAlertOpen(true);
+                ShowAlert(MSG_EMPTY_USER_ID, 'error');
                 return;
             }
             setFetchLoading(true);
@@ -217,13 +237,16 @@ function UsersDeleteContent() {
                 setFetchLoading(false);
             }
         },
-        [userId, HandleApiFailure],
+        [userId, HandleApiFailure, ShowAlert],
     );
 
     /**
      * Deletes the loaded user — mirrors COUSR03C `DELETE-USER-INFO`. DeleteUser
      * returns 204 with no body, so nothing is read from the response. On success
-     * it reports the deletion and returns to the admin user list.
+     * it clears the read-only details panel and reports the deletion in a GREEN
+     * success alert, STAYING on the screen (no auto-navigation) so the message is
+     * actually seen (FINDING-04) — matching the legacy COUSR03C on-screen
+     * confirmation and the sibling /users/update behavior.
      */
     const HandleDelete = useCallback(async (): Promise<void> => {
         if (!fetchedUser || userId.trim().length === 0) {
@@ -235,19 +258,24 @@ function UsersDeleteContent() {
         try {
             await UsersApi.DeleteUser(deletedId);
             setDialogOpen(false);
-            setInfoMessage(
-                `${MSG_DELETE_SUCCESS_PREFIX}${deletedId}${MSG_DELETE_SUCCESS_SUFFIX}`,
-            );
+            // Clear the read-only details and the grey confirm hint, then surface
+            // the deletion as a GREEN success alert. FINDING-04: the page stays put
+            // (no auto-navigation) so the success message actually paints — this
+            // mirrors /users/update and the legacy COUSR03C, which remained on the
+            // Delete User screen showing "User <id> has been deleted ...".
             setFetchedUser(null);
-            router.push(USERS_LIST_ROUTE);
-            router.refresh();
+            setInfoMessage('');
+            ShowAlert(
+                `${MSG_DELETE_SUCCESS_PREFIX}${deletedId}${MSG_DELETE_SUCCESS_SUFFIX}`,
+                'success',
+            );
         } catch (err) {
             setDialogOpen(false);
             HandleApiFailure(err);
         } finally {
             setDeleteLoading(false);
         }
-    }, [fetchedUser, userId, router, HandleApiFailure]);
+    }, [fetchedUser, userId, ShowAlert, HandleApiFailure]);
 
     /**
      * Opens the delete-confirmation dialog (PF5 equivalent). A confirmation is
@@ -257,12 +285,11 @@ function UsersDeleteContent() {
     const HandleOpenConfirm = useCallback((): void => {
         if (!fetchedUser) {
             setInfoMessage('');
-            setErrorState(MSG_EMPTY_USER_ID);
-            setAlertOpen(true);
+            ShowAlert(MSG_EMPTY_USER_ID, 'error');
             return;
         }
         setDialogOpen(true);
-    }, [fetchedUser]);
+    }, [fetchedUser, ShowAlert]);
 
     /** Closes the dialog without deleting (Cancel / Escape / backdrop). */
     const HandleCancel = useCallback((): void => {
@@ -276,6 +303,7 @@ function UsersDeleteContent() {
         setInfoMessage('');
         setErrorState(null);
         setAlertOpen(false);
+        setAlertSeverity('error');
         setDialogOpen(false);
     }, []);
 
@@ -493,6 +521,7 @@ function UsersDeleteContent() {
                 open={alertOpen}
                 onClose={() => setAlertOpen(false)}
                 error={errorState}
+                severity={alertSeverity}
             />
         </Container>
     );

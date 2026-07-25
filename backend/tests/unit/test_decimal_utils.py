@@ -28,7 +28,10 @@ from decimal import Decimal
 import pytest
 
 from app.utils.decimal_utils import (
+    DecodeSignedAmount,
     DecodeZonedDecimal,
+    EncodeZonedDecimal,
+    Quantize,
     ToDecimal,
     TruncateToCents,
 )
@@ -168,3 +171,141 @@ def test_interest_formula_truncates_cbact04c_parity():
     rate = Decimal("19.99")
     monthlyInterest = TruncateToCents((balance * rate) / INTEREST_MONTHLY_DIVISOR)
     assert monthlyInterest == Decimal("16.65")
+
+
+# ---------------------------------------------------------------------------
+# Phase G -- DecodeZonedDecimal defensive input guards
+#
+# Each test targets ONE guard raise-branch and asserts BOTH the specific
+# exception type AND a unique substring of its message. Asserting the message
+# is what makes these mutation-killing: if a guard were removed, a later
+# backstop might still raise, but with a DIFFERENT message (or a different
+# exception type), so the ``match=`` assertion would fail.
+# ---------------------------------------------------------------------------
+
+
+def test_decode_rejects_non_str_input():
+    # A non-str payload cannot carry zoned-decimal bytes; reject with TypeError.
+    with pytest.raises(TypeError, match="must be str"):
+        DecodeZonedDecimal(12345, 2)
+
+
+def test_decode_rejects_negative_scale():
+    # A negative implied-fraction scale is nonsensical; reject with ValueError.
+    with pytest.raises(ValueError, match="scale must be non-negative"):
+        DecodeZonedDecimal("0000001940{", -1)
+
+
+def test_decode_rejects_blank_field():
+    # An all-blank fixed-width field has no digits to decode; reject.
+    with pytest.raises(ValueError, match="blank"):
+        DecodeZonedDecimal("      ", 2)
+
+
+def test_decode_rejects_non_numeric_payload():
+    # An ASCII letter in the payload fails the digit check with a distinct
+    # "Non-numeric" message (not the later "Invalid zoned-decimal value").
+    with pytest.raises(ValueError, match="Non-numeric"):
+        DecodeZonedDecimal("1234A6789{", 2)
+
+
+def test_decode_rejects_unicode_digit_payload():
+    # A superscript digit passes str.isdigit() but is rejected by Decimal(),
+    # so the InvalidOperation is caught and re-raised as a clean ValueError.
+    # decimal.InvalidOperation is NOT a subclass of ValueError, so removing the
+    # try/except would let it escape and fail this pytest.raises(ValueError).
+    rawValue = "12\u00b2456789{"
+    with pytest.raises(ValueError, match="Invalid zoned-decimal value"):
+        DecodeZonedDecimal(rawValue, 2)
+
+
+# ---------------------------------------------------------------------------
+# Phase H -- DecodeZonedDecimal scale-zero path + DecodeSignedAmount wrapper
+# ---------------------------------------------------------------------------
+
+
+def test_decode_scale_zero_has_no_implied_point():
+    # With scale=0 there is no implied decimal point; the digits decode whole.
+    assert DecodeZonedDecimal("00012{", 0) == Decimal("120")
+
+
+def test_decode_signed_amount_applies_money_scale():
+    # The money convenience wrapper decodes with the fixed MONEY_SCALE (2).
+    assert DecodeSignedAmount("00000001940{") == Decimal("194.00")
+
+
+# ---------------------------------------------------------------------------
+# Phase I -- EncodeZonedDecimal (round trip, truncation, guards)
+# ---------------------------------------------------------------------------
+
+
+def test_encode_positive_amount_matches_byte_layout():
+    # 194.00 in 12 digits, scale 2 -> "00000001940" + '{' (+0 overpunch).
+    assert EncodeZonedDecimal(Decimal("194.00"), 12, 2) == "00000001940{"
+
+
+def test_encode_negative_amount_matches_byte_layout():
+    # -919.00 in 11 digits, scale 2 -> "0000009190" + '}' (-0 overpunch).
+    assert EncodeZonedDecimal(Decimal("-919.00"), 11, 2) == "0000009190}"
+
+
+def test_encode_then_decode_round_trips_negative():
+    # Encoding then decoding reproduces the original signed magnitude exactly.
+    encodedField = EncodeZonedDecimal(Decimal("-919.00"), 11, 2)
+    assert DecodeZonedDecimal(encodedField, 2) == Decimal("-919.00")
+
+
+def test_encode_truncates_toward_zero_before_padding():
+    # Encoding applies ROUND_DOWN truncation, so 194.009 encodes like 194.00.
+    truncatedField = EncodeZonedDecimal(Decimal("194.009"), 12, 2)
+    assert truncatedField == EncodeZonedDecimal(Decimal("194.00"), 12, 2)
+
+
+def test_encode_rejects_negative_scale():
+    # A negative scale is invalid on the encode path as well.
+    with pytest.raises(ValueError, match="scale must be non-negative"):
+        EncodeZonedDecimal(Decimal("1"), 11, -1)
+
+
+def test_encode_rejects_non_positive_total_digits():
+    # totalDigits must be strictly positive to hold at least the sign digit.
+    with pytest.raises(ValueError, match="totalDigits must be positive"):
+        EncodeZonedDecimal(Decimal("1"), 0, 2)
+
+
+def test_encode_rejects_value_overflowing_field_width():
+    # A value needing more digit positions than totalDigits is rejected.
+    with pytest.raises(ValueError, match="overflows"):
+        EncodeZonedDecimal(Decimal("123456789012"), 11, 2)
+
+
+# ---------------------------------------------------------------------------
+# Phase J -- ToDecimal remaining guards (bool rejection, unparseable string)
+# ---------------------------------------------------------------------------
+
+
+def test_to_decimal_rejects_bool():
+    # bool is an int subclass but is never a valid monetary value; reject it
+    # explicitly so True/False can never be coerced to Decimal(1)/Decimal(0).
+    with pytest.raises(TypeError, match="bool is not a valid"):
+        ToDecimal(True)
+
+
+def test_to_decimal_rejects_unparseable_string():
+    # A string that is not a decimal number surfaces a specific ValueError,
+    # never a leaked decimal.InvalidOperation.
+    with pytest.raises(ValueError, match="Cannot parse Decimal"):
+        ToDecimal("not-a-number")
+
+
+# ---------------------------------------------------------------------------
+# Phase K -- Quantize InvalidOperation guard
+# ---------------------------------------------------------------------------
+
+
+def test_quantize_rejects_value_exceeding_precision():
+    # Quantizing a value so large it would exceed the Decimal context precision
+    # raises InvalidOperation, which is translated to a clean ValueError.
+    with pytest.raises(ValueError, match="Cannot quantize"):
+        Quantize(Decimal("1E30"))
+

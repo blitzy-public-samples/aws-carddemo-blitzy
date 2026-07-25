@@ -22,6 +22,7 @@ import type { ColumnDef } from '@/components/DataTable';
 import { FormField } from '@/components/FormField';
 import { ErrorAlert } from '@/components/ErrorAlert';
 import { TransactionsApi } from '@/lib/apiClient';
+import { FormatMoney } from '@/lib/format';
 import { DEFAULT_PAGE_SIZE } from '@/types';
 import type { TransactionSummary, PaginatedResponse } from '@/types';
 
@@ -119,7 +120,11 @@ const transactionColumns: ColumnDef<TransactionSummary>[] = [
         key: 'tran_amt',
         header: 'Amount',
         align: 'right',
-        render: (row) => row.tran_amt,
+        // Route through the shared money formatter so the transaction list shows
+        // the same "$" currency presentation as accounts-view / billpay (QA
+        // Issue 1). FormatMoney only prepends the symbol; it never coerces the
+        // exact Decimal string to a number (AAP §0.7.1).
+        render: (row) => FormatMoney(row.tran_amt),
     },
 ];
 

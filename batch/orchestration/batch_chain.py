@@ -69,6 +69,7 @@ from sqlalchemy import text
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
+from batch.config import EnsureBackendSecretAvailable
 from batch.db import FormatConciseError, GetSyncSession
 from batch.jobs.backup_tran import BackupTransactions
 from batch.jobs.combine_tran import CombineTransactions
@@ -398,6 +399,64 @@ def _RunStep(step: ChainStep, context: ChainContext,
     return stepValue
 
 
+def _ValidateUserSeedSecurity(steps) -> None:
+    """Fail fast when a user-seed step is present but its security prereqs fail.
+
+    The user-seed step (``InitializeUsers`` -- the :data:`SEED_STEPS` ``users``
+    step and the :data:`CHAIN_STEPS` ``DUSRSECJ`` step) hashes the seed passwords
+    with bcrypt through the backend security module, which requires a valid
+    ``SECRET_KEY``. Because every step commits its own transaction, discovering an
+    unset or invalid ``SECRET_KEY`` only when the user step finally runs would
+    leave all of the earlier steps already committed -- a non-atomic partial seed
+    (QA finding F-1). This preflight resolves the very same backend security
+    dependency the user seed will use, BEFORE any step opens a transaction, so a
+    misconfigured secret aborts the run cleanly with nothing written.
+
+    It is a deliberate no-op when ``steps`` contains no user-seed step, so batch
+    runs that never touch authentication stay free of any ``SECRET_KEY``
+    requirement (only :func:`~batch.loaders.init_users.InitializeUsers` needs it).
+
+    Args:
+        steps: The ordered step tuple about to be executed (:data:`SEED_STEPS`
+            or :data:`CHAIN_STEPS`).
+
+    Raises:
+        BatchChainError: If a user-seed step is present and the backend security
+            dependency cannot be satisfied (unset/invalid ``SECRET_KEY``, or the
+            security module cannot be imported); ``.stepName`` names the user
+            step so the failure is attributable to the exact chain position.
+    """
+    userSeedStep = next(
+        (step for step in steps if step.action is InitializeUsers), None
+    )
+    if userSeedStep is None:
+        return
+    # Make the backend SECRET_KEY discoverable CWD-independently (F-1) before the
+    # backend config singleton is built: export it from the anchored backend/.env
+    # unless it is already set in the environment. This mirrors how batch resolves
+    # SYNC_DATABASE_URL and leaves app.core.config's own .env behavior untouched.
+    EnsureBackendSecretAvailable()
+    try:
+        # Mirror the user seed's own lazy dependency: importing app.core.security
+        # instantiates the backend app.core.config.settings singleton, which
+        # requires a valid SECRET_KEY. Resolving it here surfaces a missing/weak
+        # secret up front rather than mid-chain, and the callable check keeps the
+        # imported symbol genuinely exercised.
+        from app.core.security import HashPassword
+
+        if not callable(HashPassword):
+            raise ValueError("app.core.security.HashPassword is not callable")
+    except (ImportError, ValueError) as securityError:
+        LOGGER.error(
+            "PREFLIGHT %s FAILED: %s",
+            userSeedStep.jobName,
+            FormatConciseError(securityError),
+        )
+        raise BatchChainError(
+            userSeedStep.jobName, securityError
+        ) from securityError
+
+
 def RunBatchChain(runDate=None, dataDir=None, outputDir=None,
                   sessionFactory=GetSyncSession) -> ChainResult:
     """Run the full CardDemo batch chain in the exact legacy README order.
@@ -438,13 +497,20 @@ def RunBatchChain(runDate=None, dataDir=None, outputDir=None,
         ChainResult: The ordered per-step outcome (printable).
 
     Raises:
-        BatchChainError: If any step fails; ``.stepName`` names the failing job.
+        BatchChainError: If the up-front user-seed security preflight fails
+            (missing/invalid ``SECRET_KEY``) or any step fails; ``.stepName``
+            names the failing job. The preflight runs before any step commits, so
+            a secret misconfiguration aborts the run with nothing written (F-1).
     """
     context = ChainContext(
         runDate=runDate,
         dataDir=_CoerceOptionalPath(dataDir),
         outputDir=_CoerceOptionalPath(outputDir),
     )
+    # Fail fast on a missing/invalid SECRET_KEY BEFORE any step commits, so the
+    # DUSRSECJ user seed can never fail part way through an already-committed
+    # chain (QA finding F-1). No-op when the chain has no user-seed step.
+    _ValidateUserSeedSecurity(CHAIN_STEPS)
     result = ChainResult()
     LOGGER.info("START OF BATCH CHAIN (%d steps)", len(CHAIN_STEPS))
     for step in CHAIN_STEPS:
@@ -477,9 +543,17 @@ def SeedAll(dataDir=None, sessionFactory=GetSyncSession) -> None:
             to :func:`batch.db.GetSyncSession`. Injectable for tests.
 
     Raises:
-        BatchChainError: If any loader fails; ``.stepName`` names the failing step.
+        BatchChainError: If the up-front user-seed security preflight fails
+            (missing/invalid ``SECRET_KEY``) or any loader fails; ``.stepName``
+            names the failing step. The preflight runs before any loader commits,
+            so a secret misconfiguration leaves the database untouched (F-1).
     """
     context = ChainContext(dataDir=_CoerceOptionalPath(dataDir))
+    # Fail fast on a missing/invalid SECRET_KEY BEFORE any loader commits, so the
+    # user seed can never fail after the other 9 tables are already committed --
+    # the non-atomic partial seed of QA finding F-1. No-op when there is no
+    # user-seed step.
+    _ValidateUserSeedSecurity(SEED_STEPS)
     LOGGER.info("START OF SEED-ALL (%d loaders)", len(SEED_STEPS))
     for step in SEED_STEPS:
         _RunStep(step, context, sessionFactory)

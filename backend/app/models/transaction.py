@@ -39,7 +39,7 @@ from datetime import datetime
 from decimal import Decimal
 from typing import Optional
 
-from sqlalchemy import CHAR, DateTime, ForeignKey, Numeric, String
+from sqlalchemy import CHAR, DateTime, ForeignKey, Index, Numeric, String, text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base
@@ -70,6 +70,24 @@ class Transaction(Base):
     """
 
     __tablename__ = "transactions"
+
+    # Composite index backing the CORPT00C report-range query
+    # (``TransactionRepository.ListPostedInDateRange``): the ``status`` equality
+    # that scopes the report to the posted ledger, followed by the IMMUTABLE UTC
+    # effective-date expression ``CAST(timezone('UTC', COALESCE(proc_ts,
+    # orig_ts)) AS date)``. Declared here so a ``create_all``-built schema (the
+    # test suite) and Alembic autogenerate stay in lockstep with migration 0006,
+    # which creates the identical index on already-migrated databases (QA finding
+    # H1 / MINOR-5). A bare ``timestamptz::date`` cast is only STABLE and cannot
+    # back an index; the explicit ``timezone('UTC', ...)`` form is IMMUTABLE and,
+    # under this UTC deployment, yields byte-identical dates for every row.
+    __table_args__ = (
+        Index(
+            "ix_transactions_status_effdate",
+            "status",
+            text("(CAST(timezone('UTC', COALESCE(proc_ts, orig_ts)) AS date))"),
+        ),
+    )
 
     # TRAN-ID PIC X(16) -> primary KSDS key (LISTCAT KEYLEN=16, RKP=0).
     tran_id: Mapped[str] = mapped_column(String(16), primary_key=True)

@@ -93,6 +93,12 @@ MONEY_SCALE = 2
 # --- Field byte offsets within the 300-byte ACCOUNT-RECORD (CVACT01Y). ---
 # ACCT-ID PIC 9(11) -> VARCHAR(11) string (leading zeros preserved; PRIMARY KEY).
 ACCT_ID_SLICE = slice(0, 11)
+# ACCT-ID contract width: the legacy key is a fixed 11-digit numeric field
+# (PIC 9(11)); it is stored as VARCHAR(11) ONLY to preserve leading zeros, never
+# to admit non-numeric text. The loader validates this format explicitly at load
+# time (QA finding F-5) so a malformed seed record can never persist an
+# out-of-contract key (see _ValidateAccountId).
+ACCT_ID_LENGTH = 11
 # ACCT-ACTIVE-STATUS PIC X(01) -> CHAR(1).
 ACTIVE_STATUS_SLICE = slice(11, 12)
 # ACCT-CURR-BAL PIC S9(10)V99 -> NUMERIC(12,2) (signed zoned decimal, 12 bytes).
@@ -229,6 +235,39 @@ def _ParseAccountRecord(record: str) -> dict:
     }
 
 
+def _ValidateAccountId(acctId: str, lineNumber: int) -> None:
+    """Reject an account id that is not exactly 11 ASCII digits.
+
+    The legacy primary key is ``ACCT-ID PIC 9(11)`` (copybook CVACT01Y): a
+    fixed 11-digit numeric field. The modern column is ``VARCHAR(11)`` solely to
+    preserve leading zeros, so this validates the numeric format explicitly at
+    load time (QA finding F-5, defense-in-depth). Enforcing the contract here
+    makes ``acct_id`` sanitization EXPLICIT rather than incidental: a malformed
+    seed record can never persist an out-of-contract key that could later reach
+    a data-derived consumer such as a statement file name. Only ASCII digits
+    ``0``-``9`` are accepted -- ``str.isdigit`` alone would also admit non-ASCII
+    Unicode digits, so it is paired with ``str.isascii``.
+
+    Args:
+        acctId: The stripped ``ACCT-ID`` field value parsed from one seed record.
+        lineNumber: The 1-based seed-file line number, for a precise error.
+
+    Raises:
+        ValueError: If ``acctId`` is not exactly :data:`ACCT_ID_LENGTH`
+            characters long or contains any non-ASCII-digit character.
+    """
+    isElevenAsciiDigits = (
+        len(acctId) == ACCT_ID_LENGTH
+        and acctId.isascii()
+        and acctId.isdigit()
+    )
+    if not isElevenAsciiDigits:
+        raise ValueError(
+            f"{SEED_FILE_NAME} line {lineNumber}: ACCT-ID must be exactly "
+            f"{ACCT_ID_LENGTH} numeric digits (PIC 9(11)), got {acctId!r}"
+        )
+
+
 def _ResolveDataDir(dataDir: Optional[Path]) -> Path:
     """Resolve the directory that holds the ASCII seed files.
 
@@ -346,7 +385,8 @@ def LoadAccounts(session: Session, dataDir: Optional[Path] = None) -> int:
         FileNotFoundError: If the seed file cannot be found in the resolved data
             directory.
         ValueError: If any non-blank record does not match the fixed 300-byte
-            length, or if a field fails zoned-decimal / date decoding.
+            length, if the ``acct_id`` key is not exactly 11 ASCII digits (QA
+            finding F-5), or if a field fails zoned-decimal / date decoding.
     """
     seedPath = _ResolveDataDir(dataDir) / SEED_FILE_NAME
     if not seedPath.is_file():
@@ -366,6 +406,11 @@ def LoadAccounts(session: Session, dataDir: Optional[Path] = None) -> int:
                     f"{SEED_FILE_NAME} line {lineNumber}: expected a "
                     f"{RECORD_LENGTH}-byte ACCOUNT-RECORD, got {len(record)} bytes"
                 )
-            parsedRows.append(_ParseAccountRecord(record))
+            parsedRow = _ParseAccountRecord(record)
+            # Validate the ACCT-ID format at load time (QA finding F-5) so a
+            # malformed key is rejected before it can be persisted or reach a
+            # data-derived consumer (e.g. a statement file name).
+            _ValidateAccountId(parsedRow["acct_id"], lineNumber)
+            parsedRows.append(parsedRow)
 
     return _UpsertRows(session, parsedRows)

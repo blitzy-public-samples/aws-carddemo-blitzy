@@ -39,6 +39,7 @@ import codecs
 from datetime import date
 from decimal import Decimal
 
+import pytest
 from sqlalchemy import func, select
 
 from app.core.security import VerifyPassword
@@ -56,7 +57,13 @@ from app.models import (
     User,
 )
 from batch.loaders.init_users import InitializeUsers
-from batch.loaders.load_accounts import LoadAccounts
+from batch.loaders.load_accounts import (
+    ACCT_ID_LENGTH,
+    RECORD_LENGTH,
+    SEED_FILE_NAME,
+    LoadAccounts,
+    _ValidateAccountId,
+)
 from batch.loaders.load_cards import LoadCards
 from batch.loaders.load_customers import LoadCustomers
 from batch.loaders.load_disclosure_groups import LoadDisclosureGroups
@@ -481,3 +488,51 @@ def test_init_users_ebcdic_count_types_and_password_hashing(db_session, usrsec_p
         assert loadedUser.password_hash != SEED_PLAINTEXT_PASSWORD, userId
         assert SEED_PLAINTEXT_PASSWORD not in loadedUser.password_hash, userId
         assert VerifyPassword(SEED_PLAINTEXT_PASSWORD, loadedUser.password_hash), userId
+
+
+def test_validate_account_id_rejects_non_numeric_and_wrong_length():
+    # QA finding F-5 (defense-in-depth): the ACCT-ID key is PIC 9(11) -- exactly
+    # 11 ASCII digits. _ValidateAccountId must ACCEPT a canonical 11-digit key
+    # (leading zeros preserved) and REJECT everything else: a path-traversal
+    # string, an embedded non-digit, a too-short and a too-long value, and an
+    # 11-character non-ASCII Unicode-digit string (which ``str.isdigit`` alone
+    # would wrongly accept, hence the paired ``str.isascii`` guard).
+    _ValidateAccountId("0" * ACCT_ID_LENGTH, 1)     # canonical zeros -> no raise
+    _ValidateAccountId("00000000001", 1)            # leading zeros    -> no raise
+
+    rejectedAcctIds = (
+        "../../../XY",       # 11 chars, path-traversal payload (non-numeric)
+        "0000000000A",       # 11 chars, embedded non-digit
+        "1234567890",        # 10 chars, too short
+        "123456789012",      # 12 chars, too long
+        "\u0660\u0661\u0662\u0663\u0664\u0665\u0666\u0667\u0668\u0669\u0660",
+    )                        # 11 Arabic-Indic digits: isdigit True, isascii False
+    for badAcctId in rejectedAcctIds:
+        with pytest.raises(ValueError, match="ACCT-ID must be exactly"):
+            _ValidateAccountId(badAcctId, 7)
+
+
+def test_load_accounts_rejects_crafted_non_numeric_acct_id(
+    db_session, data_dir, tmp_path
+):
+    # QA finding F-5: a crafted seed record whose ACCT-ID carries path separators
+    # ("../../../XY") must be REJECTED at load with a specific ValueError and
+    # never stored verbatim, so a malformed key can never reach a data-derived
+    # consumer (e.g. a statement file name). Reconciles the ACCTFILE load path
+    # (LoadAccounts <-> a crafted 300-byte CVACT01Y record spliced from real seed
+    # bytes so the ONLY defect is the account id).
+    realRecord = (
+        (data_dir / SEED_FILE_NAME).read_text(encoding="latin-1").splitlines()[0]
+    )
+    assert len(realRecord) == RECORD_LENGTH          # sanity: real 300-byte image
+    craftedAcctId = "../../../XY"                     # 11 chars keeps length at 300
+    assert len(craftedAcctId) == ACCT_ID_LENGTH
+    craftedRecord = craftedAcctId + realRecord[ACCT_ID_LENGTH:]
+    assert len(craftedRecord) == RECORD_LENGTH
+    (tmp_path / SEED_FILE_NAME).write_text(craftedRecord + "\n", encoding="latin-1")
+
+    with pytest.raises(ValueError, match="ACCT-ID must be exactly"):
+        LoadAccounts(db_session, tmp_path)
+
+    # The malformed key was rejected BEFORE the upsert -- nothing was persisted.
+    assert _CountRows(db_session, Account) == 0

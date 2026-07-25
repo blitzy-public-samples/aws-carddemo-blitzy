@@ -14,7 +14,7 @@ setup, and the quick-start guide, start with the
 | :------- | :------- |
 | [`./architecture.md`](./architecture.md) | Three-tier system architecture, the layered backend (routers → services → repositories → models), the authentication and session model, and the COBOL/CICS/VSAM → modern migration flow. |
 | [`./api-reference.md`](./api-reference.md) | REST API endpoints, request/response DTOs, validation rules, and error/message codes. The running backend also serves interactive OpenAPI/Swagger UI at `http://localhost:8000/docs`. |
-| [`./data-model.md`](./data-model.md) | The 10 PostgreSQL tables, their keys, indexes, foreign-key relationships, and exact-decimal (`NUMERIC`) precision. |
+| [`./data-model.md`](./data-model.md) | The 11 PostgreSQL tables, their keys, indexes, foreign-key relationships, and exact-decimal (`NUMERIC`) precision. |
 | [`./batch.md`](./batch.md) | The Python batch CLI: the preserved chain order, per-job descriptions, data loaders, and golden-master parity. |
 | [`./traceability.md`](./traceability.md) | Legacy transaction / BMS map / COBOL program / VSAM dataset → modern route / endpoint / service / model / table mapping. |
 

@@ -66,6 +66,9 @@ EXPECTED_CHAIN_STEPS = [
     "TRANIDX", "OPENFIL",
 ]
 EXPECTED_CHAIN_STEP_COUNT = 17
+# 10 FK-safe seed steps: one loader per table in dependency order, ending with
+# the user seed, so SeedAll bootstraps a fresh database without violating any
+# foreign-key constraint.
 EXPECTED_SEED_STEP_COUNT = 10
 NOOP_STEP_NAMES = ("CLOSEFIL", "OPENFIL", "TRANIDX")
 FK_ORDER_FAILING_STEP = "XREFFILE"

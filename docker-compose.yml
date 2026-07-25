@@ -77,8 +77,11 @@ services:
       POSTGRES_DB: ${POSTGRES_DB:-carddemo}
     # Publish 5432 for host tooling (psql, host-run migrations/loaders, ...).
     # ${POSTGRES_HOST_PORT} lets parallel clones pick non-colliding host ports.
-    # QA findings M-12 / M-23: bind to the LOOPBACK interface by default so the
-    # database is reachable only from the host, NOT from the LAN/other machines.
+    # QA findings M-12 / M-23 / I-04: bind to the LOOPBACK interface by default
+    # so the database is reachable only from the host, NOT from the LAN/other
+    # machines. The backend/batch reach the DB over the compose network via the
+    # `db` service DNS -- NOT this published port -- so loopback-binding is fully
+    # non-breaking; a production deployment can omit this publish entirely.
     # Override ${DB_BIND_HOST} (e.g. to 0.0.0.0) only for a deliberate, secured
     # remote-access deployment.
     ports:
@@ -116,6 +119,14 @@ services:
       timeout: 5s
       retries: 10
       start_period: 10s
+    # Bound container log growth (QA finding I-09). Without this the Docker daemon
+    # uses the json-file driver with NO size cap, so logs can grow until the disk
+    # fills on a long-running deployment. Cap each service to a few rotated files.
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
     networks:
       - carddemo-net
     restart: unless-stopped
@@ -222,6 +233,12 @@ services:
       timeout: 5s
       retries: 5
       start_period: 20s
+    # Bound container log growth (QA finding I-09): rotate the json-file logs.
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
     networks:
       - carddemo-net
     profiles:
@@ -292,6 +309,12 @@ services:
       timeout: 5s
       retries: 5
       start_period: 20s
+    # Bound container log growth (QA finding I-09): rotate the json-file logs.
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
     networks:
       - carddemo-net
     profiles:

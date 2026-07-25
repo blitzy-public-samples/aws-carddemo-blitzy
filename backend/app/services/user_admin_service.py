@@ -172,13 +172,6 @@ ADDED_ACTION = "added"  # COUSR01C L257
 UPDATED_ACTION = "updated"  # COUSR02C L374
 DELETED_ACTION = "deleted"  # COUSR03C L320
 
-# Generous upper bound for the single ordered fetch that backs the paginated
-# list. USRSEC is a small administrative security file (the legacy seed defines
-# roughly ten users), so this cap is never reached in practice; it exists only
-# to bound the query defensively while still letting :meth:`UserAdminService.ListUsers`
-# report exact pagination metadata (total_items / total_pages / has_next).
-MAX_USER_LIST_SIZE = 10000
-
 
 class UserAdminService:
     """Admin user-management business logic (COUSR00C through COUSR03C).
@@ -626,10 +619,14 @@ class UserAdminService:
     ) -> PaginatedResponse[UserSummary]:
         """List users for the admin browse screen (COUSR00C, CU00).
 
-        Reproduces the COUSR00C USRSEC browse (STARTBR/READNEXT over the whole
-        file, ordered by user id). The repository returns users ordered by id;
-        this method slices the requested page and reports exact pagination
-        metadata. Read-only: it never commits.
+        Reproduces the COUSR00C USRSEC browse (STARTBR/READNEXT ordered by user
+        id). The requested page is fetched directly at the database with a
+        single ordered ``OFFSET``/``LIMIT`` query, and the total row count comes
+        from a companion ``COUNT(*)``; only the page (not the whole table) is
+        transferred and materialized. Because the ordering is the stable
+        ``user_id`` primary key, ``OFFSET (page-1)*page_size LIMIT page_size``
+        returns the exact rows and pagination metadata the former whole-table
+        fetch-then-slice produced. Read-only: it never commits.
 
         Args:
             session: The active async database session.
@@ -645,12 +642,14 @@ class UserAdminService:
             AuthorizationError: If ``currentUser`` is not an administrator.
         """
         self._AssertAdmin(currentUser)
-        allUsers = await self.userRepository.ListUsers(
-            session, startUserId=None, limit=MAX_USER_LIST_SIZE
+        totalItems = await self.userRepository.CountUsers(session)
+        pageOffset = (params.page - 1) * params.page_size
+        pageUsers = await self.userRepository.ListUsers(
+            session,
+            startUserId=None,
+            limit=params.page_size,
+            offset=pageOffset,
         )
-        totalItems = len(allUsers)
-        startIndex = (params.page - 1) * params.page_size
-        pageUsers = allUsers[startIndex : startIndex + params.page_size]
         userSummaries = [UserSummary.model_validate(row) for row in pageUsers]
         return PaginatedResponse.Create(userSummaries, totalItems, params)
 

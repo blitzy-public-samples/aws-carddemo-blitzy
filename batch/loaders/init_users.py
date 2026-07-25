@@ -75,16 +75,22 @@ from sqlalchemy.orm import Session
 from app.models.user import User
 
 # NOTE: ``app.core.security.HashPassword`` is imported lazily inside
-# ``_ParseUserRecord`` (not at module load). Importing ``app.core.security`` at
-# module scope would instantiate the backend ``app.core.config.settings``
-# singleton, which fails fast when the backend-only ``SECRET_KEY`` is unset --
-# re-coupling the entire batch package (and therefore ``python -m batch.cli
-# --help``) to an environment variable that is irrelevant to batch data
-# processing (QA finding #60). Deferring the import keeps the batch CLI and all
-# non-user-seed jobs/loaders importable and runnable with only
-# ``SYNC_DATABASE_URL``; the backend security module is loaded only when user
-# rows are actually hashed. The single hashing implementation is still reused
-# (not duplicated), preserving parity with the login service.
+# ``_ParseUserRecord`` (not at module load). Unlike the pure data loaders, this
+# user seed GENUINELY REQUIRES ``SECRET_KEY``: it hashes the seed passwords with
+# bcrypt through the backend's single hashing implementation, whose module
+# (``app.core.security``) instantiates the ``app.core.config.settings`` singleton
+# that requires the secret. The import is DEFERRED (rather than declared at
+# module scope) so that this requirement is scoped to the user seed alone --
+# importing this module, and therefore the batch CLI (``python -m batch.cli
+# --help``) and every non-user-seed job/loader, does NOT drag in ``SECRET_KEY``;
+# those paths remain runnable with only ``SYNC_DATABASE_URL`` (QA finding #60).
+# The backend security module is loaded only when user rows are actually hashed,
+# and the single hashing implementation is reused (never duplicated), preserving
+# byte-for-byte parity with the login service. When this seed runs through the
+# orchestrator, ``batch.config.EnsureBackendSecretAvailable`` has already exported
+# ``SECRET_KEY`` from the anchored ``backend/.env`` (unless it is already set), so
+# the secret resolves no matter which directory the CLI was launched from (QA
+# finding F-1).
 
 __all__ = ["InitializeUsers"]
 

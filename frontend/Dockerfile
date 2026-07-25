@@ -118,8 +118,11 @@ ENV NEXT_TELEMETRY_DISABLED=1
 
 # Least privilege (Ochs Rule #3): create a dedicated non-root user and group for
 # the runtime. BusyBox `addgroup`/`adduser` on Alpine accept these long options.
+# `--ingroup nodejs` sets nextjs's PRIMARY group to nodejs (gid 1001); WITHOUT it
+# BusyBox `adduser --system` defaults the primary group to `nogroup` (65533),
+# leaving the copied application files group-owned by nogroup (QA finding I-02).
 RUN addgroup --system --gid 1001 nodejs \
-    && adduser --system --uid 1001 nextjs
+    && adduser --system --uid 1001 --ingroup nodejs nextjs
 
 # Copy the standalone server (server.js + package.json + minimal node_modules) to
 # the image root, then the static and public assets that standalone output does
@@ -141,6 +144,22 @@ EXPOSE 3000
 # only and make the published port unreachable.
 ENV PORT=3000
 ENV HOSTNAME=0.0.0.0
+
+# -----------------------------------------------------------------------------
+# Image-level container healthcheck (QA finding I-05: defense-in-depth).
+#
+# Mirrors the readiness probe the root docker-compose.yml already defines for
+# this service, lifted into the IMAGE so a plain `docker run` (no compose) still
+# gets a health signal; under compose the compose-level healthcheck overrides it.
+# node:22-alpine ships BusyBox wget (no curl): `-q -O /dev/null` discards the body
+# and wget exits non-zero on any HTTP error status -> unhealthy, or 0 on a 200 ->
+# healthy. It probes /signon (a concrete 200 page) rather than `/`, which
+# redirects to /signon. Host is 127.0.0.1 (NOT localhost): the standalone server
+# binds IPv4 0.0.0.0 (HOSTNAME=0.0.0.0), while BusyBox wget would resolve
+# `localhost` to IPv6 ::1 first and be refused. `--start-period` covers startup.
+# -----------------------------------------------------------------------------
+HEALTHCHECK --interval=10s --timeout=5s --start-period=20s --retries=5 \
+    CMD ["wget", "-q", "-O", "/dev/null", "http://127.0.0.1:3000/signon"]
 
 # Launch the standalone server directly. Exec form gives it PID 1 so it receives
 # termination signals correctly. This is the standalone entrypoint, NOT

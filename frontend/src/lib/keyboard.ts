@@ -122,3 +122,85 @@ export function ShouldSuppressActivationShortcut(
     }
     return IsInteractiveActivationTarget(target);
 }
+
+/**
+ * Resolves the actual focusable element for a control located by `name`.
+ *
+ * A MUI `TextField` renders a directly focusable `<input name>`; a MUI `Select`
+ * renders its value-bearing `<input name>` as a hidden native input
+ * (`aria-hidden`, `tabindex="-1"`) paired with a focusable `role="combobox"`
+ * trigger inside the same `.MuiInputBase-root` wrapper. This returns the trigger
+ * for the Select shape and the element itself for a plain input.
+ *
+ * @param element - The element found by `name`.
+ * @returns The element that should receive focus, or `null` when a Select's
+ *     trigger cannot be located.
+ */
+function ResolveFocusableControl(element: HTMLElement): HTMLElement | null {
+    const isNonFocusableNativeInput =
+        element.getAttribute('aria-hidden') === 'true' ||
+        element.getAttribute('tabindex') === '-1' ||
+        (element instanceof HTMLInputElement && element.type === 'hidden');
+    if (isNonFocusableNativeInput) {
+        const wrapper = element.closest('.MuiInputBase-root');
+        return wrapper?.querySelector<HTMLElement>('[role="combobox"]') ?? null;
+    }
+    return element;
+}
+
+/**
+ * Moves focus to a form control identified by its `name` attribute.
+ *
+ * Data-entry screens call this to park the cursor on a specific field after a
+ * failed submit (QA Issue 5), reproducing the legacy 3270 behavior of placing
+ * the cursor on the field that needs attention. It resolves the correct
+ * focusable element for both a `TextField` and a `Select` (see
+ * {@link ResolveFocusableControl}).
+ *
+ * Because the control elements exist in the DOM regardless of validation state,
+ * this is safe to call synchronously right after setting the error state — it
+ * never depends on an error-driven React re-render having flushed first.
+ *
+ * @param fieldName - The control's `name` (the FormField `name` prop).
+ * @returns `true` when a matching control was found and focused; else `false`.
+ */
+export function FocusFieldByName(fieldName: string): boolean {
+    if (typeof document === 'undefined' || fieldName === '') {
+        return false;
+    }
+    const named = document.getElementsByName(fieldName);
+    if (named.length === 0) {
+        return false;
+    }
+    const focusTarget = ResolveFocusableControl(named[0] as HTMLElement);
+    if (focusTarget === null) {
+        return false;
+    }
+    focusTarget.focus();
+    return true;
+}
+
+/**
+ * Focuses the first invalid field, honoring the caller's on-screen field order.
+ *
+ * The caller supplies its fields in display order plus the authoritative set of
+ * field names it just marked invalid, so this never reads validation state back
+ * out of the DOM (which would race React's asynchronous re-render). Focus moves
+ * to the first ordered field present in the invalid set — matching the legacy
+ * behavior of parking the cursor on the first field in error (QA Issue 5).
+ *
+ * @param orderedFieldNames - Field `name`s in the order they appear on screen.
+ * @param invalidFieldNames - The set of field `name`s currently in error.
+ * @returns `true` when a field was focused; otherwise `false`.
+ */
+export function FocusFirstInvalidField(
+    orderedFieldNames: readonly string[],
+    invalidFieldNames: ReadonlySet<string>,
+): boolean {
+    for (const fieldName of orderedFieldNames) {
+        if (invalidFieldNames.has(fieldName) && FocusFieldByName(fieldName)) {
+            return true;
+        }
+    }
+    return false;
+}

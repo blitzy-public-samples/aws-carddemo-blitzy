@@ -374,8 +374,11 @@ describe('ReportsPage', () => {
         const table = await screen.findByRole('table');
         expect(within(table).getByText('TXN00000001')).toBeInTheDocument();
         expect(within(table).getByText('TXN00000002')).toBeInTheDocument();
-        expect(within(table).getByText('-100.00')).toBeInTheDocument();
-        expect(within(table).getByText('2500.75')).toBeInTheDocument();
+        // Amounts render through the shared FormatMoney (QA Issue 1 — the report
+        // now uses the same '$' presentation as every other screen); the exact
+        // decimal is preserved verbatim behind the prefix.
+        expect(within(table).getByText('$-100.00')).toBeInTheDocument();
+        expect(within(table).getByText('$2500.75')).toBeInTheDocument();
     });
 
     // Scenario 6 -----------------------------------------------------------
@@ -445,16 +448,19 @@ describe('ReportsPage', () => {
         await user.click(screen.getByRole('button', { name: GENERATE_BUTTON }));
         const table = await screen.findByRole('table');
 
-        // Row amount inside the table (would be '-100' if Number-coerced).
-        expect(within(table).getByText('-100.00')).toBeInTheDocument();
+        // Row amount inside the table (would be '-100' if Number-coerced); the
+        // trailing-zero decimal is preserved verbatim behind the shared '$'
+        // prefix added by FormatMoney (QA Issue 1).
+        expect(within(table).getByText('$-100.00')).toBeInTheDocument();
 
-        // Running totals outside the table (would drop trailing zeros if coerced).
-        expect(screen.getByText(/Page Total:\s*0\.10/)).toBeInTheDocument();
+        // Running totals outside the table (would drop trailing zeros if coerced),
+        // each displayed through FormatMoney so the '$' presentation is consistent.
+        expect(screen.getByText(/Page Total:\s*\$0\.10/)).toBeInTheDocument();
         expect(
-            screen.getByText(/Account Total:\s*1000\.00/),
+            screen.getByText(/Account Total:\s*\$1000\.00/),
         ).toBeInTheDocument();
         expect(
-            screen.getByText(/Grand Total:\s*-9999\.90/),
+            screen.getByText(/Grand Total:\s*\$-9999\.90/),
         ).toBeInTheDocument();
     });
 

@@ -32,6 +32,7 @@ import Typography from '@mui/material/Typography';
 import { FormField } from '@/components/FormField';
 import { ErrorAlert } from '@/components/ErrorAlert';
 import { Login } from '@/lib/auth';
+import { FocusFieldByName } from '@/lib/keyboard';
 import type { LoginRequest, CurrentUser } from '@/types';
 
 /* ------------------------------------------------------------------------- */
@@ -49,6 +50,18 @@ const EMPTY_USER_ID_MESSAGE = 'Please enter User ID ...';
 
 /** Empty-Password edit message -- verbatim from COSGN00C.cbl L125. */
 const EMPTY_PASSWORD_MESSAGE = 'Please enter Password ...';
+
+/**
+ * Per-field helper texts shown on the offending input when a required-field
+ * edit fails (FINDING-10, WCAG 3.3.1/4.1.2). They are INTENTIONALLY distinct
+ * from the verbatim legacy toast messages above: the toast preserves the exact
+ * COSGN00C wording, while these short, field-scoped labels are what a screen
+ * reader announces via `aria-describedby` when the field is marked
+ * `aria-invalid` -- so the error is tied to the specific control, not only to a
+ * transient Snackbar.
+ */
+const REQUIRED_USER_ID_HELPER = 'User ID is required';
+const REQUIRED_PASSWORD_HELPER = 'Password is required';
 
 /** Regular-user landing route -- legacy XCTL to COMEN01C (COSGN00C L237). */
 const MENU_ROUTE = '/menu';
@@ -89,6 +102,13 @@ export default function SignonPage() {
     const [submitting, setSubmitting] = useState(false);
     const [alertOpen, setAlertOpen] = useState(false);
     const [errorContent, setErrorContent] = useState<unknown>(null);
+    // Per-field validation helper text (empty string = no error). Drives the
+    // FormField `error`/`helperText` props so the invalid input is programmatically
+    // marked (aria-invalid + aria-describedby), in addition to the toast.
+    const [fieldErrors, setFieldErrors] = useState<{ userId: string; password: string }>({
+        userId: '',
+        password: '',
+    });
 
     /**
      * Routes a {@link FormField} change to the matching state setter. The
@@ -100,8 +120,12 @@ export default function SignonPage() {
     const HandleChange = (name: string, value: string) => {
         if (name === 'userId') {
             setUserId(value);
+            // Clear the field's validation error as soon as it is edited so the
+            // aria-invalid state and helper text do not linger after correction.
+            setFieldErrors((previous) => ({ ...previous, userId: '' }));
         } else if (name === 'password') {
             setPassword(value);
+            setFieldErrors((previous) => ({ ...previous, password: '' }));
         }
     };
 
@@ -132,13 +156,23 @@ export default function SignonPage() {
     const HandleSubmit = async (event: FormEvent<HTMLFormElement>) => {
         event.preventDefault();
         if (!userId) {
+            // Mark the User ID field invalid (aria-invalid + aria-describedby via
+            // the helper text) AND keep the verbatim legacy toast.
+            setFieldErrors({ userId: REQUIRED_USER_ID_HELPER, password: '' });
             ShowError(EMPTY_USER_ID_MESSAGE);
+            // Move the cursor to the offending field (QA Issue 5); the verbatim
+            // legacy COSGN00C message itself is preserved unchanged (D1 fidelity).
+            FocusFieldByName('userId');
             return;
         }
         if (!password) {
+            setFieldErrors({ userId: '', password: REQUIRED_PASSWORD_HELPER });
             ShowError(EMPTY_PASSWORD_MESSAGE);
+            FocusFieldByName('password');
             return;
         }
+        // Both fields valid: clear any prior field-level error before submitting.
+        setFieldErrors({ userId: '', password: '' });
         const credentials: LoginRequest = { user_id: userId, password };
         setSubmitting(true);
         try {
@@ -187,6 +221,8 @@ export default function SignonPage() {
                                     autoFocus
                                     autoComplete="username"
                                     disabled={submitting}
+                                    error={Boolean(fieldErrors.userId)}
+                                    helperText={fieldErrors.userId || undefined}
                                 />
                                 <FormField
                                     name="password"
@@ -198,6 +234,8 @@ export default function SignonPage() {
                                     required
                                     autoComplete="current-password"
                                     disabled={submitting}
+                                    error={Boolean(fieldErrors.password)}
+                                    helperText={fieldErrors.password || undefined}
                                 />
                                 <Button
                                     type="submit"

@@ -73,6 +73,13 @@ MINIMUM_LOGIN_MAX_ATTEMPTS = 1
 # all), so the duration must be strictly positive.
 MINIMUM_LOGIN_LOCKOUT_SECONDS = 1
 
+# Lower bound for the database and readiness timeouts (QA finding #7 — bounded
+# readiness under a slow/frozen PostgreSQL). A non-positive timeout would either
+# disable the bound (0 == "wait forever" for asyncpg) or make every operation
+# fail instantly, so each timeout must be strictly positive. Expressed as a
+# float second count so sub-second tuning is possible.
+MINIMUM_TIMEOUT_SECONDS = 0.1
+
 # Environments treated as unmistakable local development/test profiles, in which
 # the built-in ``DATABASE_URL`` / ``SYNC_DATABASE_URL`` convenience default
 # (localhost throwaway credentials) is permitted. Any OTHER value of
@@ -142,6 +149,15 @@ class Settings(BaseSettings):
     # backend/.env in development). A default of True would leak frame locals
     # (including this settings object) through debug tracebacks in production.
     DEBUG: bool = False
+    # Gates the interactive API docs (/docs, /redoc) and the raw OpenAPI schema
+    # (/openapi.json). ``None`` -- the value when the env var is unset -- means
+    # "derive from ENVIRONMENT": the docs are served only for a local profile
+    # (development/test) and return 404 in staging/production, reducing
+    # API-surface disclosure there (QA finding #10). Setting the env var to an
+    # explicit ``true``/``false`` overrides that derivation for operators who
+    # must expose docs in a locked-down environment or suppress them locally.
+    # The effective decision is read via the ``ApiDocsEnabled`` property.
+    ENABLE_API_DOCS: bool | None = None
 
     # --- Database URLs (consumed by app/db/session.py, Alembic, loaders) ---
     # Typed as SecretStr so the embedded credentials never render in cleartext
@@ -201,6 +217,41 @@ class Settings(BaseSettings):
     LOGIN_LOCKOUT_SECONDS: int = Field(
         default=900,
         ge=MINIMUM_LOGIN_LOCKOUT_SECONDS,
+    )
+
+    # --- Database / readiness timeouts (QA finding #7) ---------------------
+    # Bounded, environment-tunable timeouts that stop the async engine and the
+    # /health/ready probe from blocking indefinitely against a slow or frozen
+    # PostgreSQL ("grey failure"). All three are consumed by the async engine in
+    # app/db/session.py (the asyncpg connect/command timeouts) and app/main.py
+    # (the readiness-probe wall-clock bound), and each fails fast at startup if
+    # set below MINIMUM_TIMEOUT_SECONDS. Values are never hardcoded (Ochs Rule
+    # #3); the defaults below are safe production baselines.
+    #
+    # DB_CONNECT_TIMEOUT_SECONDS bounds asyncpg's connection-establishment phase
+    # (its ``timeout`` connect arg) so a checkout against an unreachable/frozen
+    # server cannot hang while opening a new socket.
+    DB_CONNECT_TIMEOUT_SECONDS: float = Field(
+        default=10.0,
+        ge=MINIMUM_TIMEOUT_SECONDS,
+    )
+    # DB_COMMAND_TIMEOUT_SECONDS bounds every asyncpg statement (its
+    # ``command_timeout`` connect arg), so a query issued against a frozen server
+    # is aborted rather than hanging. Kept generous (30s) so a legitimately slow
+    # API query is never severed, while still bounding a true grey failure.
+    DB_COMMAND_TIMEOUT_SECONDS: float = Field(
+        default=30.0,
+        ge=MINIMUM_TIMEOUT_SECONDS,
+    )
+    # HEALTH_READY_TIMEOUT_SECONDS is the wall-clock bound the /health/ready
+    # handler applies (via asyncio.wait_for) around the whole readiness probe
+    # (connection checkout + probe query). It is deliberately tighter than the
+    # command timeout because a readiness probe must answer promptly (a bounded
+    # 503) for any direct consumer — a load balancer or monitor — that lacks its
+    # own client timeout, exactly the frozen-DB gap QA finding #7 reported.
+    HEALTH_READY_TIMEOUT_SECONDS: float = Field(
+        default=5.0,
+        ge=MINIMUM_TIMEOUT_SECONDS,
     )
 
     # --- CORS (consumed by app/main.py -> CORSMiddleware) ---
@@ -356,6 +407,24 @@ class Settings(BaseSettings):
                 f"{', '.join(insecureOrigins)}"
             )
         return self
+
+    @property
+    def ApiDocsEnabled(self) -> bool:
+        """Return whether the API docs and OpenAPI schema should be served.
+
+        Honors an explicit ``ENABLE_API_DOCS`` env override when one is set;
+        otherwise derives the decision from ``ENVIRONMENT`` -- enabled only for a
+        local profile (:data:`LOCAL_PROFILE_ENVIRONMENTS`) and disabled in
+        staging/production so ``/docs``, ``/redoc`` and ``/openapi.json`` return
+        404 there (QA finding #10). ``app.main.create_application`` reads this to
+        decide the FastAPI ``docs_url``/``redoc_url``/``openapi_url`` values.
+
+        Returns:
+            ``True`` when the interactive docs and raw schema should be exposed.
+        """
+        if self.ENABLE_API_DOCS is not None:
+            return self.ENABLE_API_DOCS
+        return self.ENVIRONMENT.strip().lower() in LOCAL_PROFILE_ENVIRONMENTS
 
 
 def _BuildSettings() -> Settings:

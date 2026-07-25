@@ -89,11 +89,20 @@ MSG_USER_TYPE_INVALID = "{field} must be 'A' (admin) or 'U' (regular user)."
 
 
 def _RequireUserId(value: str) -> str:
-    """Validate SEC-USR-ID: mandatory and alphanumeric (COUSR01 USERIDI).
+    """Validate SEC-USR-ID: mandatory, exactly 8 characters, and alphanumeric.
 
-    The width bound (<= 8) is enforced declaratively by the field's
-    ``max_length``; this helper reproduces the legacy required-then-alphanumeric
-    edit (1215-EDIT-MANDATORY followed by 1230-EDIT-ALPHANUM-REQD).
+    Reproduces the legacy fixed-width key edit in the same order the sign-on
+    program applies it (1215-EDIT-MANDATORY, then the exact-length edit, then
+    1230-EDIT-ALPHANUM-REQD). The exact-length check mirrors
+    :meth:`app.schemas.auth.LoginRequest.ValidateUserId` so an id that is
+    accepted here can always be used to sign on afterwards. Previously a shorter
+    id (for example a 3-character value) passed create -- because only the
+    ``max_length`` upper bound was enforced -- yet the sign-on validator rejected
+    it as "must be exactly 8 characters", producing an unusable ("dead")
+    credential; the same value is now rejected at create time with the identical
+    message (QA Issue 2). The ``max_length`` field bound still guards the upper
+    width declaratively; this helper additionally enforces the lower bound so the
+    stored width is exact.
 
     Args:
         value: The candidate user id, already whitespace-stripped by the model.
@@ -102,11 +111,18 @@ def _RequireUserId(value: str) -> str:
         The original ``value`` unchanged when it passes every edit.
 
     Raises:
-        ValueError: When the value is blank or contains a disallowed character.
+        ValueError: When the value is blank, is not exactly
+            :data:`app.utils.validators.USER_ID_LENGTH` characters, or contains
+            a disallowed character.
     """
     requiredResult = validators.ValidateRequired(USER_ID_LABEL, value)
     if not requiredResult.isValid:
         raise ValueError(requiredResult.message)
+    lengthResult = validators.ValidateLength(
+        USER_ID_LABEL, value, validators.USER_ID_LENGTH
+    )
+    if not lengthResult.isValid:
+        raise ValueError(lengthResult.message)
     formatResult = validators.ValidateAlphanumeric(USER_ID_LABEL, value)
     if not formatResult.isValid:
         raise ValueError(formatResult.message)

@@ -247,7 +247,7 @@ describe('UsersAddPage', () => {
         ).toBeInTheDocument();
     });
 
-    it('blocks submission and shows a validation alert when fields are empty', async () => {
+    it('blocks submission and shows per-field validation errors when fields are empty', async () => {
         const user = SetupUser();
         RenderAddUserPage();
 
@@ -256,11 +256,44 @@ describe('UsersAddPage', () => {
         });
         await user.click(submitButton);
 
-        // ValidateForm rejects the empty form with the first-field message, shown
-        // via ErrorAlert (MUI Alert, role="alert"); AddUser is never called.
-        const validationAlert = await screen.findByRole('alert');
-        expect(validationAlert).toHaveTextContent('First Name is required.');
+        // QA Issue 6: users/add now surfaces PER-FIELD errors as each field's
+        // helperText (aligned with transactions/add) instead of a single
+        // aggregate alert. Every empty required field shows its own message,
+        // and AddUser is never called.
+        expect(
+            await screen.findByText('First Name is required.'),
+        ).toBeInTheDocument();
+        expect(screen.getByText('Last Name is required.')).toBeInTheDocument();
+        expect(screen.getByText('User ID is required.')).toBeInTheDocument();
+        expect(screen.getByText('Password is required.')).toBeInTheDocument();
+        expect(
+            screen.getByText('User Type must be Admin or User.'),
+        ).toBeInTheDocument();
         expect(mockAddUser).not.toHaveBeenCalled();
+    });
+
+    it('marks the first offending field aria-invalid and links its message via aria-describedby on empty submit (FINDING-10)', async () => {
+        const user = SetupUser();
+        RenderAddUserPage();
+
+        const submitButton = await screen.findByRole('button', {
+            name: /Add User/i,
+        });
+        await user.click(submitButton);
+
+        // FINDING-10 (WCAG 3.3.1 / 4.1.2): the first offending field (First Name)
+        // is marked programmatically, in addition to the validation toast, so it
+        // is discoverable when a screen-reader user navigates the form.
+        const firstNameInput = screen.getByRole('textbox', {
+            name: /First Name/i,
+        });
+        expect(firstNameInput).toHaveAttribute('aria-invalid', 'true');
+
+        const describedById = firstNameInput.getAttribute('aria-describedby');
+        expect(describedById).toBeTruthy();
+        expect(
+            document.getElementById(describedById as string),
+        ).toHaveTextContent('First Name is required.');
     });
 
     it('creates the user (201) then clears the form and returns to the list', async () => {

@@ -91,6 +91,22 @@ class AccountRepository:
         locking previously guaranteed (AAP 0.7.4). The change-detection compare
         and the field mutation are performed by the service, not here.
 
+        The ``populate_existing=True`` execution option is essential to that
+        guarantee. The legacy ``9600-WRITE-PROCESSING`` re-reads the record under
+        the lock straight ``INTO ACCOUNT-RECORD`` (COACTUPC L3894-3902), i.e. the
+        locked read *overwrites* the working-storage copy with the current
+        committed image. A caller may already have loaded this same ``acct_id``
+        lock-free earlier in the request (for example the posting flow's initial
+        lookup via :meth:`GetByAcctId`), leaving a stale instance in the session
+        identity map. Without ``populate_existing`` SQLAlchemy would hand that
+        cached, pre-lock instance back and silently discard the freshly locked
+        row's column values -- so a balance mutation would build on a stale
+        starting value and the concurrent increment would be lost. Setting
+        ``populate_existing=True`` forces the attributes of the identity-mapped
+        instance to be refreshed from the row read under the lock, faithfully
+        matching the COBOL ``READ ... UPDATE INTO`` re-read and closing the
+        lost-update window (AAP 0.7.4, 0.8.1 behavior preservation).
+
         Args:
             session: Active async unit-of-work session; the acquired row lock is
                 held until this session commits or rolls back.
@@ -104,6 +120,7 @@ class AccountRepository:
             select(Account)
             .where(Account.acct_id == acctId)
             .with_for_update()
+            .execution_options(populate_existing=True)
         )
         return (await session.execute(stmt)).scalar_one_or_none()
 

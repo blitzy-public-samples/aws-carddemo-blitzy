@@ -12,7 +12,7 @@
  */
 
 import { useState, useEffect, useCallback, Suspense } from 'react';
-import type { KeyboardEvent } from 'react';
+import type { FormEvent, KeyboardEvent } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import Box from '@mui/material/Box';
 import Stack from '@mui/material/Stack';
@@ -336,7 +336,17 @@ function UsersUpdateContent() {
      *
      * @param event - The keyboard event bubbling up from a focused control.
      */
-    function HandleKeyDown(event: KeyboardEvent<HTMLDivElement>): void {
+    function HandlePreventSubmit(event: FormEvent): void {
+        // The page persists edits explicitly via the Save / Save & Exit buttons
+        // (and the F5/F3 shortcuts), so an implicit native form submit (e.g.
+        // Enter in a field) must never reload the page. Wrapping the editable
+        // fields in a real <form> element places the Password field inside a
+        // form for password managers and assistive tech (QA Issue 7c); this
+        // handler neutralizes the form's default submit.
+        event.preventDefault();
+    }
+
+    function HandleKeyDown(event: KeyboardEvent<HTMLElement>): void {
         if (event.key === 'Enter') {
             // Let a focused button/link/select own Enter; only the screen-level
             // fetch shortcut runs when Enter fires outside an interactive
@@ -381,7 +391,12 @@ function UsersUpdateContent() {
 
     return (
         <Container maxWidth="sm" sx={{ mt: 3, mb: 3 }}>
-            <Box onKeyDown={HandleKeyDown}>
+            <Box
+                component="form"
+                noValidate
+                onSubmit={HandlePreventSubmit}
+                onKeyDown={HandleKeyDown}
+            >
                 <Typography variant="h5" component="h1" sx={{ mb: 3 }}>
                     Update User
                 </Typography>
@@ -437,6 +452,7 @@ function UsersUpdateContent() {
                                 maxLength={PASSWORD_MAX_LENGTH}
                                 disabled={loading}
                                 helperText={PASSWORD_HELPER_TEXT}
+                                autoComplete="new-password"
                             />
                             <FormField
                                 name="userType"

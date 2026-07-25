@@ -43,19 +43,20 @@ Example:
 import logging
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
+from contextvars import ContextVar
 from urllib.parse import urlsplit
 
 from fastapi import FastAPI, Request, status
 from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.openapi.utils import get_openapi
 from fastapi.responses import JSONResponse, Response
 from fastapi.routing import APIRoute
 from pydantic import ValidationError as PydanticValidationError
-from sqlalchemy import text
 from sqlalchemy.exc import DataError, SQLAlchemyError
-from starlette.datastructures import MutableHeaders
+from starlette.datastructures import Headers, MutableHeaders
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
@@ -80,7 +81,7 @@ from app.core.exceptions import (
     TransactionPostingError,
 )
 from app.core.log_masking import InstallPanMaskingFilter
-from app.db.session import engine
+from app.db.session import CheckDatabaseReady, DatabaseNotReadyError, engine
 
 # Module-level logger for infrastructure events only (for example, a failure
 # while disposing the database engine at shutdown). Business events are logged
@@ -94,16 +95,17 @@ HEALTH_ROUTE_PATH = "/health"
 HEALTH_RESPONSE: dict[str, str] = {"status": "ok"}
 
 # Root-level READINESS probe path (QA finding F5). Unlike the liveness route, the
-# readiness route asserts the backend can actually serve traffic by executing a
-# trivial ``SELECT 1`` against PostgreSQL: it returns 200 only when the database
-# is reachable and 503 otherwise, so docker-compose (and any orchestrator) can
-# gate dependent services on a genuinely ready backend rather than a merely
-# running process.
+# readiness route asserts the backend can actually serve traffic by querying a
+# core application table in PostgreSQL: it returns 200 only when the database is
+# reachable AND the schema is present, and 503 otherwise, so docker-compose (and
+# any orchestrator) can gate dependent services on a genuinely ready backend
+# rather than a merely running process.
 HEALTH_READY_ROUTE_PATH = "/health/ready"
 HEALTH_READY_OK: dict[str, str] = {"status": "ready"}
 HEALTH_READY_UNAVAILABLE: dict[str, str] = {"status": "unavailable"}
-# Cheapest possible connectivity check; compiled once and reused per probe.
-READINESS_PROBE_QUERY = text("SELECT 1")
+# The readiness probe itself (schema-aware query + bounded, pool-bypassing
+# connection) lives in ``app.db.session.CheckDatabaseReady`` (QA findings #6 and
+# #7); this module only maps its success/failure to 200/503 in the route below.
 
 # Field names whose submitted value must never be echoed back in a 422 request
 # validation response (QA finding F7). FastAPI's default RequestValidationError
@@ -486,30 +488,60 @@ class CsrfProtectionMiddleware(BaseHTTPMiddleware):
         return requestOrigin in settings.BACKEND_CORS_ORIGINS
 
 
+# Response-compression tuning (QA finding M-02 performance: uncompressed JSON
+# list/report payloads reached ~9.8 MB). Only bodies at or above
+# ``GZIP_MINIMUM_SIZE`` bytes are compressed, so tiny responses -- the health
+# probes, the sign-on result, single-record views -- are left untouched and pay
+# no CPU cost. ``GZIP_COMPRESS_LEVEL`` is a deliberate mid-range zlib level: the
+# compression runs synchronously in the ASGI send path, so a moderate level
+# keeps the event-loop cost low (consistent with the CRITICAL-#1 event-loop
+# discipline) while still shrinking large JSON by more than an order of
+# magnitude.
+GZIP_MINIMUM_SIZE = 1000
+GZIP_COMPRESS_LEVEL = 6
+
+
 def _ConfigureMiddleware(fastapiApp: FastAPI) -> None:
     """Register cross-cutting middleware on the application.
 
     Middleware is registered inner-to-outer (Starlette treats the LAST
     ``add_middleware`` call as the OUTERMOST layer), producing this response
     chain from outermost to innermost: ``CorrelationId`` -> ``SecurityHeaders``
-    -> ``CORS`` -> ``CsrfProtection`` -> routers.
+    -> ``CORS`` -> ``CsrfProtection`` -> ``GZip`` -> routers.
 
-    * :class:`CsrfProtectionMiddleware` is added FIRST (innermost) so its
-      origin check for cookie mutations (QA finding M-02) runs just before the
-      router, yet its 403 response still travels back out through CORS (gaining
-      the CORS headers a browser needs to read it) and SecurityHeaders.
+    * :class:`~fastapi.middleware.gzip.GZipMiddleware` is added FIRST so it is
+      the INNERMOST layer, wrapping the routers directly. It compresses the
+      response body (setting ``Content-Encoding: gzip``, ``Vary:
+      Accept-Encoding`` and the compressed ``Content-Length``) only when the
+      client advertises ``Accept-Encoding: gzip`` AND the body is at least
+      :data:`GZIP_MINIMUM_SIZE` bytes -- eliminating the multi-megabyte
+      uncompressed JSON payloads (QA finding M-02) while leaving small responses
+      (the health probes, the sign-on result, single-record views) and clients
+      that do not negotiate gzip byte-for-byte unchanged. It MUST be innermost:
+      Starlette's ``GZipMiddleware`` only honors ``minimum_size`` when it
+      receives the router's response as a single, complete body message
+      (``more_body`` False); the OUTER :class:`CsrfProtectionMiddleware` is a
+      ``BaseHTTPMiddleware`` that re-emits every response as a stream, which
+      would otherwise force the streaming-compression path and compress even
+      tiny bodies. The compressed body is transparently inflated by the
+      browser/HTTP client, so the CSV (``StreamingResponse``) and PDF (binary
+      ``Response``) downloads decode to exactly the same bytes as before.
+    * :class:`CsrfProtectionMiddleware` is added next so its origin check for
+      cookie mutations (QA finding M-02) runs just before the router (only GZip
+      is inner of it), yet its 403 response still travels back out through CORS
+      (gaining the CORS headers a browser needs to read it) and SecurityHeaders.
     * Starlette's CORS middleware is added next so the Next.js frontend -- whose
       origin is listed in ``settings.BACKEND_CORS_ORIGINS`` (for example
       ``http://localhost:3000``) -- may call the API with credentials.
       ``allow_credentials`` is enabled because the session-cookie baseline
       requires the browser to send the auth cookie cross-origin, and CORS being
       OUTER of CSRF means the preflight ``OPTIONS`` is answered here without ever
-      reaching the CSRF layer. Session/JWT decoding is still performed by the
-      ``get_current_user`` dependency, not by middleware.
+      reaching the CSRF or GZip layers. Session/JWT decoding is still performed
+      by the ``get_current_user`` dependency, not by middleware.
     * :class:`SecurityHeadersMiddleware` is added next so it wraps every outgoing
-      response -- including CORS preflight responses, the CSRF 403, and the
-      streaming CSV/PDF downloads -- with the security headers required by QA
-      finding F5.
+      response -- including CORS preflight responses, the CSRF 403, the
+      gzip-compressed JSON, and the streaming CSV/PDF downloads -- with the
+      security headers required by QA finding F5.
     * :class:`CorrelationIdMiddleware` is added LAST so it is the OUTERMOST layer
       (QA finding M-32): it binds the request-scoped correlation id BEFORE any
       inner layer or exception handler runs -- so CORS, CSRF, the routers, the
@@ -520,6 +552,11 @@ def _ConfigureMiddleware(fastapiApp: FastAPI) -> None:
     Args:
         fastapiApp: The application instance to configure.
     """
+    fastapiApp.add_middleware(
+        GZipMiddleware,
+        minimum_size=GZIP_MINIMUM_SIZE,
+        compresslevel=GZIP_COMPRESS_LEVEL,
+    )
     fastapiApp.add_middleware(CsrfProtectionMiddleware)
     fastapiApp.add_middleware(
         CORSMiddleware,
@@ -901,23 +938,32 @@ def _RegisterHealthRoute(fastapiApp: FastAPI) -> None:
 
     @fastapiApp.get(HEALTH_READY_ROUTE_PATH, tags=["health"])
     async def _ReadinessCheck() -> JSONResponse:
-        """Return 200 when the database answers ``SELECT 1``; 503 otherwise.
+        """Return 200 when the database is reachable and migrated; 503 otherwise.
 
-        Opens a short-lived connection and runs the trivial readiness query. The
-        two specific, named failure categories a database outage produces are
-        caught (never a bare except): a :class:`sqlalchemy.exc.SQLAlchemyError`
-        (for example ``OperationalError`` when the server refuses a query) and an
-        :class:`OSError` (the connect-phase socket failures SQLAlchemy does not
-        wrap -- ``socket.gaierror`` when the ``db`` hostname cannot be resolved
-        because the container is down, ``ConnectionRefusedError``, and socket
-        ``TimeoutError``). Either way the probe reports 503 ``unavailable`` and
-        logs the reason, so a database outage surfaces as "not ready" rather than
-        a served 500.
+        Delegates the actual check to
+        :func:`app.db.session.CheckDatabaseReady`, which opens a dedicated,
+        pool-bypassing asyncpg connection bounded by the driver's own connect
+        and command timeouts (``settings.HEALTH_READY_TIMEOUT_SECONDS``) and runs
+        the schema-aware probe query. This endpoint therefore ALWAYS answers
+        promptly, even against a frozen/grey-failed database whose TCP socket is
+        open but never responds -- the failure mode that a wrapped POOLED probe
+        could not bound, because a socket frozen inside ``pool_pre_ping`` is
+        bridged through greenlet and is not cancellable by ``asyncio.wait_for``
+        (QA finding #7). A reachable-but-unmigrated database is likewise reported
+        NOT ready (QA finding #6).
+
+        A single, specific :class:`~app.db.session.DatabaseNotReadyError` is
+        caught (never a bare except): the DB layer has already collapsed every
+        underlying driver fault -- connect/command timeout against a frozen
+        server, refused/failed connection (``OSError``), or a missing ``users``
+        table on an unmigrated schema (``asyncpg.PostgresError``) -- into this one
+        sanitized signal. It maps to 503 ``unavailable`` and logs the reason, so
+        an outage, a frozen database, or an unmigrated schema all surface as
+        "not ready" promptly, rather than as a hang or a served 500.
         """
         try:
-            async with engine.connect() as dbConnection:
-                await dbConnection.execute(READINESS_PROBE_QUERY)
-        except (SQLAlchemyError, OSError) as readinessError:
+            await CheckDatabaseReady()
+        except DatabaseNotReadyError as readinessError:
             _LOGGER.warning("Readiness probe failed; database unavailable: %s", readinessError)
             return JSONResponse(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -1180,9 +1226,19 @@ def create_application() -> FastAPI:
     Returns:
         A fully configured :class:`fastapi.FastAPI` instance ready to serve.
     """
+    # Gate the interactive docs and raw OpenAPI schema by environment (QA
+    # finding #10): a local profile serves them; staging/production disables all
+    # three so ``/docs``, ``/redoc`` and ``/openapi.json`` return 404, reducing
+    # API-surface disclosure. Passing ``None`` for a URL is FastAPI's supported
+    # way to unmount that route. An explicit ``ENABLE_API_DOCS`` env value
+    # overrides the derivation (see ``settings.ApiDocsEnabled``).
+    docsEnabled = settings.ApiDocsEnabled
     fastapiApp = FastAPI(
         title=settings.PROJECT_NAME,
         lifespan=Lifespan,
+        docs_url="/docs" if docsEnabled else None,
+        redoc_url="/redoc" if docsEnabled else None,
+        openapi_url="/openapi.json" if docsEnabled else None,
     )
     _ConfigureMiddleware(fastapiApp)
     _MountRouters(fastapiApp)

@@ -320,7 +320,7 @@ describe('UsersPage', () => {
                 name: new RegExp(REGULAR_USER_ID),
             });
             await user.click(
-                within(userRow).getByRole('button', { name: 'Update' }),
+                within(userRow).getByRole('button', { name: /^Update user/ }),
             );
 
             expect(mockPush).toHaveBeenCalledWith(UPDATE_ROUTE);
@@ -340,7 +340,7 @@ describe('UsersPage', () => {
                 name: new RegExp(REGULAR_USER_ID),
             });
             await user.click(
-                within(userRow).getByRole('button', { name: 'Delete' }),
+                within(userRow).getByRole('button', { name: /^Delete user/ }),
             );
 
             expect(mockPush).toHaveBeenCalledWith(DELETE_ROUTE);

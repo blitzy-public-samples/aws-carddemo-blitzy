@@ -129,6 +129,15 @@ ZERO_AMOUNT = Decimal("0")
 # Quantum used to render amounts with a fixed two-decimal scale.
 AMOUNT_QUANTUM = Decimal("0.01")
 
+# Server-side streaming batch size for the main transaction scan. The report
+# reads the entire ``transactions`` table ordered by card; fetching every row
+# into memory at once (``.all()``) does not scale to production volumes, so the
+# scan is streamed in fixed batches via ``yield_per`` (QA finding MODERATE-6).
+# The value only governs how many rows are buffered per round trip -- the
+# iteration order and the emitted rows are byte-for-byte identical to a full
+# materialization.
+STREAM_CHUNK_SIZE = 1000
+
 
 # ---------------------------------------------------------------------------
 # Small collaborators
@@ -257,30 +266,92 @@ def _FormatAmount(amount: Decimal) -> str:
     return str(amount.quantize(AMOUNT_QUANTUM))
 
 
-def _ResolveDescriptions(session: Session, tran: Transaction) -> tuple[str, str, str]:
-    """Resolve the descriptive fields for one transaction.
+class _ReferenceLookups:
+    """In-memory reference maps that replace per-row ``session.get`` lookups.
 
-    Looks up the owning account (via the card cross-reference), the transaction
-    type description, and the transaction category description. Each lookup uses
-    :meth:`Session.get`, which consults the session identity map first, so the
-    repeated same-key lookups typical of a card-grouped report are served from
-    memory rather than re-querying (avoiding the N+1 pattern).
+    The detail report resolves three descriptive fields for every transaction:
+    the owning account (via the card cross-reference), the transaction-type
+    description, and the transaction-category description. The former
+    implementation issued a :meth:`Session.get` per field per row; because
+    :meth:`Session.get` does **not** cache negative (miss) lookups, transactions
+    whose card / type / category is absent re-queried the database on every row,
+    producing the query amplification reported as QA finding H2 (roughly three
+    queries per transaction over a 50k-row scan).
+
+    The three reference tables are small and static (a few hundred cross-
+    reference rows and a handful of type / category rows), so each is loaded once
+    into a dict keyed exactly as the legacy per-row lookup. Every subsequent
+    resolution is then a pure in-memory dict access. The result is byte-for-byte
+    identical to the previous behavior: a present key yields the stored attribute
+    (even when that attribute is ``None``) and an absent key yields the empty
+    string -- exactly what ``xref.acct_id if xref is not None else ""`` and its
+    siblings produced.
+
+    Attributes:
+        accountIdByCard: Maps ``CardXref.card_num`` to ``acct_id`` (the account
+            behind the card).
+        typeDescByType: Maps ``TransactionType.tran_type`` to ``tran_type_desc``.
+        catDescByKey: Maps the composite ``(tran_type_cd, tran_cat_cd)`` key to
+            ``TransactionCategory.tran_cat_type_desc``.
+    """
+
+    def __init__(
+        self,
+        accountIdByCard: dict[str, str],
+        typeDescByType: dict[str, str],
+        catDescByKey: dict[tuple[str, str], str],
+    ) -> None:
+        self.accountIdByCard = accountIdByCard
+        self.typeDescByType = typeDescByType
+        self.catDescByKey = catDescByKey
+
+    def Resolve(self, tran: Transaction) -> tuple[str, str, str]:
+        """Resolve the descriptive fields for one transaction from memory.
+
+        Args:
+            tran: The transaction whose descriptors are required.
+
+        Returns:
+            A ``(accountId, typeDesc, catDesc)`` tuple; any component whose key
+            is absent from its reference map is returned as an empty string,
+            matching the legacy ``session.get(...) or ""`` semantics exactly.
+        """
+        accountId = self.accountIdByCard.get(tran.card_num, "")
+        typeDesc = self.typeDescByType.get(tran.tran_type_cd, "")
+        catKey = (tran.tran_type_cd, tran.tran_cat_cd)
+        catDesc = self.catDescByKey.get(catKey, "")
+        return accountId, typeDesc, catDesc
+
+
+def _LoadReferenceLookups(session: Session) -> _ReferenceLookups:
+    """Load the three small reference tables into memory once.
+
+    Runs exactly three fully-buffered ``SELECT`` statements -- one per reference
+    table -- before the main transaction scan begins, so no per-row query is
+    issued during reporting (the fix for QA finding H2). The scans complete
+    fully before the streaming transaction cursor opens, so they never contend
+    with it.
 
     Args:
         session: The caller-owned, read-only session.
-        tran: The transaction whose descriptors are required.
 
     Returns:
-        A ``(accountId, typeDesc, catDesc)`` tuple; any component that cannot be
-        resolved is returned as an empty string.
+        A populated :class:`_ReferenceLookups` keyed identically to the legacy
+        per-row :meth:`Session.get` calls.
     """
-    xref = session.get(CardXref, tran.card_num)
-    accountId = xref.acct_id if xref is not None else ""
-    tranType = session.get(TransactionType, tran.tran_type_cd)
-    typeDesc = tranType.tran_type_desc if tranType is not None else ""
-    tranCat = session.get(TransactionCategory, (tran.tran_type_cd, tran.tran_cat_cd))
-    catDesc = tranCat.tran_cat_type_desc if tranCat is not None else ""
-    return accountId, typeDesc, catDesc
+    accountIdByCard = {
+        xref.card_num: xref.acct_id
+        for xref in session.execute(select(CardXref)).scalars()
+    }
+    typeDescByType = {
+        tranType.tran_type: tranType.tran_type_desc
+        for tranType in session.execute(select(TransactionType)).scalars()
+    }
+    catDescByKey = {
+        (tranCat.tran_type_cd, tranCat.tran_cat_cd): tranCat.tran_cat_type_desc
+        for tranCat in session.execute(select(TransactionCategory)).scalars()
+    }
+    return _ReferenceLookups(accountIdByCard, typeDescByType, catDescByKey)
 
 
 # ---------------------------------------------------------------------------
@@ -465,15 +536,23 @@ def _RunReport(
         The number of detail lines written.
     """
     state = _ReportState()
+    lookups = _LoadReferenceLookups(session)
     _WriteReportTitle(writer, dateRange)
     # Report the POSTED transaction master ONLY (QA finding M16). The legacy
     # CBTRN03C reads the posted TRANSACT ledger; PENDING daily staging rows and
     # validation-REJECTED rows must never appear on the detail report or in its
     # page/account/grand totals, exactly as they are excluded from statements.
+    # The scan is ordered by card (for the control break) then transaction id,
+    # and is streamed in fixed batches via ``yield_per`` so the full table is
+    # never materialized in memory (QA finding MODERATE-6). ``yield_per`` changes
+    # only the fetch granularity; the ordered rows delivered are identical, and
+    # all three descriptor lookups are served from the pre-loaded reference maps
+    # so no query is issued inside the loop.
     statement = (
         select(Transaction)
         .where(Transaction.status == STATUS_POSTED)
         .order_by(Transaction.card_num, Transaction.tran_id)
+        .execution_options(yield_per=STREAM_CHUNK_SIZE)
     )
     for tran in session.execute(statement).scalars():
         if not _WithinDateRange(tran, dateRange):
@@ -483,7 +562,7 @@ def _RunReport(
         state.currentCardNum = tran.card_num
         if state.linesOnPage >= PAGE_SIZE:
             _WritePageBreak(writer, state)
-        descriptions = _ResolveDescriptions(session, tran)
+        descriptions = lookups.Resolve(tran)
         _WriteDetailLine(writer, tran, descriptions, state)
     _WriteFinalTotals(writer, state)
     return state.detailLineCount

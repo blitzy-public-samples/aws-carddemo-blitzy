@@ -309,9 +309,11 @@ describe('TransactionsPage', () => {
 
             RenderTransactionsPage();
 
-            // Signed, 2-decimal value shown exactly as delivered.
-            expect(await screen.findByText('-100.00')).toBeInTheDocument();
-            expect(screen.getByText('2500.50')).toBeInTheDocument();
+            // Signed, 2-decimal value shown with the shared '$' currency prefix
+            // (QA Issue 1 — consistent money presentation via FormatMoney), the
+            // decimal preserved exactly (no numeric coercion).
+            expect(await screen.findByText('$-100.00')).toBeInTheDocument();
+            expect(screen.getByText('$2500.50')).toBeInTheDocument();
 
             // Numeric coercion would drop trailing zeros ('-100') — must NOT happen.
             expect(screen.queryByText('-100')).not.toBeInTheDocument();

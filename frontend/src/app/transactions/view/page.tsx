@@ -20,6 +20,7 @@ import Button from '@mui/material/Button';
 import CircularProgress from '@mui/material/CircularProgress';
 
 import { TransactionsApi } from '@/lib/apiClient';
+import { FormatMoney } from '@/lib/format';
 import { FormField } from '@/components/FormField';
 import { ErrorAlert } from '@/components/ErrorAlert';
 
@@ -346,7 +347,7 @@ function TransactionsViewContent() {
                                 />
                                 <DetailRow
                                     label="Amount:"
-                                    value={transactionDetail.tran_amt}
+                                    value={FormatMoney(transactionDetail.tran_amt)}
                                     align="right"
                                 />
                                 <DetailRow

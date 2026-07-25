@@ -255,10 +255,13 @@ For the exact chain order and per-job semantics, see
 
 The legacy design propagated identity and role in the CICS `CARDDEMO-COMMAREA`
 (copybook `COCOM01Y`) on every program call. The modern stack has no COMMAREA to
-pass; it replaces that propagation with **stateless, server-side auth** enforced
-by FastAPI dependency injection. Protected endpoints declare
-`Depends(get_current_user)`, and admin-only endpoints additionally declare
-`Depends(require_admin)`.
+pass; it replaces that propagation with **token-carried, server-side auth**
+enforced by FastAPI dependency injection. Identity is carried statelessly in a
+signed token (there is no server-side session store for identity), but the token
+also embeds a `session_version` claim that is re-checked on every request, so
+outstanding tokens can be revoked server-side (see **Session revocation and
+logout** below). Protected endpoints declare `Depends(get_current_user)`, and
+admin-only endpoints additionally declare `Depends(require_admin)`.
 
 **Session baseline, JWT alternative.** Session-based authentication is the
 confirmed baseline; JWT is an accepted equivalent alternative. Select the
@@ -266,6 +269,17 @@ strategy with the `AUTH_MODE` environment variable (default `session`; set `jwt`
 to switch). Admin-only screens and endpoints are gated to `user_type='A'` on
 **both** the client and the server — the client hides them for a regular user,
 and the server rejects them regardless of what the client sends.
+
+**Session revocation and logout.** Although identity is token-carried, token
+validity is anchored server-side by the `users.session_version` counter. Each
+token embeds the subject's `session_version` at sign-on as an `sver` claim, and
+`get_current_user` rejects the token with `401 Unauthorized` whenever that claim
+no longer matches the stored value. `POST /auth/logout` increments
+`session_version`, immediately invalidating every outstanding token for that
+user; a role change or a password change increments it for the same reason.
+Logout is idempotent and takes no authentication dependency, so it always
+succeeds — even with an already-missing or expired token — and, under the
+session baseline, also clears the session cookie.
 
 **Password storage.** Passwords are **hashed** with bcrypt. The legacy
 plaintext `SEC-USR-PWD` field is never reproduced. The seed accounts `ADMIN001`
@@ -287,7 +301,7 @@ originating COBOL program, copybook, or BMS map.
 | Batch COBOL `CBACT*`/`CBCUS01C`/`CBTRN*`/`CBSTM03A`–`B` (10) | Python `batch/jobs/*.py` | 1 program → 1 job |
 | Copybooks `app/cpy/*.cpy` (28) | SQLAlchemy models + Pydantic schemas / shared DTOs | Record layouts → ORM + DTO |
 | VSAM KSDS + sequential datasets | PostgreSQL tables + Alembic migrations | Record layout → DDL; AIX → index |
-| CICS COMMAREA (`COCOM01Y`) | Session / JWT claims via `Depends(...)` | Stateless identity + role |
+| CICS COMMAREA (`COCOM01Y`) | Session / JWT claims via `Depends(...)` | Token-carried identity + role, with server-side `session_version` revocation |
 | JCL + PROC chain | Python CLI + `batch/orchestration/batch_chain.py` | Preserves the legacy job order |
 | Date utility `CSUTLDTC` | `app/utils/date_utils.py` | Wraps LE date services → Python date validation |
 

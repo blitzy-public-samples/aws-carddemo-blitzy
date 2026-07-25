@@ -40,8 +40,8 @@ Restore-capable, full-fidelity backup (QA finding M18)
     * Sensitive exposure is prevented by FILE-SYSTEM PERMISSIONS rather than by
       masking (QA finding M13): the backup directory is created owner-only
       (``0700``) and every backup file is published owner-only (``0600``) via
-      :func:`~batch.jobs.output_safety.AtomicWritePath`, so the full-PAN data is
-      never group- or world-readable.
+      :func:`~batch.jobs.output_safety.AtomicVersionedWritePath`, so the
+      full-PAN data is never group- or world-readable.
     * :func:`RestoreTransactions` reads a backup file and idempotently upserts
       its rows back into the ``transactions`` table (``INSERT ... ON CONFLICT DO
       UPDATE`` on the ``tran_id`` primary key), so a backup can be replayed to
@@ -59,13 +59,19 @@ POSTED-only master (QA finding M16)
     a restore).
 
 Generation semantics
-    Each backup run allocates the next monotonically increasing generation number
-    by scanning the output directory for existing ``transact_bkup_*.csv`` files
-    and adding one (mirroring the ``(+1)`` relative-generation reference). A run
-    therefore always produces a brand-new file and never overwrites or corrupts a
-    prior generation, which keeps the job safely re-runnable across the two points
-    it is invoked in the batch chain and preserves prior generations for
-    point-in-time restore.
+    Each run allocates the next monotonically increasing generation number by
+    scanning the output directory for existing ``transact_bkup_*.csv`` files and
+    adding one (mirroring the ``(+1)`` relative-generation reference). That scan
+    is only a fast starting *hint*: the actual generation is then RESERVED
+    race-safely via an atomic ``O_CREAT | O_EXCL`` create
+    (:func:`~batch.jobs.output_safety.AtomicVersionedWritePath`), so two backups
+    running concurrently into the same directory are guaranteed to receive
+    *distinct* generation numbers and can never silently overwrite one another
+    (QA finding F-4). A run therefore always produces a brand-new file and never
+    overwrites or corrupts a prior generation, which keeps the job safely
+    re-runnable -- including concurrently -- across the two points it is invoked
+    in the batch chain, and preserves prior generations for point-in-time
+    restore.
 
 Transaction ownership
     The caller owns the unit of work for BOTH operations. :func:`BackupTransactions`
@@ -88,6 +94,7 @@ from __future__ import annotations
 
 import csv
 import logging
+from collections.abc import Iterable
 from datetime import datetime
 from decimal import Decimal
 from pathlib import Path
@@ -98,7 +105,11 @@ from sqlalchemy.orm import Session
 
 from app.models.transaction import STATUS_POSTED, Transaction
 
-from batch.jobs.output_safety import AtomicWritePath, SafeCsvWriter, SecureDirectory
+from batch.jobs.output_safety import (
+    AtomicVersionedWritePath,
+    SafeCsvWriter,
+    SecureDirectory,
+)
 
 # Module logger. Configuration (handlers, level, formatting) is owned by the CLI
 # / orchestration entrypoint, not hardcoded here (Ochs Rule #3).
@@ -127,6 +138,14 @@ DEFAULT_BACKUP_SUBDIR = ("out", "backups", "transactions")
 # Text encoding for the CSV backup. UTF-8 is the modern default; the stored
 # values are ordinary text decoded at load time from the ASCII/EBCDIC seeds.
 FILE_ENCODING = "utf-8"
+
+# Server-side streaming batch size for the transaction snapshot scan. The backup
+# reads the entire POSTED ``transactions`` table; materializing every row at once
+# (``.all()``) does not scale to production volumes, so the scan is streamed in
+# fixed batches via ``yield_per`` (QA finding MODERATE-6). The value governs only
+# how many rows are buffered per round trip -- the ordered rows written to the
+# backup file are byte-for-byte identical to a full materialization.
+STREAM_CHUNK_SIZE = 1000
 
 # CSV column order. Mirrors the ``transactions`` record layout (CVTRA05Y) and
 # must stay in lockstep with the row builder in :func:`_BuildBackupRow` and the
@@ -182,29 +201,51 @@ def _ResolveOutputDir(outputDir: str | Path | None) -> Path:
     return repositoryRoot.joinpath(*DEFAULT_BACKUP_SUBDIR)
 
 
-def _ResolveGeneration(outputDir: Path) -> str:
-    """Compute the next backup generation identifier (GDG ``(+1)`` semantics).
+def _HighestExistingGeneration(outputDir: Path) -> int:
+    """Return the highest existing backup generation number in ``outputDir``.
 
-    Scans ``outputDir`` for existing ``transact_bkup_<NNNN>.csv`` files, parses
-    their numeric generation suffix, and returns the next value (highest found
-    plus one) as a zero-padded string. Non-numeric or malformed suffixes are
-    ignored so a stray file never derails the sequence. When no prior generation
-    exists the first identifier is ``"0001"``.
+    Scans ``outputDir`` for existing ``transact_bkup_<NNNN>.csv`` files and parses
+    their numeric generation suffix, returning the largest value found (or ``0``
+    when none exist). Non-numeric or malformed suffixes are ignored so a stray
+    file never derails the sequence. The caller adds one to obtain the *starting
+    hint* for the race-safe generation claim; the returned value is only a hint
+    because a concurrent writer may reserve that next number first, in which case
+    the atomic claim advances past it (see
+    :func:`~batch.jobs.output_safety.AtomicVersionedWritePath`).
 
     Args:
         outputDir: The (already-created) directory holding prior generations.
 
     Returns:
-        The next generation identifier, zero-padded to
-        :data:`GENERATION_PADDING` digits.
+        The highest existing generation number, or ``0`` when the directory holds
+        no prior generation.
     """
     highestGeneration = 0
     for existingFile in outputDir.glob(BACKUP_GLOB):
         generationText = existingFile.stem[len(BACKUP_FILE_PREFIX):]
         if generationText.isdigit():
             highestGeneration = max(highestGeneration, int(generationText))
-    nextGeneration = highestGeneration + 1
-    return f"{nextGeneration:0{GENERATION_PADDING}d}"
+    return highestGeneration
+
+
+def _BuildGenerationPath(outputDir: Path, generationNumber: int) -> Path:
+    """Build the backup file path for a specific generation number.
+
+    Renders ``transact_bkup_<NNNN>.csv`` with the number zero-padded to
+    :data:`GENERATION_PADDING` digits (numbers wider than the padding render in
+    full so the sequence never truncates). This single builder is the
+    authoritative name<->number mapping shared by the scanner and the race-safe
+    claim loop, guaranteeing they always agree on the pattern.
+
+    Args:
+        outputDir: The directory that will hold the generation file.
+        generationNumber: The generation number to render into the filename.
+
+    Returns:
+        The full :class:`~pathlib.Path` for the requested generation.
+    """
+    generationText = f"{generationNumber:0{GENERATION_PADDING}d}"
+    return outputDir / f"{BACKUP_FILE_PREFIX}{generationText}{BACKUP_FILE_SUFFIX}"
 
 
 def _FormatTimestamp(value: datetime | None) -> str:
@@ -260,42 +301,93 @@ def _BuildBackupRow(transaction: Transaction) -> list[str]:
     ]
 
 
-def _WriteBackupCsv(backupPath: Path, transactions: list[Transaction]) -> int:
-    """Write the POSTED transaction snapshot to ``backupPath`` as CSV.
+def _WriteBackupRows(backupFile: object, transactions: Iterable[Transaction]) -> int:
+    """Serialize the header and every transaction row to an open backup file.
 
-    Emits the :data:`CSV_HEADER` row followed by one full-fidelity,
-    Decimal-faithful row per transaction. The file is published atomically and
-    restricted to owner-only ``0600`` (QA finding M13); a mid-write failure
-    leaves no partial file at ``backupPath``. File-I/O failures surface as
-    :class:`OSError`, which is logged with context and re-raised (never
-    swallowed) so the orchestrator can react.
+    Emits the :data:`CSV_HEADER` row followed by one full-fidelity, Decimal-
+    faithful row per transaction through a
+    :class:`~batch.jobs.output_safety.SafeCsvWriter`, so every cell is neutralized
+    against CSV formula injection (CWE-1236) while exact ``Decimal`` amounts pass
+    through unchanged (AAP 0.7.1). The file the caller publishes is written
+    atomically and restricted to owner-only ``0600`` (QA finding M13) by
+    :func:`~batch.jobs.output_safety.AtomicVersionedWritePath`. The
+    ``transactions`` iterable is consumed once and streamed straight to the CSV
+    writer, so a ``yield_per`` result (QA finding MODERATE-6) is serialized
+    without materializing the whole snapshot in memory.
 
     Args:
-        backupPath: The full path of the generation file to create.
+        backupFile: An already-open text file handle to write to.
+        transactions: The transactions to serialize, already ordered by the
+            caller. Consumed once; may be a streaming result.
+
+    Returns:
+        The number of transaction rows written (excluding the header).
+    """
+    csvWriter = SafeCsvWriter(csv.writer(backupFile))
+    csvWriter.writerow(CSV_HEADER)
+    rowsWritten = 0
+    for transaction in transactions:
+        csvWriter.writerow(_BuildBackupRow(transaction))
+        rowsWritten += 1
+    return rowsWritten
+
+
+def _WriteVersionedBackupCsv(
+    outputDir: Path,
+    startNumber: int,
+    transactions: Iterable[Transaction],
+) -> tuple[int, int]:
+    """Reserve the next free generation race-safely and write the snapshot to it.
+
+    Delegates generation reservation and atomic publication to
+    :func:`~batch.jobs.output_safety.AtomicVersionedWritePath`: the first free
+    generation at or after ``startNumber`` is claimed with an atomic
+    ``O_CREAT | O_EXCL`` create (so concurrent backups never collide on the same
+    number -- QA finding F-4), the rows are written to a temporary sibling, and
+    that sibling is atomically promoted onto the reserved path only on clean
+    completion (so a mid-write failure never leaves a partial file). File-I/O
+    failures surface as :class:`OSError`, which is logged with context and
+    re-raised (never swallowed) so the orchestrator can react.
+
+    Args:
+        outputDir: The (already-created) directory that will hold the backup.
+        startNumber: The first generation number to attempt (the highest existing
+            generation plus one, used as a fast starting hint).
         transactions: The transactions to serialize, already ordered by the
             caller.
 
     Returns:
-        The number of transaction rows written (excluding the header).
+        A ``(backupCount, reservedGeneration)`` tuple: the number of transaction
+        rows written and the generation number that was atomically claimed.
 
     Raises:
-        OSError: If the backup file cannot be opened or written.
+        OSError: If no generation can be reserved or the backup file cannot be
+            written.
     """
+
+    def _CandidatePathFor(generationNumber: int) -> Path:
+        return _BuildGenerationPath(outputDir, generationNumber)
+
     try:
-        # Publish atomically (F-4): a mid-write failure leaves no partial file at
-        # backupPath, and the finished file is owner-only 0600 (M13). Every cell
-        # is neutralized against CSV formula injection (F-3, CWE-1236) while exact
-        # Decimal amounts pass through unchanged.
-        with AtomicWritePath(backupPath) as stagingPath:
+        # Reserve the next generation race-safely (F-4) and publish atomically:
+        # a mid-write failure leaves no partial file, and the finished file is
+        # owner-only 0600 (M13). Every cell is neutralized against CSV formula
+        # injection (F-3, CWE-1236) while exact Decimal amounts pass through
+        # unchanged.
+        with AtomicVersionedWritePath(_CandidatePathFor, startNumber) as (
+            stagingPath,
+            reservedGeneration,
+        ):
             with stagingPath.open("w", encoding=FILE_ENCODING, newline="") as backupFile:
-                csvWriter = SafeCsvWriter(csv.writer(backupFile))
-                csvWriter.writerow(CSV_HEADER)
-                for transaction in transactions:
-                    csvWriter.writerow(_BuildBackupRow(transaction))
+                backupCount = _WriteBackupRows(backupFile, transactions)
     except OSError:
-        LOGGER.exception("Failed writing transaction backup to %s", backupPath)
+        LOGGER.exception(
+            "Failed writing transaction backup in %s (start generation %d)",
+            outputDir,
+            startNumber,
+        )
         raise
-    return len(transactions)
+    return backupCount, reservedGeneration
 
 
 def BackupTransactions(session: Session, outputDir: str | Path | None = None) -> int:
@@ -336,21 +428,31 @@ def BackupTransactions(session: Session, outputDir: str | Path | None = None) ->
 
     backupDirectory = SecureDirectory(_ResolveOutputDir(outputDir))
 
-    generation = _ResolveGeneration(backupDirectory)
-    backupPath = backupDirectory / f"{BACKUP_FILE_PREFIX}{generation}{BACKUP_FILE_SUFFIX}"
+    # Scan for the highest existing generation only as a fast STARTING HINT; the
+    # actual number is reserved race-safely inside _WriteVersionedBackupCsv, so a
+    # concurrent backup can never claim the same generation (QA finding F-4).
+    startNumber = _HighestExistingGeneration(backupDirectory) + 1
 
+    # Stream the snapshot in fixed batches via ``yield_per`` (QA finding
+    # MODERATE-6) so the whole POSTED table is never materialized in memory; the
+    # rows are written to the backup file exactly as a full materialization would
+    # have, only fetched incrementally.
     statement = (
         select(Transaction)
         .where(Transaction.status == STATUS_POSTED)
         .order_by(Transaction.tran_id)
+        .execution_options(yield_per=STREAM_CHUNK_SIZE)
     )
-    transactions = session.execute(statement).scalars().all()
+    transactions = session.execute(statement).scalars()
 
-    backupCount = _WriteBackupCsv(backupPath, transactions)
+    backupCount, generation = _WriteVersionedBackupCsv(
+        backupDirectory, startNumber, transactions
+    )
+    backupPath = _BuildGenerationPath(backupDirectory, generation)
     LOGGER.info(
         "Backed up %d POSTED transaction(s) to generation %s (%s)",
         backupCount,
-        generation,
+        f"{generation:0{GENERATION_PADDING}d}",
         backupPath,
     )
 

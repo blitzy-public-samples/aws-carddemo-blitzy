@@ -15,11 +15,14 @@ DB-free, synchronous, stdlib only.
 
 import csv
 import io
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from decimal import Decimal
 
 import pytest
 
 from batch.jobs.output_safety import (
+    AtomicVersionedWritePath,
     AtomicWritePath,
     NeutralizeCsvCell,
     SafeCsvWriter,
@@ -228,3 +231,109 @@ def test_atomic_write_temp_is_sibling_in_same_directory(tmp_path):
         assert stagingPath.parent == finalPath.parent
         stagingPath.write_text("x", encoding="utf-8")
     assert finalPath.exists()
+
+
+# ---------------------------------------------------------------------------
+# AtomicVersionedWritePath -- race-safe generation claim + atomic publication
+# (QA finding F-4: concurrent backups must never overwrite the same generation)
+# ---------------------------------------------------------------------------
+
+
+def _CandidateFactory(directory):
+    """Build a candidate-path callable naming files ``gen_<NNNN>.csv``."""
+
+    def _CandidatePathFor(generationNumber):
+        return directory / f"gen_{generationNumber:04d}.csv"
+
+    return _CandidatePathFor
+
+
+def test_versioned_write_reserves_start_number_when_directory_empty(tmp_path):
+    candidatePathFor = _CandidateFactory(tmp_path)
+    with AtomicVersionedWritePath(candidatePathFor, 1) as (stagingPath, reserved):
+        assert reserved == 1
+        # The reservation exists on disk during the write so concurrent writers
+        # skip past it, while the content still lives in the temporary sibling.
+        assert candidatePathFor(1).exists()
+        assert stagingPath != candidatePathFor(1)
+        stagingPath.write_text("content-1\n", encoding="utf-8")
+    assert candidatePathFor(1).read_text(encoding="utf-8") == "content-1\n"
+    # Clean promotion leaves exactly one file and no temporary sibling behind.
+    assert sorted(p.name for p in tmp_path.glob("gen_*.csv")) == ["gen_0001.csv"]
+    assert list(tmp_path.glob(".*.tmp")) == []
+
+
+def test_versioned_write_skips_already_taken_generations(tmp_path):
+    candidatePathFor = _CandidateFactory(tmp_path)
+    # Generations 1 and 2 already exist; a claim starting at 1 must advance to 3
+    # rather than overwrite either prior generation.
+    candidatePathFor(1).write_text("old-1", encoding="utf-8")
+    candidatePathFor(2).write_text("old-2", encoding="utf-8")
+    with AtomicVersionedWritePath(candidatePathFor, 1) as (stagingPath, reserved):
+        assert reserved == 3
+        stagingPath.write_text("new-3", encoding="utf-8")
+    assert candidatePathFor(1).read_text(encoding="utf-8") == "old-1"
+    assert candidatePathFor(2).read_text(encoding="utf-8") == "old-2"
+    assert candidatePathFor(3).read_text(encoding="utf-8") == "new-3"
+
+
+def test_versioned_write_removes_temp_and_reservation_on_failure(tmp_path):
+    candidatePathFor = _CandidateFactory(tmp_path)
+    with pytest.raises(OSError) as excInfo:
+        with AtomicVersionedWritePath(candidatePathFor, 1) as (stagingPath, _reserved):
+            stagingPath.write_text("partial", encoding="utf-8")
+            raise OSError(28, "No space left on device")  # ENOSPC mid-write
+    assert excInfo.value.errno == 28
+    # Neither a partial file at the reserved path nor a stray empty reservation
+    # nor a temporary sibling is left behind on failure.
+    assert not candidatePathFor(1).exists()
+    assert list(tmp_path.glob("gen_*.csv")) == []
+    assert list(tmp_path.glob(".*.tmp")) == []
+
+
+def test_versioned_write_raises_when_no_free_generation_within_max_attempts(tmp_path):
+    candidatePathFor = _CandidateFactory(tmp_path)
+    candidatePathFor(1).write_text("taken", encoding="utf-8")
+    # Only one attempt is permitted and generation 1 is already taken, so the
+    # claim fails loudly (never silently overwrites) rather than looping.
+    with pytest.raises(OSError):
+        with AtomicVersionedWritePath(candidatePathFor, 1, maxAttempts=1):
+            pass  # pragma: no cover - body never runs; claim fails first
+    # The pre-existing generation is untouched.
+    assert candidatePathFor(1).read_text(encoding="utf-8") == "taken"
+
+
+def test_versioned_write_concurrent_claims_are_all_distinct(tmp_path):
+    """Directly prove the anti-F-4 property at the primitive level.
+
+    Many threads race to claim generations from the same starting hint into the
+    same directory. Because each reservation uses an atomic ``O_CREAT | O_EXCL``
+    create, every worker MUST receive a distinct generation number and every
+    worker's content MUST survive -- none may be silently overwritten.
+    """
+    candidatePathFor = _CandidateFactory(tmp_path)
+    workerCount = 32
+    startBarrier = threading.Barrier(workerCount)
+
+    def _ClaimAndWrite(workerId):
+        # Maximize contention: every worker starts from the same hint (1) at the
+        # same instant, so they collide and must serialize via the O_EXCL claim.
+        startBarrier.wait()
+        with AtomicVersionedWritePath(candidatePathFor, 1) as (stagingPath, reserved):
+            stagingPath.write_text(f"worker-{workerId}\n", encoding="utf-8")
+        return reserved
+
+    with ThreadPoolExecutor(max_workers=workerCount) as executor:
+        reservedNumbers = list(executor.map(_ClaimAndWrite, range(workerCount)))
+
+    # Every worker got a unique generation -- no two claimed the same number.
+    assert len(set(reservedNumbers)) == workerCount
+    # Exactly one file per worker survives on disk (nothing lost to overwrite).
+    writtenFiles = sorted(tmp_path.glob("gen_*.csv"))
+    assert len(writtenFiles) == workerCount
+    # Every worker's content is present exactly once (no lost writes).
+    contents = sorted(path.read_text(encoding="utf-8").strip() for path in writtenFiles)
+    assert contents == sorted(f"worker-{workerId}" for workerId in range(workerCount))
+    # No temporary siblings remain after all promotions complete.
+    assert list(tmp_path.glob(".*.tmp")) == []
+
