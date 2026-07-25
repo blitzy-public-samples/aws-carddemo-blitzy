@@ -45,8 +45,6 @@ import org.springframework.core.task.SyncTaskExecutor;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
-import org.testcontainers.junit.jupiter.Container;
-import org.testcontainers.junit.jupiter.Testcontainers;
 import org.testcontainers.postgresql.PostgreSQLContainer;
 import org.testcontainers.utility.DockerImageName;
 
@@ -74,13 +72,15 @@ import static org.assertj.core.api.Assertions.assertThat;
  * :note: The job is launched through a dedicated synchronous {@link TaskExecutorJobLauncher}
  *     (a {@link SyncTaskExecutor} over the context {@link JobRepository}) so the launch
  *     blocks until the job finishes; the asynchronous ``asyncJobLauncher`` bean is never
- *     used. The schema is self-contained: Hibernate ``create-drop`` builds the business
- *     tables from the ``com.carddemo.common.domain`` entities, the Spring Batch JDBC
- *     initializer builds the ``BATCH_*`` metadata tables, and Flyway is disabled. A parent
- *     ``customers`` row is seeded per account because {@link CardXref} declares a real
- *     foreign key to ``customers``.
+ *     used. Schema provisioning inherits the production ``application.yml`` settings unchanged
+ *     — Flyway and ``spring.batch.jdbc.initialize-schema`` are left at their production values
+ *     rather than overridden — so the test exercises the same schema-management configuration
+ *     production runs. The shared business tables have no ``batch-service`` migration — they are
+ *     owned by other services and are absent from this classpath — so Hibernate materializes
+ *     them from the ``com.carddemo.common.domain`` entities via ``ddl-auto=create`` (the one
+ *     property this test overrides). A parent ``customers`` row is seeded per account because
+ *     {@link CardXref} declares a real foreign key to ``customers``.
  */
-@Testcontainers
 @SpringBootTest(classes = BatchServiceApplication.class)
 @DisplayName("InterestCalculationJob (CBACT04C) Testcontainers integration test")
 class InterestCalculationJobIT {
@@ -96,20 +96,32 @@ class InterestCalculationJobIT {
                     + "VALUES (?, ?, ?, ?, ?)";
 
     /**
-     * Shared PostgreSQL container, started once for the class by the Testcontainers
-     * extension. The ``postgres:18`` image matches the production database major version.
+     * Shared PostgreSQL container for the whole test JVM, started once from a static
+     * initializer. It is intentionally not bound to the JUnit Testcontainers lifecycle: the
+     * container is never stopped by an ``afterAll`` callback, so the Testcontainers Ryuk
+     * reaper removes it only after the fork JVM exits — strictly after the Spring context and
+     * its Hikari connection pool have closed. Closing the datastore resources while the
+     * database is still reachable is what lets context shutdown finish promptly instead of
+     * stalling against an already-stopped container. The ``postgres:18`` image matches the
+     * production database major version.
      */
-    @Container
     static final PostgreSQLContainer POSTGRES =
             new PostgreSQLContainer(DockerImageName.parse("postgres:18"));
 
+    static {
+        POSTGRES.start();
+    }
+
     /**
-     * :purpose: Point the JPA datasource at the container and force a self-contained schema.
-     *     Hibernate ``create-drop`` builds every business table from the domain entities,
-     *     Flyway is disabled so the test does not depend on the batch-metadata migration, and
-     *     the Spring Batch JDBC initializer creates the ``BATCH_*`` metadata tables. The three
-     *     schema owners never collide (Hibernate manages only ``@Entity`` tables; Spring Batch
-     *     manages only ``BATCH_*``).
+     * :purpose: Point the JPA datasource at the container, then let the context inherit the
+     *     production ``application.yml`` schema-management settings unchanged — Flyway and
+     *     ``spring.batch.jdbc.initialize-schema`` are left at their production values rather than
+     *     overridden — so the test runs against the same schema configuration as production.
+     *     Only ``ddl-auto`` is overridden — to ``create`` — because the shared business tables
+     *     have no ``batch-service`` migration (they are owned by other services and absent from
+     *     this classpath), so Hibernate materializes them from the ``com.carddemo.common.domain``
+     *     entities. ``create`` (rather than ``create-drop``) issues no shutdown DDL, so the
+     *     context closes cleanly.
      * :param registry: registry the test framework resolves datasource and schema properties
      *     from before the application context starts.
      */
@@ -119,9 +131,7 @@ class InterestCalculationJobIT {
         registry.add("spring.datasource.username", POSTGRES::getUsername);
         registry.add("spring.datasource.password", POSTGRES::getPassword);
         registry.add("spring.datasource.driver-class-name", () -> "org.postgresql.Driver");
-        registry.add("spring.jpa.hibernate.ddl-auto", () -> "create-drop");
-        registry.add("spring.flyway.enabled", () -> "false");
-        registry.add("spring.batch.jdbc.initialize-schema", () -> "always");
+        registry.add("spring.jpa.hibernate.ddl-auto", () -> "create");
     }
 
     /** Interest-calculation job under test; qualified because nine ``Job`` beans exist in the context. */
