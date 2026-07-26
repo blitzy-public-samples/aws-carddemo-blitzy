@@ -26,7 +26,7 @@ authenticated user.
 
 Error handling is centralized. Domain exceptions raised by the service --
 ``NotFoundError`` (-> HTTP 404), ``DomainValidationError`` (-> 400/422), and
-``TransactionPostingError`` with its subclasses (-> HTTP 400 carrying the reject
+``TransactionPostingError`` with its subclasses (-> HTTP 422 carrying the reject
 ``code`` plus the verbatim ``description``) -- bubble unmodified to the
 application-level handlers registered in ``app.main``. This router therefore
 contains no ``try`` / ``except`` block.
@@ -164,7 +164,7 @@ async def AddTransaction(
     The router implements none of these checks (they live in the service and in
     ``app.core.exceptions``); it simply lets the exception bubble to the
     application-level handler in ``app.main``, which maps every
-    ``TransactionPostingError`` to HTTP 400 with the code and description in the
+    ``TransactionPostingError`` to HTTP 422 with the code and description in the
     response body.
 
     Args:

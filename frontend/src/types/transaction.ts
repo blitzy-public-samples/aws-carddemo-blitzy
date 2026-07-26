@@ -37,6 +37,10 @@ export interface TransactionSummary {
     tran_cat_cd: string;
     tran_amt: string;
     tran_source: string;
+    // Mirrors backend TransactionSummary.tran_desc (Optional[str], TRAN-DESC
+    // X(100)); nullable, so the browse grid's Description column (legacy COTRN00
+    // TDESC01-07) renders an empty cell when the backend omits a value.
+    tran_desc: string | null;
     // Mirrors backend TransactionSummary.orig_ts (Optional[datetime]); nullable
     // so the browse grid's date column never assumes a value is present.
     orig_ts: string | null;

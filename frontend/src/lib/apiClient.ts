@@ -123,6 +123,17 @@ const NETWORK_ERROR_MESSAGE =
     'Unable to reach the server. Please check your network connection and try again.';
 
 /**
+ * Pydantic v2 prepends this literal to the `msg` of every 422 item that a custom
+ * field/model validator raises as a `ValueError` (for example the signon edits
+ * surface "Value error, User ID must be supplied."). It is a framework artifact,
+ * not part of the domain sentence the user should read, so the display formatter
+ * strips a single leading occurrence before showing the message (QA dest INFO(b)).
+ * Built-in constraint messages (e.g. "String should have at most 8 characters")
+ * carry no such prefix and are left unchanged.
+ */
+const PYDANTIC_VALUE_ERROR_PREFIX = 'Value error, ';
+
+/**
  * Base URL for every request, composed ONLY from the environment (Ochs rule #3 --
  * no hardcoded origin). `NEXT_PUBLIC_API_URL` (the backend ORIGIN, e.g.
  * http://localhost:8000) lives in frontend/.env.local.example and is inlined into
@@ -190,12 +201,25 @@ function IsRecord(value: unknown): value is Record<string, unknown> {
     return typeof value === 'object' && value !== null;
 }
 
+/**
+ * Strips the Pydantic v2 {@link PYDANTIC_VALUE_ERROR_PREFIX} from a single 422
+ * `msg` so the toast shows only the domain sentence ("User ID must be supplied."
+ * rather than "Value error, User ID must be supplied."). Only a leading
+ * occurrence is removed; any message without the prefix is returned unchanged.
+ */
+function NormalizeValidationMessage(msg: string): string {
+    if (msg.startsWith(PYDANTIC_VALUE_ERROR_PREFIX)) {
+        return msg.slice(PYDANTIC_VALUE_ERROR_PREFIX.length);
+    }
+    return msg;
+}
+
 /** Joins the `msg` fields of FastAPI 422 validation items into one message string. */
 function ExtractValidationMessages(detail: unknown[]): string {
     return detail
         .map((item) => {
             if (IsRecord(item) && typeof item.msg === 'string') {
-                return item.msg;
+                return NormalizeValidationMessage(item.msg);
             }
             return '';
         })

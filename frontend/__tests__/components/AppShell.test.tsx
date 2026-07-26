@@ -266,6 +266,77 @@ describe('AppShell', () => {
     });
 
     // ----------------------------------------------------------------------
+    // Client-side auth guard (dest QA F-1)
+    // ----------------------------------------------------------------------
+
+    it('redirects an unauthenticated visitor on a protected route to /signon and never leaves protected content on screen (dest F-1)', async () => {
+        const replace = jest.fn();
+        mockUsePathname.mockReturnValue('/accounts/view');
+        mockUseRouter.mockReturnValue(MakeRouterMock({ replace }));
+        // No client identity => the mount-time guard must redirect to /signon.
+        mockGetCurrentUser.mockReturnValue(null);
+
+        RenderWithProviders(
+            <AppShell>
+                <div>Protected Content</div>
+            </AppShell>,
+        );
+
+        // The guard effect redirects to the signon route...
+        await waitFor(() => {
+            expect(replace).toHaveBeenCalledWith(SIGNON_ROUTE);
+        });
+        // ...and the protected page body is never left on screen (an empty
+        // <main> placeholder renders while the redirect settles), with no shell
+        // chrome (AppBar / nav) exposed to an unauthenticated visitor.
+        expect(screen.queryByText('Protected Content')).not.toBeInTheDocument();
+        expect(screen.queryByRole('banner')).not.toBeInTheDocument();
+        expect(
+            screen.queryByRole('link', { name: 'Menu' }),
+        ).not.toBeInTheDocument();
+    });
+
+    it('does not redirect an unauthenticated visitor on the signon route so login stays reachable (dest F-1)', async () => {
+        const replace = jest.fn();
+        mockUsePathname.mockReturnValue(SIGNON_ROUTE);
+        mockUseRouter.mockReturnValue(MakeRouterMock({ replace }));
+        mockGetCurrentUser.mockReturnValue(null);
+
+        RenderWithProviders(
+            <AppShell>
+                <div>Signon Page</div>
+            </AppShell>,
+        );
+
+        // The signon route is exempt from the guard: the bare login page renders
+        // and no redirect is issued (a redirect here would loop).
+        expect(screen.getByText('Signon Page')).toBeInTheDocument();
+        await waitFor(() => {
+            expect(mockGetCurrentUser).toHaveBeenCalled();
+        });
+        expect(replace).not.toHaveBeenCalled();
+    });
+
+    it('does not redirect an authenticated visitor on a protected route (dest F-1 guard no-op)', async () => {
+        const replace = jest.fn();
+        mockUsePathname.mockReturnValue(MENU_ROUTE);
+        mockUseRouter.mockReturnValue(MakeRouterMock({ replace }));
+        // An established identity must never be redirected by the guard.
+        mockGetCurrentUser.mockReturnValue(MakeCurrentUser());
+
+        RenderWithProviders(
+            <AppShell>
+                <div>Page Body</div>
+            </AppShell>,
+        );
+
+        await waitFor(() => {
+            expect(screen.getByText('Page Body')).toBeInTheDocument();
+        });
+        expect(replace).not.toHaveBeenCalled();
+    });
+
+    // ----------------------------------------------------------------------
     // Route-change focus management (QA N-02)
     // ----------------------------------------------------------------------
 

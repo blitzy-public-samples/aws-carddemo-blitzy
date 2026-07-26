@@ -920,8 +920,8 @@ Cookie: carddemo_session=<token>
   "items": [
     {
       "user_id": "ADMIN001",
-      "first_name": "Admin",
-      "last_name": "User",
+      "first_name": "MARGARET",
+      "last_name": "GOLD",
       "user_type": "A"
     }
   ],
@@ -962,7 +962,7 @@ Content-Type: application/json
 Cookie: carddemo_session=<token>
 
 {
-  "user_id": "USER0002",
+  "user_id": "USER0006",
   "first_name": "John",
   "last_name": "Smith",
   "password": "PASSWORD",
@@ -975,7 +975,7 @@ material.
 
 ```json
 {
-  "user_id": "USER0002",
+  "user_id": "USER0006",
   "first_name": "John",
   "last_name": "Smith",
   "user_type": "U"
@@ -998,7 +998,7 @@ map `COUSR02`).
 **Path parameters:** `userId` — up to 8-character user id.
 
 ```http
-GET /api/v1/admin/users/USER0002
+GET /api/v1/admin/users/USER0006
 Cookie: carddemo_session=<token>
 ```
 
@@ -1029,12 +1029,12 @@ Update a user. Ports `COUSR02C` (transaction **CU02**, BMS map `COUSR02`). A new
 | `password` | string | no | New plaintext password (hashed at rest); omit to leave unchanged. |
 
 ```http
-PUT /api/v1/admin/users/USER0002
+PUT /api/v1/admin/users/USER0006
 Content-Type: application/json
 Cookie: carddemo_session=<token>
 
 {
-  "first_name": "John",
+  "first_name": "Jane",
   "last_name": "Smith",
   "user_type": "U"
 }
@@ -1058,7 +1058,7 @@ Delete a user. Ports `COUSR03C` (transaction **CU03**, BMS map `COUSR03`).
 **Path parameters:** `userId` — up to 8-character user id.
 
 ```http
-DELETE /api/v1/admin/users/USER0002
+DELETE /api/v1/admin/users/USER0006
 Cookie: carddemo_session=<token>
 ```
 

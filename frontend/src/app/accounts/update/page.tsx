@@ -536,13 +536,19 @@ function AccountsUpdateContent() {
                                     maxLength={MONEY_LENGTH}
                                     placeholder={MONEY_FORMAT_HINT}
                                 />
+                                {/*
+                                  * Account Group is OPTIONAL (dest QA F-3): the
+                                  * legacy ACCT-GROUP-ID (PIC X(10)) is nullable
+                                  * free text and the backend field is Optional,
+                                  * so this field carries no `required` marker /
+                                  * asterisk and saves cleanly when left blank.
+                                  */}
                                 <FormField
                                     name="group_id"
                                     label="Account Group"
                                     value={formValues.group_id ?? ''}
                                     onChange={HandleChange}
                                     maxLength={GROUP_ID_LENGTH}
-                                    required
                                 />
                             </Stack>
                         </CardContent>

@@ -131,6 +131,7 @@ const TRANSACTION_COLUMN_HEADERS: readonly string[] = [
     'Type',
     'Category',
     'Source',
+    'Description',
     'Amount',
 ];
 
@@ -140,8 +141,8 @@ const TRANSACTION_COLUMN_HEADERS: readonly string[] = [
 
 /**
  * Build a `TransactionSummary` list row. Every field is a string (ids keep
- * their leading zeros; `tran_amt` is an exact decimal STRING) and there is
- * intentionally NO `tran_desc` — the summary DTO does not carry one.
+ * their leading zeros; `tran_amt` is an exact decimal STRING). The summary DTO
+ * carries a nullable `tran_desc`, surfaced by the grid's Description column.
  *
  * @param overrides - Partial fields that replace any summary default.
  * @returns A fully-populated `TransactionSummary`.
@@ -156,6 +157,7 @@ function MakeTransactionSummary(
         tran_cat_cd: '0005',
         tran_amt: '-100.00',
         tran_source: 'POS',
+        tran_desc: 'Purchase at Abshire-Lowe',
         orig_ts: '2024-01-15-12.30.00.000000',
     };
 
@@ -220,7 +222,10 @@ describe('TransactionsPage', () => {
         it('renders the title, headers, and one row per transaction, fetching page 1 at page size 7', async () => {
             ArmListResponse([
                 MakeTransactionSummary(),
-                MakeTransactionSummary({ tran_id: SECOND_TRAN_ID }),
+                MakeTransactionSummary({
+                    tran_id: SECOND_TRAN_ID,
+                    tran_desc: 'Refund from Kihn Group',
+                }),
             ]);
 
             RenderTransactionsPage();
@@ -243,6 +248,15 @@ describe('TransactionsPage', () => {
             expect(screen.getAllByRole('columnheader')).toHaveLength(
                 TRANSACTION_COLUMN_HEADERS.length,
             );
+
+            // dest QA F-2 — the Description column surfaces each row's tran_desc
+            // (legacy COTRN00 TDESC01-07), matching the COTRN01 detail view.
+            expect(
+                screen.getByText('Purchase at Abshire-Lowe'),
+            ).toBeInTheDocument();
+            expect(
+                screen.getByText('Refund from Kihn Group'),
+            ).toBeInTheDocument();
 
             // The list API is pagination-only (no filter beyond page/page_size).
             await waitFor(() => {

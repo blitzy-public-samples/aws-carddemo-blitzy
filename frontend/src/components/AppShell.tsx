@@ -205,6 +205,23 @@ export function AppShell(props: AppShellProps) {
         setIsMounted(true);
     }, [pathname]);
 
+    // QA dest F-1 — client-side auth guard. On the mainframe an unauthenticated
+    // terminal could only ever reach the signon map (COSGN00); every other map
+    // required an established CICS session. Here a visitor with no client
+    // identity who lands on a protected route (e.g. /accounts/view, /billpay —
+    // screens that wait for id input and so never trigger the axios 401
+    // interceptor on their own) is redirected to /signon. This is UX/navigation
+    // only and NOT the security boundary: the backend still enforces auth on
+    // every request (HTTP 401). `GetCurrentUser()` is read here (not the
+    // `currentUser` state) so the check uses the freshest identity for this
+    // pathname without waiting for a state commit. The /signon route is exempt so
+    // the login page stays reachable.
+    useEffect(() => {
+        if (pathname !== SIGNON_ROUTE && GetCurrentUser() === null) {
+            router.replace(SIGNON_ROUTE);
+        }
+    }, [pathname, router]);
+
     // The single `<main>` landmark, used to move focus to the new page's heading
     // on client-side navigation (QA N-02). One ref serves both render branches
     // (bare/pre-auth and the authenticated shell) because they are mutually
@@ -421,25 +438,30 @@ export function AppShell(props: AppShellProps) {
         );
     }
 
-    // Pre-auth bypass: never wrap the signon page, and (once mounted) never wrap a
-    // page for a visitor with no client identity — render the children WITHOUT the
-    // shell chrome so the login flow and any redirect happen bare. This stays
-    // hydration-safe: during SSR and the first client render `isMounted` is false,
-    // so the branch matches on both sides; the identity-based switch only happens
-    // AFTER mount via the effect above.
-    //
-    // QA #15: the children are still wrapped in a `<main>` landmark so every page
-    // (including /signon) exposes exactly one main region for assistive tech. The
-    // wrapper is layout-neutral (a block element filling its parent), so the
-    // centered signon form is unaffected. The authenticated branch below renders
-    // its own single `<main>`, and these two branches are mutually exclusive, so
-    // there is never more than one main landmark.
-    if (pathname === SIGNON_ROUTE || (isMounted && !currentUser)) {
+    // Pre-auth bypass for the signon page: never wrap COSGN00 in the shell — the
+    // login flow appears bare. QA #15: the children are still wrapped in a single
+    // `<main>` landmark so every page (including /signon) exposes exactly one main
+    // region for assistive tech. The wrapper is layout-neutral (a block element
+    // filling its parent), so the centered signon form is unaffected.
+    if (pathname === SIGNON_ROUTE) {
         return (
             <Box component="main" ref={mainRef}>
                 {props.children}
             </Box>
         );
+    }
+
+    // QA dest F-1: a mounted visitor with no client identity on a protected route
+    // is being redirected to /signon by the auth-guard effect above. Render an
+    // EMPTY `<main>` — never the protected page's children — so no protected
+    // content is shown while the redirect settles. This stays hydration-safe:
+    // during SSR and the first client render `isMounted` is false, so neither
+    // pre-auth branch matches and both sides render the same full shell; the
+    // identity-based switch only happens AFTER mount via the effects above. The
+    // authenticated branch below renders its own single `<main>`, and these
+    // branches are mutually exclusive, so there is never more than one main.
+    if (isMounted && !currentUser) {
+        return <Box component="main" ref={mainRef} />;
     }
 
     return (

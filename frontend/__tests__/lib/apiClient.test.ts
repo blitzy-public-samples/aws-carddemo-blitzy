@@ -335,6 +335,51 @@ describe('response interceptor / error normalization', () => {
         expect(apiError.detail).toBeUndefined();
     });
 
+    it('strips the Pydantic "Value error, " prefix from 422 msgs (dest INFO(b))', async () => {
+        // Pydantic v2 prepends "Value error, " to every custom-validator ValueError
+        // msg; these are the exact strings the signon edits emit. The display
+        // message must show only the domain sentence, not the framework artifact.
+        const validationBody = {
+            detail: [
+                {
+                    loc: ['body', 'user_id'],
+                    msg: 'Value error, User ID must be supplied.',
+                    type: 'value_error',
+                },
+                {
+                    loc: ['body', 'password'],
+                    msg: 'Value error, Password must be supplied.',
+                    type: 'value_error',
+                },
+            ],
+        };
+        const apiError = await ExpectApiErrorRejection(
+            responseOnRejected(
+                MakeAxiosError({ status: 422, data: validationBody, url: '/auth/login' }),
+            ),
+        );
+        expect(apiError.status).toBe(422);
+        expect(apiError.message).toBe(
+            'User ID must be supplied.; Password must be supplied.',
+        );
+        // A built-in constraint msg carries no prefix and must pass through verbatim.
+        const constraintBody = {
+            detail: [
+                {
+                    loc: ['body', 'password'],
+                    msg: 'String should have at most 8 characters',
+                    type: 'string_too_long',
+                },
+            ],
+        };
+        const constraintError = await ExpectApiErrorRejection(
+            responseOnRejected(
+                MakeAxiosError({ status: 422, data: constraintBody, url: '/auth/login' }),
+            ),
+        );
+        expect(constraintError.message).toBe('String should have at most 8 characters');
+    });
+
     it('reports status 0 and an ACTIONABLE network message for a network error (M-11)', async () => {
         // A CORS / host-alias rejection or dropped connection reaches axios as a
         // terse "Network Error" with NO response. The client must replace that with

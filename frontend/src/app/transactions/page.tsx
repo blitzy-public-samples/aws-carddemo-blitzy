@@ -94,10 +94,11 @@ function FormatTransactionDate(originTimestamp: string | null): string {
 
 /**
  * Column definitions for the transactions browse grid, built from the
- * TransactionSummary DTO fields (there is intentionally NO `tran_desc` on the
- * summary). The `card_num` column is masked for security; the `tran_amt` column
- * is right-aligned and rendered as the exact Decimal STRING verbatim (AAP
- * §0.7.1 — never parsed to a JavaScript number).
+ * TransactionSummary DTO fields. A `Description` column (legacy COTRN00
+ * TDESC01-07) surfaces `tran_desc` so the browse list matches the COTRN01
+ * transaction-detail view. The `card_num` column is masked for security; the
+ * `tran_amt` column is right-aligned and rendered as the exact Decimal STRING
+ * verbatim (AAP §0.7.1 — never parsed to a JavaScript number).
  */
 const transactionColumns: ColumnDef<TransactionSummary>[] = [
     { key: 'tran_id', header: 'Transaction ID', align: 'left' },
@@ -116,6 +117,15 @@ const transactionColumns: ColumnDef<TransactionSummary>[] = [
     { key: 'tran_type_cd', header: 'Type', align: 'left' },
     { key: 'tran_cat_cd', header: 'Category', align: 'left' },
     { key: 'tran_source', header: 'Source', align: 'left' },
+    {
+        key: 'tran_desc',
+        header: 'Description',
+        align: 'left',
+        // Surface the transaction description on the browse grid (legacy COTRN00
+        // TDESC01-07) so the list matches the COTRN01 detail view. Nullable on
+        // the summary DTO, so render an empty cell when the backend omits it.
+        render: (row) => row.tran_desc ?? '',
+    },
     {
         key: 'tran_amt',
         header: 'Amount',

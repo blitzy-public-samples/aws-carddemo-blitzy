@@ -43,10 +43,10 @@ while the file/module name stays snake_case.
 """
 
 from datetime import date, datetime
-from decimal import Decimal, InvalidOperation
+from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 from typing import Optional
 
-from pydantic import Field, field_validator
+from pydantic import Field, field_serializer, field_validator
 
 from app.schemas.common import OrmBase, RequestBase
 from app.schemas.customer import CustomerRead
@@ -454,6 +454,28 @@ class AccountRead(OrmBase):
         """Normalize legacy X(10) date text (or a ``date``) into a native ``date``."""
         return _ParseAccountDate(value)
 
+    @field_serializer(
+        "curr_bal",
+        "credit_limit",
+        "cash_credit_limit",
+        "curr_cyc_credit",
+        "curr_cyc_debit",
+        when_used="json",
+    )
+    def SerializeMoney(self, value: Decimal) -> str:
+        """Serialize a money field as a canonical two-decimal string (QA w002).
+
+        Every monetary field is emitted as an exact decimal STRING, never a
+        float (AAP section 0.7.1). A value written through ``PUT`` can reach the
+        response carrying the scale of the submitted input (for example
+        ``"3820.0"``) rather than the canonical ``NUMERIC(12,2)`` scale the
+        datastore holds, whereas a freshly-read account is already scale 2.
+        Quantizing to two places yields the same ``"3820.00"`` presentation for
+        both paths. Input with more than two decimal places is already rejected
+        upstream by the ``decimal_places`` constraint, so this only ever pads a
+        shorter scale and never rounds a real value away.
+        """
+        return str(value.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP))
 
 
 class AccountBeforeImage(RequestBase):
