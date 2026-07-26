@@ -41,6 +41,7 @@ Example:
 """
 
 import logging
+import math
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from contextvars import ContextVar
@@ -117,6 +118,20 @@ SENSITIVE_FIELD_NAMES: frozenset[str] = frozenset(
 )
 # Placeholder substituted for any sensitive submitted value in a 422 body.
 SENSITIVE_VALUE_PLACEHOLDER = "***redacted***"
+
+# Placeholder substituted for any non-JSON-compliant float (IEEE-754 NaN,
+# +Infinity, -Infinity) encountered anywhere in a validation-error payload
+# before it is serialized (QA SECURITY finding: NaN/Infinity DoS). Python's
+# ``json.loads`` ACCEPTS these values from a request body via a literal such as
+# ``1e400``/``NaN``, so a caller can smuggle one onto ANY field -- including an
+# unknown/extra field that bypasses every field validator -- and it then lands
+# in ``RequestValidationError.errors()`` as the offending ``input``. The 422
+# handlers below render with FastAPI's ``JSONResponse`` (``json.dumps`` with
+# ``allow_nan=False``), which RAISES ``ValueError`` on such a value; because that
+# raise happens INSIDE the exception handler, Starlette turns the intended 422
+# into an unhandled 500 -- a pre-auth denial-of-service. Neutralizing the value
+# with this placeholder keeps the handler total.
+NON_FINITE_FLOAT_PLACEHOLDER = "<non-finite>"
 
 # Mapping from a general domain-exception type to the HTTP status code it
 # surfaces as. Because Starlette resolves handlers along the exception's MRO,
@@ -729,6 +744,45 @@ def _SanitizeOneValidationError(rawError: dict) -> dict:
     return sanitizedError
 
 
+def _ReplaceNonFiniteFloats(value: object) -> object:
+    """Recursively replace non-JSON-compliant floats with a safe placeholder.
+
+    IEEE-754 ``NaN``, ``Infinity`` and ``-Infinity`` are accepted by Python's
+    ``json.loads`` -- so a request body may legally carry one through a literal
+    such as ``1e400`` or ``NaN`` on any field -- but are rejected by
+    ``json.dumps(allow_nan=False)``, which is exactly the encoder FastAPI's
+    :class:`~fastapi.responses.JSONResponse` uses. If such a value survives into
+    the body of a validation-error handler, the response renderer raises
+    :class:`ValueError` *inside* the handler and Starlette converts the intended
+    422 into an unhandled 500 (a pre-auth denial-of-service). Walking the
+    already-encoded error payload here and substituting
+    :data:`NON_FINITE_FLOAT_PLACEHOLDER` for every non-finite ``float`` keeps the
+    handler total while preserving the exact response shape for every other
+    value.
+
+    Args:
+        value: An arbitrary value drawn from a validation-error payload -- a
+            scalar, or a ``dict``/``list``/``tuple`` nesting other values.
+
+    Returns:
+        The value with every non-finite ``float`` (at any nesting depth)
+        replaced by :data:`NON_FINITE_FLOAT_PLACEHOLDER`; all other values are
+        returned structurally unchanged.
+    """
+    if isinstance(value, float):
+        if math.isfinite(value):
+            return value
+        return NON_FINITE_FLOAT_PLACEHOLDER
+    if isinstance(value, dict):
+        return {
+            itemKey: _ReplaceNonFiniteFloats(itemValue)
+            for itemKey, itemValue in value.items()
+        }
+    if isinstance(value, (list, tuple)):
+        return [_ReplaceNonFiniteFloats(listItem) for listItem in value]
+    return value
+
+
 async def _HandleRequestValidationError(
     request: Request, exc: RequestValidationError
 ) -> JSONResponse:
@@ -748,9 +802,14 @@ async def _HandleRequestValidationError(
         A JSON 422 response with the sanitized validation error list.
     """
     sanitizedErrors = [_SanitizeOneValidationError(rawError) for rawError in exc.errors()]
+    # Sanitize NaN/Infinity floats (which may sit on any field, including an
+    # unknown/extra one) as the OUTERMOST step, after ``jsonable_encoder`` has
+    # produced the final JSON-able structure, so no non-finite float reaches
+    # ``json.dumps(allow_nan=False)`` and turns this 422 into a 500 (QA SECURITY
+    # finding: NaN/Infinity DoS).
     return JSONResponse(
         status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-        content={"detail": jsonable_encoder(sanitizedErrors)},
+        content={"detail": _ReplaceNonFiniteFloats(jsonable_encoder(sanitizedErrors))},
     )
 
 
@@ -776,9 +835,14 @@ async def _HandleValidationError(
     Returns:
         A JSON response with status 422 and the structured validation errors.
     """
+    # Sanitize NaN/Infinity floats as the OUTERMOST step (see
+    # ``_HandleRequestValidationError``): a bare ``ValidationError`` can carry a
+    # non-finite ``input`` just as a request-validation error can, and
+    # ``json.dumps(allow_nan=False)`` would otherwise raise here and turn this
+    # 422 into a 500 (QA SECURITY finding: NaN/Infinity DoS).
     return JSONResponse(
         status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-        content={"detail": jsonable_encoder(exc.errors())},
+        content={"detail": _ReplaceNonFiniteFloats(jsonable_encoder(exc.errors()))},
     )
 
 

@@ -135,6 +135,50 @@ def test_to_decimal_rejects_float_type_error():
 
 
 # ---------------------------------------------------------------------------
+# Phase D2 -- ToDecimal non-finite rejection (QA SECURITY finding: NaN/Infinity)
+#
+# ``decimal.Decimal`` accepts the IEEE-754 special values both directly and
+# parsed from a string ("Infinity"/"NaN"/"inf"/"nan"). Left unchecked such a
+# value flows to the DB and to response serialization, where FastAPI's
+# ``json.dumps(allow_nan=False)`` raises and yields a 500 (a DoS vector). Every
+# money/rate schema routes user input through ToDecimal, so rejecting non-finite
+# HERE sanitizes the whole schema layer once and surfaces as a 422.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "nonFiniteText",
+    ["Infinity", "-Infinity", "+Infinity", "inf", "-inf", "Inf", "NaN", "nan", "sNaN"],
+)
+def test_to_decimal_rejects_non_finite_string(nonFiniteText):
+    # A string that parses to a non-finite Decimal is not a valid monetary
+    # amount and MUST be rejected with ValueError (surfaced by Pydantic as 422),
+    # never silently accepted.
+    with pytest.raises(ValueError):
+        ToDecimal(nonFiniteText)
+
+
+@pytest.mark.parametrize(
+    "nonFiniteDecimal",
+    [Decimal("Infinity"), Decimal("-Infinity"), Decimal("NaN"), Decimal("sNaN")],
+)
+def test_to_decimal_rejects_non_finite_decimal(nonFiniteDecimal):
+    # A non-finite Decimal supplied directly (e.g. echoed from an upstream
+    # computation) is likewise rejected, closing the Decimal-passthrough branch.
+    with pytest.raises(ValueError):
+        ToDecimal(nonFiniteDecimal)
+
+
+def test_to_decimal_accepts_large_but_finite_string():
+    # "1e400" is an ENORMOUS but perfectly FINITE decimal (unlike the float
+    # literal 1e400, which is inf); ToDecimal must still accept it -- the guard
+    # rejects only non-finite values, never large-magnitude finite ones.
+    largeFinite = ToDecimal("1e400")
+    assert largeFinite.is_finite() is True
+    assert largeFinite == Decimal("1E+400")
+
+
+# ---------------------------------------------------------------------------
 # Phase E -- TruncateToCents (ROUND_DOWN, AAP section 0.7.2)
 # ---------------------------------------------------------------------------
 

@@ -281,34 +281,54 @@ def EncodeZonedDecimal(value: Decimal, totalDigits: int, scale: int) -> str:
 
 
 def ToDecimal(value: str | int | Decimal) -> Decimal:
-    """Convert a safe numeric input to ``Decimal`` without ever using float.
+    """Convert a safe numeric input to a FINITE ``Decimal`` without using float.
 
     Accepts ``str``, ``int``, or ``Decimal``. A ``float`` (or ``bool``, or any
     other type) is rejected with :class:`TypeError` so that binary
     floating-point rounding can never contaminate a monetary value.
 
+    The result is additionally required to be FINITE. An IEEE-754 special value
+    -- ``NaN``, ``Infinity`` or ``-Infinity`` -- is never a valid monetary or
+    rate amount, yet ``decimal.Decimal`` accepts one both directly and parsed
+    from a string such as ``"Infinity"`` / ``"NaN"`` / ``"inf"`` / ``"nan"``.
+    Left unchecked, such a value flows through validation to the database and to
+    response serialization, where ``json.dumps(allow_nan=False)`` (the encoder
+    FastAPI's ``JSONResponse`` uses) raises and turns the response into a 500 --
+    a denial-of-service vector (QA SECURITY finding: NaN/Infinity). Rejecting it
+    here, at the single shared coercion point every money/rate schema routes
+    through, sanitizes the user-supplied input once for the whole schema layer
+    (Ochs Rule #3) and surfaces to the client as an HTTP 422 rather than a 500.
+
     Args:
         value: The value to convert (``str``, ``int``, or ``Decimal``).
 
     Returns:
-        The value as a :class:`decimal.Decimal`.
+        The value as a finite :class:`decimal.Decimal`.
 
     Raises:
         TypeError: If ``value`` is a ``float``, ``bool``, or unsupported type.
-        ValueError: If a ``str`` cannot be parsed as a decimal number.
+        ValueError: If a ``str`` cannot be parsed as a decimal number, or the
+            resulting value is a non-finite ``NaN`` / ``Infinity`` /
+            ``-Infinity``.
     """
     if isinstance(value, Decimal):
-        return value
-    if isinstance(value, bool):
+        decimalValue = value
+    elif isinstance(value, bool):
         raise TypeError("bool is not a valid monetary value")
-    if isinstance(value, int):
-        return Decimal(value)
-    if isinstance(value, str):
+    elif isinstance(value, int):
+        decimalValue = Decimal(value)
+    elif isinstance(value, str):
         try:
-            return Decimal(value.strip())
+            decimalValue = Decimal(value.strip())
         except InvalidOperation as exc:
             raise ValueError(f"Cannot parse Decimal from {value!r}") from exc
-    raise TypeError(f"Unsupported type for Decimal: {type(value).__name__}")
+    else:
+        raise TypeError(f"Unsupported type for Decimal: {type(value).__name__}")
+    if not decimalValue.is_finite():
+        raise ValueError(
+            f"Non-finite Decimal is not a valid monetary value: {value!r}"
+        )
+    return decimalValue
 
 
 def Quantize(value: Decimal, quantum: Decimal = QUANTUM_CENTS) -> Decimal:
