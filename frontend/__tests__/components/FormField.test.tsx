@@ -286,7 +286,10 @@ describe('FormField', () => {
             );
 
             const input = screen.getByRole('textbox');
-            input.focus();
+            // Focus through userEvent (not a raw input.focus()) so the resulting
+            // React state update is wrapped in act(...), keeping the test free of
+            // "not wrapped in act" warnings while still focusing the field.
+            await user.click(input);
             // Pressing Enter must invoke the caller's handler (Enter-submits),
             // with the key reported so the caller can gate on 'Enter'.
             await user.keyboard('{Enter}');
