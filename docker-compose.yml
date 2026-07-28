@@ -63,6 +63,13 @@ x-backend-service: &backend-service
     # Actuator health details are only rendered to authenticated principals
     # (MJ-16); anonymous callers still receive the overall UP/DOWN status.
     MANAGEMENT_ENDPOINT_HEALTH_SHOW_DETAILS: when-authorized
+    # AES-256-GCM key for at-rest encryption of sensitive customer/card
+    # attributes (SSN, government id, EFT account id, CVV) via
+    # carddemo-common's CryptoConverter, which resolves CARDDEMO_PII_KEY (or the
+    # carddemo.pii.key system property) and fails with IllegalStateException when
+    # it is absent. Externalized like every other secret (CR-11): no in-file
+    # default, so `docker compose` fails fast if .env omits it.
+    CARDDEMO_PII_KEY: ${CARDDEMO_PII_KEY:?set CARDDEMO_PII_KEY in .env}
   # Liveness/readiness via the Spring Boot Actuator health endpoint. The base
   # image (eclipse-temurin:21-jre) ships neither curl nor wget, so the probe
   # uses bash's /dev/tcp pseudo-device to issue a minimal HTTP request and
@@ -105,8 +112,17 @@ services:
       POSTGRES_USER: ${POSTGRES_USER:?set POSTGRES_USER in .env}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
     # No host port (CR-11): only containers on carddemo-net reach the database.
+    #
+    # The postgres:18+ official image stores its cluster in a
+    # major-version-specific subdirectory so `pg_upgrade --link` works across
+    # majors, and its entrypoint ABORTS if the persistent volume is mounted at
+    # the legacy /var/lib/postgresql/data path ("in 18+, these Docker images are
+    # configured to store database data in a format which is compatible with
+    # pg_ctlcluster"). The supported configuration for 18+ is therefore a single
+    # mount one level up, at /var/lib/postgresql.
+    # See docker-library/postgres#1259 and docker-library/postgres#37.
     volumes:
-      - pgdata:/var/lib/postgresql/data
+      - pgdata:/var/lib/postgresql
     healthcheck:
       test:
         - CMD-SHELL
@@ -276,9 +292,19 @@ services:
     # The scrape config authenticates with a monitoring principal whose password
     # is supplied at runtime from the environment (CR-11); Prometheus reads it
     # from this mounted file (password_file) rather than any committed value.
+    #
+    # uid/gid MUST be pinned to 65534 ("nobody"), the account the upstream
+    # prom/prometheus image runs as. Projected config files default to
+    # root:root, so with mode 0440 alone the Prometheus process cannot open
+    # this file and EVERY scrape job fails with
+    #   "unable to read basic auth password: ... permission denied",
+    # leaving all service targets down while Prometheus itself reports healthy.
+    # Pinning the owner keeps least privilege (0440, not world-readable).
     configs:
       - source: monitoring_password
         target: /etc/prometheus/secrets/monitoring-password
+        uid: "65534"
+        gid: "65534"
         mode: 0440
     ports:
       - "127.0.0.1:9090:9090"
