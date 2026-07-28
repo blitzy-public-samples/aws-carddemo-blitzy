@@ -91,6 +91,11 @@ spec:
             # Shared Redis AUTH secret for externalized Spring Session (CR-17).
             - secretRef:
                 name: carddemo-redis-secret
+            # Shared AES-256-GCM key for at-rest PII field encryption
+            # (carddemo-common CryptoConverter: SSN, government id, EFT account
+            # id, CVV). Services fail closed if it is absent.
+            - secretRef:
+                name: carddemo-pii-key
           resources:
             requests:
               cpu: 250m
