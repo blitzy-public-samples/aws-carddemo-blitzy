@@ -1,0 +1,94 @@
+{
+  "name": "carddemo-frontend",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Modernized CardDemo frontend: Next.js App Router + MUI SPA, redesigned per Material Design 3.",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "cp -rT .next/static .next/standalone/.next/static && cp -rT public .next/standalone/public && node .next/standalone/server.js",
+    "type-check": "tsc --noEmit",
+    "lint": "eslint .",
+    "lint:ci": "eslint . --max-warnings=0",
+    "test": "jest",
+    "test:watch": "jest --watch"
+  },
+  "dependencies": {
+    "@emotion/cache": "^11.13.0",
+    "@emotion/react": "^11.13.0",
+    "@emotion/styled": "^11.13.0",
+    "@mui/icons-material": "9.2.0",
+    "@mui/material": "9.2.0",
+    "@mui/material-nextjs": "9.1.1",
+    "axios": "^1.7.0",
+    "next": "16.2.11",
+    "react": "19.2.7",
+    "react-dom": "19.2.7"
+  },
+  "devDependencies": {
+    "@swc/core": "^1.7.0",
+    "@swc/jest": "^0.2.37",
+    "@testing-library/jest-dom": "^6.6.0",
+    "@testing-library/react": "^16.1.0",
+    "@testing-library/user-event": "^14.5.0",
+    "@types/jest": "^29.5.0",
+    "@types/jest-axe": "3.5.9",
+    "@types/node": "^20.0.0",
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "eslint": "9.39.5",
+    "eslint-config-next": "16.2.11",
+    "jest": "^29.7.0",
+    "jest-axe": "10.0.0",
+    "jest-environment-jsdom": "^29.7.0",
+    "typescript": "^5.6.0"
+  },
+  "overrides": {
+    "postcss": "^8.5.10",
+    "sharp": "^0.35.0",
+    "brace-expansion": "^5.0.8",
+    "minimatch": "^10.0.0"
+  },
+  "jest": {
+    "testEnvironment": "jest-environment-jsdom",
+    "setupFilesAfterEnv": [
+      "<rootDir>/__tests__/jest.setup.ts"
+    ],
+    "moduleNameMapper": {
+      "^@/(.*)$": "<rootDir>/src/$1",
+      "\\.(css|scss|sass|less)$": "<rootDir>/__tests__/__mocks__/styleMock.js"
+    },
+    "testMatch": [
+      "<rootDir>/__tests__/**/*.(test|spec).(ts|tsx)",
+      "<rootDir>/src/**/*.(test|spec).(ts|tsx)"
+    ],
+    "transform": {
+      "^.+\\.(t|j)sx?$": [
+        "@swc/jest",
+        {
+          "jsc": {
+            "parser": {
+              "syntax": "typescript",
+              "tsx": true
+            },
+            "transform": {
+              "react": {
+                "runtime": "automatic"
+              }
+            }
+          }
+        }
+      ]
+    },
+    "transformIgnorePatterns": [
+      "/node_modules/(?!(?:@mui|@babel/runtime)/)"
+    ],
+    "modulePathIgnorePatterns": [
+      "<rootDir>/.next/"
+    ],
+    "clearMocks": true
+  }
+}

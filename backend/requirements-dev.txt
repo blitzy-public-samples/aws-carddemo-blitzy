@@ -1,0 +1,27 @@
+# CardDemo Backend - DEVELOPMENT / TEST dependency manifest (pip).
+#
+# QA finding M-22 (image composition): the production backend image installs
+# ONLY the runtime set in `requirements.txt`, so pytest / pytest-asyncio / httpx
+# never enter the shipped image. This companion manifest is for local
+# development and CI test runs: it first pulls in the full runtime set, then
+# layers the test tooling on top.
+#
+# Install for development / CI with:
+#   pip install -r requirements-dev.txt
+#
+# All versions are pinned and mirror the `dev` optional-dependencies group in
+# pyproject.toml package-for-package and version-for-version. Keep this file,
+# pyproject.toml, and requirements.txt synchronized; do not introduce drift.
+
+# Full runtime dependency set (single source of truth for runtime pins).
+-r requirements.txt
+
+# Testing
+# pytest >= 9.0.3 (QA finding M-24): 8.3.4 has a fixed tmpdir vulnerability and
+# the suite performs privileged DB operations. pytest-asyncio is upgraded to the
+# 1.x line as the compatible pair (0.25.2 caps at pytest < 9); 1.4.0 also makes
+# the async-fixture loop scope explicit-by-default, clearing the prior
+# PytestDeprecationWarning (see the asyncio_default_fixture_loop_scope pin, N-05).
+pytest==9.1.1
+pytest-asyncio==1.4.0
+httpx==0.28.1

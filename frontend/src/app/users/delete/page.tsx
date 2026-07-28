@@ -1,0 +1,533 @@
+'use client';
+
+/*
+ * Delete User page — modern replacement for the legacy 3270 "Delete User" screen.
+ *
+ * Traceability (Ochs Test Rule §0.8.1 — each ported unit references its origin):
+ *   Origin    : BMS map COUSR03 / mapset COUSR3A, CICS transaction CU03,
+ *               COBOL program COUSR03C.
+ *   REFERENCE : app/bms/COUSR03.bms, app/cpy-bms/COUSR03.CPY
+ *               (business behavior derived from app/cbl/COUSR03C.cbl).
+ *   Purpose   : Delete User — lookup by User ID, display read-only details,
+ *               confirm, delete.
+ *   Access    : ADMIN-ONLY (user_type === 'A'); one of the COUSR00–COUSR03
+ *               admin-gated screens (AAP §0.8.1, §0.4.4).
+ *
+ * This is a Client Component: it uses React hooks, client-side navigation, and
+ * localStorage-backed identity (IsAdmin), none of which run on the server.
+ *
+ * SECURITY: COUSR03 carries NO password field; UserRead exposes none. A password
+ * is never requested, rendered, logged, or placed in the confirmation dialog.
+ */
+
+import { useState, useEffect, useCallback, useRef, Suspense } from 'react';
+import { useRouter, useSearchParams } from 'next/navigation';
+import {
+    Box,
+    Stack,
+    Container,
+    Typography,
+    Button,
+    CircularProgress,
+} from '@mui/material';
+import type { AlertColor } from '@mui/material';
+
+import { ConfirmDialog } from '@/components/ConfirmDialog';
+import { ErrorAlert } from '@/components/ErrorAlert';
+import { FormField } from '@/components/FormField';
+import { UsersApi, IsApiError } from '@/lib/apiClient';
+import { IsAdmin } from '@/lib/auth';
+import { ShouldSuppressActivationShortcut } from '@/lib/keyboard';
+import type { UserRead } from '@/types';
+
+/* ------------------------------------------------------------------------- */
+/* Module constants (Ochs rule: ALL_UPPERCASE with underscores).             */
+/* ------------------------------------------------------------------------- */
+
+/** On-screen User ID buffer width — legacy USRIDIN PIC X(8) (COUSR03.CPY). */
+const USER_ID_MAX_LENGTH = 8;
+
+/** Admin user-list route; the PF3/PF12 "Back" target of COUSR03. */
+const USERS_LIST_ROUTE = '/users';
+
+/** Regular-menu route a non-admin is redirected to (client-side UX gate). */
+const MENU_ROUTE = '/menu';
+
+/** HTTP 403 — the server `require_admin` boundary (authoritative gate). */
+const HTTP_FORBIDDEN = 403;
+
+/** HTTP 404 — the looked-up User ID does not exist. */
+const HTTP_NOT_FOUND = 404;
+
+/* Message text mirroring COUSR03C (self-documenting; no scattered literals). */
+
+/** Empty-id guard message (COUSR03C rejects a blank User ID before any read). */
+const MSG_EMPTY_USER_ID = 'User ID can NOT be empty...';
+
+/** Confirm hint shown once a user is loaded (modern PF5-delete equivalent). */
+// QA M1: the abort control on this page is the "Back" button (COUSR03 F3=Back);
+// the hint previously said "Cancel", which matches only the modal dialog's
+// button, not the on-page control. Align the copy to the visible "Back" button.
+const MSG_CONFIRM_HINT = 'Press Delete to remove this user, or Back to abort.';
+
+/** Not-found message when the account/user READ returns no record. */
+const MSG_USER_NOT_FOUND = 'User ID NOT found...';
+
+/** Delete-success prefix — composed as `User <id> has been deleted ...`. */
+const MSG_DELETE_SUCCESS_PREFIX = 'User ';
+
+/** Delete-success suffix — composed as `User <id> has been deleted ...`. */
+const MSG_DELETE_SUCCESS_SUFFIX = ' has been deleted ...';
+
+/* ------------------------------------------------------------------------- */
+/* Suspense fallback.                                                        */
+/* ------------------------------------------------------------------------- */
+
+/**
+ * Lightweight fallback rendered while the Suspense boundary resolves. Next.js 16
+ * requires every `useSearchParams()` consumer to sit beneath a Suspense boundary,
+ * so the search-param-reading content is isolated behind this fallback.
+ *
+ * @returns A centered progress indicator.
+ */
+function DeletePageFallback() {
+    return (
+        <Container maxWidth="sm">
+            <Stack sx={{ alignItems: 'center', py: 6 }}>
+                <CircularProgress aria-label="Loading" />
+            </Stack>
+        </Container>
+    );
+}
+
+/* ------------------------------------------------------------------------- */
+/* Default export — Suspense wrapper (Next.js 16 useSearchParams rule).      */
+/* ------------------------------------------------------------------------- */
+
+/**
+ * Route entry point for `/users/delete`. It renders only the Suspense boundary;
+ * all state, effects, and the search-param read live in {@link UsersDeleteContent}
+ * so `next build` does not fail on the client-side-rendering bailout.
+ *
+ * @returns The Suspense-wrapped delete-user page.
+ */
+export default function UsersDeletePage() {
+    return (
+        <Suspense fallback={<DeletePageFallback />}>
+            <UsersDeleteContent />
+        </Suspense>
+    );
+}
+
+/* ------------------------------------------------------------------------- */
+/* Inner content — all state, effects, handlers, and page JSX.               */
+/* ------------------------------------------------------------------------- */
+
+/**
+ * The delete-user screen body. Holds every hook and handler and is the sole
+ * caller of `useSearchParams()` (which supplies the deep-link `userId`). Renders
+ * page content only — the AppBar/Drawer shell is supplied by the root layout.
+ *
+ * @returns The delete-user page content, or `null` until the admin gate resolves.
+ */
+function UsersDeleteContent() {
+    const router = useRouter();
+    const searchParams = useSearchParams();
+
+    // State (camelCase per Ochs).
+    const [userId, setUserId] = useState<string>('');
+    const [fetchedUser, setFetchedUser] = useState<UserRead | null>(null);
+    const [infoMessage, setInfoMessage] = useState<string>('');
+    const [errorState, setErrorState] = useState<unknown>(null);
+    const [alertOpen, setAlertOpen] = useState<boolean>(false);
+    // ErrorAlert is reused for the delete-success message via `alertSeverity`
+    // (mirrors /users/update). Defaults to 'error'; ShowAlert sets it per call.
+    const [alertSeverity, setAlertSeverity] = useState<AlertColor>('error');
+    const [dialogOpen, setDialogOpen] = useState<boolean>(false);
+    const [fetchLoading, setFetchLoading] = useState<boolean>(false);
+    const [deleteLoading, setDeleteLoading] = useState<boolean>(false);
+    const [accessChecked, setAccessChecked] = useState<boolean>(false);
+
+    // Fires the deep-link auto-fetch exactly once (survives re-renders).
+    const deepLinkHandledRef = useRef<boolean>(false);
+
+    /**
+     * Surfaces a message through the shared ErrorAlert at the given severity.
+     * Routing EVERY alert through this helper guarantees the severity is set on
+     * each open, so a prior green success alert can never bleed its color into a
+     * subsequent error (and vice versa). Setters are stable, so the callback has
+     * no dependencies and stays referentially constant.
+     *
+     * @param content - The message/error to display (string or caught error).
+     * @param severity - The MUI alert color ('error' | 'success' | ...).
+     */
+    const ShowAlert = useCallback(
+        (content: unknown, severity: AlertColor): void => {
+            setErrorState(content);
+            setAlertSeverity(severity);
+            setAlertOpen(true);
+        },
+        [],
+    );
+
+    /**
+     * Maps a caught error to the correct UX: an admin 403 redirects to the menu
+     * (the real boundary is the server), a 404 shows the friendly not-found text,
+     * and anything else is surfaced through the ErrorAlert. Catches are narrowed
+     * with `IsApiError` (Ochs: specific error handling, never a blanket cast).
+     *
+     * @param err - The value thrown by an awaited `UsersApi` call.
+     */
+    const HandleApiFailure = useCallback(
+        (err: unknown): void => {
+            if (IsApiError(err) && err.status === HTTP_FORBIDDEN) {
+                router.replace(MENU_ROUTE);
+                return;
+            }
+            if (IsApiError(err) && err.status === HTTP_NOT_FOUND) {
+                setFetchedUser(null);
+                setInfoMessage('');
+                ShowAlert(MSG_USER_NOT_FOUND, 'error');
+                return;
+            }
+            ShowAlert(err, 'error');
+        },
+        [router, ShowAlert],
+    );
+
+    /**
+     * Relays the FormField edit as `onChange(name, value)`; clears any stale
+     * details and info text so the previous lookup cannot be mistaken for the
+     * newly-typed id.
+     *
+     * @param _name - The field name (single field here; unused).
+     * @param value - The new User ID value.
+     */
+    const HandleChange = useCallback((_name: string, value: string): void => {
+        setUserId(value);
+        setInfoMessage('');
+        setFetchedUser(null);
+    }, []);
+
+    /**
+     * Looks up a user by id — mirrors COUSR03C `PROCESS-ENTER-KEY`. An empty id is
+     * rejected before any request (the legacy blank-id guard); a successful read
+     * populates the read-only details and shows the confirm hint.
+     *
+     * @param explicitId - Optional id (used by the deep-link effect); falls back
+     *                      to the current `userId` state.
+     */
+    const HandleFetch = useCallback(
+        async (explicitId?: string): Promise<void> => {
+            const lookupId = (explicitId ?? userId).trim();
+            if (lookupId.length === 0) {
+                setInfoMessage('');
+                setFetchedUser(null);
+                ShowAlert(MSG_EMPTY_USER_ID, 'error');
+                return;
+            }
+            setFetchLoading(true);
+            try {
+                const user = await UsersApi.GetUser(lookupId);
+                setFetchedUser(user);
+                setInfoMessage(MSG_CONFIRM_HINT);
+            } catch (err) {
+                HandleApiFailure(err);
+            } finally {
+                setFetchLoading(false);
+            }
+        },
+        [userId, HandleApiFailure, ShowAlert],
+    );
+
+    /**
+     * Deletes the loaded user — mirrors COUSR03C `DELETE-USER-INFO`. DeleteUser
+     * returns 204 with no body, so nothing is read from the response. On success
+     * it clears the read-only details panel and reports the deletion in a GREEN
+     * success alert, STAYING on the screen (no auto-navigation) so the message is
+     * actually seen (FINDING-04) — matching the legacy COUSR03C on-screen
+     * confirmation and the sibling /users/update behavior.
+     */
+    const HandleDelete = useCallback(async (): Promise<void> => {
+        if (!fetchedUser || userId.trim().length === 0) {
+            setDialogOpen(false);
+            return;
+        }
+        const deletedId = fetchedUser.user_id;
+        setDeleteLoading(true);
+        try {
+            await UsersApi.DeleteUser(deletedId);
+            setDialogOpen(false);
+            // Clear the read-only details and the grey confirm hint, then surface
+            // the deletion as a GREEN success alert. FINDING-04: the page stays put
+            // (no auto-navigation) so the success message actually paints — this
+            // mirrors /users/update and the legacy COUSR03C, which remained on the
+            // Delete User screen showing "User <id> has been deleted ...".
+            setFetchedUser(null);
+            setInfoMessage('');
+            ShowAlert(
+                `${MSG_DELETE_SUCCESS_PREFIX}${deletedId}${MSG_DELETE_SUCCESS_SUFFIX}`,
+                'success',
+            );
+        } catch (err) {
+            setDialogOpen(false);
+            HandleApiFailure(err);
+        } finally {
+            setDeleteLoading(false);
+        }
+    }, [fetchedUser, userId, ShowAlert, HandleApiFailure]);
+
+    /**
+     * Opens the delete-confirmation dialog (PF5 equivalent). A confirmation is
+     * only meaningful once a user is loaded; otherwise it surfaces the lookup
+     * guard message rather than opening an empty dialog.
+     */
+    const HandleOpenConfirm = useCallback((): void => {
+        if (!fetchedUser) {
+            setInfoMessage('');
+            ShowAlert(MSG_EMPTY_USER_ID, 'error');
+            return;
+        }
+        setDialogOpen(true);
+    }, [fetchedUser, ShowAlert]);
+
+    /** Closes the dialog without deleting (Cancel / Escape / backdrop). */
+    const HandleCancel = useCallback((): void => {
+        setDialogOpen(false);
+    }, []);
+
+    /** Resets the whole screen — mirrors COUSR03C `CLEAR-CURRENT-SCREEN` (PF4). */
+    const HandleClear = useCallback((): void => {
+        setUserId('');
+        setFetchedUser(null);
+        setInfoMessage('');
+        setErrorState(null);
+        setAlertOpen(false);
+        setAlertSeverity('error');
+        setDialogOpen(false);
+    }, []);
+
+    /** Returns to the admin user list — PF3/PF12 "Back". */
+    const HandleBack = useCallback((): void => {
+        router.push(USERS_LIST_ROUTE);
+    }, [router]);
+
+    // Admin gate (§0.4.4 role-based rendering + §0.8.1 admin-only).
+    useEffect(() => {
+        // client gating is UX only; server require_admin (403) is the real boundary
+        if (!IsAdmin()) {
+            router.replace(MENU_ROUTE);
+            return;
+        }
+        setAccessChecked(true);
+    }, [router]);
+
+    // Deep-link auto-fetch (COUSR03C MAIN-PARA CDEMO-CU03-USR-SELECTED). Runs once
+    // when the list page navigates in via /users/delete?userId=<encoded id>.
+    useEffect(() => {
+        if (!accessChecked || deepLinkHandledRef.current) {
+            return;
+        }
+        const initialId = searchParams.get('userId');
+        if (initialId && initialId.trim().length > 0) {
+            deepLinkHandledRef.current = true;
+            setUserId(initialId);
+            void HandleFetch(initialId);
+        }
+    }, [accessChecked, searchParams, HandleFetch]);
+
+    // PF-key mapping (COUSR03.bms footer: ENTER=Fetch F3=Back F4=Clear F5=Delete).
+    useEffect(() => {
+        if (!accessChecked) {
+            return;
+        }
+        function HandleKeyDown(event: KeyboardEvent): void {
+            // While the confirm dialog is open it is modal and OWNS all keyboard
+            // interaction — MUI Dialog handles Escape → onCancel itself. The
+            // page-level window shortcuts must stand down so Escape is not
+            // double-handled and F-keys cannot re-trigger actions (QA M-28).
+            if (dialogOpen) {
+                return;
+            }
+            if (event.key === 'Enter') {
+                // Let a focused button/link own Enter; only the screen-level
+                // fetch runs when Enter fires outside an interactive control,
+                // so a focused "Back"/"Clear" button is not double-activated.
+                if (ShouldSuppressActivationShortcut(event.key, event.target)) {
+                    return;
+                }
+                void HandleFetch();
+            } else if (event.key === 'F5') {
+                event.preventDefault();
+                HandleOpenConfirm();
+            } else if (event.key === 'F3') {
+                event.preventDefault();
+                HandleBack();
+            } else if (event.key === 'F4') {
+                event.preventDefault();
+                HandleClear();
+            }
+            // Escape is intentionally NOT handled here: the ConfirmDialog owns it
+            // while open, and the AppShell is the single global Escape owner
+            // while the dialog is closed.
+        }
+        window.addEventListener('keydown', HandleKeyDown);
+        return () => {
+            window.removeEventListener('keydown', HandleKeyDown);
+        };
+    }, [
+        accessChecked,
+        dialogOpen,
+        HandleFetch,
+        HandleOpenConfirm,
+        HandleBack,
+        HandleClear,
+    ]);
+
+    // Render nothing until the admin check runs (prevents a content flash for a
+    // non-admin who is about to be redirected, and avoids a hydration mismatch).
+    if (!accessChecked) {
+        return null;
+    }
+
+    // Skip autoFocus when arriving via a deep link so focus is not stolen.
+    const deepLinkId = searchParams.get('userId');
+    const userTypeLabel =
+        fetchedUser && fetchedUser.user_type === 'A' ? 'Admin' : 'User';
+
+    return (
+        <Container maxWidth="sm">
+            <Stack spacing={3} sx={{ py: 3 }}>
+                {/*
+                  * QA I22: use the `h5` type scale for the page title so every
+                  * user-admin CRUD route (list / add / update / delete) shares one
+                  * consistent heading hierarchy (the other three already use `h5`).
+                  */}
+                <Typography variant="h5" component="h1">
+                    Delete User
+                </Typography>
+
+                <Stack direction="row" spacing={2} sx={{ alignItems: 'center' }}>
+                    <FormField
+                        name="user_id"
+                        label="User ID"
+                        value={userId}
+                        onChange={HandleChange}
+                        maxLength={USER_ID_MAX_LENGTH}
+                        autoFocus={!deepLinkId}
+                        autoComplete="off"
+                    />
+                    <Button
+                        variant="contained"
+                        color="primary"
+                        onClick={() => {
+                            void HandleFetch();
+                        }}
+                        disabled={fetchLoading}
+                    >
+                        Fetch
+                    </Button>
+                </Stack>
+
+                {fetchedUser ? (
+                    /*
+                     * The fetched user's read-only attributes render as a
+                     * description list (`<dl>` / `<dt>` / `<dd>`) so each value
+                     * is programmatically associated with its label (QA N-01,
+                     * "associated labels"). The `<dl>`/`<dd>` user-agent margins
+                     * are reset (`m: 0`) so this is a purely semantic change
+                     * with no visual difference. Typography's `component` prop
+                     * keeps every node an MUI Typography (AAP §0.3.4 rule b).
+                     */
+                    <Stack component="dl" spacing={2} sx={{ m: 0 }}>
+                        <Box>
+                            <Typography
+                                component="dt"
+                                variant="subtitle2"
+                                color="text.secondary"
+                            >
+                                First Name
+                            </Typography>
+                            <Typography component="dd" variant="body1" sx={{ m: 0 }}>
+                                {fetchedUser.first_name}
+                            </Typography>
+                        </Box>
+                        <Box>
+                            <Typography
+                                component="dt"
+                                variant="subtitle2"
+                                color="text.secondary"
+                            >
+                                Last Name
+                            </Typography>
+                            <Typography component="dd" variant="body1" sx={{ m: 0 }}>
+                                {fetchedUser.last_name}
+                            </Typography>
+                        </Box>
+                        <Box>
+                            <Typography
+                                component="dt"
+                                variant="subtitle2"
+                                color="text.secondary"
+                            >
+                                User Type
+                            </Typography>
+                            <Typography component="dd" variant="body1" sx={{ m: 0 }}>
+                                {userTypeLabel}
+                            </Typography>
+                        </Box>
+                    </Stack>
+                ) : null}
+
+                {infoMessage ? (
+                    <Typography variant="body2" color="text.secondary">
+                        {infoMessage}
+                    </Typography>
+                ) : null}
+
+                <Stack direction="row" spacing={2}>
+                    <Button
+                        variant="contained"
+                        color="error"
+                        onClick={HandleOpenConfirm}
+                        disabled={!fetchedUser || deleteLoading}
+                    >
+                        Delete
+                    </Button>
+                    <Button variant="outlined" onClick={HandleClear}>
+                        Clear
+                    </Button>
+                    <Button variant="text" onClick={HandleBack}>
+                        Back
+                    </Button>
+                </Stack>
+            </Stack>
+
+            <ConfirmDialog
+                open={dialogOpen}
+                title="Delete User"
+                confirmLabel="Delete"
+                cancelLabel="Cancel"
+                confirmColor="error"
+                loading={deleteLoading}
+                onConfirm={() => {
+                    void HandleDelete();
+                }}
+                onCancel={HandleCancel}
+            >
+                <Typography variant="body2">
+                    You are about to delete user {fetchedUser?.user_id} (
+                    {fetchedUser?.first_name} {fetchedUser?.last_name},{' '}
+                    {userTypeLabel}). This action cannot be undone.
+                </Typography>
+            </ConfirmDialog>
+
+            <ErrorAlert
+                open={alertOpen}
+                onClose={() => setAlertOpen(false)}
+                error={errorState}
+                severity={alertSeverity}
+            />
+        </Container>
+    );
+}

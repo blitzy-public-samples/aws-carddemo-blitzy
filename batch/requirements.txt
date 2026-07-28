@@ -1,0 +1,34 @@
+# CardDemo Batch - Python dependency manifest (pip).
+#
+# Target runtime: Python 3.13.x (AAP 0.6.1; supported range 3.10-3.13, < 3.14).
+# This manifest lists the DIRECT dependencies of the batch package (batch/cli.py
+# and friends) that are NOT already provided by the backend. The batch code also
+# imports the backend `app` package (app.models, app.utils, app.core), so the
+# backend MUST be installed as well. The supported installation (from the
+# repository root) installs both packages editable in one command:
+#
+#   pip install -e ./backend -e ./batch
+#
+# The editable install of ./batch reads batch/pyproject.toml, which declares the
+# console entry point `carddemo-batch` and pulls in `carddemo-backend` from the
+# local ./backend checkout. Use THIS requirements file only when installing the
+# batch dependencies without the editable package (e.g. into an existing
+# environment that already has the backend importable):
+#
+#   pip install -r backend/requirements.txt -r batch/requirements.txt
+#
+# All versions are pinned per AAP 0.6.1 (validated against current stable
+# releases, mid-2026).
+
+# CLI framework (batch/cli.py). Kept out of the backend runtime set on purpose
+# (see backend/requirements.txt), so it is declared here where it is used.
+typer==0.27.0
+
+# Typer's underlying command engine. Upgraded as a COORDINATED PAIR with Typer
+# (QA finding N-04): Click 8.1.8 carried a vulnerable `click.edit` and is below
+# the >= 8.3.3 security floor. Click >= 8.2 changed the
+# `Parameter.make_metavar()` signature that crashed Typer 0.15.1's `--help`
+# (former finding #55), so Click cannot be bumped alone; Typer 0.27.0 uses the
+# new signature and renders `--help` cleanly with Click 8.4.2, which also
+# satisfies uvicorn's `click>=7.0` constraint (no conflict with the backend).
+click==8.4.2

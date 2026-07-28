@@ -1,0 +1,139 @@
+# =============================================================================
+# CardDemo Backend — PEP 621 project manifest, dependencies & tooling config.
+#
+# Greenfield FastAPI backend of the modernized CardDemo application, ported from
+# the legacy COBOL/CICS/VSAM mainframe stack (AAP §0.4.1, §0.5.4, §0.6.1).
+#
+# Dependency pins mirror ``backend/requirements.txt`` package-for-package and
+# version-for-version — that file is the single source of truth for pins, and
+# this manifest MUST NOT introduce version drift. See the ``dependencies``
+# section below for the packages deliberately kept out of the backend runtime
+# set (the batch-only CLI dependency and the test-only tooling).
+#
+# No secrets, environment values, or private index URLs appear in this file
+# (Ochs Rule #3: configuration is read from the environment, never hardcoded;
+# all dependencies resolve from the public PyPI index).
+# =============================================================================
+
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "carddemo-backend"
+version = "1.0.0"
+description = "Modernized CardDemo FastAPI backend — REST API over PostgreSQL, ported from legacy COBOL/CICS/VSAM."
+requires-python = ">=3.13"
+license = { text = "Apache-2.0" }
+
+# -----------------------------------------------------------------------------
+# Runtime dependencies.
+#
+# This list mirrors ``backend/requirements.txt`` EXACTLY, minus three classes of
+# entries that do not belong in the backend runtime set:
+#   * ``typer``   — batch/ CLI dependency, not a backend service dependency.
+#   * ``pytest``, ``pytest-asyncio`` — test tooling (see the ``dev`` group).
+#   * ``httpx``   — test HTTP client (see the ``dev`` group).
+# Keep this synchronized with requirements.txt; do not change a version here
+# without changing it there as well.
+# -----------------------------------------------------------------------------
+dependencies = [
+    # Web framework / ASGI server / multipart form parsing (login form).
+    # python-multipart >= 0.0.32 (QA finding M-23): < 0.0.32 has a malformed-
+    # multipart DoS; it is NOT removable because Starlette 1.3.1 hard-imports it
+    # at ``starlette.requests`` load time even without Form/File endpoints.
+    "fastapi==0.136.1",
+    # starlette pinned as a DIRECT dependency (QA finding M-15): app/main.py
+    # imports from starlette directly (SecurityHeaders / CSRF / correlation-id
+    # middleware), so it is part of this service's own contract and must not float
+    # with FastAPI's transitive `starlette>=0.46.0` range. 1.3.1 is what FastAPI
+    # 0.136.1 resolves.
+    "starlette==1.3.1",
+    "uvicorn[standard]==0.34.0",
+    "python-multipart==0.0.32",
+    # Validation / typed settings (Ochs Rule #3: env-driven configuration).
+    "pydantic==2.10.4",
+    "pydantic-settings==2.7.1",
+    "email-validator==2.2.0",
+    # ORM / migrations / PostgreSQL drivers. The [asyncio] extra pulls greenlet,
+    # which SQLAlchemy's async engine requires on Python 3.13; greenlet is also
+    # pinned explicitly for reproducible builds.
+    "sqlalchemy[asyncio]==2.0.36",
+    "greenlet==3.5.3",
+    "alembic==1.14.0",
+    "asyncpg==0.30.0",
+    "psycopg2-binary==2.9.10",
+    # Security: password hashing + JWT (legacy plaintext SEC-USR-PWD -> hash).
+    # bcrypt is pinned to 4.0.1 because passlib 1.7.4 cannot read bcrypt
+    # >= 4.1/5.x (which removed ``__about__.__version__``); 4.0.1 is the last
+    # fully compatible release line.
+    "passlib[bcrypt]==1.7.4",
+    "bcrypt==4.0.1",
+    # PyJWT >= 2.13.0 (QA finding M-23): earlier pins carry known advisories in
+    # the JWT decode/verify path; 2.13.0 is the current patched release.
+    "PyJWT==2.13.0",
+    # Report / statement generation (CSV via the stdlib ``csv`` module; PDF and
+    # HTML rendering via reportlab + Jinja2).
+    # reportlab 4.5.1 (QA finding I-01): clears the Python 3.13 AST deprecation
+    # warning from rl_safe_eval that 4.2.5 emitted; latest 4.x (no 5.x major bump).
+    "reportlab==4.5.1",
+    "Jinja2==3.1.6",
+]
+
+[project.optional-dependencies]
+# Development / test tooling for the backend's async unit, integration, and
+# golden-master parity suites. Versions mirror ``backend/requirements.txt``.
+# Install with: ``pip install -e '.[dev]'``.
+dev = [
+    # pytest >= 9.0.3 (QA finding M-24): 8.3.4 has a fixed tmpdir vulnerability
+    # and this suite performs privileged DB operations. pytest-asyncio 1.x is the
+    # compatible pair (0.25.2 caps at pytest < 9) and makes the async-fixture loop
+    # scope explicit-by-default, clearing the prior deprecation warning (N-05).
+    "pytest==9.1.1",
+    "pytest-asyncio==1.4.0",
+    "httpx==0.28.1",
+]
+
+# -----------------------------------------------------------------------------
+# setuptools package discovery.
+#
+# Ship only the importable ``app`` package tree (backend/app/). The ``tests``
+# and ``alembic`` directories are project artifacts, not distributable library
+# packages, so they are excluded from the wheel/sdist.
+# -----------------------------------------------------------------------------
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["app*"]
+exclude = ["tests*", "alembic*"]
+
+# -----------------------------------------------------------------------------
+# pytest configuration.
+#
+# ``asyncio_mode = "auto"`` lets the backend's async test suites run without a
+# per-test ``@pytest.mark.asyncio`` decorator (critical for the async unit,
+# integration, and golden-master parity tests). Tests live under
+# ``backend/tests/`` so ``cd backend && pytest`` works out of the box.
+#
+# ``asyncio_default_fixture_loop_scope = "function"`` pins the event-loop scope
+# for async fixtures explicitly (QA finding N-05). Leaving it unset emits a
+# pytest-asyncio DeprecationWarning and risks a silent behavior change in a
+# future release; "function" matches this suite's function-scoped async fixtures
+# (``test_engine``/``db_session``), each created and disposed within its own
+# test's loop.
+# -----------------------------------------------------------------------------
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+addopts = "-ra -q"
+
+# -----------------------------------------------------------------------------
+# Optional, dev-only formatter/linter configuration encoding the Ochs
+# formatting rule (4-space indentation; lines kept under 120 characters). Ruff
+# is NOT a declared dependency of this project — this table is purely advisory
+# and is ignored unless a developer has ruff installed in their environment.
+# -----------------------------------------------------------------------------
+[tool.ruff]
+line-length = 120
+indent-width = 4

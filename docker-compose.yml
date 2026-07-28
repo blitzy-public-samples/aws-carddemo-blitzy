@@ -1,0 +1,434 @@
+# =============================================================================
+# CardDemo modernized stack — root Docker Compose topology (local / dev).
+#
+# Traceability: greenfield target for the CardDemo COBOL -> modern migration
+# (AAP 0.4.1 / 0.5.4 / 0.6.3 — CREATE). There is NO legacy source file for this
+# artifact; it is new infrastructure that replaces the mainframe CICS region and
+# JCL/PROC orchestration with a three-tier container topology:
+#
+#   * db       PostgreSQL 17 — relational store that replaces VSAM KSDS + AIX.
+#   * backend  FastAPI (./backend) — REST API that replaces the CICS online
+#              COBOL programs; serves app.main:app on :8000.
+#   * frontend Next.js + Material UI (./frontend) — SPA that replaces the BMS
+#              3270 maps; serves the standalone Next.js server on :3000.
+#
+# Ochs Rule #3 (no hardcoding secrets): NO real secret is committed here. Every
+# credential/key is supplied through ${VAR:-default} interpolation where the
+# default is an OBVIOUS, non-production dev placeholder, or from the developer's
+# own environment (shell / root .env / the optional per-service env_file noted
+# on the backend service). Production MUST override POSTGRES_PASSWORD and
+# SECRET_KEY with real values from the environment — never commit real secrets.
+#
+# -----------------------------------------------------------------------------
+# Usage
+# -----------------------------------------------------------------------------
+# Warm the database only (default profile — backend/frontend are gated behind
+# the `full` profile, so this does not require their source to be built yet):
+#
+#     docker compose up -d db
+#
+# Bring up the whole stack (builds backend + frontend from their Dockerfiles):
+#
+#     docker compose --profile full up -d --build
+#
+# Database migrations run AUTOMATICALLY as part of the full-stack bring-up above
+# (QA finding I-12): the one-shot `migrator` service applies `alembic upgrade
+# head` and the backend depends on it with service_completed_successfully, so a
+# first `--profile full up` on a brand-new volume is fully migrated before the
+# backend starts — no manual step required. Migrations are still kept OUT of the
+# backend IMAGE startup so a plain container boot stays idempotent and side-effect
+# free; the dedicated migrator service (not image CMD) owns them.
+#
+# To apply migrations MANUALLY instead (host-based development, or to re-run /
+# inspect them explicitly), the backend image can run the same command directly.
+# The backend service mounts the repository's app/data read-only and sets
+# CARDDEMO_ASCII_DIR / CARDDEMO_EBCDIC_DIR (see the backend service below), so
+# `run --rm` inherits both and this command seeds all 10 tables with NO extra
+# flags or volume mounts required (QA finding F3):
+#
+#     docker compose --profile full run --rm backend alembic upgrade head
+#
+# -----------------------------------------------------------------------------
+# Parallel-clone / multi-instance isolation
+# -----------------------------------------------------------------------------
+# Host ports and the Postgres credentials/db name are all interpolated so that
+# several checkouts can run side by side without colliding. Compose already
+# scopes container, network, and volume names by project (derived from the
+# directory name, or COMPOSE_PROJECT_NAME); only the *published host ports* need
+# an explicit offset, for example:
+#
+#     POSTGRES_HOST_PORT=$((5432 + CLONE_INDEX)) \
+#     BACKEND_HOST_PORT=$((8000 + CLONE_INDEX)) \
+#     FRONTEND_HOST_PORT=$((3000 + CLONE_INDEX)) \
+#     COMPOSE_PROJECT_NAME=carddemo-$CLONE_INDEX \
+#         docker compose up -d db
+#
+# NOTE: the obsolete top-level `version:` key is intentionally omitted; current
+# Docker Compose (the Compose Specification) ignores it and warns when present.
+# =============================================================================
+
+services:
+
+  # ---------------------------------------------------------------------------
+  # db — PostgreSQL 17. Relational replacement for the legacy VSAM datastore.
+  # Runs under the DEFAULT profile so `docker compose up -d db` can warm the
+  # database on its own, before the application images exist.
+  # ---------------------------------------------------------------------------
+  db:
+    image: postgres:17
+    # OS-CVE posture (QA finding I-01): this is the STOCK upstream postgres:17
+    # image, pinned to the AAP-specified tag (AAP 0.6.1). It is PULLED, not built
+    # from a Dockerfile here, so its OS packages cannot be patched in a local build
+    # layer the way the backend/frontend images are (those add apt/apk upgrade
+    # layers). The `17` tag tracks upstream 17.x PATCH releases, so a periodic
+    # `docker compose pull` (or a rebuild) picks up the latest patched minor with
+    # its security fixes. Residual base-image CVEs that have no upstream fix yet
+    # remain an upstream / deployment-pipeline concern and should be scanned in CI
+    # against the exact published digest (see the backend Dockerfile supply-chain
+    # note). Changing away from the pinned postgres:17 is intentionally NOT done
+    # here because the AAP fixes the datastore version.
+    # Credentials / database name: dev-only defaults via interpolation
+    # (Ochs Rule #3). Override POSTGRES_PASSWORD from the environment for any
+    # shared or production use — the default below is plainly not a real secret.
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-carddemo}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-carddemo}
+      POSTGRES_DB: ${POSTGRES_DB:-carddemo}
+    # Publish 5432 for host tooling (psql, host-run migrations/loaders, ...).
+    # ${POSTGRES_HOST_PORT} lets parallel clones pick non-colliding host ports.
+    # QA findings M-12 / M-23 / I-04: bind to the LOOPBACK interface by default
+    # so the database is reachable only from the host, NOT from the LAN/other
+    # machines. The backend/batch reach the DB over the compose network via the
+    # `db` service DNS -- NOT this published port -- so loopback-binding is fully
+    # non-breaking; a production deployment can omit this publish entirely.
+    # Override ${DB_BIND_HOST} (e.g. to 0.0.0.0) only for a deliberate, secured
+    # remote-access deployment.
+    ports:
+      - "${DB_BIND_HOST:-127.0.0.1}:${POSTGRES_HOST_PORT:-5432}:5432"
+    # Least-privilege container hardening (QA finding M-23). PostgreSQL's official
+    # entrypoint starts as root to chown the data dir and create its socket dir,
+    # then drops to the `postgres` user via gosu, so it needs a SMALL capability
+    # set (CHOWN/DAC_OVERRIDE/FOWNER for the chown+initdb, SETUID/SETGID for the
+    # privilege drop) -- everything else is dropped. `no-new-privileges` blocks
+    # setuid escalation. The root filesystem is read-only; the data lives in the
+    # named volume (writable) and the socket/temp dirs are backed by tmpfs.
+    security_opt:
+      - "no-new-privileges:true"
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN
+      - DAC_OVERRIDE
+      - FOWNER
+      - SETGID
+      - SETUID
+    read_only: true
+    tmpfs:
+      - /tmp
+      - /var/run/postgresql
+    # Persist data in a named volume so it survives `docker compose down`.
+    volumes:
+      - carddemo_pgdata:/var/lib/postgresql/data
+    # Dependents wait on `service_healthy`. The doubled `$$` escapes Compose
+    # interpolation so POSTGRES_USER / POSTGRES_DB are expanded by the shell
+    # INSIDE the container (against the values set above), not at parse time.
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+    # Bound container log growth (QA finding I-09). Without this the Docker daemon
+    # uses the json-file driver with NO size cap, so logs can grow until the disk
+    # fills on a long-running deployment. Cap each service to a few rotated files.
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    networks:
+      - carddemo-net
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------------------
+  # migrator — one-shot Alembic schema+seed migration runner (QA finding I-12).
+  #
+  # Runs `alembic upgrade head` ONCE against the database, then exits. The
+  # backend depends on it with `condition: service_completed_successfully`, so a
+  # full-stack bring-up ALWAYS applies migrations BEFORE the backend starts —
+  # the previous topology left migrations as a manual step, so a first-run
+  # `docker compose --profile full up` started the backend against an unmigrated
+  # schema (backend unhealthy -> frontend never started). This automates the
+  # DOCUMENTED `run --rm backend alembic upgrade head` step: it reuses the SAME
+  # backend image (same build context) and overrides only the command, so it
+  # runs migration 0001 (schema) .. head and seed migration 0002_seed_data.py.
+  #
+  # Config mirrors the backend's database wiring: the compose-internal `db` host
+  # (NOT localhost), the async + sync driver URLs, SECRET_KEY passed through from
+  # the environment (alembic/env.py imports app.core.config, which requires a
+  # >=32-char SECRET_KEY -> a full-stack start without a real key fails closed
+  # here exactly as the backend would), and the CARDDEMO_ASCII_DIR /
+  # CARDDEMO_EBCDIC_DIR seed locations pointing at the read-only app/data mount
+  # so the seed migration finds its inputs with no extra flags. Gated behind the
+  # `full` profile so `docker compose up -d db` never triggers it.
+  # ---------------------------------------------------------------------------
+  migrator:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    # Do not migrate until PostgreSQL reports healthy (avoids connection races).
+    depends_on:
+      db:
+        condition: service_healthy
+    # Same env_file + database wiring as the backend (see backend service for the
+    # detailed rationale). Values in `environment:` win over the env_file so the
+    # container always targets the compose-internal `db` host.
+    env_file:
+      - path: ./backend/.env
+        required: false
+    environment:
+      DATABASE_URL: "postgresql+asyncpg://${POSTGRES_USER:-carddemo}:${POSTGRES_PASSWORD:-carddemo}\
+        @db:5432/${POSTGRES_DB:-carddemo}"
+      SYNC_DATABASE_URL: "postgresql+psycopg2://${POSTGRES_USER:-carddemo}:${POSTGRES_PASSWORD:-carddemo}\
+        @db:5432/${POSTGRES_DB:-carddemo}"
+      SECRET_KEY: ${SECRET_KEY:-}
+      ENVIRONMENT: ${ENVIRONMENT:-development}
+      CARDDEMO_ASCII_DIR: /app/data/ASCII
+      CARDDEMO_EBCDIC_DIR: /app/data/EBCDIC
+    # Read-only app/data mount supplies the ASCII/EBCDIC seed inputs consumed by
+    # migration 0002_seed_data.py (same mount the backend declares).
+    volumes:
+      - ./app/data:/app/data:ro
+    # Override the image CMD (uvicorn) with the migration command, then exit.
+    command: ["alembic", "upgrade", "head"]
+    # One-shot job: never restart. `service_completed_successfully` on the backend
+    # requires this container to exit 0, so a failed migration blocks the backend
+    # (fails closed) rather than starting it against a half-migrated schema.
+    restart: "no"
+    # Bound container log growth (QA finding I-09): rotate the json-file logs.
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    networks:
+      - carddemo-net
+    profiles:
+      - full
+
+  # ---------------------------------------------------------------------------
+  # backend — FastAPI service built from ./backend/Dockerfile. Replaces the
+  # CICS online COBOL programs. Gated behind the `full` profile so it is only
+  # built/started for a full-stack bring-up.
+  # ---------------------------------------------------------------------------
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    # Do not start until PostgreSQL reports healthy AND migrations have completed
+    # (QA finding I-12): the one-shot `migrator` service applies `alembic upgrade
+    # head` first, so the backend never boots against an unmigrated schema.
+    depends_on:
+      db:
+        condition: service_healthy
+      migrator:
+        condition: service_completed_successfully
+    # Runtime configuration read by app/core/config.py (pydantic-settings):
+    #   * DATABASE_URL / SYNC_DATABASE_URL point at the compose-internal `db`
+    #     hostname (NOT localhost) and carry the async / sync drivers.
+    #   * SECRET_KEY has NO default in config.py and must be >= 32 characters.
+    #     This file bakes in NO signing key (QA finding M-25): SECRET_KEY is
+    #     passed through from the environment and resolves to EMPTY when unset
+    #     (so the db-only `docker compose up -d db` bring-up is never blocked).
+    #     A full-stack start without an explicit key therefore FAILS CLOSED
+    #     inside config.py — ValidateSecretKey rejects a blank/short key — rather
+    #     than silently running on a shared placeholder. Provide a real key via
+    #     `export SECRET_KEY=...` or an uncommented backend/.env.
+    #   * Every value is interpolated — no real secret is baked into this file.
+    #
+    # Backend runtime configuration is loaded from ./backend/.env when present
+    # (QA finding M-07: Compose now loads the DOCUMENTED backend env file rather
+    # than ignoring it). `required: false` means the file is skipped without error
+    # when a developer has not created one (e.g. the db-only bring-up, or a
+    # checkout that only copied backend/.env.example). Values in the `environment:`
+    # block below are applied AFTER the env_file and therefore WIN, so the
+    # DATABASE_URL / SYNC_DATABASE_URL overrides always point the container at the
+    # compose-internal `db` host rather than a localhost value that a copied .env
+    # might carry. Put SECRET_KEY (and any other real secret) in backend/.env; it
+    # is git-ignored and never baked into the image.
+    env_file:
+      - path: ./backend/.env
+        required: false
+    environment:
+      DATABASE_URL: "postgresql+asyncpg://${POSTGRES_USER:-carddemo}:${POSTGRES_PASSWORD:-carddemo}\
+        @db:5432/${POSTGRES_DB:-carddemo}"
+      SYNC_DATABASE_URL: "postgresql+psycopg2://${POSTGRES_USER:-carddemo}:${POSTGRES_PASSWORD:-carddemo}\
+        @db:5432/${POSTGRES_DB:-carddemo}"
+      SECRET_KEY: ${SECRET_KEY:-}
+      ENVIRONMENT: ${ENVIRONMENT:-development}
+      # QA finding I-17: allow BOTH the `localhost` and `127.0.0.1` forms of the
+      # frontend origin. The browser sends an Origin header that exactly matches
+      # the host the SPA was loaded from, and `localhost` and `127.0.0.1` are
+      # DISTINCT origins for CORS. Publishing only `localhost` here made a SPA
+      # opened at http://127.0.0.1:${FRONTEND_HOST_PORT} fail every cross-origin
+      # preflight (400) even though the loopback address is equivalent. Listing
+      # both aliases keeps either host usable; config.py's AssembleCorsOrigins
+      # splits this comma-separated value and CORS_ORIGIN_PATTERN admits both.
+      BACKEND_CORS_ORIGINS: http://localhost:${FRONTEND_HOST_PORT:-3000},http://127.0.0.1:${FRONTEND_HOST_PORT:-3000}
+      # Seed-data locations consumed by `alembic upgrade head` (migration
+      # 0002_seed_data.py). They point the seed loader explicitly at the
+      # read-only app/data mount declared below so the DOCUMENTED containerized
+      # migration command works with no extra flags (QA finding F3). On a host
+      # checkout the loader instead falls back to the repo-root app/data, so
+      # these overrides are container-only and harmless elsewhere.
+      CARDDEMO_ASCII_DIR: /app/data/ASCII
+      CARDDEMO_EBCDIC_DIR: /app/data/EBCDIC
+    # Mount the repository's legacy reference datasets read-only so the Alembic
+    # seed migration can read app/data/ASCII/*.txt and the EBCDIC USRSEC dataset.
+    # The backend build context is ./backend, so the repo-root app/data is NOT in
+    # the image; this run-time mount supplies it for
+    # `docker compose --profile full run --rm backend alembic upgrade head`
+    # WITHOUT baking reference data into the image (preserves the F1 image
+    # hygiene fix). It is read-only and is unused by the running API, which reads
+    # only from the database.
+    volumes:
+      - ./app/data:/app/data:ro
+    # Publish the ASGI port. The image CMD already runs
+    # `uvicorn app.main:app --host 0.0.0.0 --port 8000`, so no `command:` here.
+    # QA findings M-12 / M-23: bind to loopback by default (host-only reach; a
+    # reverse proxy / deliberate deployment overrides ${BACKEND_BIND_HOST}).
+    ports:
+      - "${BACKEND_BIND_HOST:-127.0.0.1}:${BACKEND_HOST_PORT:-8000}:8000"
+    # Least-privilege container hardening (QA finding M-23). The backend runs as
+    # the non-root `appuser`, is a STATELESS API (reads app/data read-only, talks
+    # to PostgreSQL, writes nothing to its own filesystem, and PYTHONDONTWRITEBYTE-
+    # CODE=1 suppresses .pyc), so it needs NO Linux capabilities and runs on a
+    # read-only root filesystem with only a small tmpfs for /tmp. `no-new-
+    # privileges` blocks any setuid escalation.
+    security_opt:
+      - "no-new-privileges:true"
+    cap_drop:
+      - ALL
+    read_only: true
+    tmpfs:
+      - /tmp
+    # Readiness gate (QA finding F5). Polls the /health/ready probe, which runs a
+    # `SELECT 1` against PostgreSQL and returns 200 only when the database is
+    # reachable (503 otherwise). The python:3.13-slim base has no curl, so the
+    # check uses the stdlib urllib client: urlopen() raises on any non-2xx status
+    # (a 503 -> HTTPError -> non-zero exit -> "unhealthy"), so the service reports
+    # healthy only once it can genuinely serve. The frontend gates on this below.
+    # 127.0.0.1 (not `localhost`) forces IPv4 to match uvicorn's 0.0.0.0 bind and
+    # avoids any IPv6-first (::1) resolution mismatch.
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - import urllib.request; urllib.request.urlopen("http://127.0.0.1:8000/health/ready", timeout=3)
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    # Bound container log growth (QA finding I-09): rotate the json-file logs.
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    networks:
+      - carddemo-net
+    profiles:
+      - full
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------------------
+  # frontend — Next.js + Material UI SPA built from ./frontend/Dockerfile.
+  # Replaces the BMS 3270 maps. Also gated behind the `full` profile.
+  # ---------------------------------------------------------------------------
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      # NEXT_PUBLIC_* values are INLINED into the client bundle at build time,
+      # so the backend origin must be supplied as a build arg (not only at
+      # runtime). It is the ORIGIN ONLY — the axios client appends `/api/v1`.
+      # The browser reaches the backend on its host-published port, so this is
+      # localhost:${BACKEND_HOST_PORT}, NOT the compose-internal `backend` host.
+      args:
+        NEXT_PUBLIC_API_URL: http://localhost:${BACKEND_HOST_PORT:-8000}
+    # Start only after the backend is HEALTHY (QA finding F5), not merely
+    # created: the SPA is useless until the API can serve, so gate on the
+    # backend's /health/ready-backed healthcheck rather than plain ordering.
+    depends_on:
+      backend:
+        condition: service_healthy
+    # Mirrors the build arg at runtime for any server-side read; the operative
+    # value for client code is the build arg above. Origin only, no /api/v1.
+    environment:
+      NEXT_PUBLIC_API_URL: http://localhost:${BACKEND_HOST_PORT:-8000}
+    # Publish the Next.js port. The image CMD already runs `node server.js`
+    # (standalone output) bound to 0.0.0.0:3000, so no `command:` here.
+    # QA findings M-12 / M-23: bind to loopback by default (host-only reach; a
+    # reverse proxy / deliberate deployment overrides ${FRONTEND_BIND_HOST}).
+    ports:
+      - "${FRONTEND_BIND_HOST:-127.0.0.1}:${FRONTEND_HOST_PORT:-3000}:3000"
+    # Least-privilege container hardening (QA finding M-23). The Next.js standalone
+    # server runs as the non-root `nextjs` user and needs NO Linux capabilities.
+    # The root filesystem is read-only; a small tmpfs backs /tmp and the Next.js
+    # runtime cache dir (.next/cache) so any on-demand cache write still succeeds
+    # without a writable image layer. `no-new-privileges` blocks setuid escalation.
+    security_opt:
+      - "no-new-privileges:true"
+    cap_drop:
+      - ALL
+    read_only: true
+    tmpfs:
+      - /tmp
+      - /app/.next/cache
+    # Liveness/readiness gate for the SPA (QA finding F5). The node:22-alpine base
+    # ships BusyBox wget (no curl); `-O /dev/null` discards the body and wget
+    # exits non-zero on any HTTP error status. It probes /signon (a real 200 page)
+    # rather than `/`, because `/` now issues a redirect to /signon (F4) and a
+    # bare probe should assert a concrete served page. The host is 127.0.0.1, NOT
+    # `localhost`: BusyBox wget resolves `localhost` to IPv6 ::1 first, but the
+    # Next.js standalone server binds IPv4 0.0.0.0 (HOSTNAME=0.0.0.0), so a
+    # `localhost` probe hits ::1:3000 and is refused. 127.0.0.1 forces IPv4.
+    healthcheck:
+      test:
+        - CMD
+        - wget
+        - -q
+        - -O
+        - /dev/null
+        - http://127.0.0.1:3000/signon
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    # Bound container log growth (QA finding I-09): rotate the json-file logs.
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    networks:
+      - carddemo-net
+    profiles:
+      - full
+    restart: unless-stopped
+
+# -----------------------------------------------------------------------------
+# Named volume for PostgreSQL data. Compose scopes the real volume name by
+# project, so parallel clones get independent volumes automatically.
+# -----------------------------------------------------------------------------
+volumes:
+  carddemo_pgdata:
+
+# -----------------------------------------------------------------------------
+# Shared user-defined bridge network so the three services resolve each other
+# by service name (for example, the backend reaches the database at host `db`).
+# -----------------------------------------------------------------------------
+networks:
+  carddemo-net:
+    driver: bridge
