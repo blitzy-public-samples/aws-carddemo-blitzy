@@ -146,8 +146,6 @@ user), or *admin* (`user_type='A'`).
 | `GET` | `/accounts/{acctId}` | View account with linked customer | CAVW / `COACTVWC` | user |
 | `PUT` | `/accounts/{acctId}` | Update account (optimistic locking) | CAUP / `COACTUPC` | user |
 | `GET` | `/cards` | List cards (paginated, ≤ 7 per page) | CCLI / `COCRDLIC` | user |
-| `GET` | `/cards/by-account/{acctId}` | View a card by its owning account (used by the `/cards/view` screen) | CCDL / `COCRDSLC` | user |
-| `PUT` | `/cards/by-account/{acctId}` | Update a card by its owning account (used by the `/cards/update` screen) | CCUP / `COCRDUPC` | user |
 | `GET` | `/cards/{cardNum}` | View a card by card number | CCDL / `COCRDSLC` | user |
 | `PUT` | `/cards/{cardNum}` | Update a card by card number | CCUP / `COCRDUPC` | user |
 | `GET` | `/transactions` | List transactions (paginated) | CT00 / `COTRN00C` | user |
@@ -162,15 +160,16 @@ user), or *admin* (`user_type='A'`).
 | `PUT` | `/admin/users/{userId}` | Update a user | CU02 / `COUSR02C` | admin |
 | `DELETE` | `/admin/users/{userId}` | Delete a user | CU03 / `COUSR03C` | admin |
 
-> **Reconciled to code.** This table lists all **22** operations implemented in
+> **Reconciled to code.** This table lists all **20** operations implemented in
 > [`backend/app/api/v1/`](../backend/app/api/v1) and served under `/api/v1`.
 > Alongside the core actions it includes the two convenience read routes
 > `GET /billpay/{acctId}` and `GET /admin/users/{userId}`; `POST /auth/logout`
-> (server-side session revocation); and the account-keyed card routes
-> `GET`/`PUT /cards/by-account/{acctId}`, which the `/cards/view` and
-> `/cards/update` screens call because the card list masks `card_num`, so the UI
-> addresses a card by its unmasked owning account id. The PAN-keyed
-> `GET`/`PUT /cards/{cardNum}` routes are retained per the AAP.
+> (server-side session revocation); and the PAN-keyed card routes
+> `GET`/`PUT /cards/{cardNum}` (CCDL/CCUP) per the AAP §0.5.5. The card list
+> (`GET /cards`) masks `card_num` in its rows; the `/cards/view` and
+> `/cards/update` screens address a specific card by its card number. The two
+> health probes `GET /health` and `GET /health/ready` are served outside the
+> `/api/v1` prefix and are not counted among these 20 operations.
 
 
 ## Endpoints
@@ -557,13 +556,25 @@ immutable.
 
 **Path parameters:** `cardNum` — 16-digit card number.
 
-**Request body** (`CardUpdate`):
+**Request body** (`CardUpdate`): the optimistic-lock control field `before_image`
+is **required**, together with the three editable card fields. The card number
+and owning account are immutable and are not part of the body.
 
-| Field | Type | Description |
-| :---- | :--- | :---------- |
-| `embossed_name` | string | Name embossed on the card face. |
-| `expiration_date` | date | ISO `YYYY-MM-DD`. |
-| `active_status` | string(1) | Active flag (`Y`/`N`). |
+| Field | Type | Required | Description |
+| :---- | :--- | :------- | :---------- |
+| `before_image` | `CardBeforeImage` | **yes** | Last-read image of the editable fields, used for the optimistic-lock check (fields below). |
+| `embossed_name` | string(50) | **yes** | Name embossed on the card face. |
+| `expiration_date` | date | **yes** | ISO `YYYY-MM-DD`. |
+| `active_status` | string(1) | **yes** | Active flag (`Y`/`N`). |
+
+`before_image` is a `CardBeforeImage` object — the values the client last read,
+compared field-for-field against the locked row to detect a concurrent change:
+
+| `CardBeforeImage` field | Type | Required | Description |
+| :---------------------- | :--- | :------- | :---------- |
+| `embossed_name` | string(50) | **yes** | Embossed name as last read. |
+| `active_status` | string(1) | **yes** | Active flag as last read. |
+| `expiration_date` | date | no | Expiration date as last read. |
 
 ```http
 PUT /api/v1/cards/4111111111115740
@@ -571,6 +582,11 @@ Content-Type: application/json
 Cookie: carddemo_session=<token>
 
 {
+  "before_image": {
+    "embossed_name": "JANE A DOE",
+    "active_status": "Y",
+    "expiration_date": "2027-05-31"
+  },
   "embossed_name": "JANE A DOE",
   "expiration_date": "2028-05-31",
   "active_status": "Y"
@@ -584,7 +600,8 @@ Cookie: carddemo_session=<token>
 | `200 OK` | Card updated. |
 | `401 Unauthorized` | No valid session or token. |
 | `404 Not Found` | No card exists for `cardNum`. |
-| `422 Unprocessable Entity` | Request body fails schema validation. |
+| `409 Conflict` | The supplied `before_image` no longer matches the locked row — the card changed concurrently between read and write (`OptimisticLockError`). Re-read and retry. |
+| `422 Unprocessable Entity` | Request body fails schema validation — most commonly a missing `before_image` (the field is required), or a malformed value. |
 
 ### Transactions
 
@@ -679,23 +696,29 @@ The service applies the same posting validations as the batch posting program
 (see [Error and Message Codes](#error-and-message-codes)). Amounts are exact
 decimals.
 
-**Request body** (`TransactionCreate`):
+**Request body** (`TransactionCreate`): at least one of `acct_id` / `card_num`
+must be supplied to identify the owning account (the service resolves the card);
+**every other field below is required**. `tran_id` is **not** accepted — the
+posting logic assigns the next sequential identifier.
 
 | Field | Type | Required | Description |
 | :---- | :--- | :------- | :---------- |
-| `card_num` | string(16) | conditional | Card number the transaction posts to. |
-| `acct_id` | string(11) | conditional | Owning account id (alternative key resolution). |
-| `tran_type_cd` | string(2) | yes | Transaction type code. |
-| `tran_cat_cd` | string(4) | yes | Transaction category code. |
-| `tran_amt` | decimal string | yes | Signed amount (`S9(9)V99`), exact decimal. |
-| `tran_source` | string | no | Source channel. |
-| `tran_desc` | string | no | Description. |
-| `merchant_id` | string | no | Merchant identifier. |
-| `merchant_name` | string | no | Merchant name. |
-| `merchant_city` | string | no | Merchant city. |
-| `merchant_zip` | string | no | Merchant ZIP. |
-| `orig_ts` | datetime | no | Origination timestamp (ISO-8601). |
-| `proc_ts` | datetime | no | Processing timestamp (ISO-8601). |
+| `acct_id` | string(11) | conditional | Owning account id (11 digits when given). At least one of `acct_id` / `card_num` is required. |
+| `card_num` | string(16) | conditional | Card number the transaction posts to (16 digits when given). At least one of `acct_id` / `card_num` is required. |
+| `tran_type_cd` | string(2) | **yes** | Transaction type code. |
+| `tran_cat_cd` | string(4) | **yes** | Transaction category code (4 digits). |
+| `tran_source` | string(10) | **yes** | Source channel. |
+| `tran_desc` | string(60) | **yes** | Description (the add screen caps this at 60). |
+| `tran_amt` | decimal string | **yes** | Signed amount (`S9(9)V99`), exact decimal, at most 2 decimal places. |
+| `merchant_id` | string(9) | **yes** | Merchant identifier (9 digits). |
+| `merchant_name` | string(50) | **yes** | Merchant name. |
+| `merchant_city` | string(50) | **yes** | Merchant city. |
+| `merchant_zip` | string(10) | **yes** | Merchant ZIP. |
+| `orig_ts` | datetime | **yes** | Origination timestamp (ISO-8601 date or datetime). |
+| `proc_ts` | datetime | **yes** | Processing timestamp (ISO-8601 date or datetime). |
+
+The example below is complete — it carries `card_num` plus all eleven required
+fields, so it is accepted by schema validation as written:
 
 ```http
 POST /api/v1/transactions
@@ -706,8 +729,15 @@ Cookie: carddemo_session=<token>
   "card_num": "4111111111115740",
   "tran_type_cd": "01",
   "tran_cat_cd": "0005",
+  "tran_source": "POS",
+  "tran_desc": "PURCHASE",
   "tran_amt": "42.50",
-  "tran_desc": "PURCHASE"
+  "merchant_id": "000012345",
+  "merchant_name": "ACME STORE",
+  "merchant_city": "SPRINGFIELD",
+  "merchant_zip": "62704",
+  "orig_ts": "2024-01-15",
+  "proc_ts": "2024-01-15"
 }
 ```
 
@@ -827,10 +857,10 @@ Cookie: carddemo_session=<token>
 ```json
 {
   "acct_id": "00000000011",
-  "curr_bal": "1250.00",
-  "credit_limit": "5000.00",
-  "available_credit": "3750.00",
-  "payment_amount": "0.00",
+  "curr_bal": "212.00",
+  "credit_limit": "4998.00",
+  "available_credit": "4786.00",
+  "payment_amount": "212.00",
   "tran_id": null,
   "message": null
 }
@@ -878,9 +908,9 @@ amount applied, and the posted payment transaction id.
 {
   "acct_id": "00000000011",
   "curr_bal": "0.00",
-  "credit_limit": "5000.00",
-  "available_credit": "5000.00",
-  "payment_amount": "1250.00",
+  "credit_limit": "4998.00",
+  "available_credit": "4998.00",
+  "payment_amount": "212.00",
   "tran_id": "0000000000000456",
   "message": "Payment applied."
 }

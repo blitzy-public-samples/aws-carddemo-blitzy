@@ -111,6 +111,18 @@ RUN mkdir -p public \
 FROM node:22-alpine AS runner
 WORKDIR /app
 
+# OS security patches (QA finding I-01). node:22-alpine is pinned to a TAG
+# (AAP 0.6.1), so the runner inherits whatever Alpine package versions were
+# current when that tag was last published, accruing OS-level CVEs over time
+# (musl, busybox, openssl/libcrypto, ...). `apk upgrade --no-cache` upgrades every
+# ALREADY-INSTALLED package to the latest patched version in the pinned Alpine
+# branch WITHOUT persisting the package index (--no-cache leaves no /var/cache/apk
+# residue), adding NO new packages and keeping the runner minimal. Only the runner
+# ships (the deps/builder stages are discarded by the multi-stage build), so this
+# is the stage whose CVEs the production image actually carries. Residual base CVEs
+# with no fixed Alpine package yet remain a base-image / pipeline concern.
+RUN apk upgrade --no-cache
+
 # Production runtime flags: enable production behavior in Next.js/React and keep
 # telemetry disabled.
 ENV NODE_ENV=production

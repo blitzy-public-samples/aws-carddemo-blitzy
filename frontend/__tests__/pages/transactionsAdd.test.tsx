@@ -499,6 +499,9 @@ describe('TransactionsAddPage', () => {
                     expect.objectContaining(
                         MakeTransactionCreate({ card_num: undefined }),
                     ),
+                    // QA Issue 16: the confirmed add carries a per-operation
+                    // idempotency key so a duplicated submit posts at most once.
+                    expect.any(String),
                 ),
             );
             expect(TransactionsApi.AddTransaction).toHaveBeenCalledTimes(1);

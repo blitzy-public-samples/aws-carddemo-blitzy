@@ -59,6 +59,23 @@ ENV PYTHONUNBUFFERED=1 \
 WORKDIR /app
 
 # -----------------------------------------------------------------------------
+# OS security patches (QA finding I-01). The python:3.13-slim base is pinned to a
+# TAG (AAP 0.6.1), so it inherits whatever Debian package versions were current
+# when that tag was last published, accruing OS-level CVEs over time (libc,
+# openssl, zlib, perl-base, ...). Upgrade every ALREADY-INSTALLED apt package to
+# the latest patched version from the Debian security repositories at BUILD time,
+# in a single cleaned layer (apt lists removed afterwards so nothing bloats the
+# image or leaks a package index). This adds NO new packages — it only patches
+# the ones the base already ships — so it fully preserves the "no build tools /
+# minimal attack surface" posture documented below. Residual base-image CVEs that
+# have no fixed Debian package published yet cannot be patched here and remain a
+# base-image / deployment-pipeline concern (see the supply-chain note above).
+# -----------------------------------------------------------------------------
+RUN apt-get update \
+    && apt-get upgrade -y \
+    && rm -rf /var/lib/apt/lists/*
+
+# -----------------------------------------------------------------------------
 # System dependencies: intentionally NONE.
 #
 # Every pinned dependency in requirements.txt ships self-contained cp313

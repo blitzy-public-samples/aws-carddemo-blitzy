@@ -384,6 +384,60 @@ describe('BillPayPage', () => {
             );
         });
 
+        it('disables Pay Balance after a successful payment so it cannot be re-submitted (QA I24)', async () => {
+            const user = await RenderAndLookup(MakeBillPayResponse());
+
+            // A positive looked-up balance leaves Pay Balance ENABLED.
+            expect(
+                screen.getByRole('button', { name: PAY_BUTTON_LABEL }),
+            ).toBeEnabled();
+
+            const dialog = await OpenPaymentDialog(user);
+            // The server clears the balance on a successful payment.
+            mockPayBill.mockResolvedValueOnce(
+                MakeBillPayResponse({
+                    curr_bal: '0.00',
+                    available_credit: '5000.00',
+                    payment_amount: '1200.00',
+                }),
+            );
+
+            await user.click(
+                within(dialog).getByRole('button', { name: PAY_BUTTON_LABEL }),
+            );
+
+            // Dialog closes and the zeroed balance renders.
+            await waitFor(() =>
+                expect(screen.queryByRole('dialog')).not.toBeInTheDocument(),
+            );
+            expect(
+                screen.getByText('Current Balance: $0.00'),
+            ).toBeInTheDocument();
+
+            // QA I24: with nothing left to pay, the (now unique) page Pay Balance
+            // button is DISABLED -- it does not stay enabled/stale after payment.
+            expect(
+                screen.getByRole('button', { name: PAY_BUTTON_LABEL }),
+            ).toBeDisabled();
+        });
+
+        it('keeps Pay Balance disabled after looking up a zero-balance account (QA I24)', async () => {
+            // Looking up an account that has nothing to pay leaves Pay Balance
+            // disabled, matching the server no-op guard for a non-positive
+            // balance (legacy COBIL00C).
+            await RenderAndLookup(
+                MakeBillPayResponse({
+                    curr_bal: '0.00',
+                    available_credit: '5000.00',
+                    payment_amount: '0.00',
+                }),
+            );
+
+            expect(
+                screen.getByRole('button', { name: PAY_BUTTON_LABEL }),
+            ).toBeDisabled();
+        });
+
         // Scenario 6 — Cancel dialog --------------------------------------------
         it('cancels the dialog without calling PayBill', async () => {
             const user = await RenderAndLookup(MakeBillPayResponse());

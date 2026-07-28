@@ -258,14 +258,15 @@ describe('CardsPage', () => {
         expect(CARD_SUMMARY_HAS_NO_CVV).toBe(true);
     });
 
-    it('is a browse-only grid: a row click does not navigate (C07/C08)', async () => {
+    it('a card row drills into the owning account by OPAQUE acct_id (QA I25)', async () => {
         const user = SetupUser();
-        // QA C07/C08: the list masks `card_num` (AAP 0.7.8), so a row carries no
-        // full PAN and cannot key a card-detail navigation; the earlier row-click
-        // that navigated by owning-account id was removed with its by-account
-        // backend routes (which selected the wrong card via `.limit(1)` on the
-        // NONUNIQUE account->card relationship). Direct card access is by the
-        // card-number picker on the view/update screens, not a list row click.
+        // QA I25: the list is no longer a dead grid -- each row is a selectable
+        // detail action. The list masks `card_num` (AAP 0.7.8), so the row must
+        // NOT be keyed by the PAN; it navigates to the account-view screen by the
+        // row's OPAQUE `acct_id`. This shows the OWNING ACCOUNT (it selects no
+        // specific card), so it does not reintroduce the earlier by-account
+        // card-detail bug that picked the wrong card via `.limit(1)` on the
+        // NONUNIQUE account->card relationship.
         ListCardsMock().mockResolvedValueOnce(
             BuildCardPage([
                 MakeCardSummary({
@@ -277,17 +278,23 @@ describe('CardsPage', () => {
 
         RenderWithProviders(<CardsPage />);
 
-        // The masked cell renders (the grid is populated) but is not an
-        // actionable navigation control; clicking it must not push any route.
-        const maskedCell = await screen.findByText(MASKED_CARD_NUMBER);
-        await user.click(maskedCell);
+        // The row is exposed as a selectable, keyboard-operable row with an
+        // accessible name that references the OPAQUE account id (and the masked
+        // card for context) -- never a raw PAN. The shared DataTable layers
+        // activation onto the row while preserving its role="row" semantics.
+        const rowButton = await screen.findByRole('row', {
+            name: new RegExp(`View account ${ROW_ACCT_ID}`),
+        });
+        await user.click(rowButton);
 
-        expect(mockPush).not.toHaveBeenCalled();
-        // The row is not exposed as a selectable button (DataTable only makes a
-        // row a button when an onRowClick handler is supplied, which it is not).
-        expect(
-            screen.queryByRole('button', { name: /select record/i }),
-        ).not.toBeInTheDocument();
+        // Clicking navigates to the account-view screen keyed by acct_id; the URL
+        // carries the opaque account id, never the card number.
+        expect(mockPush).toHaveBeenCalledWith(
+            `/accounts/view?acctId=${ROW_ACCT_ID}`,
+        );
+        expect(mockPush).not.toHaveBeenCalledWith(
+            expect.stringContaining(RAW_CARD_NUMBER),
+        );
     });
 
     it('refetches with page 2 when the pagination control advances', async () => {
@@ -392,6 +399,40 @@ describe('CardsPage', () => {
         expect(
             within(alert).getByText('Internal Server Error'),
         ).toBeInTheDocument();
+    });
+
+    it('shows a persistent Retry action (not an endless spinner) on load failure and recovers when clicked (QA Issue 11)', async () => {
+        const user = SetupUser();
+        const listMock = ListCardsMock();
+        // First attempt fails; the Retry attempt succeeds with one row.
+        listMock.mockRejectedValueOnce(
+            new ApiError({ status: 500, message: 'Internal Server Error' }),
+        );
+        const recovered = BuildCardPage([
+            MakeCardSummary({ card_num: '************4242' }),
+        ]);
+        listMock.mockResolvedValueOnce(recovered);
+
+        RenderWithProviders(<CardsPage />);
+
+        // A retry affordance is presented and there is NO endless loading
+        // spinner behind it (the pre-fix defect was an infinite spinner).
+        const retryButton = await screen.findByRole('button', { name: /retry/i });
+        expect(retryButton).toBeInTheDocument();
+        expect(
+            screen.queryByLabelText('Loading cards'),
+        ).not.toBeInTheDocument();
+
+        await user.click(retryButton);
+
+        // The recovered data renders and the retry panel is gone.
+        await waitFor(() => {
+            expect(screen.getByText('************4242')).toBeInTheDocument();
+        });
+        expect(
+            screen.queryByRole('button', { name: /retry/i }),
+        ).not.toBeInTheDocument();
+        expect(listMock).toHaveBeenCalledTimes(2);
     });
 
     it('discards a stale (superseded) response so it cannot overwrite newer data (M-05)', async () => {

@@ -29,6 +29,7 @@ from app.utils.validators import (
     ValidateAlphanumeric,
     ValidateDateField,
     ValidateDateOfBirthField,
+    ValidateIdentifier,
     ValidateLength,
     ValidateNoControlChars,
     ValidateNonNegative,
@@ -656,6 +657,41 @@ def test_validate_alphanumeric_rejects_non_str_without_raising():
         alphanumericResult = ValidateAlphanumeric("addressLine", wrongValue)
         assert alphanumericResult.isValid is False
         assert alphanumericResult.message != ""
+
+
+def test_validate_identifier_accepts_alphanumeric_without_space():
+    # QA Issue 18: a canonical fixed-width id (letters and digits, no space)
+    # passes; the sample ids ADMIN001 / USER0001 are the canonical shape.
+    assert ValidateIdentifier("userId", "ADMIN001").isValid is True
+    assert ValidateIdentifier("userId", "user0001").isValid is True
+
+
+def test_validate_identifier_rejects_embedded_space():
+    # QA Issue 18: an interior space is an ambiguous identifier character and
+    # must be rejected (unlike ValidateAlphanumeric, which permits it as legacy
+    # filler). Surrounding whitespace is trimmed upstream, so any space that
+    # reaches this edit is necessarily embedded.
+    spacedResult = ValidateIdentifier("userId", "AB CD001")
+    assert spacedResult.isValid is False
+    assert spacedResult.message != ""
+
+
+def test_validate_identifier_rejects_blank():
+    # A blank identifier is a failed required edit (same order as the sibling
+    # alphanumeric edit: required is checked before format).
+    for blankValue in ("", "   "):
+        blankResult = ValidateIdentifier("userId", blankValue)
+        assert blankResult.isValid is False
+        assert blankResult.message != ""
+
+
+def test_validate_identifier_rejects_non_str_without_raising():
+    # A non-str id is a failed identifier edit, not an exception (mirrors the
+    # defensive guard on every other string validator in this suite).
+    for wrongValue in WRONG_TYPE_VALUES:
+        identifierResult = ValidateIdentifier("userId", wrongValue)
+        assert identifierResult.isValid is False
+        assert identifierResult.message != ""
 
 
 def test_validate_length_rejects_non_str_without_raising():

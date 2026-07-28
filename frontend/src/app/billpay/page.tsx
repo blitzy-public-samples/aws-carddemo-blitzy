@@ -75,6 +75,24 @@ const CONFIRM_DIALOG_TITLE = 'Confirm Bill Payment';
 /** Fallback success message when the API response omits `message`. */
 const PAYMENT_SUCCESS_MESSAGE = 'Bill payment processed successfully.';
 
+/**
+ * Reports whether an account has a positive balance left to pay. The server
+ * pays the FULL balance and only acts when ``curr_bal > 0`` (legacy COBIL00C:
+ * a zero/credit balance is a no-op), so the Pay Balance control is meaningful
+ * only for a positive balance. After a successful payment the response carries
+ * the zeroed balance, so this returns ``false`` and the button disables itself
+ * (QA I24: PAY must not stay enabled/stale after a payment). This is a display
+ * gate, not a monetary computation, so a numeric parse is sufficient; the
+ * authoritative amount and guard remain server-side.
+ *
+ * @param billPayInfo - The current bill-pay preflight/response snapshot.
+ * @returns ``true`` when the current balance is strictly greater than zero.
+ */
+function HasPositiveBalance(billPayInfo: BillPayResponse): boolean {
+    const currentBalance = Number.parseFloat(billPayInfo.curr_bal);
+    return Number.isFinite(currentBalance) && currentBalance > 0;
+}
+
 /* ------------------------------------------------------------------------- */
 /* Page component.                                                           */
 /* ------------------------------------------------------------------------- */
@@ -282,7 +300,19 @@ function BillPayPage() {
                         variant="contained"
                         color="primary"
                         onClick={HandleSubmit}
-                        disabled={!billPayInfo || isLoading}
+                        // QA I24: disable Pay Balance whenever there is nothing
+                        // to pay -- no looked-up account, a request in flight,
+                        // or a non-positive balance (including the zeroed
+                        // balance returned right after a successful payment).
+                        // This stops the control from staying enabled/stale
+                        // after payment and inviting a pointless re-submit; a
+                        // fresh Look Up of a positive-balance account re-enables
+                        // it. The server remains the authoritative guard.
+                        disabled={
+                            !billPayInfo ||
+                            isLoading ||
+                            !HasPositiveBalance(billPayInfo)
+                        }
                     >
                         {PAY_BUTTON_LABEL}
                     </Button>

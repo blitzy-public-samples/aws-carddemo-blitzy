@@ -73,6 +73,7 @@ __all__ = [
     "ValidateNoControlChars",
     "ValidateAlpha",
     "ValidateAlphanumeric",
+    "ValidateIdentifier",
     "ValidateLength",
     "ValidateNumericId",
     "ValidateYesNo",
@@ -159,10 +160,17 @@ MSG_CONTROL_CHARS: Final = "{field} must not contain control characters."
 # and side-effect-free). They use character classes only, so there is no
 # catastrophic-backtracking risk. Alpha and alphanumeric permit the space,
 # matching the legacy INSPECT ... CONVERTING edits that treated the space as an
-# allowed filler character.
+# allowed filler character. IDENTIFIER is the stricter no-space variant used for
+# canonical KEY fields (the user id): a space is legitimate filler inside a free
+# name field but is an ambiguous character inside a fixed-width identifier that
+# becomes a database primary key, a URL path segment, and a token subject (QA
+# Issue 18 -- "ID pattern allows spaces ... ambiguous identifiers"), so the
+# identifier edit forbids it while the shared alphanumeric edit keeps the legacy
+# filler semantics for every other field.
 # ---------------------------------------------------------------------------
 ALPHA_PATTERN: Final = re.compile(r"[A-Za-z ]+")
 ALPHANUMERIC_PATTERN: Final = re.compile(r"[A-Za-z0-9 ]+")
+IDENTIFIER_PATTERN: Final = re.compile(r"[A-Za-z0-9]+")
 DIGITS_PATTERN: Final = re.compile(r"[0-9]+")
 # Disallowed control characters (QA finding F4, Online Security Gate): the C0
 # control range U+0000-U+001F plus DEL U+007F. These have no legitimate place in
@@ -365,6 +373,41 @@ def ValidateAlphanumeric(fieldName: str, value: str) -> ValidationResult:
     if _IsBlank(value):
         return _Invalid(MSG_REQUIRED.format(field=fieldName))
     if ALPHANUMERIC_PATTERN.fullmatch(value) is None:
+        return _Invalid(MSG_ALPHANUMERIC.format(field=fieldName))
+    return _Valid()
+
+
+def ValidateIdentifier(fieldName: str, value: str) -> ValidationResult:
+    """Validate a canonical identifier field: required, letters/digits, no space.
+
+    The stricter sibling of :func:`ValidateAlphanumeric` for fixed-width KEY
+    fields such as the user id (SEC-USR-ID). It applies the same
+    required-then-format order and the same :data:`MSG_ALPHANUMERIC` failure
+    message (so client and server report identically), but it forbids the
+    embedded space that the shared alphanumeric edit permits as legacy filler.
+    An identifier becomes a database primary key, a URL path segment, and a JWT
+    subject, so an embedded space is an ambiguous, non-canonical character with
+    no legitimate place there (QA Issue 18: "ID pattern allows spaces ...
+    ambiguous identifiers"). Surrounding whitespace is already trimmed by the
+    request model (``str_strip_whitespace=True``), so any space that reaches
+    this edit is necessarily an interior one and is correctly rejected.
+
+    Args:
+        fieldName: Field label used to build the failure message.
+        value: The candidate identifier to check.
+
+    Returns:
+        A :class:`ValidationResult`; invalid with :data:`MSG_REQUIRED` when
+        blank or :data:`MSG_ALPHANUMERIC` when a non-alphanumeric character
+        (including an embedded space) is present.
+    """
+    # A non-str (non-None) value is not a representable identifier: reject it as
+    # a failed edit rather than letting the regex raise TypeError.
+    if value is not None and not isinstance(value, str):
+        return _Invalid(MSG_ALPHANUMERIC.format(field=fieldName))
+    if _IsBlank(value):
+        return _Invalid(MSG_REQUIRED.format(field=fieldName))
+    if IDENTIFIER_PATTERN.fullmatch(value) is None:
         return _Invalid(MSG_ALPHANUMERIC.format(field=fieldName))
     return _Valid()
 

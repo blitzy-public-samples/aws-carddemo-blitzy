@@ -46,7 +46,7 @@ from datetime import date, datetime
 from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 from typing import Optional
 
-from pydantic import Field, field_serializer, field_validator
+from pydantic import Field, ValidationInfo, field_serializer, field_validator
 
 from app.schemas.common import OrmBase, RequestBase
 from app.schemas.customer import CustomerRead
@@ -84,6 +84,21 @@ ACTIVE_STATUS_LABEL = "Account status"
 OPEN_DATE_LABEL = "Open date"
 EXPIRATION_DATE_LABEL = "Expiration date"
 REISSUE_DATE_LABEL = "Reissue date"
+
+# Human-readable labels for the two account *limit* fields, used to build the
+# nonnegative-bound failure message (QA finding I5). The five monetary fields
+# are signed ``PIC S9(10)V99`` in the copybook, so balances and cycle
+# accumulators (``curr_bal``, ``curr_cyc_credit``, ``curr_cyc_debit``) remain
+# legitimately signed; only the two *limit* ceilings can never be negative and
+# are therefore bounded. The wording matches
+# ``app.services.account_service.MONEY_FIELD_LABELS`` so a rejection reads
+# identically whether it surfaces at the schema or the service boundary.
+CREDIT_LIMIT_LABEL = "Credit Limit"
+CASH_CREDIT_LIMIT_LABEL = "Cash Credit Limit"
+LIMIT_FIELD_LABELS = {
+    "credit_limit": CREDIT_LIMIT_LABEL,
+    "cash_credit_limit": CASH_CREDIT_LIMIT_LABEL,
+}
 
 # Message surfaced when a monetary field receives a non-decimal value (for
 # example a binary ``float``), so Pydantic reports a clean ``ValidationError``.
@@ -132,10 +147,15 @@ def _ParseAccountDate(rawValue: object) -> Optional[date]:
     """Validate and parse an account date input into a native ``date``.
 
     Reproduces the legacy X(10) date handling for ``ACCT-OPEN-DATE``,
-    ``ACCT-EXPIRAION-DATE`` and ``ACCT-REISSUE-DATE``. A blank/``None`` input
-    yields ``None`` (these columns are nullable); a :class:`datetime.date` (or
-    :class:`datetime.datetime`) is accepted directly so an ORM row loads
-    without a round-trip through text; a string is validated with the ported
+    ``ACCT-EXPIRAION-DATE`` and ``ACCT-REISSUE-DATE``. A genuinely absent value
+    -- Python ``None`` / JSON ``null`` / an omitted optional field -- yields
+    ``None`` (these columns are nullable). A *blank string* is deliberately NOT
+    treated as "no date": it is an explicit-but-empty submission (for example an
+    operator clearing a required date on ``COACTUP`` and saving), so it is
+    rejected with the legacy ``"Date must be supplied."`` edit rather than
+    silently coerced to NULL (QA finding I4). A :class:`datetime.date` (or
+    :class:`datetime.datetime`) is accepted directly so an ORM row loads without
+    a round-trip through text; a non-blank string is validated with the ported
     ``CSUTLDPY`` calendar edits via :func:`app.utils.date_utils.ValidateDate`
     and then parsed with :func:`app.utils.date_utils.ParseLegacyDate`.
 
@@ -144,13 +164,14 @@ def _ParseAccountDate(rawValue: object) -> Optional[date]:
             ``None``).
 
     Returns:
-        The parsed :class:`datetime.date`, or ``None`` when the input is
-        blank/``None``.
+        The parsed :class:`datetime.date`, or ``None`` only when the input is
+        genuinely absent (``None``).
 
     Raises:
-        ValueError: If a supplied string fails the legacy calendar edits. Only
-            the specific :class:`ValueError` is raised (never a bare
-            ``except``) so Pydantic surfaces a clean ``ValidationError``.
+        ValueError: If a supplied string is blank (``"Date must be supplied."``)
+            or fails the legacy calendar edits. Only the specific
+            :class:`ValueError` is raised (never a bare ``except``) so Pydantic
+            surfaces a clean ``ValidationError``.
     """
     if rawValue is None:
         return None
@@ -159,8 +180,13 @@ def _ParseAccountDate(rawValue: object) -> Optional[date]:
     if isinstance(rawValue, date):
         return rawValue
     dateText = str(rawValue).strip()
-    if dateText == "":
-        return None
+    # QA finding I4: a blank string is an explicit-but-empty date submission
+    # (an operator cleared a required date field on COACTUP and saved). It must
+    # NOT be coerced to NULL and committed -- only a genuinely absent value
+    # (already returned by the ``rawValue is None`` guard above) means "no
+    # date". Letting the blank fall through to ``ValidateDate`` yields the
+    # legacy ``"Date must be supplied."`` edit and a clean HTTP 422, instead of
+    # the previous silent ``return None`` that persisted a NULL.
     result = date_utils.ValidateDate(dateText)
     if not result.isValid:
         raise ValueError(result.message)
@@ -718,6 +744,45 @@ class AccountUpdate(RequestBase):
     def ParseDates(cls, value: object) -> Optional[date]:
         """Validate/parse a supplied legacy X(10) date field into a native ``date``."""
         return _ParseAccountDate(value)
+
+    @field_validator("credit_limit", "cash_credit_limit")
+    @classmethod
+    def CheckLimitNonNegative(
+        cls, value: Optional[Decimal], info: ValidationInfo
+    ) -> Optional[Decimal]:
+        """Reject a negative credit or cash-advance limit (QA finding I5).
+
+        The five monetary fields are signed ``PIC S9(10)V99`` in ``CVACT01Y``,
+        but a *limit* is a business ceiling that can never be negative, so the
+        two limit fields carry a nonnegative bound while balances and cycle
+        accumulators stay signed. This runs after :meth:`CoerceMoney` has
+        produced an exact :class:`decimal.Decimal`, and only on a supplied value
+        (an omitted optional field is ``None`` and is left to the partial-update
+        path). A negative limit raises the legacy-style
+        ``"{field} must not be negative."`` edit via
+        :func:`app.utils.validators.ValidateNonNegative`, which Pydantic
+        surfaces as HTTP 422 -- closing the gap where a negative ``credit_limit``
+        was previously accepted and persisted.
+
+        Args:
+            value: The coerced limit value, or ``None`` when the field was
+                omitted from the partial update.
+            info: Pydantic validation context; ``info.field_name`` selects the
+                human-readable label so the message names the specific limit.
+
+        Returns:
+            The unmodified ``value`` when it is absent or nonnegative.
+
+        Raises:
+            ValueError: When a supplied limit value is negative.
+        """
+        if value is None:
+            return value
+        fieldLabel = LIMIT_FIELD_LABELS.get(info.field_name, info.field_name)
+        result = validators.ValidateNonNegative(fieldLabel, value)
+        if not result.isValid:
+            raise ValueError(result.message)
+        return value
 
 
 class AccountDetail(AccountRead):

@@ -469,6 +469,44 @@ describe('TransactionsPage', () => {
             const errorAlert = await screen.findByRole('alert');
             expect(errorAlert).toHaveTextContent(SERVER_ERROR_MESSAGE);
         });
+
+        it('shows a persistent Retry action (not an endless spinner) on load failure and recovers when clicked (QA Issue 11)', async () => {
+            const user = SetupUser();
+            const listMock = TransactionsApi.ListTransactions as jest.Mock;
+            // First attempt fails; the Retry attempt succeeds with one row.
+            listMock.mockRejectedValueOnce(
+                new ApiError({ status: 500, message: SERVER_ERROR_MESSAGE }),
+            );
+            const RECOVERED_TRAN_ID = '0000000000009999';
+            listMock.mockResolvedValueOnce(
+                MakePaginatedResponse<TransactionSummary>([
+                    MakeTransactionSummary({ tran_id: RECOVERED_TRAN_ID }),
+                ]),
+            );
+
+            RenderTransactionsPage();
+
+            // A retry affordance is presented and there is NO endless loading
+            // spinner behind it (the pre-fix defect was an infinite spinner).
+            const retryButton = await screen.findByRole('button', {
+                name: /retry/i,
+            });
+            expect(retryButton).toBeInTheDocument();
+            expect(
+                screen.queryByLabelText('Loading transactions'),
+            ).not.toBeInTheDocument();
+
+            await user.click(retryButton);
+
+            // The recovered data renders and the retry panel is gone.
+            await waitFor(() => {
+                expect(screen.getByText(RECOVERED_TRAN_ID)).toBeInTheDocument();
+            });
+            expect(
+                screen.queryByRole('button', { name: /retry/i }),
+            ).not.toBeInTheDocument();
+            expect(listMock).toHaveBeenCalledTimes(2);
+        });
     });
 
     // --- Scenario 9: request-generation guard (QA M-05).

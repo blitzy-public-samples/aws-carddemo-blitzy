@@ -89,7 +89,7 @@ MSG_USER_TYPE_INVALID = "{field} must be 'A' (admin) or 'U' (regular user)."
 
 
 def _RequireUserId(value: str) -> str:
-    """Validate SEC-USR-ID: mandatory, exactly 8 characters, and alphanumeric.
+    """Validate and canonicalize SEC-USR-ID: mandatory, exactly 8, no-space, UPPER.
 
     Reproduces the legacy fixed-width key edit in the same order the sign-on
     program applies it (1215-EDIT-MANDATORY, then the exact-length edit, then
@@ -104,16 +104,36 @@ def _RequireUserId(value: str) -> str:
     width declaratively; this helper additionally enforces the lower bound so the
     stored width is exact.
 
+    QA Issue 18 (canonical identifier policy) adds two edits here:
+
+        * **No embedded space.** The format edit is :func:`ValidateIdentifier`
+          (not the space-permitting :func:`ValidateAlphanumeric`), so an id such
+          as ``"AB CD001"`` is rejected. A user id is a database primary key, a
+          URL path segment, and a token subject, so an interior space is an
+          ambiguous, non-canonical character with no place there.
+        * **Upper-case canonicalization.** The validated id is returned
+          upper-cased, matching the legacy COSGN00C ``FUNCTION UPPER-CASE`` edit
+          that the sign-on service applies before its USRSEC lookup
+          (``auth_service`` normalizes ``user_id`` to ``.strip().upper()``).
+          Canonicalizing here -- the single point every create flows through --
+          guarantees the STORED id matches the form the sign-on path looks up,
+          so an id created in any case (for example ``"lowercas"``) can always
+          be signed on afterwards. Without this, a lower-case id was stored
+          verbatim yet never matched the uppercased sign-on lookup, another
+          "dead" credential. The password is deliberately NOT folded (that would
+          destroy credential entropy -- QA finding M-01); only the id is
+          canonicalized.
+
     Args:
         value: The candidate user id, already whitespace-stripped by the model.
 
     Returns:
-        The original ``value`` unchanged when it passes every edit.
+        The canonical (upper-cased) user id when it passes every edit.
 
     Raises:
         ValueError: When the value is blank, is not exactly
             :data:`app.utils.validators.USER_ID_LENGTH` characters, or contains
-            a disallowed character.
+            a disallowed character (including an embedded space).
     """
     requiredResult = validators.ValidateRequired(USER_ID_LABEL, value)
     if not requiredResult.isValid:
@@ -123,10 +143,10 @@ def _RequireUserId(value: str) -> str:
     )
     if not lengthResult.isValid:
         raise ValueError(lengthResult.message)
-    formatResult = validators.ValidateAlphanumeric(USER_ID_LABEL, value)
+    formatResult = validators.ValidateIdentifier(USER_ID_LABEL, value)
     if not formatResult.isValid:
         raise ValueError(formatResult.message)
-    return value
+    return value.upper()
 
 
 def _RequireName(fieldLabel: str, value: str) -> str:
@@ -173,24 +193,39 @@ def _RequireUserType(value: str) -> str:
 
 
 def _RequirePassword(value: str) -> str:
-    """Validate SEC-USR-PWD on write: mandatory plaintext (never stored as-is).
+    """Validate SEC-USR-PWD on write: mandatory, exactly 8 chars, plaintext.
 
     The plaintext is only carried inbound; hashing happens in the service /
-    security layer. The width bound (<= 8, the legacy field width) is enforced
-    by the field's ``max_length`` and is deliberately not widened here.
+    security layer, over the EXACT bytes (case preserved -- QA finding M-01, so
+    this helper never folds the case).
+
+    QA Issue 18 (credential policy) adds a meaningful minimum length. The legacy
+    SEC-USR-PWD is a fixed-width ``PIC X(08)`` field, so a password is exactly 8
+    characters: the field's ``max_length`` already enforces the upper bound (the
+    "legacy maximum width" the finding directs us to preserve) and this exact-
+    length edit adds the matching lower bound, symmetric with the exactly-8 user
+    id. It rejects the previously-accepted weak one-character password
+    ("password has no meaningful minimum length") with the shared
+    "must be exactly 8 characters" message.
 
     Args:
         value: The candidate plaintext password, already whitespace-stripped.
 
     Returns:
-        The original ``value`` unchanged when it is present.
+        The original ``value`` unchanged when it is present and exactly 8 chars.
 
     Raises:
-        ValueError: When the value is blank.
+        ValueError: When the value is blank or is not exactly
+            :data:`app.utils.validators.PASSWORD_LENGTH` characters.
     """
     requiredResult = validators.ValidateRequired(PASSWORD_LABEL, value)
     if not requiredResult.isValid:
         raise ValueError(requiredResult.message)
+    lengthResult = validators.ValidateLength(
+        PASSWORD_LABEL, value, validators.PASSWORD_LENGTH
+    )
+    if not lengthResult.isValid:
+        raise ValueError(lengthResult.message)
     return value
 
 

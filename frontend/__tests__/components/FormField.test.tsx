@@ -270,4 +270,29 @@ describe('FormField', () => {
             expect(helperNode.className).toMatch(/Mui-error|error/i);
         });
     });
+
+    describe('onKeyDown passthrough (QA I23 / I25)', () => {
+        it('forwards key events from the native input to the onKeyDown handler', async () => {
+            const user = userEvent.setup();
+            const handleKeyDown = jest.fn();
+            RenderWithProviders(
+                <FormField
+                    name="acctId"
+                    label="Account ID"
+                    value=""
+                    onChange={jest.fn()}
+                    onKeyDown={handleKeyDown}
+                />,
+            );
+
+            const input = screen.getByRole('textbox');
+            input.focus();
+            // Pressing Enter must invoke the caller's handler (Enter-submits),
+            // with the key reported so the caller can gate on 'Enter'.
+            await user.keyboard('{Enter}');
+
+            expect(handleKeyDown).toHaveBeenCalled();
+            expect(handleKeyDown.mock.calls[0][0].key).toBe('Enter');
+        });
+    });
 });

@@ -259,7 +259,7 @@ describe('UsersPage', () => {
     // Search field contract (length bound + client-side filter).
     // -----------------------------------------------------------------------
     describe('search field', () => {
-        it('bounds the search input to 8 characters and filters client-side', async () => {
+        it('bounds the search input to 8 characters and runs the search SERVER-SIDE on Search (QA I23)', async () => {
             const user = SetupUser();
             ArmAdminSession();
             const regularUser: UserSummary = MakeUserSummary();
@@ -267,16 +267,19 @@ describe('UsersPage', () => {
                 user_id: ADMIN_USER_ID,
                 user_type: 'A',
             });
-            (UsersApi.ListUsers as jest.Mock).mockResolvedValueOnce(
-                MakePaginatedResponse([regularUser, adminUser]),
-            );
+            // Initial browse returns BOTH users; the server-side search then
+            // returns only the admin (as the backend would for the ADMIN prefix).
+            (UsersApi.ListUsers as jest.Mock)
+                .mockResolvedValueOnce(
+                    MakePaginatedResponse([regularUser, adminUser]),
+                )
+                .mockResolvedValueOnce(MakePaginatedResponse([adminUser]));
 
             RenderUsersPage();
 
             expect(await screen.findByText(REGULAR_USER_ID)).toBeInTheDocument();
             expect(screen.getByText(ADMIN_USER_ID)).toBeInTheDocument();
-            // The real ListUsers contract carries only {page, page_size} — search
-            // is a client-side filter, never a server parameter.
+            // The unfiltered browse carries exactly {page, page_size} (no filter).
             expect(UsersApi.ListUsers).toHaveBeenCalledWith({
                 page: 1,
                 page_size: DEFAULT_PAGE_SIZE,
@@ -288,17 +291,103 @@ describe('UsersPage', () => {
                 String(SEARCH_MAX_LENGTH),
             );
 
-            // Typing an admin-id prefix filters the current page down client-side.
+            // Typing does NOT fetch (no per-keystroke request); the search is
+            // committed only on Search/Enter/Clear.
             await user.type(searchInput, 'ADMIN');
+            expect(UsersApi.ListUsers).toHaveBeenCalledTimes(1);
 
+            // Clicking Search runs the search SERVER-SIDE: the request carries
+            // the user_id prefix, and the returned (admin-only) page renders --
+            // the client no longer filters locally.
+            await user.click(screen.getByRole('button', { name: 'Search' }));
+
+            await waitFor(() =>
+                expect(UsersApi.ListUsers).toHaveBeenLastCalledWith({
+                    page: 1,
+                    page_size: DEFAULT_PAGE_SIZE,
+                    user_id: 'ADMIN',
+                }),
+            );
+            expect(await screen.findByText(ADMIN_USER_ID)).toBeInTheDocument();
             await waitFor(() =>
                 expect(
                     screen.queryByText(REGULAR_USER_ID),
                 ).not.toBeInTheDocument(),
             );
-            expect(screen.getByText(ADMIN_USER_ID)).toBeInTheDocument();
-            // The filter is client-side: no additional server fetch was issued.
-            expect(UsersApi.ListUsers).toHaveBeenCalledTimes(1);
+        });
+
+        it('commits the search from the Enter key (QA I23 / I25)', async () => {
+            const user = SetupUser();
+            ArmAdminSession();
+            const regularUser: UserSummary = MakeUserSummary();
+            const adminUser: UserSummary = MakeUserSummary({
+                user_id: ADMIN_USER_ID,
+                user_type: 'A',
+            });
+            (UsersApi.ListUsers as jest.Mock)
+                .mockResolvedValueOnce(
+                    MakePaginatedResponse([regularUser, adminUser]),
+                )
+                .mockResolvedValueOnce(MakePaginatedResponse([adminUser]));
+
+            RenderUsersPage();
+
+            await screen.findByText(REGULAR_USER_ID);
+            const searchInput = screen.getByLabelText(SEARCH_LABEL);
+
+            // Pressing Enter in the field commits the search exactly like Search.
+            await user.type(searchInput, 'ADMIN{Enter}');
+
+            await waitFor(() =>
+                expect(UsersApi.ListUsers).toHaveBeenLastCalledWith({
+                    page: 1,
+                    page_size: DEFAULT_PAGE_SIZE,
+                    user_id: 'ADMIN',
+                }),
+            );
+            expect(await screen.findByText(ADMIN_USER_ID)).toBeInTheDocument();
+        });
+
+        it('Clear resets the search and reloads the unfiltered browse (QA I23)', async () => {
+            const user = SetupUser();
+            ArmAdminSession();
+            const regularUser: UserSummary = MakeUserSummary();
+            const adminUser: UserSummary = MakeUserSummary({
+                user_id: ADMIN_USER_ID,
+                user_type: 'A',
+            });
+            (UsersApi.ListUsers as jest.Mock)
+                .mockResolvedValueOnce(
+                    MakePaginatedResponse([regularUser, adminUser]),
+                )
+                .mockResolvedValueOnce(MakePaginatedResponse([adminUser]))
+                .mockResolvedValueOnce(
+                    MakePaginatedResponse([regularUser, adminUser]),
+                );
+
+            RenderUsersPage();
+
+            await screen.findByText(REGULAR_USER_ID);
+            const searchInput = screen.getByLabelText(SEARCH_LABEL);
+            await user.type(searchInput, 'ADMIN');
+            await user.click(screen.getByRole('button', { name: 'Search' }));
+            await waitFor(() =>
+                expect(
+                    screen.queryByText(REGULAR_USER_ID),
+                ).not.toBeInTheDocument(),
+            );
+
+            // Clear empties the box and refetches with NO user_id filter.
+            await user.click(screen.getByRole('button', { name: 'Clear' }));
+
+            await waitFor(() =>
+                expect(UsersApi.ListUsers).toHaveBeenLastCalledWith({
+                    page: 1,
+                    page_size: DEFAULT_PAGE_SIZE,
+                }),
+            );
+            expect(searchInput).toHaveValue('');
+            expect(await screen.findByText(REGULAR_USER_ID)).toBeInTheDocument();
         });
     });
 

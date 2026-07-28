@@ -237,6 +237,39 @@ describe('TransactionsViewPage', () => {
                 screen.getByText(DEFAULT_TRAN_ID).closest('dd'),
             ).not.toBeNull();
         });
+
+        it('renders the detail <dl> with only valid grouping children — no injected separators (QA I22b)', async () => {
+            mockGetTransaction.mockResolvedValueOnce(MakeTransactionRead());
+
+            const { container } = RenderWithProviders(<TransactionsViewPage />);
+
+            // Wait for the read-only detail to load.
+            await screen.findByText(DETAIL_CARD_TITLE);
+
+            const descriptionList = container.querySelector('dl');
+            expect(descriptionList).not.toBeNull();
+
+            // Before the QA I22b fix, MUI's `divider` prop injected a
+            // <Divider role="separator"> (an <hr>) as a DIRECT child of the
+            // <dl> between every row. A <dl> may only contain <dt>/<dd> or
+            // <div> groupings, so a separator child is invalid list markup.
+            // The fix drops the `divider` prop, so the list must contain zero
+            // separator / <hr> nodes anywhere within it.
+            expect(
+                descriptionList?.querySelectorAll('[role="separator"]').length,
+            ).toBe(0);
+            expect(descriptionList?.querySelectorAll('hr').length).toBe(0);
+
+            // Every DIRECT child of the <dl> is a valid grouping element: each
+            // DetailRow renders a <div> (MUI Box) wrapping its <dt>/<dd> pair.
+            // If the `divider` prop regressed, non-grouping <hr> separators
+            // would appear here and fail this assertion.
+            const directChildren = Array.from(descriptionList?.children ?? []);
+            expect(directChildren.length).toBeGreaterThan(0);
+            directChildren.forEach((child) => {
+                expect(['DIV', 'DT', 'DD']).toContain(child.tagName);
+            });
+        });
     });
 
     /* ----------------------------------------------------------------------- */

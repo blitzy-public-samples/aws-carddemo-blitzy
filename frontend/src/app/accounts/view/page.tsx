@@ -29,8 +29,8 @@
  */
 
 import { Suspense, useCallback, useEffect, useState } from 'react';
-import type { ReactElement, ReactNode } from 'react';
-import { useRouter, useSearchParams } from 'next/navigation';
+import type { KeyboardEvent, ReactElement, ReactNode } from 'react';
+import { useSearchParams } from 'next/navigation';
 import {
     Box,
     Button,
@@ -310,22 +310,35 @@ function LoadingFallback(): ReactElement {
  * @returns The account-view page content.
  */
 function AccountsViewContent(): ReactElement {
-    const router = useRouter();
     const searchParams = useSearchParams();
-    const acctId = searchParams.get(ACCT_ID_QUERY_PARAM) ?? '';
+    // The account id present in the URL (`?acctId=`). Used only to SEED the view
+    // and to react to EXTERNAL url changes (a deep link, or browser back/forward);
+    // the in-page LOAD action does NOT navigate (see HandleLoadClick — QA I20).
+    const acctIdFromUrl = searchParams.get(ACCT_ID_QUERY_PARAM) ?? '';
 
     const [account, setAccount] = useState<AccountDetail | null>(null);
     const [isLoading, setIsLoading] = useState<boolean>(false);
     const [errorState, setErrorState] = useState<unknown>(null);
     const [isErrorOpen, setIsErrorOpen] = useState<boolean>(false);
+    // The account id currently being viewed/fetched. Seeded from the URL and kept
+    // in sync when the URL changes externally, but ALSO settable directly by the
+    // LOAD button WITHOUT a route navigation (QA Issue 20 — a hard navigation,
+    // if the Next server were unreachable, would drop the SPA for the
+    // browser-native error page). The data fetch keys off this value.
+    const [activeAcctId, setActiveAcctId] = useState<string>(acctIdFromUrl);
     // Controlled value of the account-id picker input. Seeded from (and kept in
-    // sync with) the `?acctId=` query param so a bookmarked/loaded account shows
-    // its id in the picker, while still allowing the user to type a new one.
-    const [pickerValue, setPickerValue] = useState<string>(acctId);
+    // sync with) the URL param so a bookmarked/loaded account shows its id in the
+    // picker, while still allowing the user to type a new one.
+    const [pickerValue, setPickerValue] = useState<string>(acctIdFromUrl);
 
+    // Sync local state when the URL param changes EXTERNALLY (deep link / browser
+    // back/forward). An in-page LOAD sets `activeAcctId` directly and syncs the URL
+    // via history.replaceState (no navigation), so this effect then observes the
+    // same value and is a no-op.
     useEffect(() => {
-        setPickerValue(acctId);
-    }, [acctId]);
+        setActiveAcctId(acctIdFromUrl);
+        setPickerValue(acctIdFromUrl);
+    }, [acctIdFromUrl]);
 
     /**
      * Loads the account by id. Guards against an empty id, sets loading state,
@@ -334,14 +347,20 @@ function AccountsViewContent(): ReactElement {
      * surfaced through {@link ErrorAlert}, not logged.
      */
     const HandleLoad = useCallback(async (): Promise<void> => {
-        if (!acctId) {
+        if (!activeAcctId) {
+            // No account selected: clear any previously loaded account so a stale
+            // panel is never left on screen (QA Issue 10).
+            setAccount(null);
             return;
         }
         setIsLoading(true);
         setErrorState(null);
         setIsErrorOpen(false);
+        // QA Issue 10: clear the previously loaded account BEFORE each new lookup
+        // so the prior account's details are never shown while the new one loads.
+        setAccount(null);
         try {
-            const detail = await AccountsApi.GetAccount(acctId);
+            const detail = await AccountsApi.GetAccount(activeAcctId);
             setAccount(detail);
         } catch (caughtError) {
             if (IsApiError(caughtError)) {
@@ -350,10 +369,12 @@ function AccountsViewContent(): ReactElement {
                 setErrorState(GENERIC_LOAD_ERROR);
             }
             setIsErrorOpen(true);
+            // QA Issue 10: on failure, ensure no stale account remains rendered.
+            setAccount(null);
         } finally {
             setIsLoading(false);
         }
-    }, [acctId]);
+    }, [activeAcctId]);
 
     useEffect(() => {
         void HandleLoad();
@@ -379,26 +400,50 @@ function AccountsViewContent(): ReactElement {
     };
 
     /**
-     * Navigates to `/accounts/view?acctId=<entered id>`. The query-param change
-     * re-drives {@link HandleLoad} through the existing `useSearchParams` effect,
-     * so the URL stays shareable/bookmarkable. An empty entry is ignored (mirrors
-     * the legacy empty-id guard) rather than clearing the current view.
+     * Loads the entered account id. QA Issue 20: this drives the lookup via local
+     * state and syncs the URL WITHOUT a route navigation. `window.history`
+     * `.replaceState` keeps the address bar shareable/bookmarkable but does not
+     * trigger an App Router RSC fetch, so an unreachable Next server can never
+     * turn this into a hard navigation to the browser-native error page; the data
+     * fetch (axios) instead fails gracefully into the in-page error alert.
+     * Setting `activeAcctId` re-drives {@link HandleLoad}. An empty entry is
+     * ignored (mirrors the legacy empty-id guard) rather than clearing the view.
      */
     const HandleLoadClick = (): void => {
         const trimmedId = pickerValue.trim();
         if (trimmedId === '') {
             return;
         }
-        const target =
-            `${ACCOUNTS_VIEW_PATH}?${ACCT_ID_QUERY_PARAM}=` +
-            `${encodeURIComponent(trimmedId)}`;
-        router.push(target);
+        if (typeof window !== 'undefined') {
+            const target =
+                `${ACCOUNTS_VIEW_PATH}?${ACCT_ID_QUERY_PARAM}=` +
+                `${encodeURIComponent(trimmedId)}`;
+            window.history.replaceState(window.history.state, '', target);
+        }
+        setActiveAcctId(trimmedId);
+    };
+
+    /**
+     * Restores the 3270 Enter-key affordance on the account-id picker (QA I25):
+     * the field previously ignored Return, so an operator who typed an id and
+     * pressed Enter saw nothing happen. Pressing Enter now performs the same
+     * in-page lookup as clicking Load.
+     *
+     * @param event - The keyboard event from the account-id field.
+     */
+    const HandlePickerKeyDown = (
+        event: KeyboardEvent<HTMLInputElement>,
+    ): void => {
+        if (event.key === 'Enter') {
+            event.preventDefault();
+            HandleLoadClick();
+        }
     };
 
     // Body has four mutually exclusive states: missing id, loading, loaded, and
     // not-found (the API error path usually pre-empts the last one).
     let bodyContent: ReactNode;
-    if (!acctId) {
+    if (!activeAcctId) {
         bodyContent = (
             <Typography variant="body1" color="text.secondary">
                 {MISSING_ACCT_MESSAGE}
@@ -435,6 +480,7 @@ function AccountsViewContent(): ReactElement {
                         label={ACCT_ID_PICKER_LABEL}
                         value={pickerValue}
                         onChange={HandlePickerChange}
+                        onKeyDown={HandlePickerKeyDown}
                         maxLength={ACCT_ID_MAX_LENGTH}
                         required
                         autoFocus

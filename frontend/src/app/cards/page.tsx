@@ -25,6 +25,7 @@
  */
 
 import { useState, useEffect, useCallback, useRef } from 'react';
+import { useRouter } from 'next/navigation';
 
 import Box from '@mui/material/Box';
 import Stack from '@mui/material/Stack';
@@ -32,6 +33,7 @@ import Typography from '@mui/material/Typography';
 import Chip from '@mui/material/Chip';
 import Button from '@mui/material/Button';
 import CircularProgress from '@mui/material/CircularProgress';
+import Alert from '@mui/material/Alert';
 
 import { DEFAULT_PAGE_SIZE } from '@/types';
 import type {
@@ -43,7 +45,7 @@ import type {
 import { DataTable } from '@/components/DataTable';
 import type { ColumnDef } from '@/components/DataTable';
 import { FormField } from '@/components/FormField';
-import { ErrorAlert } from '@/components/ErrorAlert';
+import { ErrorAlert, NormalizeError } from '@/components/ErrorAlert';
 import { CardsApi } from '@/lib/apiClient';
 
 /* ------------------------------------------------------------------------- */
@@ -56,6 +58,17 @@ import { CardsApi } from '@/lib/apiClient';
  * truth; never hardcode the literal 7 in the pagination request.
  */
 const ROWS_PER_PAGE = DEFAULT_PAGE_SIZE;
+
+/**
+ * Detail-drill target for a card row (QA I25). A card row navigates to the
+ * account-view screen keyed by the row's OPAQUE `acct_id` -- never by the card
+ * number. `card_num` is a sensitive PAN (rendered masked), so it must not
+ * appear in a URL; `acct_id` is a non-sensitive business key and the account
+ * view surfaces the owning account's detail. The `?acctId=` query param matches
+ * the account-view page's reader.
+ */
+const CARD_DETAIL_ROUTE = '/accounts/view';
+const CARD_DETAIL_QUERY_PARAM = 'acctId';
 
 /** FormField `name` for the account-number filter (legacy ACCTSID). */
 const ACCOUNT_FILTER_NAME = 'accountIdFilter';
@@ -86,6 +99,19 @@ const CARD_MASK_CHARACTER = '*';
 
 /** Empty-page message shown when a browse page contains no cards. */
 const EMPTY_CARDS_MESSAGE = 'No cards found.';
+
+/**
+ * Persistent message shown in place of the loading indicator when a card-list
+ * load fails and there is no data to display (QA Issue 11). Unlike the transient
+ * ErrorAlert toast (which auto-hides after a few seconds and would leave the
+ * spinner behind), this inline panel stays until the user retries, so the page
+ * can never sit on an endless spinner after a failed/timed-out request.
+ */
+const LIST_LOAD_FAILED_MESSAGE =
+    'Unable to load cards. Please check your connection and try again.';
+
+/** Label of the inline retry action rendered beside {@link LIST_LOAD_FAILED_MESSAGE}. */
+const RETRY_LABEL = 'Retry';
 
 /* ------------------------------------------------------------------------- */
 /* Presentation helpers (small, PascalCase — Ochs naming rule).              */
@@ -190,6 +216,7 @@ const columns: ColumnDef<CardSummary>[] = [
  * @returns The Cards List page element.
  */
 export default function CardsPage() {
+    const router = useRouter();
     // State (camelCase variables). `pageData` is null until the first page
     // arrives, so the render tree guards against it before handing it to
     // DataTable (whose `data` prop is non-nullable).
@@ -200,6 +227,11 @@ export default function CardsPage() {
     const [errorState, setErrorState] =
         useState<ErrorResponse | string | unknown | null>(null);
     const [isErrorOpen, setIsErrorOpen] = useState<boolean>(false);
+    // QA Issue 11: tracks whether the LAST load failed with no data to show, so
+    // the render can replace the (otherwise endless) spinner with a persistent
+    // retry panel. Reset to false at the start of every load and set true only in
+    // the failure path (guarded by the request-generation check below).
+    const [loadFailed, setLoadFailed] = useState<boolean>(false);
     const [accountIdFilter, setAccountIdFilter] = useState<string>('');
     const [cardIdFilter, setCardIdFilter] = useState<string>('');
 
@@ -236,6 +268,7 @@ export default function CardsPage() {
         setIsLoading(true);
         setIsErrorOpen(false);
         setErrorState(null);
+        setLoadFailed(false);
         try {
             // Read the CURRENT filter values from the refs (see the ref
             // declarations above) so the search boxes actually narrow the browse
@@ -262,6 +295,9 @@ export default function CardsPage() {
             }
             setErrorState(caughtError);
             setIsErrorOpen(true);
+            // QA Issue 11: record the failure so the render shows a persistent
+            // retry panel instead of an endless spinner when no data is present.
+            setLoadFailed(true);
         } finally {
             // Only the latest request owns the shared loading flag (QA M-05).
             if (requestGenerationRef.current === requestGeneration) {
@@ -289,6 +325,22 @@ export default function CardsPage() {
      */
     function HandlePageChange(page: number): void {
         setPageNumber(page);
+    }
+
+    /**
+     * Opens the detail drill-down for a selected card row (QA I25): the card
+     * list was previously a dead, unclickable grid. Navigation is keyed by the
+     * row's OPAQUE `acct_id` (never the masked PAN), routing to the account-view
+     * screen for the owning account. Invoked by both mouse click and keyboard
+     * (Enter/Space) via the shared DataTable's accessible row-selection support.
+     *
+     * @param row - The selected card summary row.
+     */
+    function HandleSelectCard(row: CardSummary): void {
+        const target =
+            `${CARD_DETAIL_ROUTE}?${CARD_DETAIL_QUERY_PARAM}=` +
+            `${encodeURIComponent(row.acct_id)}`;
+        router.push(target);
     }
 
     /**
@@ -387,17 +439,56 @@ export default function CardsPage() {
                     data={pageData}
                     onPageChange={HandlePageChange}
                     getRowKey={(row) => row.card_num}
+                    onRowClick={HandleSelectCard}
+                    getRowLabel={(row) =>
+                        `View account ${row.acct_id} for card ` +
+                        `${MaskCardNumber(row.card_num)}`
+                    }
                     loading={isLoading}
                     emptyMessage={EMPTY_CARDS_MESSAGE}
                 />
+            ) : loadFailed ? (
+                /*
+                 * QA Issue 11: the initial load failed and there is no data to
+                 * render. Show a PERSISTENT error with an inline Retry action
+                 * rather than an endless spinner. This is the SOLE error surface
+                 * for the no-data case (the ErrorAlert toast below is gated off
+                 * while `pageData` is null) so the failure is not announced
+                 * twice. The specific failure message is shown when available,
+                 * falling back to a connectivity-oriented hint. Retry re-invokes
+                 * LoadCards, which resets `loadFailed` and shows the spinner
+                 * again while the new request is in flight.
+                 */
+                <Alert
+                    severity="error"
+                    action={
+                        <Button
+                            color="inherit"
+                            size="small"
+                            onClick={() => void LoadCards()}
+                        >
+                            {RETRY_LABEL}
+                        </Button>
+                    }
+                >
+                    {NormalizeError(errorState).message || LIST_LOAD_FAILED_MESSAGE}
+                </Alert>
             ) : (
                 <Box sx={{ display: 'flex', justifyContent: 'center', p: 4 }}>
                     <CircularProgress aria-label="Loading cards" />
                 </Box>
             )}
 
+            {/*
+             * The auto-hiding toast is the error surface ONLY when a table is
+             * already on screen (a pagination/refresh failure): the table stays
+             * put and the transient failure is announced briefly. When there is
+             * no data, the persistent retry panel above is the sole surface, so
+             * the toast is gated off to avoid announcing the same failure twice
+             * (QA Issue 11).
+             */}
             <ErrorAlert
-                open={isErrorOpen}
+                open={isErrorOpen && pageData !== null}
                 onClose={HandleErrorClose}
                 error={errorState}
             />

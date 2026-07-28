@@ -102,7 +102,7 @@ export interface ErrorAlertProps {
 /* ------------------------------------------------------------------------- */
 
 /** The display fields resolved from an arbitrary error input. */
-interface NormalizedError {
+export interface NormalizedError {
     message: string;
     code?: string;
     detail?: string;
@@ -122,7 +122,7 @@ function IsRecord(value: unknown): value is Record<string, unknown> {
  * @param error - The value to normalize (ErrorResponse, string, ApiError, null).
  * @returns The resolved display fields.
  */
-function NormalizeError(error: ErrorResponse | string | unknown | null): NormalizedError {
+export function NormalizeError(error: ErrorResponse | string | unknown | null): NormalizedError {
     let resolved: NormalizedError = { message: UNEXPECTED_ERROR_MESSAGE };
 
     if (error === null || error === undefined) {
@@ -214,7 +214,19 @@ export function ErrorAlert(props: ErrorAlertProps) {
                 severity={severity}
                 variant="filled"
                 onClose={props.onClose}
-                sx={{ width: 1 }}
+                sx={{
+                    width: 1,
+                    // QA I22: the default filled `info` Alert renders white text on
+                    // `info.main` (#0288d1) ≈ 3.86:1, which fails WCAG AA (MUI's own
+                    // contrast threshold is 3, not 4.5). Darkening the background to
+                    // the theme's `info.dark` token keeps the white contrastText and
+                    // raises the ratio to ≈8.9:1. The other severities already pass
+                    // and are left untouched. Token-based, no hardcoded hex (AAP
+                    // §0.3.4).
+                    ...(severity === 'info'
+                        ? { backgroundColor: 'info.dark' }
+                        : {}),
+                }}
             >
                 {props.title ? <AlertTitle>{props.title}</AlertTitle> : null}
                 <Box>

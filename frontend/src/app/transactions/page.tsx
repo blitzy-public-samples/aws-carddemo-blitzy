@@ -16,11 +16,12 @@ import Container from '@mui/material/Container';
 import Typography from '@mui/material/Typography';
 import Button from '@mui/material/Button';
 import CircularProgress from '@mui/material/CircularProgress';
+import Alert from '@mui/material/Alert';
 
 import { DataTable } from '@/components/DataTable';
 import type { ColumnDef } from '@/components/DataTable';
 import { FormField } from '@/components/FormField';
-import { ErrorAlert } from '@/components/ErrorAlert';
+import { ErrorAlert, NormalizeError } from '@/components/ErrorAlert';
 import { TransactionsApi } from '@/lib/apiClient';
 import { FormatMoney } from '@/lib/format';
 import { DEFAULT_PAGE_SIZE } from '@/types';
@@ -35,6 +36,19 @@ const PAGE_TITLE = 'List Transactions';
 
 /** Body text shown by the grid when a page contains zero transactions. */
 const EMPTY_TRANSACTIONS_MESSAGE = 'No transactions found.';
+
+/**
+ * Persistent message shown in place of the loading indicator when a
+ * transaction-list load fails and there is no data to display (QA Issue 11).
+ * Unlike the transient ErrorAlert toast (which auto-hides and would leave the
+ * spinner behind), this inline panel stays until the user retries, so the page
+ * can never sit on an endless spinner after a failed/timed-out request.
+ */
+const LIST_LOAD_FAILED_MESSAGE =
+    'Unable to load transactions. Please check your connection and try again.';
+
+/** Label of the inline retry action rendered beside {@link LIST_LOAD_FAILED_MESSAGE}. */
+const RETRY_LABEL = 'Retry';
 
 /** Inline validation message when Search Tran ID is not numeric (COTRN00C). */
 const TRAN_ID_NUMERIC_ERROR = 'Tran ID must be Numeric.';
@@ -164,6 +178,11 @@ export default function TransactionsPage() {
     const [isErrorOpen, setIsErrorOpen] = useState<boolean>(false);
     const [searchTranId, setSearchTranId] = useState<string>('');
     const [searchError, setSearchError] = useState<string>('');
+    // QA Issue 11: tracks whether the LAST load failed with no data to show, so
+    // the render can replace the (otherwise endless) spinner with a persistent
+    // retry panel. Reset to false at the start of every load and set true only in
+    // the failure path (guarded by the request-generation check).
+    const [loadFailed, setLoadFailed] = useState<boolean>(false);
 
     // Monotonic request-generation counter (QA M-05). Each LoadTransactions call
     // claims the next generation; only the request whose captured generation
@@ -188,6 +207,7 @@ export default function TransactionsPage() {
             requestGenerationRef.current = requestGeneration;
             setIsLoading(true);
             setErrorState(null);
+            setLoadFailed(false);
             try {
                 const result = await TransactionsApi.ListTransactions({
                     page: targetPage,
@@ -205,6 +225,9 @@ export default function TransactionsPage() {
                 }
                 setErrorState(error);
                 setIsErrorOpen(true);
+                // QA Issue 11: record the failure so the render shows a persistent
+                // retry panel instead of an endless spinner when no data exists.
+                setLoadFailed(true);
             } finally {
                 // Only the latest request owns the shared loading flag (QA M-05).
                 if (requestGenerationRef.current === requestGeneration) {
@@ -333,6 +356,34 @@ export default function TransactionsPage() {
                         emptyMessage={EMPTY_TRANSACTIONS_MESSAGE}
                         loading={isLoading}
                     />
+                ) : loadFailed ? (
+                    /*
+                     * QA Issue 11: the load failed and there is no data to
+                     * render. Show a PERSISTENT error with an inline Retry action
+                     * rather than an endless spinner. This is the SOLE error
+                     * surface for the no-data case (the ErrorAlert toast below is
+                     * gated off while `transactionsData` is null) so the failure
+                     * is not announced twice. The specific failure message is
+                     * shown when available, falling back to a connectivity hint.
+                     * Retry re-invokes LoadTransactions for the current page,
+                     * which resets `loadFailed` and shows the spinner again while
+                     * in flight.
+                     */
+                    <Alert
+                        severity="error"
+                        action={
+                            <Button
+                                color="inherit"
+                                size="small"
+                                onClick={() => void LoadTransactions(pageNumber)}
+                            >
+                                {RETRY_LABEL}
+                            </Button>
+                        }
+                    >
+                        {NormalizeError(errorState).message ||
+                            LIST_LOAD_FAILED_MESSAGE}
+                    </Alert>
                 ) : (
                     <Box sx={{ textAlign: 'center', py: 4 }}>
                         <CircularProgress aria-label="Loading transactions" />
@@ -340,8 +391,16 @@ export default function TransactionsPage() {
                 )}
             </Stack>
 
+            {/*
+             * The auto-hiding toast is the error surface ONLY when a table is
+             * already on screen (a pagination/refresh failure): the table stays
+             * put and the transient failure is announced briefly. When there is
+             * no data, the persistent retry panel above is the sole surface, so
+             * the toast is gated off to avoid announcing the same failure twice
+             * (QA Issue 11).
+             */}
             <ErrorAlert
-                open={isErrorOpen}
+                open={isErrorOpen && transactionsData !== null}
                 onClose={HandleErrorClose}
                 error={errorState}
             />

@@ -53,12 +53,13 @@ constants ALL_UPPERCASE. All monetary assertions use exact ``Decimal``.
 
 from __future__ import annotations
 
+import asyncio
 from decimal import Decimal
 
 import pytest
 from httpx import AsyncClient
-from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import func, select
+from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
 # app.core.exceptions is a declared dependency: the posting-reject exception
 # family is the single source of truth for the reject code<->description pairing
@@ -72,6 +73,9 @@ from app.core.exceptions import (
 )
 from app.models.account import Account
 from app.models.tran_category_balance import TranCategoryBalance
+from app.models.transaction import STATUS_POSTED, Transaction
+from app.schemas import TransactionCreate
+from app.services import TransactionService
 
 # ---------------------------------------------------------------------------
 # Module constants (ALL_UPPERCASE per the Ochs Rule §0.8.2).
@@ -290,12 +294,16 @@ async def test_transactions_list_paginated(
 ) -> None:
     """GET /transactions returns a masked, well-formed paginated page (CT00).
 
-    Seeds two posted rows through the add path, then asserts the paginated
-    envelope shape (all metadata keys present, page slice within ``page_size``)
-    and that every listed ``card_num`` is masked to its last four digits.
+    Seeds two DISTINCT posted rows through the add path, then asserts the
+    paginated envelope shape (all metadata keys present, page slice within
+    ``page_size``) and that every listed ``card_num`` is masked to its last four
+    digits. The two rows differ in description/amount so they are two genuinely
+    distinct operations: the server-enforced exactly-once guard collapses only
+    BYTE-IDENTICAL submissions (a duplicate), which a list-pagination test must
+    not rely on to reach two rows.
     """
-    await PostValidTransaction(admin_client)
-    await PostValidTransaction(admin_client)
+    await PostValidTransaction(admin_client, tran_desc="LIST ROW ONE")
+    await PostValidTransaction(admin_client, tran_desc="LIST ROW TWO", tran_amt="11.00")
 
     response = await admin_client.get(TRANSACTIONS_URL)
 
@@ -430,6 +438,90 @@ async def test_add_transaction_success(
     # must move by the SAME amount as the account balance, in the same commit.
     categoryAfter = await ReadCategoryBalance(db_session, VALID_ACCT_ID, typeCd, catCd)
     assert categoryAfter - categoryBefore == SUCCESS_BALANCE_DELTA
+
+
+async def CountPostedTransactions(dbSession: AsyncSession) -> int:
+    """Return the total number of POSTED transaction rows in the database.
+
+    Counts the whole posted ledger so a pre/post delta equals the number of new
+    rows a test inserted, regardless of which account they belong to.
+
+    Args:
+        dbSession: Active async database session.
+
+    Returns:
+        The count of ``transactions`` rows whose ``status`` is ``POSTED``.
+    """
+    result = await dbSession.execute(
+        select(func.count())
+        .select_from(Transaction)
+        .where(Transaction.status == STATUS_POSTED)
+    )
+    return int(result.scalar_one())
+
+
+@pytest.mark.asyncio
+async def test_add_transaction_concurrent_duplicate_posts_once(
+    seed_data: None,
+    db_session: AsyncSession,
+    test_engine: AsyncEngine,
+) -> None:
+    """Two identical concurrent adds post exactly ONE transaction (QA Issue 16).
+
+    Reproduces the QA rapid-double-submit race at the service layer, which is the
+    faithful way to force TRUE concurrency: two byte-identical valid
+    ``AddTransaction`` calls run simultaneously on two INDEPENDENT sessions
+    (``asyncio.gather``) against the same non-expired account 00000000050. The
+    server-enforced idempotency guard must collapse them to a single financial
+    effect -- exactly ONE new POSTED row and ONE balance delta -- rather than the
+    two distinct transactions the legacy MAX(tran_id)+1 assignment produced. Both
+    callers must observe the SAME committed ``tran_id`` (the replay returns the
+    winner's row), and neither call may raise.
+
+    A shared HTTP client cannot express this race because the test client binds
+    every request to the single shared ``db_session``; two concurrent posts must
+    therefore use two sessions from the engine directly. The ``seed_data``
+    fixtures only ``flush`` their rows into ``db_session``'s open transaction, so
+    the seed is committed here first to make it visible to the independent
+    concurrent sessions (the ``db_session`` truncate teardown still wipes every
+    table afterward, so this commit does not leak into later tests).
+    """
+    await db_session.commit()
+    createModel = TransactionCreate(**BuildTransactionPayload(tran_amt=SUCCESS_TRAN_AMT))
+    sessionMaker = async_sessionmaker(
+        bind=test_engine,
+        class_=AsyncSession,
+        expire_on_commit=False,
+        autoflush=False,
+    )
+
+    async with sessionMaker() as probeSession:
+        countBefore = await CountPostedTransactions(probeSession)
+        balanceBefore = await ReadAccountBalance(probeSession, VALID_ACCT_ID)
+
+    async def PostOnce() -> object:
+        """Post the identical transaction on its own isolated session."""
+        async with sessionMaker() as session:
+            return await TransactionService().AddTransaction(session, createModel)
+
+    results = await asyncio.gather(PostOnce(), PostOnce(), return_exceptions=True)
+
+    # Neither concurrent add may raise: one posts, the other detects the replay
+    # and returns the winner's already-posted transaction.
+    raisedErrors = [outcome for outcome in results if isinstance(outcome, Exception)]
+    assert not raisedErrors, f"Concurrent add raised: {raisedErrors!r}"
+
+    async with sessionMaker() as probeSession:
+        countAfter = await CountPostedTransactions(probeSession)
+        balanceAfter = await ReadAccountBalance(probeSession, VALID_ACCT_ID)
+
+    # Exactly ONE new posted row and ONE balance delta -- one user operation.
+    assert countAfter - countBefore == 1
+    assert balanceAfter - balanceBefore == SUCCESS_BALANCE_DELTA
+    # Both callers observe the SAME committed transaction id (one financial
+    # effect, not two distinct MAX+1 ids).
+    observedTranIds = {outcome.tran_id for outcome in results}
+    assert len(observedTranIds) == 1
 
 
 # ===========================================================================

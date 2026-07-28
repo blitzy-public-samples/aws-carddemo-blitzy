@@ -201,28 +201,35 @@ class LoginRequest(RequestBase):
     @field_validator("user_id")
     @classmethod
     def ValidateUserId(cls, value: str) -> str:
-        """Validate the user id: required, exactly 8 chars, and alphanumeric.
+        """Validate the user id: required, exactly 8 chars, no-space alphanumeric.
 
-        Reproduces the legacy fixed-width key edit and adds an alphanumeric
-        allow-list so the id -- which becomes a database key and a token subject
-        -- cannot smuggle injection characters downstream (Ochs sanitization
-        rule). The sample ids ADMIN001 / USER0001 satisfy all three checks.
+        Reproduces the legacy fixed-width key edit and adds a no-space
+        alphanumeric allow-list (:func:`~app.utils.validators.ValidateIdentifier`)
+        so the id -- which becomes a database key and a token subject -- cannot
+        smuggle injection characters or an ambiguous embedded space downstream
+        (Ochs sanitization rule; QA Issue 18). This mirrors the create-time edit
+        (:func:`app.schemas.user._RequireUserId`) so a spaced id is rejected the
+        same way on both paths -- with a clear 422 here rather than a confusing
+        401 when the non-canonical id fails the USRSEC lookup. Case is NOT folded
+        in this validator; the service (``auth_service``) applies the COSGN00C
+        ``FUNCTION UPPER-CASE`` canonicalization before the lookup. The sample ids
+        ADMIN001 / USER0001 satisfy all three checks.
 
         Args:
             value: The submitted user id (already whitespace-stripped by the
                 model configuration).
 
         Returns:
-            The validated user id, unchanged.
+            The validated user id, unchanged (the service canonicalizes case).
 
         Raises:
             ValueError: If the id is blank, is not exactly
                 :data:`USER_ID_LENGTH` characters, or contains any
-                non-alphanumeric character.
+                non-alphanumeric character (including an embedded space).
         """
         _EnsureValid(validators.ValidateRequired(USER_ID_LABEL, value))
         _EnsureValid(validators.ValidateLength(USER_ID_LABEL, value, USER_ID_LENGTH))
-        _EnsureValid(validators.ValidateAlphanumeric(USER_ID_LABEL, value))
+        _EnsureValid(validators.ValidateIdentifier(USER_ID_LABEL, value))
         return value
 
     @field_validator("password")

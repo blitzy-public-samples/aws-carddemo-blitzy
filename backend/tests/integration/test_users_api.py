@@ -72,6 +72,9 @@ pytestmark = pytest.mark.asyncio
 # ``settings.API_V1_PREFIX`` + the router's own ``/admin/users`` prefix.
 # ---------------------------------------------------------------------------
 USERS_URL = f"{settings.API_V1_PREFIX}/admin/users"
+# Sign-on endpoint, used by the QA Issue 18 create->sign-on round-trip below to
+# prove a freshly created credential is usable (no "dead" credential).
+LOGIN_URL = f"{settings.API_V1_PREFIX}/auth/login"
 
 # 8-character id (SEC-USR-ID X(08)) for a user created within a single test.
 NEW_USER_ID = "TSTUSR01"
@@ -269,6 +272,118 @@ async def test_users_list_admin_ok(
     assert regular_user.user_id in listedIds
 
 
+async def test_users_search_spans_all_pages_not_just_current(
+    admin_client: AsyncClient,
+    admin_user: User,
+    regular_user: User,
+) -> None:
+    """GET /admin/users?user_id=<prefix> searches the WHOLE table (QA I23).
+
+    Regression for the "search filters only the current page" defect: the admin
+    "Search User ID" box previously narrowed only the rows already loaded on the
+    client, so a matching id sitting on any other page was reported "not found".
+    The search now runs server-side over the entire user table.
+
+    The scenario forces the target off the current page. A distinctive user
+    ``ZEBRA001`` sorts LAST, and ``page_size=1`` makes page 1 of the UNfiltered
+    browse contain only ``ADMIN001`` (``ZEBRA001`` is on a later page). Searching
+    for the ``ZEBRA`` prefix must still return ``ZEBRA001`` on page 1 -- proving
+    the search spans all pages -- and the pagination metadata must describe the
+    FILTERED set (``total_items == 1``).
+
+    Args:
+        admin_client: Client authenticated as the administrator.
+        admin_user: The seeded administrator row (ensures ADMIN001 exists).
+        regular_user: The seeded regular row (ensures USER0001 also exists).
+    """
+    searchUserId = "ZEBRA001"
+    createPayload = MakeCreatePayload()
+    createPayload["user_id"] = searchUserId
+    createResponse = await admin_client.post(USERS_URL, json=createPayload)
+    assert createResponse.status_code == HTTP_CREATED
+
+    # Baseline: page 1 of the UNfiltered browse (page_size=1) is ADMIN001, so
+    # the target is genuinely NOT on the current page.
+    unfilteredFirstPage = await admin_client.get(
+        USERS_URL, params={"page": 1, "page_size": 1}
+    )
+    assert unfilteredFirstPage.status_code == HTTP_OK
+    unfilteredIds = {row["user_id"] for row in unfilteredFirstPage.json()["items"]}
+    assert searchUserId not in unfilteredIds
+
+    # Search for the target's prefix on page 1 (same tiny page window): the
+    # whole-table server-side search must surface it despite it living on a
+    # later page of the unfiltered browse.
+    searchResponse = await admin_client.get(
+        USERS_URL, params={"page": 1, "page_size": 1, "user_id": "ZEBRA"}
+    )
+    assert searchResponse.status_code == HTTP_OK
+    searchBody = searchResponse.json()
+    AssertNoPasswordKeys(searchBody)
+    searchIds = {row["user_id"] for row in searchBody["items"]}
+    assert searchUserId in searchIds
+    # Pagination metadata reflects the FILTERED set, not the whole table.
+    assert searchBody["total_items"] == 1
+
+
+async def test_users_search_is_case_insensitive(
+    admin_client: AsyncClient,
+    admin_user: User,
+) -> None:
+    """GET /admin/users?user_id=zeb matches ``ZEBRA001`` (case-insensitive I23).
+
+    The stored ids are canonical uppercase, so the search intentionally uses a
+    case-insensitive ``ILIKE 'prefix%'`` predicate -- a lowercase search term
+    still finds the uppercase id (matching the prior client filter, which
+    lower-cased both sides).
+
+    Args:
+        admin_client: Client authenticated as the administrator.
+        admin_user: The seeded administrator row (ensures ADMIN001 exists).
+    """
+    searchUserId = "ZEBRA001"
+    createPayload = MakeCreatePayload()
+    createPayload["user_id"] = searchUserId
+    createResponse = await admin_client.post(USERS_URL, json=createPayload)
+    assert createResponse.status_code == HTTP_CREATED
+
+    response = await admin_client.get(USERS_URL, params={"user_id": "zeb"})
+
+    assert response.status_code == HTTP_OK
+    matchedIds = {row["user_id"] for row in response.json()["items"]}
+    assert searchUserId in matchedIds
+
+
+async def test_users_search_escapes_like_wildcards(
+    admin_client: AsyncClient,
+    admin_user: User,
+) -> None:
+    """GET /admin/users?user_id=ZEB%25 treats ``%`` literally (injection-safe I23).
+
+    The prefix search uses ``autoescape=True``, so a SQL ``LIKE`` wildcard in the
+    operator's input is matched LITERALLY rather than as "match anything" (Ochs:
+    sanitize/validate user-supplied data). ``ZEBRA001`` starts with ``ZEB`` but
+    NOT with the literal text ``ZEB%``, so an escaped-wildcard search returns no
+    rows -- if the ``%`` leaked through unescaped it would match ``ZEBRA001`` and
+    the assertion would fail.
+
+    Args:
+        admin_client: Client authenticated as the administrator.
+        admin_user: The seeded administrator row (ensures ADMIN001 exists).
+    """
+    createPayload = MakeCreatePayload()
+    createPayload["user_id"] = "ZEBRA001"
+    createResponse = await admin_client.post(USERS_URL, json=createPayload)
+    assert createResponse.status_code == HTTP_CREATED
+
+    response = await admin_client.get(USERS_URL, params={"user_id": "ZEB%"})
+
+    assert response.status_code == HTTP_OK
+    responseBody = response.json()
+    assert responseBody["items"] == []
+    assert responseBody["total_items"] == 0
+
+
 async def test_create_user_ok(admin_client: AsyncClient, db_session) -> None:
     """POST /admin/users creates a user (201) and stores a bcrypt password_hash.
 
@@ -301,6 +416,84 @@ async def test_create_user_ok(admin_client: AsyncClient, db_session) -> None:
     assert createdUser.password_hash
     assert createdUser.password_hash != SEED_PASSWORD
     assert createdUser.password_hash.startswith("$2")
+
+
+async def test_create_user_rejects_embedded_space_id(
+    admin_client: AsyncClient,
+) -> None:
+    """POST /admin/users rejects an embedded-space user id (QA Issue 18).
+
+    A user id is a database key, a URL path segment, and a token subject, so an
+    interior space is an ambiguous, non-canonical identifier. The stricter
+    no-space identifier edit rejects it with HTTP 422 (previously accepted).
+
+    Args:
+        admin_client: Client authenticated as the administrator.
+    """
+    createPayload = MakeCreatePayload()
+    createPayload["user_id"] = "AB CD001"
+
+    response = await admin_client.post(USERS_URL, json=createPayload)
+
+    assert response.status_code == HTTP_UNPROCESSABLE
+
+
+async def test_create_user_rejects_one_character_password(
+    admin_client: AsyncClient,
+) -> None:
+    """POST /admin/users rejects a too-short (weak) password (QA Issue 18).
+
+    SEC-USR-PWD is a fixed-width ``PIC X(08)`` field, so the exact-8 edit adds a
+    meaningful minimum length symmetric with the exactly-8 user id. A
+    one-character password (previously accepted) is now rejected with HTTP 422.
+
+    Args:
+        admin_client: Client authenticated as the administrator.
+    """
+    createPayload = MakeCreatePayload()
+    createPayload["password"] = "x"
+
+    response = await admin_client.post(USERS_URL, json=createPayload)
+
+    assert response.status_code == HTTP_UNPROCESSABLE
+
+
+async def test_create_lowercase_id_canonicalizes_and_signs_on(
+    admin_client: AsyncClient, client: AsyncClient
+) -> None:
+    """A user created with a lower-case id is stored UPPERCASE and can sign on.
+
+    QA Issue 18 (canonical identifier policy): the sign-on path applies the
+    COSGN00C ``FUNCTION UPPER-CASE`` edit before its USRSEC lookup, so a
+    lower-case id stored verbatim used to be an unusable ("dead") credential --
+    the stored lower-case key never matched the uppercased sign-on lookup.
+    Create now canonicalizes the id to upper case, so the stored key matches the
+    sign-on lookup and the freshly created account authenticates. The password
+    is verified over its EXACT bytes (M-01), so its case is preserved.
+
+    Args:
+        admin_client: Client authenticated as the administrator (creates).
+        client: Unauthenticated client used to sign on as the new user.
+    """
+    lowerCaseId = "lower001"
+    canonicalId = "LOWER001"
+    createPayload = MakeCreatePayload()
+    createPayload["user_id"] = lowerCaseId
+
+    createResponse = await admin_client.post(USERS_URL, json=createPayload)
+
+    # The stored / echoed id is the canonical uppercase form, not the input.
+    assert createResponse.status_code == HTTP_CREATED
+    assert createResponse.json()["user_id"] == canonicalId
+
+    # The freshly created credential signs on (no dead credential). Sign on with
+    # the ORIGINAL lower-case id: the sign-on path uppercases it to the same key.
+    loginResponse = await client.post(
+        LOGIN_URL, json={"user_id": lowerCaseId, "password": SEED_PASSWORD}
+    )
+
+    assert loginResponse.status_code == HTTP_OK
+    assert loginResponse.json()["user_id"] == canonicalId
 
 
 async def test_get_user_ok(admin_client: AsyncClient) -> None:

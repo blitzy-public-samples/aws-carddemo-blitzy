@@ -80,6 +80,21 @@ MINIMUM_LOGIN_LOCKOUT_SECONDS = 1
 # float second count so sub-second tuning is possible.
 MINIMUM_TIMEOUT_SECONDS = 0.1
 
+# Default and lower bound for the maximum accepted request-body size, in bytes
+# (QA finding #31 — no explicit request-body limit). The legacy CICS terminal
+# bounded online input implicitly; the modern HTTP surface must apply an
+# explicit ceiling so an oversized or a deliberately unbounded body cannot
+# exhaust memory before validation runs, and is rejected with a bounded HTTP
+# 413 instead. The default (1 MiB) comfortably exceeds every legitimate CardDemo
+# JSON payload -- the widest request (a transaction add or account update) is a
+# few hundred bytes -- while still rejecting abusive uploads. The floor keeps a
+# misconfiguration from setting a ceiling so small that normal requests fail:
+# 1 KiB is below no legitimate payload yet still finite. Both are byte counts,
+# environment-tunable (never hardcoded, Ochs Rule #3), and consumed by
+# app/main.py's RequestBodySizeLimitMiddleware.
+DEFAULT_MAX_REQUEST_BODY_BYTES = 1_048_576
+MINIMUM_MAX_REQUEST_BODY_BYTES = 1_024
+
 # Environments treated as unmistakable local development/test profiles, in which
 # the built-in ``DATABASE_URL`` / ``SYNC_DATABASE_URL`` convenience default
 # (localhost throwaway credentials) is permitted. Any OTHER value of
@@ -107,7 +122,9 @@ class Settings(BaseSettings):
         ENVIRONMENT: Deployment environment name (``development``, ``staging`` or
             ``production``).
         DEBUG: Whether debug behavior is enabled; defaults to ``False``
-            (secure-by-default) and must be ``False`` in production.
+            (secure-by-default). :meth:`RefuseDebugInProduction` rejects a
+            ``True`` value outside a local profile, so it can never be enabled
+            in staging/production (QA finding #31).
         DATABASE_URL: SQLAlchemy async engine URL (asyncpg driver) used by the
             application runtime. Held as :class:`~pydantic.SecretStr` (embeds a
             password); read with ``.get_secret_value()``.
@@ -147,7 +164,10 @@ class Settings(BaseSettings):
     ENVIRONMENT: str = "development"
     # Secure by default: DEBUG is OFF unless explicitly opted into (e.g. via
     # backend/.env in development). A default of True would leak frame locals
-    # (including this settings object) through debug tracebacks in production.
+    # (including this settings object) through debug tracebacks in production,
+    # so RefuseDebugInProduction (below) additionally rejects DEBUG=True outside
+    # a local profile (QA finding #31): it can never be enabled in staging or
+    # production even if the environment sets it.
     DEBUG: bool = False
     # Gates the interactive API docs (/docs, /redoc) and the raw OpenAPI schema
     # (/openapi.json). ``None`` -- the value when the env var is unset -- means
@@ -254,11 +274,33 @@ class Settings(BaseSettings):
         ge=MINIMUM_TIMEOUT_SECONDS,
     )
 
+    # --- Request-body size limit (QA finding #31; consumed by app/main.py ->
+    # RequestBodySizeLimitMiddleware) ---------------------------------------
+    # Explicit ceiling, in bytes, on the request body the API accepts. It bounds
+    # memory use and rejects an oversized or unbounded payload with a bounded
+    # HTTP 413 before the body is buffered or validated -- a denial-of-service
+    # guard the legacy terminal input length enforced implicitly. Fails fast at
+    # startup if set below MINIMUM_MAX_REQUEST_BODY_BYTES so a misconfiguration
+    # cannot reject normal requests; the default is a safe production baseline
+    # far above every legitimate CardDemo payload. Environment-tunable and never
+    # hardcoded (Ochs Rule #3).
+    MAX_REQUEST_BODY_BYTES: int = Field(
+        default=DEFAULT_MAX_REQUEST_BODY_BYTES,
+        ge=MINIMUM_MAX_REQUEST_BODY_BYTES,
+    )
+
     # --- CORS (consumed by app/main.py -> CORSMiddleware) ---
     # ``NoDecode`` disables pydantic-settings' default JSON decoding of complex
     # (list) fields, so a plain comma-separated environment string reaches the
     # ``mode="before"`` validator below instead of raising a JSON parse error.
-    BACKEND_CORS_ORIGINS: Annotated[list[str], NoDecode] = ["http://localhost:3000"]
+    # QA finding I-17: default to BOTH loopback aliases of the frontend origin.
+    # `localhost` and `127.0.0.1` are distinct CORS origins, so a SPA opened at
+    # either host must be admitted out of the box; an explicit BACKEND_CORS_ORIGINS
+    # environment value still replaces this default entirely.
+    BACKEND_CORS_ORIGINS: Annotated[list[str], NoDecode] = [
+        "http://localhost:3000",
+        "http://127.0.0.1:3000",
+    ]
 
     @field_validator("BACKEND_CORS_ORIGINS", mode="before")
     @classmethod
@@ -405,6 +447,37 @@ class Settings(BaseSettings):
                 "BACKEND_CORS_ORIGINS must use https:// when "
                 f"ENVIRONMENT={self.ENVIRONMENT!r}; insecure origin(s): "
                 f"{', '.join(insecureOrigins)}"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def RefuseDebugInProduction(self) -> "Settings":
+        """Reject ``DEBUG=True`` outside an unmistakable local profile.
+
+        Debug mode exposes framework tracebacks that leak frame locals --
+        including this settings object and, through it, fragments of the
+        database URL and the signing key -- to any client that triggers an
+        error. That disclosure is tolerable only on a developer's machine, so
+        inside a local profile (:data:`LOCAL_PROFILE_ENVIRONMENTS`) ``DEBUG`` may
+        be toggled freely; in every other environment (notably ``staging`` /
+        ``production``) a ``True`` value is a misconfiguration that must fail
+        fast at startup rather than silently weaken a live deployment (QA
+        finding #31). Compared case-insensitively against the stripped
+        ``ENVIRONMENT`` value, mirroring the other production guards.
+
+        Returns:
+            The validated settings instance, unchanged.
+
+        Raises:
+            ValueError: If ``DEBUG`` is ``True`` while ``ENVIRONMENT`` is not a
+                local profile.
+        """
+        normalizedEnvironment = self.ENVIRONMENT.strip().lower()
+        if self.DEBUG and normalizedEnvironment not in LOCAL_PROFILE_ENVIRONMENTS:
+            raise ValueError(
+                "DEBUG must be False when "
+                f"ENVIRONMENT={self.ENVIRONMENT!r}; debug tracebacks would leak "
+                "secrets in a non-local deployment"
             )
         return self
 

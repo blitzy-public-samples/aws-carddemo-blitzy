@@ -10,9 +10,10 @@
  * → MUI DataTable + Pagination) and the page size (legacy 10 rows → modern 7 rows, F-004).
  */
 
-import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
+import type { KeyboardEvent } from 'react';
 import { useRouter } from 'next/navigation';
-import { Box, Stack, Container, Typography, Button } from '@mui/material';
+import { Stack, Container, Typography, Button } from '@mui/material';
 
 import { DataTable } from '@/components/DataTable';
 import type { ColumnDef } from '@/components/DataTable';
@@ -20,7 +21,7 @@ import { FormField } from '@/components/FormField';
 import { ErrorAlert } from '@/components/ErrorAlert';
 import { UsersApi, IsApiError } from '@/lib/apiClient';
 import { IsAdmin } from '@/lib/auth';
-import type { UserSummary, PaginatedResponse } from '@/types';
+import type { UserSummary, UserListParams, PaginatedResponse } from '@/types';
 import { DEFAULT_PAGE_SIZE } from '@/types';
 
 /**
@@ -71,6 +72,14 @@ export default function UsersPage() {
     const [errorValue, setErrorValue] = useState<unknown>(null);
     const [alertOpen, setAlertOpen] = useState(false);
 
+    // Committed search term the browse is actually filtered by (QA I23). The
+    // input box (`searchUserId` state) only updates this on Search/Clear/Enter,
+    // never per keystroke, so the whole-table server search is not re-run on
+    // every character. The ref mirrors it so the memoized LoadUsers reads the
+    // latest committed value even on the same-tick Search/Clear refetch path
+    // (the same pattern the card-list search uses).
+    const searchTermRef = useRef<string>('');
+
     // Client-side gating is UX only; the server require_admin (403) is the real security boundary.
     useEffect(() => {
         const adminFlag = IsAdmin();
@@ -94,10 +103,20 @@ export default function UsersPage() {
         requestGenerationRef.current = requestGeneration;
         setLoading(true);
         try {
-            const result = await UsersApi.ListUsers({
+            // Read the COMMITTED search term from the ref (see its declaration)
+            // so the server-side prefix search narrows the WHOLE user table, not
+            // just the current page (QA I23). The term is included ONLY when
+            // non-empty, so an unfiltered browse sends exactly {page, page_size}
+            // (the real contract) and a search adds the user_id prefix.
+            const listParams: Partial<UserListParams> = {
                 page: currentPage,
                 page_size: ROWS_PER_PAGE,
-            });
+            };
+            const committedSearch = searchTermRef.current.trim();
+            if (committedSearch) {
+                listParams.user_id = committedSearch;
+            }
+            const result = await UsersApi.ListUsers(listParams);
             // Only the latest request may commit its data (QA M-05).
             if (requestGenerationRef.current !== requestGeneration) {
                 return;
@@ -140,8 +159,58 @@ export default function UsersPage() {
         setCurrentPage(page);
     };
 
+    // Editing the box only updates the input value; it does NOT commit the
+    // search or fetch. The whole-table server search runs only when the admin
+    // presses Search/Enter (or Clear), so typing does not fire a request per
+    // keystroke (QA I23).
     const HandleSearchChange = (name: string, value: string) => {
         setSearchUserId(value);
+    };
+
+    /**
+     * Commits the current box value as the active search term and returns to
+     * the first page. The committed term is mirrored into the ref synchronously
+     * so the page-1 refetch path (below) reads it immediately. When already on
+     * page 1, setting the same page number would not re-run the fetch effect, so
+     * LoadUsers is invoked directly.
+     */
+    const HandleSearch = () => {
+        const committed = searchUserId.trim();
+        searchTermRef.current = committed;
+        if (currentPage === 1) {
+            void LoadUsers();
+        } else {
+            setCurrentPage(1);
+        }
+    };
+
+    /**
+     * Clears the search box and the committed term, returning to the unfiltered
+     * first page. The ref is cleared synchronously (the page-1 path may refetch
+     * this same tick before any state-sync effect runs), mirroring the card-list
+     * Clear semantics.
+     */
+    const HandleClear = () => {
+        setSearchUserId('');
+        searchTermRef.current = '';
+        if (currentPage === 1) {
+            void LoadUsers();
+        } else {
+            setCurrentPage(1);
+        }
+    };
+
+    /**
+     * Restores the 3270 Enter-key affordance: pressing Return in the search box
+     * commits the search, exactly like clicking Search (QA I23 / I25).
+     *
+     * @param event - The keyboard event from the search field.
+     */
+    const HandleSearchKeyDown = (event: KeyboardEvent<HTMLInputElement>) => {
+        if (event.key === 'Enter') {
+            event.preventDefault();
+            HandleSearch();
+        }
     };
 
     const HandleAddUser = () => {
@@ -199,18 +268,10 @@ export default function UsersPage() {
         },
     ];
 
-    // Client-side filter over the current page; full server-side search is not in the ListUsers contract.
-    const displayedPage = useMemo<PaginatedResponse<UserSummary>>(() => {
-        const sourcePage = usersPage ?? EMPTY_USERS_PAGE;
-        if (!searchUserId) {
-            return sourcePage;
-        }
-        const needle = searchUserId.toLowerCase();
-        const filteredItems = sourcePage.items.filter((user) =>
-            user.user_id.toLowerCase().startsWith(needle),
-        );
-        return { ...sourcePage, items: filteredItems };
-    }, [usersPage, searchUserId]);
+    // The search now runs SERVER-SIDE over the whole user table (QA I23), so the
+    // page returned by the API is already the correct, filtered browse -- there
+    // is no client-side re-filtering. Render whatever page the backend returned.
+    const displayedPage = usersPage ?? EMPTY_USERS_PAGE;
 
     if (!accessChecked) {
         // Gate not yet evaluated: render nothing to avoid an SSR/hydration flash.
@@ -235,16 +296,27 @@ export default function UsersPage() {
                 </Button>
             </Stack>
 
-            <Box sx={{ mb: 2 }}>
+            <Stack
+                direction={{ xs: 'column', sm: 'row' }}
+                spacing={2}
+                sx={{ mb: 2, alignItems: { sm: 'flex-start' } }}
+            >
                 <FormField
                     name="searchUserId"
                     label="Search User ID"
                     value={searchUserId}
                     onChange={HandleSearchChange}
+                    onKeyDown={HandleSearchKeyDown}
                     maxLength={8}
                     fullWidth={false}
                 />
-            </Box>
+                <Button variant="contained" onClick={HandleSearch}>
+                    Search
+                </Button>
+                <Button variant="outlined" onClick={HandleClear}>
+                    Clear
+                </Button>
+            </Stack>
 
             <DataTable<UserSummary>
                 columns={columns}

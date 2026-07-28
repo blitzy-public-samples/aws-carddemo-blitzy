@@ -96,7 +96,12 @@ from app.models.card_xref import CardXref
 from app.models.customer import Customer
 from app.models.transaction import STATUS_POSTED, Transaction
 
-from batch.jobs.output_safety import AtomicWritePath, SafeCsvWriter, SecureDirectory
+from batch.jobs.output_safety import (
+    AtomicWritePath,
+    ReserveVersionedGeneration,
+    SafeCsvWriter,
+    SecureDirectory,
+)
 
 __all__ = ["GenerateStatements", "StatementResult"]
 
@@ -180,6 +185,19 @@ STATEMENT_GENERATION_PADDING = 4
 # File extensions a run produces; both are scanned when computing the next
 # generation so the CSV and PDF of a run always share the same generation number.
 STATEMENT_FILE_EXTENSIONS = (".csv", ".pdf")
+# Reservation-marker naming for the ATOMIC run-generation claim (QA finding I8).
+# The generation number is no longer chosen by a bare scan-then-use (a TOCTOU
+# race in which two concurrent runs both picked the same number and one
+# overwrote the other). Instead each run atomically RESERVES its generation by
+# creating a marker file ``statement_gen_<NNNN>.reserved`` with O_CREAT|O_EXCL
+# (the same primitive transaction backup uses), so concurrent runs are handed
+# DISTINCT numbers. The marker prefix/suffix are deliberately DISJOINT from the
+# real statement file names (``statement_<acct>_<last4>_<NNNN>.csv|.pdf``): the
+# ``.reserved`` extension never matches STATEMENT_FILE_EXTENSIONS and the
+# ``statement_gen_`` stem cannot be produced by an all-numeric account id, so
+# markers never appear in statement globs or file counts.
+STATEMENT_GENERATION_MARKER_PREFIX = "statement_gen_"
+STATEMENT_GENERATION_MARKER_SUFFIX = ".reserved"
 
 
 # --- PDF layout constants ------------------------------------------------------
@@ -397,38 +415,75 @@ def _ResolveOutputDir(outputDir: str | Path | None) -> Path:
     return SecureDirectory(resolvedDir)
 
 
-def _ResolveRunGeneration(outputDir: Path) -> str:
-    """Compute the next run-level statement generation (GDG ``(+1)`` semantics).
+def _BuildGenerationMarkerPath(outputDir: Path, generationNumber: int) -> Path:
+    """Build the reservation-marker path for a specific run generation number.
 
-    Scans ``outputDir`` for existing ``statement_*_<NNNN>.csv`` /
-    ``statement_*_<NNNN>.pdf`` files, parses the trailing numeric generation
-    segment of each, and returns the next value (highest found plus one) as a
-    zero-padded string (QA finding M19). Because the generation is the LAST
-    underscore-delimited segment of the file stem, it is read with a single
-    ``rsplit`` regardless of the account id / last-four in the middle. Files
-    without a numeric trailing segment (for example any legacy file written
-    before generations existed) are ignored so they never derail the sequence.
-    When no prior generation exists the first identifier is ``"0001"``.
+    Renders ``statement_gen_<NNNN>.reserved`` with the number zero-padded to
+    :data:`STATEMENT_GENERATION_PADDING` digits (numbers wider than the padding
+    render in full so the sequence never truncates). This single builder is the
+    authoritative number<->marker mapping used by the atomic reservation claim
+    (:func:`~batch.jobs.output_safety.ReserveVersionedGeneration`), and its name
+    is deliberately disjoint from the real statement file names so a marker can
+    never be mistaken for -- or counted alongside -- a published statement.
 
-    A single value is returned for the whole run so every statement produced by
-    one :func:`GenerateStatements` call shares the same generation (one run ==
-    one GDG generation), preserving all earlier generations untouched.
+    Args:
+        outputDir: The directory that will hold the reservation marker.
+        generationNumber: The generation number to render into the marker name.
+
+    Returns:
+        The full :class:`~pathlib.Path` of the reservation marker for the number.
+    """
+    generationText = f"{generationNumber:0{STATEMENT_GENERATION_PADDING}d}"
+    markerName = (
+        f"{STATEMENT_GENERATION_MARKER_PREFIX}{generationText}"
+        f"{STATEMENT_GENERATION_MARKER_SUFFIX}"
+    )
+    return outputDir / markerName
+
+
+def _HighestExistingGeneration(outputDir: Path) -> int:
+    """Return the highest run generation already present in ``outputDir``.
+
+    Scans for BOTH published statement files
+    (``statement_<acct>_<last4>_<NNNN>.csv`` / ``.pdf``) and in-flight
+    reservation markers (``statement_gen_<NNNN>.reserved``), parses each
+    trailing numeric generation, and returns the largest value found (or ``0``
+    when none exist). Files without a numeric trailing segment (for example any
+    legacy file written before generations existed) are ignored so a stray file
+    never derails the sequence.
+
+    The returned value is only a fast STARTING HINT: the caller adds one and
+    passes the result to
+    :func:`~batch.jobs.output_safety.ReserveVersionedGeneration`, which claims
+    the first free number race-safely with an atomic ``O_CREAT | O_EXCL`` create.
+    Because the atomic claim -- not this scan -- guarantees distinct generations,
+    a concurrent run that reserves the hinted number first merely causes the
+    claim to advance; correctness never depends on the hint being exact.
+    Including markers in the scan simply lets the hint skip past a generation
+    another run has already reserved but not yet published, avoiding wasted
+    claim attempts.
 
     Args:
         outputDir: The (already-created) directory holding prior generations.
 
     Returns:
-        The next run generation identifier, zero-padded to
-        :data:`STATEMENT_GENERATION_PADDING` digits.
+        The highest existing generation number, or ``0`` when none exist.
     """
     highestGeneration = 0
-    for extension in STATEMENT_FILE_EXTENSIONS:
-        for existingFile in outputDir.glob(f"{STATEMENT_FILE_PREFIX}*{extension}"):
+    statementGlobs = [
+        f"{STATEMENT_FILE_PREFIX}*{extension}"
+        for extension in STATEMENT_FILE_EXTENSIONS
+    ]
+    markerGlob = (
+        f"{STATEMENT_GENERATION_MARKER_PREFIX}*"
+        f"{STATEMENT_GENERATION_MARKER_SUFFIX}"
+    )
+    for pattern in (*statementGlobs, markerGlob):
+        for existingFile in outputDir.glob(pattern):
             trailingSegment = existingFile.stem.rsplit("_", 1)
             if len(trailingSegment) == 2 and trailingSegment[1].isdigit():
                 highestGeneration = max(highestGeneration, int(trailingSegment[1]))
-    nextGeneration = highestGeneration + 1
-    return f"{nextGeneration:0{STATEMENT_GENERATION_PADDING}d}"
+    return highestGeneration
 
 
 def _BuildStatementFilename(context: _StatementContext, suffix: str) -> str:
@@ -794,23 +849,39 @@ def GenerateStatements(
     LOGGER.info("START OF EXECUTION OF PROGRAM CBSTM03A")
     result = StatementResult()
     resolvedDir = _ResolveOutputDir(outputDir)
-    # Allocate ONE generation for this run (GDG (+1) semantics, QA finding M19):
-    # every statement written below shares this suffix, so a re-run writes a fresh
-    # generation and never overwrites the prior run's statements. Retention of
-    # older generations is left to the operator/deployment (the job never deletes
-    # a prior generation), mirroring the legacy GDG retention policy.
-    runGeneration = _ResolveRunGeneration(resolvedDir)
-    xrefs = session.execute(
-        select(CardXref).order_by(CardXref.xref_card_num)
-    ).scalars().all()
-    for xref in xrefs:
-        context = _BuildStatementContext(session, resolvedDir, xref, runGeneration)
-        csvPath = _WriteStatementCsv(context)
-        pdfPath = _WriteStatementPdf(context)
-        result.csvPaths.append(str(csvPath))
-        result.pdfPaths.append(str(pdfPath))
-        result.statementsGenerated += 1
-        result.totalAmount += context.statementTotal
+    # Allocate ONE generation for this run (GDG (+1) semantics, QA finding M19)
+    # by ATOMICALLY RESERVING it (QA finding I8) rather than choosing it with a
+    # bare scan-then-use. The previous scan-then-use was a time-of-check/
+    # time-of-use race: two concurrent runs both computed the same "highest + 1"
+    # and one silently overwrote the other's statements. _HighestExistingGeneration
+    # is now only a fast STARTING HINT; ReserveVersionedGeneration claims the first
+    # free number with an atomic O_CREAT|O_EXCL marker create (the SAME primitive
+    # transaction backup uses), so concurrent runs are guaranteed DISTINCT
+    # generations. Every statement written inside the reservation shares this one
+    # suffix, so a re-run writes a fresh generation and never overwrites a prior
+    # run's statements. Retention of older generations is left to the operator (the
+    # job never deletes a prior generation), mirroring the legacy GDG policy.
+    startNumber = _HighestExistingGeneration(resolvedDir) + 1
+    with ReserveVersionedGeneration(
+        lambda generationNumber: _BuildGenerationMarkerPath(
+            resolvedDir, generationNumber
+        ),
+        startNumber,
+    ) as reservedGeneration:
+        runGeneration = f"{reservedGeneration:0{STATEMENT_GENERATION_PADDING}d}"
+        xrefs = session.execute(
+            select(CardXref).order_by(CardXref.xref_card_num)
+        ).scalars().all()
+        for xref in xrefs:
+            context = _BuildStatementContext(
+                session, resolvedDir, xref, runGeneration
+            )
+            csvPath = _WriteStatementCsv(context)
+            pdfPath = _WriteStatementPdf(context)
+            result.csvPaths.append(str(csvPath))
+            result.pdfPaths.append(str(pdfPath))
+            result.statementsGenerated += 1
+            result.totalAmount += context.statementTotal
     LOGGER.info("END OF EXECUTION OF PROGRAM CBSTM03A")
     return result
 

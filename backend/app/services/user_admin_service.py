@@ -347,9 +347,18 @@ class UserAdminService:
         a NOTFND condition surfaces "User ID NOT found..." and any other file
         error surfaces "Unable to lookup User...".
 
+        QA Issue 18 (canonical identifier policy): the path-supplied id is
+        canonicalized to ``.strip().upper()`` before the lookup, exactly as the
+        sign-on path canonicalizes its id (``auth_service.Login``) and as the
+        create path stores it (``user.schemas._RequireUserId`` upper-cases the
+        stored key). Because every user id is stored in its canonical uppercase
+        form, this makes the view / update / delete lookups case-insensitive and
+        consistent with sign-on, so ``GET/PUT/DELETE /admin/users/{userId}``
+        resolve the same record regardless of the casing in the URL.
+
         Args:
             session: The active async database session.
-            userId: The user id to read.
+            userId: The user id to read (canonicalized to uppercase here).
 
         Returns:
             The matching :class:`~app.models.user.User` ORM instance.
@@ -357,8 +366,9 @@ class UserAdminService:
         Raises:
             NotFoundError: If no user matches (NOTFND) or the read fails (OTHER).
         """
+        canonicalUserId = userId.strip().upper()
         try:
-            foundUser = await self.userRepository.GetByUserId(session, userId)
+            foundUser = await self.userRepository.GetByUserId(session, canonicalUserId)
         except SQLAlchemyError as lookupError:
             raise NotFoundError(MSG_UNABLE_TO_LOOKUP) from lookupError
         if foundUser is None:
@@ -616,6 +626,7 @@ class UserAdminService:
         session: AsyncSession,
         params: PaginationParams,
         currentUser: User,
+        userIdPrefix: str | None = None,
     ) -> PaginatedResponse[UserSummary]:
         """List users for the admin browse screen (COUSR00C, CU00).
 
@@ -628,11 +639,20 @@ class UserAdminService:
         returns the exact rows and pagination metadata the former whole-table
         fetch-then-slice produced. Read-only: it never commits.
 
+        A non-empty ``userIdPrefix`` narrows the browse to user ids beginning
+        with that text (case-insensitive), reproducing the "Search User ID" box
+        as a WHOLE-TABLE server-side search (QA I23) instead of the former
+        client filter that only inspected the current page. The count and the
+        page fetch apply the identical prefix predicate so the pagination
+        metadata describes the filtered set.
+
         Args:
             session: The active async database session.
             params: Page number and page size.
             currentUser: The acting administrator (mandatory; from
                 ``require_admin``), re-checked in depth by :meth:`_AssertAdmin`.
+            userIdPrefix: Optional case-insensitive user-id prefix search term;
+                ``None``/empty returns the unfiltered browse.
 
         Returns:
             A page of :class:`~app.schemas.UserSummary` items (no password) with
@@ -642,13 +662,17 @@ class UserAdminService:
             AuthorizationError: If ``currentUser`` is not an administrator.
         """
         self._AssertAdmin(currentUser)
-        totalItems = await self.userRepository.CountUsers(session)
+        totalItems = await self.userRepository.CountUsers(
+            session,
+            userIdPrefix=userIdPrefix,
+        )
         pageOffset = (params.page - 1) * params.page_size
         pageUsers = await self.userRepository.ListUsers(
             session,
             startUserId=None,
             limit=params.page_size,
             offset=pageOffset,
+            userIdPrefix=userIdPrefix,
         )
         userSummaries = [UserSummary.model_validate(row) for row in pageUsers]
         return PaginatedResponse.Create(userSummaries, totalItems, params)

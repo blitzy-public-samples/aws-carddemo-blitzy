@@ -28,6 +28,8 @@ import CardContent from '@mui/material/CardContent';
 import Stack from '@mui/material/Stack';
 import Button from '@mui/material/Button';
 import Typography from '@mui/material/Typography';
+import CircularProgress from '@mui/material/CircularProgress';
+import { visuallyHidden } from '@mui/utils';
 
 import { FormField } from '@/components/FormField';
 import { ErrorAlert } from '@/components/ErrorAlert';
@@ -243,9 +245,34 @@ export default function SignonPage() {
                                     color="primary"
                                     fullWidth
                                     disabled={submitting}
+                                    // QA I21 / w000 FINDING-10: expose the pending
+                                    // submit as BUSY to assistive tech (`aria-busy`)
+                                    // and show a visible in-button spinner, so the
+                                    // pending state is no longer signalled by the
+                                    // disabled attribute alone.
+                                    aria-busy={submitting}
+                                    startIcon={
+                                        submitting ? (
+                                            <CircularProgress
+                                                size={20}
+                                                color="inherit"
+                                                aria-hidden="true"
+                                            />
+                                        ) : undefined
+                                    }
                                 >
-                                    Sign On
+                                    {submitting ? 'Signing On…' : 'Sign On'}
                                 </Button>
+                                {/*
+                                  * QA I21: a polite live region announces the
+                                  * pending sign-on to screen-reader users the moment
+                                  * submission starts. It is visually hidden (the
+                                  * button spinner + label already give the sighted
+                                  * cue) but present in the accessibility tree.
+                                  */}
+                                <Box role="status" aria-live="polite" sx={visuallyHidden}>
+                                    {submitting ? 'Signing on, please wait…' : ''}
+                                </Box>
                             </Stack>
                         </Box>
                     </CardContent>

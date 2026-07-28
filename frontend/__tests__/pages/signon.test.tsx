@@ -25,6 +25,8 @@ import {
     RenderWithProviders,
     screen,
     waitFor,
+    act,
+    within,
     SetupUser,
     MakeCurrentUser,
     MakeAdminUser,
@@ -336,5 +338,48 @@ describe('SignonPage', () => {
                 }),
             ),
         );
+    });
+
+    it('surfaces a visible busy/progress state with aria-busy while signing on (QA I21)', async () => {
+        const user = SetupUser();
+        // A DEFERRED login promise keeps the submit pending so the busy/progress
+        // semantics are observable before the request settles.
+        let resolveLogin: (value: unknown) => void = () => {};
+        (Login as jest.Mock).mockReturnValueOnce(
+            new Promise((resolve) => {
+                resolveLogin = resolve;
+            }),
+        );
+        RenderWithProviders(<SignonPage />);
+
+        await user.type(screen.getByLabelText(/user id/i), ADMIN_USER_ID);
+        await user.type(
+            screen.getByLabelText(/password/i),
+            THROWAWAY_PASSWORD,
+        );
+        await user.click(
+            screen.getByRole('button', { name: SIGN_ON_BUTTON_NAME }),
+        );
+
+        // While the request is in flight the button relabels to "Signing On…",
+        // reports itself BUSY to assistive tech, stays disabled to block a
+        // double-submit, and shows an in-button spinner; a polite live region
+        // separately announces the pending sign-on. Previously the ONLY pending
+        // cue was the disabled attribute (QA I21).
+        const pendingButton = await screen.findByRole('button', {
+            name: /signing on/i,
+        });
+        expect(pendingButton).toHaveAttribute('aria-busy', 'true');
+        expect(pendingButton).toBeDisabled();
+        // The decorative spinner is aria-hidden, so query it with `hidden: true`.
+        expect(
+            within(pendingButton).getByRole('progressbar', { hidden: true }),
+        ).toBeInTheDocument();
+        expect(screen.getByRole('status')).toHaveTextContent(/signing on/i);
+
+        // Settle the deferred login so no state update lands after the test.
+        await act(async () => {
+            resolveLogin(MakeAdminUser());
+        });
     });
 });

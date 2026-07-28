@@ -77,6 +77,7 @@ import { useEffect, useRef, useState } from 'react';
 import type { KeyboardEvent as ReactKeyboardEvent, ReactNode } from 'react';
 
 import { GetCurrentUser, IsAdmin, Logout } from '@/lib/auth';
+import { ErrorAlert } from '@/components/ErrorAlert';
 import type { CurrentUser } from '@/types';
 
 /* ------------------------------------------------------------------------- */
@@ -103,6 +104,19 @@ const SIGNON_ROUTE = '/signon';
 
 /** Route the header brand returns to — the regular-user menu (`COMEN01`). */
 const HOME_ROUTE = '/menu';
+
+/** Label shown on the Logout button while a sign-out is in flight (QA Issue 2). */
+const LOGGING_OUT_LABEL = 'Signing out…';
+
+/** Default Logout button label. */
+const LOGOUT_LABEL = 'Logout';
+
+/**
+ * Title of the alert shown when server-side sign-out could not be confirmed
+ * (QA Issue 2 / CWE-613). The `Logout` helper rejects in this case; the user is
+ * kept signed in and can press Logout again to retry.
+ */
+const LOGOUT_FAILED_TITLE = 'Sign-out failed';
 
 /* ------------------------------------------------------------------------- */
 /* Navigation model (single typed source of truth).                          */
@@ -159,6 +173,78 @@ function GetRouteFamily(path: string): string {
 }
 
 /* ------------------------------------------------------------------------- */
+/* Focus helpers (QA I28 — aria-hidden-aware focus placement).               */
+/* ------------------------------------------------------------------------- */
+
+/**
+ * Upper bound on the number of animation frames {@link FocusWhenExposed} waits
+ * for an `aria-hidden` ancestor to clear before focusing regardless. MUI's
+ * temporary Drawer keeps `aria-hidden="true"` on the app root for the FULL
+ * slide-out transition (~200 ms) and removes it only when the transition
+ * completes; 30 frames (~0.5 s at 60 fps) comfortably covers that window while
+ * guaranteeing the poll can never loop forever.
+ */
+const MAX_FOCUS_DEFER_FRAMES = 30;
+
+/**
+ * Returns `true` when `element` is itself, or has an ancestor, carrying
+ * `aria-hidden="true"`. Focusing an element inside such a subtree makes Chromium
+ * log "Blocked aria-hidden on an element because its descendant retained focus"
+ * (QA I28), because a focused node must never be hidden from assistive technology.
+ *
+ * @param element - The candidate focus target.
+ * @returns Whether the element currently sits inside an `aria-hidden` subtree.
+ */
+export function IsInsideAriaHidden(element: HTMLElement): boolean {
+    let node: HTMLElement | null = element;
+    while (node !== null) {
+        if (node.getAttribute('aria-hidden') === 'true') {
+            return true;
+        }
+        node = node.parentElement;
+    }
+    return false;
+}
+
+/**
+ * Focuses `element`, but never while it sits inside an `aria-hidden` subtree.
+ *
+ * QA I28 — when the mobile navigation Drawer closes, MUI's Modal keeps
+ * `aria-hidden="true"` on the app root for the entire slide-out transition and
+ * removes it only once the transition completes. Placing focus on an app-root
+ * descendant during that window — the hamburger toggle after an Escape/backdrop
+ * dismissal, or the destination page `<h1>` after a nav-item click — trips
+ * Chromium's blocked-aria-hidden warning. This helper defers the `focus()` call
+ * one animation frame at a time until no `aria-hidden` ancestor remains (i.e.
+ * until the app root is exposed to assistive technology again), then focuses.
+ * When the target is already exposed — the common case: desktop navigation, or
+ * any route change with no open Drawer — it focuses synchronously, preserving the
+ * existing behavior. Bounded by {@link MAX_FOCUS_DEFER_FRAMES} so it can never
+ * spin indefinitely.
+ *
+ * @param element - The element to focus once exposed; `null` is a no-op.
+ */
+export function FocusWhenExposed(element: HTMLElement | null): void {
+    if (element === null || typeof window === 'undefined') {
+        return;
+    }
+    const target: HTMLElement = element;
+    let framesWaited = 0;
+    function TryFocus(): void {
+        if (
+            IsInsideAriaHidden(target) &&
+            framesWaited < MAX_FOCUS_DEFER_FRAMES
+        ) {
+            framesWaited += 1;
+            window.requestAnimationFrame(TryFocus);
+            return;
+        }
+        target.focus();
+    }
+    TryFocus();
+}
+
+/* ------------------------------------------------------------------------- */
 /* Props (single typed object — Ochs ≤4-parameter rule).                     */
 /* ------------------------------------------------------------------------- */
 
@@ -198,6 +284,24 @@ export function AppShell(props: AppShellProps) {
     const [showAdmin, setShowAdmin] = useState(false);
     const [isMounted, setIsMounted] = useState(false);
     const [mobileOpen, setMobileOpen] = useState(false);
+    // QA Issue 2 (CWE-613): logout is now confirmed with the server before the
+    // SPA shows a signed-out state. `isLoggingOut` disables the button while the
+    // (bounded-retry) revocation is in flight; `logoutError` holds the failure
+    // when revocation could not be confirmed so the user is kept signed in and
+    // shown an explicit, retryable failure instead of a false success.
+    const [isLoggingOut, setIsLoggingOut] = useState(false);
+    const [logoutError, setLogoutError] = useState<unknown>(null);
+    // QA I26 (RSC prefetch churn): next/link eagerly prefetches every in-viewport
+    // <Link>. With the permanent desktop drawer that means ALL navigation
+    // destinations prefetch their React Server Component payload on every page
+    // load. Each nav link therefore starts with prefetch={false} — which, in the
+    // App Router, disables BOTH viewport and hover auto-prefetch — and opts into
+    // prefetching only once the user shows intent toward it (hover or keyboard
+    // focus), limiting prefetch traffic to routes the user is actually likely to
+    // visit. A path latches in this Set on first intent and stays prefetched.
+    const [intendedNavPaths, setIntendedNavPaths] = useState<Set<string>>(
+        () => new Set<string>(),
+    );
 
     useEffect(() => {
         setCurrentUser(GetCurrentUser());
@@ -227,6 +331,11 @@ export function AppShell(props: AppShellProps) {
     // (bare/pre-auth and the authenticated shell) because they are mutually
     // exclusive, so only one `<main>` is mounted at a time.
     const mainRef = useRef<HTMLElement | null>(null);
+
+    // QA I28: reference to the hamburger toggle button so a keyboard/backdrop
+    // dismissal of the temporary drawer can hand focus back to the control that
+    // opened it, AFTER the close has removed `aria-hidden` from the app root.
+    const menuButtonRef = useRef<HTMLButtonElement | null>(null);
 
     // Skips the very first render so the browser's natural initial focus (or a
     // page's `autoFocus` field) is never stolen on a full page load; the route
@@ -269,7 +378,14 @@ export function AppShell(props: AppShellProps) {
         const heading = main.querySelector<HTMLElement>('h1');
         const focusTarget: HTMLElement = heading ?? main;
         focusTarget.setAttribute('tabindex', '-1');
-        focusTarget.focus();
+        // QA I28: when this navigation was triggered by tapping a mobile nav item,
+        // the temporary Drawer is still sliding out and MUI keeps `aria-hidden` on
+        // the app root (which contains this heading) for the whole transition.
+        // Focusing the heading now would trip Chromium's blocked-aria-hidden
+        // warning, so defer until the app root is exposed. With no open Drawer
+        // (desktop nav, dialog-driven redirects) the target is already exposed and
+        // `FocusWhenExposed` focuses synchronously, preserving prior behavior.
+        FocusWhenExposed(focusTarget);
     }, [pathname]);
 
     // Role-gated nav (client-side UX only — NOT the security boundary; see the
@@ -302,11 +418,51 @@ export function AppShell(props: AppShellProps) {
 
     /**
      * Closes the temporary (mobile) navigation drawer. Bound to each nav item's
-     * click and to the drawer backdrop `onClose`, so tapping a destination both
-     * navigates (via `next/link`) and dismisses the overlay.
+     * click and to the drawer backdrop / Escape `onClose`, so tapping a
+     * destination both navigates (via `next/link`) and dismisses the overlay.
+     *
+     * QA I28 — avoid the browser's "Blocked aria-hidden on an element because its
+     * descendant retained focus" warning. When MUI's Modal dismisses the drawer
+     * it (a) applies `aria-hidden` to the rest of the application and (b) — by
+     * default — RESTORES focus to the element that opened it (the hamburger
+     * toggle) while that app-root subtree is still `aria-hidden`, which is
+     * exactly what the browser blocks. A plain blur is insufficient because
+     * MUI's own focus-restore re-focuses the hidden trigger after the blur.
+     *
+     * The fix has two coordinated parts:
+     *   1. `disableRestoreFocus` on the drawer's Modal (see `ModalProps` below)
+     *      stops MUI from moving focus back into the app root ON ITS OWN, which
+     *      it would otherwise do the instant the close begins — while the app
+     *      root is still `aria-hidden`.
+     *   2. This handler blurs the active element immediately (so nothing inside
+     *      the closing subtree keeps focus during the transition) and then, for a
+     *      dismissal that does NOT navigate (Escape / backdrop tap), hands focus
+     *      back to the hamburger toggle via {@link FocusWhenExposed}. Crucially,
+     *      MUI keeps `aria-hidden` on the app root for the FULL ~200 ms slide-out
+     *      transition, so the hand-off must wait until that attribute is gone —
+     *      `FocusWhenExposed` polls animation frames until the toggle is no longer
+     *      inside an `aria-hidden` subtree, then focuses it. Navigation
+     *      dismissals skip this hand-off: the route-change effect lands focus on
+     *      the destination page's <h1> (also via `FocusWhenExposed`).
+     *
+     * @param options - `returnFocusToToggle` requests the post-close focus
+     *   hand-off back to the hamburger toggle (used for Escape / backdrop only).
      */
-    function HandleDrawerClose(): void {
+    function HandleDrawerClose(options?: { returnFocusToToggle?: boolean }): void {
+        if (typeof document !== 'undefined') {
+            const activeElement = document.activeElement;
+            if (activeElement instanceof HTMLElement) {
+                activeElement.blur();
+            }
+        }
         setMobileOpen(false);
+        if (options?.returnFocusToToggle) {
+            // Hand focus back to the control that opened the drawer, but only once
+            // MUI has removed the app-root `aria-hidden` at the end of the slide-out
+            // transition — focusing it earlier recreates the blocked-focus warning
+            // this handler exists to prevent (QA I28).
+            FocusWhenExposed(menuButtonRef.current);
+        }
     }
 
     /**
@@ -321,15 +477,40 @@ export function AppShell(props: AppShellProps) {
     }
 
     /**
-     * Logs the current user out. Delegates to `@/lib/auth` `Logout`, which now
-     * asks the backend to invalidate the HTTP-only session cookie (QA #17) before
-     * clearing the mirrored client identity and hard-redirecting to `/signon`.
-     * `Logout` is async; its promise is intentionally not awaited here (the DOM
-     * `onClick` handler is synchronous) — teardown and the redirect run inside
-     * `Logout` itself, so `void` marks the fire-and-forget call explicitly.
+     * Logs the current user out. Delegates to `@/lib/auth` `Logout`, which asks
+     * the backend to invalidate the HTTP-only session cookie (QA #17) and — only
+     * once the server CONFIRMS revocation — clears the mirrored client identity
+     * and hard-redirects to `/signon`.
+     *
+     * QA Issue 2 (CWE-613): `Logout` now REJECTS when server-side revocation
+     * cannot be confirmed after its bounded retries, instead of silently
+     * succeeding. This handler therefore awaits it (via the promise chain, since
+     * the DOM `onClick` is synchronous), disables the button while in flight to
+     * prevent overlapping attempts, and on rejection keeps the user signed in and
+     * surfaces an explicit, retryable failure alert. On success the redirect
+     * inside `Logout` navigates away before the `finally` matters.
      */
     function HandleLogout(): void {
-        void Logout();
+        if (isLoggingOut) {
+            return;
+        }
+        setLogoutError(null);
+        setIsLoggingOut(true);
+        void Logout()
+            .catch((error: unknown) => {
+                setLogoutError(error);
+            })
+            .finally(() => {
+                setIsLoggingOut(false);
+            });
+    }
+
+    /**
+     * Dismisses the sign-out-failed alert. The user remains signed in; pressing
+     * Logout again retries server revocation.
+     */
+    function HandleLogoutErrorClose(): void {
+        setLogoutError(null);
     }
 
     /**
@@ -347,6 +528,26 @@ export function AppShell(props: AppShellProps) {
         if (event.key === 'Escape' && !event.defaultPrevented) {
             router.back();
         }
+    }
+
+    /**
+     * Latches a navigation destination as "intended" (the user hovered it or
+     * moved keyboard focus to it) so its next render enables next/link
+     * prefetching (QA I26). Idempotent: re-triggering for an already-latched
+     * path returns the SAME Set reference, so React bails out of the state
+     * update and no redundant render or prefetch scheduling occurs.
+     *
+     * @param path - The absolute route path the user has shown intent toward.
+     */
+    function MarkNavPathIntended(path: string): void {
+        setIntendedNavPaths((previousPaths) => {
+            if (previousPaths.has(path)) {
+                return previousPaths;
+            }
+            const nextPaths = new Set(previousPaths);
+            nextPaths.add(path);
+            return nextPaths;
+        });
     }
 
     /**
@@ -369,6 +570,17 @@ export function AppShell(props: AppShellProps) {
                 <ListItemButton
                     component={Link}
                     href={item.path}
+                    // QA I26 (RSC prefetch churn): start with prefetch disabled
+                    // — in the App Router prefetch={false} suppresses BOTH
+                    // viewport and hover auto-prefetch — and switch to
+                    // next/link's default (prefetch={null}) only once this
+                    // destination is latched as "intended" via hover/keyboard
+                    // focus below. This limits prefetch traffic to routes the
+                    // user is actually likely to visit instead of eagerly
+                    // fetching every nav destination's RSC payload on page load.
+                    prefetch={intendedNavPaths.has(item.path) ? null : false}
+                    onMouseEnter={() => MarkNavPathIntended(item.path)}
+                    onFocus={() => MarkNavPathIntended(item.path)}
                     selected={isActive}
                     // FINDING-07 (WCAG 4.1.2): `selected` only supplies the
                     // Mui-selected visual highlight. `aria-current="page"`
@@ -377,7 +589,7 @@ export function AppShell(props: AppShellProps) {
                     // item is the current page; omitted (undefined) on inactive
                     // items.
                     aria-current={isActive ? 'page' : undefined}
-                    onClick={HandleDrawerClose}
+                    onClick={() => HandleDrawerClose()}
                 >
                     <ListItemIcon>{item.icon}</ListItemIcon>
                     <ListItemText primary={item.label} />
@@ -451,16 +663,20 @@ export function AppShell(props: AppShellProps) {
         );
     }
 
-    // QA dest F-1: a mounted visitor with no client identity on a protected route
-    // is being redirected to /signon by the auth-guard effect above. Render an
-    // EMPTY `<main>` — never the protected page's children — so no protected
-    // content is shown while the redirect settles. This stays hydration-safe:
-    // during SSR and the first client render `isMounted` is false, so neither
-    // pre-auth branch matches and both sides render the same full shell; the
-    // identity-based switch only happens AFTER mount via the effects above. The
-    // authenticated branch below renders its own single `<main>`, and these
-    // branches are mutually exclusive, so there is never more than one main.
-    if (isMounted && !currentUser) {
+    // QA Issue 30 + dest F-1 — gate the authenticated chrome on RESOLVED auth
+    // state. The full shell (header, brand, nav labels) is rendered ONLY once the
+    // mount effects have run AND a client identity is present. Until then —
+    // during SSR and the very first client render (`isMounted` false), and for a
+    // mounted anonymous visitor being redirected to /signon by the auth-guard
+    // effect above (`currentUser` null) — an EMPTY `<main>` with NO header/nav is
+    // rendered instead. This eliminates the brief flash of the static
+    // authenticated shell frame an anonymous visitor previously saw (I30), and it
+    // is hydration-exact: the server and the first client render both produce the
+    // same empty main, so there is no mismatch; the switch to the full shell
+    // happens only AFTER mount once `currentUser` is known. The authenticated
+    // branch below renders its own single `<main>`, and these branches are
+    // mutually exclusive, so there is never more than one main.
+    if (!isMounted || !currentUser) {
         return <Box component="main" ref={mainRef} />;
     }
 
@@ -472,6 +688,7 @@ export function AppShell(props: AppShellProps) {
             >
                 <Toolbar>
                     <IconButton
+                        ref={menuButtonRef}
                         color="inherit"
                         aria-label="Open navigation menu"
                         edge="start"
@@ -511,8 +728,10 @@ export function AppShell(props: AppShellProps) {
                                 color="inherit"
                                 startIcon={<LogoutIcon />}
                                 onClick={HandleLogout}
+                                disabled={isLoggingOut}
+                                aria-busy={isLoggingOut}
                             >
-                                Logout
+                                {isLoggingOut ? LOGGING_OUT_LABEL : LOGOUT_LABEL}
                             </Button>
                         </>
                     ) : null}
@@ -529,8 +748,12 @@ export function AppShell(props: AppShellProps) {
                 <Drawer
                     variant="temporary"
                     open={mobileOpen}
-                    onClose={HandleDrawerClose}
-                    ModalProps={{ keepMounted: true }}
+                    onClose={() => HandleDrawerClose({ returnFocusToToggle: true })}
+                    // QA I28: `disableRestoreFocus` stops MUI from restoring focus
+                    // to the hamburger toggle while the app root is still
+                    // `aria-hidden` during the close; `HandleDrawerClose` performs
+                    // the focus hand-off itself on the next frame instead.
+                    ModalProps={{ keepMounted: true, disableRestoreFocus: true }}
                     sx={(theme) => ({
                         display: { xs: 'block', md: 'none' },
                         '& .MuiDrawer-paper': {
@@ -576,6 +799,18 @@ export function AppShell(props: AppShellProps) {
                 <Toolbar />
                 {props.children}
             </Box>
+            {/*
+             * QA Issue 2 (CWE-613): when server-side sign-out cannot be confirmed,
+             * `Logout` rejects and the user is kept signed in. Surface that
+             * explicit, retryable failure here (severity="error"); dismissing it
+             * leaves the session intact and pressing Logout again retries.
+             */}
+            <ErrorAlert
+                open={Boolean(logoutError)}
+                onClose={HandleLogoutErrorClose}
+                error={logoutError}
+                title={LOGOUT_FAILED_TITLE}
+            />
         </Box>
     );
 }

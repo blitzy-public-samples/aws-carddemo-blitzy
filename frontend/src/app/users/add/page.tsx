@@ -64,10 +64,22 @@ const USER_TYPE_OPTIONS: FieldOption[] = [
 const USER_ID_LENGTH = 8;
 
 /**
- * Allowed user-id characters: letters, digits, and spaces — identical to the
- * backend ALPHANUMERIC_PATTERN so accept/reject parity holds on both tiers.
+ * Allowed user-id characters: letters and digits only, NO embedded space —
+ * identical to the backend IDENTIFIER_PATTERN so accept/reject parity holds on
+ * both tiers. A user id becomes a database key, a URL path segment, and a token
+ * subject, so an interior space is an ambiguous, non-canonical character (QA
+ * Issue 18: "ID pattern allows spaces ... ambiguous identifiers").
  */
-const USER_ID_ALPHANUMERIC_PATTERN = /^[A-Za-z0-9 ]+$/;
+const USER_ID_ALPHANUMERIC_PATTERN = /^[A-Za-z0-9]+$/;
+
+/**
+ * Exact width of SEC-USR-PWD (COUSR01 PASSWDI PIC X(8)). Like the user id, the
+ * password is a fixed-width field, so the client requires EXACTLY this many
+ * characters — mirrored from the backend UserCreate edit so the client rejects
+ * the same weak short passwords the server does (QA Issue 18: a one-character
+ * password used to be accepted because there was no meaningful minimum length).
+ */
+const PASSWORD_LENGTH = 8;
 
 /* Per-field validation messages. The User ID length/format text matches the
  * backend messages verbatim so the client and server report the same failure. */
@@ -77,6 +89,7 @@ const USER_ID_REQUIRED_ERROR = 'User ID is required.';
 const USER_ID_LENGTH_ERROR = 'User ID must be exactly 8 characters.';
 const USER_ID_ALPHANUMERIC_ERROR = 'User ID can have numbers or alphabets only.';
 const PASSWORD_REQUIRED_ERROR = 'Password is required.';
+const PASSWORD_LENGTH_ERROR = 'Password must be exactly 8 characters.';
 const USER_TYPE_INVALID_ERROR = 'User Type must be Admin or User.';
 
 /**
@@ -211,6 +224,10 @@ export default function UsersAddPage() {
         }
         if (!values.password) {
             errors.password = PASSWORD_REQUIRED_ERROR;
+        } else if (values.password.length !== PASSWORD_LENGTH) {
+            // QA Issue 18: reject a too-short (weak) password before submit, the
+            // same exact-8 rule the server enforces (UserCreate password edit).
+            errors.password = PASSWORD_LENGTH_ERROR;
         }
         if (values.userType !== 'A' && values.userType !== 'U') {
             errors.userType = USER_TYPE_INVALID_ERROR;

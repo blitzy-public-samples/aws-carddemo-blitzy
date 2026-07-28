@@ -169,7 +169,24 @@ SessionLocal = sessionmaker(
 # configuration) and DISABLED by default, so production and development runs are
 # completely unaffected (no behavior change); only when explicitly enabled does
 # it change behavior.
-REQUIRE_TEST_DB_ENV_VAR = "BATCH_REQUIRE_TEST_DB"
+# Canonical, documented environment variable that opts the guard IN. Named with
+# the ``CARDDEMO_`` project prefix so the SAME variable reads naturally across the
+# backend, batch and docs (QA finding I6): the operator sets exactly ONE
+# documented name and it is honored. ``docs/batch.md`` and ``README.md`` document
+# this name; enabling it against a non-test database now protects that data
+# instead of being silently ignored.
+REQUIRE_TEST_DB_ENV_VAR = "CARDDEMO_REQUIRE_TEST_DB"
+
+# Backward-compatible legacy alias for :data:`REQUIRE_TEST_DB_ENV_VAR`. Earlier
+# builds (and any CI/harness that already exports it) used this name, so it is
+# still honored -- enabling the guard through it never silently stops protecting
+# data. The canonical ``CARDDEMO_REQUIRE_TEST_DB`` is the documented form; this
+# alias is retained purely so existing callers keep working (QA finding I6).
+LEGACY_REQUIRE_TEST_DB_ENV_VAR = "BATCH_REQUIRE_TEST_DB"
+
+# Both names are consulted; either one, when truthy, enables the guard. The
+# canonical name is listed first so it is the one surfaced in diagnostics.
+_REQUIRE_TEST_DB_ENV_VARS = (REQUIRE_TEST_DB_ENV_VAR, LEGACY_REQUIRE_TEST_DB_ENV_VAR)
 
 # String values (case-insensitive, surrounding whitespace ignored) that turn the
 # guard ON. Any other value -- including unset -- leaves the guard OFF.
@@ -182,15 +199,20 @@ TEST_DB_NAME_SUFFIX = "_test"
 def _IsTestDbGuardEnabled() -> bool:
     """Return whether the test-database guard has been opted in via the environment.
 
-    Reads :data:`REQUIRE_TEST_DB_ENV_VAR`; the guard is enabled only when its
-    value is one of :data:`GUARD_TRUTHY_VALUES`. Absent or any other value leaves
-    the guard disabled, preserving the default (production-safe) behavior.
+    Reads the canonical :data:`REQUIRE_TEST_DB_ENV_VAR` and the legacy
+    :data:`LEGACY_REQUIRE_TEST_DB_ENV_VAR` alias; the guard is enabled when
+    EITHER one holds a value in :data:`GUARD_TRUTHY_VALUES`. Absent or any other
+    value on both leaves the guard disabled, preserving the default
+    (production-safe) behavior (QA finding I6).
 
     Returns:
-        ``True`` when the guard is enabled, otherwise ``False``.
+        ``True`` when the guard is enabled through either name, otherwise ``False``.
     """
-    rawValue = os.environ.get(REQUIRE_TEST_DB_ENV_VAR, "")
-    return rawValue.strip().lower() in GUARD_TRUTHY_VALUES
+    for envVarName in _REQUIRE_TEST_DB_ENV_VARS:
+        rawValue = os.environ.get(envVarName, "")
+        if rawValue.strip().lower() in GUARD_TRUTHY_VALUES:
+            return True
+    return False
 
 
 def _AssertTestDatabase() -> None:

@@ -74,13 +74,20 @@ dev = [
 # -----------------------------------------------------------------------------
 # Console entry point.
 #
-# ``carddemo-batch`` invokes the Typer application object ``app`` in
-# ``batch/cli.py`` (Typer instances are callable, mirroring the module's own
-# ``if __name__ == "__main__": app()`` guard). This makes the packaged command
-# and ``python -m batch.cli`` behave identically.
+# ``carddemo-batch`` invokes ``batch.cli:_RunCli`` -- the SAME wrapper the module
+# runs under ``if __name__ == "__main__":`` -- NOT the raw Typer ``app`` object.
+# ``_RunCli`` wraps ``app()`` in the batch error boundary that turns the specific
+# runtime failures (test-DB guard rejection, missing configuration, malformed
+# input) into one concise ``ERROR: ...`` stderr line with a non-zero exit code,
+# instead of a raw multi-line traceback. Targeting ``app`` directly bypassed that
+# boundary, so the packaged command printed tracebacks where ``python -m
+# batch.cli`` printed clean errors (QA finding I6). Routing the script through
+# ``_RunCli`` makes the packaged command and ``python -m batch.cli`` behave
+# identically. (Click still handles ``--help`` / parameter errors itself; those
+# ``SystemExit`` paths propagate through ``_RunCli`` untouched.)
 # -----------------------------------------------------------------------------
 [project.scripts]
-carddemo-batch = "batch.cli:app"
+carddemo-batch = "batch.cli:_RunCli"
 
 # -----------------------------------------------------------------------------
 # setuptools package discovery.

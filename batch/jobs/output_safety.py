@@ -62,6 +62,7 @@ __all__ = [
     "SafeCsvWriter",
     "AtomicWritePath",
     "AtomicVersionedWritePath",
+    "ReserveVersionedGeneration",
     "SecureDirectory",
     "SECURE_DIR_MODE",
     "SECURE_FILE_MODE",
@@ -427,4 +428,73 @@ def AtomicVersionedWritePath(
     # staged inode onto the reserved destination, which inherits this mode.
     os.chmod(temporaryPath, mode)
     os.replace(temporaryPath, reservedPath)
+
+
+@contextmanager
+def ReserveVersionedGeneration(
+    candidatePathFor: Callable[[int], Path],
+    startNumber: int,
+    maxAttempts: int = MAX_GENERATION_CLAIM_ATTEMPTS,
+) -> Iterator[int]:
+    """Atomically reserve a unique generation NUMBER for a MULTI-FILE run.
+
+    This is the run-level counterpart to :func:`AtomicVersionedWritePath`. Where
+    that helper reserves and publishes ONE versioned file, a job such as
+    statement generation writes MANY files that must all share ONE run
+    generation (one run == one GDG generation). This context manager reserves
+    just the generation NUMBER -- not a single output file -- so every file the
+    run subsequently writes can embed the reserved number.
+
+    It closes the same scan-then-write time-of-check/time-of-use race that
+    :func:`AtomicVersionedWritePath` closes (QA finding F-4 / I8, AAP 0.7.5 GDG
+    ``(+1)`` semantics: a new generation must never overwrite a prior one), using
+    the IDENTICAL atomic primitive: starting at ``startNumber`` the first free
+    generation is claimed by creating a marker file with ``O_CREAT | O_EXCL``
+    (shared :func:`_ReserveVersionedPath`). Because at most one process can win
+    that create for a given number, any set of concurrent runs is guaranteed to
+    receive DISTINCT generation numbers, and each is handed the next free one.
+
+    Marker lifetime: the marker's sole job is to serialize concurrent
+    generation-number claims for the lifetime of the run. Once the run's own
+    published artifacts exist on disk (or, on failure, any partial artifacts),
+    THOSE record the number for future ``highest generation + 1`` scans, so the
+    marker is removed on exit -- on BOTH success and failure -- to keep the
+    output directory free of empty reservation stubs. Distinctness across
+    concurrent runs is preserved because both markers are held simultaneously
+    for the entire window in which their generations overlap; a run that has
+    released its marker has already published (or abandoned) its generation, so
+    a later run's scan advances past it.
+
+    Args:
+        candidatePathFor: Maps a generation number to the marker
+            :class:`~pathlib.Path` used to claim it. The marker name MUST NOT
+            collide with the run's real output file names.
+        startNumber: The first generation number to attempt (typically the
+            highest existing generation plus one, a fast starting hint).
+        maxAttempts: Upper bound on consecutive claim attempts before failing
+            loudly (defaults to :data:`MAX_GENERATION_CLAIM_ATTEMPTS`), so a
+            pathological directory can never cause an infinite loop.
+
+    Yields:
+        The generation number that was atomically reserved for this run.
+
+    Raises:
+        OSError: Propagated unchanged if no generation can be reserved within
+            ``maxAttempts`` attempts (or a create fails for any reason other than
+            the candidate already existing); the marker is removed first.
+    """
+    reservedPath, reservedNumber, reservedFd = _ReserveVersionedPath(
+        candidatePathFor, startNumber, maxAttempts
+    )
+    # The marker only needs to EXIST on disk as an atomic claim; nothing is
+    # written through it, so the reserved descriptor is closed immediately.
+    os.close(reservedFd)
+    try:
+        yield reservedNumber
+    finally:
+        # Remove the marker on BOTH success and failure: the run's published
+        # (or partial) files now carry the number for future scans, so the empty
+        # marker stub is no longer needed. Best-effort unlink never masks an
+        # in-flight exception (see _RemoveTemporaryFile).
+        _RemoveTemporaryFile(reservedPath)
 

@@ -25,6 +25,7 @@ from batch.jobs.output_safety import (
     AtomicVersionedWritePath,
     AtomicWritePath,
     NeutralizeCsvCell,
+    ReserveVersionedGeneration,
     SafeCsvWriter,
 )
 
@@ -336,4 +337,123 @@ def test_versioned_write_concurrent_claims_are_all_distinct(tmp_path):
     assert contents == sorted(f"worker-{workerId}" for workerId in range(workerCount))
     # No temporary siblings remain after all promotions complete.
     assert list(tmp_path.glob(".*.tmp")) == []
+
+
+# ---------------------------------------------------------------------------
+# ReserveVersionedGeneration -- atomic run-level generation NUMBER reservation
+# for MULTI-FILE runs (QA finding I8: concurrent statement runs must never
+# collide on one generation and overwrite each other's statements).
+# ---------------------------------------------------------------------------
+
+
+def _MarkerFactory(directory):
+    """Build a candidate-marker callable naming markers ``gen_<NNNN>.reserved``."""
+
+    def _MarkerPathFor(generationNumber):
+        return directory / f"gen_{generationNumber:04d}.reserved"
+
+    return _MarkerPathFor
+
+
+def test_reserve_generation_yields_start_number_and_holds_marker(tmp_path):
+    markerPathFor = _MarkerFactory(tmp_path)
+    with ReserveVersionedGeneration(markerPathFor, 1) as reserved:
+        assert reserved == 1
+        # The marker exists on disk for the lifetime of the reservation so a
+        # concurrent run scanning/claiming skips past it.
+        assert markerPathFor(1).exists()
+    # The marker is removed on clean exit -- the caller's published files (not the
+    # empty marker) record the generation for future scans, so no stub remains.
+    assert list(tmp_path.glob("gen_*.reserved")) == []
+
+
+def test_reserve_generation_nested_reservations_are_distinct(tmp_path):
+    """Two (or more) reservations HELD SIMULTANEOUSLY receive distinct numbers.
+
+    This is the exact anti-I8 property: while two runs overlap (both markers
+    held), the atomic O_EXCL claim guarantees they hold DIFFERENT generation
+    numbers, so their per-run output files can never collide.
+    """
+    markerPathFor = _MarkerFactory(tmp_path)
+    # ``first`` and ``second`` are held simultaneously via a single multi-context
+    # ``with`` (Python enters them left-to-right, both live for the body); the
+    # inner ``with third`` stays nested so its INDIVIDUAL release can be asserted.
+    with (
+        ReserveVersionedGeneration(markerPathFor, 1) as first,
+        ReserveVersionedGeneration(markerPathFor, 1) as second,
+    ):
+        with ReserveVersionedGeneration(markerPathFor, 1) as third:
+            assert {first, second, third} == {1, 2, 3}
+            # All three markers coexist while their reservations overlap.
+            assert markerPathFor(1).exists()
+            assert markerPathFor(2).exists()
+            assert markerPathFor(3).exists()
+        # Innermost released -> its marker is gone; the outer two remain.
+        assert not markerPathFor(3).exists()
+        assert markerPathFor(1).exists()
+        assert markerPathFor(2).exists()
+    # All reservations released -> the directory is free of marker stubs.
+    assert list(tmp_path.glob("gen_*.reserved")) == []
+
+
+def test_reserve_generation_removes_marker_on_failure(tmp_path):
+    markerPathFor = _MarkerFactory(tmp_path)
+    with (
+        pytest.raises(ValueError, match="boom"),
+        ReserveVersionedGeneration(markerPathFor, 1) as reserved,
+    ):
+        assert reserved == 1
+        assert markerPathFor(1).exists()
+        raise ValueError("boom")  # e.g. a mid-run database error
+    # The marker is removed even on failure so a retry can re-use the number when
+    # no output was published under it (correct: nothing was produced).
+    assert list(tmp_path.glob("gen_*.reserved")) == []
+
+
+def test_reserve_generation_sequential_reuses_freed_number(tmp_path):
+    """Distinctness holds only WHILE reservations overlap (by design).
+
+    Two reservations that do NOT overlap (the first fully released before the
+    second starts) both get generation 1 from the same start hint, because the
+    marker's only job is to serialize CONCURRENT claims. Sequential monotonicity
+    is the caller's responsibility: it derives the start hint from its own
+    already-published files (see statement_gen._HighestExistingGeneration).
+    """
+    markerPathFor = _MarkerFactory(tmp_path)
+    with ReserveVersionedGeneration(markerPathFor, 1) as first:
+        assert first == 1
+    with ReserveVersionedGeneration(markerPathFor, 1) as second:
+        assert second == 1  # marker 1 was freed on the first exit -> reusable
+
+
+def test_reserve_generation_concurrent_claims_are_all_distinct(tmp_path):
+    """Many threads reserving from the same hint AT ONCE all get distinct numbers.
+
+    Unlike the sequential test, every worker HOLDS its reservation until a shared
+    release barrier fires, so all reservations overlap in time. The atomic
+    O_CREAT|O_EXCL marker create then forces every worker onto a distinct
+    generation number -- the runtime guarantee that closes I8.
+    """
+    markerPathFor = _MarkerFactory(tmp_path)
+    workerCount = 32
+    claimedBarrier = threading.Barrier(workerCount)
+    releaseBarrier = threading.Barrier(workerCount)
+
+    def _ReserveAndHold(_workerId):
+        with ReserveVersionedGeneration(markerPathFor, 1) as reserved:
+            # Wait until EVERY worker has claimed, so all markers are held
+            # simultaneously and the reservations genuinely overlap.
+            claimedBarrier.wait()
+            # Every generation in [1, workerCount] must be reserved right now.
+            assert markerPathFor(reserved).exists()
+            releaseBarrier.wait()
+            return reserved
+
+    with ThreadPoolExecutor(max_workers=workerCount) as executor:
+        reservedNumbers = list(executor.map(_ReserveAndHold, range(workerCount)))
+
+    # Every worker received a UNIQUE generation -- the contiguous range 1..N.
+    assert sorted(reservedNumbers) == list(range(1, workerCount + 1))
+    # All markers are cleaned up once every reservation has been released.
+    assert list(tmp_path.glob("gen_*.reserved")) == []
 

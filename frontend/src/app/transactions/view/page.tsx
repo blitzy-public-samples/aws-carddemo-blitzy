@@ -11,7 +11,6 @@ import { useRouter, useSearchParams } from 'next/navigation';
 import Container from '@mui/material/Container';
 import Box from '@mui/material/Box';
 import Stack from '@mui/material/Stack';
-import Divider from '@mui/material/Divider';
 import Card from '@mui/material/Card';
 import CardHeader from '@mui/material/CardHeader';
 import CardContent from '@mui/material/CardContent';
@@ -315,10 +314,20 @@ function TransactionsViewContent() {
                             slotProps={{ title: { component: 'h2' } }}
                         />
                         <CardContent>
+                            {/*
+                              * QA I22: this Stack is the `<dl>` description list.
+                              * MUI's `divider` prop injects a `<Divider>`
+                              * (role="separator") BETWEEN each child, i.e. as a
+                              * DIRECT child of the `<dl>` — but a `<dl>` may only
+                              * contain `<dt>`/`<dd>` (or `<div>` groupings), so a
+                              * separator child is invalid list markup. Each
+                              * `DetailRow` already renders a valid `<div>`-grouped
+                              * `<dt>`/`<dd>` pair; the `spacing={1.5}` keeps the rows
+                              * visually separated without the invalid divider nodes.
+                              */}
                             <Stack
                                 component="dl"
                                 spacing={1.5}
-                                divider={<Divider flexItem />}
                                 sx={{ m: 0 }}
                             >
                                 <DetailRow

@@ -320,29 +320,144 @@ describe('AccountsViewPage', () => {
         expect(mockGetAccount).not.toHaveBeenCalled();
     });
 
-    it('navigates to ?acctId= when an id is entered in the picker and LOAD is clicked (QA #12)', async () => {
+    it('drives the lookup from local state and syncs the URL WITHOUT a route navigation when LOAD is clicked (QA Issue 20 / #12)', async () => {
         // Start from the picker-only state (no acctId supplied) so the page is
         // NOT a dead-end: the user can type an id and load it.
         mockSearchParams = new URLSearchParams();
         const user = SetupUser();
+        // The lookup that the LOAD click drives must succeed and render.
+        mockGetAccount.mockResolvedValueOnce(MakeAccountDetail());
+        // Observe the URL sync without letting it mutate jsdom navigation state.
+        const replaceStateSpy = jest.spyOn(window.history, 'replaceState');
 
-        RenderWithProviders(<AccountsViewPage />);
+        try {
+            RenderWithProviders(<AccountsViewPage />);
 
-        // The friendly prompt is shown, but now beside an actionable picker.
-        expect(await screen.findByText(MISSING_ACCT_MESSAGE)).toBeInTheDocument();
+            // The friendly prompt is shown, beside an actionable picker.
+            expect(
+                await screen.findByText(MISSING_ACCT_MESSAGE),
+            ).toBeInTheDocument();
 
-        await user.type(
-            screen.getByRole('textbox', { name: /account number/i }),
-            EXPECTED_ACCT_ID,
+            await user.type(
+                screen.getByRole('textbox', { name: /account number/i }),
+                EXPECTED_ACCT_ID,
+            );
+            await user.click(screen.getByRole('button', { name: /load/i }));
+
+            // QA Issue 20: the lookup runs from LOCAL state (GetAccount is called
+            // directly) and the URL is synced via history.replaceState so the
+            // address bar stays shareable/bookmarkable. Crucially there is NO App
+            // Router navigation (push/replace) — an unreachable Next server can
+            // therefore never turn this into a hard navigation to the native
+            // browser error page; a fetch failure degrades into the in-page alert.
+            await waitFor(() => {
+                expect(mockGetAccount).toHaveBeenCalledWith(EXPECTED_ACCT_ID);
+            });
+            // Assert on the title + URL args (the leading current-state arg is an
+            // implementation detail that is `null` in jsdom).
+            expect(replaceStateSpy).toHaveBeenCalledTimes(1);
+            const [, replaceStateTitle, replaceStateUrl] =
+                replaceStateSpy.mock.calls[0];
+            expect(replaceStateTitle).toBe('');
+            expect(replaceStateUrl).toBe(
+                `/accounts/view?acctId=${EXPECTED_ACCT_ID}`,
+            );
+            expect(mockPush).not.toHaveBeenCalled();
+            expect(mockReplace).not.toHaveBeenCalled();
+
+            // The loaded account renders in-place.
+            expect(
+                await screen.findByText('Account Details'),
+            ).toBeInTheDocument();
+            expect(screen.getByText('JOHN')).toBeInTheDocument();
+        } finally {
+            replaceStateSpy.mockRestore();
+        }
+    });
+
+    it('loads the account when Enter is pressed in the picker (QA I25)', async () => {
+        // Restores the 3270 Enter-key affordance: typing an id and pressing
+        // Return must perform the same in-page lookup as clicking Load (the
+        // field previously ignored Enter, a no-op).
+        mockSearchParams = new URLSearchParams();
+        const user = SetupUser();
+        mockGetAccount.mockResolvedValueOnce(MakeAccountDetail());
+        const replaceStateSpy = jest.spyOn(window.history, 'replaceState');
+
+        try {
+            RenderWithProviders(<AccountsViewPage />);
+
+            expect(
+                await screen.findByText(MISSING_ACCT_MESSAGE),
+            ).toBeInTheDocument();
+
+            // Type the id and press Enter (no Load click).
+            await user.type(
+                screen.getByRole('textbox', { name: /account number/i }),
+                `${EXPECTED_ACCT_ID}{Enter}`,
+            );
+
+            // Enter drives the SAME local-state lookup + URL sync as Load, with
+            // no App Router navigation (QA I20 preserved).
+            await waitFor(() => {
+                expect(mockGetAccount).toHaveBeenCalledWith(EXPECTED_ACCT_ID);
+            });
+            const [, , replaceStateUrl] = replaceStateSpy.mock.calls[0];
+            expect(replaceStateUrl).toBe(
+                `/accounts/view?acctId=${EXPECTED_ACCT_ID}`,
+            );
+            expect(mockPush).not.toHaveBeenCalled();
+            expect(mockReplace).not.toHaveBeenCalled();
+
+            expect(
+                await screen.findByText('Account Details'),
+            ).toBeInTheDocument();
+        } finally {
+            replaceStateSpy.mockRestore();
+        }
+    });
+
+    it('clears the previously loaded account when a subsequent lookup fails (QA Issue 10)', async () => {
+        // Mount loads an account successfully; the SECOND lookup (new id via the
+        // picker) fails. The prior account must NOT be left on screen.
+        mockSearchParams = new URLSearchParams({ acctId: EXPECTED_ACCT_ID });
+        const user = SetupUser();
+        mockGetAccount.mockResolvedValueOnce(MakeAccountDetail());
+        mockGetAccount.mockRejectedValueOnce(
+            new ApiError({
+                status: NOT_FOUND_HTTP_STATUS,
+                message: API_ERROR_MESSAGE,
+            }),
         );
-        await user.click(screen.getByRole('button', { name: /load/i }));
+        const replaceStateSpy = jest.spyOn(window.history, 'replaceState');
 
-        // The picker drives a shareable query-param navigation (which then
-        // re-runs the existing fetch effect); it does not fetch imperatively.
-        expect(mockPush).toHaveBeenCalledWith(
-            `/accounts/view?acctId=${EXPECTED_ACCT_ID}`,
-        );
-        expect(mockGetAccount).not.toHaveBeenCalled();
+        try {
+            RenderWithProviders(<AccountsViewPage />);
+
+            // The first account is on screen.
+            expect(await screen.findByText('JOHN')).toBeInTheDocument();
+
+            // Enter a DIFFERENT id and load it; that fetch will fail.
+            const OTHER_ACCT_ID = '00000000022';
+            const picker = screen.getByRole('textbox', {
+                name: /account number/i,
+            });
+            await user.clear(picker);
+            await user.type(picker, OTHER_ACCT_ID);
+            await user.click(screen.getByRole('button', { name: /load/i }));
+
+            // The failure is surfaced AND the stale prior account is gone (QA
+            // Issue 10: no stale panel left behind on a failed lookup).
+            await waitFor(() => {
+                expect(screen.getByRole('alert')).toHaveTextContent(
+                    API_ERROR_MESSAGE,
+                );
+            });
+            expect(screen.queryByText('JOHN')).not.toBeInTheDocument();
+            expect(mockGetAccount).toHaveBeenCalledWith(OTHER_ACCT_ID);
+        } finally {
+            replaceStateSpy.mockRestore();
+        }
     });
 
     it('surfaces an error alert when the account fetch fails', async () => {

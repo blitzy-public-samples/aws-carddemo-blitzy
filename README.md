@@ -199,7 +199,7 @@ configuration are added **alongside** the untouched legacy `app/` tree.
 │   │   ├── db/                  Async engine + session + declarative Base
 │   │   └── utils/               date_utils, decimal_utils (zoned-decimal decode), validators
 │   ├── alembic/                 Migration environment
-│   │   └── versions/            0001_initial_schema … 0008 (eight migrations)
+│   │   └── versions/            0001_initial_schema … 0009 (nine migrations)
 │   ├── tests/                   Unit + integration + golden-master parity tests
 │   ├── pyproject.toml           PEP 621 manifest (dependency pins)
 │   ├── requirements.txt         pip manifest (dependency pins)
@@ -259,8 +259,16 @@ the backend and frontend services.
    docker compose --profile full up --build
    ```
 
+   This first runs a one-shot **`migrator`** service that applies all Alembic
+   migrations and seed data (`alembic upgrade head`), and only **then** starts the
+   backend — so a first run against a brand-new database volume comes up fully
+   migrated with **no separate manual migration step**. The backend `depends_on`
+   the migrator with `condition: service_completed_successfully`, so if a
+   migration fails the backend does not start (fail-closed) rather than booting
+   against an unmigrated schema.
+
    To bring up **only** PostgreSQL (for local backend/frontend development), use
-   the default profile:
+   the default profile (this does *not* run the migrator or the app services):
 
    ```bash
    docker compose up -d db
@@ -275,8 +283,12 @@ the backend and frontend services.
    | Interactive API docs (Swagger / OpenAPI) | http://localhost:8000/docs |
    | PostgreSQL | `localhost:5432` |
 
-The backend waits for PostgreSQL to report healthy before starting. Apply
-migrations and seed data as described in
+On a full-stack `docker compose --profile full up`, migrations and seed data are
+applied automatically by the one-shot `migrator` service **before** the backend
+starts, so no separate migration step is required for the containerized first
+run. The backend waits for PostgreSQL to report healthy **and** for the migrator
+to complete successfully before starting. For host-based development, or to
+re-run or inspect migrations explicitly, see
 [Database Migrations & Seed Data](#database-migrations--seed-data).
 
 > **Secrets come from the environment only.** The `.env` / `.env.local` files are
@@ -359,8 +371,8 @@ constraints, secondary indexes, and foreign keys.
    batch loaders use the sync (psycopg2) DSN, while the app runtime uses the
    async `DATABASE_URL` (see [Configuration](#configuration)).
 2. Apply migrations with Alembic. Use **either** the host command **or** the
-   containerized command below — both apply the same eight migrations
-   (`0001`–`0008`):
+   containerized command below — both apply the same nine migrations
+   (`0001`–`0009`):
 
    **Host (local development):** run from `backend/`, where the sibling
    repo-root `app/data` is on disk and resolved automatically:
@@ -407,6 +419,11 @@ constraints, secondary indexes, and foreign keys.
      `ix_transactions_status_effdate` index on `status` plus the UTC effective
      date (`COALESCE(proc_ts, orig_ts)`), so the date-range transaction report is
      served by an index range scan instead of a full table scan (idempotent).
+   - `0009_add_transaction_idempotency_key` adds a nullable
+     `transactions.idempotency_key` column and the partial unique index
+     `uq_transactions_idempotency_key`, enforcing exactly-once semantics for the
+     online add-transaction path so a retried or duplicated request produces a
+     single financial effect (idempotent).
 
 3. Alternatively (or to reload individual datasets), run the batch loaders under
    [`batch/loaders/`](batch/loaders). They load accounts, cards, customers, the
@@ -545,6 +562,14 @@ Key backend variables:
 | `API_V1_PREFIX` | REST API mount prefix (default `/api/v1`) |
 | `BACKEND_CORS_ORIGINS` | Comma-separated list of allowed frontend origins |
 | `ENVIRONMENT` | Runtime environment (e.g. `development`) |
+
+Key batch variables (optional; see [`docs/batch.md`](docs/batch.md#optional-environment-variables)):
+
+| Variable | Purpose |
+| :------- | :------ |
+| `CARDDEMO_DATA_DIR` | Overrides the `--data-dir` default for the seed loaders. Set it when the batch package is installed outside the repository (the bundled default resolves under `site-packages`, which carries no seed files); otherwise the in-repo `app/data/ASCII` is used. |
+| `CARDDEMO_REQUIRE_TEST_DB` | Opt-in destructive-database guard: when truthy (`1`/`true`/`yes`/`on`), every batch command refuses to run unless the target database name ends with `_test`. Disabled by default; the legacy name `BATCH_REQUIRE_TEST_DB` is still honored as an alias. |
+| `BATCH_LOG_LEVEL` | Batch log level when `--verbose` is not passed (default `INFO`). |
 
 Key frontend variables:
 

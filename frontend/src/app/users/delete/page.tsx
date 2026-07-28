@@ -398,7 +398,12 @@ function UsersDeleteContent() {
     return (
         <Container maxWidth="sm">
             <Stack spacing={3} sx={{ py: 3 }}>
-                <Typography variant="h4" component="h1">
+                {/*
+                  * QA I22: use the `h5` type scale for the page title so every
+                  * user-admin CRUD route (list / add / update / delete) shares one
+                  * consistent heading hierarchy (the other three already use `h5`).
+                  */}
+                <Typography variant="h5" component="h1">
                     Delete User
                 </Typography>
 

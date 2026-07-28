@@ -25,6 +25,8 @@ See 0.5.1, 0.7.1, 0.7.3, 0.8.1.
 
 from __future__ import annotations
 
+import hashlib
+import json
 from decimal import Decimal, InvalidOperation
 from typing import Optional
 
@@ -98,6 +100,30 @@ MAX_ID_GENERATION_RETRIES = 10
 # This has no legacy counterpart (the mainframe never surfaced this race), so it
 # is a plain, non-sensitive advisory rather than a ported verbatim screen text.
 MSG_TRAN_ID_CONFLICT = "Unable to assign a unique transaction id; please retry."
+
+# ---------------------------------------------------------------------------
+# Server-enforced exactly-once (idempotency) guard for the online add path.
+# The legacy CICS/3270 terminal could not double-submit the way a web button
+# can, so COTRN02C had no such guard; the modern web tier needs one (AAP 0.7.4 --
+# concurrency semantics must be preserved). Each add computes a 64-character
+# SHA-256 digest -- from the caller's Idempotency-Key header when supplied, else
+# a deterministic fingerprint of the request's business content -- stored on the
+# posted row's operational ``idempotency_key`` column. A partial UNIQUE index
+# makes two identical concurrent adds collapse to ONE committed row (the loser
+# returns the winner's transaction), so one user operation has one effect.
+# ---------------------------------------------------------------------------
+# Digest input namespaces keep an explicit client key and a content fingerprint
+# in disjoint hash spaces (a client key can never accidentally alias a
+# fingerprint). Ochs ALL_UPPERCASE constants.
+IDEMPOTENCY_KEY_NAMESPACE = "key:"
+IDEMPOTENCY_FINGERPRINT_NAMESPACE = "fp:"
+# Upper bound on an accepted client Idempotency-Key header (input sanitization,
+# Ochs "validate all user input"). The value is hashed to a fixed 64 chars, so
+# the bound only rejects abusive payloads, not legitimate UUID-style keys.
+IDEMPOTENCY_KEY_MAX_LENGTH = 255
+# Client message for an over-long Idempotency-Key header (-> HTTP 422). Plain and
+# non-sensitive (no legacy counterpart).
+MSG_IDEMPOTENCY_KEY_TOO_LONG = "Idempotency-Key header exceeds the maximum length."
 
 # ---------------------------------------------------------------------------
 # Verbatim on-screen messages, ported character-for-character from the legacy
@@ -299,7 +325,10 @@ class TransactionService:
     # METHOD 3 -- add (COTRN02C, CT02) + posting validation (CBTRN02C)
     # -----------------------------------------------------------------------
     async def AddTransaction(
-        self, session: AsyncSession, transactionCreate: TransactionCreate
+        self,
+        session: AsyncSession,
+        transactionCreate: TransactionCreate,
+        idempotencyKey: str | None = None,
     ) -> TransactionRead:
         """Add a transaction and post it to the account (COTRN02C + CBTRN02C).
 
@@ -314,17 +343,34 @@ class TransactionService:
         / 0.8.1 -- the legacy program posts to BOTH the account balance and the
         transaction-category balance).
 
+        Exactly-once (idempotency) guard: after the key-field/data-field edits
+        and the posting validation, a 64-character digest is computed from
+        ``idempotencyKey`` (when supplied) or a fingerprint of the request's
+        business content, and a fast-path lookup returns the ORIGINAL transaction
+        if an add already committed under that digest (a sequential resubmit). A
+        concurrent resubmit that passes the fast path loses the race on the
+        partial UNIQUE index at commit, is rolled back (voiding its balance
+        updates), and likewise returns the winner's row -- so two identical
+        submissions produce exactly ONE transaction and ONE balance change (QA
+        finding: rapid duplicate submit; AAP 0.7.4 concurrency preservation).
+
         Args:
             session: Active async database session (caller-owned).
             transactionCreate: The validated add-transaction request DTO.
+            idempotencyKey: Optional caller-supplied ``Idempotency-Key`` header.
+                When present it defines the exactly-once identity of the
+                operation (a client retry reuses it); when absent a deterministic
+                fingerprint of the request content is used instead.
 
         Returns:
             A :class:`TransactionRead` of the newly posted transaction
-            (``card_num`` masked on serialization).
+            (``card_num`` masked on serialization). For a duplicate submission
+            this is the ORIGINAL transaction, not a second one.
 
         Raises:
             DomainValidationError: For any failed key-field or data-field edit,
-                with the verbatim COTRN02C message.
+                with the verbatim COTRN02C message; also for an over-long
+                ``idempotencyKey`` header (input sanitization).
             NotFoundError: When the supplied account id or card number does not
                 resolve to a cross-reference row.
             InvalidCardNumberError: Posting code 100 (unknown card cross-ref).
@@ -342,6 +388,19 @@ class TransactionService:
         # Step 3 -- CBTRN02C posting validation (codes 100/101, then 102/103).
         account = await self._LoadAccountForPosting(session, cardNum)
         self._RunPostingValidation(account, tranAmt, transactionCreate.orig_ts)
+        # Step 3b -- exactly-once guard. Compute the operation's digest and, on the
+        # FAST PATH, return the already-committed transaction if an earlier add
+        # used the same digest (a sequential resubmit). This short-circuits before
+        # any write; the concurrent-resubmit case (both callers pass this check
+        # before either commits) is caught by the partial UNIQUE index below.
+        idempotencyDigest = self._ComputeIdempotencyDigest(
+            idempotencyKey, transactionCreate, cardNum
+        )
+        replayed = await self.transactionRepository.GetByIdempotencyKey(
+            session, idempotencyDigest
+        )
+        if replayed is not None:
+            return TransactionRead.model_validate(replayed)
         # Steps 4-6 -- insert the transaction (2900), post the account balances
         # (2800-UPDATE-ACCOUNT-REC), then post the transaction-category running
         # balance (2700-UPDATE-TCATBAL), all in ONE atomic unit-of-work, retrying
@@ -369,14 +428,30 @@ class TransactionService:
                 transaction = await self._InsertNewTransaction(
                     session, cardNum, tranAmt, transactionCreate
                 )
+                # Tag the row with the operation digest so the partial UNIQUE
+                # index enforces exactly-once at commit. Set after the insert
+                # flush (autoflush is off), so it is written in the same
+                # unit-of-work and committed atomically with the balance updates.
+                transaction.idempotency_key = idempotencyDigest
                 await self._PostToAccount(session, acctId, tranAmt)
                 await self._PostToCategoryBalance(session, acctId, transaction)
                 await session.commit()
             except IntegrityError:
-                # A concurrent add committed the same generated TRAN-ID first,
-                # colliding on the primary key. Roll back and retry with a newly
-                # recomputed id; give up (409) only when the cap is reached.
+                # A concurrent add committed first. It collided on EITHER the
+                # generated TRAN-ID primary key OR the idempotency_key partial
+                # UNIQUE index. Roll back, then disambiguate by the digest: if a
+                # row now exists under THIS operation's digest, the collision was
+                # a duplicate submission -- return that winner's transaction so
+                # the operation has exactly ONE effect (no retry, no second
+                # write). Otherwise it was a pure TRAN-ID race between DISTINCT
+                # operations, so retry with a freshly re-read MAX(tran_id); give
+                # up (409) only when the bounded cap is reached.
                 await session.rollback()
+                winner = await self.transactionRepository.GetByIdempotencyKey(
+                    session, idempotencyDigest
+                )
+                if winner is not None:
+                    return TransactionRead.model_validate(winner)
                 if attempt >= MAX_ID_GENERATION_RETRIES:
                     raise ConflictError(MSG_TRAN_ID_CONFLICT) from None
                 continue
@@ -784,6 +859,87 @@ class TransactionService:
             orig_ts=transactionCreate.orig_ts,
             proc_ts=transactionCreate.proc_ts,
         )
+
+    def _ComputeIdempotencyDigest(
+        self,
+        idempotencyKey: str | None,
+        transactionCreate: TransactionCreate,
+        cardNum: str,
+    ) -> str:
+        """Return the 64-char exactly-once digest for this add operation.
+
+        When the caller supplied an ``Idempotency-Key`` header, that value (after
+        trimming) defines the operation's identity, so a client retry that
+        reuses it collapses to one effect. Otherwise a deterministic fingerprint
+        of the request's business content is used, so two byte-identical
+        keyless submissions (the rapid double-submit) still collapse while two
+        genuinely distinct operations (differing in any field, including the
+        original/processing timestamps) get distinct digests and both post.
+
+        The chosen input is namespaced (an explicit key and a content fingerprint
+        never share a hash space) and hashed with SHA-256 to a fixed 64-character
+        hex string that fits the ``idempotency_key`` column exactly.
+
+        Args:
+            idempotencyKey: The caller's raw ``Idempotency-Key`` header, or None.
+            transactionCreate: The validated add-transaction request DTO.
+            cardNum: The resolved 16-digit card number bound to the operation.
+
+        Returns:
+            The 64-character lowercase hex SHA-256 digest.
+
+        Raises:
+            DomainValidationError: When a supplied header exceeds
+                :data:`IDEMPOTENCY_KEY_MAX_LENGTH` (input sanitization).
+        """
+        trimmedKey = idempotencyKey.strip() if idempotencyKey else ""
+        if trimmedKey:
+            if len(trimmedKey) > IDEMPOTENCY_KEY_MAX_LENGTH:
+                raise DomainValidationError(MSG_IDEMPOTENCY_KEY_TOO_LONG)
+            material = IDEMPOTENCY_KEY_NAMESPACE + trimmedKey
+        else:
+            fingerprint = self._BuildFingerprintSource(transactionCreate, cardNum)
+            material = IDEMPOTENCY_FINGERPRINT_NAMESPACE + fingerprint
+        return hashlib.sha256(material.encode("utf-8")).hexdigest()
+
+    @staticmethod
+    def _BuildFingerprintSource(
+        transactionCreate: TransactionCreate, cardNum: str
+    ) -> str:
+        """Serialize the request's business content into a canonical string.
+
+        Produces an order-fixed, unambiguous JSON array of the normalized
+        business fields so identical requests yield an identical string and any
+        difference (amount, merchant, description, or either timestamp) yields a
+        different one. The amount is rendered as a plain fixed-point Decimal and
+        the timestamps in ISO-8601 so equal values compare equal regardless of
+        incidental formatting.
+
+        Args:
+            transactionCreate: The validated add-transaction request DTO.
+            cardNum: The resolved 16-digit card number bound to the operation.
+
+        Returns:
+            A deterministic JSON string of the business content.
+        """
+        origTs = transactionCreate.orig_ts
+        procTs = transactionCreate.proc_ts
+        fingerprintParts = [
+            cardNum or "",
+            transactionCreate.acct_id or "",
+            transactionCreate.tran_type_cd or "",
+            transactionCreate.tran_cat_cd or "",
+            transactionCreate.tran_source or "",
+            transactionCreate.tran_desc or "",
+            format(transactionCreate.tran_amt, "f"),
+            transactionCreate.merchant_id or "",
+            transactionCreate.merchant_name or "",
+            transactionCreate.merchant_city or "",
+            transactionCreate.merchant_zip or "",
+            origTs.isoformat() if origTs is not None else "",
+            procTs.isoformat() if procTs is not None else "",
+        ]
+        return json.dumps(fingerprintParts, separators=(",", ":"), ensure_ascii=True)
 
     async def _PostToAccount(
         self, session: AsyncSession, acctId: str, tranAmt: Decimal

@@ -34,6 +34,7 @@ import type { CurrentUser, LoginRequest, LoginResponse } from '@/types';
 import {
     AuthApi,
     ClearStoredAuth,
+    IsApiError,
     SESSION_USER_STORAGE_KEY,
 } from './apiClient';
 
@@ -49,6 +50,45 @@ import {
  * `settings.SESSION_COOKIE_NAME`.
  */
 export const SESSION_COOKIE_NAME = 'carddemo_session';
+
+/**
+ * Maximum number of server-side logout (session-revocation) attempts before
+ * {@link Logout} gives up and reports failure (QA Issue 2 / CWE-613). Sign-out is
+ * a security operation: the SPA must not claim the user is signed out until the
+ * backend confirms the HTTP-only session cookie was invalidated, so a transient
+ * failure is RETRIED a bounded number of times rather than silently ignored.
+ */
+const LOGOUT_MAX_ATTEMPTS = 3;
+
+/**
+ * Delay, in milliseconds, between successive logout-revocation retries. Kept
+ * short so a genuine sign-out still feels responsive while still giving a
+ * momentarily unreachable backend a chance to recover.
+ */
+const LOGOUT_RETRY_DELAY_MS = 500;
+
+/**
+ * Fallback message used when the logout round-trip rejects with a value that is
+ * not an `Error`, so {@link Logout} always propagates a real `Error` describing
+ * an unconfirmed sign-out.
+ */
+const LOGOUT_FAILED_MESSAGE =
+    'Sign-out could not be confirmed by the server. Your session may still be ' +
+    'active. Please try again.';
+
+/**
+ * Resolves after `delayMs` milliseconds. A tiny SSR-safe helper used to space out
+ * the bounded logout retries (setTimeout exists in both the browser and Node, so
+ * no `window` guard is required).
+ *
+ * @param delayMs - How long to wait before resolving, in milliseconds.
+ * @returns A promise that resolves once the delay elapses.
+ */
+function Delay(delayMs: number): Promise<void> {
+    return new Promise((resolve) => {
+        setTimeout(resolve, delayMs);
+    });
+}
 
 /* ------------------------------------------------------------------------- */
 /* Private storage helpers (small, SSR-guarded).                             */
@@ -139,41 +179,74 @@ export async function Login(credentials: LoginRequest): Promise<CurrentUser> {
 }
 
 /**
- * Logs the user out end-to-end and returns them to the signon screen.
+ * Logs the user out end-to-end and returns them to the signon screen — but ONLY
+ * once the server confirms the session was revoked.
  *
  * The authoritative session is the HTTP-only `carddemo_session` cookie, which
  * JavaScript can neither read nor delete; clearing only the mirrored
  * `localStorage` identity would therefore leave the cookie valid, so the very
  * next authenticated request would still succeed (QA issue #17). This helper
- * first asks the backend to invalidate the session via `AuthApi.Logout()`,
- * which responds with a cookie-deletion header so the browser drops the cookie;
+ * asks the backend to invalidate the session via `AuthApi.Logout()`, which
+ * responds with a cookie-deletion header so the browser drops the cookie;
  * afterwards protected calls carry no credential and return HTTP 401.
  *
- * The backend call is best-effort: it is wrapped so that a transient network or
- * server error still lets local teardown and the redirect proceed (a user must
- * always be able to sign out of the SPA). After the round-trip the mirrored
- * identity is cleared via {@link ClearStoredAuth} (the same key the 401
- * interceptor clears), then a hard redirect to `/signon` is performed
- * (SSR-guarded).
+ * SECURITY (QA Issue 2 / CWE-613): the previous implementation swallowed any
+ * revocation failure and ALWAYS cleared local identity and redirected, so a
+ * failed/unreachable logout was presented as success while the live server
+ * session kept authorizing protected requests. Sign-out is now confirmed:
  *
- * @returns A promise that resolves once teardown has completed and the redirect
- *   has been issued.
+ *   - Server revocation is attempted up to {@link LOGOUT_MAX_ATTEMPTS} times
+ *     (spaced by {@link LOGOUT_RETRY_DELAY_MS}) to ride out a transient failure.
+ *   - Local teardown ({@link ClearStoredAuth}) and the `/signon` redirect run
+ *     ONLY after the server confirms invalidation.
+ *   - If every attempt fails, the mirrored identity is deliberately LEFT INTACT
+ *     (no redirect) and the failure is propagated to the caller so the UI can
+ *     keep the user in an explicit logout-failed state and offer a retry, rather
+ *     than falsely showing a signed-out state.
+ *
+ * Only the SPECIFIC, expected failure surface (a typed {@link ApiError} from the
+ * round-trip) is retried; any other (unexpected) error is re-thrown immediately
+ * rather than swallowed, per the Ochs error-handling rule.
+ *
+ * @returns A promise that resolves once the server has confirmed sign-out and the
+ *   redirect has been issued.
+ * @throws The last {@link ApiError} (or a wrapped {@link Error}) when server-side
+ *   revocation could not be confirmed after the bounded retries.
  */
 export async function Logout(): Promise<void> {
-    try {
-        // Ask the backend to clear the HTTP-only session cookie. Catch a
-        // SPECIFIC failure surface (any rejection from the logout round-trip)
-        // so sign-out is never blocked by a transient backend/network problem;
-        // this is deliberate best-effort teardown, not a swallowed bug.
-        await AuthApi.Logout();
-    } catch {
-        // Intentionally ignored: local teardown + redirect below must still run
-        // so the user is always signed out of the SPA.
+    let lastError: unknown = null;
+    for (let attempt = 1; attempt <= LOGOUT_MAX_ATTEMPTS; attempt += 1) {
+        try {
+            // Ask the backend to invalidate the HTTP-only session cookie.
+            await AuthApi.Logout();
+            // CONFIRMED: only now is it safe to tear down local state and leave
+            // the SPA. The mirrored identity is cleared (the same key the 401
+            // interceptor clears) and a hard redirect to /signon is performed
+            // (SSR-guarded).
+            ClearStoredAuth();
+            if (typeof window !== 'undefined') {
+                window.location.href = '/signon';
+            }
+            return;
+        } catch (error) {
+            // Retry ONLY the expected API failure surface; a non-ApiError is
+            // unexpected and must not be swallowed (Ochs specific-catch rule).
+            if (!IsApiError(error)) {
+                throw error;
+            }
+            lastError = error;
+            if (attempt < LOGOUT_MAX_ATTEMPTS) {
+                await Delay(LOGOUT_RETRY_DELAY_MS);
+            }
+        }
     }
-    ClearStoredAuth();
-    if (typeof window !== 'undefined') {
-        window.location.href = '/signon';
+    // Every attempt failed: the server session may still be live, so DO NOT clear
+    // local identity or redirect. Propagate so the caller surfaces an explicit
+    // logout-failed state and can retry (QA Issue 2 / CWE-613).
+    if (lastError instanceof Error) {
+        throw lastError;
     }
+    throw new Error(LOGOUT_FAILED_MESSAGE);
 }
 
 /**

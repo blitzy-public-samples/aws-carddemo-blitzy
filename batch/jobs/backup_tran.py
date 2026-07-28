@@ -96,7 +96,7 @@ import csv
 import logging
 from collections.abc import Iterable
 from datetime import datetime
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 
 from sqlalchemy import select
@@ -504,7 +504,22 @@ def _BuildRestoreValues(row: dict[str, str]) -> dict[str, object]:
     for column in CSV_HEADER:
         rawValue = row[column]
         if column == "tran_amt":
-            values[column] = Decimal(rawValue)
+            # A malformed amount cell (e.g. a hand-edited backup CSV) makes
+            # Decimal() raise decimal.InvalidOperation, which is NOT a subclass of
+            # ValueError and so would escape the CLI error boundary as a raw
+            # traceback (QA finding I19). Translate it here, at the source, into a
+            # specific ValueError (Ochs Rule #5 -- catch the specific exception)
+            # carrying a concise, sanitized message; the caller-owned transaction
+            # is rolled back by GetSyncSession and the CLI reports one clean line.
+            # tran_amt is a monetary field, never a PAN/SSN, so echoing the
+            # offending token is safe and aids diagnosis.
+            try:
+                values[column] = Decimal(rawValue)
+            except InvalidOperation:
+                raise ValueError(
+                    "invalid decimal in restore CSV column 'tran_amt': "
+                    f"{rawValue!r}"
+                ) from None
         elif column in _TIMESTAMP_COLUMNS:
             values[column] = _ParseTimestamp(rawValue)
         else:

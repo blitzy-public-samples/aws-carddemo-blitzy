@@ -48,8 +48,8 @@ API mount — every endpoint is served under the `/api/v1` prefix (for example
 | `CAVW` | `COACTVW` | `COACTVWC` | `/accounts/view` | `GET /accounts/{acctId}` | `account_service` |
 | `CAUP` | `COACTUP` | `COACTUPC` | `/accounts/update` | `PUT /accounts/{acctId}` | `account_service` |
 | `CCLI` | `COCRDLI` | `COCRDLIC` | `/cards` | `GET /cards` | `card_service` |
-| `CCDL` | `COCRDSL` | `COCRDSLC` | `/cards/view` | `GET /cards/by-account/{acctId}` | `card_service` |
-| `CCUP` | `COCRDUP` | `COCRDUPC` | `/cards/update` | `PUT /cards/by-account/{acctId}` | `card_service` |
+| `CCDL` | `COCRDSL` | `COCRDSLC` | `/cards/view` | `GET /cards/{cardNum}` | `card_service` |
+| `CCUP` | `COCRDUP` | `COCRDUPC` | `/cards/update` | `PUT /cards/{cardNum}` | `card_service` |
 | `CT00` | `COTRN00` | `COTRN00C` | `/transactions` | `GET /transactions` | `transaction_service` |
 | `CT01` | `COTRN01` | `COTRN01C` | `/transactions/view` | `GET /transactions/{tranId}` | `transaction_service` |
 | `CT02` | `COTRN02` | `COTRN02C` | `/transactions/add` | `POST /transactions` | `transaction_service` |
@@ -265,7 +265,7 @@ required behaviour. The categories are:
 
 | Category | Example files | Authorization |
 | :------- | :------------ | :------------ |
-| Additional Alembic migrations | `0003_drop_card_cvv`, `0004_add_account_group_fk`, `0005_add_user_session_version`, `0006_drop_account_groups`, `0007_repair_daily_staging_status`, `0008_add_transaction_report_range_index` | AAP `backend/alembic/versions/*.py` wildcard; each realizes a required schema correction (CVV removal, `group_id` handling, session versioning, daily-staging repair, report-range index) |
+| Additional Alembic migrations | `0003_drop_card_cvv`, `0004_add_account_group_fk`, `0005_add_user_session_version`, `0006_drop_account_groups`, `0007_repair_daily_staging_status`, `0008_add_transaction_report_range_index`, `0009_add_transaction_idempotency_key` | AAP `backend/alembic/versions/*.py` wildcard; each realizes a required schema correction (CVV removal, `group_id` handling, session versioning, daily-staging repair, report-range index, exactly-once transaction idempotency key) |
 | Security / hardening modules | `core/rate_limiter.py`, `core/log_masking.py`, `core/correlation.py`, `utils/csv_safety.py`, `jobs/output_safety.py` | AAP `core/*.py`, `utils/*.py`, `jobs/*.py` wildcards; mandated by the Ochs no-hardcoding / sanitize-input rule and findings on rate limiting, PII redaction, CSV-injection safety, and correlation IDs |
 | Split dependency manifest | `backend/requirements-dev.txt` | Runtime-vs-dev dependency split so the production image installs runtime deps only |
 | Additional tests | files under `backend/tests/`, `batch/tests/`, `frontend/__tests__/` | AAP `tests/**` / `__tests__/**` wildcards; cover the concurrency, race-safety, idempotency, staging-status, and header behaviours added during remediation |

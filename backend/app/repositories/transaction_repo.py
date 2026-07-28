@@ -266,6 +266,41 @@ class TransactionRepository:
         result = await session.execute(stmt)
         return result.scalar_one_or_none()
 
+    async def GetByIdempotencyKey(
+        self, session: AsyncSession, idempotencyKey: str
+    ) -> Transaction | None:
+        """Return the transaction previously posted under ``idempotencyKey``.
+
+        Backs the server-enforced exactly-once guard for the online add path
+        (COTRN02C / POST /transactions). The service computes a 64-character
+        digest for each add -- from the caller's ``Idempotency-Key`` header when
+        supplied, otherwise a fingerprint of the request's business content --
+        and stores it on the posted row's :attr:`Transaction.idempotency_key`
+        (a modern operational column, never a legacy TRAN-RECORD field). This
+        lookup lets the service short-circuit a replay to the ORIGINAL row: both
+        the pre-insert fast path (a later, sequential resubmit) and the
+        post-``IntegrityError`` path (a concurrent submit that lost the race on
+        the partial UNIQUE index) resolve the winning transaction through it, so
+        a duplicate submission produces no second financial effect.
+
+        No legacy VSAM verb corresponds to this method: it is modern
+        concurrency-control infrastructure. It performs data access only and
+        never commits.
+
+        Args:
+            session: Active async database session.
+            idempotencyKey: The 64-character digest to look up.
+
+        Returns:
+            The single :class:`Transaction` carrying that key, or ``None`` when
+            no add has committed under it yet.
+        """
+        stmt = select(Transaction).where(
+            Transaction.idempotency_key == idempotencyKey
+        )
+        result = await session.execute(stmt)
+        return result.scalar_one_or_none()
+
     async def Insert(
         self, session: AsyncSession, transaction: Transaction
     ) -> Transaction:

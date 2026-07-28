@@ -78,6 +78,13 @@ from batch import __version__
 # shared concise-error formatter (strips SQLAlchemy's SQL/parameter dump).
 from batch.db import FormatConciseError, GetSyncSession
 
+# Makes the backend SECRET_KEY discoverable from the anchored ``backend/.env``
+# (CWD-independently) so the STANDALONE ``load init-users`` command works exactly
+# like the full-chain preflight already does, instead of failing on a missing
+# backend token (QA finding I7). Reads a local file / sets env vars only; it never
+# opens a database connection.
+from batch.config import EnsureBackendSecretAvailable
+
 # Whole-chain orchestration (BatchChainError carries the failing legacy job name).
 from batch.orchestration.batch_chain import BatchChainError, RunBatchChain, SeedAll
 
@@ -114,10 +121,45 @@ from batch.loaders.init_users import InitializeUsers
 # --------------------------------------------------------------------------- #
 # Module constants (ALL_UPPERCASE per the Ochs Rule).
 # --------------------------------------------------------------------------- #
-# ``__file__`` is ``<repo>/batch/cli.py`` -> ``.parent.parent`` is ``<repo>`` ->
-# ``app/data/ASCII`` holds the display-readable ASCII seed files (the primary
-# loader source; EBCDIC is only used where no ASCII equivalent exists).
-DEFAULT_DATA_DIR: Path = Path(__file__).resolve().parent.parent / "app" / "data" / "ASCII"
+# Environment variable that overrides the default seed-data directory (QA finding
+# I15). When set, its value becomes the ``--data-dir`` default, so an operator who
+# installed the batch package OUTSIDE the repository can point at the ASCII seed
+# files once (via configuration) instead of repeating ``--data-dir`` on every
+# loader invocation.
+DATA_DIR_ENV_VAR: str = "CARDDEMO_DATA_DIR"
+
+
+def _ComputeDefaultDataDir() -> Path:
+    """Resolve the default ASCII seed-data directory (QA finding I15).
+
+    Resolution order:
+
+    1. ``CARDDEMO_DATA_DIR`` when set -- an operator-configured path. This is how
+       an INSTALLED batch distribution (whose ``batch/cli.py`` lives under
+       ``site-packages`` and has NO sibling ``app/data/ASCII`` tree) points at the
+       seed files.
+    2. Otherwise the repository-relative ``<repo>/app/data/ASCII`` (``__file__`` is
+       ``<repo>/batch/cli.py`` so ``.parent.parent`` is the repository root),
+       correct for an in-repo checkout / editable install.
+
+    The result is only a DEFAULT: :func:`_RequireDataDir` validates that it exists
+    at command time and, when it does not, emits a clear, actionable message
+    instead of the confusing missing-``site-packages``-path error the raw
+    ``__file__``-relative default produced on an installed distribution.
+
+    Returns:
+        The resolved default seed-data directory (existence not guaranteed here).
+    """
+    configuredDataDir = os.environ.get(DATA_DIR_ENV_VAR, "").strip()
+    if configuredDataDir:
+        return Path(configuredDataDir)
+    return Path(__file__).resolve().parent.parent / "app" / "data" / "ASCII"
+
+
+# Default seed-data directory used as the ``--data-dir`` option default. Computed
+# once at import; ``CARDDEMO_DATA_DIR`` (if set) takes precedence over the
+# repo-relative path (QA finding I15).
+DEFAULT_DATA_DIR: Path = _ComputeDefaultDataDir()
 
 # Default destination for generated statements, reports and backups. The output
 # jobs create this directory (``mkdir(parents=True, exist_ok=True)``) on demand.
@@ -190,6 +232,39 @@ def _ParseRunDate(runDate: Optional[str]) -> Optional[date]:
         raise typer.BadParameter(
             f"Run date must be ISO format YYYY-MM-DD, got: {runDate!r}"
         ) from exc
+
+
+def _RequireDataDir(dataDir: Path) -> Path:
+    """Validate the seed-data directory, with a clear message when it is missing.
+
+    Replaces the ``exists=True`` validation that Click used to perform on each
+    ``--data-dir`` option (QA finding I15). That built-in check produced a
+    confusing ``Directory '<site-packages>/app/data/ASCII' does not exist`` error
+    on an installed distribution -- where the ``__file__``-relative default points
+    inside ``site-packages``, which carries no seed files. Validating here instead
+    lets the message tell the operator exactly how to proceed: pass ``--data-dir``
+    or configure :data:`DATA_DIR_ENV_VAR`. A specific :class:`ValueError` is raised
+    (Ochs Rule #5 -- never a catch-all) and is rendered by the CLI error boundary
+    as one concise ``ERROR: ...`` line with a non-zero exit code.
+
+    Args:
+        dataDir: The resolved ``--data-dir`` value (an explicit flag value or the
+            computed :data:`DEFAULT_DATA_DIR`).
+
+    Returns:
+        ``dataDir`` unchanged when it is an existing directory.
+
+    Raises:
+        ValueError: When ``dataDir`` is not an existing directory.
+    """
+    if dataDir.is_dir():
+        return dataDir
+    raise ValueError(
+        f"seed data directory not found: {dataDir}. The ASCII seed files are not "
+        "bundled with an installed batch distribution; pass --data-dir <path> "
+        "(for example the repository's app/data/ASCII) or set the "
+        f"{DATA_DIR_ENV_VAR} environment variable to a directory that contains them."
+    )
 
 
 def _ConfigureLogging(verbose: bool) -> None:
@@ -407,11 +482,12 @@ def RestoreTransactionsCommand(
 @loadApp.command("accounts")
 def LoadAccountsCommand(
     dataDir: Path = typer.Option(
-        DEFAULT_DATA_DIR, "--data-dir", exists=True, file_okay=False,
+        DEFAULT_DATA_DIR, "--data-dir",
         help="Directory containing ASCII seed files.",
     ),
 ) -> None:
     """Load the account master seed (legacy ACCTFILE IDCAMS job)."""
+    dataDir = _RequireDataDir(dataDir)
     with GetSyncSession() as session:
         count = LoadAccounts(session, dataDir=dataDir)
     typer.echo(f"load accounts complete: {count} rows")
@@ -420,11 +496,12 @@ def LoadAccountsCommand(
 @loadApp.command("cards")
 def LoadCardsCommand(
     dataDir: Path = typer.Option(
-        DEFAULT_DATA_DIR, "--data-dir", exists=True, file_okay=False,
+        DEFAULT_DATA_DIR, "--data-dir",
         help="Directory containing ASCII seed files.",
     ),
 ) -> None:
     """Load the card master seed (legacy CARDFILE IDCAMS job)."""
+    dataDir = _RequireDataDir(dataDir)
     with GetSyncSession() as session:
         count = LoadCards(session, dataDir=dataDir)
     typer.echo(f"load cards complete: {count} rows")
@@ -433,11 +510,12 @@ def LoadCardsCommand(
 @loadApp.command("customers")
 def LoadCustomersCommand(
     dataDir: Path = typer.Option(
-        DEFAULT_DATA_DIR, "--data-dir", exists=True, file_okay=False,
+        DEFAULT_DATA_DIR, "--data-dir",
         help="Directory containing ASCII seed files.",
     ),
 ) -> None:
     """Load the customer master seed (legacy CUSTFILE IDCAMS job)."""
+    dataDir = _RequireDataDir(dataDir)
     with GetSyncSession() as session:
         count = LoadCustomers(session, dataDir=dataDir)
     typer.echo(f"load customers complete: {count} rows")
@@ -446,11 +524,12 @@ def LoadCustomersCommand(
 @loadApp.command("xref")
 def LoadCardXrefCommand(
     dataDir: Path = typer.Option(
-        DEFAULT_DATA_DIR, "--data-dir", exists=True, file_okay=False,
+        DEFAULT_DATA_DIR, "--data-dir",
         help="Directory containing ASCII seed files.",
     ),
 ) -> None:
     """Load the card cross-reference seed (legacy XREFFILE IDCAMS job)."""
+    dataDir = _RequireDataDir(dataDir)
     with GetSyncSession() as session:
         count = LoadCardXref(session, dataDir=dataDir)
     typer.echo(f"load xref complete: {count} rows")
@@ -459,11 +538,12 @@ def LoadCardXrefCommand(
 @loadApp.command("transactions")
 def LoadTransactionsCommand(
     dataDir: Path = typer.Option(
-        DEFAULT_DATA_DIR, "--data-dir", exists=True, file_okay=False,
+        DEFAULT_DATA_DIR, "--data-dir",
         help="Directory containing ASCII seed files.",
     ),
 ) -> None:
     """Load the transaction seed (legacy TRANFILE IDCAMS job)."""
+    dataDir = _RequireDataDir(dataDir)
     with GetSyncSession() as session:
         count = LoadTransactions(session, dataDir=dataDir)
     typer.echo(f"load transactions complete: {count} rows")
@@ -472,11 +552,12 @@ def LoadTransactionsCommand(
 @loadApp.command("disclosure-groups")
 def LoadDisclosureGroupsCommand(
     dataDir: Path = typer.Option(
-        DEFAULT_DATA_DIR, "--data-dir", exists=True, file_okay=False,
+        DEFAULT_DATA_DIR, "--data-dir",
         help="Directory containing ASCII seed files.",
     ),
 ) -> None:
     """Load the disclosure group seed (legacy DISCGRP IDCAMS job)."""
+    dataDir = _RequireDataDir(dataDir)
     with GetSyncSession() as session:
         count = LoadDisclosureGroups(session, dataDir=dataDir)
     typer.echo(f"load disclosure-groups complete: {count} rows")
@@ -485,11 +566,12 @@ def LoadDisclosureGroupsCommand(
 @loadApp.command("tran-categories")
 def LoadTranCategoriesCommand(
     dataDir: Path = typer.Option(
-        DEFAULT_DATA_DIR, "--data-dir", exists=True, file_okay=False,
+        DEFAULT_DATA_DIR, "--data-dir",
         help="Directory containing ASCII seed files.",
     ),
 ) -> None:
     """Load the transaction category seed (legacy TRANCATG IDCAMS job)."""
+    dataDir = _RequireDataDir(dataDir)
     with GetSyncSession() as session:
         count = LoadTranCategories(session, dataDir=dataDir)
     typer.echo(f"load tran-categories complete: {count} rows")
@@ -498,11 +580,12 @@ def LoadTranCategoriesCommand(
 @loadApp.command("tran-types")
 def LoadTranTypesCommand(
     dataDir: Path = typer.Option(
-        DEFAULT_DATA_DIR, "--data-dir", exists=True, file_okay=False,
+        DEFAULT_DATA_DIR, "--data-dir",
         help="Directory containing ASCII seed files.",
     ),
 ) -> None:
     """Load the transaction type seed (legacy TRANTYPE IDCAMS job)."""
+    dataDir = _RequireDataDir(dataDir)
     with GetSyncSession() as session:
         count = LoadTranTypes(session, dataDir=dataDir)
     typer.echo(f"load tran-types complete: {count} rows")
@@ -511,11 +594,12 @@ def LoadTranTypesCommand(
 @loadApp.command("tcatbal")
 def LoadTranCategoryBalancesCommand(
     dataDir: Path = typer.Option(
-        DEFAULT_DATA_DIR, "--data-dir", exists=True, file_okay=False,
+        DEFAULT_DATA_DIR, "--data-dir",
         help="Directory containing ASCII seed files.",
     ),
 ) -> None:
     """Load the transaction category balance seed (legacy TCATBALF IDCAMS job)."""
+    dataDir = _RequireDataDir(dataDir)
     with GetSyncSession() as session:
         count = LoadTranCategoryBalances(session, dataDir=dataDir)
     typer.echo(f"load tcatbal complete: {count} rows")
@@ -523,7 +607,18 @@ def LoadTranCategoryBalancesCommand(
 
 @loadApp.command("init-users")
 def InitializeUsersCommand() -> None:
-    """Initialize user security with hashed passwords (legacy DUSRSECJ / USRSEC.PS)."""
+    """Initialize user security with hashed passwords (legacy DUSRSECJ / USRSEC.PS).
+
+    Standalone ``init-users`` hashes the seed passwords through the backend
+    security module, which requires ``SECRET_KEY``. Mirror the full-chain
+    preflight (``batch_chain._ValidateUserSeedSecurity``) by making that secret
+    discoverable from the anchored ``backend/.env`` -- CWD-independently -- BEFORE
+    hashing, so this documented loader works on its own instead of failing on a
+    missing backend token (QA finding I7). A genuinely absent secret still fails
+    fast, but now surfaces as one concise CLI error through the error boundary
+    rather than a raw traceback.
+    """
+    EnsureBackendSecretAvailable()
     with GetSyncSession() as session:
         count = InitializeUsers(session)
     typer.echo(f"init-users complete: {count} users")
@@ -538,7 +633,7 @@ def RunAllCommand(
         None, "--run-date", help="Business run date (YYYY-MM-DD)."
     ),
     dataDir: Path = typer.Option(
-        DEFAULT_DATA_DIR, "--data-dir", exists=True, file_okay=False,
+        DEFAULT_DATA_DIR, "--data-dir",
         help="Directory containing ASCII seed files.",
     ),
     outputDir: Path = typer.Option(
@@ -560,6 +655,7 @@ def RunAllCommand(
     full run never leaves untracked files in the working tree (QA Finding E).
     """
     parsedDate = _ParseRunDate(runDate)
+    dataDir = _RequireDataDir(dataDir)
     result = RunBatchChain(runDate=parsedDate, dataDir=dataDir, outputDir=outputDir)
     rejectedTotal = 0
     for stepName, stepValue in result.stepResults:
@@ -579,7 +675,7 @@ def RunAllCommand(
 @app.command("seed-all")
 def SeedAllCommand(
     dataDir: Path = typer.Option(
-        DEFAULT_DATA_DIR, "--data-dir", exists=True, file_okay=False,
+        DEFAULT_DATA_DIR, "--data-dir",
         help="Directory containing ASCII seed files.",
     ),
 ) -> None:
@@ -588,6 +684,7 @@ def SeedAllCommand(
     Delegates to :func:`batch.orchestration.batch_chain.SeedAll`, which runs each
     loader in its own transaction; per-loader row counts are emitted to the log.
     """
+    dataDir = _RequireDataDir(dataDir)
     SeedAll(dataDir=dataDir)
     typer.echo("seed-all complete (see log for per-loader counts)")
 

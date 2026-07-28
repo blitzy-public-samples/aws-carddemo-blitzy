@@ -47,7 +47,7 @@ ownership scoping is therefore declined on AAP grounds (documented decision --
 see ``app.api.v1.cards`` and the resolution report).
 """
 
-from fastapi import APIRouter, Depends, status
+from fastapi import APIRouter, Depends, Header, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.dependencies import get_current_user, get_db
@@ -140,6 +140,7 @@ async def AddTransaction(
     transactionCreate: TransactionCreate,
     session: AsyncSession = Depends(get_db),
     currentUser=Depends(get_current_user),
+    idempotencyKey: str | None = Header(default=None, alias="Idempotency-Key"),
 ) -> TransactionRead:
     """Add a new transaction and post it to the account (COTRN02C, CT02).
 
@@ -167,13 +168,28 @@ async def AddTransaction(
     ``TransactionPostingError`` to HTTP 422 with the code and description in the
     response body.
 
+    Exactly-once (idempotency): an optional ``Idempotency-Key`` request header is
+    forwarded to the service, which enforces server-side that a duplicate
+    submission -- a rapid double confirmation or a client retry -- posts exactly
+    ONE transaction and applies ONE balance change (returning the ORIGINAL
+    transaction for the replay). When the header is omitted, a deterministic
+    fingerprint of the request content provides the same protection for
+    byte-identical concurrent submissions. This closes a web-only double-submit
+    hazard the legacy 3270 terminal could not create (AAP 0.7.4 -- preserve
+    concurrency semantics); the router itself performs no idempotency logic.
+
     Args:
         transactionCreate: The validated add-transaction request DTO.
         session: Request-scoped async database session (dependency-injected).
         currentUser: The authenticated user; injected to enforce authentication.
+        idempotencyKey: Optional ``Idempotency-Key`` header defining the
+            exactly-once identity of the operation; forwarded to the service.
 
     Returns:
         The :class:`~app.schemas.TransactionRead` of the newly posted
-        transaction (``card_num`` masked). Responds with HTTP 201 Created.
+        transaction (``card_num`` masked). Responds with HTTP 201 Created. For a
+        duplicate submission it is the ORIGINAL transaction, not a second one.
     """
-    return await TransactionService().AddTransaction(session, transactionCreate)
+    return await TransactionService().AddTransaction(
+        session, transactionCreate, idempotencyKey=idempotencyKey
+    )

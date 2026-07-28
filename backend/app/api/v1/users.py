@@ -70,7 +70,7 @@ names imported from ``app.core.dependencies`` (``get_db``/``require_admin``)
 keep their snake_case framework-contract spelling.
 """
 
-from fastapi import APIRouter, Depends, status
+from fastapi import APIRouter, Depends, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 # ``require_admin`` transitively resolves the caller identity (it depends on
@@ -110,6 +110,16 @@ async def ListUsers(
     session: AsyncSession = Depends(get_db),
     params: PaginationParams = Depends(),
     currentUser: User = Depends(require_admin),
+    user_id: str | None = Query(
+        default=None,
+        max_length=8,
+        description=(
+            "Optional case-insensitive User ID prefix. When supplied, the "
+            "browse is filtered server-side across the WHOLE user table to ids "
+            "beginning with this text (COUSR00C search), so a matching user on "
+            "any page is found -- not only those on the page already loaded."
+        ),
+    ),
 ) -> PaginatedResponse[UserSummary]:
     """List security users for the admin browse screen (COUSR00C, CU00).
 
@@ -118,16 +128,29 @@ async def ListUsers(
     service and returns one page of password-free
     :class:`~app.schemas.UserSummary` rows plus pagination metadata.
 
+    The optional ``user_id`` query parameter carries the admin "Search User ID"
+    box: it is normalized (trimmed; blank becomes no filter) and passed to the
+    service as a case-insensitive prefix search that runs at the database over
+    the entire table (QA I23), rather than the former client-only filter that
+    inspected only the current page.
+
     Args:
         session: The request-scoped async database session (from ``get_db``).
         params: The ``page`` / ``page_size`` query parameters.
         currentUser: The acting administrator (from ``require_admin``), passed to
             the service as the mandatory actor for the in-depth admin re-check.
+        user_id: Optional User ID prefix search term (``<= 8`` chars).
 
     Returns:
         A :class:`~app.schemas.PaginatedResponse` page of ``UserSummary`` rows.
     """
-    return await UserAdminService().ListUsers(session, params, currentUser)
+    userIdPrefix = user_id.strip() if user_id else None
+    return await UserAdminService().ListUsers(
+        session,
+        params,
+        currentUser,
+        userIdPrefix=userIdPrefix or None,
+    )
 
 
 @router.post(

@@ -426,8 +426,9 @@ relationships (chiefly the `CARDXREF` cross-reference).
 | `fk_card_xref_acct_id_accounts` | `card_xref.acct_id` | `accounts.acct_id` |
 | `fk_transactions_card_num_cards` | `transactions.card_num` | `cards.card_num` |
 
-**Secondary indexes.** Five non-unique secondary indexes re-express the VSAM
-alternate indexes and support the browse screens.
+**Secondary indexes.** Six non-unique secondary indexes re-express the VSAM
+alternate indexes and support the browse and report screens; a seventh, a
+**unique** partial index, enforces online transaction idempotency.
 
 | Index | Table (columns) | Purpose |
 |-------|-----------------|---------|
@@ -436,6 +437,8 @@ alternate indexes and support the browse screens.
 | `ix_card_xref_cust_id` | `card_xref(cust_id)` | Cross-reference by customer. |
 | `ix_card_xref_acct_id` | `card_xref(acct_id)` | Cross-reference by account (VSAM AIX). |
 | `ix_transactions_card_num` | `transactions(card_num)` | Transaction-list-by-card (`COTRN00C` / `CT00`). |
+| `ix_transactions_status_effdate` | `transactions(status, COALESCE(proc_ts, orig_ts))` | Date-range transaction report by status + UTC effective date (`CORPT00C` / `CR00`); added by migration `0008`. |
+| `uq_transactions_idempotency_key` | `transactions(idempotency_key)` — **UNIQUE**, partial (`WHERE idempotency_key IS NOT NULL`) | Enforces exactly-once online add-transaction so a retried request produces a single financial effect; added by migration `0009`. |
 
 ## 8. Seed Data
 

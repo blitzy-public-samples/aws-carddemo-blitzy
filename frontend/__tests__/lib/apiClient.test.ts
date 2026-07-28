@@ -806,8 +806,17 @@ describe('TransactionsApi', () => {
         // Backend returns 201; the method returns response.data, so status is not asserted.
         mockPost.mockResolvedValueOnce({ data: transactionRead, status: 201 });
         const result = await TransactionsApi.AddTransaction(transactionCreate);
-        expect(mockPost).toHaveBeenCalledWith('/transactions', transactionCreate);
+        // No Idempotency-Key supplied -> no per-request config is attached.
+        expect(mockPost).toHaveBeenCalledWith('/transactions', transactionCreate, undefined);
         expect(result).toEqual(transactionRead);
+
+        // QA Issue 16: a supplied key is forwarded as the Idempotency-Key
+        // header so the server collapses a duplicated submit to one effect.
+        mockPost.mockResolvedValueOnce({ data: transactionRead, status: 201 });
+        await TransactionsApi.AddTransaction(transactionCreate, 'idem-key-123');
+        expect(mockPost).toHaveBeenLastCalledWith('/transactions', transactionCreate, {
+            headers: { 'Idempotency-Key': 'idem-key-123' },
+        });
     });
 });
 

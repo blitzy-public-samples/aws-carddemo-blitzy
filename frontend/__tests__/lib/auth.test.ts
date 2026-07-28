@@ -10,7 +10,9 @@
  *     on the HTTP-only session cookie), and PROPAGATES auth errors without
  *     persisting;
  *   - `Logout`: delegates client-state teardown to `ClearStoredAuth` and then
- *     performs the hard redirect to `/signon`;
+ *     performs the hard redirect to `/signon` — but ONLY after the server
+ *     confirms revocation (bounded retries); on unconfirmed sign-out it rejects
+ *     and performs NO teardown/redirect (QA Issue 2 / CWE-613);
  *   - `GetCurrentUser`: returns the parsed stored user, `null` when absent, and
  *     `null` (never throwing) when the stored JSON is malformed;
  *   - `GetRole` / `IsAdmin`: report the `'A'`/`'U'` role (or `null`), with
@@ -37,15 +39,39 @@
  */
 
 // --- Phase A: mock `@/lib/apiClient` with an explicit factory (hoisted) ------
-jest.mock('@/lib/apiClient', () => ({
-    __esModule: true,
-    AuthApi: { Login: jest.fn(), Logout: jest.fn() },
-    ClearStoredAuth: jest.fn(),
-    SESSION_USER_STORAGE_KEY: 'carddemo_user',
-}));
+// The factory also supplies a faithful `ApiError` class and `IsApiError` guard
+// because `auth.ts` now imports `IsApiError` to retry ONLY the expected API
+// failure surface during logout (QA Issue 2). Modeling the real class/guard here
+// lets the Logout tests drive the bounded-retry / confirmed-revocation paths
+// deterministically (a rejected round-trip is an ApiError, exactly as the real
+// axios interceptor normalizes it).
+jest.mock('@/lib/apiClient', () => {
+    class ApiError extends Error {
+        status: number;
+        code?: string;
+        detail?: string;
+        constructor(init: { status: number; message: string; code?: string; detail?: string }) {
+            super(init.message);
+            this.name = 'ApiError';
+            this.status = init.status;
+            this.code = init.code;
+            this.detail = init.detail;
+        }
+    }
+    return {
+        __esModule: true,
+        AuthApi: { Login: jest.fn(), Logout: jest.fn() },
+        ClearStoredAuth: jest.fn(),
+        IsApiError: (error: unknown): error is InstanceType<typeof ApiError> =>
+            error instanceof ApiError,
+        ApiError,
+        SESSION_USER_STORAGE_KEY: 'carddemo_user',
+    };
+});
 
 import { Login, Logout, GetCurrentUser, GetRole, IsAdmin } from '@/lib/auth';
 import {
+    ApiError,
     AuthApi,
     ClearStoredAuth,
     SESSION_USER_STORAGE_KEY,
@@ -214,21 +240,62 @@ describe('Logout', () => {
         expect(locationStub.href).toBe('/signon');
     });
 
-    it('still tears down and redirects when the backend logout call fails (best-effort)', async () => {
+    it('does NOT tear down or redirect when server revocation never succeeds; it rejects after bounded retries (QA Issue 2 / CWE-613)', async () => {
         localStorage.setItem(
             SESSION_USER_STORAGE_KEY,
             JSON.stringify(MakeCurrentUser()),
         );
-        // A transient backend/network failure must NOT trap the user in the SPA:
-        // local teardown + redirect proceed regardless.
-        mockAuthLogout.mockRejectedValueOnce(new Error('network down'));
+        // Every revocation attempt fails (the live server session would remain
+        // authorized). The SPA must NOT present a signed-out state: Logout must
+        // reject, leave the mirrored identity intact, and issue no redirect.
+        mockAuthLogout.mockRejectedValue(
+            new ApiError({ status: 0, message: 'network down' }),
+        );
+        const locationStub = StubLocation('/menu');
+
+        await expect(Logout()).rejects.toBeInstanceOf(ApiError);
+
+        // Revocation is retried the bounded number of times before giving up.
+        expect(mockAuthLogout).toHaveBeenCalledTimes(3);
+        // No teardown and no redirect on unconfirmed sign-out.
+        expect(mockClearStoredAuth).not.toHaveBeenCalled();
+        expect(locationStub.href).toBe('');
+    });
+
+    it('retries a transient revocation failure and, once the server confirms, tears down and redirects', async () => {
+        localStorage.setItem(
+            SESSION_USER_STORAGE_KEY,
+            JSON.stringify(MakeCurrentUser()),
+        );
+        // First attempt fails transiently, second succeeds: sign-out is confirmed,
+        // so local teardown + redirect proceed (and only then).
+        mockAuthLogout
+            .mockRejectedValueOnce(new ApiError({ status: 0, message: 'transient' }))
+            .mockResolvedValueOnce({ message: 'Signed out successfully.' });
         const locationStub = StubLocation('/menu');
 
         await Logout();
 
-        expect(mockAuthLogout).toHaveBeenCalledTimes(1);
+        expect(mockAuthLogout).toHaveBeenCalledTimes(2);
         expect(mockClearStoredAuth).toHaveBeenCalledTimes(1);
         expect(locationStub.href).toBe('/signon');
+    });
+
+    it('rethrows immediately (no retry) when the failure is not an ApiError', async () => {
+        localStorage.setItem(
+            SESSION_USER_STORAGE_KEY,
+            JSON.stringify(MakeCurrentUser()),
+        );
+        // A non-ApiError is unexpected and must not be swallowed or retried
+        // (Ochs specific-catch rule): surface it on the first attempt.
+        mockAuthLogout.mockRejectedValue(new TypeError('unexpected'));
+        const locationStub = StubLocation('/menu');
+
+        await expect(Logout()).rejects.toBeInstanceOf(TypeError);
+
+        expect(mockAuthLogout).toHaveBeenCalledTimes(1);
+        expect(mockClearStoredAuth).not.toHaveBeenCalled();
+        expect(locationStub.href).toBe('');
     });
 });
 

@@ -503,6 +503,285 @@ class CsrfProtectionMiddleware(BaseHTTPMiddleware):
         return requestOrigin in settings.BACKEND_CORS_ORIGINS
 
 
+# ---------------------------------------------------------------------------
+# Unhandled-error safety net INSIDE the header-decorating layers (QA finding #9:
+# an unhandled database-outage 500 lost its CORS and security headers). Starlette
+# installs the catch-all Exception/500 handler on its OUTERMOST
+# ServerErrorMiddleware -- above CORSMiddleware and SecurityHeadersMiddleware --
+# so a 500 rendered there never receives those headers, and a browser sees an
+# opaque network/CORS failure instead of the safe JSON envelope.
+# SafeErrorMiddleware is registered as the INNERMOST middleware, so when it
+# renders the 500 the response travels back OUT through GZip -> CSRF -> CORS ->
+# SecurityHeaders -> CorrelationId and is decorated by every one of them.
+# _HandleUnexpectedError remains registered as the last-resort fallback for a
+# fault raised in the outer middleware layers themselves (which
+# SafeErrorMiddleware, being inner of them, cannot see).
+# ---------------------------------------------------------------------------
+
+
+def _RecoverCorrelationIdFromScope(scope: Scope) -> str:
+    """Return the correlation id bound for this request, from the ASGI scope.
+
+    :class:`CorrelationIdMiddleware` stashes the id on ``scope["state"]`` (shared
+    with ``request.state``) precisely so an error path that runs after its
+    context binding has unwound can still recover the SAME id. Falls back to the
+    context variable, then to a freshly sanitized id, so a correlation id is
+    always available for the log line and the response envelope.
+
+    Args:
+        scope: The ASGI HTTP connection scope.
+
+    Returns:
+        The request's correlation id (never empty).
+    """
+    scopeState = scope.get("state") or {}
+    return scopeState.get(REQUEST_STATE_ATTRIBUTE) or GetCorrelationId()
+
+
+def _LogAndBuildSafe500(correlationId: str, method: str, path: str, exc: BaseException) -> JSONResponse:
+    """Log an unhandled fault and build the sanitized HTTP 500 envelope.
+
+    Single source of truth shared by :class:`SafeErrorMiddleware` (the common
+    path, which emits the 500 from inside the CORS/security-header layers) and
+    :func:`_HandleUnexpectedError` (the outer fallback). The full exception --
+    including its traceback -- is logged server-side under the correlation id;
+    the client receives only a generic detail plus that same id (also echoed on
+    the ``X-Request-ID`` response header), never a stack trace, SQL statement, or
+    bound parameter (which may include a card number).
+
+    Args:
+        correlationId: The request's correlation id, used in the log line, the
+            response body, and the ``X-Request-ID`` header.
+        method: The request HTTP method, for the log line.
+        path: The request path, for the log line.
+        exc: The unhandled exception, logged with its traceback.
+
+    Returns:
+        A status-500 :class:`JSONResponse` with a generic detail and the
+        correlation id.
+    """
+    _LOGGER.error(
+        "Unhandled error [%s] on %s %s",
+        correlationId,
+        method,
+        path,
+        exc_info=exc,
+    )
+    return JSONResponse(
+        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+        content={"detail": "Internal Server Error", "correlation_id": correlationId},
+        headers={RESPONSE_HEADER_NAME: correlationId},
+    )
+
+
+class SafeErrorMiddleware:
+    """Pure ASGI middleware that renders an unhandled fault as a safe HTTP 500.
+
+    Registered as the INNERMOST middleware (see :func:`_ConfigureMiddleware`) so
+    the 500 it emits flows back OUT through GZip, CSRF, CORS, SecurityHeaders and
+    CorrelationId and is decorated by each -- closing QA finding #9, where a
+    database-outage 500 (an unhandled ``sqlalchemy.exc.OperationalError``, a
+    sibling of the handled ``DataError``) surfaced from Starlette's outer
+    ``ServerErrorMiddleware`` without the CORS or security headers a browser
+    needs to read the safe envelope.
+
+    Only a fault raised at or below this layer -- the routers, the services, the
+    repositories, and the inner ``ExceptionMiddleware`` -- is caught here. If the
+    response has ALREADY started (a fault mid-stream, for example during a
+    CSV/PDF download), the status and headers are already on the wire, so the
+    exception is re-raised and Starlette's outer ``ServerErrorMiddleware`` remains
+    the last-resort handler (it will not double-send once a response has begun).
+    Catching the broad ``Exception`` here is the deliberate, documented
+    error-boundary exception to the Ochs specific-exception rule -- it mirrors
+    :func:`_HandleUnexpectedError`. Non-HTTP scopes pass straight through.
+    """
+
+    def __init__(self, app: ASGIApp) -> None:
+        """Store the wrapped ASGI application.
+
+        Args:
+            app: The next ASGI application in the middleware chain.
+        """
+        self.app = app
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        """Run the inner app, rendering any unhandled fault as a safe 500.
+
+        Args:
+            scope: The ASGI connection scope.
+            receive: The ASGI receive callable.
+            send: The ASGI send callable to forward messages to.
+        """
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+
+        responseStarted = False
+
+        async def SendTrackingStart(message: Message) -> None:
+            nonlocal responseStarted
+            if message["type"] == "http.response.start":
+                responseStarted = True
+            await send(message)
+
+        try:
+            await self.app(scope, receive, SendTrackingStart)
+        except Exception as unhandledError:
+            # Deliberate broad error boundary (mirrors _HandleUnexpectedError):
+            # any unhandled fault below this layer becomes a sanitized 500 that
+            # still flows out through the CORS/security-header middleware. If the
+            # response already began streaming its status/headers are on the
+            # wire, so re-raise and let the outer ServerErrorMiddleware be the
+            # last-resort net (it will not double-send a started response).
+            if responseStarted:
+                raise
+            correlationId = _RecoverCorrelationIdFromScope(scope)
+            safeResponse = _LogAndBuildSafe500(
+                correlationId,
+                scope.get("method", ""),
+                scope.get("path", ""),
+                unhandledError,
+            )
+            await safeResponse(scope, receive, send)
+
+
+# ---------------------------------------------------------------------------
+# Request-body size limit (QA finding #31: production had no explicit
+# request-body policy). An oversized or unbounded body is rejected with a
+# bounded HTTP 413 before it is buffered or validated, capping pre-auth memory
+# use. The ceiling is ``settings.MAX_REQUEST_BODY_BYTES`` (environment-tunable,
+# never hardcoded).
+# ---------------------------------------------------------------------------
+# Generic 413 body. It never echoes the configured ceiling (no capability
+# disclosure) and reads uniformly whether the limit was tripped by the declared
+# Content-Length or by the actual streamed byte count.
+_BODY_TOO_LARGE_DETAIL = "Request body too large."
+
+
+class _RequestBodyTooLargeError(Exception):
+    """Internal signal that the streamed request body exceeded the byte cap.
+
+    Raised by the counting ``receive`` wrapper and caught only within
+    :class:`RequestBodySizeLimitMiddleware`; it is never surfaced to a handler.
+    """
+
+
+def _ReadDeclaredContentLength(scope: Scope) -> int | None:
+    """Return the request's declared ``Content-Length`` in bytes, if usable.
+
+    Scans the raw ASGI scope headers (lowercased byte pairs) for
+    ``content-length`` and parses it as a non-negative integer.
+
+    Args:
+        scope: The ASGI HTTP connection scope.
+
+    Returns:
+        The parsed byte count, or ``None`` when the header is absent or is not a
+        valid non-negative integer (the streamed byte counter then applies).
+    """
+    for headerName, headerValue in scope.get("headers") or []:
+        if headerName == b"content-length":
+            try:
+                parsedLength = int(headerValue)
+            except (ValueError, TypeError):
+                return None
+            return parsedLength if parsedLength >= 0 else None
+    return None
+
+
+async def _SendRequestTooLarge(scope: Scope, receive: Receive, send: Send) -> None:
+    """Emit the bounded HTTP 413 response for an over-large request body.
+
+    Sent through the middleware's own ``send`` so it flows back out through the
+    CORS and security-header layers, exactly like every other error envelope.
+
+    Args:
+        scope: The ASGI connection scope.
+        receive: The ASGI receive callable.
+        send: The ASGI send callable to forward the response to.
+    """
+    response = JSONResponse(
+        status_code=status.HTTP_413_CONTENT_TOO_LARGE,
+        content={"detail": _BODY_TOO_LARGE_DETAIL},
+    )
+    await response(scope, receive, send)
+
+
+class RequestBodySizeLimitMiddleware:
+    """Pure ASGI middleware that bounds the accepted request-body size.
+
+    Rejects an over-large body with a bounded HTTP 413 (QA finding #31) before it
+    is buffered or validated, capping the pre-auth memory use that the legacy
+    CICS terminal input length bounded implicitly. Two complementary checks:
+
+    * a fast pre-check on a declared ``Content-Length`` that already exceeds
+      ``settings.MAX_REQUEST_BODY_BYTES`` -- the common JSON-client case; and
+    * a streamed byte counter that also caps a chunked body sent with no
+      ``Content-Length`` (or one that under-declares its length), so the ceiling
+      cannot be evaded.
+
+    Registered inside the CORS/security layers (see :func:`_ConfigureMiddleware`)
+    so the 413 carries the same CORS and security headers as every other
+    response. Non-HTTP scopes pass straight through untouched.
+    """
+
+    def __init__(self, app: ASGIApp, maxBodyBytes: int) -> None:
+        """Store the wrapped app and the configured body-size ceiling.
+
+        Args:
+            app: The next ASGI application in the middleware chain.
+            maxBodyBytes: The maximum accepted request-body size in bytes
+                (``settings.MAX_REQUEST_BODY_BYTES``).
+        """
+        self.app = app
+        self.maxBodyBytes = maxBodyBytes
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        """Enforce the body-size ceiling, rejecting an over-large body with 413.
+
+        Args:
+            scope: The ASGI connection scope.
+            receive: The ASGI receive callable.
+            send: The ASGI send callable to forward messages to.
+        """
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+
+        declaredLength = _ReadDeclaredContentLength(scope)
+        if declaredLength is not None and declaredLength > self.maxBodyBytes:
+            await _SendRequestTooLarge(scope, receive, send)
+            return
+
+        bytesSeen = 0
+        responseStarted = False
+
+        async def CountingReceive() -> Message:
+            nonlocal bytesSeen
+            message = await receive()
+            if message["type"] == "http.request":
+                bytesSeen += len(message.get("body", b"") or b"")
+                if bytesSeen > self.maxBodyBytes:
+                    raise _RequestBodyTooLargeError
+            return message
+
+        async def SendTrackingStart(message: Message) -> None:
+            nonlocal responseStarted
+            if message["type"] == "http.response.start":
+                responseStarted = True
+            await send(message)
+
+        try:
+            await self.app(scope, CountingReceive, SendTrackingStart)
+        except _RequestBodyTooLargeError:
+            # Nothing sent yet: reject cleanly with a 413. If a response already
+            # started, its headers are on the wire and cannot be rewritten, so
+            # re-raise for the outer error boundary to handle.
+            if responseStarted:
+                raise
+            await _SendRequestTooLarge(scope, receive, send)
+
+
 # Response-compression tuning (QA finding M-02 performance: uncompressed JSON
 # list/report payloads reached ~9.8 MB). Only bodies at or above
 # ``GZIP_MINIMUM_SIZE`` bytes are compressed, so tiny responses -- the health
@@ -522,29 +801,54 @@ def _ConfigureMiddleware(fastapiApp: FastAPI) -> None:
     Middleware is registered inner-to-outer (Starlette treats the LAST
     ``add_middleware`` call as the OUTERMOST layer), producing this response
     chain from outermost to innermost: ``CorrelationId`` -> ``SecurityHeaders``
-    -> ``CORS`` -> ``CsrfProtection`` -> ``GZip`` -> routers.
+    -> ``CORS`` -> ``CsrfProtection`` -> ``GZip`` -> ``SafeError`` ->
+    ``RequestBodySizeLimit`` -> routers. The two innermost layers (added first)
+    are the error/size boundary: because they sit INSIDE CORS and
+    SecurityHeaders, the 500 and 413 envelopes they emit still travel back out
+    through those layers and are decorated with the CORS and security headers a
+    browser needs (QA findings #9 and #31).
 
-    * :class:`~fastapi.middleware.gzip.GZipMiddleware` is added FIRST so it is
-      the INNERMOST layer, wrapping the routers directly. It compresses the
-      response body (setting ``Content-Encoding: gzip``, ``Vary:
+    * :class:`RequestBodySizeLimitMiddleware` is added FIRST so it is the
+      INNERMOST layer, guarding the routers directly (QA finding #31). It
+      rejects an over-large request body with a bounded HTTP 413 -- via a fast
+      ``Content-Length`` pre-check plus a streamed byte counter -- before the
+      body is buffered or validated. Being inside CORS and SecurityHeaders, its
+      413 still travels back out through them and is decorated with the CORS and
+      security headers a browser needs to read it.
+    * :class:`SafeErrorMiddleware` is added next so it wraps the routers and the
+      inner ``ExceptionMiddleware`` (QA finding #9). Any unhandled fault raised
+      there -- notably a database-outage ``OperationalError`` that no domain
+      handler covers -- is rendered here as a sanitized 500 whose response, being
+      emitted from inside CORS and SecurityHeaders, is decorated with their
+      headers (Starlette's own catch-all runs in the OUTERMOST
+      ``ServerErrorMiddleware``, above those layers, and so could not be). It
+      forwards a started response untouched, re-raising only when a fault occurs
+      mid-stream so the outer ``ServerErrorMiddleware`` remains the fallback.
+    * :class:`~fastapi.middleware.gzip.GZipMiddleware` is added next, so it wraps
+      the transparent error/size boundary and, through it, the routers. It
+      compresses the response body (setting ``Content-Encoding: gzip``, ``Vary:
       Accept-Encoding`` and the compressed ``Content-Length``) only when the
       client advertises ``Accept-Encoding: gzip`` AND the body is at least
       :data:`GZIP_MINIMUM_SIZE` bytes -- eliminating the multi-megabyte
       uncompressed JSON payloads (QA finding M-02) while leaving small responses
       (the health probes, the sign-on result, single-record views) and clients
-      that do not negotiate gzip byte-for-byte unchanged. It MUST be innermost:
-      Starlette's ``GZipMiddleware`` only honors ``minimum_size`` when it
-      receives the router's response as a single, complete body message
+      that do not negotiate gzip byte-for-byte unchanged. It MUST stay INNER of
+      the CSRF layer: Starlette's ``GZipMiddleware`` only honors ``minimum_size``
+      when it receives the router's response as a single, complete body message
       (``more_body`` False); the OUTER :class:`CsrfProtectionMiddleware` is a
       ``BaseHTTPMiddleware`` that re-emits every response as a stream, which
       would otherwise force the streaming-compression path and compress even
-      tiny bodies. The compressed body is transparently inflated by the
+      tiny bodies. The two pure-ASGI layers inner of GZip
+      (:class:`SafeErrorMiddleware`, :class:`RequestBodySizeLimitMiddleware`)
+      forward body messages unchanged, so the framing GZip sees is exactly the
+      router's. The compressed body is transparently inflated by the
       browser/HTTP client, so the CSV (``StreamingResponse``) and PDF (binary
       ``Response``) downloads decode to exactly the same bytes as before.
     * :class:`CsrfProtectionMiddleware` is added next so its origin check for
       cookie mutations (QA finding M-02) runs just before the router (only GZip
-      is inner of it), yet its 403 response still travels back out through CORS
-      (gaining the CORS headers a browser needs to read it) and SecurityHeaders.
+      and the error/size boundary are inner of it), yet its 403 response still
+      travels back out through CORS (gaining the CORS headers a browser needs to
+      read it) and SecurityHeaders.
     * Starlette's CORS middleware is added next so the Next.js frontend -- whose
       origin is listed in ``settings.BACKEND_CORS_ORIGINS`` (for example
       ``http://localhost:3000``) -- may call the API with credentials.
@@ -567,6 +871,11 @@ def _ConfigureMiddleware(fastapiApp: FastAPI) -> None:
     Args:
         fastapiApp: The application instance to configure.
     """
+    fastapiApp.add_middleware(
+        RequestBodySizeLimitMiddleware,
+        maxBodyBytes=settings.MAX_REQUEST_BODY_BYTES,
+    )
+    fastapiApp.add_middleware(SafeErrorMiddleware)
     fastapiApp.add_middleware(
         GZipMiddleware,
         minimum_size=GZIP_MINIMUM_SIZE,
@@ -849,10 +1158,17 @@ async def _HandleValidationError(
 async def _HandleUnexpectedError(request: Request, exc: Exception) -> JSONResponse:
     """Render any otherwise-unhandled exception as a sanitized HTTP 500.
 
-    This is the last-resort safety net. Every anticipated error is already
+    This is the OUTER last-resort safety net. Every anticipated error is already
     mapped to a precise status by the domain handlers above (or, for request
-    validation, by FastAPI itself), so reaching here means a genuinely
-    unexpected fault. The full exception -- including its traceback -- is logged
+    validation, by FastAPI itself), and the common unhandled fault (raised in a
+    router, service, repository, or the inner ``ExceptionMiddleware`` -- for
+    example a database-outage ``OperationalError``) is now intercepted one layer
+    IN by :class:`SafeErrorMiddleware`, whose 500 is decorated with the CORS and
+    security headers (QA finding #9). This handler is therefore reached only for
+    a fault raised in the OUTER middleware layers themselves (above
+    ``SafeErrorMiddleware``), which those layers cannot self-wrap; it shares the
+    same sanitized-500 builder (:func:`_LogAndBuildSafe500`) so the envelope is
+    identical. The full exception -- including its traceback -- is logged
     server-side under the request's correlation id for diagnosis, while the client
     receives only a generic body carrying that same id. This never leaks a stack
     trace, file path, SQL statement, or bound parameter (which may include a card
@@ -883,18 +1199,7 @@ async def _HandleUnexpectedError(request: Request, exc: Exception) -> JSONRespon
         body is intentionally free of any internal detail.
     """
     correlationId = getattr(request.state, REQUEST_STATE_ATTRIBUTE, None) or GetCorrelationId()
-    _LOGGER.error(
-        "Unhandled error [%s] on %s %s",
-        correlationId,
-        request.method,
-        request.url.path,
-        exc_info=exc,
-    )
-    return JSONResponse(
-        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-        content={"detail": "Internal Server Error", "correlation_id": correlationId},
-        headers={RESPONSE_HEADER_NAME: correlationId},
-    )
+    return _LogAndBuildSafe500(correlationId, request.method, request.url.path, exc)
 
 
 async def _HandleRecursionError(request: Request, exc: RecursionError) -> JSONResponse:

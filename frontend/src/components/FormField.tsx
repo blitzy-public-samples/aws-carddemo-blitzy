@@ -47,7 +47,7 @@ import {
     FormHelperText,
 } from '@mui/material';
 import type { SelectChangeEvent } from '@mui/material/Select';
-import type { ChangeEvent } from 'react';
+import type { ChangeEvent, KeyboardEvent } from 'react';
 
 /**
  * A single option rendered as a `MenuItem` when `type === 'select'`.
@@ -94,6 +94,17 @@ export interface FormFieldProps {
     value: string;
     /** Change handler invoked as `onChange(name, value)`. */
     onChange: (name: string, value: string) => void;
+    /**
+     * Optional native key handler forwarded to the underlying text/password/
+     * number/date `<input>`. Lets a caller wire "Enter submits" on a lookup
+     * field so pressing Return triggers the same action as the adjacent button
+     * — restoring the 3270 Enter-key affordance the redesigned forms otherwise
+     * dropped (QA I25: Account View Enter no-op; QA I23: user-search Enter). It
+     * is bound to the native input (via `slotProps.htmlInput`), not the MUI root
+     * element, so the handler receives an `HTMLInputElement` keyboard event. Not
+     * applied to the `select` shape, which has no free-text entry.
+     */
+    onKeyDown?: (event: KeyboardEvent<HTMLInputElement>) => void;
     /** Field kind; defaults to `'text'`. */
     type?: FieldType;
     /** Maximum accepted length, taken from the copybook `<name>I PIC X(n)`. */
@@ -255,6 +266,9 @@ export function FormField(props: FormFieldProps) {
                     maxLength: props.maxLength,
                     readOnly: props.readOnly,
                     autoComplete: props.autoComplete,
+                    // Bind Enter/key handling to the native input so the caller
+                    // receives an HTMLInputElement event (QA I23 / I25).
+                    onKeyDown: props.onKeyDown,
                 },
                 inputLabel: type === 'date' ? { shrink: true } : undefined,
             }}

@@ -29,16 +29,43 @@ jest.mock('next/link', () => {
     // or Node globals, so `react` is pulled in via `require` INSIDE the factory
     // (never JSX). The mock forwards `href` AND `className` so the MUI
     // `Mui-selected` class that `ListItemButton component={Link}` computes reaches
-    // the rendered anchor, which the selected-route assertion relies on.
+    // the rendered anchor, which the selected-route assertion relies on. It ALSO
+    // forwards `onClick` (as real `next/link` does to its underlying anchor) so
+    // handlers the shell attaches to nav items — notably `HandleDrawerClose`,
+    // which the QA I28 drawer-focus spec exercises — actually fire on click.
     const React = require('react');
     return {
         __esModule: true,
-        default: (props: { href: string; className?: string; children?: unknown }) => {
+        default: (props: {
+            href: string;
+            className?: string;
+            onClick?: (event: unknown) => void;
+            onMouseEnter?: (event: unknown) => void;
+            onFocus?: (event: unknown) => void;
+            prefetch?: boolean | null;
+            children?: unknown;
+        }) => {
             const resolvedHref =
                 typeof props.href === 'string' ? props.href : String(props.href);
             return React.createElement(
                 'a',
-                { href: resolvedHref, className: props.className },
+                {
+                    href: resolvedHref,
+                    className: props.className,
+                    onClick: props.onClick,
+                    // Real next/link forwards these intent handlers to its
+                    // underlying anchor; the shell uses them to latch a nav
+                    // destination for prefetch (QA I26), so the mock must too.
+                    onMouseEnter: props.onMouseEnter,
+                    onFocus: props.onFocus,
+                    // Real next/link CONSUMES `prefetch` and never forwards it to
+                    // the DOM anchor; the mock mirrors that (so React emits no
+                    // "unknown DOM prop" warning) but records the current value
+                    // as a data-* attribute so the QA I26 selective-prefetch spec
+                    // can assert it flips from "false" (disabled) to "null"
+                    // (next/link default) once the user shows intent.
+                    'data-prefetch': String(props.prefetch),
+                },
                 props.children,
             );
         },
@@ -49,13 +76,14 @@ import {
     RenderWithProviders,
     screen,
     userEvent,
+    fireEvent,
     waitFor,
     act,
     MakeCurrentUser,
     MakeAdminUser,
 } from '../testUtils';
 import type { ReactElement } from 'react';
-import { AppShell } from '@/components/AppShell';
+import { AppShell, IsInsideAriaHidden, FocusWhenExposed } from '@/components/AppShell';
 import { GetCurrentUser, IsAdmin, Logout } from '@/lib/auth';
 import { usePathname, useRouter } from 'next/navigation';
 
@@ -140,6 +168,10 @@ describe('AppShell', () => {
         mockUseRouter.mockReturnValue(MakeRouterMock());
         mockGetCurrentUser.mockReturnValue(MakeCurrentUser());
         mockIsAdmin.mockReturnValue(false);
+        // Logout now RESOLVES only after confirmed server revocation (QA Issue 2);
+        // default it to a resolved promise so HandleLogout's `.catch().finally()`
+        // chain has a thenable to attach to. Failure-path specs override this.
+        mockLogout.mockResolvedValue(undefined);
     });
 
     // ----------------------------------------------------------------------
@@ -183,6 +215,82 @@ describe('AppShell', () => {
         REGULAR_NAV_LABELS.forEach((label) => {
             expect(screen.getByRole('link', { name: label })).toBeInTheDocument();
         });
+    });
+
+    // ----------------------------------------------------------------------
+    // Selective RSC prefetch (QA I26)
+    // ----------------------------------------------------------------------
+    // next/link eagerly prefetches every in-viewport <Link> by default, so the
+    // permanent desktop drawer would prefetch ALL nav destinations' RSC payloads
+    // on every page load. The shell instead starts each nav link with
+    // prefetch={false} (App Router: no viewport OR hover auto-prefetch) and opts
+    // a destination into next/link's default (prefetch={null}) only once the user
+    // shows intent toward it via hover or keyboard focus. The mocked next/link
+    // exposes the live prefetch value as `data-prefetch` ("false" = disabled,
+    // "null" = next/link default/enabled) for these assertions.
+
+    it('starts every nav link with prefetch disabled on load (QA I26)', () => {
+        RenderWithProviders(
+            <AppShell>
+                <div>Page Body</div>
+            </AppShell>,
+        );
+
+        // Nothing is prefetched until the user shows intent, so every nav link
+        // renders with the disabled sentinel — the eager viewport prefetch of
+        // all destinations that I26 reported is gone.
+        REGULAR_NAV_LABELS.forEach((label) => {
+            expect(
+                screen.getByRole('link', { name: label }),
+            ).toHaveAttribute('data-prefetch', 'false');
+        });
+    });
+
+    it('enables prefetch for a nav link only after hover intent, leaving the rest disabled (QA I26)', async () => {
+        const user = userEvent.setup();
+        RenderWithProviders(
+            <AppShell>
+                <div>Page Body</div>
+            </AppShell>,
+        );
+
+        const accountsLink = screen.getByRole('link', { name: 'Accounts' });
+        expect(accountsLink).toHaveAttribute('data-prefetch', 'false');
+
+        await user.hover(accountsLink);
+
+        // The hovered destination latches into next/link's default prefetch...
+        expect(
+            screen.getByRole('link', { name: 'Accounts' }),
+        ).toHaveAttribute('data-prefetch', 'null');
+        // ...while every OTHER destination stays disabled (selective, not the
+        // global eager prefetch the finding reported).
+        REGULAR_NAV_LABELS.filter((label) => label !== 'Accounts').forEach(
+            (label) => {
+                expect(
+                    screen.getByRole('link', { name: label }),
+                ).toHaveAttribute('data-prefetch', 'false');
+            },
+        );
+    });
+
+    it('enables prefetch for a nav link on keyboard focus intent (QA I26)', () => {
+        RenderWithProviders(
+            <AppShell>
+                <div>Page Body</div>
+            </AppShell>,
+        );
+
+        const cardsLink = screen.getByRole('link', { name: 'Cards' });
+        expect(cardsLink).toHaveAttribute('data-prefetch', 'false');
+
+        // Keyboard users (Tab-to-focus) get the same prefetch-on-intent as mouse
+        // users. React derives onFocus from the bubbling focusin event.
+        fireEvent.focusIn(cardsLink);
+
+        expect(
+            screen.getByRole('link', { name: 'Cards' }),
+        ).toHaveAttribute('data-prefetch', 'null');
     });
 
     // ----------------------------------------------------------------------
@@ -442,6 +550,66 @@ describe('AppShell', () => {
         expect(mockLogout).toHaveBeenCalledTimes(1);
     });
 
+    it('keeps the user signed in and surfaces a retryable failure when sign-out is not confirmed (QA Issue 2 / CWE-613)', async () => {
+        const user = userEvent.setup();
+        const replace = jest.fn();
+        mockUseRouter.mockReturnValue(MakeRouterMock({ replace }));
+        // Server revocation could not be confirmed: `Logout` rejects (it performs
+        // no teardown/redirect). The shell must NOT present a signed-out state.
+        mockLogout.mockRejectedValue(
+            new Error('Sign-out could not be confirmed by the server.'),
+        );
+
+        RenderWithProviders(
+            <AppShell>
+                <div>Page Body</div>
+            </AppShell>,
+        );
+
+        await user.click(screen.getByRole('button', { name: /logout/i }));
+
+        // The explicit failure alert appears...
+        await waitFor(() => {
+            expect(screen.getByText('Sign-out failed')).toBeInTheDocument();
+        });
+        // ...the user is NOT signed out: the shell chrome and page remain, and no
+        // signon redirect was issued.
+        expect(screen.getByText('Page Body')).toBeInTheDocument();
+        expect(screen.getByRole('banner')).toBeInTheDocument();
+        expect(replace).not.toHaveBeenCalledWith(SIGNON_ROUTE);
+    });
+
+    it('disables the Logout control while sign-out is in flight (QA Issue 2)', async () => {
+        const user = userEvent.setup();
+        // A pending revocation keeps the button in its in-flight state so a
+        // second click cannot start an overlapping sign-out attempt.
+        let resolveLogout: () => void = () => {};
+        mockLogout.mockReturnValue(
+            new Promise<void>((resolve) => {
+                resolveLogout = resolve;
+            }),
+        );
+
+        RenderWithProviders(
+            <AppShell>
+                <div>Page Body</div>
+            </AppShell>,
+        );
+
+        await user.click(screen.getByRole('button', { name: /logout/i }));
+
+        await waitFor(() => {
+            expect(
+                screen.getByRole('button', { name: /signing out/i }),
+            ).toBeDisabled();
+        });
+
+        // Settle the pending promise so no state update lands after the test.
+        await act(async () => {
+            resolveLogout();
+        });
+    });
+
     it('navigates back when Escape is pressed (legacy PF3 mapping)', async () => {
         const user = userEvent.setup();
         const back = jest.fn();
@@ -501,5 +669,297 @@ describe('AppShell', () => {
         await user.keyboard('{Escape}');
 
         expect(back).not.toHaveBeenCalled();
+    });
+
+    // ----------------------------------------------------------------------
+    // Mobile drawer close moves focus out of the closing subtree (QA I28)
+    // ----------------------------------------------------------------------
+
+    it('moves focus off the chosen nav item before the drawer closes (QA I28)', async () => {
+        RenderWithProviders(
+            <AppShell>
+                <div>Page Body</div>
+            </AppShell>,
+        );
+
+        // With the mobile drawer shut, exactly one accessible nav anchor exists
+        // (the permanent drawer's; the temporary drawer is aria-hidden). Every
+        // nav item's onClick is HandleDrawerClose, so this exercises the very
+        // handler the mobile overlay dismissal uses.
+        const cardsLink = screen.getByRole('link', { name: 'Cards' });
+
+        // Neutralize jsdom's unimplemented anchor navigation WITHOUT touching the
+        // React onClick — preventDefault blocks only the default action, so
+        // HandleDrawerClose still runs.
+        cardsLink.addEventListener('click', (event) => event.preventDefault());
+
+        // Observe the fix's mechanism directly: HandleDrawerClose blurs the
+        // active element. With the mobile drawer already shut, activating this
+        // (permanent-drawer) item is a `setMobileOpen(false)` no-op — no MUI
+        // Modal opens or closes — so the ONLY thing that can move focus is the
+        // handler's explicit blur. That isolation makes the assertions a clean
+        // differential: remove the blur and focus stays on the item.
+        const blurSpy = jest.spyOn(cardsLink, 'blur');
+
+        // Put focus ON the nav item, as a keyboard/touch user would before
+        // activating it. MUI ButtonBase flushes focus-visible state on focus, so
+        // wrap the focus call in act.
+        await act(async () => {
+            cardsLink.focus();
+        });
+        expect(document.activeElement).toBe(cardsLink);
+
+        // Choosing the destination closes the drawer. Before the QA I28 fix the
+        // just-clicked item KEPT focus while MUI's Modal applied `aria-hidden`
+        // to its ancestor, logging the "aria-hidden on an ancestor of a focused
+        // element" warning. The fix blurs the active element FIRST, so focus
+        // returns to <body> — outside the closing drawer subtree. A low-level
+        // `fireEvent.click` measures the component's own focus handling
+        // (HandleDrawerClose) rather than userEvent's focus choreography, which
+        // would otherwise re-focus the anchor after the handler runs.
+        await act(async () => {
+            fireEvent.click(cardsLink);
+        });
+
+        expect(blurSpy).toHaveBeenCalled();
+        expect(document.activeElement).not.toBe(cardsLink);
+        expect(document.activeElement).toBe(document.body);
+    });
+
+    it('withholds the hamburger-toggle focus hand-off until the app root is no longer aria-hidden, then focuses it (QA I28)', async () => {
+        // Regression for the QA I28 RUNTIME finding. Dismissing the temporary
+        // drawer WITHOUT navigating (Escape / backdrop tap) must return focus to
+        // the hamburger toggle — but NEVER while MUI still has `aria-hidden="true"`
+        // on the app root, which it keeps for the WHOLE slide-out transition (the
+        // first fix attempt re-focused the toggle one frame after close, ~200 ms
+        // too early, and Chrome logged "Blocked aria-hidden … descendant retained
+        // focus"). The shell now (a) disables MUI's own focus-restore
+        // (`disableRestoreFocus`) and (b) hands focus back via `FocusWhenExposed`,
+        // which polls animation frames until no `aria-hidden` ancestor remains.
+        //
+        // This spec proves both halves deterministically: with a captured rAF
+        // queue it shows focus is WITHHELD frame after frame while the app root is
+        // aria-hidden, and only lands on the toggle once the ancestor `aria-hidden`
+        // is removed (mirroring MUI's `ModalManager.remove` at transition end).
+        const rafCallbacks: FrameRequestCallback[] = [];
+        const rafSpy = jest
+            .spyOn(window, 'requestAnimationFrame')
+            .mockImplementation((cb: FrameRequestCallback): number => {
+                rafCallbacks.push(cb);
+                return rafCallbacks.length;
+            });
+
+        /** Runs every currently-queued rAF callback once (they may re-queue). */
+        function RunOneFrame(): void {
+            const pending = rafCallbacks.splice(0, rafCallbacks.length);
+            pending.forEach((callback) => callback(0));
+        }
+
+        /**
+         * Mirrors MUI's `ModalManager.remove`: strips `aria-hidden="true"` from
+         * the toggle and every ancestor, i.e. re-exposes the app root exactly as
+         * the Drawer's slide-out completion does.
+         */
+        function ExposeAppRoot(element: HTMLElement): void {
+            let node: HTMLElement | null = element;
+            while (node !== null) {
+                if (node.getAttribute('aria-hidden') === 'true') {
+                    node.removeAttribute('aria-hidden');
+                }
+                node = node.parentElement;
+            }
+        }
+
+        try {
+            RenderWithProviders(
+                <AppShell>
+                    <div>Page Body</div>
+                </AppShell>,
+            );
+
+            // Open the temporary (mobile) drawer from the hamburger toggle. In
+            // jsdom the `display: { md: 'none' }` sx is inert, so the toggle is
+            // present and clickable regardless of viewport. Opening it makes MUI's
+            // Modal put `aria-hidden="true"` on the app-root subtree (which
+            // contains the toggle).
+            const toggle = screen.getByRole('button', {
+                name: 'Open navigation menu',
+            });
+            await act(async () => {
+                fireEvent.click(toggle);
+            });
+
+            // The open temporary drawer is a MUI Modal exposing role="presentation"
+            // on its root; MUI's Escape handler is bound there.
+            const presentation = await screen.findByRole('presentation');
+            // Sanity: the toggle really is inside an aria-hidden subtree now, so
+            // the deferral below is exercising the real condition.
+            expect(toggle.closest('[aria-hidden="true"]')).not.toBeNull();
+
+            // Dismiss with Escape (a NON-navigating dismissal). MUI's Modal fires
+            // `onClose`, which the shell routes through
+            // HandleDrawerClose({ returnFocusToToggle: true }); that blurs to
+            // <body> and schedules the aria-hidden-aware hand-off.
+            await act(async () => {
+                fireEvent.keyDown(presentation, { key: 'Escape', code: 'Escape' });
+            });
+
+            // While the app root stays aria-hidden, the hand-off must keep
+            // deferring: focus never lands on the toggle no matter how many frames
+            // elapse. Run several frames and assert the toggle is still unfocused.
+            await act(async () => {
+                RunOneFrame();
+                RunOneFrame();
+                RunOneFrame();
+            });
+            expect(toggle).not.toHaveFocus();
+            expect(toggle.closest('[aria-hidden="true"]')).not.toBeNull();
+
+            // The slide-out completes: MUI removes `aria-hidden` from the app root.
+            act(() => {
+                ExposeAppRoot(toggle);
+            });
+
+            // The very next frame now finds the toggle exposed and focuses it.
+            await act(async () => {
+                RunOneFrame();
+            });
+            expect(toggle).toHaveFocus();
+        } finally {
+            rafSpy.mockRestore();
+        }
+    });
+});
+
+/* ------------------------------------------------------------------------- */
+/* Focus helpers (QA I28) — direct unit coverage of the exported utilities.   */
+/* ------------------------------------------------------------------------- */
+
+describe('IsInsideAriaHidden', () => {
+    afterEach(() => {
+        document.body.innerHTML = '';
+    });
+
+    it('returns true when the element itself is aria-hidden', () => {
+        const element = document.createElement('button');
+        element.setAttribute('aria-hidden', 'true');
+        document.body.appendChild(element);
+
+        expect(IsInsideAriaHidden(element)).toBe(true);
+    });
+
+    it('returns true when an ANCESTOR is aria-hidden', () => {
+        const ancestor = document.createElement('div');
+        ancestor.setAttribute('aria-hidden', 'true');
+        const child = document.createElement('button');
+        ancestor.appendChild(child);
+        document.body.appendChild(ancestor);
+
+        expect(IsInsideAriaHidden(child)).toBe(true);
+    });
+
+    it('returns false when neither the element nor any ancestor is aria-hidden', () => {
+        const parent = document.createElement('div');
+        const child = document.createElement('button');
+        parent.appendChild(child);
+        document.body.appendChild(parent);
+
+        expect(IsInsideAriaHidden(child)).toBe(false);
+    });
+
+    it('ignores aria-hidden="false" (only "true" hides)', () => {
+        const ancestor = document.createElement('div');
+        ancestor.setAttribute('aria-hidden', 'false');
+        const child = document.createElement('button');
+        ancestor.appendChild(child);
+        document.body.appendChild(ancestor);
+
+        expect(IsInsideAriaHidden(child)).toBe(false);
+    });
+});
+
+describe('FocusWhenExposed', () => {
+    let rafCallbacks: FrameRequestCallback[];
+    let rafSpy: jest.SpyInstance;
+
+    beforeEach(() => {
+        rafCallbacks = [];
+        rafSpy = jest
+            .spyOn(window, 'requestAnimationFrame')
+            .mockImplementation((cb: FrameRequestCallback): number => {
+                rafCallbacks.push(cb);
+                return rafCallbacks.length;
+            });
+    });
+
+    afterEach(() => {
+        rafSpy.mockRestore();
+        document.body.innerHTML = '';
+    });
+
+    /** Runs every currently-queued rAF callback once (they may re-queue). */
+    function RunOneFrame(): void {
+        const pending = rafCallbacks.splice(0, rafCallbacks.length);
+        pending.forEach((callback) => callback(0));
+    }
+
+    it('is a no-op for a null target and never schedules a frame', () => {
+        expect(() => FocusWhenExposed(null)).not.toThrow();
+        expect(rafCallbacks).toHaveLength(0);
+    });
+
+    it('focuses SYNCHRONOUSLY when the target is already exposed (no deferral)', () => {
+        const element = document.createElement('button');
+        document.body.appendChild(element);
+
+        FocusWhenExposed(element);
+
+        // Focused immediately, without waiting for a frame.
+        expect(element).toHaveFocus();
+        expect(rafCallbacks).toHaveLength(0);
+    });
+
+    it('withholds focus while an ancestor is aria-hidden, then focuses once exposed', () => {
+        const ancestor = document.createElement('div');
+        ancestor.setAttribute('aria-hidden', 'true');
+        const element = document.createElement('button');
+        ancestor.appendChild(element);
+        document.body.appendChild(ancestor);
+
+        FocusWhenExposed(element);
+
+        // Deferred: not focused, a frame is queued.
+        expect(element).not.toHaveFocus();
+        expect(rafCallbacks.length).toBeGreaterThan(0);
+
+        // Still hidden across several frames -> still not focused.
+        RunOneFrame();
+        RunOneFrame();
+        expect(element).not.toHaveFocus();
+
+        // Expose the subtree (mirrors MUI removing app-root aria-hidden).
+        ancestor.removeAttribute('aria-hidden');
+        RunOneFrame();
+
+        expect(element).toHaveFocus();
+    });
+
+    it('focuses eventually even if the subtree never exposes (bounded, never spins)', () => {
+        const ancestor = document.createElement('div');
+        ancestor.setAttribute('aria-hidden', 'true');
+        const element = document.createElement('button');
+        ancestor.appendChild(element);
+        document.body.appendChild(ancestor);
+
+        FocusWhenExposed(element);
+        expect(element).not.toHaveFocus();
+
+        // Drain far more frames than the internal cap (30) WITHOUT ever exposing;
+        // the helper must stop deferring and focus so it can never loop forever.
+        for (let frame = 0; frame < 40; frame += 1) {
+            RunOneFrame();
+        }
+
+        expect(element).toHaveFocus();
     });
 });

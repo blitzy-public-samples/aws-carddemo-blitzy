@@ -87,6 +87,22 @@ class Transaction(Base):
             "status",
             text("(CAST(timezone('UTC', COALESCE(proc_ts, orig_ts)) AS date))"),
         ),
+        # Server-enforced exactly-once guard for the ONLINE add path (COTRN02C /
+        # POST /transactions), QA finding "rapid duplicate submit". A PARTIAL
+        # UNIQUE index on the modern operational ``idempotency_key`` column makes
+        # two identical concurrent adds collapse to ONE committed row: the second
+        # committer collides on this index, rolls back, and returns the winner's
+        # transaction. The ``WHERE idempotency_key IS NOT NULL`` predicate scopes
+        # the constraint to online adds only, so the ~300 seeded rows and every
+        # batch-posted / daily row (all NULL here) are untouched -- no legacy
+        # TRAN-RECORD semantics change. Declared here so a ``create_all``-built
+        # schema (the test suite) and Alembic migration 0009 stay in lockstep.
+        Index(
+            "uq_transactions_idempotency_key",
+            "idempotency_key",
+            unique=True,
+            postgresql_where=text("idempotency_key IS NOT NULL"),
+        ),
     )
 
     # TRAN-ID PIC X(16) -> primary KSDS key (LISTCAT KEYLEN=16, RKP=0).
@@ -136,6 +152,18 @@ class Transaction(Base):
 
     # FILLER PIC X(20) at the tail of both copybooks is dropped: it only padded
     # the record to 350 bytes and holds no business data.
+
+    # NOT a CVTRA05Y/CVTRA06Y field: a modern operational exactly-once guard for
+    # the online add path (COTRN02C / POST /transactions). Holds a 64-char
+    # SHA-256 digest of the caller's ``Idempotency-Key`` header (when supplied)
+    # or a deterministic fingerprint of the request's business content. NULL for
+    # every seeded, batch-posted and daily-staging row, so the partial UNIQUE
+    # index above ignores them. It is server-internal and NEVER surfaced in a
+    # response: TransactionRead does not declare it, and OrmBase ignores
+    # undeclared ORM attributes, so ``model_validate`` never emits it.
+    idempotency_key: Mapped[str | None] = mapped_column(
+        String(64), nullable=True
+    )
 
     # Reciprocal of Card.transactions (many transactions -> one card). The "Card"
     # target is a string forward reference that SQLAlchemy resolves through its

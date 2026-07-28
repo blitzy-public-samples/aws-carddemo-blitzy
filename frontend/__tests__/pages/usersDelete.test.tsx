@@ -217,6 +217,26 @@ describe('UsersDeletePage', () => {
         expect(getUserMock).not.toHaveBeenCalled();
     });
 
+    it('titles the page with the h5 typography scale shared across user-CRUD screens (QA I22c)', () => {
+        ArmAdmin();
+
+        RenderPage();
+
+        // The page title is the single semantic level-1 heading...
+        const heading = screen.getByRole('heading', {
+            level: 1,
+            name: PAGE_TITLE,
+        });
+
+        // ...rendered at the MUI `h5` typography scale, matching the other
+        // user-CRUD screens (Users list / Add / Update). Before the QA I22c
+        // fix this page used the larger `h4` scale, making the admin User
+        // section visually inconsistent. Assert the VISUAL variant (the
+        // semantic level intentionally stays h1).
+        expect(heading.className).toMatch(/MuiTypography-h5/);
+        expect(heading.className).not.toMatch(/MuiTypography-h4/);
+    });
+
     // ----------------------------------------------------------------------
     // 2. Deep-link auto-fetch (admin) -> read-only details + confirm hint.
     // ----------------------------------------------------------------------

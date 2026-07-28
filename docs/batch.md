@@ -73,6 +73,31 @@ Run every command from the **repository root**.
    a real value — the DSN is read from the environment, in keeping with the Ochs
    no-hardcoding rule.
 
+### Optional environment variables
+
+Beyond the required `SYNC_DATABASE_URL`, the batch CLI honors these optional
+variables (all read from the environment — never hardcoded, per the Ochs rule):
+
+| Variable | Purpose | Default |
+| :------- | :------ | :------ |
+| `BATCH_LOG_LEVEL` | Log level used when `--verbose` is not passed. | `INFO` |
+| `CARDDEMO_DATA_DIR` | Directory of the ASCII seed files used as the `--data-dir` default. Set this when the batch package is **installed** outside the repository — its bundled default resolves under `site-packages`, which carries no seed files. | `<repo>/app/data/ASCII` |
+| `CARDDEMO_REQUIRE_TEST_DB` | Opt-in destructive-database guard. When truthy (`1` / `true` / `yes` / `on`), **every** command refuses to run unless the target database name ends with `_test`, protecting non-test data. Disabled by default, so normal runs are unaffected. The legacy name `BATCH_REQUIRE_TEST_DB` is still honored as an alias. | unset (guard off) |
+
+> **Seed data directory.** If neither `--data-dir` nor `CARDDEMO_DATA_DIR`
+> resolves to an existing directory (for example, an installed CLI invoked from
+> outside the repository), the loader stops with a clear message telling you to
+> pass `--data-dir <path>` or set `CARDDEMO_DATA_DIR` — it never fails with a
+> confusing `site-packages` path.
+
+> **`init-users` and `SECRET_KEY`.** The user-security seed hashes passwords
+> through the backend security module, which requires `SECRET_KEY`. Both the full
+> chain (`run-all` / `seed-all`) and the standalone `load init-users` command
+> resolve `SECRET_KEY` automatically from the anchored `backend/.env` — regardless
+> of the working directory — so no extra configuration is needed for a standard
+> checkout. If `SECRET_KEY` is genuinely absent, the command fails fast with one
+> concise error rather than a traceback.
+
 ## 2. CLI Overview
 
 The CLI is a thin dispatcher: every subcommand opens exactly one synchronous
@@ -85,6 +110,13 @@ python -m batch.cli --help          # top-level: job, load, run-all, seed-all
 python -m batch.cli job --help       # 11 individual jobs (1:1 with CB* programs)
 python -m batch.cli load --help      # 10 data loaders (1:1 with IDCAMS load jobs)
 ```
+
+Both entry points are equivalent: the installed console script `carddemo-batch`
+and `python -m batch.cli` run the same wrapper, so a runtime failure — a
+destructive-database guard rejection, missing configuration, or malformed input —
+is reported identically: one concise `ERROR: …` line on stderr with a non-zero
+exit code, never a raw traceback. (Click still renders `--help` and parameter
+errors itself.)
 
 The CLI is organized into two sub-apps and two orchestration commands:
 
@@ -104,8 +136,10 @@ log level to `DEBUG`; the default level is `INFO` and can also be set through th
 
 The loaders correspond one-to-one with the legacy IDCAMS load jobs. Each reads a
 display-readable ASCII seed file from `app/data/ASCII/` (the primary source; the
-`--data-dir` option defaults to that directory) and upserts rows into the target
-table, so re-running a loader is safe.
+`--data-dir` option defaults to that directory, overridable per-run with
+`--data-dir` or globally with the `CARDDEMO_DATA_DIR` environment variable — see
+[Optional environment variables](#optional-environment-variables)) and upserts
+rows into the target table, so re-running a loader is safe.
 
 Bootstrap a fresh database by loading **every** table in a single
 foreign-key-safe pass:
@@ -151,7 +185,7 @@ as real credentials.
 
 ## 4. Batch Jobs
 
-The `job` sub-app exposes the eleven batch jobs, each a one-to-one port of a
+The `job` sub-app exposes the twelve batch jobs, each a one-to-one port of a
 legacy `CB*` COBOL program (a few also carry JCL/control-card lineage). Each job
 opens its own transaction and delegates to the listed entry function.
 
@@ -168,6 +202,7 @@ opens its own transaction and delegates to the listed entry function.
 | `tran-detail-report` | Transaction detail report | [`CBTRN03C`](../app/cbl/CBTRN03C.cbl) | `ReportTransactionDetail` |
 | `combine-tran` | Combine/merge transaction files | [`COMBTRAN.jcl`](../app/jcl/COMBTRAN.jcl) + [`REPROCT.ctl`](../app/ctl/REPROCT.ctl) | `CombineTransactions` |
 | `backup-tran` | Back up transactions | [`TRANBKP.jcl`](../app/jcl/TRANBKP.jcl) | `BackupTransactions` |
+| `restore-tran` | Restore transactions from a backup file (idempotent replay of the `backup-tran` output) | [`TRANBKP.jcl`](../app/jcl/TRANBKP.jcl) (restore side) | `RestoreTransactions` |
 
 Example — post the daily transaction file for a specific business date:
 

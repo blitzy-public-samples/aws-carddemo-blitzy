@@ -50,6 +50,7 @@ import type {
     BillPayResponse,
     UserRead,
     UserSummary,
+    UserListParams,
     UserCreate,
     UserUpdate,
     PaginatedResponse,
@@ -142,6 +143,21 @@ const PYDANTIC_VALUE_ERROR_PREFIX = 'Value error, ';
  */
 const apiBaseUrl = `${process.env.NEXT_PUBLIC_API_URL}${API_V1_PATH}`;
 
+/**
+ * Per-request timeout in milliseconds (QA Issue 11 -- Cards/Transactions infinite
+ * loading). Without a timeout axios waits forever for a response, so a hung or
+ * never-answered XHR leaves the list pages showing their loading indicator
+ * indefinitely (the `finally` that clears the spinner never runs because the
+ * promise never settles). A bounded timeout makes axios ABORT the request and
+ * reject with a no-`response` error (code `ECONNABORTED`); the shared
+ * error-normalization core then surfaces the actionable {@link NETWORK_ERROR_MESSAGE}
+ * and each list page drops its spinner and shows a retry affordance. 30s is long
+ * enough for a slow-but-real backend response yet bounded so the UI can never hang
+ * forever. It is a client tuning constant (not a secret), so a named constant is
+ * appropriate (Ochs rule -- no magic numbers, no hardcoded secrets).
+ */
+const REQUEST_TIMEOUT_MS = 30000;
+
 /* ------------------------------------------------------------------------- */
 /* The axios singleton (exported).                                           */
 /* ------------------------------------------------------------------------- */
@@ -151,10 +167,15 @@ const apiBaseUrl = `${process.env.NEXT_PUBLIC_API_URL}${API_V1_PATH}`;
  * page/component -- uses. `withCredentials: true` is REQUIRED so the browser sends
  * the HTTP-only `carddemo_session` cookie on every request; the backend CORS
  * policy allows the http://localhost:3000 origin with credentials enabled.
+ *
+ * `timeout` bounds every request (QA Issue 11): a request that receives no
+ * response within {@link REQUEST_TIMEOUT_MS} is aborted and rejected, so a hung
+ * XHR can never leave a page loading forever.
  */
 export const apiClient: AxiosInstance = axios.create({
     baseURL: apiBaseUrl,
     withCredentials: true,
+    timeout: REQUEST_TIMEOUT_MS,
     headers: {
         'Content-Type': 'application/json',
     },
@@ -427,6 +448,26 @@ function BuildCardListQuery(
 }
 
 /**
+ * Builds the user-list query: the pagination window plus the optional COUSR00C
+ * "Search User ID" prefix filter (`user_id`). The filter is included ONLY when
+ * it is a non-empty (trimmed) string, so an untouched search box sends no
+ * filter and the browse is unfiltered. Trimming here mirrors the backend's
+ * blank-filter normalization; the backend then runs a case-insensitive,
+ * injection-safe prefix search over the WHOLE user table, so the match is found
+ * on any page -- not just the one already loaded (QA I23).
+ */
+function BuildUserListQuery(
+    params?: Partial<UserListParams>,
+): Record<string, string | number> {
+    const query: Record<string, string | number> = BuildListQuery(params);
+    const userId = params?.user_id?.trim();
+    if (userId) {
+        query.user_id = userId;
+    }
+    return query;
+}
+
+/**
  * Builds the transaction-report query. `report_type` is passed straight through
  * from the request (axios serializes the enum's string value); `confirm` is
  * included only when present. `format` selects the output representation.
@@ -615,10 +656,21 @@ export const TransactionsApi = {
      */
     async AddTransaction(
         transactionCreate: TransactionCreate,
+        idempotencyKey?: string,
     ): Promise<TransactionRead> {
+        // Idempotency-Key (QA Issue 16 -- duplicate financial transaction on a
+        // rapid double-submit). When supplied, the server treats two requests
+        // carrying the SAME key as ONE financial effect (partial-unique digest),
+        // so a double-click or a transport-level retry of a single confirmed add
+        // cannot post twice. The header is optional and additive: an omitted key
+        // falls back to the server-side content fingerprint.
+        const requestConfig = idempotencyKey
+            ? { headers: { 'Idempotency-Key': idempotencyKey } }
+            : undefined;
         const response = await apiClient.post<TransactionRead>(
             '/transactions',
             transactionCreate,
+            requestConfig,
         );
         return response.data;
     },
@@ -694,13 +746,17 @@ export const BillPayApi = {
  * `userId` is a string (VARCHAR(8)).
  */
 export const UsersApi = {
-    /** Lists users with page/page_size defaults. GET /admin/users. */
+    /**
+     * Lists users with page/page_size defaults and an optional case-insensitive
+     * `user_id` prefix search that the backend applies SERVER-SIDE across the
+     * whole user table (COUSR00C search). GET /admin/users.
+     */
     async ListUsers(
-        params?: Partial<PaginationParams>,
+        params?: Partial<UserListParams>,
     ): Promise<PaginatedResponse<UserSummary>> {
         const response = await apiClient.get<PaginatedResponse<UserSummary>>(
             '/admin/users',
-            { params: BuildListQuery(params) },
+            { params: BuildUserListQuery(params) },
         );
         return response.data;
     },

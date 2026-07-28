@@ -31,8 +31,16 @@
 #
 #     docker compose --profile full up -d --build
 #
-# Apply database migrations once the backend image is built. Migrations are kept
-# OUT of image startup so container boot stays idempotent and side-effect free.
+# Database migrations run AUTOMATICALLY as part of the full-stack bring-up above
+# (QA finding I-12): the one-shot `migrator` service applies `alembic upgrade
+# head` and the backend depends on it with service_completed_successfully, so a
+# first `--profile full up` on a brand-new volume is fully migrated before the
+# backend starts — no manual step required. Migrations are still kept OUT of the
+# backend IMAGE startup so a plain container boot stays idempotent and side-effect
+# free; the dedicated migrator service (not image CMD) owns them.
+#
+# To apply migrations MANUALLY instead (host-based development, or to re-run /
+# inspect them explicitly), the backend image can run the same command directly.
 # The backend service mounts the repository's app/data read-only and sets
 # CARDDEMO_ASCII_DIR / CARDDEMO_EBCDIC_DIR (see the backend service below), so
 # `run --rm` inherits both and this command seeds all 10 tables with NO extra
@@ -68,6 +76,17 @@ services:
   # ---------------------------------------------------------------------------
   db:
     image: postgres:17
+    # OS-CVE posture (QA finding I-01): this is the STOCK upstream postgres:17
+    # image, pinned to the AAP-specified tag (AAP 0.6.1). It is PULLED, not built
+    # from a Dockerfile here, so its OS packages cannot be patched in a local build
+    # layer the way the backend/frontend images are (those add apt/apk upgrade
+    # layers). The `17` tag tracks upstream 17.x PATCH releases, so a periodic
+    # `docker compose pull` (or a rebuild) picks up the latest patched minor with
+    # its security fixes. Residual base-image CVEs that have no upstream fix yet
+    # remain an upstream / deployment-pipeline concern and should be scanned in CI
+    # against the exact published digest (see the backend Dockerfile supply-chain
+    # note). Changing away from the pinned postgres:17 is intentionally NOT done
+    # here because the AAP fixes the datastore version.
     # Credentials / database name: dev-only defaults via interpolation
     # (Ochs Rule #3). Override POSTGRES_PASSWORD from the environment for any
     # shared or production use — the default below is plainly not a real secret.
@@ -132,6 +151,72 @@ services:
     restart: unless-stopped
 
   # ---------------------------------------------------------------------------
+  # migrator — one-shot Alembic schema+seed migration runner (QA finding I-12).
+  #
+  # Runs `alembic upgrade head` ONCE against the database, then exits. The
+  # backend depends on it with `condition: service_completed_successfully`, so a
+  # full-stack bring-up ALWAYS applies migrations BEFORE the backend starts —
+  # the previous topology left migrations as a manual step, so a first-run
+  # `docker compose --profile full up` started the backend against an unmigrated
+  # schema (backend unhealthy -> frontend never started). This automates the
+  # DOCUMENTED `run --rm backend alembic upgrade head` step: it reuses the SAME
+  # backend image (same build context) and overrides only the command, so it
+  # runs migration 0001 (schema) .. head and seed migration 0002_seed_data.py.
+  #
+  # Config mirrors the backend's database wiring: the compose-internal `db` host
+  # (NOT localhost), the async + sync driver URLs, SECRET_KEY passed through from
+  # the environment (alembic/env.py imports app.core.config, which requires a
+  # >=32-char SECRET_KEY -> a full-stack start without a real key fails closed
+  # here exactly as the backend would), and the CARDDEMO_ASCII_DIR /
+  # CARDDEMO_EBCDIC_DIR seed locations pointing at the read-only app/data mount
+  # so the seed migration finds its inputs with no extra flags. Gated behind the
+  # `full` profile so `docker compose up -d db` never triggers it.
+  # ---------------------------------------------------------------------------
+  migrator:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    # Do not migrate until PostgreSQL reports healthy (avoids connection races).
+    depends_on:
+      db:
+        condition: service_healthy
+    # Same env_file + database wiring as the backend (see backend service for the
+    # detailed rationale). Values in `environment:` win over the env_file so the
+    # container always targets the compose-internal `db` host.
+    env_file:
+      - path: ./backend/.env
+        required: false
+    environment:
+      DATABASE_URL: "postgresql+asyncpg://${POSTGRES_USER:-carddemo}:${POSTGRES_PASSWORD:-carddemo}\
+        @db:5432/${POSTGRES_DB:-carddemo}"
+      SYNC_DATABASE_URL: "postgresql+psycopg2://${POSTGRES_USER:-carddemo}:${POSTGRES_PASSWORD:-carddemo}\
+        @db:5432/${POSTGRES_DB:-carddemo}"
+      SECRET_KEY: ${SECRET_KEY:-}
+      ENVIRONMENT: ${ENVIRONMENT:-development}
+      CARDDEMO_ASCII_DIR: /app/data/ASCII
+      CARDDEMO_EBCDIC_DIR: /app/data/EBCDIC
+    # Read-only app/data mount supplies the ASCII/EBCDIC seed inputs consumed by
+    # migration 0002_seed_data.py (same mount the backend declares).
+    volumes:
+      - ./app/data:/app/data:ro
+    # Override the image CMD (uvicorn) with the migration command, then exit.
+    command: ["alembic", "upgrade", "head"]
+    # One-shot job: never restart. `service_completed_successfully` on the backend
+    # requires this container to exit 0, so a failed migration blocks the backend
+    # (fails closed) rather than starting it against a half-migrated schema.
+    restart: "no"
+    # Bound container log growth (QA finding I-09): rotate the json-file logs.
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    networks:
+      - carddemo-net
+    profiles:
+      - full
+
+  # ---------------------------------------------------------------------------
   # backend — FastAPI service built from ./backend/Dockerfile. Replaces the
   # CICS online COBOL programs. Gated behind the `full` profile so it is only
   # built/started for a full-stack bring-up.
@@ -140,10 +225,14 @@ services:
     build:
       context: ./backend
       dockerfile: Dockerfile
-    # Do not start until PostgreSQL reports healthy (avoids connection races).
+    # Do not start until PostgreSQL reports healthy AND migrations have completed
+    # (QA finding I-12): the one-shot `migrator` service applies `alembic upgrade
+    # head` first, so the backend never boots against an unmigrated schema.
     depends_on:
       db:
         condition: service_healthy
+      migrator:
+        condition: service_completed_successfully
     # Runtime configuration read by app/core/config.py (pydantic-settings):
     #   * DATABASE_URL / SYNC_DATABASE_URL point at the compose-internal `db`
     #     hostname (NOT localhost) and carry the async / sync drivers.
@@ -177,7 +266,15 @@ services:
         @db:5432/${POSTGRES_DB:-carddemo}"
       SECRET_KEY: ${SECRET_KEY:-}
       ENVIRONMENT: ${ENVIRONMENT:-development}
-      BACKEND_CORS_ORIGINS: http://localhost:${FRONTEND_HOST_PORT:-3000}
+      # QA finding I-17: allow BOTH the `localhost` and `127.0.0.1` forms of the
+      # frontend origin. The browser sends an Origin header that exactly matches
+      # the host the SPA was loaded from, and `localhost` and `127.0.0.1` are
+      # DISTINCT origins for CORS. Publishing only `localhost` here made a SPA
+      # opened at http://127.0.0.1:${FRONTEND_HOST_PORT} fail every cross-origin
+      # preflight (400) even though the loopback address is equivalent. Listing
+      # both aliases keeps either host usable; config.py's AssembleCorsOrigins
+      # splits this comma-separated value and CORS_ORIGIN_PATTERN admits both.
+      BACKEND_CORS_ORIGINS: http://localhost:${FRONTEND_HOST_PORT:-3000},http://127.0.0.1:${FRONTEND_HOST_PORT:-3000}
       # Seed-data locations consumed by `alembic upgrade head` (migration
       # 0002_seed_data.py). They point the seed loader explicitly at the
       # read-only app/data mount declared below so the DOCUMENTED containerized

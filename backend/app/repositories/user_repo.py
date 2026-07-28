@@ -77,6 +77,7 @@ class UserRepository:
         startUserId: str | None = None,
         limit: int = DEFAULT_PAGE_SIZE,
         offset: int = 0,
+        userIdPrefix: str | None = None,
     ) -> list[User]:
         """Return an ordered page of users, optionally starting at a key.
 
@@ -95,12 +96,26 @@ class UserRepository:
         ``startUserId`` are independent positioning tools; the service uses one
         or the other.
 
+        ``userIdPrefix`` narrows the browse to user ids that BEGIN WITH the
+        given text (case-insensitive), backing the admin "Search User ID" box
+        (QA I23). The former screen filtered only the rows already on the client
+        page, so a matching id on any other page was reported "not found"; the
+        filter is now applied at the database over the WHOLE table before
+        paging, so search spans the complete authorized set. The match is an
+        ORM ``ILIKE 'prefix%'`` with ``autoescape=True``, so any ``%``/``_`` in
+        the operator's input is treated literally (injection-safe per the Ochs
+        rule) and the result is ordered/paged exactly like the unfiltered
+        browse. The prefix and ``startUserId`` are composable but the service
+        supplies only one search affordance at a time.
+
         Args:
             session: Active async unit-of-work session.
             startUserId: Optional inclusive lower-bound user id (``GTEQ``).
             limit: Maximum number of rows to return (page size).
             offset: Number of leading ordered rows to skip before the page;
                 ``0`` (the default) starts at the first row.
+            userIdPrefix: Optional case-insensitive user-id prefix filter; when
+                supplied, only ids starting with it are returned.
 
         Returns:
             A list of :class:`~app.models.user.User` in ascending ``user_id``
@@ -109,29 +124,46 @@ class UserRepository:
         stmt = select(User).order_by(User.user_id).limit(limit)
         if startUserId is not None:
             stmt = stmt.where(User.user_id >= startUserId)
+        if userIdPrefix:
+            stmt = stmt.where(User.user_id.istartswith(userIdPrefix, autoescape=True))
         if offset > 0:
             stmt = stmt.offset(offset)
         result = await session.execute(stmt)
         return list(result.scalars().all())
 
-    async def CountUsers(self, session: AsyncSession) -> int:
+    async def CountUsers(
+        self,
+        session: AsyncSession,
+        userIdPrefix: str | None = None,
+    ) -> int:
         """Return the total number of users for pagination metadata.
 
         Backs the exact ``total_items`` / ``total_pages`` figures the admin
-        browse screen (COUSR00C) reports. Composed as a bounded, parameterless
-        ``COUNT(*)`` so the paginated list no longer has to fetch the whole
-        table merely to learn its size: the service pairs this count with a
-        single ``OFFSET``/``LIMIT`` page fetch, transferring only the page. The
+        browse screen (COUSR00C) reports. Composed as a bounded ``COUNT(*)`` so
+        the paginated list no longer has to fetch the whole table merely to
+        learn its size: the service pairs this count with a single
+        ``OFFSET``/``LIMIT`` page fetch, transferring only the page. The
         aggregate is an ORM expression (never string SQL), so it is
         injection-safe.
 
+        When ``userIdPrefix`` is supplied the count is restricted to the SAME
+        case-insensitive ``ILIKE 'prefix%'`` predicate the paged
+        :meth:`ListUsers` applies (QA I23), so ``total_items`` / ``total_pages``
+        describe the filtered result set rather than the whole table — the
+        pagination controls then match what the search actually returns.
+
         Args:
             session: Active async unit-of-work session.
+            userIdPrefix: Optional case-insensitive user-id prefix filter; must
+                match the value passed to :meth:`ListUsers` for consistent
+                pagination metadata.
 
         Returns:
-            The total number of rows in the ``users`` table.
+            The total number of rows matching the (optional) prefix filter.
         """
         stmt = select(func.count()).select_from(User)
+        if userIdPrefix:
+            stmt = stmt.where(User.user_id.istartswith(userIdPrefix, autoescape=True))
         result = await session.execute(stmt)
         return int(result.scalar_one())
 

@@ -18,6 +18,16 @@ import pytest
 from pydantic import ValidationError
 
 from app.schemas.auth import LoginRequest
+from app.schemas.common import (
+    DEFAULT_PAGE_SIZE,
+    MAX_PAGE_SIZE,
+    PaginationParams,
+)
+
+# The legacy card-browse page size (F-004, program COCRDLIC): exactly seven
+# rows per screen. Pinned as a named constant so the parity assertions below
+# read as intent, not a magic number.
+LEGACY_CARD_BROWSE_PAGE_SIZE = 7
 
 # A clean, in-width credential pair (both fields are PIC X(8), max length 8).
 CLEAN_USER_ID = "ADMIN001"
@@ -56,3 +66,41 @@ def test_request_base_rejects_c0_and_del_control_chars():
     for controlChar in ("\t", "\n", "\r", "\x1f", "\x7f"):
         with pytest.raises(ValidationError):
             LoginRequest(user_id=CLEAN_USER_ID, password=f"PW{controlChar}X")
+
+
+# ---------------------------------------------------------------------------
+# Pagination default parity (QA finding I27, Test Quality).
+#
+# F-004 (legacy program COCRDLIC) fixes the card-browse screen at at most seven
+# rows per page. In the modern stack that limit lives as a single named
+# constant, app.schemas.common.DEFAULT_PAGE_SIZE, which supplies the default for
+# PaginationParams.page_size. I27 observed that mutating that constant from 7 to
+# 8 left the ENTIRE backend suite green -- the legacy seven-row contract had no
+# direct assertion pinning it. The three tests below close that gap: the first
+# two fail the moment the constant (or the DTO default it feeds) drifts off 7,
+# killing the surviving 7 -> 8 mutation; the third keeps the default coherent
+# with its configured upper bound.
+# ---------------------------------------------------------------------------
+
+
+def test_default_page_size_constant_matches_legacy_card_browse_limit():
+    # Pin the F-004 / COCRDLIC contract directly on the source-of-truth
+    # constant. This is the assertion whose absence let the 7 -> 8 mutation
+    # survive the whole backend suite (I27).
+    assert DEFAULT_PAGE_SIZE == LEGACY_CARD_BROWSE_PAGE_SIZE
+
+
+def test_pagination_params_default_page_size_is_legacy_card_browse_limit():
+    # The constant only matters if it actually reaches the value a caller
+    # receives when no page_size is supplied. Construct PaginationParams with no
+    # arguments and assert the resolved default equals the legacy seven-row
+    # limit -- this also fails under the 7 -> 8 mutation.
+    paginationParams = PaginationParams()
+    assert paginationParams.page_size == LEGACY_CARD_BROWSE_PAGE_SIZE
+
+
+def test_pagination_params_default_page_size_within_max_bound():
+    # Defense-in-depth: the legacy default must remain a legal value (never
+    # above the configured maximum), keeping the constant and its bound coherent
+    # if either is edited later.
+    assert DEFAULT_PAGE_SIZE <= MAX_PAGE_SIZE

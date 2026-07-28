@@ -8,7 +8,7 @@
  * is authoritative on the server and surfaced via ErrorAlert.
  */
 
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 
 import Container from '@mui/material/Container';
@@ -281,6 +281,28 @@ function BuildTransactionPayload(form: TransactionCreate): TransactionCreate {
 
 
 /**
+ * Mints one idempotency key per confirmed add operation (QA Issue 16). The
+ * server treats two requests carrying the same key as a single financial
+ * effect, so this key — attached to exactly one confirmed submit — makes a
+ * transport-level duplication of that submit collapse to one transaction while
+ * two genuinely distinct confirmed adds (distinct keys) both post.
+ *
+ * Prefers the Web Crypto `randomUUID`; falls back to a timestamp+random token
+ * for runtimes/test environments where it is unavailable.
+ *
+ * @returns A collision-resistant idempotency key string.
+ */
+function GenerateIdempotencyKey(): string {
+    const cryptoObject =
+        typeof globalThis !== 'undefined' ? globalThis.crypto : undefined;
+    if (cryptoObject && typeof cryptoObject.randomUUID === 'function') {
+        return cryptoObject.randomUUID();
+    }
+    return `idem-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+}
+
+
+/**
  * Add-Transaction page. Renders the redesigned MD3 data-entry form, runs
  * client-side validation for UX fidelity, gates the write behind a confirm
  * dialog, and POSTs to `/transactions` — surfacing the server's authoritative
@@ -299,6 +321,14 @@ export default function TransactionsAddPage() {
     const [isAlertOpen, setIsAlertOpen] = useState<boolean>(false);
     const [alertSeverity, setAlertSeverity] = useState<'success' | 'error'>('error');
     const [alertContent, setAlertContent] = useState<unknown>(null);
+
+    // Synchronous in-flight guard (QA Issue 16). React state updates are
+    // asynchronous, so `isSubmitting` has not yet re-rendered and disabled the
+    // Confirm button by the time a rapid SECOND click fires HandleConfirm. A
+    // ref flips synchronously and closes that double-submit window before any
+    // second network call can start — complementing the server-enforced
+    // Idempotency-Key so a duplicate add posts at most one financial effect.
+    const inFlightRef = useRef<boolean>(false);
 
     /**
      * Relays a single field edit into the grouped form and clears that field's
@@ -334,11 +364,25 @@ export default function TransactionsAddPage() {
 
     /** Confirmed add: POST the transaction and surface success or the error. */
     const HandleConfirm = async () => {
+        // Reject re-entry synchronously so a rapid double-click cannot fire a
+        // second POST before `isSubmitting` re-renders (QA Issue 16).
+        if (inFlightRef.current) {
+            return;
+        }
+        inFlightRef.current = true;
+
+        // One key for this single confirmed operation: a transport-level retry
+        // of THIS submit reuses it (server collapses to one effect), while a
+        // later, separate confirmed add mints a fresh key and posts normally.
+        const idempotencyKey = GenerateIdempotencyKey();
+
         setIsConfirmOpen(false);
         setIsSubmitting(true);
         try {
-            const createdTransaction =
-                await TransactionsApi.AddTransaction(BuildTransactionPayload(transactionForm));
+            const createdTransaction = await TransactionsApi.AddTransaction(
+                BuildTransactionPayload(transactionForm),
+                idempotencyKey,
+            );
             setAlertSeverity('success');
             setAlertContent(
                 `${SUCCESS_MESSAGE} Your Tran ID is ${createdTransaction.tran_id}.`,
@@ -352,6 +396,9 @@ export default function TransactionsAddPage() {
             setIsAlertOpen(true);
         } finally {
             setIsSubmitting(false);
+            // Clear the guard so a genuine, user-initiated retry of a FAILED
+            // submit is allowed (it mints a new key on the next confirm).
+            inFlightRef.current = false;
         }
     };
 

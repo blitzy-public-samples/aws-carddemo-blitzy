@@ -11,6 +11,7 @@
 import { RenderWithProviders, screen, userEvent, act } from '../testUtils';
 import { ErrorAlert } from '@/components/ErrorAlert';
 import type { ErrorResponse } from '@/types';
+import theme from '@/app/theme';
 
 /**
  * Canonical posting reason codes paired with their descriptions, copied
@@ -162,6 +163,31 @@ describe('ErrorAlert', () => {
         );
 
         expect(screen.getByRole('alert').className).toMatch(/warning/i);
+    });
+
+    it('darkens the filled info alert to a WCAG-AA background token (QA I22a)', () => {
+        RenderWithProviders(
+            <ErrorAlert
+                open
+                onClose={jest.fn()}
+                severity="info"
+                error={{ message: 'Fetch a user to edit.' } as ErrorResponse}
+            />,
+        );
+
+        const alert = screen.getByRole('alert');
+
+        // It is still a *filled info* alert (severity is preserved)...
+        expect(alert.className).toMatch(/colorInfo/i);
+        expect(alert.className).toMatch(/filled/i);
+
+        // ...but the background is darkened from `info.main` (#0288d1 ≈ 3.86:1,
+        // fails WCAG AA) to the theme's `info.dark` token so the white
+        // contrastText clears 4.5:1. Comparing against the live theme keeps the
+        // assertion token-driven — no hardcoded hex (AAP §0.3.4) — and it fails
+        // if the override is removed (background would fall back to info.main).
+        expect(alert).toHaveStyle({ backgroundColor: theme.palette.info.dark });
+        expect(alert).not.toHaveStyle({ backgroundColor: theme.palette.info.main });
     });
 
     it('renders the title when provided', () => {

@@ -48,7 +48,13 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from app.models import STATUS_PENDING, STATUS_POSTED
-from batch.jobs.statement_gen import GenerateStatements, _BuildStatementFilename
+from batch.jobs.output_safety import ReserveVersionedGeneration
+from batch.jobs.statement_gen import (
+    GenerateStatements,
+    _BuildGenerationMarkerPath,
+    _BuildStatementFilename,
+    _HighestExistingGeneration,
+)
 
 # --------------------------------------------------------------------------- #
 # Module constants (Ochs ALL_UPPERCASE). Distinct primary-key values per card
@@ -532,3 +538,76 @@ def test_statement_pdf_excludes_full_pan_cvv_and_ssn(
     assert SAMPLE_CVV not in pdfText   # CVV never rendered (structurally absent, C-03)
     assert SAMPLE_SSN not in pdfText   # full SSN never rendered
     assert CARD_ONE_LAST4 in pdfText   # masked last-four IS rendered
+
+
+# --------------------------------------------------------------------------- #
+# I8 -- atomic run-generation reservation (concurrency). The statement job no
+# longer picks its generation with a scan-then-use (TOCTOU) that let two
+# concurrent runs both choose "0001" and overwrite each other; it now reserves
+# the number atomically. These tests exercise the statement layer's reservation
+# seam directly (DB-free, deterministic): a single connection/session cannot be
+# shared across threads under the rollback-isolated db_session fixture, so the
+# true end-to-end two-process collision is re-verified at runtime instead.
+# --------------------------------------------------------------------------- #
+def test_generation_marker_name_is_disjoint_from_statement_files(tmp_path):
+    # A reservation marker must never be mistaken for -- or counted as -- a
+    # published statement: its ".reserved" extension and "statement_gen_" stem
+    # cannot match the statement globs (statement_<acct>_<last4>_<NNNN>.csv/pdf).
+    markerPath = _BuildGenerationMarkerPath(tmp_path, 1)
+    assert markerPath.name == "statement_gen_0001.reserved"
+    markerPath.write_text("", encoding="utf-8")
+    assert list(tmp_path.glob("statement_*_*.csv")) == []
+    assert list(tmp_path.glob("statement_*_*.pdf")) == []
+
+
+def test_highest_existing_generation_counts_files_and_held_markers(tmp_path):
+    # Empty directory -> highest is 0 (first run will start at 1).
+    assert _HighestExistingGeneration(tmp_path) == 0
+    # A published statement file advances the highest (drives sequential (+1)).
+    (tmp_path / "statement_00000000010_3697_0002.csv").write_text(
+        "x", encoding="utf-8"
+    )
+    assert _HighestExistingGeneration(tmp_path) == 2
+    # An in-flight reservation marker for a HIGHER number is also counted, so a
+    # concurrent run's start hint skips past a generation already reserved but
+    # not yet published (fewer wasted atomic-claim attempts).
+    markerPathFor = lambda number: _BuildGenerationMarkerPath(tmp_path, number)
+    with ReserveVersionedGeneration(markerPathFor, 5) as reserved:
+        assert reserved == 5
+        assert _HighestExistingGeneration(tmp_path) == 5
+    # Once the reservation is released its marker is gone; the highest falls back
+    # to the published file, so future scans never over-count freed reservations.
+    assert _HighestExistingGeneration(tmp_path) == 2
+
+
+def test_concurrent_statement_generation_reservations_are_distinct(tmp_path):
+    # The exact anti-I8 guarantee at the statement layer: two runs whose
+    # reservations OVERLAP receive DISTINCT generations, so the file names they
+    # build (statement_<acct>_<last4>_<NNNN>) can never collide/overwrite.
+    markerPathFor = lambda number: _BuildGenerationMarkerPath(tmp_path, number)
+    startNumber = _HighestExistingGeneration(tmp_path) + 1
+    # Both reservations are held simultaneously via a single multi-context
+    # ``with`` (both enter before the body and stay live), so the atomic O_EXCL
+    # claim must hand them DISTINCT numbers.
+    with (
+        ReserveVersionedGeneration(markerPathFor, startNumber) as runA,
+        ReserveVersionedGeneration(markerPathFor, startNumber) as runB,
+    ):
+        assert runA != runB
+        generationA = f"{runA:04d}"
+        generationB = f"{runB:04d}"
+        contextA = SimpleNamespace(
+            account=SimpleNamespace(acct_id=ACCT_ONE),
+            xref=SimpleNamespace(acct_id=ACCT_ONE, xref_card_num=CARD_ONE),
+            generation=generationA,
+        )
+        contextB = SimpleNamespace(
+            account=SimpleNamespace(acct_id=ACCT_ONE),
+            xref=SimpleNamespace(acct_id=ACCT_ONE, xref_card_num=CARD_ONE),
+            generation=generationB,
+        )
+        nameA = _BuildStatementFilename(contextA, ".csv")
+        nameB = _BuildStatementFilename(contextB, ".csv")
+        assert nameA != nameB  # distinct generations -> distinct file names
+        assert nameA.endswith(f"_{generationA}.csv")
+        assert nameB.endswith(f"_{generationB}.csv")
