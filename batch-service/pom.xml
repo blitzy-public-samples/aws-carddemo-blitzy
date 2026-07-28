@@ -91,6 +91,17 @@
             <groupId>org.flywaydb</groupId>
             <artifactId>flyway-database-postgresql</artifactId>
         </dependency>
+        <!--
+          Spring Boot 4 modularized auto-configuration: FlywayAutoConfiguration lives in the
+          spring-boot-flyway module (it is NOT bundled with flyway-core). Without it, the
+          `spring.flyway.*` properties in application.yml are inert and V1__batch_metadata.sql
+          never runs, so the Spring Batch job repository has no BATCH_* tables at startup.
+          This service sets `spring.flyway.enabled: true`, so the module is required.
+        -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-flyway</artifactId>
+        </dependency>
 
         <!-- Test stack: JUnit 5 (Jupiter), AssertJ, Mockito. -->
         <dependency>
