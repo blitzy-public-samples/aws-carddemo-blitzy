@@ -95,7 +95,7 @@ class TransactionAddInsertContractTest {
         xref.setXrefCardNum(CARD_NUM);
         xref.setXrefAcctId(1L);
         xref.setXrefCustId(1L);
-        when(cardXrefRepository.findByXrefAcctId(1L)).thenReturn(Optional.of(xref));
+        when(cardXrefRepository.findFirstByXrefAcctIdOrderByXrefCardNumAsc(1L)).thenReturn(Optional.of(xref));
         when(transactionRepository.getNextTransactionId()).thenReturn(900L);
         when(transactionMapper.toEntity(any(TransactionAddRequestDto.class)))
                 .thenAnswer(invocation -> new Transaction());

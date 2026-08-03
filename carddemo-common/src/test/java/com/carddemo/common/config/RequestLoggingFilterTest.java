@@ -170,4 +170,72 @@ class RequestLoggingFilterTest {
         assertFalse(filter.shouldNotFilter(new MockHttpServletRequest("GET", "/accounts/1")),
                 "business routes must be logged");
     }
+
+    /**
+     * :purpose: A card number in the request path must not reach the access log. The card screens
+     *     address a card BY its number, so logging the URI verbatim wrote a full PAN into the log
+     *     of every card request (CWE-532).
+     * :raises ServletException: if the filter raises a servlet error.
+     * :raises IOException: if the filter raises an I/O error.
+     */
+    @Test
+    @DisplayName("a card number in the URI is masked in the access log")
+    void cardNumberInUriIsMasked() throws ServletException, IOException {
+        MockHttpServletRequest request =
+                new MockHttpServletRequest("GET", "/cards/9006000000000001");
+        MockHttpServletResponse response = new MockHttpServletResponse();
+        response.setStatus(200);
+
+        filter.doFilter(request, response, new MockFilterChain());
+
+        String formatted = appender.list.get(0).getFormattedMessage();
+        assertFalse(formatted.contains("9006000000000001"),
+                "the full PAN must not appear in the access log: " + formatted);
+        assertTrue(formatted.startsWith("GET /cards/************0001 -> 200 in"),
+                "the PAN must be reduced to its last four digits: " + formatted);
+    }
+
+    /**
+     * :purpose: The same masking applies to the ERROR record written for a 5xx outcome.
+     * :raises ServletException: if the filter raises a servlet error.
+     * :raises IOException: if the filter raises an I/O error.
+     */
+    @Test
+    @DisplayName("a card number in the URI is masked on the 5xx access-log path too")
+    void cardNumberInUriIsMaskedOnErrorPath() throws ServletException, IOException {
+        MockHttpServletRequest request =
+                new MockHttpServletRequest("PUT", "/cards/9006000000000004");
+        MockHttpServletResponse response = new MockHttpServletResponse();
+        response.setStatus(500);
+
+        filter.doFilter(request, response, new MockFilterChain());
+
+        String formatted = appender.list.get(0).getFormattedMessage();
+        assertEquals(Level.ERROR, appender.list.get(0).getLevel(), "a 5xx outcome logs at ERROR");
+        assertFalse(formatted.contains("9006000000000004"),
+                "the full PAN must not appear in the access log: " + formatted);
+        assertTrue(formatted.contains("/cards/************0004"),
+                "the PAN must be reduced to its last four digits: " + formatted);
+    }
+
+    /**
+     * :purpose: Identifiers shorter than the shortest PAN — an 11-digit account id — stay intact,
+     *     so support and correlation are unaffected by the masking.
+     * :raises ServletException: if the filter raises a servlet error.
+     * :raises IOException: if the filter raises an I/O error.
+     */
+    @Test
+    @DisplayName("an 11-digit account id is left intact")
+    void accountIdIsNotMasked() throws ServletException, IOException {
+        MockHttpServletRequest request =
+                new MockHttpServletRequest("GET", "/accounts/90000000061");
+        MockHttpServletResponse response = new MockHttpServletResponse();
+        response.setStatus(200);
+
+        filter.doFilter(request, response, new MockFilterChain());
+
+        assertTrue(appender.list.get(0).getFormattedMessage()
+                        .startsWith("GET /accounts/90000000061 -> 200 in"),
+                "an account id is not PAN-shaped and must stay readable");
+    }
 }

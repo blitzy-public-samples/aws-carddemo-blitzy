@@ -32,6 +32,11 @@ import org.springframework.jdbc.core.RowMapper;
  *     the ``TRAN-AMT`` COMP-3 field survives unchanged, and ``dalytran_merchant_id`` is
  *     read through ``getObject`` so a SQL ``NULL`` stays ``null`` rather than becoming
  *     zero, which would alter the value the validation rules see.
+ * :note: Every mapped row is checked by {@link DailyTransactionFeedValidator} before it
+ *     leaves the mapper, so a staged row that is not a usable fixed-width
+ *     ``DALYTRAN`` record fails with an actionable message naming the record and the
+ *     offending column instead of aborting the step later with a raw
+ *     ``NullPointerException`` or ``StringIndexOutOfBoundsException``.
  */
 public class DailyTransactionRowMapper implements RowMapper<DailyTransaction> {
 
@@ -41,6 +46,8 @@ public class DailyTransactionRowMapper implements RowMapper<DailyTransaction> {
      * :param rowNum: the zero-based index of the current row.
      * :returns: the mapped {@link DailyTransaction}.
      * :raises SQLException: if any column cannot be read.
+     * :raises com.carddemo.common.exception.CardDemoException: if the row is not a
+     *     usable ``CVTRA06Y`` record.
      */
     @Override
     public DailyTransaction mapRow(ResultSet rs, int rowNum) throws SQLException {
@@ -58,6 +65,7 @@ public class DailyTransactionRowMapper implements RowMapper<DailyTransaction> {
         record.setDalytranCardNum(rs.getString("dalytran_card_num"));
         record.setDalytranOrigTs(rs.getString("dalytran_orig_ts"));
         record.setDalytranProcTs(rs.getString("dalytran_proc_ts"));
+        DailyTransactionFeedValidator.requireUsableRecord(record);
         return record;
     }
 }

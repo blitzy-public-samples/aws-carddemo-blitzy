@@ -19,6 +19,7 @@ package com.carddemo.account.service;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatExceptionOfType;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.inOrder;
 import static org.mockito.Mockito.lenient;
@@ -159,7 +160,7 @@ class AccountServiceTest {
         Customer customer = mock(Customer.class);
         AccountViewResponseDto expected = mock(AccountViewResponseDto.class);
 
-        when(cardXrefRepository.findByXrefAcctId(ACCT_ID)).thenReturn(Optional.of(cardXref));
+        when(cardXrefRepository.findFirstByXrefAcctIdOrderByXrefCardNumAsc(ACCT_ID)).thenReturn(Optional.of(cardXref));
         when(accountRepository.findById(ACCT_ID)).thenReturn(Optional.of(account));
         when(customerRepository.findById(CUST_ID)).thenReturn(Optional.of(customer));
         when(accountMapper.toViewResponse(account, customer, cardXref)).thenReturn(expected);
@@ -181,7 +182,7 @@ class AccountServiceTest {
      */
     @Test
     void viewAccount_xrefMiss_throwsRecordNotFound_andShortCircuits() {
-        when(cardXrefRepository.findByXrefAcctId(ACCT_ID)).thenReturn(Optional.empty());
+        when(cardXrefRepository.findFirstByXrefAcctIdOrderByXrefCardNumAsc(ACCT_ID)).thenReturn(Optional.empty());
 
         assertThatExceptionOfType(RecordNotFoundException.class)
                 .isThrownBy(() -> accountService.viewAccount(ACCT_ID, null))
@@ -198,7 +199,7 @@ class AccountServiceTest {
     void viewAccount_accountMiss_throwsRecordNotFound_andSkipsCustomer() {
         CardXref cardXref = xref();
 
-        when(cardXrefRepository.findByXrefAcctId(ACCT_ID)).thenReturn(Optional.of(cardXref));
+        when(cardXrefRepository.findFirstByXrefAcctIdOrderByXrefCardNumAsc(ACCT_ID)).thenReturn(Optional.of(cardXref));
         when(accountRepository.findById(ACCT_ID)).thenReturn(Optional.empty());
 
         assertThatExceptionOfType(RecordNotFoundException.class)
@@ -217,7 +218,7 @@ class AccountServiceTest {
         CardXref cardXref = xref();
         Account account = mock(Account.class);
 
-        when(cardXrefRepository.findByXrefAcctId(ACCT_ID)).thenReturn(Optional.of(cardXref));
+        when(cardXrefRepository.findFirstByXrefAcctIdOrderByXrefCardNumAsc(ACCT_ID)).thenReturn(Optional.of(cardXref));
         when(accountRepository.findById(ACCT_ID)).thenReturn(Optional.of(account));
         when(customerRepository.findById(CUST_ID)).thenReturn(Optional.empty());
 
@@ -245,7 +246,7 @@ class AccountServiceTest {
         AccountUpdateRequestDto request = new AccountUpdateRequestDto();
         AccountUpdateResponseDto expected = mock(AccountUpdateResponseDto.class);
 
-        when(cardXrefRepository.findByXrefAcctId(ACCT_ID)).thenReturn(Optional.of(cardXref));
+        when(cardXrefRepository.findFirstByXrefAcctIdOrderByXrefCardNumAsc(ACCT_ID)).thenReturn(Optional.of(cardXref));
         when(accountRepository.findById(ACCT_ID)).thenReturn(Optional.of(account));
         when(customerRepository.findById(CUST_ID)).thenReturn(Optional.of(customer));
         // The client echoes back the version it read, so the compare step passes.
@@ -280,7 +281,7 @@ class AccountServiceTest {
         AccountUpdateRequestDto request = new AccountUpdateRequestDto();
         request.setAcctActiveStatus("Y");
 
-        when(cardXrefRepository.findByXrefAcctId(ACCT_ID)).thenReturn(Optional.of(cardXref));
+        when(cardXrefRepository.findFirstByXrefAcctIdOrderByXrefCardNumAsc(ACCT_ID)).thenReturn(Optional.of(cardXref));
         when(accountRepository.findById(ACCT_ID)).thenReturn(Optional.of(account));
         when(customerRepository.findById(CUST_ID)).thenReturn(Optional.of(customer));
         // The snapshot still matches at read time; the competing commit lands before the flush.
@@ -310,7 +311,7 @@ class AccountServiceTest {
         Customer customer = mock(Customer.class);
         AccountUpdateRequestDto request = new AccountUpdateRequestDto();
 
-        when(cardXrefRepository.findByXrefAcctId(ACCT_ID)).thenReturn(Optional.of(cardXref));
+        when(cardXrefRepository.findFirstByXrefAcctIdOrderByXrefCardNumAsc(ACCT_ID)).thenReturn(Optional.of(cardXref));
         when(accountRepository.findById(ACCT_ID)).thenReturn(Optional.of(account));
         when(customerRepository.findById(CUST_ID)).thenReturn(Optional.of(customer));
         // The screen was displayed at version 3; the stored record has since moved to 7.
@@ -346,7 +347,7 @@ class AccountServiceTest {
         Customer customer = mock(Customer.class);
         AccountUpdateResponseDto expected = mock(AccountUpdateResponseDto.class);
 
-        when(cardXrefRepository.findByXrefAcctId(ACCT_ID)).thenReturn(Optional.of(cardXref));
+        when(cardXrefRepository.findFirstByXrefAcctIdOrderByXrefCardNumAsc(ACCT_ID)).thenReturn(Optional.of(cardXref));
         when(accountRepository.findById(ACCT_ID)).thenReturn(Optional.of(account));
         when(customerRepository.findById(CUST_ID)).thenReturn(Optional.of(customer));
         when(customer.getCustSsn()).thenReturn(storedSsn);
@@ -387,7 +388,7 @@ class AccountServiceTest {
         Account account = mock(Account.class);
         Customer customer = mock(Customer.class);
 
-        when(cardXrefRepository.findByXrefAcctId(ACCT_ID)).thenReturn(Optional.of(cardXref));
+        when(cardXrefRepository.findFirstByXrefAcctIdOrderByXrefCardNumAsc(ACCT_ID)).thenReturn(Optional.of(cardXref));
         when(accountRepository.findById(ACCT_ID)).thenReturn(Optional.of(account));
         when(customerRepository.findById(CUST_ID)).thenReturn(Optional.of(customer));
         when(customer.getCustSsn()).thenReturn(storedSsn);
@@ -419,7 +420,7 @@ class AccountServiceTest {
         Customer customer = mock(Customer.class);
         AccountUpdateRequestDto request = new AccountUpdateRequestDto();
 
-        when(cardXrefRepository.findByXrefAcctId(ACCT_ID)).thenReturn(Optional.of(cardXref));
+        when(cardXrefRepository.findFirstByXrefAcctIdOrderByXrefCardNumAsc(ACCT_ID)).thenReturn(Optional.of(cardXref));
         when(accountRepository.findById(ACCT_ID)).thenReturn(Optional.of(account));
         when(customerRepository.findById(CUST_ID)).thenReturn(Optional.of(customer));
         // The submitted value equals what is on file, so the no-change determination would
@@ -453,7 +454,7 @@ class AccountServiceTest {
         AccountUpdateRequestDto request = new AccountUpdateRequestDto();
         AccountUpdateResponseDto expected = mock(AccountUpdateResponseDto.class);
 
-        when(cardXrefRepository.findByXrefAcctId(ACCT_ID)).thenReturn(Optional.of(cardXref));
+        when(cardXrefRepository.findFirstByXrefAcctIdOrderByXrefCardNumAsc(ACCT_ID)).thenReturn(Optional.of(cardXref));
         when(accountRepository.findById(ACCT_ID)).thenReturn(Optional.of(account));
         when(customerRepository.findById(CUST_ID)).thenReturn(Optional.of(customer));
         request.setVersion(4L);
@@ -469,6 +470,74 @@ class AccountServiceTest {
     }
 
     /**
+     * :purpose: Verify that an update whose only change lands on the CUSTOMER record advances
+     *  the ACCOUNT's version anyway. The account is the root of the account+customer aggregate
+     *  COACTUPC rewrites, so its version is the token the next writer's snapshot is compared
+     *  against; without the advance a second writer's stale submission still matched and its
+     *  change silently overwrote this one (AAP 0.6.2).
+     */
+    @Test
+    void updateAccount_customerOnlyChange_advancesTheAggregateVersionAndEchoesIt() {
+        CardXref cardXref = xref();
+        Account account = mock(Account.class);
+        Customer customer = mock(Customer.class);
+        AccountUpdateRequestDto request = new AccountUpdateRequestDto();
+        AccountUpdateResponseDto expected = mock(AccountUpdateResponseDto.class);
+
+        when(cardXrefRepository.findFirstByXrefAcctIdOrderByXrefCardNumAsc(ACCT_ID))
+                .thenReturn(Optional.of(cardXref));
+        when(accountRepository.findById(ACCT_ID)).thenReturn(Optional.of(account));
+        when(customerRepository.findById(CUST_ID)).thenReturn(Optional.of(customer));
+        when(accountMapper.toUpdateResponse(account, customer, cardXref)).thenReturn(expected);
+        when(accountRepository.findVersionByAcctId(ACCT_ID)).thenReturn(Optional.of(3L));
+        request.setVersion(2L);
+        when(account.getVersion()).thenReturn(2L);
+        // A submitted CUSTOMER field only: the mapper is mocked, so no account field changes.
+        request.setCustFirstName("Alpha");
+
+        AccountUpdateResponseDto result = accountService.updateAccount(ACCT_ID, request, null);
+
+        verify(accountRepository).advanceAggregateVersion(ACCT_ID);
+        verify(expected).setVersion(3L);
+        assertThat(result).isSameAs(expected);
+    }
+
+    /**
+     * :purpose: Verify that an update which rewrites the ACCOUNT row does NOT advance the
+     *  version a second time: the provider's own ``@Version`` handling already moves it, so an
+     *  extra advance would make the echoed token disagree with the stored one.
+     */
+    @Test
+    void updateAccount_accountFieldChange_leavesVersionAdvanceToTheProvider() {
+        CardXref cardXref = xref();
+        Account account = new Account();
+        account.setAcctId(ACCT_ID);
+        account.setAcctActiveStatus("N");
+        account.setVersion(2L);
+        Customer customer = mock(Customer.class);
+        AccountUpdateRequestDto request = new AccountUpdateRequestDto();
+        AccountUpdateResponseDto expected = mock(AccountUpdateResponseDto.class);
+
+        when(cardXrefRepository.findFirstByXrefAcctIdOrderByXrefCardNumAsc(ACCT_ID))
+                .thenReturn(Optional.of(cardXref));
+        when(accountRepository.findById(ACCT_ID)).thenReturn(Optional.of(account));
+        when(customerRepository.findById(CUST_ID)).thenReturn(Optional.of(customer));
+        when(accountMapper.toUpdateResponse(account, customer, cardXref)).thenReturn(expected);
+        request.setVersion(2L);
+        request.setAcctActiveStatus("Y");
+        // Reproduce the mapper's account-field write so the service sees a dirty account row.
+        doAnswer(invocation -> {
+            account.setAcctActiveStatus(request.getAcctActiveStatus());
+            return null;
+        }).when(accountMapper).applyUpdate(request, account, customer);
+
+        accountService.updateAccount(ACCT_ID, request, null);
+
+        verify(accountRepository, never()).advanceAggregateVersion(ACCT_ID);
+        verify(accountRepository, never()).findVersionByAcctId(ACCT_ID);
+    }
+
+    /**
      * :purpose: Verify the service delegates all field mutation to the mapper and
      *  never re-assigns the account id, customer id, or optimistic-lock version
      *  itself (COACTUPC ``9700-CHECK-CHANGE`` excludes id/version from the update).
@@ -481,7 +550,7 @@ class AccountServiceTest {
         AccountUpdateRequestDto request = new AccountUpdateRequestDto();
         request.setAcctActiveStatus("Y");
 
-        when(cardXrefRepository.findByXrefAcctId(ACCT_ID)).thenReturn(Optional.of(cardXref));
+        when(cardXrefRepository.findFirstByXrefAcctIdOrderByXrefCardNumAsc(ACCT_ID)).thenReturn(Optional.of(cardXref));
         when(accountRepository.findById(ACCT_ID)).thenReturn(Optional.of(account));
         when(customerRepository.findById(CUST_ID)).thenReturn(Optional.of(customer));
         request.setVersion(1L);
@@ -530,7 +599,7 @@ class AccountServiceTest {
         request.setOldAcctCurrBal(new BigDecimal("103.00"));
         request.setAcctCurrBal(new BigDecimal("111.00"));
 
-        when(cardXrefRepository.findByXrefAcctId(ACCT_ID)).thenReturn(Optional.of(cardXref));
+        when(cardXrefRepository.findFirstByXrefAcctIdOrderByXrefCardNumAsc(ACCT_ID)).thenReturn(Optional.of(cardXref));
         when(accountRepository.findById(ACCT_ID)).thenReturn(Optional.of(account));
         when(customerRepository.findById(CUST_ID)).thenReturn(Optional.of(customer));
         when(account.getAcctCurrBal()).thenReturn(new BigDecimal("999.99"));
@@ -559,7 +628,7 @@ class AccountServiceTest {
         request.setAcctCurrBal(new BigDecimal("111.00"));
         AccountUpdateResponseDto expected = mock(AccountUpdateResponseDto.class);
 
-        when(cardXrefRepository.findByXrefAcctId(ACCT_ID)).thenReturn(Optional.of(cardXref));
+        when(cardXrefRepository.findFirstByXrefAcctIdOrderByXrefCardNumAsc(ACCT_ID)).thenReturn(Optional.of(cardXref));
         when(accountRepository.findById(ACCT_ID)).thenReturn(Optional.of(account));
         when(customerRepository.findById(CUST_ID)).thenReturn(Optional.of(customer));
         when(accountMapper.toUpdateResponse(account, customer, cardXref)).thenReturn(expected);
@@ -582,7 +651,7 @@ class AccountServiceTest {
         AccountUpdateRequestDto request = new AccountUpdateRequestDto();
         request.setAcctActiveStatus("Y");
 
-        when(cardXrefRepository.findByXrefAcctId(ACCT_ID)).thenReturn(Optional.of(cardXref));
+        when(cardXrefRepository.findFirstByXrefAcctIdOrderByXrefCardNumAsc(ACCT_ID)).thenReturn(Optional.of(cardXref));
         when(accountRepository.findById(ACCT_ID)).thenReturn(Optional.of(account));
         when(customerRepository.findById(CUST_ID)).thenReturn(Optional.of(customer));
         when(account.getAcctActiveStatus()).thenReturn("Y");

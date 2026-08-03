@@ -11,7 +11,8 @@
 --   * card_xref           50 rows <- cardxref.txt          (CVACT03Y)
 --   * tran_cat_bal        50 rows <- tcatbal.txt           (CVTRA01Y)
 --   * daily_transactions 300 rows <- dailytran.txt         (CVTRA06Y)
---   * transactions       300 rows <- the posted image of the daily feed (see below)
+--   * transactions       300 rows <- an earlier posted image of the daily feed,
+--                                    re-keyed into a reserved id window (see below)
 --
 -- Statements are ordered so every foreign key resolves: customers and accounts
 -- before cards / card_xref / tran_cat_bal, and daily_transactions before the
@@ -662,17 +663,32 @@ ON CONFLICT DO NOTHING;
 -- preserved. The EXISTS filter keeps the seeded history referentially consistent
 -- with the seeded cards (a feed record whose card is unknown is what the posting job
 -- rejects with code 100, and is therefore never part of the posted history).
+--
+-- TRAN-ID DISJOINTNESS (QA Issue 1). The seeded history is an EARLIER cycle's posting
+-- of the same merchant activity, so its ids must not be the ids the staged DALYTRAN
+-- feed still carries: CBTRN02C's 2900-WRITE-TRANSACTION-FILE moves DALYTRAN-ID into
+-- TRAN-ID and abends on a non-'00' WRITE, so seeding the history under the feed's own
+-- ids made the very first posting record fail with
+-- "duplicate key value violates unique constraint transactions_pkey" and left the
+-- delivered state unable to post a single record. The history is therefore re-keyed
+-- into the reserved 1 000 000 000 .. 1 999 999 999 window by adding
+-- HISTORY_TRAN_ID_OFFSET (1e9) to the feed id, which keeps TRAN-ID a 16-character
+-- zero-padded numeric string (PIC X(16), e.g. 0000000943918566 -> 0000001943918566)
+-- and leaves the staged feed byte-identical to app/data/ASCII/dailytran.txt so the
+-- posting job runs on the delivered seed exactly as POSTTRAN.jcl does.
 INSERT INTO transactions (
     tran_id, tran_type_cd, tran_cat_cd, tran_source, tran_desc, tran_amt,
     tran_merchant_id, tran_merchant_name, tran_merchant_city, tran_merchant_zip,
     tran_card_num, tran_orig_ts, tran_proc_ts
 )
-SELECT d.dalytran_id, d.dalytran_type_cd, d.dalytran_cat_cd, d.dalytran_source,
+SELECT LPAD((CAST(d.dalytran_id AS BIGINT) + 1000000000)::text, 16, '0'),
+       d.dalytran_type_cd, d.dalytran_cat_cd, d.dalytran_source,
        d.dalytran_desc, d.dalytran_amt, d.dalytran_merchant_id, d.dalytran_merchant_name,
        d.dalytran_merchant_city, d.dalytran_merchant_zip, d.dalytran_card_num,
        d.dalytran_orig_ts, d.dalytran_orig_ts
   FROM daily_transactions d
  WHERE EXISTS (SELECT 1 FROM cards c WHERE c.card_num = d.dalytran_card_num)
+   AND d.dalytran_id ~ '^[0-9]{1,16}$'
 ON CONFLICT DO NOTHING;
 
 -- Re-align the transaction-id sequence past the seeded history so the first id the
@@ -680,12 +696,21 @@ ON CONFLICT DO NOTHING;
 -- COBOL "last id + 1" baseline (AAP 0.6.5) while keeping the 16-digit zero-padded
 -- wire format. TRAN-ID is PIC X(16) and may legally be non-numeric, so only
 -- digit-only ids participate in the maximum.
+--
+-- The staged DALYTRAN feed participates in the maximum as well: CBTRN02C posts a feed
+-- record under its own DALYTRAN-ID, so an id still waiting in daily_transactions is an
+-- id already reserved in the transaction master. Ignoring it would let the online add
+-- flow (COTRN02C) draw an id that the next posting run then tries to WRITE, which is
+-- the abend the reserved-id baseline exists to prevent.
 SELECT setval(
            'transaction_id_seq',
            GREATEST(
                COALESCE((SELECT MAX(CAST(tran_id AS BIGINT))
                            FROM transactions
                           WHERE tran_id ~ '^[0-9]{1,16}$'), 0) + 1,
+               COALESCE((SELECT MAX(CAST(dalytran_id AS BIGINT))
+                           FROM daily_transactions
+                          WHERE dalytran_id ~ '^[0-9]{1,16}$'), 0) + 1,
                1),
            false
        );

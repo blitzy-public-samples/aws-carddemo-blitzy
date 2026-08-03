@@ -84,6 +84,15 @@ public class InterestCalculationService {
     /** The ``'DEFAULT'`` disclosure account-group id used on fallback (``CBACT04C`` line 437). */
     private static final String DEFAULT_ACCT_GROUP_ID = "DEFAULT";
 
+    /** ``MOVE SPACES TO TRAN-MERCHANT-NAME``: the full ``X(50)`` field in blanks. */
+    private static final String TRAN_MERCHANT_NAME_SPACES = " ".repeat(50);
+
+    /** ``MOVE SPACES TO TRAN-MERCHANT-CITY``: the full ``X(50)`` field in blanks. */
+    private static final String TRAN_MERCHANT_CITY_SPACES = " ".repeat(50);
+
+    /** ``MOVE SPACES TO TRAN-MERCHANT-ZIP``: the full ``X(10)`` field in blanks. */
+    private static final String TRAN_MERCHANT_ZIP_SPACES = " ".repeat(10);
+
     /** Repository for the account-ordered transaction-category-balance driving read. */
     private final TranCatBalRepository tranCatBalRepository;
 
@@ -123,15 +132,24 @@ public class InterestCalculationService {
      * :purpose: Compute the monthly interest for one transaction-category balance,
      *     reproducing ``1300-COMPUTE-INTEREST`` (``CBACT04C`` lines 462-466):
      *     ``(TRAN-CAT-BAL * DIS-INT-RATE) / 1200``. The multiplication is performed before
-     *     the division to match the COBOL parenthesization.
+     *     the division to match the COBOL parenthesization, and the quotient is TRUNCATED
+     *     toward zero at the receiver's scale.
      * :param categoryBalance: the transaction-category balance (``TRAN-CAT-BAL``).
      * :param interestRate: the disclosure-group annual interest rate (``DIS-INT-RATE``).
      * :returns: the monthly interest at scale 2.
+     * :note: The rounding mode is {@link RoundingMode#DOWN}, not ``HALF_UP``. The COBOL
+     *     ``COMPUTE`` carries no ``ROUNDED`` phrase, so the excess fractional digits of the
+     *     quotient are simply dropped as it is stored into ``WS-MONTHLY-INT``
+     *     (``PIC S9(09)V99``): ``0.41666… -> 0.41``, ``0.125 -> 0.12`` (never ``0.13``),
+     *     and for a credit balance ``-0.41666… -> -0.41``. Rounding half up instead added a
+     *     cent to every non-terminating quotient and that error propagated into
+     *     ``accounts.acct_curr_bal`` through ``1050-UPDATE-ACCOUNT``, diverging financial
+     *     output in breach of AAP 0.6.1, 0.7.1 and 0.7.6 (QA Issue 9).
      */
     public BigDecimal computeMonthlyInterest(BigDecimal categoryBalance, BigDecimal interestRate) {
         return categoryBalance
                 .multiply(interestRate)
-                .divide(MONTHLY_INTEREST_DIVISOR, 2, RoundingMode.HALF_UP);
+                .divide(MONTHLY_INTEREST_DIVISOR, 2, RoundingMode.DOWN);
     }
 
     /**
@@ -175,9 +193,16 @@ public class InterestCalculationService {
      *     the account. A missing cross-reference is unrecoverable and fails the step.
      * :param acctId: the account id used as the ``FD-XREF-ACCT-ID`` alternate key.
      * :returns: the 16-character card number.
+     * :note: The read is ordered by ``XREF-CARD-NUM`` ascending. A VSAM alternate-index
+     *     read returns the records sharing an alternate key in PRIMARY-key order, so for an
+     *     account holding several cards ``1110-GET-XREF-DATA`` always yielded the lowest
+     *     card number. An unordered ``findFirst`` returned whichever row PostgreSQL
+     *     happened to reach first, so the same data and the same parameters could stamp a
+     *     DIFFERENT ``TRAN-CARD-NUM`` on the interest transaction from run to run
+     *     (QA Issue 11).
      */
     public String resolveCardNumber(Long acctId) {
-        return cardXrefRepository.findFirstByXrefAcctId(acctId)
+        return cardXrefRepository.findFirstByXrefAcctIdOrderByXrefCardNumAsc(acctId)
                 .map(CardXref::getXrefCardNum)
                 .orElseThrow(() -> new RecordNotFoundException("Card cross-reference not found: acctId=" + acctId));
     }
@@ -205,9 +230,13 @@ public class InterestCalculationService {
         transaction.setTranDesc("Int. for a/c " + String.format("%011d", account.getAcctId()));
         transaction.setTranAmt(monthlyInterest);
         transaction.setTranMerchantId(0L);
-        transaction.setTranMerchantName("");
-        transaction.setTranMerchantCity("");
-        transaction.setTranMerchantZip("");
+        // MOVE SPACES TO TRAN-MERCHANT-NAME / -CITY / -ZIP: a COBOL MOVE of SPACES fills the
+        // whole fixed-width field, so the stored value is the field's width in blanks, not an
+        // empty string (QA Issue 12). The widths are the CVTRA05Y declarations X(50), X(50)
+        // and X(10), which the column definitions match exactly.
+        transaction.setTranMerchantName(TRAN_MERCHANT_NAME_SPACES);
+        transaction.setTranMerchantCity(TRAN_MERCHANT_CITY_SPACES);
+        transaction.setTranMerchantZip(TRAN_MERCHANT_ZIP_SPACES);
         transaction.setTranCardNum(cardNumber);
         transaction.setTranOrigTs(timestamp);
         transaction.setTranProcTs(timestamp);

@@ -41,6 +41,8 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
 import java.math.RoundingMode;
+import java.sql.SQLException;
+import java.util.Locale;
 
 /**
  * :purpose: Bill-payment business logic migrated from CICS program ``COBIL00C``
@@ -81,6 +83,9 @@ public class BillPaymentService {
 
     /** Monetary scale for balance and amount arithmetic (``NUMERIC(_,2)``). */
     private static final int MONEY_SCALE = 2;
+
+    /** SQL state PostgreSQL raises for a unique/primary-key violation. */
+    private static final String SQLSTATE_UNIQUE_VIOLATION = "23505";
 
     private final AccountRepository accountRepository;
     private final CardXrefRepository cardXrefRepository;
@@ -176,7 +181,7 @@ public class BillPaymentService {
         // Step 5 (confirm Y) - atomic bill payment (COBOL L209-235), all within this tx.
         // 5.1 Card cross-reference lookup keyed by account id (READ-CXACAIX-FILE); a miss
         //     reuses the same "Account ID NOT found..." text as the account miss.
-        CardXref cardXref = cardXrefRepository.findByXrefAcctId(acctId)
+        CardXref cardXref = cardXrefRepository.findFirstByXrefAcctIdOrderByXrefCardNumAsc(acctId)
                 .orElseThrow(() -> new RecordNotFoundException(MSG_ACCOUNT_NOT_FOUND));
 
         // 5.2 Generate the 16-digit transaction id from the DB sequence (AAP 0.6.5),
@@ -200,6 +205,17 @@ public class BillPaymentService {
             // silently overwriting an existing transaction at commit time.
             transactionRepository.saveAndFlush(tran);
         } catch (DataIntegrityViolationException e) {
+            // ONLY a unique/primary-key violation on the transaction id is the legacy DUPKEY
+            // case. A violated check constraint or a numeric overflow (for example an account
+            // balance that will not fit NUMERIC(11,2)) is a different fault entirely, and
+            // reporting it as "Tran ID already exist..." invited an endless client retry while
+            // hiding the real cause. Anything else propagates so the data-access handler
+            // reports it honestly with its correlation id.
+            if (!isTransactionIdUniqueViolation(e)) {
+                log.error("Bill payment failed on a data-integrity violation that is not a "
+                        + "duplicate transaction id", e);
+                throw e;
+            }
             log.warn("Bill payment rejected duplicate transaction id {}", tranId);
             throw new CardDemoException(MSG_TRAN_ID_EXISTS);
         }
@@ -297,6 +313,54 @@ public class BillPaymentService {
         } catch (NumberFormatException e) {
             throw new RecordNotFoundException(MSG_ACCOUNT_NOT_FOUND);
         }
+    }
+
+    /**
+     * :purpose: Report whether a data-integrity violation is a unique/primary-key violation
+     *  naming the transaction id, i.e. the only integrity failure the legacy ``DUPKEY``
+     *  handling covers (``COBIL00C`` "Tran ID already exist...").
+     * :param ex: the violation raised by the persistence provider.
+     * :returns: ``true`` when a chained {@link SQLException} reports SQL state ``23505`` for
+     *  the transaction primary key.
+     */
+    private static boolean isTransactionIdUniqueViolation(DataIntegrityViolationException ex) {
+        for (Throwable cause = ex; cause != null; cause = cause.getCause()) {
+            if (cause instanceof SQLException sqlCause
+                    && SQLSTATE_UNIQUE_VIOLATION.equals(sqlCause.getSQLState())) {
+                return namesTransactionId(sqlCause.getMessage());
+            }
+        }
+        // No driver exception is chained (a provider that reports only its own text): the
+        // reported wording must then say BOTH that the failure was a duplicate/unique key AND
+        // that the transaction id is the key involved, so a not-null or check violation
+        // mentioning the column is never mistaken for a duplicate id.
+        String reported = chainedMessages(ex);
+        return (reported.contains("duplicate key") || reported.contains("unique constraint"))
+                && namesTransactionId(reported);
+    }
+
+    /**
+     * :purpose: Report whether a driver message names the transaction primary key.
+     * :param message: the message to inspect; may be ``null``.
+     * :returns: ``true`` when the transaction primary key or its column is named.
+     */
+    private static boolean namesTransactionId(String message) {
+        String text = String.valueOf(message).toLowerCase(Locale.ROOT);
+        return text.contains("transactions_pkey") || text.contains("tran_id");
+    }
+
+    /**
+     * :purpose: Concatenate every message in an exception chain, lower-cased, for text
+     *  inspection when no SQL state is available.
+     * :param throwable: the head of the chain.
+     * :returns: the concatenated, lower-cased messages.
+     */
+    private static String chainedMessages(Throwable throwable) {
+        StringBuilder text = new StringBuilder();
+        for (Throwable cause = throwable; cause != null; cause = cause.getCause()) {
+            text.append(String.valueOf(cause.getMessage()).toLowerCase(Locale.ROOT)).append(' ');
+        }
+        return text.toString();
     }
 
     /**

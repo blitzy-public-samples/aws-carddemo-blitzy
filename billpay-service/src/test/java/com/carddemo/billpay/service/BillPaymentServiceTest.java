@@ -46,6 +46,8 @@ import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 
 import org.springframework.dao.DataIntegrityViolationException;
+
+import java.sql.SQLException;
 import org.springframework.orm.ObjectOptimisticLockingFailureException;
 
 import java.math.BigDecimal;
@@ -378,7 +380,7 @@ public class BillPaymentServiceTest {
     void xrefNotFoundThrowsRecordNotFound() {
         when(accountRepository.findById(ACCT_ID))
                 .thenReturn(Optional.of(payableAccount(POSITIVE_BALANCE)));
-        when(cardXrefRepository.findByXrefAcctId(ACCT_ID)).thenReturn(Optional.empty());
+        when(cardXrefRepository.findFirstByXrefAcctIdOrderByXrefCardNumAsc(ACCT_ID)).thenReturn(Optional.empty());
         BillPaymentRequestDto req = request(ACCT_ID_INPUT, "Y");
 
         assertThatThrownBy(() -> billPaymentService.processBillPayment(req, null))
@@ -386,7 +388,7 @@ public class BillPaymentServiceTest {
                 .hasMessage(MSG_ACCOUNT_NOT_FOUND);
 
         verify(accountRepository).findById(ACCT_ID);
-        verify(cardXrefRepository).findByXrefAcctId(ACCT_ID);
+        verify(cardXrefRepository).findFirstByXrefAcctIdOrderByXrefCardNumAsc(ACCT_ID);
         verify(transactionRepository, never()).getNextTransactionId();
         verify(transactionRepository, never()).saveAndFlush(any(Transaction.class));
         verify(accountRepository, never()).save(any(Account.class));
@@ -408,7 +410,7 @@ public class BillPaymentServiceTest {
         CardXref cardXref = xref();
         String tranId = "0000000000000001";
         when(accountRepository.findById(ACCT_ID)).thenReturn(Optional.of(account));
-        when(cardXrefRepository.findByXrefAcctId(ACCT_ID)).thenReturn(Optional.of(cardXref));
+        when(cardXrefRepository.findFirstByXrefAcctIdOrderByXrefCardNumAsc(ACCT_ID)).thenReturn(Optional.of(cardXref));
         when(transactionRepository.getNextTransactionId()).thenReturn(1L);
         when(billPaymentMapper.toBillPaymentTransaction(account, cardXref, tranId))
                 .thenReturn(mappedTransaction(tranId, POSITIVE_BALANCE));
@@ -465,7 +467,7 @@ public class BillPaymentServiceTest {
         CardXref cardXref = xref();
         String tranId = "0000001234567890";
         when(accountRepository.findById(ACCT_ID)).thenReturn(Optional.of(account));
-        when(cardXrefRepository.findByXrefAcctId(ACCT_ID)).thenReturn(Optional.of(cardXref));
+        when(cardXrefRepository.findFirstByXrefAcctIdOrderByXrefCardNumAsc(ACCT_ID)).thenReturn(Optional.of(cardXref));
         when(transactionRepository.getNextTransactionId()).thenReturn(1234567890L);
         when(billPaymentMapper.toBillPaymentTransaction(account, cardXref, tranId))
                 .thenReturn(mappedTransaction(tranId, POSITIVE_BALANCE));
@@ -490,12 +492,15 @@ public class BillPaymentServiceTest {
         CardXref cardXref = xref();
         String tranId = "0000000000000001";
         when(accountRepository.findById(ACCT_ID)).thenReturn(Optional.of(account));
-        when(cardXrefRepository.findByXrefAcctId(ACCT_ID)).thenReturn(Optional.of(cardXref));
+        when(cardXrefRepository.findFirstByXrefAcctIdOrderByXrefCardNumAsc(ACCT_ID)).thenReturn(Optional.of(cardXref));
         when(transactionRepository.getNextTransactionId()).thenReturn(1L);
         when(billPaymentMapper.toBillPaymentTransaction(account, cardXref, tranId))
                 .thenReturn(mappedTransaction(tranId, POSITIVE_BALANCE));
         when(transactionRepository.saveAndFlush(any(Transaction.class)))
-                .thenThrow(new DataIntegrityViolationException("dup"));
+                .thenThrow(new DataIntegrityViolationException(
+                        "duplicate key value violates unique constraint \"transactions_pkey\"",
+                        new SQLException("duplicate key value violates unique constraint "
+                                + "\"transactions_pkey\"", "23505")));
         BillPaymentRequestDto req = request(ACCT_ID_INPUT, "Y");
 
         assertThatThrownBy(() -> billPaymentService.processBillPayment(req, null))
@@ -505,6 +510,34 @@ public class BillPaymentServiceTest {
         // The insert is flushed immediately, so the duplicate key is rejected here and
         // the account rewrite never runs; the pre-existing transaction row is untouched.
         verify(transactionRepository).saveAndFlush(any(Transaction.class));
+        verify(accountRepository, never()).save(any(Account.class));
+    }
+
+    /**
+     * :purpose: An integrity violation that is NOT a duplicate transaction id -- for example the
+     *  numeric overflow a balance too large for ``NUMERIC(11,2)`` produces -- must not be
+     *  reported as ``Tran ID already exist...``, which invited an endless client retry of a
+     *  request that can never succeed. It propagates so the data-access handler reports it.
+     */
+    @Test
+    void nonDuplicateIntegrityViolationIsNotReportedAsDuplicateId() {
+        Account account = payableAccount(POSITIVE_BALANCE);
+        CardXref cardXref = xref();
+        String tranId = "0000000000000001";
+        when(accountRepository.findById(ACCT_ID)).thenReturn(Optional.of(account));
+        when(cardXrefRepository.findFirstByXrefAcctIdOrderByXrefCardNumAsc(ACCT_ID))
+                .thenReturn(Optional.of(cardXref));
+        when(transactionRepository.getNextTransactionId()).thenReturn(1L);
+        when(billPaymentMapper.toBillPaymentTransaction(account, cardXref, tranId))
+                .thenReturn(mappedTransaction(tranId, POSITIVE_BALANCE));
+        when(transactionRepository.saveAndFlush(any(Transaction.class)))
+                .thenThrow(new DataIntegrityViolationException("numeric field overflow",
+                        new SQLException("numeric field overflow", "22003")));
+        BillPaymentRequestDto req = request(ACCT_ID_INPUT, "Y");
+
+        assertThatThrownBy(() -> billPaymentService.processBillPayment(req, null))
+                .isInstanceOf(DataIntegrityViolationException.class);
+
         verify(accountRepository, never()).save(any(Account.class));
     }
 
@@ -522,7 +555,7 @@ public class BillPaymentServiceTest {
         CardXref cardXref = xref();
         String tranId = "0000000000000001";
         when(accountRepository.findById(ACCT_ID)).thenReturn(Optional.of(account));
-        when(cardXrefRepository.findByXrefAcctId(ACCT_ID)).thenReturn(Optional.of(cardXref));
+        when(cardXrefRepository.findFirstByXrefAcctIdOrderByXrefCardNumAsc(ACCT_ID)).thenReturn(Optional.of(cardXref));
         when(transactionRepository.getNextTransactionId()).thenReturn(1L);
         when(billPaymentMapper.toBillPaymentTransaction(account, cardXref, tranId))
                 .thenReturn(mappedTransaction(tranId, POSITIVE_BALANCE));
@@ -565,7 +598,7 @@ public class BillPaymentServiceTest {
         CardXref cardXref = xref();
         String tranId = "0000000000000001";
         when(accountRepository.findById(ACCT_ID)).thenReturn(Optional.of(account));
-        when(cardXrefRepository.findByXrefAcctId(ACCT_ID)).thenReturn(Optional.of(cardXref));
+        when(cardXrefRepository.findFirstByXrefAcctIdOrderByXrefCardNumAsc(ACCT_ID)).thenReturn(Optional.of(cardXref));
         when(transactionRepository.getNextTransactionId()).thenReturn(1L);
         when(billPaymentMapper.toBillPaymentTransaction(account, cardXref, tranId))
                 .thenReturn(mappedTransaction(tranId, POSITIVE_BALANCE));
@@ -576,7 +609,7 @@ public class BillPaymentServiceTest {
         InOrder inOrder = inOrder(accountRepository, cardXrefRepository, transactionRepository,
                 billPaymentMapper);
         inOrder.verify(accountRepository).findById(ACCT_ID);
-        inOrder.verify(cardXrefRepository).findByXrefAcctId(ACCT_ID);
+        inOrder.verify(cardXrefRepository).findFirstByXrefAcctIdOrderByXrefCardNumAsc(ACCT_ID);
         inOrder.verify(transactionRepository).getNextTransactionId();
         inOrder.verify(billPaymentMapper).toBillPaymentTransaction(account, cardXref, tranId);
         inOrder.verify(transactionRepository).saveAndFlush(any(Transaction.class));

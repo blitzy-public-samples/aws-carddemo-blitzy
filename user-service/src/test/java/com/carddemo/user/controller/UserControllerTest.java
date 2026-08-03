@@ -48,7 +48,9 @@ import com.carddemo.common.exception.RecordNotFoundException;
 import com.carddemo.user.config.SecurityConfig;
 import com.carddemo.user.service.UserService;
 
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -130,6 +132,12 @@ class UserControllerTest {
     /** :purpose: Frozen no-change rejection message (COUSR02C update). */
     private static final String MSG_PLEASE_MODIFY = "Please modify to update ...";
 
+    /** :purpose: Raw password carried in the add-user request BODY (never in the query string). */
+    private static final String ADD_PASSWORD = "Pass1234";
+
+    /** :purpose: Raw password carried in the update-user request BODY. */
+    private static final String UPDATE_PASSWORD = "NewPass9";
+
     /** :purpose: Frozen bottom-of-list boundary message (COUSR00C PF8 paging). */
     private static final String MSG_ALREADY_BOTTOM = "You are already at the bottom of the page...";
 
@@ -186,12 +194,30 @@ class UserControllerTest {
      * :returns: the JSON request body.
      */
     private String addUserJson(String userId, String firstName, String lastName, String userType) throws Exception {
-        AddUserRequestDto dto = new AddUserRequestDto();
-        dto.setUserId(userId);
-        dto.setFirstName(firstName);
-        dto.setLastName(lastName);
-        dto.setUserType(userType);
-        return objectMapper.writeValueAsString(dto);
+        return addUserJson(userId, firstName, lastName, userType, ADD_PASSWORD);
+    }
+
+    /**
+     * :purpose: Render an add-user request body including the raw password, which travels in
+     *     the BODY and never in the query string (the credential must not reach an access log
+     *     or a tracing span). The password is declared write-only on the DTO, so the JSON is
+     *     assembled from a map rather than by serializing the DTO.
+     * :param userId: the entered user id.
+     * :param firstName: the entered first name.
+     * :param lastName: the entered last name.
+     * :param userType: the entered user type code.
+     * :param password: the entered raw password.
+     * :returns: the JSON request body.
+     */
+    private String addUserJson(String userId, String firstName, String lastName, String userType,
+                               String password) throws Exception {
+        Map<String, Object> body = new LinkedHashMap<>();
+        body.put("userId", userId);
+        body.put("firstName", firstName);
+        body.put("lastName", lastName);
+        body.put("userType", userType);
+        body.put("password", password);
+        return objectMapper.writeValueAsString(body);
     }
 
     /**
@@ -232,11 +258,26 @@ class UserControllerTest {
      * :returns: the JSON request body.
      */
     private String updateUserJson(String firstName, String lastName, String userType) throws Exception {
-        UpdateUserRequestDto dto = new UpdateUserRequestDto();
-        dto.setFirstName(firstName);
-        dto.setLastName(lastName);
-        dto.setUserType(userType);
-        return objectMapper.writeValueAsString(dto);
+        return updateUserJson(firstName, lastName, userType, UPDATE_PASSWORD);
+    }
+
+    /**
+     * :purpose: Render an update-user request body including the raw password, which travels
+     *     in the BODY and never in the query string.
+     * :param firstName: the new first name.
+     * :param lastName: the new last name.
+     * :param userType: the new user type code.
+     * :param password: the entered raw password.
+     * :returns: the JSON request body.
+     */
+    private String updateUserJson(String firstName, String lastName, String userType,
+                                  String password) throws Exception {
+        Map<String, Object> body = new LinkedHashMap<>();
+        body.put("firstName", firstName);
+        body.put("lastName", lastName);
+        body.put("userType", userType);
+        body.put("password", password);
+        return objectMapper.writeValueAsString(body);
     }
 
     // -----------------------------------------------------------------
@@ -373,12 +414,11 @@ class UserControllerTest {
     @DisplayName("POST /users as ADMIN with a valid body returns 201 Created (no password echoed)")
     @WithMockUser(roles = "ADMIN")
     void addUserValidReturnsCreated() throws Exception {
-        given(userService.addUser(any(AddUserRequestDto.class), any()))
+        given(userService.addUser(any(AddUserRequestDto.class)))
                 .willReturn(writeResponse("USER0007", "Grace", "Green", "U",
                         "User USER0007 has been added ..."));
 
         mockMvc.perform(post("/users").with(csrf())
-                        .param("password", "Pass1234")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(addUserJson("USER0007", "Grace", "Green", "U")))
                 .andExpect(status().isCreated())
@@ -389,12 +429,13 @@ class UserControllerTest {
                 .andExpect(jsonPath("$.password").doesNotExist());
 
         ArgumentCaptor<AddUserRequestDto> addCaptor = ArgumentCaptor.forClass(AddUserRequestDto.class);
-        verify(userService).addUser(addCaptor.capture(), eq("Pass1234"));
+        verify(userService).addUser(addCaptor.capture());
         AddUserRequestDto captured = addCaptor.getValue();
         assertThat(captured.getUserId()).isEqualTo("USER0007");
         assertThat(captured.getFirstName()).isEqualTo("Grace");
         assertThat(captured.getLastName()).isEqualTo("Green");
         assertThat(captured.getUserType()).isEqualTo("U");
+        assertThat(captured.getPassword()).isEqualTo(ADD_PASSWORD);
     }
 
     /**
@@ -405,18 +446,17 @@ class UserControllerTest {
     @DisplayName("POST /users as ADMIN with an empty field returns 400 (CardDemoException)")
     @WithMockUser(roles = "ADMIN")
     void addUserEmptyFieldReturnsBadRequest() throws Exception {
-        given(userService.addUser(any(AddUserRequestDto.class), any()))
+        given(userService.addUser(any(AddUserRequestDto.class)))
                 .willThrow(new CardDemoException(MSG_USER_TYPE_EMPTY));
 
         mockMvc.perform(post("/users").with(csrf())
-                        .param("password", "Pass1234")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(addUserJson("USER0008", "Heidi", "Hunt", "")))
                 .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.status").value(400))
                 .andExpect(jsonPath("$.message").value(MSG_USER_TYPE_EMPTY));
 
-        verify(userService).addUser(any(AddUserRequestDto.class), eq("Pass1234"));
+        verify(userService).addUser(any(AddUserRequestDto.class));
     }
 
     /**
@@ -427,11 +467,10 @@ class UserControllerTest {
     @DisplayName("POST /users as ADMIN with a duplicate id returns 400 (CardDemoException)")
     @WithMockUser(roles = "ADMIN")
     void addUserDuplicateReturnsBadRequest() throws Exception {
-        given(userService.addUser(any(AddUserRequestDto.class), any()))
+        given(userService.addUser(any(AddUserRequestDto.class)))
                 .willThrow(new CardDemoException(MSG_USER_ALREADY_EXISTS));
 
         mockMvc.perform(post("/users").with(csrf())
-                        .param("password", "Pass1234")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(addUserJson("USER0001", "Ivan", "Irwin", "U")))
                 .andExpect(status().isBadRequest())
@@ -495,12 +534,11 @@ class UserControllerTest {
     @DisplayName("PUT /users/{id} as ADMIN with a valid body returns 200 (no password echoed)")
     @WithMockUser(roles = "ADMIN")
     void updateUserValidReturnsOk() throws Exception {
-        given(userService.updateUser(eq("USER0001"), any(UpdateUserRequestDto.class), any()))
+        given(userService.updateUser(eq("USER0001"), any(UpdateUserRequestDto.class)))
                 .willReturn(writeResponse("USER0001", "Alicia", "Adamson", "A",
                         "User USER0001 has been updated ..."));
 
         mockMvc.perform(put("/users/USER0001").with(csrf())
-                        .param("password", "NewPass9")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(updateUserJson("Alicia", "Adamson", "A")))
                 .andExpect(status().isOk())
@@ -511,11 +549,12 @@ class UserControllerTest {
                 .andExpect(jsonPath("$.password").doesNotExist());
 
         ArgumentCaptor<UpdateUserRequestDto> updateCaptor = ArgumentCaptor.forClass(UpdateUserRequestDto.class);
-        verify(userService).updateUser(eq("USER0001"), updateCaptor.capture(), eq("NewPass9"));
+        verify(userService).updateUser(eq("USER0001"), updateCaptor.capture());
         UpdateUserRequestDto captured = updateCaptor.getValue();
         assertThat(captured.getFirstName()).isEqualTo("Alicia");
         assertThat(captured.getLastName()).isEqualTo("Adamson");
         assertThat(captured.getUserType()).isEqualTo("A");
+        assertThat(captured.getPassword()).isEqualTo(UPDATE_PASSWORD);
     }
 
     /**
@@ -526,17 +565,16 @@ class UserControllerTest {
     @DisplayName("PUT /users/{id} as ADMIN for a missing user returns 404 (RecordNotFoundException)")
     @WithMockUser(roles = "ADMIN")
     void updateUserMissingReturnsNotFound() throws Exception {
-        given(userService.updateUser(eq("USER9999"), any(UpdateUserRequestDto.class), any()))
+        given(userService.updateUser(eq("USER9999"), any(UpdateUserRequestDto.class)))
                 .willThrow(new RecordNotFoundException(MSG_USER_NOT_FOUND));
 
         mockMvc.perform(put("/users/USER9999").with(csrf())
-                        .param("password", "NewPass9")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(updateUserJson("Alicia", "Adamson", "A")))
                 .andExpect(status().isNotFound())
                 .andExpect(jsonPath("$.status").value(404));
 
-        verify(userService).updateUser(eq("USER9999"), any(UpdateUserRequestDto.class), eq("NewPass9"));
+        verify(userService).updateUser(eq("USER9999"), any(UpdateUserRequestDto.class));
     }
 
     /**
@@ -547,11 +585,10 @@ class UserControllerTest {
     @DisplayName("PUT /users/{id} as ADMIN with no changed field returns 400 (CardDemoException)")
     @WithMockUser(roles = "ADMIN")
     void updateUserRejectedReturnsBadRequest() throws Exception {
-        given(userService.updateUser(eq("USER0001"), any(UpdateUserRequestDto.class), any()))
+        given(userService.updateUser(eq("USER0001"), any(UpdateUserRequestDto.class)))
                 .willThrow(new CardDemoException(MSG_PLEASE_MODIFY));
 
         mockMvc.perform(put("/users/USER0001").with(csrf())
-                        .param("password", "NewPass9")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(updateUserJson("Alice", "Adminson", "A")))
                 .andExpect(status().isBadRequest())
@@ -624,7 +661,6 @@ class UserControllerTest {
     @WithMockUser(roles = "USER")
     void addUserForbiddenForUserRole() throws Exception {
         mockMvc.perform(post("/users").with(csrf())
-                        .param("password", "Pass1234")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(addUserJson("USER0009", "Judy", "Jones", "U")))
                 .andExpect(status().isForbidden());
@@ -674,7 +710,6 @@ class UserControllerTest {
     @DisplayName("POST /users unauthenticated -> 403 with an empty body and no service call")
     void addUserUnauthenticatedIsRejected() throws Exception {
         mockMvc.perform(post("/users").with(csrf())
-                        .param("password", "Pass1234")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(addUserJson("USER0010", "Karl", "King", "U")))
                 .andExpect(status().isUnauthorized())

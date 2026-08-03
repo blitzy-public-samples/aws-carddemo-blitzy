@@ -157,18 +157,26 @@ $RECYCLE.BIN/
 # output, never source, and must never be staged. Both the bare names (produced when a
 # job runs with the working directory as its root) and the configured
 # carddemo.batch.output-dir / input-dir roots are covered.
+# The names below are copied from the constants that produce them, so a rename in
+# JobSchedulingConfig must be mirrored here: DEFAULT_ACCOUNT_REPORT_FILE,
+# DEFAULT_CARD_REPORT_FILE, DEFAULT_CARD_XREF_REPORT_FILE, DEFAULT_CUSTOMER_REPORT_FILE,
+# DEFAULT_CATEGORY_BALANCE_REPORT_FILE, DEFAULT_TRANSACTION_DETAIL_REPORT_FILE,
+# DEFAULT_COMBINED_TRANSACTION_FILE, DEFAULT_DAILY_TRANSACTION_FEED_FILE, plus the
+# carddemo.batch.reject-file / statement-text-file / statement-html-file property
+# defaults. An earlier revision listed invented stems (trandet*, catbal*, acctrept*,
+# cardrept*, xrefrept*, custrept*) that matched none of them.
 /output/
 /input/
 dalyrejs*.txt
 statements.txt
 statements.html
-combined*.txt
-trandet*.txt
-catbal*.txt
-acctrept*.txt
-cardrept*.txt
-xrefrept*.txt
-custrept*.txt
+combined-transactions*.txt
+tran-detail-report*.txt
+tcatbal-report*.txt
+acctdata-report*.txt
+carddata-report*.txt
+cardxref-report*.txt
+custdata-report*.txt
 dailytran*.txt
 carddemo-batch/
 

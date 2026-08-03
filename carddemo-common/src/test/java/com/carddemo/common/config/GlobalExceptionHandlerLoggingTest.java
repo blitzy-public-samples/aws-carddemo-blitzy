@@ -116,4 +116,36 @@ class GlobalExceptionHandlerLoggingTest {
 
         assertThat(capturedText()).doesNotContain(PAN).contains("****5740");
     }
+
+    @Test
+    @DisplayName("the data-access log path masks both the request path and the driver message")
+    void panIsMaskedOnTheDataAccessPath() {
+        ServletWebRequest request = new ServletWebRequest(
+                new MockHttpServletRequest("PUT", "/cards/" + PAN));
+
+        ResponseEntity<ErrorResponse> response = handler.handleDataAccess(
+                new org.springframework.dao.DataIntegrityViolationException(
+                        "could not execute statement; parameters were [" + PAN + "]"),
+                request);
+
+        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.INTERNAL_SERVER_ERROR);
+        String logged = capturedText();
+        assertThat(logged).contains("Data access failure at");
+        assertThat(logged)
+                .as("neither the path nor the failing statement may retain the PAN")
+                .doesNotContain(PAN);
+        assertThat(logged).contains("****5740");
+    }
+
+    @Test
+    @DisplayName("the optimistic-lock log path masks the request path")
+    void panIsMaskedOnTheOptimisticLockPath() {
+        ServletWebRequest request = new ServletWebRequest(
+                new MockHttpServletRequest("PUT", "/cards/" + PAN));
+
+        handler.handleOptimisticLockConflict(
+                new com.carddemo.common.exception.OptimisticLockConflictException(), request);
+
+        assertThat(capturedText()).doesNotContain(PAN).contains("****5740");
+    }
 }

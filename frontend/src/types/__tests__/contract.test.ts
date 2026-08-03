@@ -311,23 +311,30 @@ describe('card contract (Card*Dto)', () => {
       cardActiveStatus: 'Y',
       cardExpiraionDate: '2027-01-31',
       custId: '000000001',
+      version: 4,
     };
     const updated: CardUpdateResponseDto = detail;
 
     expect(detail.custId).toBe('000000001');
     expect(detail.cardExpiraionDate).toBe('2027-01-31');
+    expect(detail.version).toBe(4);
     expect(updated.custId).toBe('000000001');
+    expect(updated.version).toBe(4);
   });
 
-  it('binds CardUpdateRequestDto (editable fields only, no CVV, no keys)', () => {
+  it('binds CardUpdateRequestDto (editable fields + version, no CVV, no keys)', () => {
     // CVV (cardCvvCd) is intentionally absent per C09 — it is never accepted from
-    // the client; the card number travels in the request path, not the body.
+    // the client; the card number travels in the request path, not the body. The
+    // optimistic-lock `version` read at display time IS carried, mirroring the
+    // account update contract (AAP 0.6.2).
     const update: CardUpdateRequestDto = {
       cardEmbossedName: 'JANE Q DOE',
       cardActiveStatus: 'N',
       cardExpiraionDate: '2028-01-31',
+      version: 4,
     };
     expect(update.cardActiveStatus).toBe('N');
+    expect(update.version).toBe(4);
   });
 });
 

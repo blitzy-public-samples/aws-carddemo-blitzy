@@ -15,11 +15,20 @@
  */
 package com.carddemo.common.dto;
 
+import com.fasterxml.jackson.annotation.JsonProperty;
+import jakarta.validation.constraints.Pattern;
+
 /**
  * :purpose: Inbound DTO for the card update screen (COCRDUPC, CICS CCUP). Carries the editable card fields (the new values), plus the optional display-time snapshot of those fields (the legacy ``CCUP-OLD-*`` values) used to detect a concurrent modification. The card number primary key and owning account id are identifiers and are never carried here.
  * :output: A mutable carrier of the editable embossed name, active status, expiry date, and CVV, together with the optional display-time snapshot (old embossed name, active status, expiry date, and CVV) of the same fields.
  */
 public class CardUpdateRequestDto {
+
+    /** :purpose: ``CARD-CVV-CD PIC 9(03)`` -- exactly three decimal digits. */
+    private static final String CVV_PATTERN = "\\d{3}";
+
+    /** :purpose: Message reported when a supplied CVV does not fit ``PIC 9(03)``. */
+    private static final String MSG_CVV_THREE_DIGITS = "Card CVV must be exactly 3 digits";
 
     /** :purpose: the embossed name (``CARD-EMBOSSED-NAME``). */
     private String cardEmbossedName;
@@ -30,8 +39,24 @@ public class CardUpdateRequestDto {
     /** :purpose: the card expiration date (legacy-spelled ``CARD-EXPIRAION-DATE``, YYYY-MM-DD). */
     private String cardExpiraionDate;
 
-    /** :purpose: the card CVV code (``CARD-CVV-CD``); write-only, never returned. */
+    /**
+     * :purpose: the card CVV code (``CARD-CVV-CD`` ``PIC 9(03)``); write-only, never returned.
+     *  An ABSENT value leaves the stored verification value untouched -- no read path returns
+     *  it, so an ordinary name/status/expiry change legitimately omits it. A SUPPLIED value
+     *  must be exactly three digits, exactly as the legacy field could hold nothing else.
+     */
+    @JsonProperty(access = JsonProperty.Access.WRITE_ONLY)
+    @Pattern(regexp = CVV_PATTERN, message = MSG_CVV_THREE_DIGITS)
     private String cardCvvCd;
+
+    /**
+     * :purpose: the optimistic-lock version the client read for this card
+     *  (``@Version``; no legacy field -- the 3270 flow held a VSAM update lock instead).
+     *  Optional: when supplied it is compared against the stored version before anything is
+     *  rewritten, which is what lets a stateless caller detect the concurrent modification
+     *  ``COCRDUPC 9300-CHECK-CHANGE-IN-REC`` detected under its lock.
+     */
+    private Long version;
 
     /**
      * :purpose: the display-time snapshot of the embossed name (``CCUP-OLD-CRDNAME``); the
@@ -56,8 +81,11 @@ public class CardUpdateRequestDto {
 
     /**
      * :purpose: the display-time snapshot of the CVV code (``CCUP-OLD-CVV-CD``); write-only,
-     *  never returned. Optional; ``null`` when the caller supplies no snapshot.
+     *  never returned. Optional; ``null`` when the caller supplies no snapshot -- which is the
+     *  normal case, because no read path returns the CVV.
      */
+    @JsonProperty(access = JsonProperty.Access.WRITE_ONLY)
+    @Pattern(regexp = CVV_PATTERN, message = MSG_CVV_THREE_DIGITS)
     private String oldCardCvvCd;
 
     /**
@@ -178,6 +206,22 @@ public class CardUpdateRequestDto {
      */
     public void setOldCardExpiraionDate(String oldCardExpiraionDate) {
         this.oldCardExpiraionDate = oldCardExpiraionDate;
+    }
+
+    /**
+     * :purpose: Return the optimistic-lock version the client read for this card.
+     * :output: the ``version`` value, or ``null`` when the caller supplied none.
+     */
+    public Long getVersion() {
+        return version;
+    }
+
+    /**
+     * :purpose: Set the optimistic-lock version the client read for this card.
+     * :param version: the ``version`` value.
+     */
+    public void setVersion(Long version) {
+        this.version = version;
     }
 
     /**

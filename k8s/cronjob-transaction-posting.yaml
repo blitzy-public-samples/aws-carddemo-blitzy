@@ -1,0 +1,143 @@
+---
+# =============================================================================
+# k8s/cronjob-transaction-posting.yaml
+# -----------------------------------------------------------------------------
+# Kubernetes CronJob for the CardDemo daily transaction-posting job stream
+# (AAP 0.4.4: app/jcl/POSTTRAN.jcl + app/cbl/CBTRN02C.cbl -> TransactionPostingJob).
+#
+# :purpose: Runs the unattended nightly posting cycle the mainframe operator
+#           submitted as POSTTRAN. It starts the transaction-service image with
+#           Spring Boot's batch runner enabled, so JobLauncherApplicationRunner
+#           executes the ``transactionPostingJob`` bean once and the pod exits
+#           with the run's outcome; the online HTTP surface is switched off
+#           because this pod serves no traffic.
+# :output:  A CronJob named ``transaction-posting`` that creates one Job pod per
+#           schedule. Its exit status reflects the batch outcome (a rejected or
+#           failed run leaves a non-zero exit and a FAILED BATCH_JOB_EXECUTION
+#           row), and its whole run is recorded in the durable BATCH_* tables so
+#           ``GET /transactions/batch/jobs/executions/{id}`` can report it.
+# :notes:   The attended route is the operator endpoint
+#           ``POST /transactions/batch/jobs/transactionPostingJob`` served by
+#           transaction-service (PostingJobController); this CronJob is the
+#           scheduled equivalent, and both submit the SAME job bean through the
+#           same JobRepository, so neither can post a business date twice.
+#           ``postingDate`` is passed as a job parameter and is IDENTIFYING: it
+#           reproduces the per-run identity the daily DALYTRAN delivery and the
+#           DALYREJS(+1) generation-data-group gave the legacy run, so a repeat
+#           schedule for a date already posted is refused instead of
+#           double-posting, while an interrupted date restarts where it stopped.
+#           Runtime config and credentials come from the same ConfigMap and
+#           Secrets as k8s/deployment-transaction-service.yaml; the reject file
+#           (DALYREJS, RECFM=F LRECL=430) is written to the writable batch
+#           working directory because the container root filesystem is read-only.
+# =============================================================================
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: transaction-posting
+  labels:
+    app: transaction-posting
+    app.kubernetes.io/name: transaction-posting
+    app.kubernetes.io/part-of: carddemo
+    app.kubernetes.io/component: batch
+spec:
+  # 02:00 UTC daily: the legacy cycle ran after the DALYTRAN feed was delivered
+  # and before the online day opened.
+  schedule: "0 2 * * *"
+  timeZone: Etc/UTC
+  # Never overlap posting cycles: two concurrent runs would contend on the same
+  # accounts and the second would be refused as a duplicate instance anyway.
+  concurrencyPolicy: Forbid
+  startingDeadlineSeconds: 3600
+  successfulJobsHistoryLimit: 7
+  failedJobsHistoryLimit: 7
+  jobTemplate:
+    spec:
+      # A posting cycle is restarted deliberately (same business date, so Spring
+      # Batch resumes the instance); Kubernetes must not retry it blindly.
+      backoffLimit: 0
+      template:
+        metadata:
+          labels:
+            app: transaction-posting
+            app.kubernetes.io/name: transaction-posting
+            app.kubernetes.io/part-of: carddemo
+            app.kubernetes.io/component: batch
+        spec:
+          restartPolicy: Never
+          # Pod-level runtime hardening, identical to the online deployment.
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 1000
+            runAsGroup: 1000
+            fsGroup: 1000
+            seccompProfile:
+              type: RuntimeDefault
+          automountServiceAccountToken: false
+          containers:
+            - name: transaction-posting
+              # Same artifact as the online pod: see transaction-service/Dockerfile.
+              image: carddemo/transaction-service:1.0.0
+              imagePullPolicy: IfNotPresent
+              securityContext:
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: true
+                capabilities:
+                  drop:
+                    - ALL
+              # Run the posting job once, then exit. spring.batch.job.enabled
+              # activates Boot's JobLauncherApplicationRunner (this context holds
+              # exactly one Job bean, and it is named explicitly so that stays
+              # true if another is ever added); the web server is switched off so
+              # the JVM terminates when the job finishes. The trailing
+              # postingDate=... is a Spring Batch job parameter, not a Spring
+              # property: it carries the cycle's business date, computed at
+              # start-up so each schedule runs its own date.
+              command:
+                - /bin/sh
+                - -c
+              args:
+                - >-
+                  exec java $JAVA_OPTS -jar /app/app.jar
+                  --spring.batch.job.enabled=true
+                  --spring.batch.job.name=transactionPostingJob
+                  --spring.main.web-application-type=none
+                  postingDate=$(date -u +%Y-%m-%d)
+              volumeMounts:
+                - name: tmp
+                  mountPath: /tmp
+                - name: batch-work
+                  mountPath: /var/carddemo/batch
+              env:
+                # Batch file roots consumed by carddemo-common's
+                # BatchOutputPathResolver: the DALYREJS reject file lands here.
+                - name: CARDDEMO_BATCH_OUTPUT_DIR
+                  value: /var/carddemo/batch/output
+                - name: CARDDEMO_BATCH_INPUT_DIR
+                  value: /var/carddemo/batch/input
+              envFrom:
+                - configMapRef:
+                    name: carddemo-config
+                - secretRef:
+                    name: carddemo-transaction-service-db
+                - secretRef:
+                    name: carddemo-redis-secret
+                - secretRef:
+                    name: carddemo-pii-key
+                - secretRef:
+                    name: carddemo-monitoring-secret
+              resources:
+                requests:
+                  cpu: 250m
+                  memory: 512Mi
+                limits:
+                  cpu: "1"
+                  memory: 1Gi
+          volumes:
+            - name: tmp
+              emptyDir: {}
+            - name: batch-work
+              # The reject file of a completed cycle is a downstream deliverable;
+              # a durable deployment substitutes a PersistentVolumeClaim here so
+              # DALYREJS survives the pod, exactly as the GDG generation did.
+              emptyDir: {}

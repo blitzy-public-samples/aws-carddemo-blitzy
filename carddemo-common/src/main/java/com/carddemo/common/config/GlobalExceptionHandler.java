@@ -213,7 +213,7 @@ public class GlobalExceptionHandler extends ResponseEntityExceptionHandler {
                                                                     WebRequest request) {
         HttpStatus status = HttpStatus.INTERNAL_SERVER_ERROR;
         // The cause carries the cryptographic detail; it is logged, never returned.
-        log.error("Protected-data conversion failed at {}", extractPath(request), ex);
+        log.error("Protected-data conversion failed at {}", loggedPath(request), ex);
         return ResponseEntity.status(status)
                 .body(buildBody(status, PiiEncryptionException.MESSAGE, request));
     }
@@ -244,7 +244,7 @@ public class GlobalExceptionHandler extends ResponseEntityExceptionHandler {
         ErrorResponse body = buildBody(HttpStatus.BAD_REQUEST, winner.getDefaultMessage(), request);
         body.addFieldError(winner.getField(), winner.getDefaultMessage());
         log.warn("Request validation failed at {}: reporting '{}' for field '{}' ({} violation(s) evaluated)",
-                extractPath(request), winner.getDefaultMessage(), winner.getField(), ordered.size());
+                loggedPath(request), winner.getDefaultMessage(), winner.getField(), ordered.size());
         return ResponseEntity.status(HttpStatus.BAD_REQUEST).headers(headers).body(body);
     }
 
@@ -317,7 +317,7 @@ public class GlobalExceptionHandler extends ResponseEntityExceptionHandler {
             body.addFieldError(winner.getPropertyPath().toString(), winner.getMessage());
         }
         log.warn("Constraint validation failed at {}: reporting '{}' ({} violation(s) evaluated)",
-                extractPath(request), message, ex.getConstraintViolations().size());
+                loggedPath(request), loggedMessage(message), ex.getConstraintViolations().size());
         return ResponseEntity.status(status).body(body);
     }
 
@@ -492,7 +492,7 @@ public class GlobalExceptionHandler extends ResponseEntityExceptionHandler {
     public ResponseEntity<ErrorResponse> handleOptimisticLockingFailure(OptimisticLockingFailureException ex,
                                                                        WebRequest request) {
         HttpStatus status = HttpStatus.CONFLICT;
-        log.warn("Optimistic-locking failure at {}: {}", extractPath(request), ex.getMessage());
+        log.warn("Optimistic-locking failure at {}: {}", loggedPath(request), loggedMessage(ex.getMessage()));
         return ResponseEntity.status(status)
                 .body(buildBody(status, OptimisticLockConflictException.MESSAGE, request));
     }
@@ -518,7 +518,11 @@ public class GlobalExceptionHandler extends ResponseEntityExceptionHandler {
     @ExceptionHandler(DataAccessException.class)
     public ResponseEntity<ErrorResponse> handleDataAccess(DataAccessException ex, WebRequest request) {
         HttpStatus status = HttpStatus.INTERNAL_SERVER_ERROR;
-        log.error("Data access failure at {}: {}", extractPath(request), ex.getMessage(), ex);
+        // The path and the driver message are masked: a resource path embeds the card
+        // number (/cards/{pan}) and a failing statement echoes its bind values, so this
+        // was the one log line that still wrote a full PAN to disk (CWE-532).
+        log.error("Data access failure at {}: {}", loggedPath(request),
+                loggedMessage(ex.getMessage()), ex);
         return ResponseEntity.status(status).body(buildBody(status, DATA_ACCESS_FAILURE_MESSAGE, request));
     }
 }

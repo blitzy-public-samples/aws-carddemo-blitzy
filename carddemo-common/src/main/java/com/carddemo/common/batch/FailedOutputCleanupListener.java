@@ -19,7 +19,9 @@ package com.carddemo.common.batch;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.Arrays;
 import java.util.List;
+import java.util.Objects;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.batch.core.BatchStatus;
@@ -39,6 +41,17 @@ import org.springframework.batch.core.step.StepExecution;
  * :note: A successful step is never touched. Deletion failures are logged rather than
  *  raised: the step has already failed, and masking its cause with an I/O error from the
  *  cleanup would lose the real reason for the failure.
+ * :note: Success is a ``COMPLETED`` batch status together with an exit code that begins
+ *  with ``COMPLETED``. Spring Batch's own convention is that a step which succeeded with
+ *  something to report carries a qualified success code — ``COMPLETED_WITH_SKIPS``, and in
+ *  this system ``COMPLETED_WITH_REJECTS`` for a posting run that produced the ``DALYREJS``
+ *  reject generation — and the file such a run wrote is precisely its deliverable. A
+ *  business FAILURE signalled through the exit code alone (for example
+ *  ``FAILED_EMPTY_FEED``) is still cleaned up.
+ * :note: Where a step's output name comes from a job parameter, the listener must be
+ *  declared ``@StepScope`` and resolve that name through the same
+ *  {@link BatchOutputPathResolver} the writer uses, so it deletes the file the execution
+ *  actually opened.
  */
 public class FailedOutputCleanupListener implements StepExecutionListener {
 
@@ -53,7 +66,12 @@ public class FailedOutputCleanupListener implements StepExecutionListener {
      *  entries are ignored so an optional second output can be passed unconditionally.
      */
     public FailedOutputCleanupListener(Path... outputPaths) {
-        this.outputPaths = List.of(outputPaths);
+        // Stream.filter rather than List.of: List.of rejects a null element outright,
+        // which would break the documented contract that an absent optional output may
+        // be passed unconditionally.
+        this.outputPaths = Arrays.stream(outputPaths)
+                .filter(Objects::nonNull)
+                .toList();
     }
 
     /**
@@ -64,9 +82,7 @@ public class FailedOutputCleanupListener implements StepExecutionListener {
      */
     @Override
     public ExitStatus afterStep(StepExecution stepExecution) {
-        if (stepExecution.getStatus() == BatchStatus.COMPLETED
-                && ExitStatus.COMPLETED.getExitCode().equals(
-                        stepExecution.getExitStatus().getExitCode())) {
+        if (succeeded(stepExecution)) {
             return null;
         }
         for (Path path : outputPaths) {
@@ -84,6 +100,24 @@ public class FailedOutputCleanupListener implements StepExecutionListener {
             }
         }
         return null;
+    }
+
+    /**
+     * :purpose: Decide whether a finished step succeeded, and may therefore keep the file
+     *  it wrote.
+     * :param stepExecution: the finished step execution.
+     * :returns: ``true`` when the batch status is ``COMPLETED`` and the exit code is
+     *  ``COMPLETED`` or a qualified success code beginning with it (for example
+     *  ``COMPLETED_WITH_REJECTS``); ``false`` for any failure, stop, or business failure
+     *  signalled through the exit code.
+     */
+    private static boolean succeeded(StepExecution stepExecution) {
+        if (stepExecution.getStatus() != BatchStatus.COMPLETED) {
+            return false;
+        }
+        ExitStatus exitStatus = stepExecution.getExitStatus();
+        String exitCode = (exitStatus == null) ? null : exitStatus.getExitCode();
+        return exitCode != null && exitCode.startsWith(ExitStatus.COMPLETED.getExitCode());
     }
 
 }

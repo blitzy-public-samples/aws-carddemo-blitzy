@@ -78,9 +78,18 @@ public class TransactionValidationProcessor implements ItemProcessor<DailyTransa
      * :returns: a {@link PostingItem} (never {@code null}) carrying reason code
      *     {@code 0} when valid, or reject code 100, 101, 102 or 103 with its
      *     description when rejected.
+     * :raises com.carddemo.common.exception.CardDemoException: when the record is not
+     *     a usable fixed-width ``DALYTRAN`` record, so the fault is reported against
+     *     the named record and field rather than as a raw dereference failure inside
+     *     the cycle-balance or expiration check.
      */
     @Override
     public PostingItem process(DailyTransaction item) {
+        // A fixed-width DALYTRAN record always carries the fields the checks below
+        // dereference; a staged row that does not is a feed fault, not a business
+        // rejection, and is reported as such before any lookup is issued.
+        DailyTransactionFeedValidator.requireUsableRecord(item);
+
         // 1500-A-LOOKUP-XREF: READ XREF-FILE by DALYTRAN-CARD-NUM. INVALID KEY -> 100.
         Optional<CardXref> xref = cardXrefRepository.findByXrefCardNum(item.getDalytranCardNum());
         if (xref.isEmpty()) {

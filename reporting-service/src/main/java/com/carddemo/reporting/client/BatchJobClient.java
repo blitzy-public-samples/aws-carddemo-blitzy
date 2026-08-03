@@ -27,6 +27,7 @@ import org.springframework.http.HttpHeaders;
 import org.springframework.stereotype.Component;
 import org.springframework.web.client.RestClient;
 import org.springframework.web.client.RestClientException;
+import org.springframework.web.client.RestClientResponseException;
 
 /**
  * :purpose: Submit the ``CBTRN03C`` / ``TRANREPT`` transaction-detail report to
@@ -51,6 +52,14 @@ public class BatchJobClient {
 
     /** Frozen ``CORPT00C`` message for a failed submission hand-off. */
     public static final String SUBMIT_FAILURE_MESSAGE = "Unable to Write TDQ (JOBS)...";
+
+    /**
+     * Prefix used when batch-service ANSWERS but refuses the run, so the caller reads the
+     * real reason (an already-running or already-complete instance, a restart violation,
+     * unusable parameters) instead of the TDQ literal, which means only "the hand-off itself
+     * could not be written" and misrepresents a refusal.
+     */
+    public static final String SUBMISSION_REFUSED_PREFIX = "Report submission was not accepted: ";
 
     /** Job stream submitted for a report request, named verbatim as its job bean. */
     private static final String TRANSACTION_DETAIL_REPORT_JOB = "transactionDetailReportJob";
@@ -106,11 +115,72 @@ public class BatchJobClient {
             LOGGER.info("Accepted {} as execution {} (status {})", TRANSACTION_DETAIL_REPORT_JOB,
                     accepted.jobExecutionId(), accepted.status());
             return accepted;
+        } catch (RestClientResponseException e) {
+            // batch-service answered, so the hand-off itself was written: the run was
+            // REFUSED. Report why, rather than claiming the TDQ write failed.
+            String reason = refusalReason(e);
+            LOGGER.error("Submission of {} was refused with status {}: {}",
+                    TRANSACTION_DETAIL_REPORT_JOB, e.getStatusCode().value(), reason);
+            throw new CardDemoException(SUBMISSION_REFUSED_PREFIX + reason, e);
         } catch (RestClientException e) {
-            LOGGER.error("Submission of {} was refused: {}", TRANSACTION_DETAIL_REPORT_JOB,
-                    e.getMessage());
+            // No answer at all (batch-service unreachable, timeout, unreadable response):
+            // the hand-off never landed, which is exactly what the frozen literal reports.
+            LOGGER.error("Submission of {} could not be handed off: {}",
+                    TRANSACTION_DETAIL_REPORT_JOB, e.getMessage());
             throw new CardDemoException(SUBMIT_FAILURE_MESSAGE, e);
         }
+    }
+
+    /**
+     * :purpose: Extract the reason batch-service gave for refusing a run from its error
+     *  response body, falling back to the HTTP status text when the body carries no message.
+     * :param e: the error response raised by the REST client.
+     * :returns: a single-line reason suitable for the user-facing refusal message.
+     */
+    private static String refusalReason(RestClientResponseException e) {
+        String body = e.getResponseBodyAsString();
+        String message = extractJsonMessage(body);
+        if (message != null && !message.isBlank()) {
+            return message.replace('\n', ' ').trim();
+        }
+        String statusText = e.getStatusText();
+        return statusText == null || statusText.isBlank()
+                ? "HTTP " + e.getStatusCode().value()
+                : statusText;
+    }
+
+    /**
+     * :purpose: Read the ``message`` member of a JSON error body without pulling in a parser
+     *  dependency on this hot path; the body is the shared error envelope produced by
+     *  ``GlobalExceptionHandler``.
+     * :param body: the raw response body; may be ``null`` or empty.
+     * :returns: the ``message`` value, or ``null`` when it is absent.
+     */
+    private static String extractJsonMessage(String body) {
+        if (body == null) {
+            return null;
+        }
+        int keyIndex = body.indexOf("\"message\"");
+        if (keyIndex < 0) {
+            return null;
+        }
+        int valueStart = body.indexOf('"', body.indexOf(':', keyIndex) + 1);
+        if (valueStart < 0) {
+            return null;
+        }
+        StringBuilder value = new StringBuilder();
+        for (int i = valueStart + 1; i < body.length(); i++) {
+            char c = body.charAt(i);
+            if (c == '\\' && i + 1 < body.length()) {
+                value.append(body.charAt(++i));
+                continue;
+            }
+            if (c == '"') {
+                break;
+            }
+            value.append(c);
+        }
+        return value.toString();
     }
 
     /**

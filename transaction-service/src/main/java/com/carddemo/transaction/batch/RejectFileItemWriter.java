@@ -17,10 +17,12 @@
 package com.carddemo.transaction.batch;
 
 import com.carddemo.common.batch.BatchOutputPathResolver;
+import com.carddemo.common.batch.FixedWidthText;
 import com.carddemo.common.domain.DailyTransaction;
 import java.math.BigDecimal;
 import java.math.BigInteger;
 import java.math.RoundingMode;
+import java.nio.charset.StandardCharsets;
 import org.springframework.batch.infrastructure.item.Chunk;
 import org.springframework.batch.infrastructure.item.ExecutionContext;
 import org.springframework.batch.infrastructure.item.ItemStreamException;
@@ -100,6 +102,15 @@ public class RejectFileItemWriter implements ItemStreamWriter<PostingItem> {
      *     transaction would have failed the posting step with
      *     ``java.io.IOException: No such file or directory``, losing the DALYREJS
      *     reject records that AAP section 0.6.4 makes a frozen 430-byte contract.
+     * :note: The delegate encodes in ``ISO-8859-1``, exactly as the other
+     *     fixed-width batch writers do (``RecordDumpItemWriter``,
+     *     ``CombineTransactionsTasklet``). ``DALYREJS`` is a ``RECFM=F LRECL=430``
+     *     data set [app/jcl/POSTTRAN.jcl], so 430 is a BYTE count, not a character
+     *     count: under the platform default UTF-8 a single accented character in
+     *     ``DALYTRAN-DESC`` or ``DALYTRAN-MERCHANT-NAME`` made the record 431+ bytes
+     *     and byte-shifted every field after it, so a byte-offset downstream reader
+     *     lost the 4-digit reject reason code entirely. One character maps to exactly
+     *     one byte in ISO-8859-1, which keeps the frozen record length (AAP 0.7.6).
      */
     public RejectFileItemWriter(
             @Value("${carddemo.batch.reject-file:dalyrejs.txt}") String rejectFileName,
@@ -107,6 +118,7 @@ public class RejectFileItemWriter implements ItemStreamWriter<PostingItem> {
         this.delegate = new FlatFileItemWriterBuilder<PostingItem>()
                 .name("rejectFileItemWriter")
                 .resource(new FileSystemResource(pathResolver.resolveOutput(rejectFileName)))
+                .encoding(StandardCharsets.ISO_8859_1.name())
                 .lineAggregator(this::toFixedWidthLine)
                 .build();
     }
@@ -218,7 +230,11 @@ public class RejectFileItemWriter implements ItemStreamWriter<PostingItem> {
      * :returns: a string of exactly ``width`` characters.
      */
     private static String padRight(String value, int width) {
-        String safe = (value == null) ? "" : value;
+        // Reduced to single-byte text FIRST: the field width is a BYTE width, so a code
+        // point that ISO-8859-1 cannot represent must occupy exactly one character here
+        // or the record would come out shorter than its declared 430 bytes (a
+        // supplementary code point is two Java characters but encodes to one byte).
+        String safe = (value == null) ? "" : FixedWidthText.toSingleByteText(value);
         if (safe.length() >= width) {
             return safe.substring(0, width);
         }

@@ -15,6 +15,10 @@
  *   "corrected" (spec-literal fidelity rule).
  * :note: The sensitive ``cardCvvCd`` is never serialized to clients and is
  *   deliberately absent from every DTO here, including the update request.
+ * :note: Mirroring the account contract, the card record carries the optimistic-lock
+ *   ``version`` read at display time; the update screen echoes it back so a
+ *   concurrent modification is reported as a conflict (``COCRDUPC``
+ *   ``DATA-WAS-CHANGED-BEFORE-UPDATE``, AAP 0.6.2) instead of silently overwriting.
  */
 
 /**
@@ -65,6 +69,7 @@ export interface CardListResponseDto {
  * :field cardExpiraionDate: expiration date in ``YYYY-MM-DD`` form (preserved
  *   legacy misspelling).
  * :field custId: owning customer id (from the ``CardXref`` cross-reference).
+ * :field version: optimistic-lock version of the card record, echoed back on update.
  */
 export interface CardDetailResponseDto {
   cardNum: string;
@@ -73,6 +78,7 @@ export interface CardDetailResponseDto {
   cardActiveStatus: string;
   cardExpiraionDate: string;
   custId: string;
+  version: number;
 }
 
 /**
@@ -83,11 +89,14 @@ export interface CardDetailResponseDto {
  * :field cardEmbossedName: updated embossed cardholder name.
  * :field cardActiveStatus: updated single-character active-status flag.
  * :field cardExpiraionDate: updated expiration date in ``YYYY-MM-DD`` form.
+ * :field version: the optimistic-lock version read at display time; a value that no
+ *   longer matches the stored record yields HTTP 409 rather than a lost update.
  */
 export interface CardUpdateRequestDto {
   cardEmbossedName: string;
   cardActiveStatus: string;
   cardExpiraionDate: string;
+  version: number;
 }
 
 /**

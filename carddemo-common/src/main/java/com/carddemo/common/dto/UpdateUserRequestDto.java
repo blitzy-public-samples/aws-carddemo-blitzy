@@ -15,20 +15,42 @@
  */
 package com.carddemo.common.dto;
 
+import com.fasterxml.jackson.annotation.JsonProperty;
+import jakarta.validation.constraints.Size;
+
 /**
- * :purpose: Inbound DTO for the update-user screen (COUSR02C, CICS CU02). Carries the editable non-secret profile fields; the user id is the lookup key supplied separately and is never changed here.
- * :output: A mutable carrier of the first name, last name, and user type.
+ * :purpose: Inbound DTO for the update-user screen (COUSR02C, CICS CU02). Carries the
+ *     editable profile fields plus the raw password the service verifies and re-encodes;
+ *     the user id is the lookup key supplied in the path and is never changed here.
+ * :output: A mutable carrier of the first name, last name, user type, and raw password.
+ * :note: Every field width mirrors the ``CSUSR01Y`` record layout so an oversized value is
+ *     refused with HTTP 400 rather than reaching the column. Presence edits stay in the
+ *     service, preserving the verbatim ``COUSR02C`` literals and their order.
+ * :note: The password travels in the request BODY and is write-only. It must never be
+ *     accepted as a query parameter, because a URL is recorded verbatim by access logs and
+ *     by tracing spans (CWE-598).
  */
 public class UpdateUserRequestDto {
 
-    /** :purpose: the new first name (``SEC-USR-FNAME``). */
+    /** :purpose: the new first name (``SEC-USR-FNAME`` ``PIC X(20)``). */
+    @Size(max = 20, message = "First Name must be at most 20 characters")
     private String firstName;
 
-    /** :purpose: the new last name (``SEC-USR-LNAME``). */
+    /** :purpose: the new last name (``SEC-USR-LNAME`` ``PIC X(20)``). */
+    @Size(max = 20, message = "Last Name must be at most 20 characters")
     private String lastName;
 
-    /** :purpose: the new user type code 'A'/'U' (``SEC-USR-TYPE``). */
+    /** :purpose: the new user type code 'A'/'U' (``SEC-USR-TYPE`` ``PIC X(01)``). */
+    @Size(max = 1, message = "User Type must be at most 1 character")
     private String userType;
+
+    /**
+     * :purpose: the entered raw password (``SEC-USR-PWD`` ``PIC X(08)``), compared against
+     *     the stored hash and re-encoded only when it changes; never returned on a response.
+     */
+    @JsonProperty(access = JsonProperty.Access.WRITE_ONLY)
+    @Size(max = 8, message = "Password must be at most 8 characters")
+    private String password;
 
     /**
      * :purpose: Create an empty UpdateUserRequestDto. Required for JSON (Jackson) serialization.
@@ -82,6 +104,22 @@ public class UpdateUserRequestDto {
      */
     public void setUserType(String userType) {
         this.userType = userType;
+    }
+
+    /**
+     * :purpose: Return the entered raw password (``SEC-USR-PWD``).
+     * :output: the ``password`` value; ``null`` when the caller supplied none.
+     */
+    public String getPassword() {
+        return password;
+    }
+
+    /**
+     * :purpose: Set the entered raw password (``SEC-USR-PWD``).
+     * :param password: the ``password`` value.
+     */
+    public void setPassword(String password) {
+        this.password = password;
     }
 
 }

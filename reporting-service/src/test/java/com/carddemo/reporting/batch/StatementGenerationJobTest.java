@@ -20,6 +20,7 @@ import com.carddemo.reporting.mapper.StatementMapper;
 import org.junit.jupiter.api.Test;
 
 import java.math.BigDecimal;
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -371,5 +372,101 @@ public class StatementGenerationJobTest {
         assertThat(html).anyMatch(line -> line.contains("000001234.56 "));
         assertThat(html).anyMatch(
                 line -> line.contains(StatementGenerationJob.formatSuppressed(new BigDecimal("100.50"))));
+    }
+
+    // ------------------------------------------------------------------
+    // 5.D - HTML escaping of datastore text (stored-XSS prevention)
+    // ------------------------------------------------------------------
+
+    /**
+     * :purpose: Verify the escape helper replaces exactly the five characters that
+     *   carry meaning in HTML and leaves ordinary statement text untouched.
+     */
+    @Test
+    void htmlEscapeReplacesTheFiveMarkupCharacters() {
+        assertThat(StatementGenerationJob.htmlEscape("JOHN A DOE")).isEqualTo("JOHN A DOE");
+        assertThat(StatementGenerationJob.htmlEscape(null)).isEmpty();
+        assertThat(StatementGenerationJob.htmlEscape("<script>alert(1)</script>"))
+                .isEqualTo("&lt;script&gt;alert(1)&lt;/script&gt;");
+        assertThat(StatementGenerationJob.htmlEscape("A & B \"quoted\" 'single'"))
+                .isEqualTo("A &amp; B &quot;quoted&quot; &#39;single&#39;");
+        // The ampersand is replaced first, so an introduced entity is not escaped twice.
+        assertThat(StatementGenerationJob.htmlEscape("&lt;")).isEqualTo("&amp;lt;");
+    }
+
+    /**
+     * :purpose: Verify customer-supplied name, address and transaction-description
+     *   text carrying markup reaches the HTML statement escaped, so no browser can
+     *   execute it, while every line stays at the frozen 100-column width.
+     */
+    @Test
+    void renderHtmlEscapesCustomerSuppliedMarkup() {
+        List<StatementMapper.StatementTransaction> transactions = new ArrayList<>();
+        transactions.add(newTransaction("0000000000000001",
+                "<img src=x onerror=alert(2)>", new BigDecimal("100.50")));
+        StatementMapper.StatementModel model = newModel(transactions, new BigDecimal("100.50"));
+        model.setCustomerName("<script>alert(1)</script>");
+        model.setAddressLine1("<b>123 MAIN ST</b>");
+
+        List<String> html = StatementGenerationJob.renderHtml(model);
+
+        assertThat(html).allSatisfy(line -> assertThat(line).hasSize(100));
+        assertThat(html).noneMatch(line -> line.contains("<script>"));
+        assertThat(html).noneMatch(line -> line.contains("onerror=alert(2)>"));
+        assertThat(html).anyMatch(line -> line.contains("&lt;script&gt;alert(1)&lt;/script&gt;"));
+        assertThat(html).anyMatch(line -> line.contains("&lt;b&gt;123 MAIN ST&lt;/b&gt;"));
+        assertThat(html).anyMatch(line -> line.contains("&lt;img src=x onerror=alert(2)&gt;"));
+    }
+
+    /**
+     * :purpose: Verify the plain-text statement is NOT escaped - it is not an HTML
+     *   document, and altering its text would break the frozen ``STMTFILE`` layout.
+     */
+    @Test
+    void renderTextLeavesMarkupCharactersUnescaped() {
+        List<StatementMapper.StatementTransaction> transactions = new ArrayList<>();
+        transactions.add(newTransaction("0000000000000001", "A & B <x>", new BigDecimal("100.50")));
+        StatementMapper.StatementModel model = newModel(transactions, new BigDecimal("100.50"));
+
+        List<String> text = StatementGenerationJob.renderText(model);
+
+        assertThat(text).allSatisfy(line -> assertThat(line).hasSize(80));
+        assertThat(text).anyMatch(line -> line.contains("A & B <x>"));
+        assertThat(text).noneMatch(line -> line.contains("&amp;"));
+    }
+
+    // ------------------------------------------------------------------
+    // 5.E - Byte contracts for text outside Latin-1
+    // ------------------------------------------------------------------
+
+    /**
+     * :purpose: Verify a name or description outside Latin-1 keeps every text line
+     *   at exactly 80 BYTES and every HTML line at exactly 100 BYTES in the
+     *   ISO-8859-1 encoding both files are written in. An accented character is two
+     *   bytes under UTF-8, and a supplementary code point is two Java characters
+     *   that encode to a single ISO-8859-1 byte, so the two directions must both
+     *   hold.
+     */
+    @Test
+    void nonLatin1TextKeepsTheEightyAndHundredByteContracts() {
+        List<StatementMapper.StatementTransaction> transactions = new ArrayList<>();
+        transactions.add(newTransaction("0000000000000001",
+                "Café Müller \uD83C\uDF63", new BigDecimal("100.50")));
+        StatementMapper.StatementModel model = newModel(transactions, new BigDecimal("100.50"));
+        model.setCustomerName("JOSÉ MÜLLER");
+        model.setAddressLine1("12 RUE DE L\u2019ÉGLISE");
+
+        List<String> text = StatementGenerationJob.renderText(model);
+        List<String> html = StatementGenerationJob.renderHtml(model);
+
+        assertThat(text).allSatisfy(line ->
+                assertThat(line.getBytes(StandardCharsets.ISO_8859_1)).hasSize(80));
+        assertThat(html).allSatisfy(line ->
+                assertThat(line.getBytes(StandardCharsets.ISO_8859_1)).hasSize(100));
+        // Latin-1 characters survive; the emoji and the typographic apostrophe are
+        // each replaced by one substitute character.
+        assertThat(text).anyMatch(line -> line.contains("JOSÉ MÜLLER"));
+        assertThat(text).anyMatch(line -> line.contains("Café Müller ?"));
+        assertThat(html).anyMatch(line -> line.contains("12 RUE DE L?ÉGLISE"));
     }
 }

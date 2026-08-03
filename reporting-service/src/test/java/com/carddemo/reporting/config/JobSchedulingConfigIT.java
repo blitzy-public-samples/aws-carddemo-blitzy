@@ -34,6 +34,7 @@ import org.junit.jupiter.api.Test;
 import org.springframework.batch.core.BatchStatus;
 import org.springframework.batch.core.job.Job;
 import org.springframework.batch.core.job.JobExecution;
+import org.springframework.batch.core.job.parameters.JobParameter;
 import org.springframework.batch.core.launch.JobExecutionAlreadyRunningException;
 import org.springframework.batch.core.launch.JobLauncher;
 import org.springframework.batch.core.launch.support.TaskExecutorJobLauncher;
@@ -93,11 +94,11 @@ class JobSchedulingConfigIT {
     private static final String SYNTHETIC_CARD = "0000000000000000";
 
     /**
-     * :purpose: The writers' compiled-in default output directory. ``JobSchedulingConfig``
-     *   deliberately submits only ``reportType``/``startDate``/``endDate``/``run.id``
-     *   (the legacy TDQ record carries no DD names), so ``statementItemWriter`` falls
-     *   back to ``output/statements.txt`` and ``output/statements.html`` relative to
-     *   the process working directory — the module base directory under Failsafe.
+     * :purpose: The writers' compiled-in default output directory. A submission that
+     *   names no files carries the configured default ``stmtFile``/``htmlFile`` names,
+     *   so ``statementItemWriter`` resolves ``output/statements.txt`` and
+     *   ``output/statements.html`` relative to the process working directory — the
+     *   module base directory under Failsafe.
      */
     private static final Path DEFAULT_OUTPUT_DIR = Paths.get("output");
 
@@ -210,6 +211,16 @@ class JobSchedulingConfigIT {
         account.setAcctAddrZip("99999");
         accountRepository.save(account);
 
+        // The card master row backs the cross-reference: a transaction's tran_card_num
+        // foreign-keys into cards (fk_transactions_card, V8__transactions_card_fk.sql), so a
+        // fixture carrying only the xref would describe a state the database does not permit.
+        jdbcTemplate.update(
+                "INSERT INTO cards (card_num, card_acct_id, card_cvv_cd, card_embossed_name, "
+                        // The legacy copybook misspelling CARD-EXPIRAION-DATE is preserved.
+                        + "card_expiraion_date, card_active_status, version) "
+                        + "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                SYNTHETIC_CARD, 1L, null, "Statement Holder", "2099-12-31", "Y", 0L);
+
         CardXref cardXref = new CardXref();
         cardXref.setXrefCardNum(SYNTHETIC_CARD);
         cardXref.setXrefCustId(1L);
@@ -305,8 +316,7 @@ class JobSchedulingConfigIT {
 
     @Test
     void submissionRunsTheRealStatementJobToCompletionAndProducesArtifacts() throws Exception {
-        JobExecution execution = awaitCompletion(
-                jobSchedulingConfig.launchStatementGeneration("Monthly", "2024-01-01", "2024-01-31"));
+        JobExecution execution = awaitCompletion(jobSchedulingConfig.launchStatementGeneration());
 
         assertThat(execution).isNotNull();
         assertThat(execution.getJobInstance().getJobName()).isEqualTo("statementGenerationJob");
@@ -314,11 +324,15 @@ class JobSchedulingConfigIT {
         assertThat(execution.getExitStatus().getExitCode()).isEqualTo("COMPLETED");
         assertThat(execution.getAllFailureExceptions()).isEmpty();
 
-        // The submitted parameters reached the real launcher, not a captor.
-        assertThat(execution.getJobParameters().getString("reportType")).isEqualTo("Monthly");
-        assertThat(execution.getJobParameters().getString("startDate")).isEqualTo("2024-01-01");
-        assertThat(execution.getJobParameters().getString("endDate")).isEqualTo("2024-01-31");
+        // The submitted parameters reached the real launcher, not a captor: the two
+        // output file names of CREASTMT and nothing else, since the job stream carries
+        // no PARM and nothing in the job could read a date window.
+        assertThat(execution.getJobParameters().getString("stmtFile")).isEqualTo("statements.txt");
+        assertThat(execution.getJobParameters().getString("htmlFile")).isEqualTo("statements.html");
         assertThat(execution.getJobParameters().getString("run.id")).isNotBlank();
+        assertThat(execution.getJobParameters().parameters())
+                .extracting(JobParameter::name)
+                .containsExactlyInAnyOrder("stmtFile", "htmlFile", "run.id");
 
         assertThat(execution.getStepExecutions()).hasSize(1);
         StepExecution stepExecution = execution.getStepExecutions().iterator().next();
@@ -390,18 +404,17 @@ class JobSchedulingConfigIT {
         removeDefaultOutput();
         Files.createFile(DEFAULT_OUTPUT_DIR);
 
-        // ``run.id`` is recorded for traceability but does NOT identify the instance, so a
-        // distinct reporting period is required: repeating the period of the success case
-        // would resolve to that already-completed instance and be refused before the run
-        // this case exists to observe could start.
-        JobExecution execution = awaitCompletion(
-                jobSchedulingConfig.launchStatementGeneration("Monthly", "2024-04-01", "2024-04-30"));
+        // Distinct output names are used so this case observes a failure of its OWN
+        // destination rather than re-running the success case's files, which the
+        // identifying ``run.id`` would otherwise happily re-execute and overwrite.
+        JobExecution execution = awaitCompletion(jobSchedulingConfig
+                .launchStatementGeneration("unwritable.txt", "unwritable.html"));
 
         assertThat(execution.getStatus()).isEqualTo(BatchStatus.FAILED);
         assertThat(execution.getExitStatus().getExitCode()).isEqualTo("FAILED");
         assertThat(execution.getAllFailureExceptions()).isNotEmpty();
         assertThat(execution.getAllFailureExceptions())
-                .anySatisfy(failure -> assertThat(failure).hasMessageContaining("statements.txt"));
+                .anySatisfy(failure -> assertThat(failure).hasMessageContaining("unwritable.txt"));
         // The injected obstruction is still in place and no statement artifact was produced.
         // (Files.notExists cannot confirm absence below a non-directory, so exists() is used.)
         assertThat(Files.isRegularFile(DEFAULT_OUTPUT_DIR)).isTrue();
@@ -446,7 +459,7 @@ class JobSchedulingConfigIT {
             // The launcher refuses the submission, so the caller learns about it
             // immediately instead of receiving a success message over a job that never ran.
             Throwable thrown = catchThrowable(() -> refusingComponent
-                    .launchStatementGeneration("Monthly", "2024-02-01", "2024-02-29"));
+                    .launchStatementGeneration("refused.txt", "refused.html"));
 
             assertThat(thrown)
                     .isInstanceOf(CardDemoException.class)

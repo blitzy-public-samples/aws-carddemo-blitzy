@@ -30,7 +30,7 @@ import java.util.Optional;
  *     bill-payment flow, replacing the CICS VSAM ``CXACAIX`` alternate-index
  *     access performed by the legacy COBOL paragraph ``READ-CXACAIX-FILE`` in
  *     ``COBIL00C``. The ``CXACAIX`` account browse key becomes the derived
- *     query {@link #findByXrefAcctId(Long)}, resolving the account-to-card
+ *     query {@link #findFirstByXrefAcctIdOrderByXrefCardNumAsc(Long)}, resolving the account-to-card
  *     linkage needed to build the bill-payment transaction. Standard
  *     create/read/update/delete behaviour is inherited from
  *     {@link JpaRepository}; the identifier type is ``String`` because the
@@ -40,13 +40,19 @@ import java.util.Optional;
 public interface CardXrefRepository extends JpaRepository<CardXref, String> {
 
     /**
-     * Look up the single card cross-reference owned by an account.
-     *
-     * :param acctId: the owning account identifier, matched against the entity
-     *     field ``xrefAcctId`` (legacy ``XREF-ACCT-ID``).
-     * :output: an {@link Optional} holding the matching {@link CardXref}, or an
-     *     empty {@link Optional} when no cross-reference exists for the supplied
-     *     account identifier.
+     * :purpose: Retrieve the FIRST card cross-reference of an account through the ``CXACAIX``
+     *     alternate index, in ascending card-number order.
+     * :param acctId: the owning account identifier used as the alternate-index key.
+     * :output: the first matching cross-reference, or an empty ``Optional`` when no
+     *     cross-reference exists for the account (the legacy ``NOTFND`` short-circuit that
+     *     fails the referential-integrity check).
+     * :note: ``CXACAIX`` is a NON-UNIQUE alternate index: an account legitimately owns
+     *     several cards (``COCRDLIC`` pages seven per screen), and the programs that resolve
+     *     an account through it -- ``COACTVWC``/``COACTUPC`` ``9200-GETCARDXREF-BYACCT``,
+     *     ``COTRN02C`` and ``COBIL00C`` -- issue ``STARTBR``/``READNEXT`` and use the FIRST
+     *     record returned. A finder that demanded a unique result therefore failed with
+     *     "Query did not return a unique result" for a perfectly normal account. The
+     *     ordering makes the choice deterministic, which the VSAM key order also was.
      */
-    Optional<CardXref> findByXrefAcctId(Long acctId);
+    Optional<CardXref> findFirstByXrefAcctIdOrderByXrefCardNumAsc(Long acctId);
 }

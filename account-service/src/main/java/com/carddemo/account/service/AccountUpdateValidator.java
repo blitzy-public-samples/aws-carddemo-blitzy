@@ -160,6 +160,22 @@ public class AccountUpdateValidator {
     /** ``app/cpy/CSUTLDPY.cpy`` day edit suffix. */
     private static final String SUFFIX_DAY_RANGE = ":day must be a number between 1 and 31.";
 
+    /**
+     * :purpose: Composed suffix reporting that a value is longer than the fixed-width field it
+     *     is written into. The 3270 map bounded every field physically, so the legacy program
+     *     carries no literal for this outcome; the wording follows the composed
+     *     ``WS-EDIT-VARIABLE-NAME`` + suffix convention the other edits use. Without the edit
+     *     an oversized value reached the column and surfaced as a server error rather than as
+     *     the client input error it is.
+     */
+    private static final String SUFFIX_MAX_LENGTH_PREFIX = " must be at most ";
+
+    /** :purpose: Trailing part of the width message; see {@link #SUFFIX_MAX_LENGTH_PREFIX}. */
+    private static final String SUFFIX_MAX_LENGTH_SUFFIX = " characters.";
+
+    /** :purpose: Singular form of {@link #SUFFIX_MAX_LENGTH_SUFFIX} for a one-character field. */
+    private static final String SUFFIX_MAX_LENGTH_SINGULAR = " character.";
+
     // -- WS-EDIT-VARIABLE-NAME values, in COACTUPC 1200 order. ---------------------
 
     private static final String VAR_OPEN_DATE = "Open Date";
@@ -182,12 +198,35 @@ public class AccountUpdateValidator {
     private static final String VAR_PHONE_NUMBER_2 = "Phone Number 2";
     private static final String VAR_EFT_ACCOUNT_ID = "EFT Account Id";
     private static final String VAR_PRIMARY_CARD_HOLDER = "Primary Card Holder";
+    private static final String VAR_ACCOUNT_STATUS = "Account Status";
+    private static final String VAR_ACCOUNT_GROUP = "Account Group";
+    private static final String VAR_LAST_NAME = "Last Name";
+    private static final String VAR_ADDRESS_LINE_2 = "Address Line 2";
+    private static final String VAR_GOVT_ISSUED_ID = "Govt Issued Id";
 
     /** :purpose: Lowest FICO score the legacy range check accepts. */
     private static final int FICO_MIN = 300;
 
     /** :purpose: Highest FICO score the legacy range check accepts. */
     private static final int FICO_MAX = 850;
+
+    /** :purpose: Declared width of ``ACCT-ACTIVE-STATUS`` ``PIC X(01)``. */
+    private static final int ACCT_STATUS_WIDTH = 1;
+
+    /** :purpose: Declared width of ``ACCT-GROUP-ID`` ``PIC X(10)``. */
+    private static final int ACCT_GROUP_ID_WIDTH = 10;
+
+    /** :purpose: Declared width of every ``CUST-*-NAME`` field, ``PIC X(25)``. */
+    private static final int NAME_WIDTH = 25;
+
+    /** :purpose: Declared width of every ``CUST-ADDR-LINE-n`` field, ``PIC X(50)``. */
+    private static final int ADDRESS_WIDTH = 50;
+
+    /** :purpose: Declared width of ``CUST-ADDR-COUNTRY-CD`` ``PIC X(03)``. */
+    private static final int COUNTRY_CODE_WIDTH = 3;
+
+    /** :purpose: Declared width of ``CUST-GOVT-ISSUED-ID`` ``PIC X(20)``. */
+    private static final int GOVT_ID_WIDTH = 20;
 
     /** :purpose: Monetary scale of every ``S9(09)V99`` COMP-3 amount. */
     private static final int MONEY_SCALE = 2;
@@ -228,6 +267,11 @@ public class AccountUpdateValidator {
             throw new CardDemoException(MSG_NO_INPUT);
         }
 
+        // Record-layout widths (app/cpy/CVACT01Y.cpy, app/cpy/CVCUS01Y.cpy). Each width edit
+        // sits at its field's position in the PERFORM order, so the message a submission with
+        // several faults reports is still the one the legacy screen would have shown.
+        requireMaxLength(request.getAcctActiveStatus(), VAR_ACCOUNT_STATUS, ACCT_STATUS_WIDTH);
+
         // 1220-EDIT-YESNO on 'Account Status'.
         requireYesNo(request.getAcctActiveStatus(), MSG_STATUS_YN);
 
@@ -256,6 +300,10 @@ public class AccountUpdateValidator {
         requireAmount(request.getAcctCurrCycDebit(),
                 VAR_CURR_CYC_DEBIT + SUFFIX_MUST_BE_SUPPLIED, VAR_CURR_CYC_DEBIT + SUFFIX_NOT_VALID);
 
+        // 'Account Group' has no legacy edit of its own -- COACTUPC displays it and rewrites it
+        // unchecked -- so its declared X(10) width is the only constraint that applies.
+        requireMaxLength(request.getAcctGroupId(), VAR_ACCOUNT_GROUP, ACCT_GROUP_ID_WIDTH);
+
         // 1265-EDIT-US-SSN: the screen carries three separate SSN fields, each edited by
         // 1245-EDIT-NUM-REQD over its own fixed width, with the range check applied only to
         // part 1 and only when part 1 already passed.
@@ -270,11 +318,16 @@ public class AccountUpdateValidator {
         // 1225-EDIT-ALPHA-REQD / 1235-EDIT-ALPHA-OPT on the names. The dedicated
         // 88-level literals win over the generic composed forms here.
         requireAlpha(request.getCustFirstName(), VAR_FIRST_NAME + SUFFIX_MUST_BE_SUPPLIED, MSG_NAME_ALPHA);
+        requireMaxLength(request.getCustFirstName(), VAR_FIRST_NAME, NAME_WIDTH);
         requireOptionalAlpha(request.getCustMiddleName(), VAR_MIDDLE_NAME + SUFFIX_ALPHABETS_ONLY);
+        requireMaxLength(request.getCustMiddleName(), VAR_MIDDLE_NAME, NAME_WIDTH);
         requireAlpha(request.getCustLastName(), MSG_LASTNAME_NOT_PROVIDED, MSG_NAME_ALPHA);
+        requireMaxLength(request.getCustLastName(), VAR_LAST_NAME, NAME_WIDTH);
 
         // 1215-EDIT-MANDATORY on 'Address Line 1'.
         requireSupplied(request.getCustAddrLine1(), VAR_ADDRESS_LINE_1 + SUFFIX_MUST_BE_SUPPLIED);
+        requireMaxLength(request.getCustAddrLine1(), VAR_ADDRESS_LINE_1, ADDRESS_WIDTH);
+        requireMaxLength(request.getCustAddrLine2(), VAR_ADDRESS_LINE_2, ADDRESS_WIDTH);
 
         // 1225-EDIT-ALPHA-REQD plus 1270-EDIT-US-STATE-CD on 'State'.
         requireStateCode(request.getCustAddrStateCd());
@@ -287,8 +340,10 @@ public class AccountUpdateValidator {
         // city column: COACTUPC edits 'City' against CUST-ADDR-LINE-3.
         requireAlpha(request.getCustAddrLine3(), VAR_CITY + SUFFIX_MUST_BE_SUPPLIED,
                 VAR_CITY + SUFFIX_ALPHABETS_ONLY);
+        requireMaxLength(request.getCustAddrLine3(), VAR_CITY, ADDRESS_WIDTH);
         requireAlpha(request.getCustAddrCountryCd(), VAR_COUNTRY + SUFFIX_MUST_BE_SUPPLIED,
                 VAR_COUNTRY + SUFFIX_ALPHABETS_ONLY);
+        requireMaxLength(request.getCustAddrCountryCd(), VAR_COUNTRY, COUNTRY_CODE_WIDTH);
 
         // 1260-EDIT-US-PHONE-NUM on both phone numbers.
         requirePhone(request.getCustPhoneNum1(), VAR_PHONE_NUMBER_1);
@@ -300,6 +355,13 @@ public class AccountUpdateValidator {
         if (!PiiMasker.isMaskShaped(request.getCustEftAccountId())) {
             requireNumeric(request.getCustEftAccountId(), VAR_EFT_ACCOUNT_ID,
                     EFT_EDIT_LENGTH, EFT_WIDTH);
+            requireMaxLength(request.getCustEftAccountId(), VAR_EFT_ACCOUNT_ID, EFT_WIDTH);
+        }
+
+        // 'Govt Issued Id' carries no legacy edit either, so only its X(20) width applies. A
+        // masked echo of the stored identifier is not a new value and is left alone.
+        if (!PiiMasker.isMaskShaped(request.getCustGovtIssuedId())) {
+            requireMaxLength(request.getCustGovtIssuedId(), VAR_GOVT_ISSUED_ID, GOVT_ID_WIDTH);
         }
 
         // 1220-EDIT-YESNO on 'Primary Card Holder'.
@@ -467,6 +529,11 @@ public class AccountUpdateValidator {
      * :param end: exclusive end index of the slice.
      * :param variableName: the ``WS-EDIT-VARIABLE-NAME`` used to compose the message.
      * :raises CardDemoException: when the slice is blank, non-numeric or zero.
+     * :note: The zero test compares the digits themselves rather than parsing them. The legacy
+     *     edit is ``IF WS-EDIT-ALPHANUM-ONLY(1:length) = ZEROS``, a character comparison over a
+     *     ``PIC X`` field of any width, whereas parsing a ten-digit ``CUST-EFT-ACCOUNT-ID``
+     *     overflows a 32-bit integer and turned a perfectly valid identifier into a server
+     *     error.
      */
     private void requireNumericSlice(String padded, int begin, int end, String variableName) {
         String slice = padded.substring(begin, end);
@@ -476,7 +543,7 @@ public class AccountUpdateValidator {
         if (!slice.chars().allMatch(Character::isDigit)) {
             throw new CardDemoException(variableName + SUFFIX_ALL_NUMERIC);
         }
-        if (Integer.parseInt(slice) == 0) {
+        if (slice.chars().allMatch(digit -> digit == '0')) {
             throw new CardDemoException(variableName + SUFFIX_NOT_ZERO);
         }
     }
@@ -543,6 +610,27 @@ public class AccountUpdateValidator {
     private void requireOptionalAlpha(String value, String alphaMessage) {
         if (!isBlank(value) && !isAlphaOrSpace(value)) {
             throw new CardDemoException(alphaMessage);
+        }
+    }
+
+    /**
+     * :purpose: Refuse a value longer than the fixed-width field it is written into. A COBOL
+     *     ``MOVE`` into a shorter ``PIC X(n)`` field truncates silently and the 3270 map could
+     *     not accept the extra characters at all, so neither storing a truncated value nor
+     *     letting the column reject it downstream is acceptable: the submission is refused
+     *     with the field's own composed message.
+     * :param value: the submitted value; an absent value passes and is left to the presence edit.
+     * :param variableName: the ``WS-EDIT-VARIABLE-NAME`` of the field.
+     * :param maxLength: the declared record-layout width.
+     * :raises CardDemoException: when the trimmed value exceeds ``maxLength``.
+     */
+    private void requireMaxLength(String value, String variableName, int maxLength) {
+        if (value == null) {
+            return;
+        }
+        if (value.trim().length() > maxLength) {
+            throw new CardDemoException(variableName + SUFFIX_MAX_LENGTH_PREFIX + maxLength
+                    + (maxLength == 1 ? SUFFIX_MAX_LENGTH_SINGULAR : SUFFIX_MAX_LENGTH_SUFFIX));
         }
     }
 

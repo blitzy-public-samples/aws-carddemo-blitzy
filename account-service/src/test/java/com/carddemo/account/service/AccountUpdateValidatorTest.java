@@ -352,6 +352,74 @@ class AccountUpdateValidatorTest {
     }
 
     /**
+     * :purpose: Every editable text field is refused when it is longer than its record-layout
+     *  width, so an oversized value can never reach the column and surface as a server error.
+     *  Each case carries the field's own composed message.
+     */
+    @Test
+    @DisplayName("a value wider than its record-layout field is rejected with the field's width message")
+    void oversizedFieldsAreRejectedWithTheirWidthMessage() {
+        assertWidthRejected(request -> request.setAcctGroupId("ELEVENCHARS"),
+                "Account Group must be at most 10 characters.");
+        assertWidthRejected(request -> request.setAcctActiveStatus("YY"),
+                "Account Status must be at most 1 character.");
+        assertWidthRejected(request -> request.setCustFirstName("A".repeat(26)),
+                "First Name must be at most 25 characters.");
+        assertWidthRejected(request -> request.setCustMiddleName("B".repeat(26)),
+                "Middle Name must be at most 25 characters.");
+        assertWidthRejected(request -> request.setCustLastName("C".repeat(26)),
+                "Last Name must be at most 25 characters.");
+        assertWidthRejected(request -> request.setCustAddrLine1("D".repeat(51)),
+                "Address Line 1 must be at most 50 characters.");
+        assertWidthRejected(request -> request.setCustAddrLine2("E".repeat(51)),
+                "Address Line 2 must be at most 50 characters.");
+        assertWidthRejected(request -> request.setCustAddrLine3("F".repeat(51)),
+                "City must be at most 50 characters.");
+        assertWidthRejected(request -> request.setCustAddrCountryCd("USAX"),
+                "Country must be at most 3 characters.");
+        assertWidthRejected(request -> request.setCustGovtIssuedId("G".repeat(21)),
+                "Govt Issued Id must be at most 20 characters.");
+        assertWidthRejected(request -> request.setCustEftAccountId("0053581756123"),
+                "EFT Account Id must be at most 10 characters.");
+    }
+
+    /**
+     * :purpose: A ten-digit ``CUST-EFT-ACCOUNT-ID`` is a legal value and must pass the numeric
+     *  edit. The legacy zero test is a character comparison over the whole field, so it must
+     *  not be reproduced by parsing the digits -- ten digits overflow a 32-bit integer and the
+     *  submission previously failed as a server error.
+     */
+    @Test
+    @DisplayName("a ten-digit EFT Account Id passes, and an all-zero one reports the zero edit")
+    void tenDigitEftAccountIdIsAcceptedAndAllZeroIsRejected() {
+        AccountUpdateRequestDto widest = validRequest();
+        widest.setCustEftAccountId("9999999999");
+        assertThatNoException().isThrownBy(() -> validator.validate(widest));
+
+        AccountUpdateRequestDto zeroes = validRequest();
+        zeroes.setCustEftAccountId("0000000000");
+        assertThatExceptionOfType(CardDemoException.class)
+                .isThrownBy(() -> validator.validate(zeroes))
+                .withMessage("EFT Account Id must not be zero.");
+    }
+
+    /**
+     * :purpose: Apply one oversized-field mutation to an otherwise valid submission and assert
+     *  the exact message the width edit reports.
+     * :param mutation: the field mutation that exceeds a declared width.
+     * :param expectedMessage: the composed message the edit must report.
+     */
+    private void assertWidthRejected(Consumer<AccountUpdateRequestDto> mutation,
+                                     String expectedMessage) {
+        AccountUpdateRequestDto request = validRequest();
+        mutation.accept(request);
+
+        assertThatExceptionOfType(CardDemoException.class)
+                .isThrownBy(() -> validator.validate(request))
+                .withMessage(expectedMessage);
+    }
+
+    /**
      * :purpose: Adapt a lambda to the parameterized-test argument type without repeating the cast.
      * :param mutation: the field mutation to apply.
      * :returns: the mutation typed as a ``Consumer``.

@@ -18,6 +18,7 @@ package com.carddemo.user.service;
 
 import org.springframework.beans.factory.annotation.Autowired;
 import com.carddemo.common.security.SessionPrincipalIndex;
+import java.sql.SQLException;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
@@ -27,6 +28,9 @@ import java.util.Optional;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.dao.DataAccessException;
+import org.springframework.dao.DataIntegrityViolationException;
+import org.springframework.dao.DuplicateKeyException;
+import org.springframework.orm.ObjectOptimisticLockingFailureException;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Pageable;
@@ -41,9 +45,12 @@ import com.carddemo.common.dto.UserListResponseDto;
 import com.carddemo.common.dto.UserResponseDto;
 import com.carddemo.common.dto.UserWriteResponseDto;
 import com.carddemo.common.exception.CardDemoException;
+import com.carddemo.common.exception.OptimisticLockConflictException;
 import com.carddemo.common.exception.RecordNotFoundException;
 import com.carddemo.user.mapper.UserMapper;
 import com.carddemo.user.repository.UserRepository;
+
+import jakarta.persistence.OptimisticLockException;
 
 /**
  * Administrator-only user-CRUD business logic.
@@ -81,6 +88,24 @@ public class UserService {
     private static final String MSG_USER_ID_EMPTY = "User ID can NOT be empty...";
     private static final String MSG_PASSWORD_EMPTY = "Password can NOT be empty...";
     private static final String MSG_USER_TYPE_EMPTY = "User Type can NOT be empty...";
+
+    /**
+     * :purpose: Reported when the entered user type is neither of the two codes the legacy
+     *     role model defines (``CDEMO-USRTYP-ADMIN`` ``'A'`` / ``CDEMO-USRTYP-USER`` ``'U'``).
+     *     The 3270 map restricted the field to a single character and the value set was
+     *     enforced downstream, so this validation outcome has no legacy literal; the wording
+     *     follows the convention already used for the other value-set edits.
+     */
+    private static final String MSG_USER_TYPE_INVALID = "User Type must be A or U";
+
+    /** :purpose: ``SEC-USR-TYPE`` administrator code (``CDEMO-USRTYP-ADMIN``). */
+    private static final String USER_TYPE_ADMIN = "A";
+
+    /** :purpose: ``SEC-USR-TYPE`` regular-user code (``CDEMO-USRTYP-USER``). */
+    private static final String USER_TYPE_USER = "U";
+
+    /** :purpose: SQL state PostgreSQL raises for a unique or primary-key violation. */
+    private static final String SQL_STATE_UNIQUE_VIOLATION = "23505";
 
     private static final String MSG_USER_PREFIX = "User ";
     private static final String MSG_ADDED_SUFFIX = " has been added ...";
@@ -327,16 +352,21 @@ public class UserService {
      * :purpose: Add a new security user (``COUSR01C`` / ``CU01``): validate the entered
      *     fields, reject a duplicate id, encode the credential, and persist as one unit of
      *     work.
-     * :param request: the entered user id, first name, last name, and user type.
-     * :param rawPassword: the entered raw password, encoded here before persistence and
-     *     never stored or logged in clear text.
+     * :param request: the entered user id, first name, last name, user type, and the raw
+     *     password, which is encoded here before persistence and never stored or logged in
+     *     clear text.
      * :returns: the persisted user projection plus the verbatim ``COUSR01C`` outcome
      *     message ``'User <id> has been added ...'``.
-     * :raises CardDemoException: when a required field is empty, the user id already
-     *     exists, or the insert fails unexpectedly.
+     * :raises CardDemoException: when a required field is empty, the user type is not a
+     *     recognised code, the user id already exists, or the insert fails unexpectedly.
+     * :note: The duplicate-id check is written twice over. The pre-check keeps the verbatim
+     *     legacy literal for the ordinary case, and the primary-key violation raised by a
+     *     concurrent inserter that won the race between the pre-check and the flush is
+     *     translated to the SAME literal, so two simultaneous creates yield exactly one row
+     *     and one 400 -- never two "created" answers for one stored row.
      */
     @Transactional
-    public UserWriteResponseDto addUser(AddUserRequestDto request, String rawPassword) {
+    public UserWriteResponseDto addUser(AddUserRequestDto request) {
         if (request == null || isBlank(request.getFirstName())) {
             throw new CardDemoException(MSG_FIRST_NAME_EMPTY);
         }
@@ -346,12 +376,14 @@ public class UserService {
         if (isBlank(request.getUserId())) {
             throw new CardDemoException(MSG_USER_ID_EMPTY);
         }
+        String rawPassword = request.getPassword();
         if (isBlank(rawPassword)) {
             throw new CardDemoException(MSG_PASSWORD_EMPTY);
         }
         if (isBlank(request.getUserType())) {
             throw new CardDemoException(MSG_USER_TYPE_EMPTY);
         }
+        requireKnownUserType(request.getUserType());
 
         String userId = request.getUserId().trim();
         if (userRepository.existsBySecUsrId(userId)) {
@@ -363,7 +395,16 @@ public class UserService {
 
         SecurityUser saved;
         try {
-            saved = userRepository.save(user);
+            // saveAndFlush, not save: the INSERT must reach the database inside this try so a
+            // concurrent claim of the same primary key is reported as the duplicate-id
+            // outcome here rather than escaping the boundary as a commit-time failure.
+            saved = userRepository.saveAndFlush(user);
+        } catch (DataIntegrityViolationException ex) {
+            if (isUniqueKeyViolation(ex)) {
+                LOG.warn("Concurrent create rejected for duplicate user id {}", userId);
+                throw new CardDemoException(MSG_USER_ALREADY_EXISTS, ex);
+            }
+            throw new CardDemoException(MSG_UNABLE_ADD, ex);
         } catch (DataAccessException ex) {
             throw new CardDemoException(MSG_UNABLE_ADD, ex);
         }
@@ -371,6 +412,46 @@ public class UserService {
         String message = MSG_USER_PREFIX + userId + MSG_ADDED_SUFFIX;
         LOG.info(message);
         return toWriteResponse(saved, message);
+    }
+
+    /**
+     * :purpose: Confirm the entered user type is one of the two codes the role model
+     *     recognises, so a client-supplied value can never reach the ``chk_sec_usr_type``
+     *     database constraint and surface as a server error. Runs only after the legacy
+     *     presence edit, so an absent value still reports
+     *     ``'User Type can NOT be empty...'``.
+     * :param userType: the entered user type code.
+     * :raises CardDemoException: when the code is neither ``'A'`` nor ``'U'``.
+     */
+    private void requireKnownUserType(String userType) {
+        String candidate = userType == null ? null : userType.trim();
+        if (!USER_TYPE_ADMIN.equals(candidate) && !USER_TYPE_USER.equals(candidate)) {
+            throw new CardDemoException(MSG_USER_TYPE_INVALID);
+        }
+    }
+
+    /**
+     * :purpose: Report whether a data-integrity failure is a unique/primary-key violation,
+     *     which for ``security_users`` can only mean the user id is already taken. Any other
+     *     integrity failure is a different fault and must not be reported as a duplicate id.
+     * :param ex: the data-integrity failure raised by the persistence provider.
+     * :returns: ``true`` when the failure carries SQL state ``23505`` (unique violation) or
+     *     is already classified as a duplicate key by Spring's exception translation.
+     */
+    private boolean isUniqueKeyViolation(DataIntegrityViolationException ex) {
+        if (ex instanceof DuplicateKeyException) {
+            return true;
+        }
+        for (Throwable current = ex; current != null; current = current.getCause()) {
+            if (current instanceof SQLException sqlException
+                    && SQL_STATE_UNIQUE_VIOLATION.equals(sqlException.getSQLState())) {
+                return true;
+            }
+            if (current.getCause() == current) {
+                break;
+            }
+        }
+        return false;
     }
 
     /**
@@ -433,18 +514,20 @@ public class UserService {
      * :purpose: Update an existing security user (``COUSR02C`` / ``CU02``): validate the
      *     entered fields, read the current record, apply only the changed fields, re-encode
      *     the credential when it changes, and persist as one unit of work.
-     * :param userId: the user id to update (the lookup key, supplied separately).
-     * :param request: the entered first name, last name, and user type.
-     * :param rawPassword: the entered raw password, compared against the stored hash and
-     *     re-encoded only when it changes; never stored or logged in clear text.
+     * :param userId: the user id to update (the lookup key, supplied in the path).
+     * :param request: the entered first name, last name, user type, and the raw password,
+     *     which is compared against the stored hash and re-encoded only when it changes;
+     *     never stored or logged in clear text.
      * :returns: the updated user projection plus the verbatim ``COUSR02C`` outcome
      *     message ``'User <id> has been updated ...'``.
      * :raises RecordNotFoundException: when no user exists for ``userId``.
-     * :raises CardDemoException: when a required field is empty, no field changed, or the
-     *     update fails unexpectedly.
+     * :raises CardDemoException: when a required field is empty, the user type is not a
+     *     recognised code, no field changed, or the update fails unexpectedly.
+     * :raises OptimisticLockConflictException: when another writer changed the same record
+     *     between this read and the flush, so the two edits cannot both be applied.
      */
     @Transactional
-    public UserWriteResponseDto updateUser(String userId, UpdateUserRequestDto request, String rawPassword) {
+    public UserWriteResponseDto updateUser(String userId, UpdateUserRequestDto request) {
         if (isBlank(userId)) {
             throw new CardDemoException(MSG_USER_ID_EMPTY);
         }
@@ -454,12 +537,14 @@ public class UserService {
         if (isBlank(request.getLastName())) {
             throw new CardDemoException(MSG_LAST_NAME_EMPTY);
         }
+        String rawPassword = request.getPassword();
         if (isBlank(rawPassword)) {
             throw new CardDemoException(MSG_PASSWORD_EMPTY);
         }
         if (isBlank(request.getUserType())) {
             throw new CardDemoException(MSG_USER_TYPE_EMPTY);
         }
+        requireKnownUserType(request.getUserType());
 
         SecurityUser user = readUser(userId);
 
@@ -490,7 +575,13 @@ public class UserService {
 
         SecurityUser saved;
         try {
-            saved = userRepository.save(user);
+            // The explicit flush runs the @Version check inside this transaction, so a
+            // concurrent update of the same record is reported here as the legacy conflict
+            // outcome instead of silently overwriting the other writer's credential.
+            saved = userRepository.saveAndFlush(user);
+        } catch (ObjectOptimisticLockingFailureException | OptimisticLockException ex) {
+            LOG.warn("Optimistic lock conflict updating user {}", userId.trim());
+            throw new OptimisticLockConflictException(ex);
         } catch (DataAccessException ex) {
             throw new CardDemoException(MSG_UNABLE_UPDATE, ex);
         }

@@ -16,6 +16,9 @@
  */
 package com.carddemo.common.security;
 
+import com.carddemo.common.dto.SessionContext;
+
+import jakarta.servlet.http.HttpSession;
 import java.time.Duration;
 import java.util.Collections;
 import java.util.Set;
@@ -25,6 +28,9 @@ import org.springframework.dao.DataAccessException;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.session.Session;
 import org.springframework.session.SessionRepository;
+import org.springframework.web.context.request.RequestAttributes;
+import org.springframework.web.context.request.RequestContextHolder;
+import org.springframework.web.context.request.ServletRequestAttributes;
 
 /**
  * :purpose: Maintain the principal-to-session index that makes session revocation
@@ -51,6 +57,14 @@ public class SessionPrincipalIndex {
      * :purpose: Key infix separating the session namespace from the indexed user id.
      */
     public static final String PRINCIPAL_KEY_INFIX = ":principal:";
+
+    /**
+     * :purpose: Session attribute recording WHY a still-stored session was revoked, set when
+     *     the session being revoked is the one serving the current request. The session keeps
+     *     no authority once the context attribute is removed; this marker exists so the
+     *     reason is auditable for the remainder of the session's natural lifetime.
+     */
+    public static final String REVOKED_REASON_ATTRIBUTE = "carddemoSessionRevokedReason";
 
     private static final Logger LOG = LoggerFactory.getLogger(SessionPrincipalIndex.class);
 
@@ -137,10 +151,26 @@ public class SessionPrincipalIndex {
         if (sessionIds == null) {
             sessionIds = Collections.emptySet();
         }
+        String callerSessionId = currentSessionId();
         int revoked = 0;
         for (String sessionId : sessionIds) {
             try {
-                sessionRepository.deleteById(sessionId);
+                if (sessionId.equals(callerSessionId)) {
+                    // The session of the request being served is revoked IN PLACE instead of
+                    // being deleted. Every hop of a request holds its own live handle on the
+                    // shared session -- the gateway that authorized it as well as this
+                    // service -- and each one saves that handle after the response is
+                    // produced. Deleting the store entry mid-request makes those saves fail
+                    // with "Session was invalidated" OUTSIDE any exception handler, which
+                    // turned a committed, successful maintenance action into HTTP 500 (and
+                    // cascaded into the container error page). Stripping the session context
+                    // instead removes exactly what grants authority, so the session is
+                    // refused on its very next use and expires naturally, while the success
+                    // status of THIS request is still delivered.
+                    revokeCurrentSessionInPlace(reason);
+                } else {
+                    sessionRepository.deleteById(sessionId);
+                }
                 revoked++;
             } catch (RuntimeException ex) {
                 LOG.warn("Unable to delete session {}: {}", sessionId, ex.getMessage());
@@ -182,5 +212,53 @@ public class SessionPrincipalIndex {
      */
     private boolean isBlank(String value) {
         return value == null || value.isBlank();
+    }
+
+    /**
+     * :purpose: Resolve the session id of the request currently being served, so revocation
+     *     can tell the caller's own session apart from the principal's other sessions.
+     * :returns: the current HTTP session id, or ``null`` when no request is bound to this
+     *     thread (a batch or test caller) or the request carries no session -- in which case
+     *     no session is the caller's own and every one is removed through the store.
+     */
+    private String currentSessionId() {
+        HttpSession session = currentSession();
+        return session == null ? null : session.getId();
+    }
+
+    /**
+     * :purpose: Revoke the session of the request currently being served without removing it
+     *     from the store: the attribute that carries the authenticated context is removed, so
+     *     {@code SessionContextAuthenticationFilter} can no longer rebuild an
+     *     ``Authentication`` from it and every later request on that session id is answered
+     *     ``401``. A short marker records why, for the audit trail.
+     * :param reason: the machine-readable revocation reason recorded on the session.
+     * :returns: nothing; a no-op when there is no bound request or session.
+     */
+    private void revokeCurrentSessionInPlace(String reason) {
+        HttpSession session = currentSession();
+        if (session == null) {
+            return;
+        }
+        session.removeAttribute(SessionContext.SESSION_ATTRIBUTE_NAME);
+        session.setAttribute(REVOKED_REASON_ATTRIBUTE, reason == null ? "REVOKED" : reason);
+    }
+
+    /**
+     * :purpose: Obtain the current request's existing session without creating one.
+     * :returns: the bound {@link HttpSession}, or ``null`` when no request is bound to this
+     *     thread or the request has no session.
+     */
+    private HttpSession currentSession() {
+        RequestAttributes attributes = RequestContextHolder.getRequestAttributes();
+        if (!(attributes instanceof ServletRequestAttributes servletAttributes)) {
+            return null;
+        }
+        try {
+            return servletAttributes.getRequest().getSession(false);
+        } catch (IllegalStateException ex) {
+            // The request has already been recycled, so there is no session to invalidate.
+            return null;
+        }
     }
 }

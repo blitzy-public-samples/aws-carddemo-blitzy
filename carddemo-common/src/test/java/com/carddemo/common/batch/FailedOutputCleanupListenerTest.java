@@ -127,6 +127,44 @@ class FailedOutputCleanupListenerTest {
     }
 
     /**
+     * :purpose: A qualified SUCCESS exit code keeps the file, because that file is the
+     *     run's deliverable: a posting run that rejected records completes
+     *     ``COMPLETED_WITH_REJECTS`` and the ``DALYREJS`` generation it wrote is exactly
+     *     what the run was for.
+     * :raises IOException: if the fixture file cannot be written.
+     */
+    @Test
+    @DisplayName("preserves the output of a step that completed with a qualified success code")
+    void preservesOutputOnQualifiedSuccessExitCode() throws IOException {
+        Path rejects = Files.writeString(workDir.resolve("dalyrejs.txt"), "one reject record");
+        Path skipped = Files.writeString(workDir.resolve("dump.txt"), "records");
+
+        new FailedOutputCleanupListener(rejects).afterStep(
+                stepExecution(BatchStatus.COMPLETED, new ExitStatus("COMPLETED_WITH_REJECTS")));
+        new FailedOutputCleanupListener(skipped).afterStep(
+                stepExecution(BatchStatus.COMPLETED, ExitStatus.COMPLETED.addExitDescription("skips")));
+
+        assertThat(rejects).exists().hasContent("one reject record");
+        assertThat(skipped).exists().hasContent("records");
+    }
+
+    /**
+     * :purpose: An absent optional output may be registered unconditionally, so a step
+     *     with one mandatory and one optional artifact needs no conditional wiring.
+     * :raises IOException: if the fixture file cannot be written.
+     */
+    @Test
+    @DisplayName("ignores a null registered path")
+    void ignoresNullRegisteredPath() throws IOException {
+        Path output = Files.writeString(workDir.resolve("statements.txt"), "partial");
+
+        new FailedOutputCleanupListener(output, null)
+                .afterStep(stepExecution(BatchStatus.FAILED, ExitStatus.FAILED));
+
+        assertThat(output).doesNotExist();
+    }
+
+    /**
      * :purpose: Build a finished step execution with the given outcome.
      * :param status: the batch status to report.
      * :param exitStatus: the exit status to report.

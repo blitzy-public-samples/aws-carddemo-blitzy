@@ -139,10 +139,10 @@ class UserCrudLifecycleTest extends AbstractIntegrationTest {
     @DisplayName("add -> read -> update -> delete lifecycle succeeds with the verbatim COUSR0* messages")
     void writeLifecycleSucceedsWithVerbatimMessages() throws Exception {
         mockMvc.perform(post("/users").session(adminSession)
-                        .param("password", RAW_PASSWORD)
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("{\"userId\":\"" + TEMP_USER_ID + "\",\"firstName\":\"Tmp\","
-                                + "\"lastName\":\"User\",\"userType\":\"U\"}"))
+                                + "\"lastName\":\"User\",\"userType\":\"U\","
+                                + "\"password\":\"" + RAW_PASSWORD + "\"}"))
                 .andExpect(status().isCreated())
                 .andExpect(jsonPath("$.userId").value(TEMP_USER_ID))
                 .andExpect(jsonPath("$.userType").value("U"))
@@ -163,9 +163,9 @@ class UserCrudLifecycleTest extends AbstractIntegrationTest {
                 .andExpect(jsonPath("$.password").doesNotExist());
 
         mockMvc.perform(put("/users/{id}", TEMP_USER_ID).session(adminSession)
-                        .param("password", RAW_PASSWORD)
                         .contentType(MediaType.APPLICATION_JSON)
-                        .content("{\"firstName\":\"Tmpupd\",\"lastName\":\"Userupd\",\"userType\":\"A\"}"))
+                        .content("{\"firstName\":\"Tmpupd\",\"lastName\":\"Userupd\",\"userType\":\"A\","
+                                + "\"password\":\"" + RAW_PASSWORD + "\"}"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.firstName").value("Tmpupd"))
                 .andExpect(jsonPath("$.userType").value("A"))
@@ -208,10 +208,10 @@ class UserCrudLifecycleTest extends AbstractIntegrationTest {
     @DisplayName("add with an existing id reports 'User ID already exist...'")
     void addWithDuplicateIdReportsAlreadyExists() throws Exception {
         mockMvc.perform(post("/users").session(adminSession)
-                        .param("password", RAW_PASSWORD)
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("{\"userId\":\"" + ADMIN_ID + "\",\"firstName\":\"Dup\","
-                                + "\"lastName\":\"User\",\"userType\":\"U\"}"))
+                                + "\"lastName\":\"User\",\"userType\":\"U\","
+                                + "\"password\":\"" + RAW_PASSWORD + "\"}"))
                 .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.message").value("User ID already exist..."));
     }
@@ -225,9 +225,9 @@ class UserCrudLifecycleTest extends AbstractIntegrationTest {
     @DisplayName("update with no change reports 'Please modify to update ...'")
     void updateWithNoChangeReportsPleaseModify() throws Exception {
         mockMvc.perform(put("/users/{id}", ADMIN_ID).session(adminSession)
-                        .param("password", RAW_PASSWORD)
                         .contentType(MediaType.APPLICATION_JSON)
-                        .content("{\"firstName\":\"Admin\",\"lastName\":\"User\",\"userType\":\"A\"}"))
+                        .content("{\"firstName\":\"Admin\",\"lastName\":\"User\",\"userType\":\"A\","
+                                + "\"password\":\"" + RAW_PASSWORD + "\"}"))
                 .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.message").value("Please modify to update ..."));
     }

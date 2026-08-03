@@ -27,7 +27,6 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.batch.core.BatchStatus;
 import org.springframework.batch.core.job.JobExecution;
-import org.springframework.batch.core.launch.JobInstanceAlreadyCompleteException;
 import org.springframework.batch.core.launch.JobLauncher;
 import org.springframework.batch.core.repository.JobRepository;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -204,21 +203,86 @@ class JobLaunchParameterIT {
     }
 
     /**
-     * :purpose: Job identity derives from the business parameters alone: re-submitting a
-     *     completed instance is refused. While ``run.id`` was identifying, every
-     *     submission silently became a new instance and this rejection never happened.
-     * :raises Exception: if the first launch or the wait fails.
+     * :purpose: A read/print submission is REPEATABLE: re-submitting the same report window
+     *     runs the job again, exactly as ``CORPT00C`` writes a TDQ 'JOBS' record on every
+     *     request and JES runs the stream each time. While the run id was non-identifying the
+     *     report window itself became the instance key, so a monthly report could be printed
+     *     once per calendar month and never again, and the whole workflow was unusable after
+     *     its first run.
+     * :raises Exception: if a launch or the wait fails.
      */
     @Test
-    @DisplayName("re-submitting identical business parameters is refused")
-    void duplicateSubmissionIsRefused() throws Exception {
-        String fileName = "idempotency-" + UUID.randomUUID() + ".txt";
+    @DisplayName("re-submitting the same read/print window runs the job again")
+    void repeatedReadSubmissionIsAccepted() throws Exception {
+        String fileName = "repeatable-" + UUID.randomUUID() + ".txt";
 
-        assertThat(awaitCompletion(jobScheduling.launchCustomerRead(fileName)).getStatus())
-                .isEqualTo(BatchStatus.COMPLETED);
+        JobExecution first = awaitCompletion(jobScheduling.launchCustomerRead(fileName));
+        JobExecution second = awaitCompletion(jobScheduling.launchCustomerRead(fileName));
 
-        assertThatThrownBy(() -> jobScheduling.launchCustomerRead(fileName))
-                .isInstanceOf(JobInstanceAlreadyCompleteException.class);
+        assertThat(first.getStatus()).isEqualTo(BatchStatus.COMPLETED);
+        assertThat(second.getStatus()).isEqualTo(BatchStatus.COMPLETED);
+        assertThat(second.getJobInstance().getInstanceId())
+                .as("each print/read submission must be its own JobInstance")
+                .isNotEqualTo(first.getJobInstance().getInstanceId());
+    }
+
+    /**
+     * :purpose: The same repeatability holds for the transaction-detail report submitted by
+     *     the online ``CORPT00C`` screen: printing the identical window twice is accepted and
+     *     produces two distinct executions.
+     * :raises Exception: if a launch or the wait fails.
+     */
+    @Test
+    @DisplayName("the transaction-detail report can be printed twice for one window")
+    void repeatedReportSubmissionIsAccepted() throws Exception {
+        String fileName = "report-" + UUID.randomUUID() + ".txt";
+
+        JobExecution first = awaitCompletion(
+                jobScheduling.launchTransactionDetailReport("2026-08-01", "2026-08-31", fileName));
+        JobExecution second = awaitCompletion(
+                jobScheduling.launchTransactionDetailReport("2026-08-01", "2026-08-31", fileName));
+
+        assertThat(first.getStatus()).isEqualTo(BatchStatus.COMPLETED);
+        assertThat(second.getStatus()).isEqualTo(BatchStatus.COMPLETED);
+        assertThat(second.getId()).isNotEqualTo(first.getId());
+        assertThat(second.getJobInstance().getInstanceId())
+                .isNotEqualTo(first.getJobInstance().getInstanceId());
+    }
+
+    /**
+     * :purpose: A repeatable read/print run records its run id as IDENTIFYING, which is what
+     *     makes every submission its own instance; a state-changing run must NOT, so its
+     *     identity still derives from the business parameters alone and a duplicate posting or
+     *     interest run is still refused.
+     * :raises Exception: if a launch or the wait fails.
+     */
+    @Test
+    @DisplayName("the run id is identifying for a read/print run and not for a state-changing run")
+    void runIdIsIdentifyingOnlyForRepeatableRuns() throws Exception {
+        JobExecution report = awaitCompletion(jobScheduling.launchCategoryBalanceReport(
+                "identifying-" + UUID.randomUUID() + ".txt"));
+        JobExecution interest = jobScheduling.launchInterestCalculation("2022071800");
+
+        assertThat(identifyingFlagOfRunId(report.getId()))
+                .as("a print/read submission must be its own instance")
+                .isEqualTo("Y");
+        assertThat(identifyingFlagOfRunId(interest.getId()))
+                .as("a state-changing submission must keep instance-level duplicate protection")
+                .isEqualTo("N");
+        awaitCompletion(interest);
+    }
+
+    /**
+     * :purpose: Read the ``IDENTIFYING`` flag Spring Batch recorded for an execution's
+     *     ``run.id`` parameter.
+     * :param jobExecutionId: the execution whose parameter is inspected.
+     * :returns: ``"Y"`` when the parameter contributes to job identity, ``"N"`` otherwise.
+     */
+    private String identifyingFlagOfRunId(Long jobExecutionId) {
+        return jdbcTemplate.queryForObject(
+                "SELECT identifying FROM batch_job_execution_params "
+                        + "WHERE job_execution_id = ? AND parameter_name = 'run.id'",
+                String.class, jobExecutionId);
     }
 
     /**

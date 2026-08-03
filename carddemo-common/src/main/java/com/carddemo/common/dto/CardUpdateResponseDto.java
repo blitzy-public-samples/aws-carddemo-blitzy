@@ -38,6 +38,13 @@ public class CardUpdateResponseDto {
 
     /** :purpose: the owning customer id resolved from the card cross-reference (``XREF-CUST-ID``). */
     private Long custId;
+    /**
+     * :purpose: the optimistic-lock version of the stored card (``@Version``; no legacy field).
+     *  The caller echoes it back on the next update so a concurrent modification is detected,
+     *  which is what the legacy screen achieved by holding a VSAM update lock (AAP 0.6.2).
+     */
+    private Long version;
+
 
     /**
      * :purpose: Create an empty CardUpdateResponseDto. Required for JSON (Jackson) serialization.
@@ -141,4 +148,20 @@ public class CardUpdateResponseDto {
         this.custId = custId;
     }
 
+
+    /**
+     * :purpose: Return the optimistic-lock version of the stored card.
+     * :output: the ``version`` value, or ``null`` when it has not been resolved.
+     */
+    public Long getVersion() {
+        return version;
+    }
+
+    /**
+     * :purpose: Set the optimistic-lock version of the stored card.
+     * :param version: the ``version`` value.
+     */
+    public void setVersion(Long version) {
+        this.version = version;
+    }
 }

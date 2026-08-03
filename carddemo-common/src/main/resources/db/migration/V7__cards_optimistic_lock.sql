@@ -1,0 +1,31 @@
+-- =============================================================================
+-- V7__cards_optimistic_lock.sql
+--
+-- Adds the JPA @Version optimistic-lock counter to cards
+-- (com.carddemo.common.domain.Card), completing the concurrency model AAP 0.6.2
+-- mandates for every aggregate a screen rewrites.
+--
+-- WHY: COCRDUPC (CICS CCUP) read the CARDDAT record for update, so VSAM held an
+-- update lock for the whole rewrite and a second updater could not interleave. A
+-- stateless REST service cannot hold that lock across requests, and cards carried
+-- no version column, so ten simultaneous PUT /cards/{num} calls ALL answered 200
+-- and only the last writer's embossed name survived: nine callers were told their
+-- change had been applied when it had not. With the counter present the provider
+-- issues
+--   UPDATE cards SET ... WHERE card_num = ? AND version = ?
+-- so a writer whose row moved since it was read matches no row and receives the
+-- verbatim COCRDUPC conflict literal
+-- 'Record changed by some one else. Please review' (HTTP 409).
+--
+-- The column mirrors accounts.version / customers.version exactly (BIGINT NOT
+-- NULL DEFAULT 0) so every existing row adopts version 0 and no seed data has to
+-- change. There is no legacy field behind it; it is recorded as target-only in
+-- docs/traceability-matrix.md.
+--
+-- Source references: app/cpy/CVACT02Y.cpy (CARD-RECORD),
+-- app/cbl/COCRDUPC.cbl:L1498-1519 (9300-CHECK-CHANGE-IN-REC and the REWRITE that
+-- follows it), app/cbl/COACTUPC.cbl:L517-523 (the 88-level conditions).
+-- =============================================================================
+
+ALTER TABLE cards
+    ADD COLUMN IF NOT EXISTS version BIGINT NOT NULL DEFAULT 0;

@@ -41,6 +41,7 @@ import com.carddemo.common.dto.CardUpdateRequestDto;
 import com.carddemo.common.dto.CardUpdateResponseDto;
 import com.carddemo.common.dto.SessionContext;
 import com.carddemo.common.exception.CardDemoException;
+import com.carddemo.common.exception.OptimisticLockConflictException;
 import com.carddemo.common.exception.RecordNotFoundException;
 import java.util.ArrayList;
 import java.util.List;
@@ -53,6 +54,7 @@ import org.mockito.InjectMocks;
 import org.mockito.InOrder;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
+import org.springframework.orm.ObjectOptimisticLockingFailureException;
 
 /**
  * :purpose: Pure Mockito unit specification for {@link CardService}, the card
@@ -107,6 +109,13 @@ class CardServiceTest {
             "Did not find cards for this search condition";
 
     /** :purpose: ``COCRDUPC`` L184 embossed-name edit message. */
+    /** ``COCRDUPC`` ``WS-PROMPT-FOR-NAME`` literal for an absent embossed name. */
+    private static final String MSG_NAME_NOT_PROVIDED = "Card name not provided";
+
+    /** ``COACTUPC``/``COCRDUPC`` concurrent-change literal surfaced as HTTP 409. */
+    private static final String MSG_DATA_WAS_CHANGED =
+            "Record changed by some one else. Please review";
+
     private static final String MSG_NAME_ALPHA =
             "Card name can only contain alphabets and spaces";
 
@@ -151,6 +160,8 @@ class CardServiceTest {
         Card c = new Card();
         c.setCardNum(cardNum);
         c.setCardAcctId(acctId);
+        // Mirror the DDL default: a stored card always carries a non-null version.
+        c.setVersion(0L);
         return c;
     }
 
@@ -202,6 +213,10 @@ class CardServiceTest {
         lenient().when(request.getCardEmbossedName()).thenReturn(name);
         lenient().when(request.getCardActiveStatus()).thenReturn(status);
         lenient().when(request.getCardExpiraionDate()).thenReturn(expiraionDate);
+        // Mockito answers 0L (the primitive default) for an unstubbed Long-returning getter,
+        // which would look like a submitted optimistic-lock token; the default fixture carries
+        // no token, so stub it explicitly.
+        lenient().when(request.getVersion()).thenReturn(null);
         return request;
     }
 
@@ -304,11 +319,39 @@ class CardServiceTest {
     }
 
     /**
-     * :purpose: A non-admin user cannot widen scope with a broader account filter; the
-     *     effective read still uses the session account id.
+     * :purpose: A non-admin user asking for an account other than the one pinned in its
+     *     session receives no rows: the supplied filter is honoured (``COCRDLIC``
+     *     ``9500-FILTER-RECORDS`` has no user-type branch) and the session account is applied
+     *     as an ADDITIONAL restriction, so neither the requested account's cards nor -- as
+     *     happened when the filter was overwritten -- the session account's cards are
+     *     disclosed. Nothing is read for the foreign account.
      */
     @Test
-    void listCards_nonAdminIgnoresBroaderAcctFilter() {
+    void listCards_nonAdminForeignAcctFilter_returnsNoRowsAndReadsNothing() {
+        SessionContext user = mock(SessionContext.class);
+        when(user.getUserType()).thenReturn(SessionContext.UserType.CDEMO_USRTYP_USER);
+        when(user.getAcctId()).thenReturn(ACCT_ID);
+        CardListResponseDto expected = mock(CardListResponseDto.class);
+        when(cardMapper.toListResponse(any())).thenReturn(expected);
+
+        CardListResponseDto result = cardService.listCards(OTHER_ACCT_ID, null, 1, user);
+
+        assertThat(result).isSameAs(expected);
+        verify(cardRepository, never()).findByCardAcctId(any());
+        verify(cardRepository, never()).findAll();
+        verify(cardRepository, never()).findById(any());
+        @SuppressWarnings("unchecked")
+        ArgumentCaptor<List<Card>> rowsCaptor = ArgumentCaptor.forClass(List.class);
+        verify(cardMapper).toListResponse(rowsCaptor.capture());
+        assertThat(rowsCaptor.getValue()).isEmpty();
+    }
+
+    /**
+     * :purpose: A non-admin user whose session pins an account and who supplies NO filter
+     *     browses its own account only (the session account is the additional restriction).
+     */
+    @Test
+    void listCards_nonAdminNoFilter_scopedToOwnAccount() {
         SessionContext user = mock(SessionContext.class);
         when(user.getUserType()).thenReturn(SessionContext.UserType.CDEMO_USRTYP_USER);
         when(user.getAcctId()).thenReturn(ACCT_ID);
@@ -316,11 +359,51 @@ class CardServiceTest {
         when(cardRepository.findByCardAcctId(ACCT_ID)).thenReturn(cards(1));
         when(cardMapper.toListResponse(any())).thenReturn(expected);
 
-        cardService.listCards(OTHER_ACCT_ID, null, 1, user);
+        cardService.listCards(null, null, 1, user);
 
-        ArgumentCaptor<Long> acctCaptor = ArgumentCaptor.forClass(Long.class);
-        verify(cardRepository).findByCardAcctId(acctCaptor.capture());
-        assertThat(acctCaptor.getValue()).isEqualTo(ACCT_ID);
+        verify(cardRepository).findByCardAcctId(ACCT_ID);
+        verify(cardRepository, never()).findAll();
+    }
+
+    /**
+     * :purpose: A non-admin user with no account pinned in its session and no filter must not
+     *     receive the entire card base; the browse yields no rows instead of every PAN.
+     */
+    @Test
+    void listCards_nonAdminUnpinnedNoFilter_doesNotWidenToFindAll() {
+        SessionContext user = mock(SessionContext.class);
+        when(user.getUserType()).thenReturn(SessionContext.UserType.CDEMO_USRTYP_USER);
+        when(user.getAcctId()).thenReturn(null);
+        CardListResponseDto expected = mock(CardListResponseDto.class);
+        when(cardMapper.toListResponse(any())).thenReturn(expected);
+
+        CardListResponseDto result = cardService.listCards(null, null, 1, user);
+
+        assertThat(result).isSameAs(expected);
+        verify(cardRepository, never()).findAll();
+        @SuppressWarnings("unchecked")
+        ArgumentCaptor<List<Card>> rowsCaptor = ArgumentCaptor.forClass(List.class);
+        verify(cardMapper).toListResponse(rowsCaptor.capture());
+        assertThat(rowsCaptor.getValue()).isEmpty();
+    }
+
+    /**
+     * :purpose: A non-admin user supplying its OWN account id as the filter reads exactly that
+     *     account (the filter is honoured, not discarded).
+     */
+    @Test
+    void listCards_nonAdminOwnAcctFilter_isHonoured() {
+        SessionContext user = mock(SessionContext.class);
+        when(user.getUserType()).thenReturn(SessionContext.UserType.CDEMO_USRTYP_USER);
+        when(user.getAcctId()).thenReturn(ACCT_ID);
+        CardListResponseDto expected = mock(CardListResponseDto.class);
+        when(cardRepository.findByCardAcctId(ACCT_ID)).thenReturn(cards(2));
+        when(cardMapper.toListResponse(any())).thenReturn(expected);
+
+        cardService.listCards(ACCT_ID, null, 1, user);
+
+        verify(cardRepository).findByCardAcctId(ACCT_ID);
+        verify(cardRepository, never()).findAll();
     }
 
     /**
@@ -509,18 +592,21 @@ class CardServiceTest {
 
     // =====================================================================================
     // UPDATE scenarios (COCRDUPC, CICS CCUP) -- fail-fast edits, no-change short-circuit,
-    // in-transaction re-read then rewrite. The card entity has no version column, so there
-    // is no snapshot-compare conflict path (see CardService.updateCard docstring).
+    // in-transaction re-read under a row write lock, then rewrite. The card carries a
+    // @Version column, so a stale version token or a stale CCUP-OLD-* snapshot is a conflict
+    // (see CardService.updateCard docstring).
     // =====================================================================================
 
     /**
-     * :purpose: A null request reproduces the first (name) edit failure.
+     * :purpose: A null request reproduces the first (name) edit failure, which for an absent
+     *     name is the prompt literal ``COCRDUPC 1230-EDIT-NAME`` emits for SPACES /
+     *     LOW-VALUES / ZEROS, not the alphabetic-content literal.
      */
     @Test
-    void updateCard_nullRequest_throwsNameAlpha() {
+    void updateCard_nullRequest_throwsNameNotProvided() {
         assertThatExceptionOfType(CardDemoException.class)
                 .isThrownBy(() -> cardService.updateCard(CARD_NUM, null, null))
-                .withMessage(MSG_NAME_ALPHA);
+                .withMessage(MSG_NAME_NOT_PROVIDED);
         verifyNoInteractions(cardRepository, cardXrefRepository, cardMapper);
     }
 
@@ -538,15 +624,31 @@ class CardServiceTest {
     }
 
     /**
-     * :purpose: A blank embossed name fails the name edit (the name is required).
+     * :purpose: A blank embossed name fails the name edit with the prompt literal
+     *     ``WS-PROMPT-FOR-NAME`` (``COCRDUPC 1230-EDIT-NAME`` treats SPACES as "not
+     *     provided"), which is a different message from the alphabetic-content edit.
      */
     @Test
-    void updateCard_blankName_throws() {
+    void updateCard_blankName_throwsNameNotProvided() {
         CardUpdateRequestDto request = mockRequest("   ", "Y", VALID_EXPIRY);
 
         assertThatExceptionOfType(CardDemoException.class)
                 .isThrownBy(() -> cardService.updateCard(CARD_NUM, request, null))
-                .withMessage(MSG_NAME_ALPHA);
+                .withMessage(MSG_NAME_NOT_PROVIDED);
+        verifyNoInteractions(cardRepository, cardXrefRepository, cardMapper);
+    }
+
+    /**
+     * :purpose: An all-zeros embossed name is "not provided" as well
+     *     (``COCRDUPC 1230-EDIT-NAME`` tests SPACES, LOW-VALUES and ZEROS alike).
+     */
+    @Test
+    void updateCard_zerosName_throwsNameNotProvided() {
+        CardUpdateRequestDto request = mockRequest("0000000000", "Y", VALID_EXPIRY);
+
+        assertThatExceptionOfType(CardDemoException.class)
+                .isThrownBy(() -> cardService.updateCard(CARD_NUM, request, null))
+                .withMessage(MSG_NAME_NOT_PROVIDED);
         verifyNoInteractions(cardRepository, cardXrefRepository, cardMapper);
     }
 
@@ -595,7 +697,7 @@ class CardServiceTest {
      */
     @Test
     void updateCard_validMonthBoundaries_notRejected() {
-        when(cardRepository.findById(CARD_NUM)).thenReturn(Optional.empty());
+        when(cardRepository.findForUpdateByCardNum(CARD_NUM)).thenReturn(Optional.empty());
 
         assertThatExceptionOfType(RecordNotFoundException.class)
                 .isThrownBy(() -> cardService.updateCard(
@@ -605,7 +707,7 @@ class CardServiceTest {
                 .isThrownBy(() -> cardService.updateCard(
                         CARD_NUM, mockRequest(VALID_NAME, "Y", "2025-12-15"), null))
                 .withMessage(MSG_DETAIL_NOT_FOUND);
-        verify(cardRepository, never()).save(any());
+        verify(cardRepository, never()).saveAndFlush(any());
     }
 
     /**
@@ -640,7 +742,7 @@ class CardServiceTest {
      */
     @Test
     void updateCard_validYearBoundaries_notRejected() {
-        when(cardRepository.findById(CARD_NUM)).thenReturn(Optional.empty());
+        when(cardRepository.findForUpdateByCardNum(CARD_NUM)).thenReturn(Optional.empty());
 
         assertThatExceptionOfType(RecordNotFoundException.class)
                 .isThrownBy(() -> cardService.updateCard(
@@ -650,7 +752,7 @@ class CardServiceTest {
                 .isThrownBy(() -> cardService.updateCard(
                         CARD_NUM, mockRequest(VALID_NAME, "Y", "2099-06-15"), null))
                 .withMessage(MSG_DETAIL_NOT_FOUND);
-        verify(cardRepository, never()).save(any());
+        verify(cardRepository, never()).saveAndFlush(any());
     }
 
     /**
@@ -668,18 +770,20 @@ class CardServiceTest {
     }
 
     /**
-     * :purpose: A well-formed request passes all four validation edits (there is no CVV edit)
-     *     and reaches the re-read, confirming the card verification value is never validated.
+     * :purpose: A well-formed request passes the four service-level validation edits and
+     *     reaches the re-read. The CVV width/format edit (``CARD-CVV-CD PIC 9(03)``) is
+     *     enforced by the ``CardUpdateRequestDto`` bean-validation contract at the request
+     *     boundary, so the service performs no CVV edit of its own.
      */
     @Test
-    void updateCard_cvvNotValidated_passesValidationEdits() {
-        when(cardRepository.findById(CARD_NUM)).thenReturn(Optional.empty());
+    void updateCard_wellFormedRequest_passesServiceValidationEdits() {
+        when(cardRepository.findForUpdateByCardNum(CARD_NUM)).thenReturn(Optional.empty());
         CardUpdateRequestDto request = mockRequest(VALID_NAME, "Y", VALID_EXPIRY);
 
         assertThatExceptionOfType(RecordNotFoundException.class)
                 .isThrownBy(() -> cardService.updateCard(CARD_NUM, request, null))
                 .withMessage(MSG_DETAIL_NOT_FOUND);
-        verify(cardRepository, never()).save(any());
+        verify(cardRepository, never()).saveAndFlush(any());
     }
 
     /**
@@ -691,14 +795,14 @@ class CardServiceTest {
         Card card = card(CARD_NUM, ACCT_ID, VALID_NAME, "Y", VALID_EXPIRY, null);
         CardUpdateRequestDto request = mockRequest(VALID_NAME, "Y", VALID_EXPIRY);
         CardUpdateResponseDto expected = mock(CardUpdateResponseDto.class);
-        when(cardRepository.findById(CARD_NUM)).thenReturn(Optional.of(card));
+        when(cardRepository.findForUpdateByCardNum(CARD_NUM)).thenReturn(Optional.of(card));
         when(cardXrefRepository.findById(CARD_NUM)).thenReturn(Optional.empty());
         when(cardMapper.toUpdateResponse(card, null)).thenReturn(expected);
 
         CardUpdateResponseDto result = cardService.updateCard(CARD_NUM, request, null);
 
         assertThat(result).isSameAs(expected);
-        verify(cardRepository, never()).save(any());
+        verify(cardRepository, never()).saveAndFlush(any());
         verify(cardMapper, never()).applyUpdate(any(), any());
         verify(cardMapper).toUpdateResponse(card, null);
     }
@@ -712,14 +816,14 @@ class CardServiceTest {
         Card card = card(CARD_NUM, ACCT_ID, VALID_NAME, "Y", VALID_EXPIRY, null);
         CardUpdateRequestDto request = mockRequest("JOHN SMITH", "Y", VALID_EXPIRY);
         CardUpdateResponseDto expected = mock(CardUpdateResponseDto.class);
-        when(cardRepository.findById(CARD_NUM)).thenReturn(Optional.of(card));
+        when(cardRepository.findForUpdateByCardNum(CARD_NUM)).thenReturn(Optional.of(card));
         when(cardXrefRepository.findById(CARD_NUM)).thenReturn(Optional.empty());
         when(cardMapper.toUpdateResponse(card, null)).thenReturn(expected);
 
         CardUpdateResponseDto result = cardService.updateCard(CARD_NUM, request, null);
 
         assertThat(result).isSameAs(expected);
-        verify(cardRepository, never()).save(any());
+        verify(cardRepository, never()).saveAndFlush(any());
         verify(cardMapper, never()).applyUpdate(any(), any());
     }
 
@@ -729,13 +833,13 @@ class CardServiceTest {
      */
     @Test
     void updateCard_reReadNotFound_throwsRecordNotFound() {
-        when(cardRepository.findById(CARD_NUM)).thenReturn(Optional.empty());
+        when(cardRepository.findForUpdateByCardNum(CARD_NUM)).thenReturn(Optional.empty());
         CardUpdateRequestDto request = mockRequest(VALID_NAME, "N", VALID_EXPIRY);
 
         assertThatExceptionOfType(RecordNotFoundException.class)
                 .isThrownBy(() -> cardService.updateCard(CARD_NUM, request, null))
                 .withMessage(MSG_DETAIL_NOT_FOUND);
-        verify(cardRepository, never()).save(any());
+        verify(cardRepository, never()).saveAndFlush(any());
         verifyNoInteractions(cardXrefRepository, cardMapper);
     }
 
@@ -750,18 +854,18 @@ class CardServiceTest {
         CardUpdateRequestDto request = mockRequest(VALID_NAME, "N", VALID_EXPIRY);
         CardUpdateResponseDto expected = mock(CardUpdateResponseDto.class);
         SessionContext session = mock(SessionContext.class);
-        when(cardRepository.findById(CARD_NUM)).thenReturn(Optional.of(card));
+        when(cardRepository.findForUpdateByCardNum(CARD_NUM)).thenReturn(Optional.of(card));
         when(cardXrefRepository.findById(CARD_NUM)).thenReturn(Optional.empty());
-        when(cardRepository.save(card)).thenReturn(card);
+        when(cardRepository.saveAndFlush(card)).thenReturn(card);
         when(cardMapper.toUpdateResponse(card, null)).thenReturn(expected);
 
         CardUpdateResponseDto result = cardService.updateCard(CARD_NUM, request, session);
 
         assertThat(result).isSameAs(expected);
         InOrder inOrder = inOrder(cardRepository, cardMapper);
-        inOrder.verify(cardRepository).findById(CARD_NUM);
+        inOrder.verify(cardRepository).findForUpdateByCardNum(CARD_NUM);
         inOrder.verify(cardMapper).applyUpdate(request, card);
-        inOrder.verify(cardRepository).save(card);
+        inOrder.verify(cardRepository).saveAndFlush(card);
         inOrder.verify(cardMapper).toUpdateResponse(card, null);
         verify(session).setCardNum(anyString());
         verify(session).setAcctId(ACCT_ID);
@@ -779,9 +883,9 @@ class CardServiceTest {
         lenient().when(card.getCardExpiraionDate()).thenReturn(VALID_EXPIRY);
         CardUpdateRequestDto request = mockRequest(VALID_NAME, "N", VALID_EXPIRY);
         CardUpdateResponseDto expected = mock(CardUpdateResponseDto.class);
-        when(cardRepository.findById(CARD_NUM)).thenReturn(Optional.of(card));
+        when(cardRepository.findForUpdateByCardNum(CARD_NUM)).thenReturn(Optional.of(card));
         when(cardXrefRepository.findById(CARD_NUM)).thenReturn(Optional.empty());
-        when(cardRepository.save(card)).thenReturn(card);
+        when(cardRepository.saveAndFlush(card)).thenReturn(card);
         when(cardMapper.toUpdateResponse(card, null)).thenReturn(expected);
 
         CardUpdateResponseDto result = cardService.updateCard(CARD_NUM, request, null);
@@ -792,6 +896,147 @@ class CardServiceTest {
         verify(card, never()).setCardAcctId(any());
     }
 
+
+    // =====================================================================================
+    // Concurrency: @Version token, CCUP-OLD-* snapshot, and provider-detected conflicts
+    // (COCRDUPC 9300-CHECK-CHANGE-IN-REC / DATA-WAS-CHANGED-BEFORE-UPDATE, AAP 0.6.2)
+    // =====================================================================================
+
+    /**
+     * :purpose: A version token matching the stored card lets the rewrite proceed.
+     */
+    @Test
+    void updateCard_matchingVersion_proceeds() {
+        Card card = card(CARD_NUM, ACCT_ID, VALID_NAME, "Y", VALID_EXPIRY, "123");
+        card.setVersion(4L);
+        CardUpdateRequestDto request = mockRequest(VALID_NAME, "N", VALID_EXPIRY);
+        lenient().when(request.getVersion()).thenReturn(4L);
+        CardUpdateResponseDto expected = mock(CardUpdateResponseDto.class);
+        when(cardRepository.findForUpdateByCardNum(CARD_NUM)).thenReturn(Optional.of(card));
+        when(cardXrefRepository.findById(CARD_NUM)).thenReturn(Optional.empty());
+        when(cardRepository.saveAndFlush(card)).thenReturn(card);
+        when(cardMapper.toUpdateResponse(card, null)).thenReturn(expected);
+
+        assertThat(cardService.updateCard(CARD_NUM, request, null)).isSameAs(expected);
+        verify(cardRepository).saveAndFlush(card);
+    }
+
+    /**
+     * :purpose: A version token that no longer matches the stored card abandons the rewrite
+     *     with the legacy conflict outcome and persists nothing.
+     */
+    @Test
+    void updateCard_staleVersion_throwsConflictAndPersistsNothing() {
+        Card card = card(CARD_NUM, ACCT_ID, VALID_NAME, "Y", VALID_EXPIRY, "123");
+        card.setVersion(5L);
+        CardUpdateRequestDto request = mockRequest(VALID_NAME, "N", VALID_EXPIRY);
+        lenient().when(request.getVersion()).thenReturn(4L);
+        when(cardRepository.findForUpdateByCardNum(CARD_NUM)).thenReturn(Optional.of(card));
+
+        assertThatExceptionOfType(OptimisticLockConflictException.class)
+                .isThrownBy(() -> cardService.updateCard(CARD_NUM, request, null))
+                .withMessage(MSG_DATA_WAS_CHANGED);
+        verify(cardRepository, never()).saveAndFlush(any());
+        verify(cardMapper, never()).applyUpdate(any(), any());
+    }
+
+    /**
+     * :purpose: A request carrying no version token is not treated as a conflict (the caller
+     *     may instead carry the ``CCUP-OLD-*`` snapshot).
+     */
+    @Test
+    void updateCard_absentVersion_isNotAConflict() {
+        Card card = card(CARD_NUM, ACCT_ID, VALID_NAME, "Y", VALID_EXPIRY, "123");
+        card.setVersion(7L);
+        CardUpdateRequestDto request = mockRequest(VALID_NAME, "N", VALID_EXPIRY);
+        lenient().when(request.getVersion()).thenReturn(null);
+        CardUpdateResponseDto expected = mock(CardUpdateResponseDto.class);
+        when(cardRepository.findForUpdateByCardNum(CARD_NUM)).thenReturn(Optional.of(card));
+        when(cardXrefRepository.findById(CARD_NUM)).thenReturn(Optional.empty());
+        when(cardRepository.saveAndFlush(card)).thenReturn(card);
+        when(cardMapper.toUpdateResponse(card, null)).thenReturn(expected);
+
+        assertThat(cardService.updateCard(CARD_NUM, request, null)).isSameAs(expected);
+    }
+
+    /**
+     * :purpose: A ``CCUP-OLD-*`` snapshot that omits the CVV still succeeds. No read path
+     *     returns the CVV (AAP 0.6.7), so demanding it in the ``9300`` compare reported a
+     *     change that had not happened and made every snapshot-bearing update fail.
+     */
+    @Test
+    void updateCard_snapshotWithoutCvv_isNotAConflict() {
+        Card card = card(CARD_NUM, ACCT_ID, VALID_NAME, "Y", VALID_EXPIRY, "123");
+        CardUpdateRequestDto request = mockRequest(VALID_NAME, "N", VALID_EXPIRY);
+        lenient().when(request.getOldCardEmbossedName()).thenReturn(VALID_NAME);
+        lenient().when(request.getOldCardActiveStatus()).thenReturn("Y");
+        lenient().when(request.getOldCardExpiraionDate()).thenReturn(VALID_EXPIRY);
+        lenient().when(request.getOldCardCvvCd()).thenReturn(null);
+        CardUpdateResponseDto expected = mock(CardUpdateResponseDto.class);
+        when(cardRepository.findForUpdateByCardNum(CARD_NUM)).thenReturn(Optional.of(card));
+        when(cardXrefRepository.findById(CARD_NUM)).thenReturn(Optional.empty());
+        when(cardRepository.saveAndFlush(card)).thenReturn(card);
+        when(cardMapper.toUpdateResponse(card, null)).thenReturn(expected);
+
+        assertThat(cardService.updateCard(CARD_NUM, request, null)).isSameAs(expected);
+        verify(cardMapper).applyUpdate(request, card);
+    }
+
+    /**
+     * :purpose: A ``CCUP-OLD-*`` snapshot whose observable fields no longer match the stored
+     *     card is still a conflict.
+     */
+    @Test
+    void updateCard_snapshotFieldDiffers_throwsConflict() {
+        Card card = card(CARD_NUM, ACCT_ID, "JANE DOE", "Y", VALID_EXPIRY, "123");
+        CardUpdateRequestDto request = mockRequest(VALID_NAME, "N", VALID_EXPIRY);
+        lenient().when(request.getOldCardEmbossedName()).thenReturn(VALID_NAME);
+        lenient().when(request.getOldCardActiveStatus()).thenReturn("Y");
+        lenient().when(request.getOldCardExpiraionDate()).thenReturn(VALID_EXPIRY);
+        when(cardRepository.findForUpdateByCardNum(CARD_NUM)).thenReturn(Optional.of(card));
+
+        assertThatExceptionOfType(OptimisticLockConflictException.class)
+                .isThrownBy(() -> cardService.updateCard(CARD_NUM, request, null))
+                .withMessage(MSG_DATA_WAS_CHANGED);
+        verify(cardRepository, never()).saveAndFlush(any());
+    }
+
+    /**
+     * :purpose: A concurrent commit detected by the persistence provider at flush time is
+     *     reported as the same legacy conflict outcome, not as a raw provider failure.
+     */
+    @Test
+    void updateCard_providerDetectedConflict_isReportedAsConflict() {
+        Card card = card(CARD_NUM, ACCT_ID, VALID_NAME, "Y", VALID_EXPIRY, "123");
+        CardUpdateRequestDto request = mockRequest(VALID_NAME, "N", VALID_EXPIRY);
+        when(cardRepository.findForUpdateByCardNum(CARD_NUM)).thenReturn(Optional.of(card));
+        when(cardXrefRepository.findById(CARD_NUM)).thenReturn(Optional.empty());
+        when(cardRepository.saveAndFlush(card))
+                .thenThrow(new ObjectOptimisticLockingFailureException(Card.class, CARD_NUM));
+
+        assertThatExceptionOfType(OptimisticLockConflictException.class)
+                .isThrownBy(() -> cardService.updateCard(CARD_NUM, request, null))
+                .withMessage(MSG_DATA_WAS_CHANGED);
+    }
+
+    /**
+     * :purpose: An identical submission that omits the CVV is still a no-op; an omitted CVV
+     *     retains the stored value and therefore cannot look like a change.
+     */
+    @Test
+    void updateCard_absentCvvOnIdenticalSubmission_isNoOp() {
+        Card card = card(CARD_NUM, ACCT_ID, VALID_NAME, "Y", VALID_EXPIRY, "123");
+        CardUpdateRequestDto request = mockRequest(VALID_NAME, "Y", VALID_EXPIRY);
+        lenient().when(request.getCardCvvCd()).thenReturn(null);
+        CardUpdateResponseDto expected = mock(CardUpdateResponseDto.class);
+        when(cardRepository.findForUpdateByCardNum(CARD_NUM)).thenReturn(Optional.of(card));
+        when(cardXrefRepository.findById(CARD_NUM)).thenReturn(Optional.empty());
+        when(cardMapper.toUpdateResponse(card, null)).thenReturn(expected);
+
+        assertThat(cardService.updateCard(CARD_NUM, request, null)).isSameAs(expected);
+        verify(cardRepository, never()).saveAndFlush(any());
+        verify(cardMapper, never()).applyUpdate(any(), any());
+    }
 
     // =====================================================================
     // COCRDLIC 1400-SETUP-MESSAGE banners reaching the client (WS-ERROR-MSG)

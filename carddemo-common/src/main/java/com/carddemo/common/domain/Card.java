@@ -12,6 +12,7 @@ import jakarta.persistence.Index;
 import jakarta.persistence.JoinColumn;
 import jakarta.persistence.ManyToOne;
 import jakarta.persistence.Table;
+import jakarta.persistence.Version;
 
 /**
  * JPA entity mapping the legacy COBOL ``CARD-RECORD`` layout (copybook
@@ -111,12 +112,41 @@ public class Card {
     private String cardActiveStatus;
 
     /**
+     * Optimistic-locking version (JPA-managed) detecting concurrent card updates.
+     *
+     * :purpose: ``COCRDUPC`` read the CARDDAT record for update, holding a VSAM update lock
+     *     for the whole rewrite; a stateless service cannot hold that lock across requests.
+     *     Without a version column concurrent card updates all reported success and only the
+     *     last writer's values survived, so the earlier edits were silently lost. The counter
+     *     makes the database itself the arbiter: a writer whose row moved since it was read
+     *     matches no row and is answered with the verbatim ``DATA-WAS-CHANGED-BEFORE-UPDATE``
+     *     outcome instead (AAP 0.6.2) [app/cbl/COCRDUPC.cbl:L1498-1519].
+     */
+    @Version
+    @Column(name = "version")
+    private Long version;
+
+    /**
      * Creates an empty card instance.
      *
      * Required by the JPA specification for entity instantiation.
      */
     public Card() {
         // No-argument constructor required by the JPA specification.
+    }
+
+    /**
+     * :returns: the optimistic-locking version, or ``null`` before the row is first persisted.
+     */
+    public Long getVersion() {
+        return version;
+    }
+
+    /**
+     * :param version: the optimistic-locking version to carry; normally managed by the provider.
+     */
+    public void setVersion(Long version) {
+        this.version = version;
     }
 
     /**

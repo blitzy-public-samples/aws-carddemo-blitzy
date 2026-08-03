@@ -89,14 +89,20 @@ public class AtomicRollbackIT {
 
 
     /**
-     * :purpose: Account group id engineered to overflow the ``acct_group_id VARCHAR(10)``
-     *     column (eleven characters), forcing the account write of the single transaction
-     *     to fail on flush. ``ACCT-GROUP-ID`` is deliberately the lever: COACTUPC does not
-     *     edit it, so the value reaches the column, whereas every monetary field is first
-     *     screened by ``1250-EDIT-SIGNED-9V2`` (nine integer digits) and can therefore
-     *     never be made to overflow ``NUMERIC(12,2)`` through the service.
+     * :purpose: Account group id that a test-scoped ``CHECK`` constraint rejects, forcing the
+     *     account write of the single transaction to fail on flush. ``ACCT-GROUP-ID`` remains
+     *     the lever because COACTUPC does not edit its CONTENT, so an in-width value reaches
+     *     the column, whereas every monetary field is first screened by ``1250-EDIT-SIGNED-9V2``
+     *     (nine integer digits) and can therefore never be made to overflow ``NUMERIC(12,2)``
+     *     through the service. An over-LENGTH value is no longer usable as the lever: the
+     *     service now edits every legacy field width (``ACCT-GROUP-ID X(10)``) and rejects it
+     *     before any write, which is a validation outcome and not the mid-transaction database
+     *     failure these cases exist to induce.
      */
-    private static final String OVERFLOW_GROUP_ID = "GROUPIDXXXX";
+    private static final String REJECTED_GROUP_ID = "ROLLBK";
+
+    /** :purpose: Test-scoped constraint that makes {@link #REJECTED_GROUP_ID} fail on flush. */
+    private static final String ROLLBACK_PROBE_CONSTRAINT = "tmp_atomic_rollback_probe";
 
     /** :purpose: Valid scale-2 balance used by the success control case. */
     private static final BigDecimal VALID_NEW_BALANCE = new BigDecimal("123.45");
@@ -187,7 +193,14 @@ public class AtomicRollbackIT {
         // The account-to-card cross-reference for this account is part of the card-service
         // migration seed (accounts 1..50 -> matching customer id), so the linkage the service
         // resolves is real seed data rather than a test-created row.
-        assertThat(cardXrefRepository.findByXrefAcctId(ACCT_ID)).isPresent();
+        assertThat(cardXrefRepository.findFirstByXrefAcctIdOrderByXrefCardNumAsc(ACCT_ID)).isPresent();
+
+        // A database-level rejection of one specific, in-width group id. The induced failure
+        // must occur on the ACCOUNT write inside the service transaction, which is precisely
+        // what these cases assert rolls the customer write back with it; the constraint is
+        // dropped again in tearDown so it never leaks into another class.
+        jdbcTemplate.execute("ALTER TABLE accounts ADD CONSTRAINT " + ROLLBACK_PROBE_CONSTRAINT
+                + " CHECK (acct_group_id IS NULL OR acct_group_id <> '" + REJECTED_GROUP_ID + "')");
     }
 
     /**
@@ -197,6 +210,8 @@ public class AtomicRollbackIT {
      */
     @AfterEach
     void tearDown() {
+        jdbcTemplate.execute("ALTER TABLE accounts DROP CONSTRAINT IF EXISTS "
+                + ROLLBACK_PROBE_CONSTRAINT);
         jdbcTemplate.update("UPDATE accounts SET acct_curr_bal = ? WHERE acct_id = ?",
                 originalAcctCurrBal, ACCT_ID);
         jdbcTemplate.update("UPDATE customers SET cust_last_name = ?, cust_ssn = ?, "
@@ -222,10 +237,10 @@ public class AtomicRollbackIT {
         AccountUpdateRequestDto request = fullRequestFrom(account, customer);
         // The account is the SECOND write. The balance carries a genuine change, so the
         // post-failure re-read below proves it was rolled back rather than merely never
-        // altered, and the over-length group id overflows acct_group_id VARCHAR(10) on
-        // flush so the account write is the failing write.
+        // altered, and the probe constraint rejects the group id on flush so the account
+        // write is the failing write.
         request.setAcctCurrBal(VALID_NEW_BALANCE);
-        request.setAcctGroupId(OVERFLOW_GROUP_ID);
+        request.setAcctGroupId(REJECTED_GROUP_ID);
         // The customer is the FIRST write; this change must not survive the rollback.
         request.setCustLastName(ROLLBACK_MARKER_LAST_NAME);
 
@@ -258,7 +273,7 @@ public class AtomicRollbackIT {
         // Change the first-written entity (customer) and force the second (account) to fail.
         request.setCustLastName(PARTIAL_MARKER_LAST_NAME);
         request.setAcctCurrBal(VALID_NEW_BALANCE);
-        request.setAcctGroupId(OVERFLOW_GROUP_ID);
+        request.setAcctGroupId(REJECTED_GROUP_ID);
 
         assertThatThrownBy(() -> accountService.updateAccount(ACCT_ID, request, null))
                 .isInstanceOf(DataIntegrityViolationException.class);

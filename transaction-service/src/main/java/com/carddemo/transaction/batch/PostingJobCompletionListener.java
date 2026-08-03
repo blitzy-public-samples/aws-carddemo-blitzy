@@ -49,9 +49,17 @@ public class PostingJobCompletionListener implements JobExecutionListener {
     /**
      * :purpose: Exit code reported when the daily-transaction feed yielded no records.
      *     ``CBTRN02C`` treats an unusable input as a hard failure (application result
-     *     code 12), never as a clean run.
+     *     code 12), never as a clean run. Set by the posting step, whose failure
+     *     Spring Batch propagates onto the job.
      */
     public static final String EMPTY_FEED_EXIT_CODE = "FAILED_EMPTY_FEED";
+
+    /**
+     * :purpose: Exit description carried with :data:`EMPTY_FEED_EXIT_CODE`, mapping
+     *     the legacy application result code 12.
+     */
+    public static final String EMPTY_FEED_EXIT_DESCRIPTION =
+            "Return code 12: the daily transaction feed contained no records";
 
     private static final Logger log = LoggerFactory.getLogger(PostingJobCompletionListener.class);
 
@@ -64,13 +72,38 @@ public class PostingJobCompletionListener implements JobExecutionListener {
      * :param jobExecution: the completed job execution whose ``COMPLETED`` step
      *        executions supply the read count (processed total) and the rejected
      *        count published under :data:`REJECT_COUNT_KEY`.
-     * :output: Fails the execution with :data:`EMPTY_FEED_EXIT_CODE` (return code 12)
-     *          when a completed run read no records at all; otherwise sets the
-     *          ``COMPLETED_WITH_REJECTS`` exit status (return code 4) when the rejected
-     *          total is greater than zero, and leaves the existing exit status alone.
+     * :output: For a ``COMPLETED`` run, the two tally lines plus the
+     *          ``COMPLETED_WITH_REJECTS`` exit status (return code 4) when the
+     *          rejected total is greater than zero. For a ``FAILED`` or ``STOPPED``
+     *          run, one diagnostic line naming the outcome and NO tally, and the
+     *          status and exit code Spring Batch assigned are left untouched.
+     * :note: A run that ends abnormally reports no tally (QA Issue 5).
+     *          ``CBTRN02C`` reaches its ``DISPLAY 'TRANSACTIONS PROCESSED :'`` and
+     *          ``DISPLAY 'TRANSACTIONS REJECTED  :'`` statements only on the normal
+     *          end-of-file path; ``9999-ABEND-PROGRAM`` calls ``CEE3ABD`` and the
+     *          run ends with no tally at all. Emitting one anyway printed
+     *          ``PROCESSED :0 / REJECTED :0`` for a run that had committed records —
+     *          a figure that contradicted the committed work and had no legacy
+     *          analogue.
+     * :note: The empty-feed verdict belongs to the step, not to this listener
+     *          (QA Issues 6 and 7): the step knows both its own read count and
+     *          whether the feed table is genuinely empty, and failing the step makes
+     *          Spring Batch carry that status and exit code onto the job, so the
+     *          job and step metadata an operator queries can never disagree.
      */
     @Override
     public void afterJob(JobExecution jobExecution) {
+        // A run that did not complete normally has no legacy tally to report.
+        if (jobExecution.getStatus() != BatchStatus.COMPLETED) {
+            log.error("Transaction posting run ended {} (exit code {}); no end-of-run tally is"
+                            + " reported because the legacy program abends before its"
+                            + " TRANSACTIONS PROCESSED / TRANSACTIONS REJECTED displays",
+                    jobExecution.getStatus(),
+                    jobExecution.getExitStatus() == null
+                            ? "" : jobExecution.getExitStatus().getExitCode());
+            return;
+        }
+
         long processedCount = 0L;
         long rejectCount = 0L;
         for (StepExecution stepExecution : jobExecution.getStepExecutions()) {
@@ -86,24 +119,10 @@ public class PostingJobCompletionListener implements JobExecutionListener {
         log.info("TRANSACTIONS PROCESSED :{}", processedCount);
         log.info("TRANSACTIONS REJECTED  :{}", rejectCount);
 
-        // An empty feed is an operational failure, not a clean run. The legacy job
-        // step was scheduled because a DALYTRAN feed had been delivered, so reading
-        // zero records means the input never arrived or was not visible to this run.
-        // Reporting COMPLETED in that case is a silent false success: the operator
-        // believes the day's transactions were posted when nothing was.
-        if (jobExecution.getStatus() == BatchStatus.COMPLETED && processedCount == 0L) {
-            log.error("Daily transaction feed was empty: no records were read from DALYTRAN");
-            jobExecution.setStatus(BatchStatus.FAILED);
-            jobExecution.setExitStatus(new ExitStatus(
-                    EMPTY_FEED_EXIT_CODE,
-                    "Return code 12: the daily transaction feed contained no records"));
-            return;
-        }
-
         // Map the legacy return code only for a normally completed run. A FAILED
         // or STOPPED job keeps the status and exit code Spring Batch assigned, so
         // rejects can never mask a hard failure as COMPLETED_WITH_REJECTS.
-        if (jobExecution.getStatus() == BatchStatus.COMPLETED && rejectCount > 0L) {
+        if (rejectCount > 0L) {
             jobExecution.setExitStatus(new ExitStatus(
                     "COMPLETED_WITH_REJECTS",
                     "Return code 4: " + rejectCount + " transaction(s) rejected"));

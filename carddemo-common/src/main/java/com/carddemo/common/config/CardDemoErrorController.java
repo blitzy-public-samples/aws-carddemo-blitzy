@@ -16,6 +16,7 @@
  */
 package com.carddemo.common.config;
 
+import com.carddemo.common.security.SensitiveDataMasker;
 import com.carddemo.common.dto.ErrorResponse;
 import jakarta.servlet.RequestDispatcher;
 import jakarta.servlet.http.HttpServletRequest;
@@ -93,10 +94,14 @@ public class CardDemoErrorController implements ErrorController {
         Throwable error = (attributes == null) ? null
                 : attributes.getError(new org.springframework.web.context.request.ServletWebRequest(request));
         if (error != null) {
-            log.warn("Error dispatch for {} resolved to {}: {}", body.getPath(), status.value(),
+            // The path is masked for the LOG only; the response body keeps the URI the
+            // caller itself supplied, which is part of the shared error contract.
+            log.warn("Error dispatch for {} resolved to {}: {}",
+                    SensitiveDataMasker.maskPan(body.getPath()), status.value(),
                     error.getClass().getSimpleName());
         } else {
-            log.warn("Error dispatch for {} resolved to {}", body.getPath(), status.value());
+            log.warn("Error dispatch for {} resolved to {}",
+                    SensitiveDataMasker.maskPan(body.getPath()), status.value());
         }
         return ResponseEntity.status(status).body(body);
     }

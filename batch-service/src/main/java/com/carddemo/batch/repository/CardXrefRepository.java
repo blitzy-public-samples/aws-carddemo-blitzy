@@ -37,12 +37,19 @@ public interface CardXrefRepository extends JpaRepository<CardXref, String> {
     /**
      * :purpose: Fetch the cross-reference for a given account id via the ``xref_acct_id``
      *  secondary index (the CXACAIX alternate-index path used when assembling the interest
-     *  transaction card number).
+     *  transaction card number), taking the LOWEST card number when the account holds
+     *  several cards.
      * :param xrefAcctId: owning account identifier to match.
-     * :returns: the first matching cross-reference, or an empty {@link Optional} when the
-     *  account has no cross-reference.
+     * :returns: the matching cross-reference with the lowest ``XREF-CARD-NUM``, or an empty
+     *  {@link Optional} when the account has no cross-reference.
+     * :note: The ordering is part of the contract, not a convenience. A VSAM
+     *  alternate-index read returns records sharing an alternate key in PRIMARY-key order,
+     *  so ``CBACT04C`` ``1110-GET-XREF-DATA`` deterministically saw the lowest card number
+     *  [app/cbl/CBACT04C.cbl:L34-39, L393-413]; an unordered ``findFirst`` tracked
+     *  PostgreSQL heap order and could stamp a different card number on a financial record
+     *  for identical data and parameters (QA Issue 11).
      */
-    Optional<CardXref> findFirstByXrefAcctId(Long xrefAcctId);
+    Optional<CardXref> findFirstByXrefAcctIdOrderByXrefCardNumAsc(Long xrefAcctId);
 
     /**
      * :purpose: List cross-references ordered by card number ascending, reproducing the

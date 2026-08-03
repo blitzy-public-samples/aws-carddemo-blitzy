@@ -210,22 +210,35 @@ CREATE TABLE IF NOT EXISTS transactions (
 -- No FK on dalytran_card_num: the feed legitimately carries unknown cards, which
 -- the posting job rejects with code 100 rather than refusing at insert time.
 -- -----------------------------------------------------------------------------
+-- Every field CBTRN02C dereferences while validating a feed record is NOT NULL, and
+-- the origination timestamp additionally carries at least its ten date characters
+-- (QA Issue 8). DALYTRAN is a fixed-width 350-byte sequential data set: a record
+-- physically cannot be missing DALYTRAN-AMT or hold a five-character
+-- DALYTRAN-ORIG-TS, so a staged row that does is not a DALYTRAN record at all.
+-- Leaving the columns nullable let such a row reach 1500-VALIDATE-TRAN, where it
+-- aborted the posting step with a raw NullPointerException /
+-- StringIndexOutOfBoundsException on every rerun - blocking every later record in the
+-- feed and never producing a reject record. The constraints refuse the row at
+-- ingestion instead, where the loader can still fix it. DALYTRAN-PROC-TS stays
+-- nullable: 2000-POST-TRANSACTION stamps it at posting time, so an unposted feed
+-- record legitimately carries none.
 CREATE TABLE IF NOT EXISTS daily_transactions (
     dalytran_id             VARCHAR(16)   PRIMARY KEY,   -- DALYTRAN-ID            PIC X(16)
-    dalytran_type_cd        VARCHAR(2),                  -- DALYTRAN-TYPE-CD       PIC X(02)
-    dalytran_cat_cd         INTEGER,                     -- DALYTRAN-CAT-CD        PIC 9(04)
+    dalytran_type_cd        VARCHAR(2)    NOT NULL,      -- DALYTRAN-TYPE-CD       PIC X(02)
+    dalytran_cat_cd         INTEGER       NOT NULL,      -- DALYTRAN-CAT-CD        PIC 9(04)
     dalytran_source         VARCHAR(10),                 -- DALYTRAN-SOURCE        PIC X(10)
     dalytran_desc           VARCHAR(100),                -- DALYTRAN-DESC          PIC X(100)
-    dalytran_amt            NUMERIC(11,2),               -- DALYTRAN-AMT           PIC S9(09)V99 (exact scale; AAP 0.6.1)
+    dalytran_amt            NUMERIC(11,2) NOT NULL,      -- DALYTRAN-AMT           PIC S9(09)V99 (exact scale; AAP 0.6.1)
     dalytran_merchant_id    BIGINT,                      -- DALYTRAN-MERCHANT-ID   PIC 9(09)
     dalytran_merchant_name  VARCHAR(50),                 -- DALYTRAN-MERCHANT-NAME PIC X(50)
     dalytran_merchant_city  VARCHAR(50),                 -- DALYTRAN-MERCHANT-CITY PIC X(50)
     dalytran_merchant_zip   VARCHAR(10),                 -- DALYTRAN-MERCHANT-ZIP  PIC X(10)
-    dalytran_card_num       VARCHAR(16),                 -- DALYTRAN-CARD-NUM      PIC X(16)
-    dalytran_orig_ts        VARCHAR(26),                 -- DALYTRAN-ORIG-TS       PIC X(26) (first 10 chars drive reject 103)
+    dalytran_card_num       VARCHAR(16)   NOT NULL,      -- DALYTRAN-CARD-NUM      PIC X(16)
+    dalytran_orig_ts        VARCHAR(26)   NOT NULL,      -- DALYTRAN-ORIG-TS       PIC X(26) (first 10 chars drive reject 103)
     dalytran_proc_ts        VARCHAR(26),                 -- DALYTRAN-PROC-TS       PIC X(26)
-    CONSTRAINT chk_daily_transactions_cat_cd CHECK (dalytran_cat_cd IS NULL OR dalytran_cat_cd BETWEEN 0 AND 9999),
-    CONSTRAINT chk_daily_transactions_merchant_id CHECK (dalytran_merchant_id IS NULL OR dalytran_merchant_id BETWEEN 0 AND 999999999)
+    CONSTRAINT chk_daily_transactions_cat_cd CHECK (dalytran_cat_cd BETWEEN 0 AND 9999),
+    CONSTRAINT chk_daily_transactions_merchant_id CHECK (dalytran_merchant_id IS NULL OR dalytran_merchant_id BETWEEN 0 AND 999999999),
+    CONSTRAINT chk_daily_transactions_orig_ts CHECK (LENGTH(dalytran_orig_ts) >= 10)
 );
 
 -- -----------------------------------------------------------------------------

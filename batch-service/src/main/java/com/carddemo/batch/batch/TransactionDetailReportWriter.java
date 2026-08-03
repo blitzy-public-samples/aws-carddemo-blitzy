@@ -16,7 +16,6 @@
 
 package com.carddemo.batch.batch;
 
-import com.carddemo.common.batch.BatchOutputPathResolver;
 import org.springframework.batch.core.configuration.annotation.StepScope;
 import org.springframework.batch.infrastructure.item.Chunk;
 import org.springframework.batch.infrastructure.item.ExecutionContext;
@@ -26,6 +25,7 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 
 import com.carddemo.common.batch.BatchOutputPathResolver;
+import com.carddemo.common.batch.FixedWidthText;
 import com.carddemo.common.config.CorrelationIdContext;
 
 import java.io.BufferedWriter;
@@ -54,11 +54,24 @@ import java.util.Locale;
  *  account, and grand totals.
  * :output: A newly created report file at the ``reportFile`` job-parameter path
  *  containing the report-name and column headers, one detail line per input
- *  item, per-page and per-account subtotal lines, and a final grand-total line;
- *  each amount is edited with the ``CVTRA07Y`` ``-ZZZ,ZZZ,ZZZ.ZZ`` (detail) or
- *  ``+ZZZ,ZZZ,ZZZ.ZZ`` (totals) mask. When the input stream is empty an empty
- *  file is produced. The control-break card number is never written to the
- *  file or to any log line.
+ *  item, per-page and per-account subtotal lines, and the closing page-total and
+ *  grand-total block; each amount is edited with the ``CVTRA07Y``
+ *  ``-ZZZ,ZZZ,ZZZ.ZZ`` (detail) or ``+ZZZ,ZZZ,ZZZ.ZZ`` (totals) mask. An empty
+ *  selection window still produces the closing block, exactly as the source
+ *  program's end-of-file path does. The control-break card number is never
+ *  written to the file or to any log line.
+ * :note: The end-of-report block reproduces the ``CBTRN03C`` end-of-file branch
+ *  literally: ``ADD TRAN-AMT TO WS-PAGE-TOTAL WS-ACCOUNT-TOTAL`` runs against
+ *  the record area, which at end of file still holds the LAST record read — so
+ *  the final record contributes to the closing page and grand totals a second
+ *  time — followed by ``1110-WRITE-PAGE-TOTALS`` and
+ *  ``1110-WRITE-GRAND-TOTALS`` and by no closing account-total line. The
+ *  reproduction is deliberate: the report is a frozen downstream layout, so the
+ *  arithmetic and the line set are preserved rather than corrected.
+ * :note: The file is written in ISO-8859-1 and every field value is reduced to
+ *  single-byte text before it is padded, so ``FD-REPTFILE-REC PIC X(133)`` is a
+ *  BYTE contract for any text the relational store can hold, not merely a
+ *  character count (see {@link FixedWidthText}).
  * :note: The reader
  *  (``TransactionRepository.findByProcTsDateRangeOrderByCardNum(startDate,
  *  endDate, pageable)``), the ``startDate``/``endDate``/``reportFile`` job
@@ -142,6 +155,15 @@ public class TransactionDetailReportWriter implements ItemStreamWriter<Transacti
     private BigDecimal grandTotal;
 
     /**
+     * Amount of the most recently rendered detail row — the Java stand-in for the
+     * ``TRAN-AMT`` still sitting in the ``TRAN-RECORD`` area when ``CBTRN03C``
+     * reaches end of file, which its end-of-file branch adds to the page and
+     * account totals once more. Zero until the first row is rendered, matching an
+     * empty selection window.
+     */
+    private BigDecimal lastAmount;
+
+    /**
      * :purpose: Construct the writer, binding the report date range and output
      *  path from the enclosing step's job parameters.
      * :param startDate: report range start date in ``YYYY-MM-DD`` form
@@ -183,8 +205,12 @@ public class TransactionDetailReportWriter implements ItemStreamWriter<Transacti
         pageTotal = BigDecimal.ZERO;
         accountTotal = BigDecimal.ZERO;
         grandTotal = BigDecimal.ZERO;
+        lastAmount = BigDecimal.ZERO;
         try {
-            out = Files.newBufferedWriter(resolvedReportFile, StandardCharsets.UTF_8);
+            // ISO-8859-1 keeps one character equal to one byte, so the X(133)
+            // record length of FD-REPTFILE-REC is a byte contract downstream
+            // readers can still parse by offset.
+            out = Files.newBufferedWriter(resolvedReportFile, StandardCharsets.ISO_8859_1);
         } catch (IOException e) {
             throw new ItemStreamException(
                     "Failed to open the daily transaction report file: " + reportFile, e);
@@ -204,15 +230,28 @@ public class TransactionDetailReportWriter implements ItemStreamWriter<Transacti
     }
 
     /**
-     * :purpose: Emit the end-of-report totals for the final card group and the
-     *  final page, then the grand total, and release the output file. Runs once
-     *  at the end of the step. When no rows were written the file is left empty.
+     * :purpose: Emit the end-of-report block and release the output file. Runs
+     *  once at the end of the step and reproduces the ``CBTRN03C`` end-of-file
+     *  branch literally: the last rendered amount is added to the page and
+     *  account totals a second time (at end of file ``TRAN-AMT`` still holds the
+     *  last record read), then ``1110-WRITE-PAGE-TOTALS`` and
+     *  ``1110-WRITE-GRAND-TOTALS`` run; no closing account-total line is written
+     *  because the source branch performs no ``1120-WRITE-ACCOUNT-TOTALS``. The
+     *  block is emitted even when the selection window matched no row, so an
+     *  empty window yields the same three-line skeleton the source program
+     *  produces rather than a zero-byte file that a failed run could not be
+     *  distinguished from.
      */
     @Override
     public void close() throws ItemStreamException {
         try {
-            if (out != null && !firstTime) {
-                writeAccountTotals();
+            if (out != null) {
+                // ADD TRAN-AMT TO WS-PAGE-TOTAL WS-ACCOUNT-TOTAL — the record area
+                // still holds the last record, so it is counted once more here. The
+                // account total is accumulated but never written: the end-of-file
+                // branch has no 1120-WRITE-ACCOUNT-TOTALS.
+                pageTotal = pageTotal.add(lastAmount);
+                accountTotal = accountTotal.add(lastAmount);
                 writePageTotals();
                 writeGrandTotals();
                 out.flush();
@@ -267,9 +306,12 @@ public class TransactionDetailReportWriter implements ItemStreamWriter<Transacti
             }
 
             // Accumulate the amount into the page and account running totals.
-            BigDecimal amount = item.getTranAmt();
+            BigDecimal amount = (item.getTranAmt() == null) ? BigDecimal.ZERO : item.getTranAmt();
             pageTotal = pageTotal.add(amount);
             accountTotal = accountTotal.add(amount);
+            // Retain the amount as the record area's TRAN-AMT: the end-of-file
+            // branch adds whatever the last read left there to the closing totals.
+            lastAmount = amount;
 
             writeDetail(item);
         }
@@ -440,13 +482,17 @@ public class TransactionDetailReportWriter implements ItemStreamWriter<Transacti
     /**
      * :purpose: Left-justify a field value into a fixed width, space-padding on
      *  the right and truncating on the right when the value is longer than the
-     *  field. A ``null`` value is treated as empty.
+     *  field. A ``null`` value is treated as empty. The value is first reduced to
+     *  single-byte text so the returned width is a BYTE width in the ISO-8859-1
+     *  encoding the report is written in, keeping every ``CVTRA07Y`` field at its
+     *  declared offset for text the relational store may hold outside Latin-1.
      * :param value: the field value (may be ``null``).
-     * :param width: the target field width in characters.
-     * :output: a string of exactly ``width`` characters.
+     * :param width: the target field width in characters, equal to bytes.
+     * :output: a string of exactly ``width`` characters, each encoding to one
+     *  byte.
      */
     private static String fixed(String value, int width) {
-        String v = (value == null) ? "" : value;
+        String v = (value == null) ? "" : FixedWidthText.toSingleByteText(value);
         if (v.length() == width) {
             return v;
         }

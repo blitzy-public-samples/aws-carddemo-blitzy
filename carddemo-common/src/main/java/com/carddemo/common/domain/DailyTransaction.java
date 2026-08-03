@@ -35,12 +35,24 @@ public class DailyTransaction {
     @Column(name = "dalytran_id", length = 16, nullable = false)
     private String dalytranId;
 
-    /** ``DALYTRAN-TYPE-CD`` PIC X(02) — transaction type code. */
-    @Column(name = "dalytran_type_cd", length = 2)
+    /**
+     * ``DALYTRAN-TYPE-CD`` PIC X(02) — transaction type code.
+     *
+     * Mandatory: the fixed-width 350-byte feed record always carries it and
+     * ``2900-WRITE-TRANSACTION-FILE`` posts it into the transaction master, so a
+     * staged row without one is not a ``DALYTRAN`` record.
+     */
+    @Column(name = "dalytran_type_cd", length = 2, nullable = false)
     private String dalytranTypeCd;
 
-    /** ``DALYTRAN-CAT-CD`` PIC 9(04) — transaction category code. */
-    @Column(name = "dalytran_cat_cd")
+    /**
+     * ``DALYTRAN-CAT-CD`` PIC 9(04) — transaction category code.
+     *
+     * Mandatory: it forms part of the ``TRAN-CAT-BAL`` key
+     * (``TRANCAT-ACCT-ID``/``TRANCAT-TYPE-CD``/``TRANCAT-CD``) that
+     * ``2700-UPDATE-TCATBAL`` maintains.
+     */
+    @Column(name = "dalytran_cat_cd", nullable = false)
     private Integer dalytranCatCd;
 
     /** ``DALYTRAN-SOURCE`` PIC X(10) — originating source channel. */
@@ -57,9 +69,10 @@ public class DailyTransaction {
      * Held as {@link BigDecimal} (never a binary floating-point type) so the
      * over-limit reject computation
      * ``WS-TEMP-BAL = ACCT-CURR-CYC-CREDIT - ACCT-CURR-CYC-DEBIT + DALYTRAN-AMT``
-     * preserves exact packed-decimal precision and scale.
+     * preserves exact packed-decimal precision and scale. Mandatory: that
+     * computation has no meaning without an amount.
      */
-    @Column(name = "dalytran_amt", precision = 11, scale = 2)
+    @Column(name = "dalytran_amt", precision = 11, scale = 2, nullable = false)
     private BigDecimal dalytranAmt;
 
     /** ``DALYTRAN-MERCHANT-ID`` PIC 9(09) — merchant identifier. */
@@ -78,17 +91,23 @@ public class DailyTransaction {
     @Column(name = "dalytran_merchant_zip", length = 10)
     private String dalytranMerchantZip;
 
-    /** ``DALYTRAN-CARD-NUM`` PIC X(16) — card number used for cross-reference lookup. */
-    @Column(name = "dalytran_card_num", length = 16)
+    /**
+     * ``DALYTRAN-CARD-NUM`` PIC X(16) — card number used for cross-reference lookup.
+     *
+     * Mandatory: ``1500-A-LOOKUP-XREF`` keys the cross-reference read on it.
+     */
+    @Column(name = "dalytran_card_num", length = 16, nullable = false)
     private String dalytranCardNum;
 
     /**
      * ``DALYTRAN-ORIG-TS`` PIC X(26) — origination timestamp in
      * ``YYYY-MM-DD-HH.MM.SS.mmmmmm`` form. Retained as the full 26-character
      * string because the posting job compares its first ten characters against
-     * the account expiration date for the expiry reject check.
+     * the account expiration date for the expiry reject check. Mandatory, and at
+     * least those ten date characters must be present, or the expiry check has
+     * nothing to compare.
      */
-    @Column(name = "dalytran_orig_ts", length = 26)
+    @Column(name = "dalytran_orig_ts", length = 26, nullable = false)
     private String dalytranOrigTs;
 
     /** ``DALYTRAN-PROC-TS`` PIC X(26) — processing timestamp (26-character form). */

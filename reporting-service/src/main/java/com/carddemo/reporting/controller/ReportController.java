@@ -91,25 +91,29 @@ public class ReportController {
      *     the entry point for the statement path, kept distinct from the ``CORPT00C``
      *     report request that submits the transaction-detail report; without it the
      *     statement job stream would have no caller at all.
-     * :param reportType: the statement run label (``Monthly``, ``Yearly`` or ``Custom``).
-     * :param startDate: inclusive window start in ``YYYY-MM-DD`` wire form.
-     * :param endDate: inclusive window end in ``YYYY-MM-DD`` wire form.
-     * :param stmtFile: optional plain-text statement output file name.
-     * :param htmlFile: optional HTML statement output file name.
+     * :param stmtFile: optional plain-text statement output file name (the ``STMTFILE``
+     *     DD name); the configured default is used when omitted.
+     * :param htmlFile: optional HTML statement output file name (the ``HTMLFILE`` DD
+     *     name); the configured default is used when omitted.
      * :returns: the accepted run's durable execution handle (HTTP 202).
      * :raises com.carddemo.common.exception.CardDemoException: when the job cannot be
      *     submitted; mapped by the shared ``GlobalExceptionHandler``.
+     * :note: The endpoint takes no report type and no date window. ``CREASTMT`` carries
+     *     no ``PARM``: its SORT step re-keys the entire ``TRANSACT`` file by card number
+     *     and transaction id with no date filter, so ``CBSTM03A`` always statements a
+     *     card's full history [app/jcl/CREASTMT.JCL]. A mandatory
+     *     ``reportType``/``startDate``/``endDate`` triple used to be accepted and
+     *     recorded as identifying job parameters even though nothing in the job could
+     *     read them, which told the caller a windowed statement had been produced and
+     *     keyed duplicate detection on values that could not change the output. Callers
+     *     that still send them are unaffected: unknown query parameters are ignored.
      */
     @PostMapping("/statements")
     @ResponseStatus(HttpStatus.ACCEPTED)
     public BatchJobExecutionDto generateStatements(
-            @RequestParam(defaultValue = "Monthly") String reportType,
-            @RequestParam String startDate,
-            @RequestParam String endDate,
             @RequestParam(required = false) String stmtFile,
             @RequestParam(required = false) String htmlFile) {
-        JobExecution execution = jobSchedulingConfig.launchStatementGeneration(
-                reportType, startDate, endDate, stmtFile, htmlFile);
+        JobExecution execution = jobSchedulingConfig.launchStatementGeneration(stmtFile, htmlFile);
         return new BatchJobExecutionDto(
                 "statementGenerationJob",
                 execution.getId(),

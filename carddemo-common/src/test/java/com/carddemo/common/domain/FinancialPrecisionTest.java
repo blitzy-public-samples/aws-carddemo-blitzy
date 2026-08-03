@@ -27,15 +27,28 @@ import org.junit.jupiter.api.Test;
 final class FinancialPrecisionTest {
 
     /**
-     * Reproduce the COBOL fixed-scale monthly-interest computation verbatim.
+     * Reproduce the COBOL fixed-scale monthly-interest computation verbatim, as the
+     * executable statement of the specification this module freezes for the money types it
+     * owns (``TranCatBal.tranCatBal`` and ``DiscGroup.disIntRate``).
      *
      * :param tranCatBal: transaction-category balance (COBOL ``TRAN-CAT-BAL``, scale 2).
      * :param disIntRate: disclosure-group interest rate (COBOL ``DIS-INT-RATE``, scale 2).
      * :return: ``(tranCatBal * disIntRate) / 1200`` as a scale-2 ``BigDecimal`` truncated
      *     toward zero (``RoundingMode.DOWN``), matching the COBOL ``COMPUTE`` without
      *     a ``ROUNDED`` phrase.
+     * :note: This is the SPECIFICATION, not the implementation under test. The interest
+     *     service lives in ``batch-service``, which depends on this module, so this module
+     *     cannot call it without inverting the dependency. The BINDING assertions against the
+     *     production method are
+     *     ``batch-service`` ``InterestCalculationServiceTest#computeMonthlyInterest_goldenTruncationCases``
+     *     and its two boundary cases, which assert exactly the values below against
+     *     ``InterestCalculationService.computeMonthlyInterest``. Both sides are required: a
+     *     specification asserted only against itself let the production method use
+     *     ``HALF_UP`` while this test stayed green, and every non-terminating quotient was a
+     *     cent out (QA Issue 9).
      */
-    private static BigDecimal monthlyInterest(BigDecimal tranCatBal, BigDecimal disIntRate) {
+    private static BigDecimal cobolMonthlyInterestSpecification(BigDecimal tranCatBal,
+                                                                BigDecimal disIntRate) {
         return tranCatBal.multiply(disIntRate)
                          .divide(BigDecimal.valueOf(1200), 2, RoundingMode.DOWN);
     }
@@ -45,7 +58,7 @@ final class FinancialPrecisionTest {
     void canonicalExampleIsZeroPoint41() {
         // 100.00 * 5.00 / 1200 = 0.41666... -> truncate (DOWN) at scale 2 -> 0.41
         // (COBOL COMPUTE has no ROUNDED phrase; HALF_UP would incorrectly yield 0.42)
-        BigDecimal r = monthlyInterest(new BigDecimal("100.00"), new BigDecimal("5.00"));
+        BigDecimal r = cobolMonthlyInterestSpecification(new BigDecimal("100.00"), new BigDecimal("5.00"));
 
         assertThat(r).isEqualByComparingTo("0.41");
         assertThat(r).isNotEqualByComparingTo("0.42");
@@ -57,7 +70,7 @@ final class FinancialPrecisionTest {
     void truncatesTowardZeroAtBoundary() {
         // 30.00 * 5.00 / 1200 = 0.125 exactly -> truncate (DOWN) at scale 2 -> 0.12
         // (HALF_UP would incorrectly yield 0.13; the COBOL COMPUTE has no ROUNDED phrase)
-        BigDecimal r = monthlyInterest(new BigDecimal("30.00"), new BigDecimal("5.00"));
+        BigDecimal r = cobolMonthlyInterestSpecification(new BigDecimal("30.00"), new BigDecimal("5.00"));
 
         assertThat(r).isEqualByComparingTo("0.12");
         assertThat(r).isNotEqualByComparingTo("0.13");
@@ -67,12 +80,12 @@ final class FinancialPrecisionTest {
     @DisplayName("Result always carries scale 2, including exact and zero cases")
     void resultIsAlwaysScale2() {
         // Exact case: 1200.00 * 1.00 / 1200 = 1.00
-        BigDecimal exact = monthlyInterest(new BigDecimal("1200.00"), new BigDecimal("1.00"));
+        BigDecimal exact = cobolMonthlyInterestSpecification(new BigDecimal("1200.00"), new BigDecimal("1.00"));
         assertThat(exact).isEqualByComparingTo("1.00");
         assertThat(exact.scale()).isEqualTo(2);
 
         // Zero case: 0.00 * 5.00 / 1200 = 0.00
-        BigDecimal zero = monthlyInterest(new BigDecimal("0.00"), new BigDecimal("5.00"));
+        BigDecimal zero = cobolMonthlyInterestSpecification(new BigDecimal("0.00"), new BigDecimal("5.00"));
         assertThat(zero).isEqualByComparingTo("0.00");
         assertThat(zero.scale()).isEqualTo(2);
     }

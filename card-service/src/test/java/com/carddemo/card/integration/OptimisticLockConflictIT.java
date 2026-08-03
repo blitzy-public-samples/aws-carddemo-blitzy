@@ -218,6 +218,101 @@ class OptimisticLockConflictIT {
     }
 
     /**
+     * :purpose: Prove that a snapshot-carrying update succeeds against a card whose stored CVV
+     *     is populated, and that the stored CVV survives the rewrite untouched. No read path
+     *     returns ``CARD-CVV-CD`` (AAP 0.6.7), so a client can never echo it back; when the
+     *     ``9300`` compare demanded it anyway EVERY snapshot-bearing update was rejected as a
+     *     conflict that had not happened, and the rewrite path nulled the stored CVV.
+     * :raises Exception: when the MockMvc exchange fails.
+     */
+    @Test
+    void snapshotUpdateWithoutCvvSucceedsAndPreservesStoredCvv() throws Exception {
+        jdbcTemplate.update("UPDATE cards SET card_cvv_cd = ? WHERE card_num = ?",
+                "417", TARGET_CARD_NUM);
+        entityManager.clear();
+
+        // Display-time read: exactly what a client can observe -- note there is no CVV here.
+        String body = mockMvc.perform(get("/cards/{cardNumber}", TARGET_CARD_NUM)
+                        .sessionAttr(SESSION_KEY, adminSession()))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.cardCvvCd").doesNotExist())
+                .andReturn().getResponse().getContentAsString();
+        JsonNode displayed = objectMapper.readTree(body);
+
+        // Submit a real change carrying the observable snapshot only (no CVV on either side).
+        String requestBody = updateJson("Aniya Vonn", SEED_STATUS, SEED_EXPIRY,
+                displayed.get("cardEmbossedName").asText(),
+                displayed.get("cardActiveStatus").asText(),
+                displayed.get("cardExpiraionDate").asText());
+        mockMvc.perform(put("/cards/{cardNumber}", TARGET_CARD_NUM)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(requestBody)
+                        .sessionAttr(SESSION_KEY, adminSession()))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.cardEmbossedName").value("Aniya Vonn"))
+                .andExpect(jsonPath("$.cardCvvCd").doesNotExist());
+
+        entityManager.clear();
+        assertEquals("Aniya Vonn", jdbcTemplate.queryForObject(
+                "SELECT card_embossed_name FROM cards WHERE card_num = ?",
+                String.class, TARGET_CARD_NUM).trim());
+        // Read through the entity (and therefore through CryptoConverter): the rewrite
+        // re-encrypts the column with a fresh IV, so the ciphertext is not comparable by
+        // value -- the decrypted CVV is, and it must be exactly what was stored before.
+        assertEquals("417", cardRepository.findById(TARGET_CARD_NUM).orElseThrow()
+                .getCardCvvCd());
+    }
+
+    /**
+     * :purpose: Prove the ``@Version`` token path end to end: the display read publishes the
+     *     version, an update echoing it succeeds and advances it by exactly one, and a second
+     *     update replaying the now-stale token is rejected with HTTP 409 without overwriting
+     *     the committed value (``COCRDUPC DATA-WAS-CHANGED-BEFORE-UPDATE``, AAP 0.6.2).
+     * :raises Exception: when the MockMvc exchange fails.
+     */
+    @Test
+    void versionTokenAdvancesOnceAndStaleTokenReturns409() throws Exception {
+        String body = mockMvc.perform(get("/cards/{cardNumber}", TARGET_CARD_NUM)
+                        .sessionAttr(SESSION_KEY, adminSession()))
+                .andExpect(status().isOk())
+                .andReturn().getResponse().getContentAsString();
+        long displayedVersion = objectMapper.readTree(body).get("version").asLong();
+
+        CardUpdateRequestDto first = new CardUpdateRequestDto();
+        first.setCardEmbossedName("Aniya Vonx");
+        first.setCardActiveStatus(SEED_STATUS);
+        first.setCardExpiraionDate(SEED_EXPIRY);
+        first.setVersion(displayedVersion);
+        mockMvc.perform(put("/cards/{cardNumber}", TARGET_CARD_NUM)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(first))
+                        .sessionAttr(SESSION_KEY, adminSession()))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.version").value(displayedVersion + 1));
+
+        // Replay the stale token: the second writer must lose rather than overwrite.
+        CardUpdateRequestDto replay = new CardUpdateRequestDto();
+        replay.setCardEmbossedName("Aniya Vony");
+        replay.setCardActiveStatus("N");
+        replay.setCardExpiraionDate(SEED_EXPIRY);
+        replay.setVersion(displayedVersion);
+        mockMvc.perform(put("/cards/{cardNumber}", TARGET_CARD_NUM)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(replay))
+                        .sessionAttr(SESSION_KEY, adminSession()))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.message").value(OptimisticLockConflictException.MESSAGE));
+
+        entityManager.clear();
+        assertEquals("Aniya Vonx", jdbcTemplate.queryForObject(
+                "SELECT card_embossed_name FROM cards WHERE card_num = ?",
+                String.class, TARGET_CARD_NUM).trim());
+        assertEquals(SEED_STATUS, currentStatusInDb());
+        assertEquals(displayedVersion + 1, jdbcTemplate.queryForObject(
+                "SELECT version FROM cards WHERE card_num = ?", Long.class, TARGET_CARD_NUM));
+    }
+
+    /**
      * :purpose: Prove the pseudo-conversational concurrent-modification race
      *     (``COCRDUPC`` read-snapshot-compare-rewrite): a client reads the card, someone
      *     else commits a change, and the client's update — carrying the now-stale
@@ -287,8 +382,8 @@ class OptimisticLockConflictIT {
 
     /**
      * :purpose: Prove the 409 originates from the ``CardService`` service-layer snapshot
-     *     compare (``9300-CHECK-CHANGE-IN-REC``), independent of the web layer and of any JPA
-     *     ``@Version`` (``Card`` has none): a direct ``updateCard`` call with a stale snapshot
+     *     compare (``9300-CHECK-CHANGE-IN-REC``), independent of the web layer and of the JPA
+     *     ``@Version`` token: a direct ``updateCard`` call with a stale snapshot
      *     throws ``OptimisticLockConflictException`` carrying the frozen message.
      */
     @Test

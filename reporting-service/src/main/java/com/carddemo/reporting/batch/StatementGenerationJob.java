@@ -17,6 +17,8 @@
 package com.carddemo.reporting.batch;
 
 import com.carddemo.common.batch.BatchOutputPathResolver;
+import com.carddemo.common.batch.FailedOutputCleanupListener;
+import com.carddemo.common.batch.FixedWidthText;
 import com.carddemo.common.domain.Account;
 import com.carddemo.common.domain.CardXref;
 import com.carddemo.common.domain.Customer;
@@ -31,6 +33,7 @@ import com.carddemo.reporting.mapper.StatementMapper;
 import org.springframework.batch.core.configuration.annotation.StepScope;
 import org.springframework.batch.core.job.Job;
 import org.springframework.batch.core.job.builder.JobBuilder;
+import org.springframework.batch.core.listener.StepExecutionListener;
 import org.springframework.batch.core.repository.JobRepository;
 import org.springframework.batch.core.step.Step;
 import org.springframework.batch.core.step.builder.StepBuilder;
@@ -54,6 +57,7 @@ import org.springframework.transaction.PlatformTransactionManager;
 import java.math.BigDecimal;
 import java.math.BigInteger;
 import java.math.RoundingMode;
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
@@ -70,6 +74,15 @@ import java.util.Map;
  * :output: Registers the ``statementGenerationJob`` job and its single chunk
  *  step, launched on demand by the reporting-service job scheduler; the step
  *  writes the concatenated text and HTML statement files.
+ * :note: Both files are written in ISO-8859-1 and every field is reduced to
+ *  single-byte text before it is padded, so the ``FD-STMTFILE-REC PIC X(80)`` and
+ *  ``HTML-FIXED-LN PIC X(100)`` layouts are BYTE contracts, matching the
+ *  ``LRECL=80`` and ``LRECL=100`` DD cards of ``CREASTMT``.
+ * :note: The job takes only the two output file names (``stmtFile`` and
+ *  ``htmlFile``, the ``STMTFILE`` and ``HTMLFILE`` DD names of ``CREASTMT``).
+ *  There is no date window: the ``CREASTMT`` SORT step re-keys the WHOLE
+ *  ``TRANSACT`` file by card number and transaction id with no date filter, so
+ *  ``CBSTM03A`` statements a card's full history [app/jcl/CREASTMT.JCL].
  */
 @Configuration("statementGenerationJobConfig")
 public class StatementGenerationJob {
@@ -143,8 +156,16 @@ public class StatementGenerationJob {
      *  supplies the paged, sorted ``findAll`` used as the reader source.
      * :returns: a paging repository reader over {@link CardXref} sorted by
      *  ``xrefCardNum`` ascending.
+     * :note: ``@StepScope`` is required, not merely convenient: a
+     *  ``RepositoryItemReader`` is an ``ItemStream`` that holds the page cursor of
+     *  the read it is performing, so a singleton instance would be ONE cursor
+     *  shared by every concurrent step execution and two statement runs launched
+     *  together would consume each other's pages - one statement file repeating
+     *  cards, another missing them - while both executions still reported
+     *  COMPLETED. A step-scoped bean gives each execution its own cursor.
      */
     @Bean
+    @StepScope
     public RepositoryItemReader<CardXref> statementCardXrefReader(CardXrefRepository cardXrefRepository) {
         return new RepositoryItemReaderBuilder<CardXref>()
                 .name("statementCardXrefReader")
@@ -281,14 +302,22 @@ public class StatementGenerationJob {
          * :param htmlResource: the HTML statement output resource.
          */
         StatementItemWriter(FileSystemResource textResource, FileSystemResource htmlResource) {
+            // ISO-8859-1 keeps one character equal to one byte, so FD-STMTFILE-REC
+            // PIC X(80) and HTML-FIXED-LN PIC X(100) stay BYTE contracts — the
+            // record lengths CREASTMT declares on its STMTFILE (LRECL=80) and
+            // HTMLFILE (LRECL=100) DD cards — for any text the relational store
+            // can hold. Under the platform default of UTF-8 a single accented
+            // customer name pushed its lines two bytes over the declared length.
             this.textDelegate = new FlatFileItemWriterBuilder<String>()
                     .name("statementTextWriter")
                     .resource(textResource)
+                    .encoding(StandardCharsets.ISO_8859_1.name())
                     .lineAggregator(new PassThroughLineAggregator<>())
                     .build();
             this.htmlDelegate = new FlatFileItemWriterBuilder<String>()
                     .name("statementHtmlWriter")
                     .resource(htmlResource)
+                    .encoding(StandardCharsets.ISO_8859_1.name())
                     .lineAggregator(new PassThroughLineAggregator<>())
                     .build();
         }
@@ -397,13 +426,17 @@ public class StatementGenerationJob {
     /**
      * :purpose: Left-justify a value into a fixed width, space-padding on the
      *  right and truncating on the right when the value is longer, reproducing
-     *  COBOL fixed-length ``MOVE`` semantics.
+     *  COBOL fixed-length ``MOVE`` semantics. The value is first reduced to
+     *  single-byte text, so the returned width is a BYTE width in the ISO-8859-1
+     *  encoding both statement files are written in and the X(80)/X(100) record
+     *  contracts hold for text outside Latin-1.
      * :param value: the field value; ``null`` is treated as empty.
-     * :param width: the target field width in characters.
-     * :returns: a string of exactly ``width`` characters.
+     * :param width: the target field width in characters, equal to bytes.
+     * :returns: a string of exactly ``width`` characters, each encoding to one
+     *  byte.
      */
     static String pad(String value, int width) {
-        String v = (value == null) ? "" : value;
+        String v = (value == null) ? "" : FixedWidthText.toSingleByteText(value);
         if (v.length() == width) {
             return v;
         }
@@ -427,20 +460,30 @@ public class StatementGenerationJob {
      *  per-transaction lines use the whole fixed-width field (``DELIMITED BY '*'``).
      * :param model: the assembled statement model for one card.
      * :returns: the ordered list of 100-character HTML statement lines.
+     * :note: Every value interpolated into a line is HTML-escaped first. The
+     *  legacy program wrote customer text into the document unescaped, which in a
+     *  browser-rendered target makes any name, address or transaction description
+     *  containing markup executable script (stored XSS). Escaping is applied to
+     *  the VALUE, before the fixed-width ``MOVE``, so ``HTML-FIXED-LN PIC X(100)``
+     *  still holds; escaping is the identity transformation for text without
+     *  ``& < > " '``, so no byte of normal statement output changes.
      */
     static List<String> renderHtml(StatementMapper.StatementModel model) {
         long accountIdValue = model.getAccountId() == null ? 0L : model.getAccountId();
-        String stAcctId = pad(String.format(Locale.ROOT, "%011d", accountIdValue), 20);
-        String stCurrBal = formatSignedZeroFilled(model.getCurrentBalance());
+        String stAcctId = htmlEscape(pad(String.format(Locale.ROOT, "%011d", accountIdValue), 20));
+        String stCurrBal = htmlEscape(formatSignedZeroFilled(model.getCurrentBalance()));
         int ficoValue = model.getFicoScore() == null ? 0 : model.getFicoScore();
-        String stFico = pad(String.format(Locale.ROOT, "%03d", ficoValue), 20);
+        String stFico = htmlEscape(pad(String.format(Locale.ROOT, "%03d", ficoValue), 20));
 
         String acctHeader = "<h3>Statement for Account Number: " + stAcctId + "</h3>";
-        String nameLine =
-                "<p style=\"font-size:16px\">" + trimAtDoubleSpace(model.getCustomerName()) + "  " + "</p>";
-        String addressLine1 = "<p>" + trimAtDoubleSpace(model.getAddressLine1()) + "  " + "</p>";
-        String addressLine2 = "<p>" + trimAtDoubleSpace(model.getAddressLine2()) + "  " + "</p>";
-        String addressLine3 = "<p>" + trimAtDoubleSpace(model.getAddressLine3()) + "  " + "</p>";
+        String nameLine = "<p style=\"font-size:16px\">"
+                + htmlEscape(trimAtDoubleSpace(model.getCustomerName())) + "  " + "</p>";
+        String addressLine1 =
+                "<p>" + htmlEscape(trimAtDoubleSpace(model.getAddressLine1())) + "  " + "</p>";
+        String addressLine2 =
+                "<p>" + htmlEscape(trimAtDoubleSpace(model.getAddressLine2())) + "  " + "</p>";
+        String addressLine3 =
+                "<p>" + htmlEscape(trimAtDoubleSpace(model.getAddressLine3())) + "  " + "</p>";
         String acctBasic = "<p>Account ID         : " + stAcctId + "</p>";
         String balanceBasic = "<p>Current Balance    : " + stCurrBal + "</p>";
         String ficoBasic = "<p>FICO Score         : " + stFico + "</p>";
@@ -508,9 +551,13 @@ public class StatementGenerationJob {
         List<StatementMapper.StatementTransaction> transactions = model.getTransactions();
         if (transactions != null) {
             for (StatementMapper.StatementTransaction transaction : transactions) {
-                String stTranId = pad(transaction.getTranId(), 16);
-                String stTranDt = pad(transaction.getDescription(), 49);
-                String stTranAmt = formatSuppressed(transaction.getAmount());
+                // Escape the value, then MOVE it into its COBOL field width: the
+                // escaped form must be bounded by the field, not by the X(100)
+                // record, or an expanded value would push the closing tag out of
+                // the line.
+                String stTranId = pad(htmlEscape(transaction.getTranId()), 16);
+                String stTranDt = pad(htmlEscape(transaction.getDescription()), 49);
+                String stTranAmt = htmlEscape(formatSuppressed(transaction.getAmount()));
                 raw.add(HTML_LTRS);
                 raw.add(HTML_L58);
                 raw.add("<p>" + stTranId + "</p>");
@@ -539,6 +586,49 @@ public class StatementGenerationJob {
             lines.add(pad(line, 100));
         }
         return lines;
+    }
+
+    /**
+     * :purpose: Escape the five characters that carry meaning in HTML so a value
+     *  taken from the datastore is rendered as text and can never be parsed as
+     *  markup or script by a browser.
+     * :param value: the value to escape; ``null`` is treated as empty.
+     * :returns: the value with ``&``, ``<``, ``>``, ``"`` and ``'`` replaced by
+     *  their character references; the value unchanged when it contains none of
+     *  them.
+     */
+    static String htmlEscape(String value) {
+        if (value == null) {
+            return "";
+        }
+        // The ampersand must be replaced first, otherwise the ampersands this
+        // method introduces would themselves be escaped again.
+        boolean needsEscaping = false;
+        for (int i = 0; i < value.length(); i++) {
+            char c = value.charAt(i);
+            if (c == '&' || c == '<' || c == '>' || c == '"' || c == '\'') {
+                needsEscaping = true;
+                break;
+            }
+        }
+        if (!needsEscaping) {
+            // The overwhelmingly common case: ordinary statement text is returned
+            // unchanged, so no allocation and no byte of existing output moves.
+            return value;
+        }
+        StringBuilder escaped = new StringBuilder(value.length() + 16);
+        for (int i = 0; i < value.length(); i++) {
+            char c = value.charAt(i);
+            switch (c) {
+                case '&' -> escaped.append("&amp;");
+                case '<' -> escaped.append("&lt;");
+                case '>' -> escaped.append("&gt;");
+                case '"' -> escaped.append("&quot;");
+                case '\'' -> escaped.append("&#39;");
+                default -> escaped.append(c);
+            }
+        }
+        return escaped.toString();
     }
 
     /**
@@ -625,6 +715,8 @@ public class StatementGenerationJob {
      * :param statementCardXrefReader: the card cross-reference reader.
      * :param statementItemProcessor: the statement-model processor.
      * :param statementItemWriter: the dual text/HTML statement writer.
+     * :param statementCleanupListener: step-scoped listener removing both statement
+     *  artifacts when the step does not complete successfully.
      * :returns: the configured statement-generation step.
      */
     @Bean
@@ -632,14 +724,42 @@ public class StatementGenerationJob {
                                         PlatformTransactionManager transactionManager,
                                         RepositoryItemReader<CardXref> statementCardXrefReader,
                                         StatementItemProcessor statementItemProcessor,
-                                        StatementItemWriter statementItemWriter) {
+                                        StatementItemWriter statementItemWriter,
+                                        FailedOutputCleanupListener statementCleanupListener) {
         return new StepBuilder(STEP_NAME, jobRepository)
                 .<CardXref, StatementMapper.StatementModel>chunk(10, transactionManager)
                 .reader(statementCardXrefReader)
                 .processor(statementItemProcessor)
                 .writer(statementItemWriter)
                 .stream(statementItemWriter)
+                .listener((StepExecutionListener) statementCleanupListener)
                 .build();
+    }
+
+    /**
+     * :purpose: Remove both statement artifacts when the step does not complete
+     *  successfully, so a failed run leaves neither the text nor the HTML statement
+     *  behind; the legacy job stream deleted the previous generation and created a new
+     *  one, and an abending ``CBSTM03A`` left the operator with no statement at all
+     *  [app/jcl/CREASTMT.JCL ``STEP030``/``STEP040``].
+     * :param stmtPath: the plain-text statement output file name, the same job parameter
+     *  and default the writer binds.
+     * :param htmlPath: the HTML statement output file name, likewise.
+     * :param pathResolver: resolver confining both names to the batch output root, so the
+     *  listener addresses exactly the files the writer opened.
+     * :returns: the cleanup listener for one statement step execution.
+     * :note: ``@StepScope`` is required because the destinations are job parameters: a
+     *  singleton listener would be bound to whichever execution created it and could
+     *  delete another run's statements.
+     */
+    @Bean
+    @StepScope
+    public FailedOutputCleanupListener statementCleanupListener(
+            @Value("#{jobParameters['stmtFile'] ?: 'statements.txt'}") String stmtPath,
+            @Value("#{jobParameters['htmlFile'] ?: 'statements.html'}") String htmlPath,
+            BatchOutputPathResolver pathResolver) {
+        return new FailedOutputCleanupListener(
+                pathResolver.resolveOutput(stmtPath), pathResolver.resolveOutput(htmlPath));
     }
 
     /**

@@ -181,20 +181,20 @@ class PostingJobCompletionListenerTest {
         }
 
         @Test
-        @DisplayName("a run with no step executions is flagged as an empty feed")
-        void runWithoutStepExecutionsIsFlaggedAsAnEmptyFeed() {
+        @DisplayName("the empty-feed verdict is left to the step, which owns both facts")
+        void emptyFeedVerdictIsLeftToTheStep() {
             JobExecution execution = jobExecution(BatchStatus.COMPLETED);
 
             listener.afterJob(execution);
 
-            // No step ran, so nothing was posted: the run must not be reported as a
-            // clean completion.
-            assertThat(execution.getStatus()).isEqualTo(BatchStatus.FAILED);
+            // Reading nothing is not by itself an empty feed: a restart that has already
+            // consumed every record legitimately reads zero rows (QA Issue 7). Only the
+            // step knows both its read count and whether the feed table holds records, so
+            // it renders the verdict and Spring Batch carries the failed status onto the
+            // job - which also keeps the job and step rows consistent (QA Issue 6).
+            assertThat(execution.getStatus()).isEqualTo(BatchStatus.COMPLETED);
             assertThat(execution.getExitStatus().getExitCode())
-                    .isEqualTo(PostingJobCompletionListener.EMPTY_FEED_EXIT_CODE);
-            assertThat(loggedLines()).containsSubsequence(
-                    "TRANSACTIONS PROCESSED :0",
-                    "TRANSACTIONS REJECTED  :0");
+                    .isEqualTo(ExitStatus.COMPLETED.getExitCode());
         }
     }
 
@@ -230,16 +230,31 @@ class PostingJobCompletionListenerTest {
 
             listener.afterJob(execution);
 
-            // Only the failed partial execution exists, so nothing is counted. Having
-            // posted nothing, the run is reported as an empty feed rather than a silent
-            // false success.
-            assertThat(loggedLines()).containsSubsequence(
+            // The failed partial execution's 50 reads and 9 rejects are excluded, so a
+            // restarted run can never double-count them.
+            assertThat(loggedLines()).containsExactly(
                     "TRANSACTIONS PROCESSED :0",
                     "TRANSACTIONS REJECTED  :0");
-            assertThat(loggedLines())
-                    .contains("Daily transaction feed was empty: no records were read from DALYTRAN");
             assertThat(execution.getExitStatus().getExitCode())
-                    .isEqualTo(PostingJobCompletionListener.EMPTY_FEED_EXIT_CODE);
+                    .isEqualTo(ExitStatus.COMPLETED.getExitCode());
+        }
+
+        @Test
+        @DisplayName("a run that ended abnormally reports no tally at all")
+        void abnormalRunReportsNoTally() {
+            JobExecution execution = jobExecution(BatchStatus.FAILED);
+            step(execution, BatchStatus.COMPLETED, 2L, 0L);
+
+            listener.afterJob(execution);
+
+            // CBTRN02C reaches its end-of-run DISPLAY statements only on the normal
+            // end-of-file path; 9999-ABEND-PROGRAM calls CEE3ABD and no tally is ever
+            // printed. Emitting one anyway printed PROCESSED :0 / REJECTED :0 for a run
+            // that had committed records - a figure with no legacy analogue that
+            // contradicted the committed work (QA Issue 5).
+            assertThat(loggedLines()).noneMatch(line -> line.startsWith("TRANSACTIONS PROCESSED"));
+            assertThat(loggedLines()).noneMatch(line -> line.startsWith("TRANSACTIONS REJECTED"));
+            assertThat(loggedLines()).anyMatch(line -> line.contains("ended FAILED"));
         }
 
         @Test

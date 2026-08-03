@@ -163,16 +163,18 @@ public class UserController {
 
     /**
      * :purpose: Add a new user.
-     * :param request: the new user's id, first name, last name, and user type.
-     * :param password: the raw password to encode, supplied separately from the request body.
+     * :param request: the new user's id, first name, last name, user type, and raw password.
      * :returns: the created user wrapped in a ``201 Created`` response.
      * :raises CardDemoException: on a duplicate id, an empty field, or a persistence failure.
+     * :note: The credential is read from the request BODY and never from the query string: a
+     *     URL is recorded verbatim by the access log and by every client/server tracing span,
+     *     so a password carried there leaks into telemetry (CWE-598). This also matches the
+     *     frontend contract, which declares ``password`` on the add-user body.
      */
     @PostMapping
     public ResponseEntity<UserWriteResponseDto> addUser(
-            @Valid @RequestBody AddUserRequestDto request,
-            @RequestParam(name = "password", required = false) String password) {
-        UserWriteResponseDto created = userService.addUser(request, password);
+            @Valid @RequestBody AddUserRequestDto request) {
+        UserWriteResponseDto created = userService.addUser(request);
         return ResponseEntity.status(HttpStatus.CREATED).body(created);
     }
 
@@ -190,18 +192,18 @@ public class UserController {
     /**
      * :purpose: Update an existing user.
      * :param id: the user id to update.
-     * :param request: the new first name, last name, and user type.
-     * :param password: the raw password to verify and re-encode, supplied separately from the request body.
+     * :param request: the new first name, last name, user type, and raw password.
      * :returns: the updated user.
      * :raises RecordNotFoundException: when no user exists for ``id``.
      * :raises CardDemoException: when no field changed, a required field is empty, or the update fails.
+     * :note: The credential is read from the request BODY, never from the query string, for
+     *     the reason given on {@link #addUser(AddUserRequestDto)}.
      */
     @PutMapping("/{id}")
     public UserWriteResponseDto updateUser(
             @PathVariable("id") String id,
-            @Valid @RequestBody UpdateUserRequestDto request,
-            @RequestParam(name = "password", required = false) String password) {
-        return userService.updateUser(id, request, password);
+            @Valid @RequestBody UpdateUserRequestDto request) {
+        return userService.updateUser(id, request);
     }
 
     /**

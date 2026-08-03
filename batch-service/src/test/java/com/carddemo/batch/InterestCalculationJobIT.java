@@ -62,7 +62,8 @@ import static org.assertj.core.api.Assertions.assertThat;
  *     rolled-up {@link Account} balances at exact financial precision. The behavioral
  *     source of truth is the legacy batch program ``app/cbl/CBACT04C.cbl`` (driven by
  *     ``app/jcl/INTCALC.jcl`` ``PARM='2022071800'``): monthly interest is
- *     ``(TRAN-CAT-BAL * DIS-INT-RATE) / 1200`` at scale 2 with ``HALF_UP``, each
+ *     ``(TRAN-CAT-BAL * DIS-INT-RATE) / 1200`` at scale 2 TRUNCATED toward zero (the
+ *     ``COMPUTE`` carries no ``ROUNDED`` phrase), each
  *     non-zero-rate category posts one interest transaction, and every account has its
  *     current-cycle credit and debit figures zeroed on the control break.
  * :output: Two verified scenarios — a non-zero-rate account that posts one interest
@@ -182,6 +183,7 @@ class InterestCalculationJobIT {
     void postsInterestTransactionAndRollsUpAccount() throws Exception {
         seedCustomer(100000001L);
         seedAccount(1L, "GRP0000001", "100.00", "500.00", "200.00");
+        seedCard("1234567890123456", 1L);
         cardXrefRepository.save(new CardXref("1234567890123456", 100000001L, 1L));
         discGroupRepository.save(new DiscGroup("GRP0000001", "01", 5, new BigDecimal("12.00")));
         tranCatBalRepository.save(new TranCatBal(1L, "01", 5, new BigDecimal("1000.00")));
@@ -234,6 +236,7 @@ class InterestCalculationJobIT {
     void zeroRatePostsNoTransactionButZeroesCycles() throws Exception {
         seedCustomer(100000002L);
         seedAccount(2L, "GRP0000002", "250.00", "300.00", "100.00");
+        seedCard("6543210987654321", 2L);
         cardXrefRepository.save(new CardXref("6543210987654321", 100000002L, 2L));
         discGroupRepository.save(new DiscGroup("GRP0000002", "01", 5, new BigDecimal("0.00")));
         tranCatBalRepository.save(new TranCatBal(2L, "01", 5, new BigDecimal("2000.00")));
@@ -303,6 +306,24 @@ class InterestCalculationJobIT {
      * :param cycCredit: the current-cycle credit (``ACCT-CURR-CYC-CREDIT``) as a decimal string.
      * :param cycDebit: the current-cycle debit (``ACCT-CURR-CYC-DEBIT``) as a decimal string.
      */
+    /**
+     * :purpose: Seed the card-master row that backs a cross-reference. The interest run posts a
+     *     transaction whose ``tran_card_num`` foreign-keys into ``cards``
+     *     (``fk_transactions_card``, ``V8__transactions_card_fk.sql``), so a fixture carrying
+     *     only the cross-reference would describe a state the database does not permit. The
+     *     sensitive CVV is left null so the fixture needs no encryption key.
+     * :param cardNum: the 16-character card number (primary key).
+     * :param acctId: the owning account id, which must already exist (``fk_cards_account``).
+     */
+    private void seedCard(String cardNum, long acctId) {
+        jdbcTemplate.update(
+                "INSERT INTO cards (card_num, card_acct_id, card_cvv_cd, card_embossed_name, "
+                        // Preserves the legacy copybook misspelling CARD-EXPIRAION-DATE.
+                        + "card_expiraion_date, card_active_status, version) "
+                        + "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                cardNum, acctId, null, "Interest Holder", "2099-12-31", "Y", 0L);
+    }
+
     private void seedAccount(long acctId, String groupId, String currBal, String cycCredit, String cycDebit) {
         Account account = new Account();
         account.setAcctId(acctId);

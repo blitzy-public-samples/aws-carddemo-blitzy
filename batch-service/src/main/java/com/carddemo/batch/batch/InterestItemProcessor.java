@@ -16,7 +16,12 @@
 
 package com.carddemo.batch.batch;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.batch.infrastructure.item.ExecutionContext;
 import org.springframework.batch.infrastructure.item.ItemProcessor;
+import org.springframework.batch.infrastructure.item.ItemStream;
+import org.springframework.batch.infrastructure.item.ItemStreamException;
 import org.springframework.batch.core.configuration.annotation.StepScope;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
@@ -66,7 +71,18 @@ import java.util.concurrent.atomic.AtomicLong;
  */
 @Component
 @StepScope
-public class InterestItemProcessor implements ItemProcessor<TranCatBal, InterestPostingItem> {
+public class InterestItemProcessor
+        implements ItemProcessor<TranCatBal, InterestPostingItem>, ItemStream {
+
+    /**
+     * :purpose: Step ``ExecutionContext`` key under which the highest suffix this run has
+     *     allocated is persisted, so a restart resumes past every COMMITTED value instead
+     *     of re-issuing ``000001``.
+     */
+    static final String TRAN_ID_SUFFIX_KEY = "interest.tranIdSuffix";
+
+    /** SLF4J logger; every line carries the MDC correlation id via ``%X{correlationId}``. */
+    private static final Logger log = LoggerFactory.getLogger(InterestItemProcessor.class);
 
     /**
      * Interest-domain service that owns the exact monthly-interest arithmetic, the
@@ -84,10 +100,16 @@ public class InterestItemProcessor implements ItemProcessor<TranCatBal, Interest
     private final String parmDate;
 
     /**
-     * Step-global monotonic transaction-id suffix, the Java equivalent of
+     * Run-global monotonic transaction-id suffix, the Java equivalent of
      * ``WS-TRANID-SUFFIX``. It starts at 0 and is incremented only when a transaction is
      * written (non-zero rate), so the first written transaction receives suffix 1 (rendered
      * ``000001``); it is never reset per account.
+     *
+     * <p>The value is seeded from, and republished to, the step ``ExecutionContext``
+     * ({@link #TRAN_ID_SUFFIX_KEY}), which Spring Batch persists with every chunk commit.
+     * A restarted execution therefore continues past the last suffix whose transaction was
+     * COMMITTED, and the suffixes of a rolled-back chunk are re-issued because those rows
+     * were never written.
      */
     private final AtomicLong tranIdSuffix = new AtomicLong(0);
 
@@ -143,5 +165,49 @@ public class InterestItemProcessor implements ItemProcessor<TranCatBal, Interest
         // Zero rate: no transaction is written and the suffix is NOT incremented, yet the
         // account id is still carried so the writer performs the cycle-zeroing roll-up.
         return InterestPostingItem.zeroInterest(acctId);
+    }
+
+    /**
+     * :purpose: Seed the tran-id suffix from the step ``ExecutionContext`` so a restarted
+     *     execution continues past every suffix whose transaction was already committed.
+     * :param executionContext: the step execution context; on a restart it is the context
+     *     Spring Batch persisted at the last successful chunk commit of the previous
+     *     execution.
+     * :note: This is what makes the interest run restartable (QA Issue 10). With the
+     *     counter starting at 0 on every execution, a run that had committed
+     *     ``<PARM-DATE>000001..000005`` re-claimed ``000001`` when restarted and died on
+     *     ``duplicate key value violates unique constraint "transactions_pkey"``, so a
+     *     partially posted portfolio could never be completed - the remaining accounts
+     *     could not be posted at all without manually deleting the committed rows.
+     */
+    @Override
+    public void open(ExecutionContext executionContext) throws ItemStreamException {
+        long resumeFrom = executionContext.getLong(TRAN_ID_SUFFIX_KEY, 0L);
+        tranIdSuffix.set(resumeFrom);
+        if (resumeFrom > 0L) {
+            log.info("Resuming interest transaction-id suffix after {} previously committed suffix(es)",
+                    resumeFrom);
+        }
+    }
+
+    /**
+     * :purpose: Publish the highest suffix allocated so far into the step
+     *     ``ExecutionContext``, which Spring Batch persists in the same transaction as the
+     *     chunk, so the durable high-water mark always covers exactly the committed
+     *     transactions.
+     * :param executionContext: the step execution context to update.
+     */
+    @Override
+    public void update(ExecutionContext executionContext) throws ItemStreamException {
+        executionContext.putLong(TRAN_ID_SUFFIX_KEY, tranIdSuffix.get());
+    }
+
+    /**
+     * :purpose: Release the processor at the end of the step; no resource is held, and the
+     *     durable suffix high-water mark has already been published by {@link #update}.
+     */
+    @Override
+    public void close() throws ItemStreamException {
+        // No resource to release: the counter's durable state lives in the ExecutionContext.
     }
 }

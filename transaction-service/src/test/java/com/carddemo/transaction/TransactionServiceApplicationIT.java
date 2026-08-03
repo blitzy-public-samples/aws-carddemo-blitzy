@@ -16,10 +16,16 @@
  */
 package com.carddemo.transaction;
 
+import java.time.Instant;
+import java.time.LocalDateTime;
+import java.time.ZoneId;
+
 import org.junit.jupiter.api.Test;
 import org.springframework.batch.core.job.Job;
+import org.springframework.batch.core.job.JobInstance;
 import org.springframework.batch.core.repository.JobRepository;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.batch.autoconfigure.JobLauncherApplicationRunner;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.context.ApplicationContext;
 import org.springframework.test.context.ActiveProfiles;
@@ -96,6 +102,21 @@ public class TransactionServiceApplicationIT {
         Job job = applicationContext.getBean("transactionPostingJob", Job.class);
         assertThat(job.getName()).isEqualTo("transactionPostingJob");
 
-        assertThat(jobRepository.getJobInstances("transactionPostingJob", 0, 100)).isEmpty();
+        // Boot's JobLauncherApplicationRunner is the only component that executes a job
+        // while the context starts, and this application registers none, so no job can run
+        // at startup by construction.
+        assertThat(applicationContext.getBeansOfType(JobLauncherApplicationRunner.class)).isEmpty();
+
+        // Corroborated from the batch metadata: no ``transactionPostingJob`` execution was created
+        // at or after this context started, so this boot launched nothing. The window is
+        // scoped to this context because the migrated PostgreSQL container is shared by
+        // every integration test in the module, and a sibling test that legitimately
+        // launches the job on demand must not decide this assertion.
+        LocalDateTime contextStartedAt = LocalDateTime.ofInstant(
+                Instant.ofEpochMilli(applicationContext.getStartupDate()), ZoneId.systemDefault());
+        for (JobInstance instance : jobRepository.getJobInstances("transactionPostingJob", 0, 100)) {
+            assertThat(jobRepository.getJobExecutions(instance)).allSatisfy(execution ->
+                    assertThat(execution.getCreateTime()).isBefore(contextStartedAt));
+        }
     }
 }

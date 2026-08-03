@@ -15,6 +15,7 @@
  */
 package com.carddemo.common.config;
 
+import com.carddemo.common.security.SensitiveDataMasker;
 import jakarta.servlet.FilterChain;
 import jakarta.servlet.ServletException;
 import jakarta.servlet.http.HttpServletRequest;
@@ -93,7 +94,7 @@ public class RequestLoggingFilter extends OncePerRequestFilter {
             // container's error dispatch and the configured error handling are unaffected.
             log.error("{} {} failed after {}ms: {}",
                     request.getMethod(),
-                    request.getRequestURI(),
+                    loggedUri(request),
                     elapsedMillis(startNanos),
                     ex.getClass().getName(),
                     ex);
@@ -101,11 +102,26 @@ public class RequestLoggingFilter extends OncePerRequestFilter {
         }
         int status = response.getStatus();
         long durationMs = elapsedMillis(startNanos);
+        String uri = loggedUri(request);
         if (status >= SERVER_ERROR_THRESHOLD) {
-            log.error("{} {} -> {} in {}ms", request.getMethod(), request.getRequestURI(), status, durationMs);
+            log.error("{} {} -> {} in {}ms", request.getMethod(), uri, status, durationMs);
         } else {
-            log.info("{} {} -> {} in {}ms", request.getMethod(), request.getRequestURI(), status, durationMs);
+            log.info("{} {} -> {} in {}ms", request.getMethod(), uri, status, durationMs);
         }
+    }
+
+    /**
+     * :purpose: Render the request URI for the access log with every PAN-shaped digit run
+     *     reduced to its last four digits. The card screens address a card by its number
+     *     (``/cards/{cardNum}``), so logging the URI verbatim wrote a full PAN into the access
+     *     log of every card request -- and of the gateway in front of it (CWE-532) -- while the
+     *     domain-error path was already masking it. The account id (11 digits) and every other
+     *     identifier are shorter than the shortest PAN and stay intact for support.
+     * :param request: the current request.
+     * :returns: the request URI with any PAN masked.
+     */
+    private static String loggedUri(HttpServletRequest request) {
+        return SensitiveDataMasker.maskPan(request.getRequestURI());
     }
 
     /**

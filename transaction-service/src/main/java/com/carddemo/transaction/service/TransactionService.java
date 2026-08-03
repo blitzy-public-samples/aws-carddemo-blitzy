@@ -41,9 +41,11 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
 import java.math.RoundingMode;
+import java.sql.SQLException;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
+import java.util.Locale;
 
 /**
  * :purpose: Online transaction business logic (list, view, add) migrated from the
@@ -153,6 +155,18 @@ public class TransactionService {
     private static final String ACTION_PF8 = "PF8";
     /** :purpose: Upper magnitude bound of the ``-99999999.99`` amount screen format (eight integer digits). */
     private static final BigDecimal AMOUNT_MAX = new BigDecimal("99999999.99");
+
+    /** Largest category code the four-character ``TCATCDI`` field can carry (``PIC 9(04)``). */
+    private static final int CAT_CD_MAX = 9999;
+
+    /** Largest merchant id the nine-character ``MIDI`` field can carry (``PIC 9(09)``). */
+    private static final long MERCHANT_ID_MAX = 999_999_999L;
+
+    /** SQL state PostgreSQL raises for a unique/primary-key violation. */
+    private static final String SQLSTATE_UNIQUE_VIOLATION = "23505";
+
+    /** Decimal places the ``TRNAMTI`` picture provides (``PIC S9(09)V99`` -> ``NUMERIC(11,2)``). */
+    private static final int MONEY_SCALE_MAX = 2;
 
     /** :purpose: Transaction master repository (list browse, keyed read, save, id sequence). */
     private final TransactionRepository transactionRepository;
@@ -430,7 +444,10 @@ public class TransactionService {
         if (!isNumeric(request.getTranTypeCd())) {
             throw new CardDemoException(MSG_TYPE_NUMERIC);
         }
-        if (request.getTranCatCd() < 0) {
+        // The 3270 map field TCATCDI is four characters wide (TRAN-CAT-CD PIC 9(04)), so a
+        // five-digit category could never be entered; over the wire it reached the INSERT and
+        // tripped chk_transactions_cat_cd, which surfaced as a duplicate-id business error.
+        if (request.getTranCatCd() < 0 || request.getTranCatCd() > CAT_CD_MAX) {
             throw new CardDemoException(MSG_CAT_NUMERIC);
         }
 
@@ -453,7 +470,9 @@ public class TransactionService {
         validateDateOrThrow(request.getTranProcTs().substring(0, 10), MSG_PROC_DATE_INVALID);
 
         // (I) Merchant id numeric check.
-        if (request.getTranMerchantId() < 0) {
+        // MIDI is nine characters wide (TRAN-MERCHANT-ID PIC 9(09)); the same reasoning as the
+        // category code applies (chk_transactions_merchant_id).
+        if (request.getTranMerchantId() < 0 || request.getTranMerchantId() > MERCHANT_ID_MAX) {
             throw new CardDemoException(MSG_MERCH_ID_NUMERIC);
         }
 
@@ -482,7 +501,17 @@ public class TransactionService {
             // an assigned id is INSERTed and never merged over an existing row.
             saved = transactionRepository.saveAndFlush(entity);
         } catch (DataIntegrityViolationException ex) {
-            // A concurrent writer claimed the id between the probe and the insert.
+            // ONLY a unique/primary-key violation on the transaction id means "a concurrent
+            // writer claimed the id between the probe and the insert". Reporting every
+            // integrity failure -- a violated check constraint, a numeric overflow, a missing
+            // parent row -- as a duplicate id told the client to retry a request that can
+            // never succeed, and hid the real fault. Anything else propagates unchanged so the
+            // data-access handler reports it honestly with its correlation id.
+            if (!isTransactionIdUniqueViolation(ex)) {
+                log.error("addTransaction failed on a data-integrity violation that is not a "
+                        + "duplicate transaction id", ex);
+                throw ex;
+            }
             log.warn("addTransaction rejected duplicate transaction id {}", tranId);
             throw new CardDemoException(MSG_TRAN_ID_EXISTS, ex);
         }
@@ -540,7 +569,7 @@ public class TransactionService {
                 throw new CardDemoException(MSG_ACCT_NUMERIC);
             }
             Long acctId = Long.valueOf(acctIdIn);
-            return cardXrefRepository.findByXrefAcctId(acctId)
+            return cardXrefRepository.findFirstByXrefAcctIdOrderByXrefCardNumAsc(acctId)
                     .orElseThrow(() -> new RecordNotFoundException(MSG_ACCT_NOT_FOUND));
         }
         if (cardIn != null) {
@@ -595,17 +624,74 @@ public class TransactionService {
     }
 
     /**
-     * :purpose: Report whether an amount fits the ``-99999999.99`` screen format,
-     *  i.e. at most eight integer digits at scale two (COTRN02C amount check).
+     * :purpose: Report whether an amount fits the ``-99999999.99`` screen format exactly:
+     *  at most eight integer digits and at most two decimal places (COTRN02C L339-351 tests
+     *  the sign, ``(2:8)`` numeric, the ``.`` in position ten and ``(11:2)`` numeric, so a
+     *  third decimal digit simply has nowhere to go on the map).
      * :param amount: the amount to test; may be ``null``.
-     * :returns: ``true`` when the amount is present and its magnitude does not exceed
-     *  ``99999999.99``.
+     * :returns: ``true`` when the amount is present, its magnitude does not exceed
+     *  ``99999999.99``, and it carries no more than two decimal places.
      */
     private static boolean matchesAmountFormat(BigDecimal amount) {
         if (amount == null) {
             return false;
         }
-        return amount.abs().compareTo(AMOUNT_MAX) <= 0;
+        if (amount.abs().compareTo(AMOUNT_MAX) > 0) {
+            return false;
+        }
+        // Trailing zeros are only presentation ("1.500" is the same value as "1.50"), so they
+        // are stripped before the significant scale is measured; 1.005 keeps scale 3 and is
+        // rejected rather than silently rounded to 1.01, which would alter a financial value
+        // the caller never authorised (AAP 0.7.6).
+        return amount.stripTrailingZeros().scale() <= MONEY_SCALE_MAX;
+    }
+
+    /**
+     * :purpose: Report whether a data-integrity violation is a unique/primary-key violation
+     *  naming the transaction id, i.e. the only integrity failure the legacy ``DUPKEY``
+     *  handling covers (``COTRN02C`` "Tran ID already exist...").
+     * :param ex: the violation raised by the persistence provider.
+     * :returns: ``true`` when a chained {@link SQLException} reports SQL state ``23505`` for
+     *  the transaction primary key.
+     */
+    private static boolean isTransactionIdUniqueViolation(DataIntegrityViolationException ex) {
+        for (Throwable cause = ex; cause != null; cause = cause.getCause()) {
+            if (cause instanceof SQLException sqlCause
+                    && SQLSTATE_UNIQUE_VIOLATION.equals(sqlCause.getSQLState())) {
+                return namesTransactionId(sqlCause.getMessage());
+            }
+        }
+        // No driver exception is chained (a provider that reports only its own text): the
+        // reported wording must then say BOTH that the failure was a duplicate/unique key AND
+        // that the transaction id is the key involved, so a not-null or check violation
+        // mentioning the column is never mistaken for a duplicate id.
+        String reported = chainedMessages(ex);
+        return (reported.contains("duplicate key") || reported.contains("unique constraint"))
+                && namesTransactionId(reported);
+    }
+
+    /**
+     * :purpose: Report whether a driver message names the transaction primary key.
+     * :param message: the message to inspect; may be ``null``.
+     * :returns: ``true`` when the transaction primary key or its column is named.
+     */
+    private static boolean namesTransactionId(String message) {
+        String text = String.valueOf(message).toLowerCase(Locale.ROOT);
+        return text.contains("transactions_pkey") || text.contains("tran_id");
+    }
+
+    /**
+     * :purpose: Concatenate every message in an exception chain, lower-cased, for text
+     *  inspection when no SQL state is available.
+     * :param throwable: the head of the chain.
+     * :returns: the concatenated, lower-cased messages.
+     */
+    private static String chainedMessages(Throwable throwable) {
+        StringBuilder text = new StringBuilder();
+        for (Throwable cause = throwable; cause != null; cause = cause.getCause()) {
+            text.append(String.valueOf(cause.getMessage()).toLowerCase(Locale.ROOT)).append(' ');
+        }
+        return text.toString();
     }
 
     /**

@@ -351,7 +351,7 @@ Observability); this table records only the source-or-mandate linkage.
 > services / controllers / repositories, and the per-service `Dockerfile`s are mapped
 > above in the end-state design and are **delivered in later tranches**.
 
-## 12. QA-Remediation Targets (runtime checkpoint) — Present on Disk
+## 13. QA-Remediation Targets (runtime checkpoint) — Present on Disk
 
 Target artifacts created or substantially reworked while remediating the runtime QA
 checkpoint. They are listed so the reverse direction stays 100% complete: every one either
@@ -377,9 +377,9 @@ a user-specified rule. Rationale for each is in `docs/decision-log.md` §7.
 | `carddemo-common` `dto/UserListResponseDto.java`, `dto/UserWriteResponseDto.java` | `COUSR00C` paging literals + `COUSR01C`/`COUSR02C`/`COUSR03C` confirmation messages `[app/cbl/COUSR00C.cbl:L211-L273]` | `source → target` |
 | `account-service` `service/AccountUpdateValidator.java` | `COACTUPC` `1200-EDIT-MAP-INPUTS` 25-field edit sequence + `1280` state/zip cross-field edit + `CSLKPCDY` lookup sets `[app/cbl/COACTUPC.cbl; app/cpy/CSLKPCDY.cpy]` | `source → target` |
 | `carddemo-common` `domain/Transaction.java` implementing `Persistable<String>` | `COTRN02C` / `COBIL00C` `WRITE` semantics — an existing transaction is never overwritten `[app/cbl/COTRN02C.cbl:L444-L451]` | `target → source (derived)` |
-| `reporting-service` `config/StatementOutputResolver.java` | `CREASTMT` / `CBSTM03A` statement destination, confined to a configured root `[app/jcl/CREASTMT.jcl; app/cbl/CBSTM03A.CBL]` | `source → target` |
+| `reporting-service` `config/StatementOutputResolver.java` | `CREASTMT` / `CBSTM03A` statement destination, confined to a configured root `[app/jcl/CREASTMT.JCL; app/cbl/CBSTM03A.CBL]` | `source → target` |
 | `docker-compose.yml` `jaeger` service + `management.opentelemetry.tracing.export.otlp.endpoint` (docker profile) | Observability rule (AAP 0.7.5) — distributed tracing verifiable in the local environment | `target → rule` |
-## 13. QA Remediation — Runtime-Verified Batch, Security & Integration Targets
+## 14. QA Remediation — Runtime-Verified Batch, Security & Integration Targets
 
 Targets added or corrected while resolving the runtime findings raised by end-to-end QA of the integrated backend. Every row was verified against the running application, not only against the source.
 
@@ -393,7 +393,7 @@ Targets added or corrected while resolving the runtime findings raised by end-to
 | `COTRN02C` transaction-id assignment `[app/cbl/COTRN02C.cbl:L444-L451]` | `transaction-service` `service/TransactionService.java#nextUnusedTransactionId` over Flyway `V4__create_transaction_id_sequence.sql` | `source → target` |
 | `CBTRN03C` / `TRANREPT` transaction-detail report `[app/cbl/CBTRN03C.cbl]` | `batch-service` `transactionDetailReportJob` + `batch/TransactionDetailReportWriter.java`, launched by `controller/BatchController.java` | `source → target` |
 | `CORPT00C` `SUBMIT-JOB-TO-INTRDR` write to TDQ `'JOBS'` `[app/cbl/CORPT00C.cbl]` | `reporting-service` `client/BatchJobClient.java#submitTransactionDetailReport` (frozen `Unable to Write TDQ (JOBS)...` on refusal) | `source → target` |
-| `CREASTMT` / `CBSTM03A` statement generation `[app/jcl/CREASTMT.jcl; app/cbl/CBSTM03A.CBL]` | `reporting-service` `batch/StatementGenerationJob.java`, launched by `controller/ReportController.java#generateStatements` (`POST /reports/statements`) | `source → target` |
+| `CREASTMT` / `CBSTM03A` statement generation `[app/jcl/CREASTMT.JCL; app/cbl/CBSTM03A.CBL]` | `reporting-service` `batch/StatementGenerationJob.java`, launched by `controller/ReportController.java#generateStatements` (`POST /reports/statements`) | `source → target` |
 | Legacy operator submission of the JCL job streams through TDQ `'JOBS'` / the JES internal reader | `batch-service` `controller/BatchController.java` (`GET /batch/jobs`, `POST /batch/jobs/{jobName}`, `GET /batch/jobs/executions/{id}`) | `source → target` |
 | CICS transaction authorization of an operator-submitted job stream `[app/csd/CARDDEMO.CSD]` | `batch-service` `config/SecurityConfig.java` (session-derived principal, `ROLE_USER`/`ROLE_ADMIN` on `/batch/**`) | `source → target` |
 | JCL `DD` data-set allocation for generated report / dump / statement files `[app/jcl/]` | `carddemo-common` `batch/BatchOutputPathResolver.java` + `batch/BatchPathConfig.java` (allowlisted, writable output and input roots) | `source → target` |
@@ -404,12 +404,12 @@ Targets added or corrected while resolving the runtime findings raised by end-to
 | Batch launch acknowledgement and outcome readback | `carddemo-common` `dto/BatchJobExecutionDto.java` (no legacy analogue — the TDQ write was fire-and-forget) | `target → source (derived from TDQ submission)` |
 | Unreachable routed upstream service | `api-gateway` `config/UpstreamFailureHandler.java` → `503` + `Retry-After` (no legacy analogue — CICS returned an abend code) | `target → source (derived from CICS routing failure)` |
 | Generated batch artefacts must never be committed (Respecting .gitignore rule) | `.gitignore` — generated batch artefact names, batch output root, and local run evidence, with `app/data/**` re-included by negation | `target → rule` |
-## 12. Targets Added While Remediating Runtime Findings
+## 15. Targets Added While Remediating Runtime Findings
 
 Every target file created or relocated while making the delivered stack run, be observable
 and be deployable. Each row names the source construct or rule it serves, so the reverse
 direction stays complete for these files too. The rationale for each choice is in
-`docs/decision-log.md` §7.
+`docs/decision-log.md` §9.
 
 | Target Implementation (delivered) | Source Construct / Mandate | Direction |
 |-----------------------------------|----------------------------|-----------|
@@ -431,49 +431,71 @@ direction stays complete for these files too. The rationale for each choice is i
 | `.dockerignore` (repository root) + `auth-service`, `user-service`, `account-service`, `card-service`, `transaction-service`, `billpay-service`, `batch-service`, `api-gateway` `.dockerignore` | Build hygiene for the containerization mandate (AAP 0.2.1): minimal, cache-correct build contexts. One per Docker CONTEXT, because Docker resolves the file relative to the context root | `target → rule` |
 | `carddemo-common` `src/test/.../batch/BatchOutputPathResolverTest.java`, `.../config/*`, `.../crypto/*`, `.../security/*`; `batch-service` `BatchJobControllerTest`; `transaction-service` `TransactionControllerSessionTest` | AAP 0.7.1 test mandate (50+ unit-test scenarios) applied to the components added above | `target → rule` |
 
+## 16. Offline Batch Compensator — QA-Remediation Targets (Present on Disk)
+
+Targets created or reworked while resolving the QA findings raised against the offline
+batch compensator. Every row is present on disk and was verified by re-running the job
+against a live PostgreSQL 18 instance, so the reverse direction stays complete for these
+files too. The rationale for each choice is in `docs/decision-log.md` §10.
+
+**Scope of this section.** It does not restate the forward inventory: the *Source
+Construct* column names a SPECIFIC BEHAVIOR WITHIN a construct already enumerated in
+sections 1–11, or the rule that mandates a target with no legacy analogue.
+
+| Source Construct / Mandate | Target Implementation (delivered) | Direction |
+|----------------------------|-----------------------------------|-----------|
+| Fixed-width record byte contracts — `DALYREJS` 430B `[app/cbl/CBTRN02C.cbl:L176-L182]`, `FD-REPTFILE-REC` `X(133)` `[app/cbl/CBTRN03C.cbl:L85]`, `STMTFILE` `X(80)` / `HTMLFILE` `X(100)` `[app/jcl/CREASTMT.JCL]` | `carddemo-common` `batch/FixedWidthText.java` (`toSingleByteText`: per-code-point reduction to single-byte text, unmappable → `?`) + `batch/FixedWidthTextTest.java`; consumed by `RejectFileItemWriter`, `TransactionDetailReportWriter.fixed`, `StatementGenerationJob.pad`, each writing ISO-8859-1 | `target → source (derived)` |
+| `CVTRA06Y` `DALYTRAN` fixed-width feed record — every field `1500-VALIDATE-TRAN` dereferences is physically present `[app/cbl/CBTRN02C.cbl:L370-L421]` | `carddemo-common` `db/migration/V1__create_schema.sql` `daily_transactions` `NOT NULL` columns + `chk_daily_transactions_orig_ts` (`LENGTH >= 10`); `transaction-service` `batch/DailyTransactionFeedValidator.java` (`requireUsableRecord`, called from `DailyTransactionRowMapper` and `TransactionValidationProcessor`) | `source → target` |
+| `POSTTRAN.jcl` operator-scheduled posting job stream `[app/jcl/POSTTRAN.jcl]` | `transaction-service` `config/PostingJobLaunchConfig.java` (`postingDate` identity, non-identifying `run.id` / correlation id) + `controller/PostingJobController.java` (`GET /transactions/batch/jobs`, `POST /transactions/batch/jobs/{jobName}`, `GET /transactions/batch/jobs/executions/{jobExecutionId}`) + `k8s/cronjob-transaction-posting.yaml` (`0 2 * * *`); tests `PostingJobControllerTest`, `TransactionPostingStepListenerTest` | `source → target` |
+| `CBTRN02C` `2900-WRITE-TRANSACTION-FILE` writes a posted record under its own `DALYTRAN-ID` `[app/cbl/CBTRN02C.cbl:L562]` | `carddemo-common` `db/migration/V3__seed_test_data.sql` — seeded history re-keyed into the reserved `1e9` id window, and `transaction_id_seq` seeded from the maximum over `transactions` AND `daily_transactions` | `source → target` |
+| `CBTRN02C` end-of-run tally reached only on the normal EOF path; `9999-ABEND-PROGRAM` prints none `[app/cbl/CBTRN02C.cbl:L227-L228, L707-L711]` | `transaction-service` `batch/PostingJobCompletionListener.java` — tally suppressed unless the run ended `COMPLETED`; `EMPTY_FEED_EXIT_DESCRIPTION` added | `source → target` |
+| `POSTTRAN` was scheduled because a feed had been delivered, so no feed is an operational fault `[app/jcl/POSTTRAN.jcl]` | `transaction-service` `TransactionPostingJob.RejectCountingStepListener` — fails the STEP with `FAILED_EMPTY_FEED` (RC 12) only when the feed table is genuinely empty, so job and step metadata agree and a restart that consumed everything is not misreported | `target → source (derived)` |
+| `CBACT04C` `1300-COMPUTE-INTEREST` unrounded `COMPUTE` into `PIC S9(09)V99` `[app/cbl/CBACT04C.cbl:L462-L465]` | `batch-service` `service/InterestCalculationService.computeMonthlyInterest` — `RoundingMode.DOWN`; `InterestCalculationServiceTest` and `carddemo-common` `FinancialPrecisionTest` assert the truncated values through the production method | `source → target` |
+| `CBACT04C` `1300-B-WRITE-TX` `MOVE SPACES TO TRAN-MERCHANT-NAME / -CITY / -ZIP` `[app/cbl/CBACT04C.cbl:L492-L494]` | `batch-service` `InterestCalculationService` `TRAN_MERCHANT_NAME_SPACES` / `_CITY_` / `_ZIP_` constants (50 / 50 / 10 blanks) | `source → target` |
+| `CBACT04C` `1110-GET-XREF-DATA` keyed `READ XREF-FILE ... KEY IS FD-XREF-ACCT-ID` returns the first record in key sequence `[app/cbl/CBACT04C.cbl:L393-L398]` | `batch-service` `repository/CardXrefRepository.findFirstByXrefAcctIdOrderByXrefCardNumAsc` | `source → target` |
+| `WS-TRANID-SUFFIX` distinguishing the interest transactions of one run `[app/cbl/CBACT04C.cbl:L473-L517]` | `batch-service` `batch/InterestItemProcessor.java` implements `ItemStream`, persisting the suffix high-water mark in the step `ExecutionContext` under `interest.tranIdSuffix` so a restart never re-issues a consumed suffix | `target → source (derived)` |
+| `CBTRN03C` EOF branch — `ADD TRAN-AMT TO WS-PAGE-TOTAL WS-ACCOUNT-TOTAL` on the last record, then page and grand totals only `[app/cbl/CBTRN03C.cbl:L197-L204]` | `batch-service` `batch/TransactionDetailReportWriter.close` — reproduces the deliberate double count and emits no trailing account total; headers are still emitted for an empty selection window | `source → target` |
+| `CBTRN03C` `1000-TRANFILE-GET-NEXT` reads the date-filtered file in card order, one pass, no paging `[app/cbl/CBTRN03C.cbl:L248]` | `batch-service` `config/DataManagementJobConfig.transactionDetailReportReader` and `repository/TransactionRepository.findByProcTsDateRangeOrderByCardNum` — ordering completed with the primary key so the paging reader has a TOTAL order and cannot drop or repeat a row across a page boundary | `target → source (derived)` |
+| `CBSTM03A` `5100`/`5200`/`6000`/`4000` `HTMLFILE` emission of customer-supplied text `[app/cbl/CBSTM03A.CBL]` | `reporting-service` `batch/StatementGenerationJob.htmlEscape` — every interpolated value escaped before the fixed-width `MOVE`; the text statement stays unescaped | `target → source (derived)` |
+| `CREASTMT.JCL` carries no `PARM`; its SORT re-keys the whole `TRANSACT` file with no date filter `[app/jcl/CREASTMT.JCL]` | `reporting-service` `controller/ReportController.generateStatements` (`POST /reports/statements`) and `config/JobSchedulingConfig.launchStatementGeneration` — parameter contract reduced to `stmtFile` / `htmlFile` (the `STMTFILE` / `HTMLFILE` DD names); the invented `reportType` / `startDate` / `endDate` identity parameters removed | `source → target` |
+| One VSAM browse position per executing job step (`STARTBR`/`READNEXT` per task) `[app/cbl/CBACT01C.cbl; app/cbl/CBACT02C.cbl; app/cbl/CBACT03C.cbl; app/cbl/CBCUS01C.cbl]` | `batch-service` `config/DataManagementJobConfig` — `accountReader`, `cardReader`, `cardXrefReader`, `customerReader`, `categoryBalanceReader` are `@StepScope`; `reporting-service` `statementCardXrefReader` likewise; `batch/LoggingItemWriter` supplied by a `@Bean @StepScope` factory so its running total is per step execution | `target → source (derived)` |
+| GDG generation allocated per run; an abending step leaves none `[app/jcl/POSTTRAN.jcl]` | `carddemo-common` `batch/FailedOutputCleanupListener.java` (null-tolerant path list; qualified `COMPLETED_WITH_*` exit codes treated as success) registered on all nine file-producing steps as `rejectFileCleanupListener`, `outputFileCleanupListener`, `reportFileCleanupListener` and `statementCleanupListener` | `target → source (derived)` |
+| Respecting .gitignore rule (AAP 0.7.2) | `.gitignore` — the eleven generated batch artefact names taken from the constants that produce them, ignored at any depth, with `app/data/**` re-included by negation | `target → rule` |
+| Explainability rule (AAP 0.7.2 / 0.7.3) | `docs/decision-log.md` §10 — 24 rows covering every deviation decided while remediating the batch compensator, including the Flyway-checksum consequence of amending `V1` / `V3` in place | `target → rule` |
+
+## 17. QA-Remediation Targets — Cross-Cutting Online Compensator Checkpoint
+
+Targets created or changed while resolving the twenty-one runtime findings of the cross-cutting
+online checkpoint. Each row names the legacy construct or rule it serves, so the reverse
+direction stays complete for these artifacts too; the rationale for every choice is in
+`docs/decision-log.md` §11 (finding numbers in parentheses are the QA report's).
+
+| Target Implementation (delivered) | Source Construct / Mandate | Direction |
+|-----------------------------------|----------------------------|-----------|
+| `carddemo-common` `db/migration/V6__security_users_optimistic_lock.sql` + `SecurityUser.version` (`@Version`) (Q4) | CICS read-snapshot-compare-rewrite lock pattern applied to the user master `[app/cbl/COUSR02C.cbl, app/cpy/CSUSR01Y.cpy]` — no legacy field | `target → source (derived)` |
+| `carddemo-common` `db/migration/V7__cards_optimistic_lock.sql` + `Card.version` (`@Version`) + `version` on `CardDetailResponseDto` / `CardUpdateResponseDto` / `CardUpdateRequestDto` and `frontend/src/types/card.ts` (Q12) | `COCRDUPC 9300-CHECK-CHANGE-IN-REC` and the `REWRITE` it guards `[app/cbl/COCRDUPC.cbl:L1498-L1519]`; `DATA-WAS-CHANGED-BEFORE-UPDATE` `[app/cbl/COACTUPC.cbl:L517-L523]` — no legacy field | `target → source (derived)` |
+| `carddemo-common` `db/migration/V8__transactions_card_fk.sql` (`fk_transactions_card`) (Q21) | Ordered cross-reference-then-account lookup and the post-vs-reject branch `[app/cbl/CBTRN02C.cbl:L210-L215, L371-L397]`; `TRAN-CARD-NUM` → `CARD-NUM` `[app/cpy/CVTRA05Y.cpy, app/cpy/CVACT02Y.cpy]`; AAP 0.1.1 / 0.4.5 declarative integrity | `source → target` |
+| `card-service` `repository/CardRepository.findForUpdateByCardNum` (`@Lock(PESSIMISTIC_WRITE)`) (Q12) | `COCRDUPC 9200 READ … UPDATE` — the VSAM update lock held across the rewrite `[app/cbl/COCRDUPC.cbl]` | `target → source (derived)` |
+| `card-service` `service/CardService.assertVersionUnchanged` + conditional `oldCardCvvCd` compare in `hasDataChangedSinceSnapshot` (Q10, Q12) | `CCUP-OLD-*` display-time snapshot compare `[app/cbl/COCRDUPC.cbl:L1498-L1519]`, reconciled with the CVV protection AAP 0.6.7 mandates | `target → source (derived)` |
+| `card-service` `mapper/CardMapper.applyUpdate` CVV retention guard (Q11) | `CARD-CVV-CD PIC 9(03)` as a field the update map never carried `[app/cpy/CVACT02Y.cpy:L7, app/cbl/COCRDUPC.cbl]` | `source → target` |
+| `carddemo-common` `dto/CardUpdateRequestDto` CVV three-digit constraint (Q13) | `CARD-CVV-CD PIC 9(03)` `[app/cpy/CVACT02Y.cpy:L7]` | `source → target` |
+| `card-service` `service/CardService.validateEmbossedName` split literals `Card name not provided` / `Card name can only contain alphabets and spaces` (Q14) | `COCRDUPC 1230-EDIT-NAME` `WS-PROMPT-FOR-NAME` `[app/cbl/COCRDUPC.cbl:L181-L184, L817]` | `source → target` |
+| `card-service` `service/CardService.listCards` filter-honouring scope resolution (Q15) | `COCRDLIC 9500-FILTER-RECORDS` — filters on the entered `ACCTSID` with no user-type branch `[app/cbl/COCRDLIC.cbl:L1386]` | `source → target` |
+| `account-service`, `card-service`, `transaction-service`, `billpay-service` `repository/CardXrefRepository.findFirstByXrefAcctIdOrderByXrefCardNumAsc` (Q7) | CXACAIX NON-unique alternate index browsed with `STARTBR`/`READNEXT` `[app/cpy/CVACT03Y.cpy, app/cbl/CBTRN02C.cbl:L371-L397]` | `source → target` |
+| `account-service` `repository/AccountRepository.advanceAggregateVersion` + `AccountService` aggregate-change detection (Q8) | Dual `REWRITE` of account then customer as one unit `[app/cbl/COACTUPC.cbl:L4066-L4090]` and the field-by-field snapshot compare `[L4131-L4189]` | `target → source (derived)` |
+| `account-service` `service/AccountUpdateValidator` remaining field-width edits and the `ZEROS` character compare (Q9) | `1200-EDIT-MAP-INPUTS` ordered edits `[app/cbl/COACTUPC.cbl]`; `ACCT-GROUP-ID X(10)`, `CUST-ADDR-LINE-n X(50)`, `CUST-*-NAME X(25)`, `CUST-ADDR-COUNTRY-CD X(03)`, `CUST-GOVT-ISSUED-ID X(20)`, `CUST-EFT-ACCOUNT-ID X(10)` `[app/cpy/CVACT01Y.cpy, app/cpy/CVCUS01Y.cpy]` | `source → target` |
+| `carddemo-common` `dto/AddUserRequestDto` / `UpdateUserRequestDto` body-carried `password` plus width and user-type constraints (Q1, Q2, Q3, Q5) | `SEC-USR-ID X(08)`, `SEC-USR-PWD X(08)`, `SEC-USR-FNAME`/`LNAME X(20)`, `SEC-USR-TYPE X(01)` `[app/cpy/CSUSR01Y.cpy]`; `COUSR01C`/`COUSR02C` edits `[app/cbl/COUSR01C.cbl, app/cbl/COUSR02C.cbl]` | `source → target` |
+| `user-service` `service/UserService` insert-and-catch creation + version conflict mapping (Q4) | `COUSR01C` `WRITE` DUPKEY → `User ID already exist...` and `COUSR02C` rewrite `[app/cbl/COUSR01C.cbl, app/cbl/COUSR02C.cbl]` | `source → target` |
+| `carddemo-common` `security/SessionPrincipalIndex` in-place revocation marker (Q6) | `COUSR02C` credential change ending the signed-on session's authority `[app/cbl/COUSR02C.cbl, app/cpy/COCOM01Y.cpy]` | `target → source (derived)` |
+| `transaction-service` `service/TransactionService` amount-scale edit, category/merchant width edits and narrowed duplicate-id detection (Q16, Q17) | `COTRN02C` amount picture and `EVALUATE` edit order `[app/cbl/COTRN02C.cbl:L325-L351, L430-L432]`; `TRAN-CAT-CD 9(04)`, `TRAN-MERCHANT-ID 9(09)` `[app/cpy/CVTRA05Y.cpy]`; DUPKEY → `Tran ID already exist...` | `source → target` |
+| `billpay-service` `service/BillPaymentService` narrowed duplicate-id detection (Q16) | `COBIL00C` `WRITE` DUPKEY handling `[app/cbl/COBIL00C.cbl:L535-L537]` | `source → target` |
+| `batch-service` `config/JobSchedulingConfig.launchRepeatable` (identifying run id for read/print runs) and `reporting-service` `config/JobSchedulingConfig` statement run id (Q18) | `CORPT00C` TDQ `'JOBS'` write on EVERY request → JES re-run `[app/cbl/CORPT00C.cbl:L450]`; `TRANREPT`/`CREASTMT` job streams `[app/proc/TRANREPT.prc, app/jcl/CREASTMT.jcl]` | `source → target` |
+| `reporting-service` `client/BatchJobClient` refusal-versus-hand-off distinction (`SUBMISSION_REFUSED_PREFIX`) (Q18) | `CORPT00C` `SUBMIT-JOB-TO-INTRDR` TDQ write outcome `[app/cbl/CORPT00C.cbl:L450]` | `target → source (derived)` |
+| `carddemo-common` `config/RequestLoggingFilter`, `config/GlobalExceptionHandler`, `config/CardDemoErrorController` and `api-gateway` `config/UpstreamFailureHandler` PAN masking on every log path (Q19) | `CARD-NUM PIC X(16)` protection AAP 0.6.7 + the "no sensitive values in logs" rule; `security/SensitiveDataMasker` `[app/cpy/CVACT02Y.cpy]` | `target → rule` |
+| `reporting-service` `src/test/.../client/BatchJobClientTest.java`; `batch-service` `JobLaunchParameterIT` repeatability and identifying-flag cases; `card-service` `OptimisticLockConflictIT` CVV-retention and version-token cases; the new `CardServiceTest`, `TransactionServiceTest`, `BillPaymentServiceTest`, `UserServiceTest`, `AccountServiceTest` and `AccountUpdateValidatorTest` regression cases | AAP 0.7.1 "at least 50 unit-test scenarios must pass" — each case pins one remediated legacy behavior | `target → rule` |
+
 ## Coverage Assertion
 
-Section 12 additionally records the targets added or corrected during QA remediation; its rows
-refine behaviors within constructs already enumerated above rather than adding new sources, so
-the forward enumeration remains one row per legacy construct.
-
-This matrix enumerates the COMPLETE legacy inventory and maps it to the target design.
-It does **not** assert that every target file is already present on disk — the migration
-lands across multiple tranches (see *Scope of this matrix* above; Section 11 lists what
-this tranche delivers):
-
-- **Forward (`source → target`):** every legacy source construct appears exactly once as a
-  Source Construct — all 28 COBOL programs (17 online + 10 batch + `CSUTLDTC`), all 28
-  `app/cpy` copybooks (27 active + `UNUSED1Y.cpy` flagged excluded), all 17 BMS mapsets,
-  all 17 `app/cpy-bms` symbolic-map copybooks, all 29 JCL job streams + 2 procs, and every
-  configuration, catalog, control, and ASCII seed artifact.
-- **Reverse (`target → source (derived)` / `target → rule`):** every target implementation
-  either appears as a Target Implementation in a forward row, or is recorded in Section 9
-  (derived from a legacy behavioral pattern with no 1:1 field), Section 10 (rule-mandated
-  or standalone-operation infrastructure with no legacy analogue), Section 11 (foundation
-  artifacts present on disk) or Section 12 (artifacts created while remediating the runtime
-  QA checkpoint, including the shared error-envelope handlers and the PII
-  encryption/masking chain).
-  or standalone-operation infrastructure with no legacy analogue), or Section 12 (targets
-  added while remediating runtime findings).
-- **No row claims coverage the runtime does not deliver.** Where an earlier revision credited
-  a component that was present but never activated, the row now names the registration or
-  dependency that makes it active and states the observed evidence; the two such rows were
-  the distributed-tracing row (Section 10) and the correlation-id row (Section 11).
-  artifacts present on disk), or Section 12 (the security, session, and observability
-  remediation artifacts present on disk, including their tests).
-- **Excluded items, recorded for audit completeness:** `app/cpy/UNUSED1Y.cpy` (unused
-  copybook) and `app/data/EBCDIC/AWS.M2.CARDDEMO.*` (12 binary data sets; the ASCII
-  fixtures in `app/data/ASCII` drive seeding). The developer-only CICS artifacts
-  `COCRDSEC` (program) and transaction `CDV1` defined in `app/csd/CARDDEMO.CSD` are
-  outside the 17-program online scope and are not transformed.
-- **Path assertions resolve:** every migration script named anywhere in this matrix —
-  `V1__create_schema.sql`, `V2__seed_reference_data.sql`, `V3__seed_test_data.sql`,
-  `V5__batch_metadata.sql`, plus the Java migration `SeededPiiEncryptionMigration`
-  (version `4`) — exists at the single path
-  `carddemo-common/src/main/resources/db/migration` (the Java migration under
-  `carddemo-common/src/main/java/com/carddemo/common/migration`). No row asserts a
-  file that is not on disk, so the mapping is checkable by inspection rather than
-  taken on trust.
-
-No source construct is left unmapped and no target artifact is left untraceable.
+Sections 12 through 17 additionally record the targets added or corrected during successive
+QA-remediation passes; their rows refine behaviors within constructs already enumerated above
+rather than adding new sources, so the forward enumeration remains one row per legacy construct.

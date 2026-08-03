@@ -35,6 +35,8 @@ import com.carddemo.common.exception.RecordNotFoundException;
 import jakarta.persistence.OptimisticLockException;
 
 import java.math.BigDecimal;
+import java.util.Arrays;
+import java.util.List;
 import java.util.Objects;
 
 import org.slf4j.Logger;
@@ -263,7 +265,9 @@ public class AccountService {
 
         // Step 5 -- apply the submitted edits onto the managed entities in place so their
         // JPA @Version and primary keys are preserved for optimistic-lock detection.
+        List<Object> accountFieldsBefore = editableAccountFields(account);
         accountMapper.applyUpdate(request, account, customer);
+        boolean accountRowChanged = !accountFieldsBefore.equals(editableAccountFields(account));
 
         try {
             // Single unit of work: customer then account (AAP deadlock-avoidance order).
@@ -277,12 +281,32 @@ public class AccountService {
             throw new OptimisticLockConflictException(e);
         }
 
+        // Step 6 -- the account is the ROOT of the account+customer aggregate COACTUPC
+        // rewrites, so its version must move whenever the aggregate moves. The provider
+        // advances it only when the account ROW is dirty, so an update confined to customer
+        // fields is completed by advancing the root token explicitly; otherwise the next
+        // writer's stale snapshot would still match and its submission would silently
+        // overwrite this change (AAP 0.6.2).
+        Long effectiveVersion = account.getVersion();
+        if (!accountRowChanged) {
+            accountRepository.advanceAggregateVersion(acctId);
+            effectiveVersion = accountRepository.findVersionByAcctId(acctId).orElse(effectiveVersion);
+        }
+
         if (sessionContext != null) {
             sessionContext.setAcctId(acctId);
             sessionContext.setCustId(records.custId());
         }
 
-        return accountMapper.toUpdateResponse(account, customer, records.cardXref());
+        AccountUpdateResponseDto response =
+                accountMapper.toUpdateResponse(account, customer, records.cardXref());
+        if (response != null && effectiveVersion != null) {
+            // Echo the token the caller must present on its NEXT submission, which after a
+            // customer-only change is the advanced root version rather than the value the
+            // managed account entity still carries.
+            response.setVersion(effectiveVersion);
+        }
+        return response;
     }
 
     /**
@@ -298,7 +322,7 @@ public class AccountService {
      *  master, or the customer master holds no matching record; the first miss wins.
      */
     private AccountRecords readAccountRecords(Long acctId) {
-        CardXref cardXref = cardXrefRepository.findByXrefAcctId(acctId)
+        CardXref cardXref = cardXrefRepository.findFirstByXrefAcctIdOrderByXrefCardNumAsc(acctId)
                 .orElseThrow(() -> new RecordNotFoundException(MSG_ACCT_NOT_IN_XREF));
 
         // Customer id is derived from the cross-reference (COBOL MOVE XREF-CUST-ID
@@ -312,6 +336,27 @@ public class AccountService {
                 .orElseThrow(() -> new RecordNotFoundException(MSG_CUST_NOT_IN_MASTER));
 
         return new AccountRecords(cardXref, account, customer, custId);
+    }
+
+    /**
+     * :purpose: Capture the values of the ten editable ACCOUNT-record fields, so the service
+     *  can tell an update that rewrites the account row from one whose only changes land on
+     *  the customer record.
+     * :param account: the freshly loaded account.
+     * :returns: an order-stable list of the editable field values, suitable for equality.
+     */
+    private static List<Object> editableAccountFields(Account account) {
+        return Arrays.asList(
+                account.getAcctActiveStatus(),
+                account.getAcctCurrBal(),
+                account.getAcctCreditLimit(),
+                account.getAcctCashCreditLimit(),
+                account.getAcctCurrCycCredit(),
+                account.getAcctCurrCycDebit(),
+                account.getAcctOpenDate(),
+                account.getAcctExpiraionDate(),
+                account.getAcctReissueDate(),
+                account.getAcctGroupId());
     }
 
     /**

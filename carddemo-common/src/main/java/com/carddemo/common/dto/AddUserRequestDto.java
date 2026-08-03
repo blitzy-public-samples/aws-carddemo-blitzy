@@ -15,23 +15,48 @@
  */
 package com.carddemo.common.dto;
 
+import com.fasterxml.jackson.annotation.JsonProperty;
+import jakarta.validation.constraints.Size;
+
 /**
- * :purpose: Inbound DTO for the add-user screen (COUSR01C, CICS CU01). Carries the entered user id and non-secret profile fields; the password is collected and encoded by the service, not by this carrier.
- * :output: A mutable carrier of the user id, first name, last name, and user type.
+ * :purpose: Inbound DTO for the add-user screen (COUSR01C, CICS CU01). Carries the entered
+ *     user id, the non-secret profile fields, and the raw password the service encodes
+ *     before it is persisted.
+ * :output: A mutable carrier of the user id, first name, last name, user type, and raw password.
+ * :note: Every field width mirrors the ``CSUSR01Y`` record layout, so a value that could
+ *     never have been keyed into the 3270 map is refused with HTTP 400 instead of reaching
+ *     the column and failing as a server error. The presence edits stay in the service so
+ *     the verbatim ``COUSR01C`` "can NOT be empty..." literals keep their legacy order --
+ *     ``@Size(max = ...)`` never fires for an absent or blank value.
+ * :note: The password travels in the request BODY and is write-only: it is never echoed on
+ *     any response DTO. It must never be accepted as a query parameter, because a URL is
+ *     recorded verbatim by access logs and by client/server tracing spans (CWE-598).
  */
 public class AddUserRequestDto {
 
-    /** :purpose: the entered user id (``SEC-USR-ID``). */
+    /** :purpose: the entered user id (``SEC-USR-ID`` ``PIC X(08)``). */
+    @Size(max = 8, message = "User ID must be at most 8 characters")
     private String userId;
 
-    /** :purpose: the entered first name (``SEC-USR-FNAME``). */
+    /** :purpose: the entered first name (``SEC-USR-FNAME`` ``PIC X(20)``). */
+    @Size(max = 20, message = "First Name must be at most 20 characters")
     private String firstName;
 
-    /** :purpose: the entered last name (``SEC-USR-LNAME``). */
+    /** :purpose: the entered last name (``SEC-USR-LNAME`` ``PIC X(20)``). */
+    @Size(max = 20, message = "Last Name must be at most 20 characters")
     private String lastName;
 
-    /** :purpose: the entered user type code 'A'/'U' (``SEC-USR-TYPE``). */
+    /** :purpose: the entered user type code 'A'/'U' (``SEC-USR-TYPE`` ``PIC X(01)``). */
+    @Size(max = 1, message = "User Type must be at most 1 character")
     private String userType;
+
+    /**
+     * :purpose: the entered raw password (``SEC-USR-PWD`` ``PIC X(08)``), encoded by the
+     *     service before persistence and never returned on a response.
+     */
+    @JsonProperty(access = JsonProperty.Access.WRITE_ONLY)
+    @Size(max = 8, message = "Password must be at most 8 characters")
+    private String password;
 
     /**
      * :purpose: Create an empty AddUserRequestDto. Required for JSON (Jackson) serialization.
@@ -101,6 +126,22 @@ public class AddUserRequestDto {
      */
     public void setUserType(String userType) {
         this.userType = userType;
+    }
+
+    /**
+     * :purpose: Return the entered raw password (``SEC-USR-PWD``).
+     * :output: the ``password`` value; ``null`` when the caller supplied none.
+     */
+    public String getPassword() {
+        return password;
+    }
+
+    /**
+     * :purpose: Set the entered raw password (``SEC-USR-PWD``).
+     * :param password: the ``password`` value.
+     */
+    public void setPassword(String password) {
+        this.password = password;
     }
 
 }

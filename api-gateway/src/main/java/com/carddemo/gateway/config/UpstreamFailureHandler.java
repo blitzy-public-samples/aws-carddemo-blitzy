@@ -17,6 +17,7 @@
 package com.carddemo.gateway.config;
 
 import com.carddemo.common.dto.ErrorResponse;
+import com.carddemo.common.security.SensitiveDataMasker;
 import jakarta.servlet.http.HttpServletRequest;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -68,7 +69,10 @@ public class UpstreamFailureHandler {
         String path = request.getRequestURI();
         // The upstream target and the underlying cause are operator information: logged
         // here, never placed in the response body.
-        LOGGER.error("Upstream service unavailable for {}: {}", path, exception.getMessage());
+        // Masked for the LOG only: a card path embeds the PAN and must not be retained in a
+        // log file; the response body keeps the URI the caller supplied.
+        LOGGER.error("Upstream service unavailable for {}: {}",
+                SensitiveDataMasker.maskPan(path), exception.getMessage());
         ErrorResponse body = new ErrorResponse(
                 HttpStatus.SERVICE_UNAVAILABLE.value(),
                 HttpStatus.SERVICE_UNAVAILABLE.getReasonPhrase(),

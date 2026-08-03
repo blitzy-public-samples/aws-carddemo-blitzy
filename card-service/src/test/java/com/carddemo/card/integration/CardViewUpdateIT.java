@@ -301,7 +301,7 @@ class CardViewUpdateIT {
 
         // The cross-reference repository wires and the CXACAIX linkage for account 1
         // resolves to customer 1 (seed: xref_cust_id == xref_acct_id == card_acct_id).
-        var crossReference = cardXrefRepository.findByXrefAcctId(1L);
+        var crossReference = cardXrefRepository.findFirstByXrefAcctIdOrderByXrefCardNumAsc(1L);
         assertThat(crossReference).isPresent();
         assertThat(crossReference.get().getXrefCustId()).isEqualTo(1L);
     }

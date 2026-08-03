@@ -49,9 +49,9 @@ import java.util.UUID;
  *  on-demand, non-blocking {@link org.springframework.batch.core.launch.JobLauncher}
  *  invocation of the sibling ``statementGenerationJob`` batch job.
  * :output: Exposes a single parameterized, asynchronous launch entry point that
- *  the reporting-service report service calls to submit the statement-generation
- *  job with the requested report type and date range; submission failures are
- *  surfaced as a {@link CardDemoException}.
+ *  the reporting-service statement endpoint calls to submit the
+ *  statement-generation job with the output file names of the run; submission
+ *  failures are surfaced as a {@link CardDemoException}.
  */
 @Configuration
 public class JobSchedulingConfig {
@@ -59,23 +59,17 @@ public class JobSchedulingConfig {
     /** :purpose: Logger for asynchronous statement-generation job submission. */
     private static final Logger LOGGER = LoggerFactory.getLogger(JobSchedulingConfig.class);
 
-    /** :purpose: Job-parameter key carrying the report name (``Monthly``/``Yearly``/``Custom``). */
-    private static final String PARAM_REPORT_TYPE = "reportType";
-
-    /** :purpose: Job-parameter key carrying the ``PARM-START-DATE`` (``YYYY-MM-DD``). */
-    private static final String PARAM_START_DATE = "startDate";
-
-    /** :purpose: Job-parameter key carrying the ``PARM-END-DATE`` (``YYYY-MM-DD``). */
-    private static final String PARAM_END_DATE = "endDate";
-
     /**
-     * :purpose: Job-parameter key carrying a per-submission unique token, recorded for
-     *  traceability as a NON-identifying parameter. It was previously identifying,
-     *  which made every submission a brand-new ``JobInstance``: a failed statement run
-     *  could never be restarted from its last committed point and a re-submission of an
-     *  already-completed report was never rejected. A ``JobInstance`` is now identified
-     *  by its report type and date range - the ``PARM`` values the legacy job stream
-     *  identified a run by.
+     * :purpose: Job-parameter key carrying a per-submission unique token, recorded as an
+     *  IDENTIFYING parameter so every statement request is a distinct ``JobInstance``.
+     *  Statement generation only reads business data and rewrites its own two output
+     *  files, so it is a repeatable print request: ``CORPT00C`` wrote a TDQ ``'JOBS'``
+     *  record on EVERY request and JES ran the job again. With the token
+     *  non-identifying, the remaining business parameters became the instance key and a
+     *  statement could be printed exactly once per key - the second identical request
+     *  was refused as already complete. The business parameter set is the two output
+     *  file names alone - the ``STMTFILE`` and ``HTMLFILE`` DD names of the legacy job
+     *  stream - because ``CREASTMT`` carries no ``PARM``.
      */
     private static final String PARAM_RUN_ID = "run.id";
 
@@ -170,14 +164,10 @@ public class JobSchedulingConfig {
     }
 
     /**
-     * :purpose: Launch the statement-generation batch job asynchronously,
-     *  re-platforming ``CORPT00C``'s TDQ ``'JOBS'`` internal-reader submission as a
-     *  non-blocking {@link JobLauncher} invocation carrying the report parameters.
-     *  A ``run.id`` token is recorded for traceability without participating in job
-     *  identity, so the report type and date range identify the ``JobInstance``.
-     * :param reportType: the report name (``Monthly``, ``Yearly`` or ``Custom``).
-     * :param startDate: the ``PARM-START-DATE`` in ``YYYY-MM-DD`` wire form.
-     * :param endDate: the ``PARM-END-DATE`` in ``YYYY-MM-DD`` wire form.
+     * :purpose: Launch the statement-generation batch job asynchronously over the
+     *  configured default output file names, re-platforming ``CORPT00C``'s TDQ
+     *  ``'JOBS'`` internal-reader submission as a non-blocking {@link JobLauncher}
+     *  invocation.
      * :return: the accepted run's {@link JobExecution}, carrying its durable execution
      *  id so the outcome can be followed.
      * :raises CardDemoException: when the job cannot be submitted to the launcher. The
@@ -186,17 +176,12 @@ public class JobSchedulingConfig {
      *  ``CompletableFuture`` that the caller discarded, so neither a refused submission
      *  nor a failed run could ever be observed.
      */
-    public JobExecution launchStatementGeneration(String reportType,
-                                                 String startDate,
-                                                 String endDate) {
-        return launchStatementGeneration(reportType, startDate, endDate, null, null);
+    public JobExecution launchStatementGeneration() {
+        return launchStatementGeneration(null, null);
     }
 
     /**
      * :purpose: Launch the statement-generation job with explicit output file names.
-     * :param reportType: the report name (``Monthly``, ``Yearly`` or ``Custom``).
-     * :param startDate: the ``PARM-START-DATE`` in ``YYYY-MM-DD`` wire form.
-     * :param endDate: the ``PARM-END-DATE`` in ``YYYY-MM-DD`` wire form.
      * :param stmtFile: plain-text statement output file name; the configured default is
      *  used when blank.
      * :param htmlFile: HTML statement output file name; the configured default is used
@@ -208,23 +193,29 @@ public class JobSchedulingConfig {
      *  ``output/statements.txt``, which is unwritable in the delivered read-only
      *  container; the writer now resolves every name through the shared batch output
      *  resolver.
+     * :note: The two file names are the whole BUSINESS parameter set. A
+     *  ``reportType``/``startDate``/``endDate`` triple used to be recorded as
+     *  identifying, but ``CREASTMT`` carries no ``PARM`` at all and its SORT step
+     *  re-keys the entire ``TRANSACT`` file with no date filter, so those values could
+     *  never influence the statement a run produced: they told the caller a windowed
+     *  statement had been generated and keyed duplicate detection on values that had no
+     *  effect [app/jcl/CREASTMT.JCL]. The instance key is therefore the two file names
+     *  plus the identifying per-submission ``run.id``, so a repeated print request for
+     *  the same destination is accepted and re-run rather than refused as a duplicate.
      */
-    public JobExecution launchStatementGeneration(String reportType,
-                                                 String startDate,
-                                                 String endDate,
-                                                 String stmtFile,
-                                                 String htmlFile) {
+    public JobExecution launchStatementGeneration(String stmtFile, String htmlFile) {
         JobParameters jobParameters = new JobParametersBuilder()
-                .addString(PARAM_REPORT_TYPE, reportType)
-                .addString(PARAM_START_DATE, startDate)
-                .addString(PARAM_END_DATE, endDate)
                 .addString(PARAM_STMT_FILE, effectiveFile(stmtFile, statementTextFile))
                 .addString(PARAM_HTML_FILE, effectiveFile(htmlFile, statementHtmlFile))
-                .addString(PARAM_RUN_ID, UUID.randomUUID().toString(), false)
+                // IDENTIFYING: statement generation only reads business data and rewrites
+                // its own two output files, so it is a repeatable print request. With a
+                // non-identifying id the report window became the instance key and a
+                // statement run could be requested exactly once per window -- never again
+                // [app/cbl/CBSTM03A.CBL, app/jcl/CREASTMT.jcl].
+                .addString(PARAM_RUN_ID, UUID.randomUUID().toString(), true)
                 .toJobParameters();
 
-        LOGGER.info("Submitting statementGenerationJob (reportType={}, startDate={}, endDate={},"
-                + " stmtFile={}, htmlFile={})", reportType, startDate, endDate,
+        LOGGER.info("Submitting statementGenerationJob (stmtFile={}, htmlFile={})",
                 jobParameters.getString(PARAM_STMT_FILE), jobParameters.getString(PARAM_HTML_FILE));
 
         try {

@@ -53,7 +53,7 @@ import static org.mockito.Mockito.when;
 /**
  * :purpose: Pure Mockito unit tests for {@link InterestCalculationService}, the ``CBACT04C``
  *     interest-calculation re-platforming. Exercises the monthly-interest formula precision
- *     (multiply-then-divide-by-1200 at scale 2, ``HALF_UP``), the disclosure-group ``DEFAULT``
+ *     (multiply-then-divide-by-1200 at scale 2, truncated toward zero), the disclosure-group ``DEFAULT``
  *     fallback, the keyed account and card-cross-reference reads, the interest-transaction
  *     assembly, the transaction write, the per-account cycle roll-up and the account-ordered
  *     driving read.
@@ -176,27 +176,58 @@ class InterestCalculationServiceTest {
     }
 
     /**
-     * :purpose: A raw result of exactly 0.005 rounds up under ``HALF_UP``.
+     * :purpose: A raw result of exactly 0.005 is TRUNCATED to 0.00. The COBOL ``COMPUTE``
+     *     carries no ``ROUNDED`` phrase, so the excess digits are dropped as the quotient is
+     *     stored into ``WS-MONTHLY-INT PIC S9(09)V99``; rounding half up added a cent that
+     *     propagated into the account balance (QA Issue 9, docs/decision-log.md).
      */
     @Test
-    @DisplayName("computeMonthlyInterest: HALF_UP rounds 0.005 up to 0.01")
-    void computeMonthlyInterest_halfUpRoundsUp() {
+    @DisplayName("computeMonthlyInterest: 0.005 truncates to 0.00, never 0.01")
+    void computeMonthlyInterest_truncatesExactHalfCent() {
         BigDecimal result = service.computeMonthlyInterest(new BigDecimal("1.00"), new BigDecimal("6.00"));
+
+        assertThat(result).isEqualByComparingTo("0.00");
+        assertThat(result.scale()).isEqualTo(2);
+    }
+
+    /**
+     * :purpose: A raw result of exactly 0.015 is TRUNCATED to 0.01, not rounded to 0.02.
+     */
+    @Test
+    @DisplayName("computeMonthlyInterest: 0.015 truncates to 0.01, never 0.02")
+    void computeMonthlyInterest_truncatesOneAndAHalfCent() {
+        BigDecimal result = service.computeMonthlyInterest(new BigDecimal("1.00"), new BigDecimal("18.00"));
 
         assertThat(result).isEqualByComparingTo("0.01");
         assertThat(result.scale()).isEqualTo(2);
     }
 
     /**
-     * :purpose: A raw result of exactly 0.015 rounds up under ``HALF_UP``.
+     * :purpose: The golden boundary cases QA measured against the COBOL semantics, asserted
+     *     against the PRODUCTION method so the specification cannot drift from the code
+     *     again: a non-terminating quotient truncates toward zero in BOTH directions and an
+     *     exact 0.125 becomes 0.12.
      */
     @Test
-    @DisplayName("computeMonthlyInterest: HALF_UP rounds 0.015 up to 0.02")
-    void computeMonthlyInterest_halfUpRoundsUpSecond() {
-        BigDecimal result = service.computeMonthlyInterest(new BigDecimal("1.00"), new BigDecimal("18.00"));
-
-        assertThat(result).isEqualByComparingTo("0.02");
-        assertThat(result.scale()).isEqualTo(2);
+    @DisplayName("computeMonthlyInterest: the golden truncation cases, positive and negative")
+    void computeMonthlyInterest_goldenTruncationCases() {
+        // 100.00 * 5.00 / 1200 = 0.41666...
+        assertThat(service.computeMonthlyInterest(new BigDecimal("100.00"), new BigDecimal("5.00")))
+                .isEqualByComparingTo("0.41");
+        // 30.00 * 5.00 / 1200 = 0.125 exactly
+        assertThat(service.computeMonthlyInterest(new BigDecimal("30.00"), new BigDecimal("5.00")))
+                .isEqualByComparingTo("0.12");
+        // A credit balance truncates toward zero, so -0.41666... becomes -0.41.
+        assertThat(service.computeMonthlyInterest(new BigDecimal("-100.00"), new BigDecimal("5.00")))
+                .isEqualByComparingTo("-0.41");
+        // -1.00 * 6.00 / 1200 = -0.005 -> -0.00
+        assertThat(service.computeMonthlyInterest(new BigDecimal("-1.00"), new BigDecimal("6.00")))
+                .isEqualByComparingTo("0.00");
+        // Terminating quotients are unaffected.
+        assertThat(service.computeMonthlyInterest(new BigDecimal("1000.00"), new BigDecimal("15.00")))
+                .isEqualByComparingTo("12.50");
+        assertThat(service.computeMonthlyInterest(new BigDecimal("800.00"), new BigDecimal("15.00")))
+                .isEqualByComparingTo("10.00");
     }
 
     /**
@@ -238,7 +269,9 @@ class InterestCalculationServiceTest {
     /**
      * :purpose: A multi-digit balance and rate exercise the multiply-then-divide order of
      *     ``(TRAN-CAT-BAL * DIS-INT-RATE) / 1200`` (``CBACT04C`` lines 464-465): 12345.67 x
-     *     15.25 = 188271.4675, divided by 1200 and rounded HALF_UP at scale 2 gives 156.89.
+     *     15.25 = 188271.4675, divided by 1200 gives 156.8928..., which truncates at scale 2
+     *     to 156.89 - the same value HALF_UP would give here, so this case isolates the
+     *     operand order rather than the rounding mode.
      */
     @Test
     @DisplayName("computeMonthlyInterest: 12345.67 at 15.25 rate -> 156.89")
@@ -347,18 +380,20 @@ class InterestCalculationServiceTest {
 
     /**
      * :purpose: A present cross-reference yields its 16-character card number via the
-     *     ``xref_acct_id`` secondary index.
+     *     ``xref_acct_id`` secondary index, read in ascending ``XREF-CARD-NUM`` order so an
+     *     account holding several cards always stamps the same card number on its interest
+     *     transaction, as the VSAM alternate-index read did (QA Issue 11).
      */
     @Test
-    @DisplayName("resolveCardNumber: found -> returns card number")
+    @DisplayName("resolveCardNumber: found -> returns the lowest card number of the account")
     void resolveCardNumber_found() {
-        when(cardXrefRepository.findFirstByXrefAcctId(1L))
+        when(cardXrefRepository.findFirstByXrefAcctIdOrderByXrefCardNumAsc(1L))
                 .thenReturn(Optional.of(new CardXref("1234567890123456", 100000001L, 1L)));
 
         String result = service.resolveCardNumber(1L);
 
         assertThat(result).isEqualTo("1234567890123456");
-        verify(cardXrefRepository, times(1)).findFirstByXrefAcctId(1L);
+        verify(cardXrefRepository, times(1)).findFirstByXrefAcctIdOrderByXrefCardNumAsc(1L);
     }
 
     /**
@@ -368,7 +403,8 @@ class InterestCalculationServiceTest {
     @Test
     @DisplayName("resolveCardNumber: not found -> RecordNotFoundException")
     void resolveCardNumber_notFound() {
-        when(cardXrefRepository.findFirstByXrefAcctId(2L)).thenReturn(Optional.empty());
+        when(cardXrefRepository.findFirstByXrefAcctIdOrderByXrefCardNumAsc(2L))
+                .thenReturn(Optional.empty());
 
         assertThatThrownBy(() -> service.resolveCardNumber(2L))
                 .isInstanceOf(RecordNotFoundException.class)
@@ -402,9 +438,12 @@ class InterestCalculationServiceTest {
         assertThat(tx.getTranDesc()).hasSize(24);
         assertThat(tx.getTranAmt()).isEqualByComparingTo("10.00");
         assertThat(tx.getTranMerchantId()).isEqualTo(0L);
-        assertThat(tx.getTranMerchantName()).isEqualTo("");
-        assertThat(tx.getTranMerchantCity()).isEqualTo("");
-        assertThat(tx.getTranMerchantZip()).isEqualTo("");
+        // MOVE SPACES fills the whole fixed-width field, so the stored value is the field's
+        // width in blanks rather than an empty string (QA Issue 12): CVTRA05Y declares
+        // TRAN-MERCHANT-NAME X(50), TRAN-MERCHANT-CITY X(50) and TRAN-MERCHANT-ZIP X(10).
+        assertThat(tx.getTranMerchantName()).isEqualTo(" ".repeat(50));
+        assertThat(tx.getTranMerchantCity()).isEqualTo(" ".repeat(50));
+        assertThat(tx.getTranMerchantZip()).isEqualTo(" ".repeat(10));
         assertThat(tx.getTranCardNum()).isEqualTo("1234567890123456");
         assertThat(tx.getTranOrigTs()).isNotNull();
         assertThat(tx.getTranOrigTs()).hasSize(26);

@@ -27,6 +27,8 @@ import java.math.BigDecimal;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
 
 import org.junit.jupiter.api.DisplayName;
@@ -123,6 +125,98 @@ class RejectFileItemWriterTest {
             return List.of();
         }
         return Files.readAllLines(file, StandardCharsets.UTF_8);
+    }
+
+    /**
+     * Runs the writer over a chunk and returns the RAW BYTES of each record it wrote.
+     *
+     * :param items: the posting items handed to the writer.
+     * :output: one byte array per written record, line separators removed.
+     */
+    private List<byte[]> writeAndReadBytes(PostingItem... items) throws Exception {
+        RejectFileItemWriter writer = new RejectFileItemWriter(
+                "dalyrejs.txt",
+                new BatchOutputPathResolver(tempDir.toString(), tempDir.toString()));
+        writer.open(new ExecutionContext());
+        try {
+            Chunk<PostingItem> chunk = new Chunk<>();
+            for (PostingItem item : items) {
+                chunk.add(item);
+            }
+            writer.write(chunk);
+            writer.update(new ExecutionContext());
+        } finally {
+            writer.close();
+        }
+        byte[] all = Files.readAllBytes(tempDir.resolve("dalyrejs.txt"));
+        List<byte[]> records = new ArrayList<>();
+        int start = 0;
+        for (int i = 0; i < all.length; i++) {
+            if (all[i] == '\n' || all[i] == '\r') {
+                if (i > start) {
+                    records.add(Arrays.copyOfRange(all, start, i));
+                }
+                start = i + 1;
+            }
+        }
+        if (start < all.length) {
+            records.add(Arrays.copyOfRange(all, start, all.length));
+        }
+        return records;
+    }
+
+    @Nested
+    @DisplayName("Frozen 430-BYTE record contract for non-ASCII data")
+    class ByteContract {
+
+        /**
+         * :purpose: ``DALYREJS`` is a ``RECFM=F LRECL=430`` data set
+         *     [app/jcl/POSTTRAN.jcl], so 430 is a BYTE count. Under the platform default
+         *     UTF-8 a single accented character in a text field made the record 431+
+         *     bytes and byte-shifted every field after it, so a byte-offset downstream
+         *     reader lost the reject reason code entirely (QA Issue 3). One character
+         *     maps to exactly one byte in the writer's ISO-8859-1 encoding.
+         */
+        @Test
+        @DisplayName("an accented merchant name and description still yield exactly 430 bytes")
+        void accentedDataKeepsTheRecordAt430Bytes() throws Exception {
+            DailyTransaction accented = dailyTransaction("25.00");
+            accented.setDalytranDesc("Purchase at Café Müller");
+            accented.setDalytranMerchantName("Café Müller");
+            accented.setDalytranMerchantCity("Zürich");
+
+            List<byte[]> records = writeAndReadBytes(PostingItem.rejected(accented,
+                    TransactionRejectException.INVALID_CARD_NUMBER,
+                    TransactionRejectException.MSG_INVALID_CARD_NUMBER, null, null));
+
+            assertThat(records).hasSize(1);
+            assertThat(records.get(0)).hasSize(RECORD_LENGTH);
+            // The reason code must still sit at bytes 351-354 (0-based 350-353).
+            assertThat(new String(Arrays.copyOfRange(records.get(0), IMAGE_LENGTH, IMAGE_LENGTH + 4),
+                    StandardCharsets.ISO_8859_1)).isEqualTo("0100");
+        }
+
+        /**
+         * :purpose: A character outside ISO-8859-1 (an emoji) degrades to a single
+         *     replacement byte rather than a multi-byte sequence, so the fixed-width
+         *     contract holds for any input the staging table can carry.
+         */
+        @Test
+        @DisplayName("characters outside ISO-8859-1 still yield exactly 430 bytes")
+        void unicodeDataKeepsTheRecordAt430Bytes() throws Exception {
+            DailyTransaction unicode = dailyTransaction("25.00");
+            unicode.setDalytranDesc("Purchase \uD83D\uDE00 emoji \u4E2D\u6587");
+            unicode.setDalytranMerchantName("\uD83D\uDE00 Store");
+
+            List<byte[]> records = writeAndReadBytes(PostingItem.rejected(unicode,
+                    TransactionRejectException.ACCOUNT_EXPIRED,
+                    TransactionRejectException.MSG_ACCOUNT_EXPIRED, null, null));
+
+            assertThat(records).hasSize(1);
+            assertThat(records.get(0)).hasSize(RECORD_LENGTH);
+            assertThat(new String(Arrays.copyOfRange(records.get(0), IMAGE_LENGTH, IMAGE_LENGTH + 4),
+                    StandardCharsets.ISO_8859_1)).isEqualTo("0103");
+        }
     }
 
     @Nested

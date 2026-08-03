@@ -483,7 +483,7 @@ class AccountViewUpdateIT {
         assertThatThrownBy(() -> cardXrefRepository.saveAndFlush(orphan))
                 .isInstanceOf(DataIntegrityViolationException.class);
 
-        assertThat(cardXrefRepository.findByXrefAcctId(UNSEEDED_ACCT_ID)).isEmpty();
+        assertThat(cardXrefRepository.findFirstByXrefAcctIdOrderByXrefCardNumAsc(UNSEEDED_ACCT_ID)).isEmpty();
     }
 
     /**

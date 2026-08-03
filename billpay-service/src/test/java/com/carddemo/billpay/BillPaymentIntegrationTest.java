@@ -211,7 +211,29 @@ public class BillPaymentIntegrationTest {
                                    String cardNum, BigDecimal balance) {
         seedCustomer(jdbc, custId);
         seedAccount(jdbc, acctId, balance);
+        // The card master row is seeded as well as the cross-reference: the payment writes a
+        // transaction whose tran_card_num foreign-keys into cards (fk_transactions_card,
+        // V8__transactions_card_fk.sql), so a fixture carrying only the xref would describe a
+        // state the database no longer permits.
+        seedCard(jdbc, cardNum, acctId);
         seedCardXref(jdbc, cardNum, custId, acctId);
+    }
+
+    /**
+     * :purpose: Insert the card-master row for a card number, populating every NOT-NULL column
+     *  and leaving the sensitive CVV null so no encryption key is needed. Requires the account
+     *  row to exist first (``fk_cards_account``).
+     * :param jdbc: the JDBC template bound to the shared container datasource.
+     * :param cardNum: the 16-character card number (primary key).
+     * :param acctId: the owning account identifier.
+     */
+    static void seedCard(JdbcTemplate jdbc, String cardNum, long acctId) {
+        jdbc.update(
+                "INSERT INTO cards (card_num, card_acct_id, card_cvv_cd, card_embossed_name, "
+                        // The legacy copybook misspelling CARD-EXPIRAION-DATE is preserved.
+                        + "card_expiraion_date, card_active_status, version) "
+                        + "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                cardNum, acctId, null, "Test Cardholder", "2099-12-31", "Y", 0L);
     }
 
     /**
@@ -258,7 +280,7 @@ public class BillPaymentIntegrationTest {
     /**
      * :purpose: Insert the card cross-reference linking a card number to its owning
      *  customer and account (the ``CXACAIX`` alternate index resolved by
-     *  ``CardXrefRepository.findByXrefAcctId``). Requires the customer and account rows
+     *  ``CardXrefRepository.findFirstByXrefAcctIdOrderByXrefCardNumAsc``). Requires the customer and account rows
      *  to exist first to satisfy the foreign-key constraints.
      * :param jdbc: the JDBC template bound to the shared container datasource.
      * :param cardNum: the 16-character card number (primary key).

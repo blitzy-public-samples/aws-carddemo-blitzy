@@ -64,6 +64,7 @@ public class CardMapper {
         response.setCardEmbossedName(card.getCardEmbossedName());
         response.setCardExpiraionDate(card.getCardExpiraionDate());
         response.setCardActiveStatus(card.getCardActiveStatus());
+        response.setVersion(card.getVersion());
         if (cardXref != null) {
             response.setCustId(cardXref.getXrefCustId());
         }
@@ -122,6 +123,12 @@ public class CardMapper {
      *   no-op.
      * :param card: the managed card entity to mutate; when ``null`` the method is
      *   a no-op.
+     * :note: The CVV is applied ONLY when the request actually carries one. No read
+     *   path returns ``CARD-CVV-CD`` (it is encrypted at rest and never projected,
+     *   AAP 0.6.7), so a client cannot echo it back and every ordinary
+     *   name/status/expiry change omits it. Writing the absent value would erase the
+     *   stored verification value silently, which is data loss rather than an edit;
+     *   an omitted field is therefore retained.
      */
     public void applyUpdate(CardUpdateRequestDto request, Card card) {
         if (request == null || card == null) {
@@ -130,7 +137,9 @@ public class CardMapper {
         card.setCardEmbossedName(request.getCardEmbossedName());
         card.setCardActiveStatus(request.getCardActiveStatus());
         card.setCardExpiraionDate(request.getCardExpiraionDate());
-        card.setCardCvvCd(request.getCardCvvCd());
+        if (request.getCardCvvCd() != null) {
+            card.setCardCvvCd(request.getCardCvvCd());
+        }
     }
 
     /**
@@ -155,6 +164,7 @@ public class CardMapper {
         response.setCardEmbossedName(card.getCardEmbossedName());
         response.setCardExpiraionDate(card.getCardExpiraionDate());
         response.setCardActiveStatus(card.getCardActiveStatus());
+        response.setVersion(card.getVersion());
         if (cardXref != null) {
             response.setCustId(cardXref.getXrefCustId());
         }

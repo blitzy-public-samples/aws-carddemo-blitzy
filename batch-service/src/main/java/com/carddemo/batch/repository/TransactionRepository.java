@@ -54,13 +54,17 @@ public interface TransactionRepository extends JpaRepository<Transaction, String
      * :param startDate: inclusive lower bound in ``YYYY-MM-DD`` form.
      * :param endDate: inclusive upper bound in ``YYYY-MM-DD`` form.
      * :param pageable: paging and sort window applied to the result set.
-     * :return: matching transactions ordered by ``tranCardNum`` ascending, comparing the
-     *     first ten characters (the ``YYYY-MM-DD`` prefix) of the 26-character ``tranProcTs``.
+     * :return: matching transactions ordered by ``tranCardNum`` ascending and, within a
+     *     card group, by ``tranId`` ascending, comparing the first ten characters (the
+     *     ``YYYY-MM-DD`` prefix) of the 26-character ``tranProcTs``. The primary key
+     *     completes the ordering so that a paged read cannot repeat or drop a tied row,
+     *     and so the rows of one card arrive in the order the legacy sequential
+     *     ``TRANSACT`` KSDS read delivers them.
      */
     @Query("SELECT t FROM Transaction t "
          + "WHERE SUBSTRING(t.tranProcTs, 1, 10) >= :startDate "
          + "AND SUBSTRING(t.tranProcTs, 1, 10) <= :endDate "
-         + "ORDER BY t.tranCardNum ASC")
+         + "ORDER BY t.tranCardNum ASC, t.tranId ASC")
     List<Transaction> findByProcTsDateRangeOrderByCardNum(@Param("startDate") String startDate,
                                                           @Param("endDate") String endDate,
                                                           Pageable pageable);

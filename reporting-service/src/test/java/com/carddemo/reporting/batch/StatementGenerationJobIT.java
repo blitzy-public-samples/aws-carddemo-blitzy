@@ -174,6 +174,16 @@ class StatementGenerationJobIT {
         account.setAcctAddrZip("99999");
         accountRepository.save(account);
 
+        // The card master row backs the cross-reference: a transaction's tran_card_num
+        // foreign-keys into cards (fk_transactions_card, V8__transactions_card_fk.sql), so a
+        // fixture carrying only the xref would describe a state the database does not permit.
+        jdbcTemplate.update(
+                "INSERT INTO cards (card_num, card_acct_id, card_cvv_cd, card_embossed_name, "
+                        // The legacy copybook misspelling CARD-EXPIRAION-DATE is preserved.
+                        + "card_expiraion_date, card_active_status, version) "
+                        + "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                SYNTHETIC_CARD, 1L, null, "Statement Holder", "2099-12-31", "Y", 0L);
+
         CardXref cardXref = new CardXref();
         cardXref.setXrefCardNum(SYNTHETIC_CARD);
         cardXref.setXrefCustId(1L);
@@ -221,11 +231,10 @@ class StatementGenerationJobIT {
         File htmlFile = new File(tempDir.toFile(), "statements.html");
 
         JobParameters params = new JobParametersBuilder()
+                // The two output file names are the whole parameter set: CREASTMT
+                // carries no PARM and the job reads no date window.
                 .addString("stmtFile", textFile.getAbsolutePath())
                 .addString("htmlFile", htmlFile.getAbsolutePath())
-                .addString("reportType", "Monthly")
-                .addString("startDate", "2024-01-01")
-                .addString("endDate", "2024-01-31")
                 .addLong("run.id", System.currentTimeMillis())
                 .toJobParameters();
 

@@ -34,6 +34,7 @@ import com.carddemo.common.dto.UserListResponseDto;
 import com.carddemo.common.dto.UserResponseDto;
 import com.carddemo.common.dto.UserWriteResponseDto;
 import com.carddemo.common.exception.CardDemoException;
+import com.carddemo.common.exception.OptimisticLockConflictException;
 import com.carddemo.common.exception.RecordNotFoundException;
 import com.carddemo.common.security.SessionPrincipalIndex;
 import com.carddemo.user.mapper.UserMapper;
@@ -54,6 +55,9 @@ import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.dao.DataAccessResourceFailureException;
+import org.springframework.dao.DataIntegrityViolationException;
+import org.springframework.dao.DuplicateKeyException;
+import org.springframework.orm.ObjectOptimisticLockingFailureException;
 import org.springframework.data.domain.PageImpl;
 import org.springframework.data.domain.Pageable;
 import org.springframework.security.crypto.password.PasswordEncoder;
@@ -77,6 +81,7 @@ class UserServiceTest {
     private static final String MSG_PWD_EMPTY = "Password can NOT be empty...";
     private static final String MSG_TYPE_EMPTY = "User Type can NOT be empty...";
     private static final String MSG_DUP = "User ID already exist...";
+    private static final String MSG_TYPE_INVALID = "User Type must be A or U";
     private static final String MSG_ADD_ERR = "Unable to Add User...";
     private static final String MSG_NOT_FOUND = "User ID NOT found...";
     private static final String MSG_LOOKUP_ERR = "Unable to lookup User...";
@@ -120,6 +125,30 @@ class UserServiceTest {
         dto.setFirstName(first);
         dto.setLastName(last);
         dto.setUserType(type);
+        return dto;
+    }
+
+    /**
+     * :purpose: Carry the raw password on the request DTO, which is where it now travels: a
+     *     credential must never be accepted as a query parameter because a URL is recorded
+     *     verbatim by access logs and tracing spans.
+     * :param dto: the request fixture to complete.
+     * :param password: the raw password to carry.
+     * :returns: the same fixture, for inline use.
+     */
+    private static AddUserRequestDto withPwd(AddUserRequestDto dto, String password) {
+        dto.setPassword(password);
+        return dto;
+    }
+
+    /**
+     * :purpose: Carry the raw password on the update request DTO.
+     * :param dto: the request fixture to complete.
+     * :param password: the raw password to carry.
+     * :returns: the same fixture, for inline use.
+     */
+    private static UpdateUserRequestDto withPwd(UpdateUserRequestDto dto, String password) {
+        dto.setPassword(password);
         return dto;
     }
 
@@ -223,9 +252,9 @@ class UserServiceTest {
         when(userRepository.existsBySecUsrId("USER0001")).thenReturn(false);
         when(userMapper.toEntity(request)).thenReturn(entity);
         when(passwordEncoder.encode("rawPass")).thenReturn("$2a$hash");
-        when(userRepository.save(any(SecurityUser.class))).thenReturn(savedUser);
+        when(userRepository.saveAndFlush(any(SecurityUser.class))).thenReturn(savedUser);
 
-        UserWriteResponseDto result = userService.addUser(request, "rawPass");
+        UserWriteResponseDto result = userService.addUser(withPwd(request, "rawPass"));
 
         // COUSR01C reports 'User <id> has been added ...' on the screen, so the write
         // response carries that verbatim message alongside the persisted projection.
@@ -234,7 +263,7 @@ class UserServiceTest {
         verify(passwordEncoder).encode("rawPass");
 
         ArgumentCaptor<SecurityUser> captor = ArgumentCaptor.forClass(SecurityUser.class);
-        verify(userRepository).save(captor.capture());
+        verify(userRepository).saveAndFlush(captor.capture());
         assertThat(captor.getValue().getSecUsrPwd()).isEqualTo("$2a$hash");
         assertThat(captor.getValue().getSecUsrPwd()).isNotEqualTo("rawPass");
     }
@@ -244,7 +273,7 @@ class UserServiceTest {
     void addUser_firstNameEmpty_throwsFirstEmpty() {
         AddUserRequestDto request = addReq("USER0001", "", "Doe", "U");
 
-        assertThatThrownBy(() -> userService.addUser(request, "rawPass"))
+        assertThatThrownBy(() -> userService.addUser(withPwd(request, "rawPass")))
                 .isExactlyInstanceOf(CardDemoException.class)
                 .hasMessage(MSG_FIRST_EMPTY);
 
@@ -256,7 +285,7 @@ class UserServiceTest {
     void addUser_lastNameEmpty_throwsLastEmpty() {
         AddUserRequestDto request = addReq("USER0001", "John", "  ", "U");
 
-        assertThatThrownBy(() -> userService.addUser(request, "rawPass"))
+        assertThatThrownBy(() -> userService.addUser(withPwd(request, "rawPass")))
                 .isExactlyInstanceOf(CardDemoException.class)
                 .hasMessage(MSG_LAST_EMPTY);
 
@@ -268,7 +297,7 @@ class UserServiceTest {
     void addUser_userIdEmpty_throwsUserIdEmpty() {
         AddUserRequestDto request = addReq("", "John", "Doe", "U");
 
-        assertThatThrownBy(() -> userService.addUser(request, "rawPass"))
+        assertThatThrownBy(() -> userService.addUser(withPwd(request, "rawPass")))
                 .isExactlyInstanceOf(CardDemoException.class)
                 .hasMessage(MSG_USERID_EMPTY);
 
@@ -280,7 +309,7 @@ class UserServiceTest {
     void addUser_passwordEmpty_throwsPasswordEmpty() {
         AddUserRequestDto request = addReq("USER0001", "John", "Doe", "U");
 
-        assertThatThrownBy(() -> userService.addUser(request, ""))
+        assertThatThrownBy(() -> userService.addUser(withPwd(request, "")))
                 .isExactlyInstanceOf(CardDemoException.class)
                 .hasMessage(MSG_PWD_EMPTY);
 
@@ -292,7 +321,7 @@ class UserServiceTest {
     void addUser_userTypeEmpty_throwsTypeEmpty() {
         AddUserRequestDto request = addReq("USER0001", "John", "Doe", "");
 
-        assertThatThrownBy(() -> userService.addUser(request, "rawPass"))
+        assertThatThrownBy(() -> userService.addUser(withPwd(request, "rawPass")))
                 .isExactlyInstanceOf(CardDemoException.class)
                 .hasMessage(MSG_TYPE_EMPTY);
 
@@ -305,11 +334,11 @@ class UserServiceTest {
         AddUserRequestDto request = addReq("USER0001", "John", "Doe", "U");
         when(userRepository.existsBySecUsrId("USER0001")).thenReturn(true);
 
-        assertThatThrownBy(() -> userService.addUser(request, "rawPass"))
+        assertThatThrownBy(() -> userService.addUser(withPwd(request, "rawPass")))
                 .isExactlyInstanceOf(CardDemoException.class)
                 .hasMessage(MSG_DUP);
 
-        verify(userRepository, never()).save(any());
+        verify(userRepository, never()).saveAndFlush(any());
         verifyNoInteractions(passwordEncoder, userMapper);
     }
 
@@ -318,7 +347,7 @@ class UserServiceTest {
     void addUser_orderFirstBeforeLast_firstReportedFirst() {
         AddUserRequestDto request = addReq("USER0001", "", "", "U");
 
-        assertThatThrownBy(() -> userService.addUser(request, "rawPass"))
+        assertThatThrownBy(() -> userService.addUser(withPwd(request, "rawPass")))
                 .isExactlyInstanceOf(CardDemoException.class)
                 .hasMessage(MSG_FIRST_EMPTY);
 
@@ -334,14 +363,73 @@ class UserServiceTest {
         when(userRepository.existsBySecUsrId("USER0001")).thenReturn(false);
         when(userMapper.toEntity(request)).thenReturn(entity);
         when(passwordEncoder.encode("rawPass")).thenReturn("$2a$hash");
-        when(userRepository.save(any(SecurityUser.class)))
+        when(userRepository.saveAndFlush(any(SecurityUser.class)))
                 .thenThrow(new DataAccessResourceFailureException("db down"));
 
-        assertThatThrownBy(() -> userService.addUser(request, "rawPass"))
+        assertThatThrownBy(() -> userService.addUser(withPwd(request, "rawPass")))
                 .isExactlyInstanceOf(CardDemoException.class)
                 .hasMessage(MSG_ADD_ERR);
 
         verify(userMapper, never()).toResponse(any());
+    }
+
+    @Test
+    @DisplayName("addUser rejects a user type outside {A,U} with 'User Type must be A or U' and never saves")
+    void addUser_unknownUserType_throwsInvalidType() {
+        AddUserRequestDto request = addReq("USER0001", "John", "Doe", "X");
+
+        assertThatThrownBy(() -> userService.addUser(withPwd(request, "rawPass")))
+                .isExactlyInstanceOf(CardDemoException.class)
+                .hasMessage(MSG_TYPE_INVALID);
+
+        verifyNoInteractions(userRepository, userMapper, passwordEncoder);
+    }
+
+    @Test
+    @DisplayName("addUser reports the empty-type literal before the value-set edit")
+    void addUser_blankUserType_reportsEmptyLiteralNotValueSet() {
+        AddUserRequestDto request = addReq("USER0001", "John", "Doe", " ");
+
+        assertThatThrownBy(() -> userService.addUser(withPwd(request, "rawPass")))
+                .isExactlyInstanceOf(CardDemoException.class)
+                .hasMessage(MSG_TYPE_EMPTY);
+
+        verifyNoInteractions(userRepository, userMapper, passwordEncoder);
+    }
+
+    @Test
+    @DisplayName("addUser translates a concurrent primary-key violation to 'User ID already exist...'")
+    void addUser_concurrentDuplicateKey_throwsAlreadyExist() {
+        AddUserRequestDto request = addReq("USER0001", "John", "Doe", "U");
+        SecurityUser entity = user("USER0001", "John", "Doe", "U", null);
+
+        when(userRepository.existsBySecUsrId("USER0001")).thenReturn(false);
+        when(userMapper.toEntity(request)).thenReturn(entity);
+        when(passwordEncoder.encode("rawPass")).thenReturn("$2a$hash");
+        // The writer that lost the race sees the constraint, not a generic failure.
+        when(userRepository.saveAndFlush(any(SecurityUser.class)))
+                .thenThrow(new DuplicateKeyException("duplicate key value violates unique constraint"));
+
+        assertThatThrownBy(() -> userService.addUser(withPwd(request, "rawPass")))
+                .isExactlyInstanceOf(CardDemoException.class)
+                .hasMessage(MSG_DUP);
+    }
+
+    @Test
+    @DisplayName("addUser reports 'Unable to Add User...' for an integrity failure that is NOT a duplicate key")
+    void addUser_otherIntegrityFailure_throwsUnableToAdd() {
+        AddUserRequestDto request = addReq("USER0001", "John", "Doe", "U");
+        SecurityUser entity = user("USER0001", "John", "Doe", "U", null);
+
+        when(userRepository.existsBySecUsrId("USER0001")).thenReturn(false);
+        when(userMapper.toEntity(request)).thenReturn(entity);
+        when(passwordEncoder.encode("rawPass")).thenReturn("$2a$hash");
+        when(userRepository.saveAndFlush(any(SecurityUser.class)))
+                .thenThrow(new DataIntegrityViolationException("check constraint violated"));
+
+        assertThatThrownBy(() -> userService.addUser(withPwd(request, "rawPass")))
+                .isExactlyInstanceOf(CardDemoException.class)
+                .hasMessage(MSG_ADD_ERR);
     }
 
     // ================================================================
@@ -358,16 +446,16 @@ class UserServiceTest {
         when(userRepository.findBySecUsrId("USER0001")).thenReturn(Optional.of(storedUser));
         when(passwordEncoder.matches("newRaw", "$2a$storedHash")).thenReturn(false);
         when(passwordEncoder.encode("newRaw")).thenReturn("$2a$new");
-        when(userRepository.save(any(SecurityUser.class))).thenReturn(savedUser);
+        when(userRepository.saveAndFlush(any(SecurityUser.class))).thenReturn(savedUser);
 
-        UserWriteResponseDto result = userService.updateUser("USER0001", request, "newRaw");
+        UserWriteResponseDto result = userService.updateUser("USER0001", withPwd(request, "newRaw"));
 
         assertThat(result.getUserId()).isEqualTo(savedUser.getSecUsrId());
         assertThat(result.getMessage()).isEqualTo("User USER0001 has been updated ...");
         verify(passwordEncoder).encode("newRaw");
 
         ArgumentCaptor<SecurityUser> captor = ArgumentCaptor.forClass(SecurityUser.class);
-        verify(userRepository).save(captor.capture());
+        verify(userRepository).saveAndFlush(captor.capture());
         assertThat(captor.getValue().getSecUsrPwd()).isEqualTo("$2a$new");
     }
 
@@ -380,13 +468,13 @@ class UserServiceTest {
 
         when(userRepository.findBySecUsrId("USER0001")).thenReturn(Optional.of(storedUser));
         when(passwordEncoder.matches("samePass", "$2a$storedHash")).thenReturn(true);
-        when(userRepository.save(any(SecurityUser.class))).thenReturn(savedUser);
+        when(userRepository.saveAndFlush(any(SecurityUser.class))).thenReturn(savedUser);
 
-        UserWriteResponseDto result = userService.updateUser("USER0001", request, "samePass");
+        UserWriteResponseDto result = userService.updateUser("USER0001", withPwd(request, "samePass"));
 
         assertThat(result.getUserId()).isEqualTo(savedUser.getSecUsrId());
         assertThat(result.getMessage()).isEqualTo("User USER0001 has been updated ...");
-        verify(userRepository).save(any(SecurityUser.class));
+        verify(userRepository).saveAndFlush(any(SecurityUser.class));
         verify(passwordEncoder, never()).encode(any());
     }
 
@@ -398,11 +486,11 @@ class UserServiceTest {
         when(userRepository.findBySecUsrId("USER0001")).thenReturn(Optional.of(storedUser));
         when(passwordEncoder.matches("samePass", "$2a$storedHash")).thenReturn(true);
 
-        assertThatThrownBy(() -> userService.updateUser("USER0001", request, "samePass"))
+        assertThatThrownBy(() -> userService.updateUser("USER0001", withPwd(request, "samePass")))
                 .isExactlyInstanceOf(CardDemoException.class)
                 .hasMessage(MSG_NO_CHANGE);
 
-        verify(userRepository, never()).save(any());
+        verify(userRepository, never()).saveAndFlush(any());
         verify(passwordEncoder, never()).encode(any());
     }
 
@@ -411,7 +499,7 @@ class UserServiceTest {
     void updateUser_userIdEmpty_throwsUserIdEmpty() {
         UpdateUserRequestDto request = updReq("John", "Doe", "U");
 
-        assertThatThrownBy(() -> userService.updateUser("", request, "rawPass"))
+        assertThatThrownBy(() -> userService.updateUser("", withPwd(request, "rawPass")))
                 .isExactlyInstanceOf(CardDemoException.class)
                 .hasMessage(MSG_USERID_EMPTY);
 
@@ -423,7 +511,7 @@ class UserServiceTest {
     void updateUser_firstNameEmpty_throwsFirstEmpty() {
         UpdateUserRequestDto request = updReq("", "Doe", "U");
 
-        assertThatThrownBy(() -> userService.updateUser("USER0001", request, "rawPass"))
+        assertThatThrownBy(() -> userService.updateUser("USER0001", withPwd(request, "rawPass")))
                 .isExactlyInstanceOf(CardDemoException.class)
                 .hasMessage(MSG_FIRST_EMPTY);
 
@@ -435,7 +523,7 @@ class UserServiceTest {
     void updateUser_lastNameEmpty_throwsLastEmpty() {
         UpdateUserRequestDto request = updReq("John", "", "U");
 
-        assertThatThrownBy(() -> userService.updateUser("USER0001", request, "rawPass"))
+        assertThatThrownBy(() -> userService.updateUser("USER0001", withPwd(request, "rawPass")))
                 .isExactlyInstanceOf(CardDemoException.class)
                 .hasMessage(MSG_LAST_EMPTY);
 
@@ -447,7 +535,7 @@ class UserServiceTest {
     void updateUser_passwordEmpty_throwsPasswordEmpty() {
         UpdateUserRequestDto request = updReq("John", "Doe", "U");
 
-        assertThatThrownBy(() -> userService.updateUser("USER0001", request, ""))
+        assertThatThrownBy(() -> userService.updateUser("USER0001", withPwd(request, "")))
                 .isExactlyInstanceOf(CardDemoException.class)
                 .hasMessage(MSG_PWD_EMPTY);
 
@@ -459,7 +547,7 @@ class UserServiceTest {
     void updateUser_userTypeEmpty_throwsTypeEmpty() {
         UpdateUserRequestDto request = updReq("John", "Doe", "");
 
-        assertThatThrownBy(() -> userService.updateUser("USER0001", request, "rawPass"))
+        assertThatThrownBy(() -> userService.updateUser("USER0001", withPwd(request, "rawPass")))
                 .isExactlyInstanceOf(CardDemoException.class)
                 .hasMessage(MSG_TYPE_EMPTY);
 
@@ -471,7 +559,7 @@ class UserServiceTest {
     void updateUser_orderUserIdBeforeFirst_userIdReportedFirst() {
         UpdateUserRequestDto request = updReq("", "Doe", "U");
 
-        assertThatThrownBy(() -> userService.updateUser("", request, "rawPass"))
+        assertThatThrownBy(() -> userService.updateUser("", withPwd(request, "rawPass")))
                 .isExactlyInstanceOf(CardDemoException.class)
                 .hasMessage(MSG_USERID_EMPTY);
 
@@ -484,12 +572,42 @@ class UserServiceTest {
         UpdateUserRequestDto request = updReq("John", "Doe", "U");
         when(userRepository.findBySecUsrId("MISSING1")).thenReturn(Optional.empty());
 
-        assertThatThrownBy(() -> userService.updateUser("MISSING1", request, "rawPass"))
+        assertThatThrownBy(() -> userService.updateUser("MISSING1", withPwd(request, "rawPass")))
                 .isExactlyInstanceOf(RecordNotFoundException.class)
                 .hasMessage(MSG_NOT_FOUND);
 
-        verify(userRepository, never()).save(any());
+        verify(userRepository, never()).saveAndFlush(any());
         verifyNoInteractions(passwordEncoder, userMapper);
+    }
+
+    @Test
+    @DisplayName("updateUser maps a concurrent modification to the legacy conflict outcome")
+    void updateUser_optimisticLockFailure_throwsConflict() {
+        UpdateUserRequestDto request = updReq("Johnny", "Doer", "A");
+
+        when(userRepository.findBySecUsrId("USER0001")).thenReturn(Optional.of(storedUser));
+        when(passwordEncoder.matches("newRaw", "$2a$storedHash")).thenReturn(false);
+        when(passwordEncoder.encode("newRaw")).thenReturn("$2a$new");
+        when(userRepository.saveAndFlush(any(SecurityUser.class)))
+                .thenThrow(new ObjectOptimisticLockingFailureException(SecurityUser.class, "USER0001"));
+
+        assertThatThrownBy(() -> userService.updateUser("USER0001", withPwd(request, "newRaw")))
+                .isInstanceOf(OptimisticLockConflictException.class)
+                .hasMessage("Record changed by some one else. Please review");
+
+        verify(userMapper, never()).toResponse(any());
+    }
+
+    @Test
+    @DisplayName("updateUser rejects a user type outside {A,U} with 'User Type must be A or U'")
+    void updateUser_unknownUserType_throwsInvalidType() {
+        UpdateUserRequestDto request = updReq("Johnny", "Doer", "Z");
+
+        assertThatThrownBy(() -> userService.updateUser("USER0001", withPwd(request, "rawPass")))
+                .isExactlyInstanceOf(CardDemoException.class)
+                .hasMessage(MSG_TYPE_INVALID);
+
+        verifyNoInteractions(userRepository, userMapper);
     }
 
     @Test
@@ -500,10 +618,10 @@ class UserServiceTest {
         when(userRepository.findBySecUsrId("USER0001")).thenReturn(Optional.of(storedUser));
         when(passwordEncoder.matches("newRaw", "$2a$storedHash")).thenReturn(false);
         when(passwordEncoder.encode("newRaw")).thenReturn("$2a$new");
-        when(userRepository.save(any(SecurityUser.class)))
+        when(userRepository.saveAndFlush(any(SecurityUser.class)))
                 .thenThrow(new DataAccessResourceFailureException("db down"));
 
-        assertThatThrownBy(() -> userService.updateUser("USER0001", request, "newRaw"))
+        assertThatThrownBy(() -> userService.updateUser("USER0001", withPwd(request, "newRaw")))
                 .isExactlyInstanceOf(CardDemoException.class)
                 .hasMessage(MSG_UPDATE_ERR);
 
@@ -596,9 +714,9 @@ class UserServiceTest {
 
         when(userRepository.findBySecUsrId("USER0001")).thenReturn(Optional.of(storedUser));
         when(passwordEncoder.matches("samePass", "$2a$storedHash")).thenReturn(true);
-        when(userRepository.save(any(SecurityUser.class))).thenReturn(savedUser);
+        when(userRepository.saveAndFlush(any(SecurityUser.class))).thenReturn(savedUser);
 
-        userService.updateUser("USER0001", request, "samePass");
+        userService.updateUser("USER0001", withPwd(request, "samePass"));
 
         verify(sessionPrincipalIndex).revokeSessions("USER0001", "ROLE_CHANGED");
     }
@@ -612,9 +730,9 @@ class UserServiceTest {
         when(userRepository.findBySecUsrId("USER0001")).thenReturn(Optional.of(storedUser));
         when(passwordEncoder.matches("newRaw", "$2a$storedHash")).thenReturn(false);
         when(passwordEncoder.encode("newRaw")).thenReturn("$2a$new");
-        when(userRepository.save(any(SecurityUser.class))).thenReturn(savedUser);
+        when(userRepository.saveAndFlush(any(SecurityUser.class))).thenReturn(savedUser);
 
-        userService.updateUser("USER0001", request, "newRaw");
+        userService.updateUser("USER0001", withPwd(request, "newRaw"));
 
         verify(sessionPrincipalIndex).revokeSessions("USER0001", "CREDENTIAL_CHANGED");
     }
@@ -628,9 +746,9 @@ class UserServiceTest {
         when(userRepository.findBySecUsrId("USER0001")).thenReturn(Optional.of(storedUser));
         when(passwordEncoder.matches("newRaw", "$2a$storedHash")).thenReturn(false);
         when(passwordEncoder.encode("newRaw")).thenReturn("$2a$new");
-        when(userRepository.save(any(SecurityUser.class))).thenReturn(savedUser);
+        when(userRepository.saveAndFlush(any(SecurityUser.class))).thenReturn(savedUser);
 
-        userService.updateUser("USER0001", request, "newRaw");
+        userService.updateUser("USER0001", withPwd(request, "newRaw"));
 
         verify(sessionPrincipalIndex).revokeSessions("USER0001", "ROLE_CHANGED");
         verify(sessionPrincipalIndex, never()).revokeSessions(any(), eq("CREDENTIAL_CHANGED"));
@@ -644,9 +762,9 @@ class UserServiceTest {
 
         when(userRepository.findBySecUsrId("USER0001")).thenReturn(Optional.of(storedUser));
         when(passwordEncoder.matches("samePass", "$2a$storedHash")).thenReturn(true);
-        when(userRepository.save(any(SecurityUser.class))).thenReturn(savedUser);
+        when(userRepository.saveAndFlush(any(SecurityUser.class))).thenReturn(savedUser);
 
-        userService.updateUser("USER0001", request, "samePass");
+        userService.updateUser("USER0001", withPwd(request, "samePass"));
 
         verifyNoInteractions(sessionPrincipalIndex);
     }
@@ -659,7 +777,7 @@ class UserServiceTest {
         when(userRepository.findBySecUsrId("USER0001")).thenReturn(Optional.of(storedUser));
         when(passwordEncoder.matches("samePass", "$2a$storedHash")).thenReturn(true);
 
-        assertThatThrownBy(() -> userService.updateUser("USER0001", request, "samePass"))
+        assertThatThrownBy(() -> userService.updateUser("USER0001", withPwd(request, "samePass")))
                 .isExactlyInstanceOf(CardDemoException.class);
 
         verifyNoInteractions(sessionPrincipalIndex);
@@ -674,9 +792,9 @@ class UserServiceTest {
         when(userRepository.existsBySecUsrId("USER0009")).thenReturn(false);
         when(userMapper.toEntity(request)).thenReturn(user("USER0009", "New", "User", "U", null));
         when(passwordEncoder.encode("rawPass")).thenReturn("$2a$new");
-        when(userRepository.save(any(SecurityUser.class))).thenReturn(savedUser);
+        when(userRepository.saveAndFlush(any(SecurityUser.class))).thenReturn(savedUser);
 
-        userService.addUser(request, "rawPass");
+        userService.addUser(withPwd(request, "rawPass"));
 
         verifyNoInteractions(sessionPrincipalIndex);
     }

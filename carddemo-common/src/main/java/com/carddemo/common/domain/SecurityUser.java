@@ -5,6 +5,7 @@ import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
 import jakarta.persistence.Id;
 import jakarta.persistence.Table;
+import jakarta.persistence.Version;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.Size;
 
@@ -75,6 +76,20 @@ public class SecurityUser {
     @Size(max = 1)
     @Column(name = "sec_usr_type", length = 1, nullable = false)
     private String secUsrType;
+
+    /**
+     * Optimistic-locking version (JPA-managed) detecting concurrent user maintenance.
+     *
+     * :purpose: The legacy ``USRSEC`` record carries no such field: ``COUSR02C`` held the
+     *     VSAM record under an update lock for the whole rewrite, which a stateless service
+     *     cannot do. Without the counter two simultaneous administrator edits both reported
+     *     success and only the later credential survived, so the earlier one was silently
+     *     lost. With it, the second writer's update matches no row and the conflict is
+     *     reported instead of overwritten (AAP 0.6.2).
+     */
+    @Version
+    @Column(name = "version")
+    private Long version;
 
     /**
      * Creates an empty instance as required by the JPA provider.
@@ -199,6 +214,24 @@ public class SecurityUser {
     @Override
     public int hashCode() {
         return SecurityUser.class.hashCode();
+    }
+
+    /**
+     * Returns the optimistic-locking version counter.
+     *
+     * :returns: the provider-managed version, or ``null`` before the row is first persisted.
+     */
+    public Long getVersion() {
+        return version;
+    }
+
+    /**
+     * Sets the optimistic-locking version counter.
+     *
+     * :param version: the version value to carry; normally managed by the JPA provider.
+     */
+    public void setVersion(Long version) {
+        this.version = version;
     }
 
     /**

@@ -17,6 +17,7 @@
 package com.carddemo.batch.config;
 
 import com.carddemo.common.batch.BatchOutputPathResolver;
+import com.carddemo.common.batch.FailedOutputCleanupListener;
 import com.carddemo.batch.batch.CategoryBalanceReportWriter;
 import com.carddemo.batch.batch.CobolRecordFormatter;
 import com.carddemo.batch.batch.CombineTransactionsTasklet;
@@ -48,6 +49,7 @@ import org.springframework.batch.core.job.Job;
 import org.springframework.batch.core.job.JobExecution;
 import org.springframework.batch.core.job.builder.JobBuilder;
 import org.springframework.batch.core.listener.JobExecutionListener;
+import org.springframework.batch.core.listener.StepExecutionListener;
 import org.springframework.batch.core.repository.JobRepository;
 import org.springframework.batch.core.step.Step;
 import org.springframework.batch.core.step.builder.StepBuilder;
@@ -139,14 +141,63 @@ public class DataManagementJobConfig {
     // -----------------------------------------------------------------------
 
     /**
+     * :purpose: Remove the artifact a step was writing when that step does not complete
+     *  successfully, for every job whose destination is the ``outputFile`` job parameter
+     *  (the ``READACCT``/``READCARD``/``READXREF``/``READCUST`` dumps, the ``PRTCATBL``
+     *  report and the ``COMBTRAN`` combined print). Without it a failed run left a file
+     *  carrying only the legacy start and end banners - the exact shape of a successful
+     *  run over an empty input - which no downstream reader could tell apart.
+     * :param outputFile: the requested output file, bound late from the ``outputFile`` job
+     *  parameter.
+     * :param pathResolver: resolver confining the name to the batch output root, so the
+     *  listener addresses exactly the file the writer opened.
+     * :returns: the cleanup listener for one step execution.
+     * :note: ``@StepScope`` is required because the destination is a job parameter: a
+     *  singleton listener would be bound to whichever execution created it and could
+     *  delete another run's file.
+     */
+    @Bean
+    @StepScope
+    public FailedOutputCleanupListener outputFileCleanupListener(
+            @Value("#{jobParameters['outputFile']}") String outputFile,
+            BatchOutputPathResolver pathResolver) {
+        return new FailedOutputCleanupListener(pathResolver.resolveOutput(outputFile));
+    }
+
+    /**
+     * :purpose: Remove the transaction-detail report when ``transactionDetailReportStep``
+     *  does not complete successfully. Its destination is the ``reportFile`` job
+     *  parameter rather than ``outputFile``, so it needs its own binding.
+     * :param reportFile: the requested report file, bound late from the ``reportFile``
+     *  job parameter.
+     * :param pathResolver: resolver confining the name to the batch output root.
+     * :returns: the cleanup listener for one report step execution.
+     */
+    @Bean
+    @StepScope
+    public FailedOutputCleanupListener reportFileCleanupListener(
+            @Value("#{jobParameters['reportFile']}") String reportFile,
+            BatchOutputPathResolver pathResolver) {
+        return new FailedOutputCleanupListener(pathResolver.resolveOutput(reportFile));
+    }
+
+    /**
      * :purpose: Page through the account master ordered by ``acctId`` for the
      *  account read-and-print job, reproducing the sequential VSAM read of
      *  ``CBACT01C`` driven by ``READACCT``.
      * :param accountRepository: paging repository over the account master.
      * :returns: a ``RepositoryItemReader`` streaming every ``Account`` in
      *  ascending ``acctId`` order.
+     * :note: ``@StepScope`` is required, not merely convenient: a
+     *  ``RepositoryItemReader`` is an ``ItemStream`` that holds the page cursor of
+     *  the read it is performing, so a singleton instance is ONE cursor shared by
+     *  every concurrent step execution. Two runs launched together then consumed
+     *  each other's pages - one dump repeated rows, another was left with nothing
+     *  but its banner lines - while both executions still reported COMPLETED. A
+     *  step-scoped bean gives each execution its own cursor.
      */
     @Bean
+    @StepScope
     public RepositoryItemReader<Account> accountReader(AccountRepository accountRepository) {
         return new RepositoryItemReaderBuilder<Account>()
                 .name("accountReader")
@@ -187,17 +238,21 @@ public class DataManagementJobConfig {
      * :param transactionManager: batch transaction manager (Boot auto-configured).
      * :param accountReader: reader streaming accounts in ``acctId`` order.
      * :param accountDumpWriter: writer printing each account to the dump file.
+     * :param outputFileCleanupListener: step-scoped listener removing the dump file
+     *  when the step does not complete successfully.
      * :returns: the ``accountReadStep`` ``Step``.
      */
     @Bean
     public Step accountReadStep(JobRepository jobRepository,
                                 PlatformTransactionManager transactionManager,
                                 RepositoryItemReader<Account> accountReader,
-                                RecordDumpItemWriter<Account> accountDumpWriter) {
+                                RecordDumpItemWriter<Account> accountDumpWriter,
+                                FailedOutputCleanupListener outputFileCleanupListener) {
         return new StepBuilder("accountReadStep", jobRepository)
                 .<Account, Account>chunk(PAGE_SIZE).transactionManager(transactionManager)
                 .reader(accountReader)
                 .writer(accountDumpWriter)
+                .listener((StepExecutionListener) outputFileCleanupListener)
                 .build();
     }
 
@@ -227,8 +282,16 @@ public class DataManagementJobConfig {
      * :param cardRepository: paging repository over the card master.
      * :returns: a ``RepositoryItemReader`` streaming every ``Card`` in ascending
      *  ``cardNum`` order.
+     * :note: ``@StepScope`` is required, not merely convenient: a
+     *  ``RepositoryItemReader`` is an ``ItemStream`` that holds the page cursor of
+     *  the read it is performing, so a singleton instance is ONE cursor shared by
+     *  every concurrent step execution. Two runs launched together then consumed
+     *  each other's pages - one dump repeated rows, another was left with nothing
+     *  but its banner lines - while both executions still reported COMPLETED. A
+     *  step-scoped bean gives each execution its own cursor.
      */
     @Bean
+    @StepScope
     public RepositoryItemReader<Card> cardReader(CardRepository cardRepository) {
         return new RepositoryItemReaderBuilder<Card>()
                 .name("cardReader")
@@ -270,17 +333,21 @@ public class DataManagementJobConfig {
      * :param transactionManager: batch transaction manager (Boot auto-configured).
      * :param cardReader: reader streaming cards in ``cardNum`` order.
      * :param cardDumpWriter: writer printing each card to the dump file.
+     * :param outputFileCleanupListener: step-scoped listener removing the dump file
+     *  when the step does not complete successfully.
      * :returns: the ``cardReadStep`` ``Step``.
      */
     @Bean
     public Step cardReadStep(JobRepository jobRepository,
                              PlatformTransactionManager transactionManager,
                              RepositoryItemReader<Card> cardReader,
-                             RecordDumpItemWriter<Card> cardDumpWriter) {
+                             RecordDumpItemWriter<Card> cardDumpWriter,
+                             FailedOutputCleanupListener outputFileCleanupListener) {
         return new StepBuilder("cardReadStep", jobRepository)
                 .<Card, Card>chunk(PAGE_SIZE).transactionManager(transactionManager)
                 .reader(cardReader)
                 .writer(cardDumpWriter)
+                .listener((StepExecutionListener) outputFileCleanupListener)
                 .build();
     }
 
@@ -310,8 +377,16 @@ public class DataManagementJobConfig {
      * :param cardXrefRepository: paging repository over the card cross-reference.
      * :returns: a ``RepositoryItemReader`` streaming every ``CardXref`` in
      *  ascending ``xrefCardNum`` order.
+     * :note: ``@StepScope`` is required, not merely convenient: a
+     *  ``RepositoryItemReader`` is an ``ItemStream`` that holds the page cursor of
+     *  the read it is performing, so a singleton instance is ONE cursor shared by
+     *  every concurrent step execution. Two runs launched together then consumed
+     *  each other's pages - one dump repeated rows, another was left with nothing
+     *  but its banner lines - while both executions still reported COMPLETED. A
+     *  step-scoped bean gives each execution its own cursor.
      */
     @Bean
+    @StepScope
     public RepositoryItemReader<CardXref> cardXrefReader(CardXrefRepository cardXrefRepository) {
         return new RepositoryItemReaderBuilder<CardXref>()
                 .name("cardXrefReader")
@@ -355,17 +430,21 @@ public class DataManagementJobConfig {
      *  ``xrefCardNum`` order.
      * :param cardXrefDumpWriter: writer printing each cross-reference record to
      *  the dump file.
+     * :param outputFileCleanupListener: step-scoped listener removing the dump file
+     *  when the step does not complete successfully.
      * :returns: the ``cardXrefReadStep`` ``Step``.
      */
     @Bean
     public Step cardXrefReadStep(JobRepository jobRepository,
                                  PlatformTransactionManager transactionManager,
                                  RepositoryItemReader<CardXref> cardXrefReader,
-                                 RecordDumpItemWriter<CardXref> cardXrefDumpWriter) {
+                                 RecordDumpItemWriter<CardXref> cardXrefDumpWriter,
+                                 FailedOutputCleanupListener outputFileCleanupListener) {
         return new StepBuilder("cardXrefReadStep", jobRepository)
                 .<CardXref, CardXref>chunk(PAGE_SIZE).transactionManager(transactionManager)
                 .reader(cardXrefReader)
                 .writer(cardXrefDumpWriter)
+                .listener((StepExecutionListener) outputFileCleanupListener)
                 .build();
     }
 
@@ -396,8 +475,16 @@ public class DataManagementJobConfig {
      * :param customerRepository: paging repository over the customer master.
      * :returns: a ``RepositoryItemReader`` streaming every ``Customer`` in
      *  ascending ``custId`` order.
+     * :note: ``@StepScope`` is required, not merely convenient: a
+     *  ``RepositoryItemReader`` is an ``ItemStream`` that holds the page cursor of
+     *  the read it is performing, so a singleton instance is ONE cursor shared by
+     *  every concurrent step execution. Two runs launched together then consumed
+     *  each other's pages - one dump repeated rows, another was left with nothing
+     *  but its banner lines - while both executions still reported COMPLETED. A
+     *  step-scoped bean gives each execution its own cursor.
      */
     @Bean
+    @StepScope
     public RepositoryItemReader<Customer> customerReader(CustomerRepository customerRepository) {
         return new RepositoryItemReaderBuilder<Customer>()
                 .name("customerReader")
@@ -439,17 +526,21 @@ public class DataManagementJobConfig {
      * :param transactionManager: batch transaction manager (Boot auto-configured).
      * :param customerReader: reader streaming customers in ``custId`` order.
      * :param customerDumpWriter: writer printing each customer to the dump file.
+     * :param outputFileCleanupListener: step-scoped listener removing the dump file
+     *  when the step does not complete successfully.
      * :returns: the ``customerReadStep`` ``Step``.
      */
     @Bean
     public Step customerReadStep(JobRepository jobRepository,
                                  PlatformTransactionManager transactionManager,
                                  RepositoryItemReader<Customer> customerReader,
-                                 RecordDumpItemWriter<Customer> customerDumpWriter) {
+                                 RecordDumpItemWriter<Customer> customerDumpWriter,
+                                 FailedOutputCleanupListener outputFileCleanupListener) {
         return new StepBuilder("customerReadStep", jobRepository)
                 .<Customer, Customer>chunk(PAGE_SIZE).transactionManager(transactionManager)
                 .reader(customerReader)
                 .writer(customerDumpWriter)
+                .listener((StepExecutionListener) outputFileCleanupListener)
                 .build();
     }
 
@@ -526,6 +617,7 @@ public class DataManagementJobConfig {
      * :param dailyTransactionValidationProcessor: pass-through validator that logs
      *  cross-reference and account lookup outcomes and returns the record
      *  unchanged.
+     * :param dailyTransactionValidationWriter: step-scoped count-only writer.
      * :returns: the ``dailyTransactionValidationStep`` ``Step``.
      */
     @Bean
@@ -533,13 +625,30 @@ public class DataManagementJobConfig {
             JobRepository jobRepository,
             PlatformTransactionManager transactionManager,
             FlatFileItemReader<DailyTransaction> dailyTransactionValidationReader,
-            DailyTransactionValidationProcessor dailyTransactionValidationProcessor) {
+            DailyTransactionValidationProcessor dailyTransactionValidationProcessor,
+            LoggingItemWriter<DailyTransaction> dailyTransactionValidationWriter) {
         return new StepBuilder("dailyTransactionValidationStep", jobRepository)
                 .<DailyTransaction, DailyTransaction>chunk(PAGE_SIZE).transactionManager(transactionManager)
                 .reader(dailyTransactionValidationReader)
                 .processor(dailyTransactionValidationProcessor)
-                .writer(new LoggingItemWriter<>("dailyTransactionValidation"))
+                .writer(dailyTransactionValidationWriter)
                 .build();
+    }
+
+    /**
+     * :purpose: Build the count-only writer of the validation-read pass, the Java
+     *  analogue of the legacy ``DISPLAY`` record sink of ``CBTRN01C``.
+     * :returns: a ``LoggingItemWriter`` labelled ``dailyTransactionValidation``.
+     * :note: ``@StepScope`` is required, not merely convenient: the writer carries
+     *  the running record count of the pass it is performing. Constructed once for
+     *  a singleton step it accumulated across every execution and interleaved
+     *  between concurrent ones, so the count it reported was neither the run's nor
+     *  any run's. A step-scoped bean gives each execution its own counter.
+     */
+    @Bean
+    @StepScope
+    public LoggingItemWriter<DailyTransaction> dailyTransactionValidationWriter() {
+        return new LoggingItemWriter<>("dailyTransactionValidation");
     }
 
     /**
@@ -577,8 +686,16 @@ public class DataManagementJobConfig {
      *  table.
      * :returns: a ``RepositoryItemReader`` streaming every ``TranCatBal`` in the
      *  composite ``trancatAcctId``/``trancatTypeCd``/``trancatCd`` order.
+     * :note: ``@StepScope`` is required, not merely convenient: a
+     *  ``RepositoryItemReader`` is an ``ItemStream`` that holds the page cursor of
+     *  the read it is performing, so a singleton instance is ONE cursor shared by
+     *  every concurrent step execution. Two runs launched together then consumed
+     *  each other's pages - one dump repeated rows, another was left with nothing
+     *  but its banner lines - while both executions still reported COMPLETED. A
+     *  step-scoped bean gives each execution its own cursor.
      */
     @Bean
+    @StepScope
     public RepositoryItemReader<TranCatBal> categoryBalanceReader(
             TranCatBalRepository tranCatBalRepository) {
         LinkedHashMap<String, Sort.Direction> sorts = new LinkedHashMap<>();
@@ -604,17 +721,21 @@ public class DataManagementJobConfig {
      * :param categoryBalanceReportWriter: step-scoped stream writer that renders
      *  the report to the ``outputFile`` job parameter; supplied directly as the
      *  step writer so the chunk step auto-registers it as an ``ItemStream``.
+     * :param outputFileCleanupListener: step-scoped listener removing the report file
+     *  when the step does not complete successfully.
      * :returns: the ``categoryBalanceReportStep`` ``Step``.
      */
     @Bean
     public Step categoryBalanceReportStep(JobRepository jobRepository,
                                           PlatformTransactionManager transactionManager,
                                           RepositoryItemReader<TranCatBal> categoryBalanceReader,
-                                          CategoryBalanceReportWriter categoryBalanceReportWriter) {
+                                          CategoryBalanceReportWriter categoryBalanceReportWriter,
+                                          FailedOutputCleanupListener outputFileCleanupListener) {
         return new StepBuilder("categoryBalanceReportStep", jobRepository)
                 .<TranCatBal, TranCatBal>chunk(PAGE_SIZE).transactionManager(transactionManager)
                 .reader(categoryBalanceReader)
                 .writer(categoryBalanceReportWriter)
+                .listener((StepExecutionListener) outputFileCleanupListener)
                 .build();
     }
 
@@ -650,14 +771,18 @@ public class DataManagementJobConfig {
      * :param transactionManager: batch transaction manager (Boot auto-configured).
      * :param combineTransactionsTasklet: tasklet performing the merge, ordering,
      *  and load.
+     * :param outputFileCleanupListener: step-scoped listener removing the combined print
+     *  when the step does not complete successfully.
      * :returns: the ``combineTransactionsStep`` ``Step``.
      */
     @Bean
     public Step combineTransactionsStep(JobRepository jobRepository,
                                         PlatformTransactionManager transactionManager,
-                                        CombineTransactionsTasklet combineTransactionsTasklet) {
+                                        CombineTransactionsTasklet combineTransactionsTasklet,
+                                        FailedOutputCleanupListener outputFileCleanupListener) {
         return new StepBuilder("combineTransactionsStep", jobRepository)
                 .tasklet(combineTransactionsTasklet, transactionManager)
+                .listener((StepExecutionListener) outputFileCleanupListener)
                 .build();
     }
 
@@ -705,6 +830,13 @@ public class DataManagementJobConfig {
      *  restart therefore regenerates the complete report rather than resuming
      *  mid-file, which would otherwise drop the already-read rows. This matches
      *  the wholesale full-report regeneration of the legacy ``CBTRN03C`` run.
+     * :note: The primary key is the ordering tie-breaker because a paging reader
+     *  issues one windowed query per page: with several transactions sharing a
+     *  card number — the normal case — a sort on the card number alone leaves
+     *  tied rows in an order the database may choose differently for each page,
+     *  which repeats one row and drops another across a page boundary. Ordering
+     *  by ``tranId`` within a card group also matches the order the legacy
+     *  sequential ``TRANSACT`` KSDS read delivers records in.
      */
     @Bean
     @StepScope
@@ -718,7 +850,7 @@ public class DataManagementJobConfig {
                 .queryString("SELECT t FROM Transaction t "
                         + "WHERE SUBSTRING(t.tranProcTs, 1, 10) >= :startDate "
                         + "AND SUBSTRING(t.tranProcTs, 1, 10) <= :endDate "
-                        + "ORDER BY t.tranCardNum")
+                        + "ORDER BY t.tranCardNum, t.tranId")
                 .parameterValues(Map.of("startDate", startDate, "endDate", endDate))
                 .pageSize(PAGE_SIZE)
                 .saveState(false)
@@ -742,6 +874,8 @@ public class DataManagementJobConfig {
      * :param transactionDetailReportWriter: step-scoped stream writer rendering
      *  the fixed-width report; supplied directly as the step writer so the chunk
      *  step auto-registers it as an ``ItemStream``.
+     * :param reportFileCleanupListener: step-scoped listener removing the report file
+     *  when the step does not complete successfully.
      * :returns: the ``transactionDetailReportStep`` ``Step``.
      */
     @Bean
@@ -750,12 +884,14 @@ public class DataManagementJobConfig {
             PlatformTransactionManager transactionManager,
             JpaPagingItemReader<Transaction> transactionDetailReportReader,
             TransactionReportItemProcessor transactionReportItemProcessor,
-            TransactionDetailReportWriter transactionDetailReportWriter) {
+            TransactionDetailReportWriter transactionDetailReportWriter,
+            FailedOutputCleanupListener reportFileCleanupListener) {
         return new StepBuilder("transactionDetailReportStep", jobRepository)
                 .<Transaction, TransactionReportItem>chunk(PAGE_SIZE).transactionManager(transactionManager)
                 .reader(transactionDetailReportReader)
                 .processor(transactionReportItemProcessor)
                 .writer(transactionDetailReportWriter)
+                .listener((StepExecutionListener) reportFileCleanupListener)
                 .build();
     }
 

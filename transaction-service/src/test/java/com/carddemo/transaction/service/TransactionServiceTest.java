@@ -58,6 +58,8 @@ import org.mockito.junit.jupiter.MockitoExtension;
 import org.mockito.junit.jupiter.MockitoSettings;
 import org.mockito.quality.Strictness;
 import org.springframework.dao.DataIntegrityViolationException;
+
+import java.sql.SQLException;
 import org.springframework.data.domain.Pageable;
 
 /**
@@ -156,7 +158,7 @@ class TransactionServiceTest {
      * Stubs a resolvable cross-reference for the account-id key path.
      */
     private void stubAccountCrossReference() {
-        when(cardXrefRepository.findByXrefAcctId(ACCT_ID))
+        when(cardXrefRepository.findFirstByXrefAcctIdOrderByXrefCardNumAsc(ACCT_ID))
                 .thenReturn(Optional.of(new CardXref(CARD_NUM, 90L, ACCT_ID)));
     }
 
@@ -169,6 +171,31 @@ class TransactionServiceTest {
         when(transactionRepository.getNextTransactionId()).thenReturn(sequenceValue);
         when(transactionRepository.saveAndFlush(any(Transaction.class)))
                 .thenAnswer(invocation -> invocation.getArgument(0));
+    }
+
+    /**
+     * Builds the violation PostgreSQL raises for a duplicate transaction primary key.
+     *
+     * :param constraintName: the violated constraint name reported by the driver.
+     * :returns: a :java:type:`DataIntegrityViolationException` with a chained SQL state 23505.
+     */
+    private static DataIntegrityViolationException uniqueViolation(String constraintName) {
+        return integrityViolation("23505",
+                "ERROR: duplicate key value violates unique constraint \"" + constraintName + "\"");
+    }
+
+    /**
+     * Builds a data-integrity violation carrying a realistic chained {@link SQLException}, the
+     * only thing that distinguishes a duplicate transaction id from any other integrity fault.
+     *
+     * :param sqlState: the SQL state the driver reports.
+     * :param message: the driver message.
+     * :returns: a :java:type:`DataIntegrityViolationException` wrapping that SQL exception.
+     */
+    private static DataIntegrityViolationException integrityViolation(String sqlState,
+                                                                     String message) {
+        return new DataIntegrityViolationException(message,
+                new SQLException(message, sqlState));
     }
 
     @Nested
@@ -224,16 +251,56 @@ class TransactionServiceTest {
         }
 
         @Test
-        @DisplayName("a duplicate key surfaces the verbatim 'Tran ID already exist...' message")
+        @DisplayName("a duplicate transaction id surfaces the verbatim 'Tran ID already exist...' message")
         void duplicateKeyIsTranslated() {
             stubAccountCrossReference();
             when(transactionRepository.getNextTransactionId()).thenReturn(42L);
             when(transactionRepository.saveAndFlush(any(Transaction.class)))
-                    .thenThrow(new DataIntegrityViolationException("duplicate key"));
+                    .thenThrow(uniqueViolation("transactions_pkey"));
 
             assertThatThrownBy(() -> service.addTransaction(validAddRequest(), null))
                     .isInstanceOf(CardDemoException.class)
                     .hasMessage("Tran ID already exist...");
+        }
+
+        @Test
+        @DisplayName("a violated CHECK constraint is NOT reported as a duplicate transaction id")
+        void checkConstraintViolationIsNotReportedAsDuplicateId() {
+            stubAccountCrossReference();
+            when(transactionRepository.getNextTransactionId()).thenReturn(42L);
+            when(transactionRepository.saveAndFlush(any(Transaction.class)))
+                    .thenThrow(integrityViolation("23514",
+                            "new row for relation \"transactions\" violates check constraint "
+                                    + "\"chk_transactions_merchant_id\""));
+
+            assertThatThrownBy(() -> service.addTransaction(validAddRequest(), null))
+                    .isInstanceOf(DataIntegrityViolationException.class);
+        }
+
+        @Test
+        @DisplayName("a numeric overflow is NOT reported as a duplicate transaction id")
+        void numericOverflowIsNotReportedAsDuplicateId() {
+            stubAccountCrossReference();
+            when(transactionRepository.getNextTransactionId()).thenReturn(42L);
+            when(transactionRepository.saveAndFlush(any(Transaction.class)))
+                    .thenThrow(integrityViolation("22003", "numeric field overflow"));
+
+            assertThatThrownBy(() -> service.addTransaction(validAddRequest(), null))
+                    .isInstanceOf(DataIntegrityViolationException.class);
+        }
+
+        @Test
+        @DisplayName("a unique violation on another column is NOT reported as a duplicate transaction id")
+        void unrelatedUniqueViolationIsNotReportedAsDuplicateId() {
+            stubAccountCrossReference();
+            when(transactionRepository.getNextTransactionId()).thenReturn(42L);
+            when(transactionRepository.saveAndFlush(any(Transaction.class)))
+                    .thenThrow(integrityViolation("23505",
+                            "duplicate key value violates unique constraint "
+                                    + "\"uq_some_other_table_column\""));
+
+            assertThatThrownBy(() -> service.addTransaction(validAddRequest(), null))
+                    .isInstanceOf(DataIntegrityViolationException.class);
         }
     }
 
@@ -251,7 +318,7 @@ class TransactionServiceTest {
 
             service.addTransaction(request, null);
 
-            verify(cardXrefRepository).findByXrefAcctId(ACCT_ID);
+            verify(cardXrefRepository).findFirstByXrefAcctIdOrderByXrefCardNumAsc(ACCT_ID);
             verify(cardXrefRepository, never()).findByXrefCardNum(anyString());
             ArgumentCaptor<Transaction> saved = ArgumentCaptor.forClass(Transaction.class);
             verify(transactionRepository).saveAndFlush(saved.capture());
@@ -277,7 +344,7 @@ class TransactionServiceTest {
         @Test
         @DisplayName("a missing account cross-reference raises 'Account ID NOT found...' (404)")
         void missingAccountCrossReferenceIsNotFound() {
-            when(cardXrefRepository.findByXrefAcctId(ACCT_ID)).thenReturn(Optional.empty());
+            when(cardXrefRepository.findFirstByXrefAcctIdOrderByXrefCardNumAsc(ACCT_ID)).thenReturn(Optional.empty());
 
             assertThatThrownBy(() -> service.addTransaction(validAddRequest(), null))
                     .isInstanceOf(RecordNotFoundException.class)
@@ -408,6 +475,60 @@ class TransactionServiceTest {
         }
 
         @Test
+        @DisplayName("an over-precise amount is rejected, never rounded into the picture")
+        void overPreciseAmountsAreRejected() {
+            // COTRN02C L339-351 tests TRNAMTI(11:2): a third decimal digit has nowhere to go on
+            // the map, so silently rounding 1.005 to 1.01 would alter a financial value the
+            // caller never authorised (AAP 0.7.6).
+            assertRejects(r -> r.setTranAmt(new BigDecimal("1.005")),
+                    "Amount should be in format -99999999.99");
+            assertRejects(r -> r.setTranAmt(new BigDecimal("-1.005")),
+                    "Amount should be in format -99999999.99");
+            assertRejects(r -> r.setTranAmt(new BigDecimal("0.001")),
+                    "Amount should be in format -99999999.99");
+            assertRejects(r -> r.setTranAmt(new BigDecimal("99999999.999")),
+                    "Amount should be in format -99999999.99");
+        }
+
+        @Test
+        @DisplayName("trailing zeros are presentation only and stay acceptable")
+        void trailingZeroAmountsAreAccepted() {
+            TransactionAddRequestDto request = validAddRequest();
+            request.setTranAmt(new BigDecimal("1.500"));
+            stubAccountCrossReference();
+            stubSequenceAndSave(1L);
+
+            service.addTransaction(request, null);
+
+            ArgumentCaptor<Transaction> saved = ArgumentCaptor.forClass(Transaction.class);
+            verify(transactionRepository).saveAndFlush(saved.capture());
+            assertThat(saved.getValue().getTranAmt()).isEqualByComparingTo("1.50");
+            assertThat(saved.getValue().getTranAmt().scale()).isEqualTo(2);
+        }
+
+        @Test
+        @DisplayName("legacy field widths bound the category code and the merchant id")
+        void legacyNumericWidthsAreEnforced() {
+            // TCATCDI is four characters (TRAN-CAT-CD PIC 9(04)) and MIDI is nine
+            // (TRAN-MERCHANT-ID PIC 9(09)); an over-wide value used to reach the INSERT and
+            // trip a CHECK constraint, which was then reported as a duplicate transaction id.
+            assertRejects(r -> r.setTranCatCd(10000), "Category CD must be Numeric...");
+            assertRejects(r -> r.setTranMerchantId(1_000_000_000L), "Merchant ID must be Numeric...");
+        }
+
+        @Test
+        @DisplayName("the widest in-picture category code and merchant id are accepted")
+        void legacyNumericWidthBoundariesAreInclusive() {
+            TransactionAddRequestDto request = validAddRequest();
+            request.setTranCatCd(9999);
+            request.setTranMerchantId(999_999_999L);
+            stubAccountCrossReference();
+            stubSequenceAndSave(1L);
+
+            assertThat(service.addTransaction(request, null).getTranId()).hasSize(16);
+        }
+
+        @Test
         @DisplayName("an impossible calendar date is rejected with the CSUTLDTC message")
         void impossibleDatesAreRejected() {
             assertRejects(r -> r.setTranOrigTs("2024-02-30"), "Orig Date - Not a valid date...");
@@ -443,10 +564,13 @@ class TransactionServiceTest {
         }
 
         @Test
-        @DisplayName("the amount is normalized to scale two with HALF_UP")
-        void amountIsNormalizedToScaleTwo() {
+        @DisplayName("an in-picture amount is stored at the fixed COBOL scale of two")
+        void amountIsStoredAtScaleTwo() {
+            // A value the TRNAMTI picture can carry is padded to the fixed S9(09)V99 scale;
+            // a value it cannot carry (10.005) is rejected by the amount edit instead of being
+            // rounded into the picture -- see overPreciseAmountsAreRejected().
             TransactionAddRequestDto request = validAddRequest();
-            request.setTranAmt(new BigDecimal("10.005"));
+            request.setTranAmt(new BigDecimal("10.5"));
             stubAccountCrossReference();
             stubSequenceAndSave(1L);
 
@@ -454,7 +578,7 @@ class TransactionServiceTest {
 
             ArgumentCaptor<Transaction> saved = ArgumentCaptor.forClass(Transaction.class);
             verify(transactionRepository).saveAndFlush(saved.capture());
-            assertThat(saved.getValue().getTranAmt()).isEqualTo(new BigDecimal("10.01"));
+            assertThat(saved.getValue().getTranAmt()).isEqualTo(new BigDecimal("10.50"));
         }
 
         @Test

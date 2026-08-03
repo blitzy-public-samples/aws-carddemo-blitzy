@@ -29,10 +29,12 @@ import com.carddemo.common.dto.SessionContext;
 import com.carddemo.common.exception.CardDemoException;
 import com.carddemo.common.exception.OptimisticLockConflictException;
 import com.carddemo.common.exception.RecordNotFoundException;
+import jakarta.persistence.OptimisticLockException;
 import java.util.Comparator;
 import java.util.List;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.orm.ObjectOptimisticLockingFailureException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -127,7 +129,10 @@ public class CardService {
 
     // -- Card update validation-edit messages (COCRDUPC.cbl), byte-for-byte. --------
 
-    /** :purpose: ``COCRDUPC`` ``WS-NAME-MUST-BE-ALPHA`` name edit message. */
+    /** :purpose: ``COCRDUPC`` ``WS-PROMPT-FOR-NAME`` absent-name edit message (L181-182). */
+    private static final String MSG_NAME_NOT_PROVIDED = "Card name not provided";
+
+    /** :purpose: ``COCRDUPC`` ``WS-NAME-MUST-BE-ALPHA`` name edit message (L183-184). */
     private static final String MSG_NAME_ALPHA =
             "Card name can only contain alphabets and spaces";
 
@@ -240,16 +245,37 @@ public class CardService {
             throw new CardDemoException(MSG_CARD_FILTER_16);
         }
 
-        // Authorization scoping (AAP 0.6.3): a non-admin sees only its own account's cards.
+        // Filter resolution and authorization scoping. COCRDLIC filters on the ACCTSID the
+        // operator typed and has no user-type branch at all (9500-FILTER-RECORDS, L1386), so the
+        // supplied filter is ALWAYS honoured. The session account of a non-admin is applied as an
+        // ADDITIONAL restriction, never as a replacement: overwriting the filter with the session
+        // account returned a different account's cards, and overwriting it with an unpinned
+        // (null) session account widened the browse to the entire card base and disclosed
+        // unrelated PANs. A non-admin asking for an account other than its own therefore sees
+        // the empty-result banner rather than someone else's cards.
         Long effectiveAcctId = acctIdFilter;
+        boolean outsideOwnAccount = false;
         if (sessionContext != null
                 && sessionContext.getUserType() == SessionContext.UserType.CDEMO_USRTYP_USER) {
-            effectiveAcctId = sessionContext.getAcctId();
+            Long ownAcctId = sessionContext.getAcctId();
+            if (ownAcctId == null) {
+                // Nothing pins this session to an account yet, so there is no scope to browse
+                // within. The unrestricted browse belongs to the administrator path: handing a
+                // non-admin every card in the institution disclosed unrelated PANs, so the
+                // caller must name an account (ACCTSID) or reach the screen through its own.
+                outsideOwnAccount = effectiveAcctId == null;
+            } else if (effectiveAcctId == null) {
+                effectiveAcctId = ownAcctId;
+            } else if (!effectiveAcctId.equals(ownAcctId)) {
+                outsideOwnAccount = true;
+            }
         }
 
         // Fetch candidates, reproducing the CARDDAT keyed read / CARDAIX account browse.
         List<Card> candidates;
-        if (cardFilterSupplied) {
+        if (outsideOwnAccount) {
+            candidates = List.of();
+        } else if (cardFilterSupplied) {
             Card single = cardRepository.findById(cardNumFilter).orElse(null);
             boolean inScope = single != null
                     && (effectiveAcctId == null || effectiveAcctId.equals(single.getCardAcctId()));
@@ -403,8 +429,9 @@ public class CardService {
                                             CardUpdateRequestDto request,
                                             SessionContext sessionContext) {
         if (request == null) {
-            // No editable fields supplied: reproduce the first (name) edit failure.
-            throw new CardDemoException(MSG_NAME_ALPHA);
+            // No editable fields supplied: reproduce the first (name) edit failure, which for an
+            // absent name is the prompt literal, not the alphabetic-content one.
+            throw new CardDemoException(MSG_NAME_NOT_PROVIDED);
         }
 
         // Step A -- validation edits, fail-fast in COBOL PERFORM order 1230->1240->1250->1260.
@@ -413,16 +440,21 @@ public class CardService {
         validateExpiryMonth(request.getCardExpiraionDate());
         validateExpiryYear(request.getCardExpiraionDate());
 
-        // Step C -- re-read the current card inside this transaction (COBOL 9200 READ ... UPDATE).
-        Card card = cardRepository.findById(cardNumber)
+        // Step C -- re-read the current card inside this transaction under a row write lock
+        // (COBOL 9200 READ ... UPDATE). The lock serialises simultaneous updaters, so each one
+        // compares its snapshot against what the previous updater actually committed instead of
+        // all of them comparing against the same pre-race image.
+        Card card = cardRepository.findForUpdateByCardNum(cardNumber)
                 .orElseThrow(() -> new RecordNotFoundException(MSG_DETAIL_NOT_FOUND));
         CardXref xref = cardXrefRepository.findById(cardNumber).orElse(null);
 
         // Step D -- read-snapshot-compare-rewrite concurrency check (COBOL 9300-CHECK-CHANGE-IN-REC).
-        // Reproduced at the service layer because Card has no version column: when the request
-        // carries the display-time snapshot (CCUP-OLD-*), the re-read card is compared field-by-field
-        // against it, and any difference signals a concurrent modification. When no snapshot is
-        // supplied the check is skipped, preserving the behaviour of callers that omit it.
+        // Two equivalent proofs of what the caller read are honoured, and either one alone is
+        // enough: the @Version counter the read paths return, and the display-time CCUP-OLD-*
+        // field snapshot. Whichever the caller carries, a value that no longer matches the
+        // stored record means somebody else changed it first and the rewrite is abandoned.
+        assertVersionUnchanged(cardNumber, request, card);
+
         if (snapshotPresent(request) && hasDataChangedSinceSnapshot(request, card)) {
             log.debug("card update conflict for account {}: {}",
                     card.getCardAcctId(), MSG_DATA_WAS_CHANGED);
@@ -439,7 +471,17 @@ public class CardService {
         cardMapper.applyUpdate(request, card);
 
         // Step F -- persist within the single transaction (COBOL REWRITE; failure rolls back).
-        Card saved = cardRepository.save(card);
+        // saveAndFlush, not save: the UPDATE must reach the database inside this try so the
+        // provider's @Version check runs here and a concurrent commit is reported as the legacy
+        // conflict outcome rather than escaping the boundary as a commit-time failure.
+        Card saved;
+        try {
+            saved = cardRepository.saveAndFlush(card);
+        } catch (ObjectOptimisticLockingFailureException | OptimisticLockException e) {
+            log.debug("card update conflict for account {}: {}",
+                    card.getCardAcctId(), MSG_DATA_WAS_CHANGED);
+            throw new OptimisticLockConflictException(e);
+        }
 
         // Step G -- propagate the resolved identifiers into the session (COBOL COMMAREA moves).
         if (sessionContext != null) {
@@ -459,8 +501,13 @@ public class CardService {
      *  non-space character.
      */
     private void validateEmbossedName(String name) {
-        if (name == null || name.isBlank()) {
-            throw new CardDemoException(MSG_NAME_ALPHA);
+        // COCRDUPC 1230-EDIT-NAME performs TWO distinct edits in order: an absent name
+        // (LOW-VALUES / SPACES / ZEROS) sets WS-PROMPT-FOR-NAME, and only a name that IS
+        // present but carries a non-alphabetic character sets WS-NAME-MUST-BE-ALPHA. The two
+        // outcomes carry different literals and must not be collapsed
+        // [app/cbl/COCRDUPC.cbl:L181-184, L806-834].
+        if (name == null || name.isBlank() || name.chars().allMatch(ch -> ch == '0')) {
+            throw new CardDemoException(MSG_NAME_NOT_PROVIDED);
         }
         for (int i = 0; i < name.length(); i++) {
             char ch = name.charAt(i);
@@ -534,6 +581,44 @@ public class CardService {
     }
 
     /**
+     * :purpose: Compare the optimistic-lock version the caller read against the version the
+     *  stored card carries now, and abandon the rewrite when they differ, reproducing
+     *  ``COCRDUPC DATA-WAS-CHANGED-BEFORE-UPDATE`` (AAP 0.6.2). An absent version is treated as
+     *  "not compared" rather than as a conflict, because the caller may instead carry the
+     *  ``CCUP-OLD-*`` field snapshot that :meth:`hasDataChangedSinceSnapshot` compares.
+     * :param cardNumber: the card being rewritten, used to correlate the conflict log line.
+     * :param request: the submitted card fields carrying the caller's version token.
+     * :param card: the current managed card re-read inside the update transaction.
+     * :returns: nothing; the method either returns silently or raises.
+     * :raises OptimisticLockConflictException: when the submitted version does not match the
+     *  stored version, yielding HTTP 409 with the legacy conflict message.
+     */
+    private void assertVersionUnchanged(String cardNumber, CardUpdateRequestDto request, Card card) {
+        Long submitted = request.getVersion();
+        if (submitted == null) {
+            return;
+        }
+        if (!submitted.equals(card.getVersion())) {
+            log.debug("stale card update rejected for card ending {}: {}",
+                    maskedTail(cardNumber), MSG_DATA_WAS_CHANGED);
+            throw new OptimisticLockConflictException();
+        }
+    }
+
+    /**
+     * :purpose: Render the last four digits of a card number for log correlation, so a
+     *  conflict line identifies the card without emitting the full PAN (AAP 0.6.7).
+     * :param cardNumber: the card number, or ``null``.
+     * :returns: the last four digits, or ``"****"`` when the value is absent or too short.
+     */
+    private static String maskedTail(String cardNumber) {
+        if (cardNumber == null || cardNumber.length() < 4) {
+            return "****";
+        }
+        return cardNumber.substring(cardNumber.length() - 4);
+    }
+
+    /**
      * :purpose: Determine whether the submitted card data matches the current card,
      *  reproducing the ``COCRDUPC`` no-change short-circuit (the embossed name is
      *  compared case-insensitively, mirroring the COBOL upper-case compare).
@@ -543,10 +628,14 @@ public class CardService {
      *  all unchanged.
      */
     private boolean isUnchanged(CardUpdateRequestDto request, Card card) {
+        // An omitted CVV cannot make an otherwise identical submission look different: the
+        // stored value is retained rather than cleared, so there is nothing to rewrite.
+        boolean cvvUnchanged = request.getCardCvvCd() == null
+                || equalsExact(request.getCardCvvCd(), card.getCardCvvCd());
         return equalsIgnoreCase(request.getCardEmbossedName(), card.getCardEmbossedName())
                 && equalsExact(request.getCardActiveStatus(), card.getCardActiveStatus())
                 && equalsExact(request.getCardExpiraionDate(), card.getCardExpiraionDate())
-                && equalsExact(request.getCardCvvCd(), card.getCardCvvCd());
+                && cvvUnchanged;
     }
 
     /**
@@ -566,8 +655,9 @@ public class CardService {
     /**
      * :purpose: Determine whether the re-read card differs from the display-time snapshot
      *  carried in the request (``COCRDUPC 9300-CHECK-CHANGE-IN-REC``), signalling that the
-     *  record was changed by someone else since it was displayed. Six fields are compared:
-     *  CVV (``CCUP-OLD-CVV-CD``), embossed name (``CCUP-OLD-CRDNAME``, case-insensitive to
+     *  record was changed by someone else since it was displayed. Five fields are always
+     *  compared and the CVV (``CCUP-OLD-CVV-CD``) is compared only when the caller supplied
+     *  it, since no read path returns it: embossed name (``CCUP-OLD-CRDNAME``, case-insensitive to
      *  mirror the COBOL upper-case ``INSPECT ... CONVERTING`` compare), expiry year
      *  (``CARD-EXPIRAION-DATE(1:4)``), expiry month (``(6:2)``), expiry day (``(9:2)``) and
      *  active status (``CCUP-OLD-CRDSTCD``).
@@ -578,8 +668,16 @@ public class CardService {
     private boolean hasDataChangedSinceSnapshot(CardUpdateRequestDto request, Card card) {
         String snapshotExpiry = request.getOldCardExpiraionDate();
         String currentExpiry = card.getCardExpiraionDate();
+        // The CVV participates ONLY when the caller actually supplied it. COCRDUPC compared
+        // CCUP-OLD-CVV-CD because the 3270 map displayed the CVV; here the CVV is encrypted at
+        // rest and deliberately absent from every read path (AAP 0.6.7), so no client can echo
+        // it back. Requiring it made every snapshot-bearing update report a change that had not
+        // happened. The three remaining fields are exactly the ones a client can observe, and
+        // the @Version token plus the row write lock cover the rest.
+        boolean cvvMatches = request.getOldCardCvvCd() == null
+                || equalsExact(request.getOldCardCvvCd(), card.getCardCvvCd());
         boolean matches =
-                equalsExact(request.getOldCardCvvCd(), card.getCardCvvCd())
+                cvvMatches
                         && equalsIgnoreCase(request.getOldCardEmbossedName(),
                                 card.getCardEmbossedName())
                         && equalsExact(slice(snapshotExpiry, 0, 4), slice(currentExpiry, 0, 4))

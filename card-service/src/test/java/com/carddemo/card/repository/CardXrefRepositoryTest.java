@@ -42,7 +42,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * :purpose: Persistence-slice tests for {@link CardXrefRepository}, exercising the
  *  card-to-customer-to-account cross-reference (legacy ``CVACT03Y`` / ``CXACAIX``)
  *  lookups that enforce referential integrity during transaction validation.
- * :output: Confirms account-scoped ``findByXrefAcctId`` (present / empty) and
+ * :output: Confirms account-scoped ``findFirstByXrefAcctIdOrderByXrefCardNumAsc`` (present / empty) and
  *  primary-key ``findById`` round-trip against a real ``postgres:18`` Testcontainer.
  */
 @DataJpaTest(showSql = false, properties = {
@@ -165,15 +165,15 @@ class CardXrefRepositoryTest {
      *  known account and does not leak another account's row.
      */
     @Test
-    @DisplayName("findByXrefAcctId returns the CXACAIX cross-reference for a known account id")
-    void findByXrefAcctIdReturnsMatchForKnownAccount() {
+    @DisplayName("findFirstByXrefAcctIdOrderByXrefCardNumAsc returns the CXACAIX cross-reference for a known account id")
+    void findFirstByXrefAcctIdOrderByXrefCardNumAscReturnsMatchForKnownAccount() {
         seedParents(CUST_1, ACCT_1);
         seedParents(CUST_2, ACCT_2);
         cardXrefRepository.saveAndFlush(newCardXref(CARD_1, CUST_1, ACCT_1));
         cardXrefRepository.saveAndFlush(newCardXref(CARD_2, CUST_2, ACCT_2));
         entityManager.clear();
 
-        Optional<CardXref> found = cardXrefRepository.findByXrefAcctId(ACCT_1);
+        Optional<CardXref> found = cardXrefRepository.findFirstByXrefAcctIdOrderByXrefCardNumAsc(ACCT_1);
 
         assertThat(found).isPresent();
         CardXref match = found.orElseThrow();
@@ -187,13 +187,13 @@ class CardXrefRepositoryTest {
      *  ``NOTFND`` referential-integrity failure (reject code 100 context).
      */
     @Test
-    @DisplayName("findByXrefAcctId returns Optional.empty() for an unknown account id")
-    void findByXrefAcctIdReturnsEmptyForUnknownAccount() {
+    @DisplayName("findFirstByXrefAcctIdOrderByXrefCardNumAsc returns Optional.empty() for an unknown account id")
+    void findFirstByXrefAcctIdOrderByXrefCardNumAscReturnsEmptyForUnknownAccount() {
         seedParents(CUST_1, ACCT_1);
         cardXrefRepository.saveAndFlush(newCardXref(CARD_1, CUST_1, ACCT_1));
         entityManager.clear();
 
-        Optional<CardXref> found = cardXrefRepository.findByXrefAcctId(UNKNOWN_ACCT_ID);
+        Optional<CardXref> found = cardXrefRepository.findFirstByXrefAcctIdOrderByXrefCardNumAsc(UNKNOWN_ACCT_ID);
 
         assertThat(found).isEmpty();
     }

@@ -33,12 +33,19 @@ import com.carddemo.common.domain.CardXref;
 public interface CardXrefRepository extends JpaRepository<CardXref, String> {
 
     /**
-     * :purpose: Resolve the card cross-reference for an account through the ``CXACAIX``
-     *     alternate-index access path (a single read-by-account, not a browse loop).
-     * :param acctId: the account id used as the alternate-index key.
-     * :output: an ``Optional`` holding the matching cross-reference, or an empty
-     *     ``Optional`` when no cross-reference exists for the account (the legacy
-     *     ``NOTFND`` / referential-integrity failure, reject code 100 context).
+     * :purpose: Retrieve the FIRST card cross-reference of an account through the ``CXACAIX``
+     *     alternate index, in ascending card-number order.
+     * :param acctId: the owning account identifier used as the alternate-index key.
+     * :output: the first matching cross-reference, or an empty ``Optional`` when no
+     *     cross-reference exists for the account (the legacy ``NOTFND`` short-circuit that
+     *     fails the referential-integrity check).
+     * :note: ``CXACAIX`` is a NON-UNIQUE alternate index: an account legitimately owns
+     *     several cards (``COCRDLIC`` pages seven per screen), and the programs that resolve
+     *     an account through it -- ``COACTVWC``/``COACTUPC`` ``9200-GETCARDXREF-BYACCT``,
+     *     ``COTRN02C`` and ``COBIL00C`` -- issue ``STARTBR``/``READNEXT`` and use the FIRST
+     *     record returned. A finder that demanded a unique result therefore failed with
+     *     "Query did not return a unique result" for a perfectly normal account. The
+     *     ordering makes the choice deterministic, which the VSAM key order also was.
      */
-    Optional<CardXref> findByXrefAcctId(Long acctId);
+    Optional<CardXref> findFirstByXrefAcctIdOrderByXrefCardNumAsc(Long acctId);
 }

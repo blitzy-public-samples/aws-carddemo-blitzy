@@ -41,7 +41,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * :purpose: Testcontainers-backed persistence integration test for
  *     {@link CardXrefRepository}, covering the VSAM ``CXACAIX`` alternate
  *     index -> PostgreSQL ``card_xref`` migration. Verifies the custom
- *     ``findByXrefAcctId`` derived query for known and unknown account ids
+ *     ``findFirstByXrefAcctIdOrderByXrefCardNumAsc`` derived query for known and unknown account ids
  *     and a round-trip by the card-number primary key.
  * :output: JUnit 5 assertions; no console output. The card number is a
  *     synthetic test PAN and is never logged.
@@ -119,13 +119,13 @@ class CardXrefRepositoryIT {
     }
 
     @Test
-    @DisplayName("findByXrefAcctId returns the CXACAIX cross-reference for a known account id")
-    void findByXrefAcctIdReturnsMatchForKnownAccount() {
+    @DisplayName("findFirstByXrefAcctIdOrderByXrefCardNumAsc returns the CXACAIX cross-reference for a known account id")
+    void findFirstByXrefAcctIdOrderByXrefCardNumAscReturnsMatchForKnownAccount() {
         seedReferentialParents();
         cardXrefRepository.saveAndFlush(newCardXref());
         entityManager.clear();
 
-        Optional<CardXref> found = cardXrefRepository.findByXrefAcctId(ACCT_ID);
+        Optional<CardXref> found = cardXrefRepository.findFirstByXrefAcctIdOrderByXrefCardNumAsc(ACCT_ID);
 
         assertThat(found).isPresent();
         assertThat(found.get().getXrefCardNum()).isEqualTo(CARD_NUM);
@@ -134,13 +134,13 @@ class CardXrefRepositoryIT {
     }
 
     @Test
-    @DisplayName("findByXrefAcctId returns Optional.empty() for an unknown account id")
-    void findByXrefAcctIdReturnsEmptyForUnknownAccount() {
+    @DisplayName("findFirstByXrefAcctIdOrderByXrefCardNumAsc returns Optional.empty() for an unknown account id")
+    void findFirstByXrefAcctIdOrderByXrefCardNumAscReturnsEmptyForUnknownAccount() {
         seedReferentialParents();
         cardXrefRepository.saveAndFlush(newCardXref());
         entityManager.clear();
 
-        Optional<CardXref> found = cardXrefRepository.findByXrefAcctId(UNKNOWN_ACCT_ID);
+        Optional<CardXref> found = cardXrefRepository.findFirstByXrefAcctIdOrderByXrefCardNumAsc(UNKNOWN_ACCT_ID);
 
         assertThat(found).isEmpty();
     }

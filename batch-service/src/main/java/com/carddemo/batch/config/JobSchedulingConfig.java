@@ -359,7 +359,41 @@ public class JobSchedulingConfig {
         }
     }
 
-    private JobExecution launch(Job job, JobParameters businessParameters) throws JobExecutionException {
+    /**
+     * :purpose: Submit a job whose run changes persistent business state, so its identity
+     *     derives from the business parameters alone and re-submitting an already-completed
+     *     instance is refused exactly as JES refused a duplicate job.
+     * :param job: the batch job to submit.
+     * :param businessParameters: the parameters assembled by the calling ``launch*`` method.
+     * :returns: the {@link JobExecution} returned by the asynchronous launcher.
+     * :throws JobExecutionException: if the launcher cannot start the job.
+     */
+    private JobExecution launch(Job job, JobParameters businessParameters)
+            throws JobExecutionException {
+        return launch(job, businessParameters, false);
+    }
+
+    /**
+     * :purpose: Submit a job that only reads business data and (re)writes its own output, so
+     *     every submission is a run in its own right. A print or read request is a repeatable
+     *     operation on the mainframe: ``CORPT00C`` writes a TDQ 'JOBS' record and JES runs the
+     *     stream on EVERY request, so an operator may print the monthly report as often as
+     *     they like. Deriving identity from the business parameters alone made the report
+     *     window itself the instance key, which let the monthly report be printed once per
+     *     calendar month -- and never again -- so the whole workflow became unusable after its
+     *     first run [app/cbl/CORPT00C.cbl, app/proc/TRANREPT.prc].
+     * :param job: the batch job to submit.
+     * :param businessParameters: the parameters assembled by the calling ``launch*`` method.
+     * :returns: the {@link JobExecution} returned by the asynchronous launcher.
+     * :throws JobExecutionException: if the launcher cannot start the job.
+     */
+    private JobExecution launchRepeatable(Job job, JobParameters businessParameters)
+            throws JobExecutionException {
+        return launch(job, businessParameters, true);
+    }
+
+    private JobExecution launch(Job job, JobParameters businessParameters, boolean repeatable)
+            throws JobExecutionException {
         // Remember whether an id was already in scope: when it was, it belongs to the
         // CorrelationIdFilter, which clears it at the end of the request. When it was not,
         // this method seeded it and must clear it again, because the launching thread is a
@@ -372,12 +406,13 @@ public class JobSchedulingConfig {
         try {
             JobParameters parameters = new JobParametersBuilder(businessParameters)
                     .addString(CorrelationIdContext.CORRELATION_ID_KEY, correlationId, false)
-                    // Non-identifying: job identity must derive from the business
-                    // parameters alone, so re-submitting an already-completed instance is
-                    // refused exactly as JES refused a duplicate job. An identifying
-                    // run.id would silently make every submission a new instance and
-                    // duplicate detection could never fire.
-                    .addString(RUN_ID_KEY, UUID.randomUUID().toString(), false)
+                    // For a state-changing run the id is NON-identifying, so job identity
+                    // derives from the business parameters alone and re-submitting an
+                    // already-completed instance is refused exactly as JES refused a duplicate
+                    // job. For a repeatable read/print run it is IDENTIFYING, so each
+                    // submission is its own JobInstance and the run can be repeated -- which is
+                    // what the TDQ 'JOBS' hand-off does on every CORPT00C request.
+                    .addString(RUN_ID_KEY, UUID.randomUUID().toString(), repeatable)
                     .toJobParameters();
             return this.asyncJobLauncher.run(job, parameters);
         } finally {
@@ -436,7 +471,7 @@ public class JobSchedulingConfig {
                 .addString("endDate", endDate)
                 .addString(REPORT_FILE_KEY, reportFile)
                 .toJobParameters();
-        return launch(transactionDetailReportJob, businessParameters);
+        return launchRepeatable(transactionDetailReportJob, businessParameters);
     }
 
     /**
@@ -480,7 +515,7 @@ public class JobSchedulingConfig {
         JobParameters businessParameters = new JobParametersBuilder()
                 .addString("outputFile", outputFile)
                 .toJobParameters();
-        return launch(categoryBalanceReportJob, businessParameters);
+        return launchRepeatable(categoryBalanceReportJob, businessParameters);
     }
 
     /**
@@ -520,7 +555,7 @@ public class JobSchedulingConfig {
         JobParameters businessParameters = new JobParametersBuilder()
                 .addString(INPUT_FILE_KEY, inputFile)
                 .toJobParameters();
-        return launch(dailyTransactionValidationJob, businessParameters);
+        return launchRepeatable(dailyTransactionValidationJob, businessParameters);
     }
 
     /**
@@ -548,7 +583,7 @@ public class JobSchedulingConfig {
         JobParameters businessParameters = new JobParametersBuilder()
                 .addString(OUTPUT_FILE_KEY, outputFile)
                 .toJobParameters();
-        return launch(accountReadJob, businessParameters);
+        return launchRepeatable(accountReadJob, businessParameters);
     }
 
     /**
@@ -573,7 +608,7 @@ public class JobSchedulingConfig {
         JobParameters businessParameters = new JobParametersBuilder()
                 .addString(OUTPUT_FILE_KEY, outputFile)
                 .toJobParameters();
-        return launch(cardReadJob, businessParameters);
+        return launchRepeatable(cardReadJob, businessParameters);
     }
 
     /**
@@ -599,7 +634,7 @@ public class JobSchedulingConfig {
         JobParameters businessParameters = new JobParametersBuilder()
                 .addString(OUTPUT_FILE_KEY, outputFile)
                 .toJobParameters();
-        return launch(cardXrefReadJob, businessParameters);
+        return launchRepeatable(cardXrefReadJob, businessParameters);
     }
 
     /**
@@ -625,7 +660,7 @@ public class JobSchedulingConfig {
         JobParameters businessParameters = new JobParametersBuilder()
                 .addString(OUTPUT_FILE_KEY, outputFile)
                 .toJobParameters();
-        return launch(customerReadJob, businessParameters);
+        return launchRepeatable(customerReadJob, businessParameters);
     }
 
     /**
@@ -651,6 +686,6 @@ public class JobSchedulingConfig {
         JobParameters businessParameters = new JobParametersBuilder()
                 .addString(OUTPUT_FILE_KEY, outputFile)
                 .toJobParameters();
-        return launch(combineTransactionsJob, businessParameters);
+        return launchRepeatable(combineTransactionsJob, businessParameters);
     }
 }

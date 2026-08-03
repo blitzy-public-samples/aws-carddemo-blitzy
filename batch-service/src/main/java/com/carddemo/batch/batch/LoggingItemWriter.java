@@ -36,9 +36,12 @@ import java.util.concurrent.atomic.AtomicLong;
  *  and the number of records seen — never the contents of any item, so no card
  *  number, CVV, SSN, government id, customer name or balance reaches the log
  *  stream (PII safety).
- * :note: Not a Spring bean (no ``@Component`` / ``@StepScope``): the sibling
- *  ``config`` package instantiates one writer per dump job via
- *  ``new LoggingItemWriter<>(label)`` and wires it into the ``Job`` / ``Step``.
+ * :note: The class carries no annotation of its own: the sibling ``config``
+ *  package declares one writer per consuming step as a ``@Bean @StepScope``
+ *  factory method returning ``new LoggingItemWriter<>(label)``. The step scope is
+ *  part of the contract, because the running total below belongs to one step
+ *  execution: a single instance shared by a singleton step accumulated across
+ *  every execution and interleaved between concurrent ones.
  * :note: Structured JSON logging and the ``correlationId`` MDC key are supplied
  *  by the module's ``logback-spring.xml`` together with
  *  {@link CorrelationIdContext}; this writer only ensures a correlation id is
@@ -61,9 +64,10 @@ public class LoggingItemWriter<T> implements ItemWriter<T> {
     private final String label;
 
     /**
-     * Cumulative count of records written across every chunk of the step,
-     * mirroring the running record count the COBOL dump implicitly walked
-     * through.
+     * Cumulative count of records written across every chunk of ONE step
+     * execution, mirroring the running record count the COBOL dump implicitly
+     * walked through. Its per-execution meaning depends on the writer being
+     * step-scoped (see the class note).
      */
     private final AtomicLong runningTotal = new AtomicLong(0);
 
