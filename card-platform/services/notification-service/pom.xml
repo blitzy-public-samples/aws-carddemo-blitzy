@@ -1,0 +1,158 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Module descriptor for the CardDemo notification service.
+  Rationale for every version and exclusion: card-platform/docs/decision-log.md
+-->
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+
+  <modelVersion>4.0.0</modelVersion>
+
+  <!-- The aggregator sits two levels up. The services directory holds no build file of its own. -->
+  <parent>
+    <groupId>com.carddemo</groupId>
+    <artifactId>card-platform</artifactId>
+    <version>1.0.0-SNAPSHOT</version>
+    <relativePath>../../pom.xml</relativePath>
+  </parent>
+
+  <!-- The parent supplies the group and the version. -->
+  <artifactId>notification-service</artifactId>
+  <packaging>jar</packaging>
+
+  <name>CardDemo Notification Service</name>
+  <description>The notification service consumes posted transactions and fraud
+    assessments, maintains a card-keyed statement read model, renders cardholder
+    alerts, and serves one read-only history endpoint.</description>
+
+  <properties>
+    <!-- Compiler release for this module. The Spring Boot parent defaults it to 17. -->
+    <java.version>25</java.version>
+  </properties>
+
+  <!-- Every version below comes from the aggregator's dependency management. -->
+  <dependencies>
+
+    <!-- Shared libraries. No other service module appears in this list. -->
+    <dependency>
+      <groupId>com.carddemo</groupId>
+      <artifactId>event-contracts</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>com.carddemo</groupId>
+      <artifactId>cobol-compat</artifactId>
+    </dependency>
+
+    <!-- The read-only history endpoint, persistence, and bean constraints. -->
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-web</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-data-jpa</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-validation</artifactId>
+    </dependency>
+
+    <!-- Health and metrics endpoints for the container health check. -->
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-actuator</artifactId>
+    </dependency>
+
+    <!-- Consumer side: two listeners, manual acknowledgement, and dead-letter
+         routing. Spring Boot 4 ships Kafka auto-configuration in its own starter. -->
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-kafka</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>org.springframework.kafka</groupId>
+      <artifactId>spring-kafka</artifactId>
+    </dependency>
+
+    <!-- Database driver and schema migration. Flyway ships its PostgreSQL dialect
+         as a separate artifact. Spring Boot 4 ships Flyway auto-configuration
+         in its own starter. -->
+    <dependency>
+      <groupId>org.postgresql</groupId>
+      <artifactId>postgresql</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-flyway</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>org.flywaydb</groupId>
+      <artifactId>flyway-core</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>org.flywaydb</groupId>
+      <artifactId>flyway-database-postgresql</artifactId>
+    </dependency>
+
+    <!-- Exposes metrics for scraping and writes structured logs. -->
+    <dependency>
+      <groupId>io.micrometer</groupId>
+      <artifactId>micrometer-registry-prometheus</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>net.logstash.logback</groupId>
+      <artifactId>logstash-logback-encoder</artifactId>
+    </dependency>
+
+    <!-- Test scope: slice tests, an embedded broker, containers, and
+         asynchronous assertions. -->
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-test</artifactId>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.springframework.kafka</groupId>
+      <artifactId>spring-kafka-test</artifactId>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.testcontainers</groupId>
+      <artifactId>testcontainers</artifactId>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.testcontainers</groupId>
+      <artifactId>testcontainers-postgresql</artifactId>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.testcontainers</groupId>
+      <artifactId>testcontainers-kafka</artifactId>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.testcontainers</groupId>
+      <artifactId>testcontainers-junit-jupiter</artifactId>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.awaitility</groupId>
+      <artifactId>awaitility</artifactId>
+      <scope>test</scope>
+    </dependency>
+
+  </dependencies>
+
+  <build>
+    <plugins>
+      <!-- Repackages the module as an executable Java archive. The aggregator pins the version. -->
+      <plugin>
+        <groupId>org.springframework.boot</groupId>
+        <artifactId>spring-boot-maven-plugin</artifactId>
+      </plugin>
+    </plugins>
+  </build>
+
+</project>

@@ -1,0 +1,186 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Module descriptor for account-service. The service reads and updates accounts
+  and customers, and closes the billing cycle for one account.
+  Rationale for every choice in this file lives in card-platform/docs/decision-log.md.
+-->
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+
+  <!-- The aggregator sits two directory levels above this file. -->
+  <parent>
+    <groupId>com.carddemo</groupId>
+    <artifactId>card-platform</artifactId>
+    <version>1.0.0-SNAPSHOT</version>
+    <relativePath>../../pom.xml</relativePath>
+  </parent>
+
+  <artifactId>account-service</artifactId>
+  <packaging>jar</packaging>
+
+  <name>CardDemo Account Service</name>
+  <description>
+    Reads and updates accounts and customers, validates the submitted fields, and
+    closes the billing cycle for one account. Publishes an event when account state
+    changes. Consumes no event.
+  </description>
+
+  <!--
+    Language level. The Spring Boot parent sets java.version to 17, and this
+    override raises the compiler release to 25. Compiled classes carry class-file
+    major version 69.
+  -->
+  <properties>
+    <java.version>25</java.version>
+  </properties>
+
+  <dependencies>
+
+    <!--
+      Shared libraries. The aggregator manages both versions, and its enforcer
+      plugin rejects any com.carddemo service artifact added to this list.
+    -->
+    <dependency>
+      <groupId>com.carddemo</groupId>
+      <artifactId>event-contracts</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>com.carddemo</groupId>
+      <artifactId>cobol-compat</artifactId>
+    </dependency>
+
+    <!--
+      Web layer. The controllers answer four Representational State Transfer
+      endpoints and check bean constraints on every submitted field.
+    -->
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-web</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-validation</artifactId>
+    </dependency>
+
+    <!--
+      Persistence and schema migration. Flyway creates the eight tables of the
+      private account schema from three migration scripts. Only
+      spring-boot-starter-flyway supplies the Flyway auto-configuration;
+      flyway-core alone supplies none.
+    -->
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-data-jpa</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-flyway</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>org.flywaydb</groupId>
+      <artifactId>flyway-core</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>org.flywaydb</groupId>
+      <artifactId>flyway-database-postgresql</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>org.postgresql</groupId>
+      <artifactId>postgresql</artifactId>
+      <scope>runtime</scope>
+    </dependency>
+
+    <!--
+      Messaging. The outbox relay publishes account state-change events. Only
+      spring-boot-starter-kafka supplies the Kafka auto-configuration;
+      spring-kafka alone supplies none.
+    -->
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-kafka</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>org.springframework.kafka</groupId>
+      <artifactId>spring-kafka</artifactId>
+    </dependency>
+
+    <!--
+      Observability. Actuator serves health and metrics, Micrometer writes the
+      Prometheus endpoint, and the encoder writes each log line as JSON
+      (JavaScript Object Notation).
+    -->
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-actuator</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>io.micrometer</groupId>
+      <artifactId>micrometer-registry-prometheus</artifactId>
+    </dependency>
+    <!-- The one hand-pinned version in this file. -->
+    <dependency>
+      <groupId>net.logstash.logback</groupId>
+      <artifactId>logstash-logback-encoder</artifactId>
+      <version>9.0</version>
+    </dependency>
+
+    <!--
+      Test scope. Testcontainers 2.x names its modules with a testcontainers-
+      prefix; the un-prefixed identifiers do not exist at the managed version.
+    -->
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-test</artifactId>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-testcontainers</artifactId>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.springframework.kafka</groupId>
+      <artifactId>spring-kafka-test</artifactId>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.testcontainers</groupId>
+      <artifactId>testcontainers</artifactId>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.testcontainers</groupId>
+      <artifactId>testcontainers-postgresql</artifactId>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.testcontainers</groupId>
+      <artifactId>testcontainers-kafka</artifactId>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.testcontainers</groupId>
+      <artifactId>testcontainers-junit-jupiter</artifactId>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.awaitility</groupId>
+      <artifactId>awaitility</artifactId>
+      <scope>test</scope>
+    </dependency>
+
+  </dependencies>
+
+  <build>
+    <plugins>
+      <!-- Packaging. The aggregator pins this plugin version in pluginManagement. -->
+      <plugin>
+        <groupId>org.springframework.boot</groupId>
+        <artifactId>spring-boot-maven-plugin</artifactId>
+      </plugin>
+    </plugins>
+  </build>
+
+</project>

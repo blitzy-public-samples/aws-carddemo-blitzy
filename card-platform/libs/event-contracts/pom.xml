@@ -1,0 +1,69 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Shared library holding the five domain event records, their common envelope,
+  the five JSON Schema documents, and schema-validating serialization on both
+  ends. The six services read these contracts.
+
+  Rationale for every version and exclusion: card-platform/docs/decision-log.md
+-->
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+
+  <!-- The aggregator sits two levels up. libs/ holds no pom.xml of its own. -->
+  <parent>
+    <groupId>com.carddemo</groupId>
+    <artifactId>card-platform</artifactId>
+    <version>1.0.0-SNAPSHOT</version>
+    <relativePath>../../pom.xml</relativePath>
+  </parent>
+
+  <!-- groupId and version come from the parent. -->
+  <artifactId>event-contracts</artifactId>
+  <packaging>jar</packaging>
+
+  <name>event-contracts</name>
+  <description>The five domain event records, their shared envelope, their JSON Schema documents, and schema-validating serialization on both ends.</description>
+
+  <!-- Compiles this module at Java 25. -->
+  <properties>
+    <java.version>25</java.version>
+    <maven.compiler.release>25</maven.compiler.release>
+  </properties>
+
+  <!-- Versions come from the aggregator. Declare none here. -->
+  <dependencies>
+    <!-- Binds the event records and the envelope to JSON. -->
+    <dependency>
+      <groupId>tools.jackson.core</groupId>
+      <artifactId>jackson-databind</artifactId>
+    </dependency>
+
+    <!-- Validates payloads against JSON Schema Draft 2020-12. -->
+    <dependency>
+      <groupId>com.networknt</groupId>
+      <artifactId>json-schema-validator</artifactId>
+    </dependency>
+
+    <!-- kafka-clients supplies the Serializer and Deserializer interfaces. -->
+    <dependency>
+      <groupId>org.apache.kafka</groupId>
+      <artifactId>kafka-clients</artifactId>
+    </dependency>
+
+    <!-- Runs SchemaBackwardCompatibilityTest and EventRoundTripTest. -->
+    <dependency>
+      <groupId>org.junit.jupiter</groupId>
+      <artifactId>junit-jupiter</artifactId>
+      <scope>test</scope>
+    </dependency>
+
+    <!-- Adds the assertion and test utility surface. -->
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-test</artifactId>
+      <scope>test</scope>
+    </dependency>
+  </dependencies>
+</project>

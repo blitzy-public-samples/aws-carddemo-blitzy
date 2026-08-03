@@ -1,0 +1,207 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+
+  <!-- Rationale for every version, exclusion, and deviation: card-platform/docs/decision-log.md -->
+
+  <!-- The aggregator sits one level up. equivalence-tests is a direct child of card-platform. -->
+  <parent>
+    <groupId>com.carddemo</groupId>
+    <artifactId>card-platform</artifactId>
+    <version>1.0.0-SNAPSHOT</version>
+    <relativePath>../pom.xml</relativePath>
+  </parent>
+
+  <artifactId>equivalence-tests</artifactId>
+  <packaging>jar</packaging>
+
+  <name>CardDemo Equivalence Tests</name>
+  <description>
+    Replays the checked-in CardDemo sample fixtures through the six services, then compares
+    balances, category balances, decline reasons, and validation messages against the
+    documented COBOL business rules. Failsafe runs every case during mvn verify.
+  </description>
+
+  <!-- The framework parent defaults the compiler release to 17. These two properties pin release 25. -->
+  <properties>
+    <java.version>25</java.version>
+    <maven.compiler.release>25</maven.compiler.release>
+  </properties>
+
+  <dependencies>
+
+    <!-- Shared libraries. The aggregator's dependency management supplies both versions. -->
+    <dependency>
+      <groupId>com.carddemo</groupId>
+      <artifactId>event-contracts</artifactId>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>com.carddemo</groupId>
+      <artifactId>cobol-compat</artifactId>
+      <scope>test</scope>
+    </dependency>
+
+    <!-- The six services. The aggregator does not manage them, so each names ${project.version}. -->
+    <dependency>
+      <groupId>com.carddemo</groupId>
+      <artifactId>authorization-service</artifactId>
+      <version>${project.version}</version>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>com.carddemo</groupId>
+      <artifactId>ledger-posting-service</artifactId>
+      <version>${project.version}</version>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>com.carddemo</groupId>
+      <artifactId>fraud-detection-service</artifactId>
+      <version>${project.version}</version>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>com.carddemo</groupId>
+      <artifactId>notification-service</artifactId>
+      <version>${project.version}</version>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>com.carddemo</groupId>
+      <artifactId>account-service</artifactId>
+      <version>${project.version}</version>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>com.carddemo</groupId>
+      <artifactId>card-service</artifactId>
+      <version>${project.version}</version>
+      <scope>test</scope>
+    </dependency>
+
+    <!-- Test infrastructure. Versions come from the Spring Boot bill of materials the aggregator imports. -->
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-test</artifactId>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-testcontainers</artifactId>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.springframework.kafka</groupId>
+      <artifactId>spring-kafka-test</artifactId>
+      <scope>test</scope>
+    </dependency>
+
+    <!-- Testcontainers 2.x publishes each module under a testcontainers-prefixed artifact identifier. -->
+    <dependency>
+      <groupId>org.testcontainers</groupId>
+      <artifactId>testcontainers</artifactId>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.testcontainers</groupId>
+      <artifactId>testcontainers-postgresql</artifactId>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.testcontainers</groupId>
+      <artifactId>testcontainers-kafka</artifactId>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.testcontainers</groupId>
+      <artifactId>testcontainers-junit-jupiter</artifactId>
+      <scope>test</scope>
+    </dependency>
+
+    <!-- Test framework and the wait helper for event-driven assertions. -->
+    <dependency>
+      <groupId>org.junit.jupiter</groupId>
+      <artifactId>junit-jupiter</artifactId>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.awaitility</groupId>
+      <artifactId>awaitility</artifactId>
+      <scope>test</scope>
+    </dependency>
+
+  </dependencies>
+
+  <build>
+    <plugins>
+
+      <!-- This module declares all nine platform modules at test scope, which the inherited
+           bannedDependencies rule rejects. Matching the identifier enforce-platform-rules unbinds
+           that execution here. enforce-toolchain keeps the Maven and Java version checks. -->
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-enforcer-plugin</artifactId>
+        <executions>
+          <execution>
+            <id>enforce-platform-rules</id>
+            <phase>none</phase>
+          </execution>
+          <execution>
+            <id>enforce-toolchain</id>
+            <phase>validate</phase>
+            <goals>
+              <goal>enforce</goal>
+            </goals>
+            <configuration>
+              <fail>true</fail>
+              <rules combine.self="override">
+                <requireMavenVersion>
+                  <version>[3.9.16,4.0.0)</version>
+                </requireMavenVersion>
+                <requireJavaVersion>
+                  <version>[25,)</version>
+                </requireJavaVersion>
+              </rules>
+            </configuration>
+          </execution>
+        </executions>
+      </plugin>
+
+      <!-- Surefire leaves the *EquivalenceTest classes to Failsafe. -->
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-surefire-plugin</artifactId>
+        <configuration>
+          <excludes>
+            <exclude>**/*EquivalenceTest.java</exclude>
+          </excludes>
+        </configuration>
+      </plugin>
+
+      <!-- Failsafe runs the *EquivalenceTest classes at integration-test and fails the build at verify. -->
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-failsafe-plugin</artifactId>
+        <configuration>
+          <includes>
+            <include>**/*EquivalenceTest.java</include>
+          </includes>
+        </configuration>
+        <executions>
+          <execution>
+            <id>run-equivalence-suite</id>
+            <goals>
+              <goal>integration-test</goal>
+              <goal>verify</goal>
+            </goals>
+          </execution>
+        </executions>
+      </plugin>
+
+    </plugins>
+  </build>
+
+</project>

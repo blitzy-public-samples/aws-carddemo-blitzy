@@ -1,0 +1,197 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  card-service: the card list, card detail and card update endpoints of the
+  modernized CardDemo platform. Replaces three Customer Information Control
+  System (CICS) transactions, driven by COCRDLIC, COCRDSLC and COCRDUPC.
+
+  Rationale for every version and exclusion: card-platform/docs/decision-log.md
+-->
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+
+  <!-- The parent sits two levels up. The services directory holds no POM of its own. -->
+  <parent>
+    <groupId>com.carddemo</groupId>
+    <artifactId>card-platform</artifactId>
+    <version>1.0.0-SNAPSHOT</version>
+    <relativePath>../../pom.xml</relativePath>
+  </parent>
+
+  <!-- groupId and version come from the parent. -->
+  <artifactId>card-service</artifactId>
+  <packaging>jar</packaging>
+
+  <name>card-service</name>
+  <description>
+    Card list, card detail and card update over Representational State Transfer
+    (REST). Owns the card table, a card cross-reference replica, and the outbox
+    and processed-event tables. Publishes a card state-change event on mutation.
+  </description>
+
+  <properties>
+    <!-- Language level. The Spring Boot parent defaults maven.compiler.release
+         to 17. A module that omits this property compiles at release 17 with no
+         warning and no failure. Class-file major version must read 69. -->
+    <java.version>25</java.version>
+  </properties>
+
+  <dependencies>
+
+    <!-- ==================================================================== -->
+    <!-- Platform libraries. This module depends on these two and on no other  -->
+    <!-- module under services. Versions come from the aggregator.             -->
+    <!-- ==================================================================== -->
+    <dependency>
+      <groupId>com.carddemo</groupId>
+      <artifactId>event-contracts</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>com.carddemo</groupId>
+      <artifactId>cobol-compat</artifactId>
+    </dependency>
+
+    <!-- ==================================================================== -->
+    <!-- Web surface. Three endpoints plus the bean constraints translated     -->
+    <!-- from the validation paragraphs of COCRDUPC.                           -->
+    <!-- ==================================================================== -->
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-web</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-validation</artifactId>
+    </dependency>
+
+    <!-- ==================================================================== -->
+    <!-- Persistence. Flyway owns every schema object and JPA validates        -->
+    <!-- against it.                                                           -->
+    <!-- ==================================================================== -->
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-data-jpa</artifactId>
+    </dependency>
+    <!-- Spring Boot 4 splits auto-configuration into one module per technology.
+         flyway-core on its own registers no Flyway auto-configuration, so the
+         migrations never run and JPA schema validation then fails on a missing
+         table. The starter registers it. -->
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-flyway</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>org.flywaydb</groupId>
+      <artifactId>flyway-core</artifactId>
+    </dependency>
+    <!-- Dialect module. The current Flyway line ships PostgreSQL support separately. -->
+    <dependency>
+      <groupId>org.flywaydb</groupId>
+      <artifactId>flyway-database-postgresql</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>org.postgresql</groupId>
+      <artifactId>postgresql</artifactId>
+      <scope>runtime</scope>
+    </dependency>
+
+    <!-- ==================================================================== -->
+    <!-- Messaging. Producer for the card state-change event published on      -->
+    <!-- mutation.                                                             -->
+    <!-- ==================================================================== -->
+    <!-- spring-kafka on its own registers no Kafka auto-configuration, so there
+         is no KafkaTemplate bean and every spring.kafka property is ignored.
+         The starter registers it. -->
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-kafka</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>org.springframework.kafka</groupId>
+      <artifactId>spring-kafka</artifactId>
+    </dependency>
+
+    <!-- ==================================================================== -->
+    <!-- Observability. Health and metrics endpoints, counters and timers,     -->
+    <!-- and log output in JavaScript Object Notation.                         -->
+    <!-- ==================================================================== -->
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-actuator</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>io.micrometer</groupId>
+      <artifactId>micrometer-registry-prometheus</artifactId>
+      <scope>runtime</scope>
+    </dependency>
+    <dependency>
+      <groupId>net.logstash.logback</groupId>
+      <artifactId>logstash-logback-encoder</artifactId>
+    </dependency>
+
+    <!-- ==================================================================== -->
+    <!-- Test scope.                                                           -->
+    <!-- ==================================================================== -->
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-test</artifactId>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.springframework.kafka</groupId>
+      <artifactId>spring-kafka-test</artifactId>
+      <scope>test</scope>
+    </dependency>
+    <!-- Binds a Testcontainers container to a Spring datasource or broker
+         through a service connection. -->
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-testcontainers</artifactId>
+      <scope>test</scope>
+    </dependency>
+    <!-- Testcontainers 2.x artifact identifiers carry a testcontainers- prefix.
+         The un-prefixed postgresql, kafka and junit-jupiter identifiers do not
+         exist at 2.0.5, and a version-less declaration of one of them fails the
+         build with a missing-version error. -->
+    <dependency>
+      <groupId>org.testcontainers</groupId>
+      <artifactId>testcontainers</artifactId>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.testcontainers</groupId>
+      <artifactId>testcontainers-postgresql</artifactId>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.testcontainers</groupId>
+      <artifactId>testcontainers-kafka</artifactId>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.testcontainers</groupId>
+      <artifactId>testcontainers-junit-jupiter</artifactId>
+      <scope>test</scope>
+    </dependency>
+    <!-- Waits for an asynchronous publish to land in a consumer test. -->
+    <dependency>
+      <groupId>org.awaitility</groupId>
+      <artifactId>awaitility</artifactId>
+      <scope>test</scope>
+    </dependency>
+
+  </dependencies>
+
+  <build>
+    <plugins>
+      <!-- The aggregator pins every plugin version under pluginManagement. The
+           declaration below activates executable-JAR packaging and nothing else. -->
+      <plugin>
+        <groupId>org.springframework.boot</groupId>
+        <artifactId>spring-boot-maven-plugin</artifactId>
+      </plugin>
+    </plugins>
+  </build>
+
+</project>
