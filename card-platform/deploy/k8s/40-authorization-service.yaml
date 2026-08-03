@@ -1,0 +1,128 @@
+# Deployment and Service for the authorization service, the one service a
+# client calls. The service writes the authorization decision, and no other
+# service writes it. No listener runs here, and no consumer group appears.
+#
+# Architecture before and after: card-platform/docs/architecture-before-after.md
+# Rationale for every choice in this folder: card-platform/docs/decision-log.md
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: authorization-service
+  namespace: carddemo
+  labels:
+    app.kubernetes.io/name: authorization-service
+    app.kubernetes.io/component: authorization
+    app.kubernetes.io/part-of: card-platform
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: authorization-service
+      app.kubernetes.io/part-of: card-platform
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: authorization-service
+        app.kubernetes.io/component: authorization
+        # The NetworkPolicy in 10-kafka.yaml keys on the label below.
+        app.kubernetes.io/part-of: card-platform
+    spec:
+      automountServiceAccountToken: false
+      # Account 10001 owns /app in the image. 00-namespace.yaml refuses root.
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: authorization-service
+          # Built from services/authorization-service/Dockerfile.
+          image: carddemo/authorization-service:1.0.0
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+          ports:
+            # 8080 carries the Representational State Transfer (REST) surface,
+            # and the Service below targets it. 9080 carries /actuator and
+            # matches MANAGEMENT_PORT in 30-configmap.yaml.
+            - name: http
+              containerPort: 8080
+            - name: management
+              containerPort: 9080
+          envFrom:
+            # Broker address, topic names, service addresses and log levels.
+            - configMapRef:
+                name: carddemo-config
+            # Datasource username and password. Neither value appears here.
+            - secretRef:
+                name: carddemo-secret
+          # The schema this service owns. 30-configmap.yaml holds the value.
+          env:
+            - name: SPRING_FLYWAY_SCHEMAS
+              valueFrom:
+                configMapKeyRef:
+                  name: carddemo-config
+                  key: AUTHORIZATION_DB_SCHEMA
+            - name: SPRING_JPA_PROPERTIES_HIBERNATE_DEFAULT_SCHEMA
+              valueFrom:
+                configMapKeyRef:
+                  name: carddemo-config
+                  key: AUTHORIZATION_DB_SCHEMA
+          # Both probes read /actuator/health on the management port. Port
+          # 8080 answers no management request. Readiness allows time for
+          # the Flyway migration this service runs at startup.
+          readinessProbe:
+            httpGet:
+              path: /actuator/health
+              port: management
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 12
+          livenessProbe:
+            httpGet:
+              path: /actuator/health
+              port: management
+            initialDelaySeconds: 90
+            periodSeconds: 20
+            timeoutSeconds: 5
+            failureThreshold: 6
+          # The image caps the heap at 75 percent of the limit below.
+          resources:
+            requests:
+              cpu: 250m
+              memory: 512Mi
+            limits:
+              cpu: "1"
+              memory: 1Gi
+---
+# Pods reach the service at authorization-service:8080, a short name the
+# Domain Name System (DNS) resolves. /actuator answers on 9080 alone.
+#
+# External reach. Host port 8081 matches AUTHORIZATION_PORT in
+# card-platform/.env.example:
+#   kubectl -n carddemo port-forward svc/authorization-service 8081:8080
+apiVersion: v1
+kind: Service
+metadata:
+  name: authorization-service
+  namespace: carddemo
+  labels:
+    app.kubernetes.io/name: authorization-service
+    app.kubernetes.io/component: authorization
+    app.kubernetes.io/part-of: card-platform
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: authorization-service
+    app.kubernetes.io/part-of: card-platform
+  ports:
+    - name: http
+      port: 8080
+      targetPort: 8080
+      protocol: TCP
