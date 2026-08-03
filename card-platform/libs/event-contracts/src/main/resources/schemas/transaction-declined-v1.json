@@ -1,0 +1,100 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://carddemo.example.com/schemas/transaction-declined-v1.json",
+  "title": "TransactionDeclined",
+  "description": "One declined authorization call publishes one TransactionDeclined event. Six payload fields name the attempt and the reason it failed, shaped after the 80-byte validation trailer at app/cbl/CBTRN02C.cbl:L180-L182 and the 350-byte daily transaction record at app/cpy/CVTRA06Y.cpy. Five envelope fields precede them, and the envelope is additive in full, because no source record carries one. The serializer checks an event before it reaches a topic, and the deserializer checks it again; a failed check on arrival routes the message to the dead-letter topic. Publish and consume paths appear in card-platform/docs/event-flow.md, and rationale for every choice here lives in card-platform/docs/decision-log.md.",
+  "$comment": "app/cbl/CBTRN02C.cbl:L370-L378 runs the card cross-reference check first and the account check only while the reason code is still zero, so one event carries one code.",
+  "type": "object",
+  "properties": {
+    "eventId": {
+      "type": "string",
+      "format": "uuid",
+      "description": "The idempotency key. Each consumer records this identifier before it applies side effects. Additive. No source field exists.",
+      "examples": ["3f1d9c62-8b4e-4a17-9f0c-2d6a5e73b418"]
+    },
+    "eventType": {
+      "type": "string",
+      "const": "TransactionDeclined",
+      "description": "The routing discriminator. A consumer reads this field to learn which payload arrived. Additive. No source field exists.",
+      "examples": ["TransactionDeclined"]
+    },
+    "schemaVersion": {
+      "type": "integer",
+      "const": 1,
+      "description": "The contract version. The number matches the -v1 suffix in this file name, and a later version only adds fields. Additive. No source field exists.",
+      "examples": [1]
+    },
+    "occurredAt": {
+      "type": "string",
+      "format": "date-time",
+      "description": "The publish timestamp, in Coordinated Universal Time. The authorization service stamps it when it writes the event, and authorizedAt carries the time the authorization happened. Additive. No source field exists.",
+      "examples": ["2022-06-10T19:27:53.412Z"]
+    },
+    "aggregateId": {
+      "type": "string",
+      "pattern": "^[0-9]{11}$",
+      "description": "The account identifier, and always the Kafka message key. Width from XREF-ACCT-ID PIC 9(11) at app/cpy/CVACT03Y.cpy:L7. The payload field accountId carries the same value.",
+      "examples": ["00000000007"]
+    },
+    "transactionId": {
+      "type": "string",
+      "minLength": 16,
+      "maxLength": 16,
+      "description": "The transaction identifier, sixteen characters. From TRAN-ID PIC X(16) at app/cpy/CVTRA05Y.cpy:L5 and DALYTRAN-ID at app/cpy/CVTRA06Y.cpy:L5.",
+      "examples": ["0000000000683580"]
+    },
+    "accountId": {
+      "type": "string",
+      "pattern": "^[0-9]{11}$",
+      "description": "The account identifier, eleven digits. From XREF-ACCT-ID PIC 9(11) at app/cpy/CVACT03Y.cpy:L7. A consumer maps this field onto its own account column, and the envelope field aggregateId carries the same value.",
+      "examples": ["00000000007"]
+    },
+    "declineReasonCode": {
+      "type": "string",
+      "enum": ["0100", "0101", "0102", "0103"],
+      "description": "The reject reason code, four digits zero-padded to the width the source writes. From WS-VALIDATION-FAIL-REASON PIC 9(04) at app/cbl/CBTRN02C.cbl:L181. These four values are the whole set: 0100 at app/cbl/CBTRN02C.cbl:L385, 0101 at L397, 0102 at L410, and 0103 at L417. Any other code fails validation, and the message routes to the dead-letter topic.",
+      "examples": ["0102"]
+    },
+    "declineReasonDescription": {
+      "type": "string",
+      "maxLength": 76,
+      "enum": [
+        "INVALID CARD NUMBER FOUND",
+        "ACCOUNT RECORD NOT FOUND",
+        "OVERLIMIT TRANSACTION",
+        "TRANSACTION RECEIVED AFTER ACCT EXPIRATION"
+      ],
+      "description": "The reject reason text that pairs with the code, reproduced character for character from the source. From WS-VALIDATION-FAIL-REASON-DESC PIC X(76) at app/cbl/CBTRN02C.cbl:L182. The four texts sit at app/cbl/CBTRN02C.cbl:L386, L398, L411 and L418.",
+      "examples": ["OVERLIMIT TRANSACTION"]
+    },
+    "amount": {
+      "type": "string",
+      "pattern": "^-?\\d{1,9}\\.\\d{2}$",
+      "description": "The attempted amount as a decimal string with two fractional digits. From DALYTRAN-AMT PIC S9(09)V99 at app/cpy/CVTRA06Y.cpy:L10, so nine digits sit before the point. A leading minus is valid. 50 of the 300 records in app/data/ASCII/dailytran.txt hold a negative amount.",
+      "$comment": "app/cbl/CBTRN02C.cbl:L548-L551 adds a non-negative amount to the cycle credit accumulator and a negative amount to the cycle debit accumulator.",
+      "examples": ["50.47", "-125.00"]
+    },
+    "maskedCardNumber": {
+      "type": "string",
+      "minLength": 16,
+      "maxLength": 16,
+      "pattern": "^\\*{12}[0-9]{4}$",
+      "description": "The card number with twelve asterisks in place of the leading digits and the last four digits left visible. Position and width from DALYTRAN-CARD-NUM PIC X(16) at app/cpy/CVTRA06Y.cpy:L15. The masking is additive: no source program masks a Primary Account Number (PAN), and app/bms/COCRDSL.bms:L96-L99 defines the card detail field at the full sixteen characters. The authorization decision runs on the full PAN, and masking happens where the event is serialized. The cross-reference read at app/cbl/CBTRN02C.cbl:L382-L383 keys on all sixteen characters.",
+      "examples": ["************7065"]
+    }
+  },
+  "required": [
+    "eventId",
+    "eventType",
+    "schemaVersion",
+    "occurredAt",
+    "aggregateId",
+    "transactionId",
+    "accountId",
+    "declineReasonCode",
+    "declineReasonDescription",
+    "amount",
+    "maskedCardNumber"
+  ],
+  "additionalProperties": false
+}

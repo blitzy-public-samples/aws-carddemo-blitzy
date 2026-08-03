@@ -1,0 +1,90 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://carddemo.example.com/schemas/fraud-flagged-v1.json",
+  "title": "FraudFlagged",
+  "description": "The fraud detection service publishes FraudFlagged when its risk rules flag an authorized transaction, and the notification service reads it under the notification-fraud consumer group. No source program scores risk, so the event is additive in full and has no COBOL ancestor. The serializer checks an event before it reaches a topic, and the deserializer checks it again; a failed check on arrival routes the message to the dead-letter topic. Publish and consume paths appear in card-platform/docs/event-flow.md, and rationale for every choice here lives in card-platform/docs/decision-log.md.",
+  "type": "object",
+  "properties": {
+    "eventId": {
+      "type": "string",
+      "format": "uuid",
+      "description": "The idempotency key. Each consumer records this identifier before it applies side effects. Additive. No source field exists.",
+      "examples": ["3f1d9c62-8b4e-4a17-9f0c-2d6a5e73b418"]
+    },
+    "eventType": {
+      "type": "string",
+      "const": "FraudFlagged",
+      "description": "The routing discriminator. FraudFlagged and FraudCleared both travel on the fraud.assessed topic, so a consumer there reads this field to select the payload shape. Additive. No source field exists.",
+      "examples": ["FraudFlagged"]
+    },
+    "schemaVersion": {
+      "type": "integer",
+      "const": 1,
+      "description": "The contract version. The number matches the -v1 suffix in this file name, and a later version only adds fields. Additive. No source field exists.",
+      "examples": [1]
+    },
+    "occurredAt": {
+      "type": "string",
+      "format": "date-time",
+      "description": "The publish timestamp, in Coordinated Universal Time. The fraud detection service stamps it when it writes the event, and assessedAt carries the time the rules finished. Additive. No source field exists.",
+      "examples": ["2022-06-10T19:27:53.412Z"]
+    },
+    "aggregateId": {
+      "type": "string",
+      "pattern": "^[0-9]{11}$",
+      "description": "The account identifier, and always the Kafka message key. Width from XREF-ACCT-ID PIC 9(11) at app/cpy/CVACT03Y.cpy:L7. The payload field accountId carries the same value.",
+      "examples": ["00000000007"]
+    },
+    "transactionId": {
+      "type": "string",
+      "minLength": 16,
+      "maxLength": 16,
+      "description": "The identifier of the transaction the rules assessed, sixteen characters. Width borrowed from TRAN-ID PIC X(16) at app/cpy/CVTRA05Y.cpy:L5, so the value matches the transactionId on TransactionAuthorized.",
+      "examples": ["0000000000683580"]
+    },
+    "accountId": {
+      "type": "string",
+      "pattern": "^[0-9]{11}$",
+      "description": "The account identifier, eleven digits. Width borrowed from XREF-ACCT-ID PIC 9(11) at app/cpy/CVACT03Y.cpy:L7. A consumer maps this field onto its own account column, and the envelope field aggregateId carries the same value.",
+      "examples": ["00000000007"]
+    },
+    "riskScore": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 100,
+      "description": "The score the risk rules produced, from 0 through 100, where a higher number means more risk. Additive. No source field exists.",
+      "examples": [82]
+    },
+    "triggeredRules": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "enum": ["VELOCITY", "AMOUNT_ANOMALY", "MERCHANT_CATEGORY"]
+      },
+      "minItems": 1,
+      "uniqueItems": true,
+      "description": "The rules that flagged the transaction. Each entry is upper case with underscores, and a flagged event names at least one rule with no duplicates. Additive. No source field exists.",
+      "$comment": "The rule-identifier list mirrors the shape of the authorization decline chain, whose extension seam is the comment ADD MORE VALIDATIONS HERE at app/cbl/CBTRN02C.cbl:L377.",
+      "examples": [["VELOCITY", "AMOUNT_ANOMALY"]]
+    },
+    "assessedAt": {
+      "type": "string",
+      "format": "date-time",
+      "description": "The time the risk rules finished, in Coordinated Universal Time. Additive. No source field exists.",
+      "examples": ["2022-06-10T19:27:53.512Z"]
+    }
+  },
+  "required": [
+    "eventId",
+    "eventType",
+    "schemaVersion",
+    "occurredAt",
+    "aggregateId",
+    "transactionId",
+    "accountId",
+    "riskScore",
+    "triggeredRules",
+    "assessedAt"
+  ],
+  "additionalProperties": false
+}

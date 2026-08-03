@@ -119,11 +119,32 @@
       <groupId>io.micrometer</groupId>
       <artifactId>micrometer-registry-prometheus</artifactId>
     </dependency>
-    <!-- The one hand-pinned version in this file. -->
+    <!-- The two hand-pinned versions in this file. -->
     <dependency>
       <groupId>net.logstash.logback</groupId>
       <artifactId>logstash-logback-encoder</artifactId>
       <version>9.0</version>
+    </dependency>
+    <!--
+      micrometer-core 1.17.0 declares no dependency on LatencyUtils, yet its
+      AbstractTimer still declares a field typed org.LatencyUtils.PauseDetector.
+      Spring's PersistenceAnnotationBeanPostProcessor, auto-registered whenever
+      spring-boot-starter-data-jpa is present, enumerates the declared fields of
+      every bean class, so a Timer bean needs that field type resolvable at
+      runtime. HdrHistogram is excluded to hold the version micrometer-core
+      resolves.
+    -->
+    <dependency>
+      <groupId>org.latencyutils</groupId>
+      <artifactId>LatencyUtils</artifactId>
+      <version>2.0.3</version>
+      <scope>runtime</scope>
+      <exclusions>
+        <exclusion>
+          <groupId>org.hdrhistogram</groupId>
+          <artifactId>HdrHistogram</artifactId>
+        </exclusion>
+      </exclusions>
     </dependency>
 
     <!--

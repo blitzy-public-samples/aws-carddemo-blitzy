@@ -1,0 +1,96 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://carddemo.example.com/schemas/transaction-posted-v1.json",
+  "title": "TransactionPosted",
+  "description": "The ledger publishes one TransactionPosted event after it applies one posting. Six payload fields carry the new account balance, the posting timestamp, and the transaction that moved the balance, with widths from app/cpy/CVACT01Y.cpy and app/cpy/CVTRA05Y.cpy. Five envelope fields precede them, and the envelope is additive in full: no source record carries one. The serializer checks an event before it reaches a topic, and the deserializer checks it again; a failed check on arrival routes the message to the dead-letter topic. Publish and consume paths appear in card-platform/docs/event-flow.md, and rationale for every choice here lives in card-platform/docs/decision-log.md.",
+  "type": "object",
+  "properties": {
+    "eventId": {
+      "type": "string",
+      "format": "uuid",
+      "description": "The idempotency key. Each consumer records this identifier before it applies side effects. Additive. No source field exists.",
+      "examples": ["3f1d9c62-8b4e-4a17-9f0c-2d6a5e73b418"]
+    },
+    "eventType": {
+      "type": "string",
+      "const": "TransactionPosted",
+      "description": "The routing discriminator. A consumer reads this field to learn which payload arrived. Additive. No source field exists.",
+      "examples": ["TransactionPosted"]
+    },
+    "schemaVersion": {
+      "type": "integer",
+      "const": 1,
+      "description": "The contract version. The number matches the -v1 suffix in this file name, and a later version only adds fields. Additive. No source field exists.",
+      "examples": [1]
+    },
+    "occurredAt": {
+      "type": "string",
+      "format": "date-time",
+      "description": "The publish timestamp, in Coordinated Universal Time. The ledger stamps it when it writes the event, and postedAt carries the time the posting happened. Additive. No source field exists.",
+      "examples": ["2022-06-10T19:27:53.412Z"]
+    },
+    "aggregateId": {
+      "type": "string",
+      "pattern": "^[0-9]{11}$",
+      "description": "The account identifier, and always the Kafka message key. Width from XREF-ACCT-ID PIC 9(11) at app/cpy/CVACT03Y.cpy:L7. The payload field accountId carries the same value.",
+      "examples": ["00000000007"]
+    },
+    "transactionId": {
+      "type": "string",
+      "minLength": 16,
+      "maxLength": 16,
+      "description": "The transaction identifier, sixteen characters. From TRAN-ID PIC X(16) at app/cpy/CVTRA05Y.cpy:L5.",
+      "examples": ["0000000000683580"]
+    },
+    "accountId": {
+      "type": "string",
+      "pattern": "^[0-9]{11}$",
+      "description": "The account identifier, eleven digits. From XREF-ACCT-ID PIC 9(11) at app/cpy/CVACT03Y.cpy:L7. A consumer maps this field onto its own account column, and the envelope field aggregateId carries the same value.",
+      "examples": ["00000000007"]
+    },
+    "newBalance": {
+      "type": "string",
+      "pattern": "^-?\\d{1,10}\\.\\d{2}$",
+      "description": "The account balance after posting, as a decimal string with two fractional digits. From ACCT-CURR-BAL PIC S9(10)V99 at app/cpy/CVACT01Y.cpy:L7, so ten digits sit before the point. A leading minus is valid: adding a negative amount can drive the balance below zero.",
+      "$comment": "app/cbl/CBTRN02C.cbl:L547 adds the transaction amount to ACCT-CURR-BAL, and newBalance carries the result.",
+      "examples": ["1250.75", "-43.10"]
+    },
+    "postedAt": {
+      "type": "string",
+      "minLength": 26,
+      "maxLength": 26,
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}-\\d{2}\\.\\d{2}\\.\\d{2}\\.\\d{2}0000$",
+      "description": "The posting timestamp, twenty-six characters shaped YYYY-MM-DD-HH.MM.SS.NN0000 with a dash between the date and the hour. From TRAN-PROC-TS PIC X(26) at app/cpy/CVTRA05Y.cpy:L17. The ledger stamps the field at posting time, and all 300 records in app/data/ASCII/dailytran.txt carry it blank. The last four characters are always zeros.",
+      "$comment": "Precision is hundredths of a second, from DB2-MIL PIC 9(002) at app/cbl/CBTRN02C.cbl:L173 and the '0000' move at app/cbl/CBTRN02C.cbl:L701, so a consumer truncates to hundredths before any byte-for-byte comparison.",
+      "examples": ["2022-07-19-23.16.01.470000"]
+    },
+    "amount": {
+      "type": "string",
+      "pattern": "^-?\\d{1,9}\\.\\d{2}$",
+      "description": "The transaction amount as a decimal string with two fractional digits. From TRAN-AMT PIC S9(09)V99 at app/cpy/CVTRA05Y.cpy:L10, so nine digits sit before the point. A leading minus is valid. 50 of the 300 records in app/data/ASCII/dailytran.txt hold a negative amount.",
+      "examples": ["50.47", "-125.00"]
+    },
+    "maskedCardNumber": {
+      "type": "string",
+      "minLength": 16,
+      "maxLength": 16,
+      "pattern": "^\\*{12}[0-9]{4}$",
+      "description": "The card number with twelve asterisks in place of the leading digits and the last four digits left visible. Position and width from TRAN-CARD-NUM PIC X(16) at app/cpy/CVTRA05Y.cpy:L15. The masking is additive: no source program masks a Primary Account Number (PAN), and app/bms/COCRDSL.bms:L96-L99 defines the card detail field at the full sixteen characters. Masking happens where the event is serialized.",
+      "examples": ["************7065"]
+    }
+  },
+  "required": [
+    "eventId",
+    "eventType",
+    "schemaVersion",
+    "occurredAt",
+    "aggregateId",
+    "transactionId",
+    "accountId",
+    "newBalance",
+    "postedAt",
+    "amount",
+    "maskedCardNumber"
+  ],
+  "additionalProperties": false
+}
