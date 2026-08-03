@@ -1,0 +1,19 @@
+# The other manifests in this folder declare their objects in this namespace.
+# Apply in filename order: kubectl apply -f card-platform/deploy/k8s/
+# Short-name Domain Name System (DNS) lookups for kafka and postgres
+# depend on a shared namespace.
+# Rationale for every choice in this folder: card-platform/docs/decision-log.md
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: carddemo
+  labels:
+    app.kubernetes.io/name: card-platform
+    app.kubernetes.io/part-of: card-platform
+    app.kubernetes.io/managed-by: kubectl
+  annotations:
+    card-platform/contents: >-
+      Authorization, ledger posting, fraud detection, notification, account
+      and card services, with the Kafka broker and PostgreSQL instance
+      they use.
