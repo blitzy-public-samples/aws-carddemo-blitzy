@@ -1,0 +1,118 @@
+# Configuration the six card-platform services read. Each service Deployment
+# pulls the whole block through envFrom, so one key here reaches all six.
+#
+# Every key name below also appears in card-platform/.env.example, and the
+# Docker Compose stack reads the same names. A name that exists in one path and
+# not the other is a defect. No credential appears here.
+#
+# Rationale for every value in this folder: card-platform/docs/decision-log.md
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: carddemo-config
+  namespace: carddemo
+  labels:
+    app.kubernetes.io/name: card-platform
+    app.kubernetes.io/component: configuration
+    app.kubernetes.io/part-of: card-platform
+    app.kubernetes.io/managed-by: kubectl
+# A ConfigMap carries strings. Every value is quoted, so a port, a count or an
+# interval reaches a container as the text it parses.
+data:
+  # PostgreSQL connection
+  # Short in-namespace name. The Domain Name System (DNS) resolves it to the
+  # Service in 20-postgres.yaml, which listens on the port below.
+  POSTGRES_HOST: "postgres"
+  POSTGRES_PORT: "5432"
+  # The server creates this database on first start, and 20-postgres.yaml reads
+  # the name from this key.
+  POSTGRES_DB: "carddemo"
+
+  # One schema per service, inside the database above
+  # Each service migrates its own schema and reads no other. Every name carries
+  # a _service suffix, so none collides with a word PostgreSQL reserves. Each
+  # service Deployment binds the one key it owns.
+  AUTHORIZATION_DB_SCHEMA: "authorization_service"
+  LEDGER_DB_SCHEMA: "ledger_service"
+  FRAUD_DB_SCHEMA: "fraud_service"
+  NOTIFICATION_DB_SCHEMA: "notification_service"
+  ACCOUNT_DB_SCHEMA: "account_service"
+  CARD_DB_SCHEMA: "card_service"
+
+  # Kafka broker
+  # 10-kafka.yaml advertises this address, and its Service targets port 9092.
+  KAFKA_BOOTSTRAP_SERVERS: "kafka:9092"
+  # The broker writes this identifier into its log directory. 10-kafka.yaml
+  # carries the same value, and a new one orphans the data already there.
+  KAFKA_CLUSTER_ID: "cardDemoPlatformKRaft1"
+  KAFKA_TOPIC_PARTITIONS: "3"
+  # One broker holds one copy of a partition.
+  KAFKA_TOPIC_REPLICATION_FACTOR: "1"
+
+  # Event topics
+  # 10-kafka.yaml creates all nine at start and the broker admits no other, so a
+  # mistyped name reaches a service as UNKNOWN_TOPIC_OR_PARTITION.
+  #
+  # One authorization call publishes one event to the first topic. The ledger
+  # posting, fraud detection and notification services each read it under their
+  # own consumer group below, and none of the three calls another.
+  # The publish and consume path per event: card-platform/docs/event-flow.md
+  TOPIC_TRANSACTION_AUTHORIZED: "transaction.authorized"
+  TOPIC_TRANSACTION_DECLINED: "transaction.declined"
+  TOPIC_TRANSACTION_POSTED: "transaction.posted"
+  TOPIC_FRAUD_ASSESSED: "fraud.assessed"
+  # The account and card services publish these two when a state change occurs.
+  TOPIC_ACCOUNT_STATE_CHANGED: "account.state-changed"
+  TOPIC_CARD_STATE_CHANGED: "card.state-changed"
+  # Appended to a topic name when a record exhausts its delivery attempts. The
+  # three consumed topics each carry a dead-letter topic named this way.
+  TOPIC_DEAD_LETTER_SUFFIX: ".DLT"
+
+  # Consumer groups
+  # Five distinct groups, one per listener. Each group receives its own copy of
+  # every event, and two listeners sharing one group would split the events
+  # between them.
+  GROUP_LEDGER_POSTING: "ledger-posting"
+  GROUP_FRAUD_DETECTION: "fraud-detection"
+  GROUP_NOTIFICATION_AUTHORIZED: "notification-authorized"
+  GROUP_NOTIFICATION_POSTED: "notification-posted"
+  GROUP_NOTIFICATION_FRAUD: "notification-fraud"
+
+  # Supporting service addresses
+  # The authorization service reads both while it applies the decline rules, and
+  # neither read writes anything. Each address names a Service in this namespace.
+  ACCOUNT_SERVICE_BASE_URL: "http://account-service:8080"
+  CARD_SERVICE_BASE_URL: "http://card-service:8080"
+
+  # Outbox relay
+  # Milliseconds between two sweeps for unpublished rows, then the rows one
+  # sweep claims.
+  OUTBOX_RELAY_INTERVAL_MS: "500"
+  OUTBOX_RELAY_BATCH_SIZE: "100"
+
+  # Consumer resilience
+  # Delivery attempts a consumer makes, then the milliseconds it waits between
+  # two. A record that exhausts the attempts routes to its dead-letter topic.
+  CONSUMER_MAX_RETRY_ATTEMPTS: "3"
+  CONSUMER_RETRY_BACKOFF_MS: "1000"
+
+  # Logging and observability
+  # Root level, then the level for the com.carddemo packages where the event
+  # fan-out shows. Both take TRACE, DEBUG, INFO, WARN, ERROR or OFF.
+  LOG_LEVEL: "INFO"
+  LOG_LEVEL_CARDDEMO: "INFO"
+  # Actuator endpoints each service exposes under /actuator. The Deployment
+  # probes read /actuator/health, so health stays in the list.
+  MANAGEMENT_ENDPOINTS: "health,metrics,prometheus"
+  # Port each container serves /actuator on. The probes target it, and port 8080
+  # answers no management request.
+  MANAGEMENT_PORT: "9080"
+
+  # Spring bindings identical in all six services
+  # Each service image ships the Docker Compose broker address as its default,
+  # and that address resolves nowhere in this namespace.
+  SPRING_KAFKA_BOOTSTRAP_SERVERS: "kafka:9092"
+  # One database, six schemas. Each service Deployment adds the schema settings
+  # it owns, and its Flyway migration creates the schema it names.
+  SPRING_DATASOURCE_URL: "jdbc:postgresql://postgres:5432/carddemo"

@@ -1,0 +1,270 @@
+# card-platform notification-service — the Representational State Transfer
+# (REST) interface this module serves.
+#
+# One read-only endpoint returns the alert history for one card. The document is
+# hand-written and checked in, and no route serves it at runtime.
+#
+# Field-by-field source mapping and every omitted field:
+#   card-platform/docs/traceability-matrix.md
+# Design decisions:
+#   card-platform/docs/decision-log.md
+---
+openapi: 3.1.0
+
+info:
+  title: CardDemo Notification Service
+  description: >-
+    Returns the alert history for one card. Each entry describes one transaction
+    the read model holds for that card, and the response carries the masked card
+    number, the entry count and the per-card total. Field names and widths
+    follow TRNX-RECORD at app/cpy/COSTM01.CPY:L20-L36.
+  version: 1.0.0
+
+servers:
+  - url: http://localhost:8084
+    description: >-
+      Local demo stack. The container listens on port 8080, and
+      card-platform/docker-compose.yml publishes NOTIFICATION_PORT on the
+      loopback address, defaulting to 8084.
+
+tags:
+  - name: notification-history
+    description: Read access to the card-keyed alert history.
+
+paths:
+
+  /notifications/{cardNumber}:
+
+    get:
+      tags:
+        - notification-history
+      operationId: getNotificationHistory
+      summary: Return the alert history for one card.
+      description: >-
+        Returns one entry per transaction the read model holds for the card. A
+        card with no entries returns 200 with an empty array, an entry count of
+        0 and a total of "0.00".
+      parameters:
+        - name: cardNumber
+          in: path
+          required: true
+          description: >-
+            Full card number, sixteen numeric digits. Width from TRNX-CARD-NUM
+            PIC X(16) at app/cpy/COSTM01.CPY:L22.
+          schema:
+            type: string
+            minLength: 16
+            maxLength: 16
+            pattern: '^[0-9]{16}$'
+      responses:
+
+        '200':
+          description: The alert history for the card.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NotificationHistory'
+
+        '400':
+          description: >-
+            The path value did not match the sixteen-digit pattern. The body is
+            the Spring Boot default problem detail, and this module adds no
+            handler that replaces it.
+
+components:
+
+  schemas:
+
+    NotificationHistory:
+      type: object
+      description: >-
+        The alert history for one card. The card number is masked, and the total
+        covers only the entries the response carries.
+      additionalProperties: false
+      required:
+        - cardNumber
+        - transactionCount
+        - totalAmount
+        - transactions
+      properties:
+
+        cardNumber:
+          type: string
+          minLength: 16
+          maxLength: 16
+          pattern: '^\*{12}[0-9]{4}$'
+          description: >-
+            Masked card number. Twelve asterisks then the last four digits.
+            Width from TRNX-CARD-NUM PIC X(16) at app/cpy/COSTM01.CPY:L22.
+          examples:
+            - '************7065'
+
+        transactionCount:
+          type: integer
+          minimum: 0
+          description: How many entries the transactions array carries.
+          examples:
+            - 1
+
+        totalAmount:
+          type: string
+          pattern: '^-?\d{1,9}\.\d{2}$'
+          description: >-
+            Per-card total of the amounts the response carries, as a decimal
+            string with two fractional digits. From WS-TOTAL-AMT PIC S9(9)V99 at
+            app/cbl/CBSTM03A.CBL:L65, zeroed per card at
+            app/cbl/CBSTM03A.CBL:L325 and accumulated at
+            app/cbl/CBSTM03A.CBL:L429. A leading minus is valid.
+          examples:
+            - '504.77'
+
+        transactions:
+          type: array
+          description: >-
+            One entry per transaction the read model holds for the card, in
+            transaction identifier order, matching app/jcl/CREASTMT.JCL:L53.
+          items:
+            $ref: '#/components/schemas/StatementTransaction'
+
+    StatementTransaction:
+      type: object
+      description: >-
+        One transaction from the card-keyed read model. Every field comes from
+        TRNX-RECORD at app/cpy/COSTM01.CPY:L20-L36. The card number sits on the
+        response envelope, and the trailing FILLER PIC X(20) at
+        app/cpy/COSTM01.CPY:L36 carries no field.
+      additionalProperties: false
+      required:
+        - transactionId
+        - typeCode
+        - categoryCode
+        - source
+        - description
+        - amount
+        - merchantId
+        - merchantName
+        - merchantCity
+        - merchantZip
+        - originTimestamp
+        - processingTimestamp
+      properties:
+
+        transactionId:
+          type: string
+          maxLength: 16
+          description: >-
+            Identifies one transaction within the card. From TRNX-ID PIC X(16)
+            at app/cpy/COSTM01.CPY:L23. Every record in
+            app/data/ASCII/dailytran.txt holds sixteen digits, padded on the
+            left with zeros.
+
+        typeCode:
+          type: string
+          maxLength: 2
+          description: >-
+            Names the transaction type. From TRNX-TYPE-CD PIC X(02) at
+            app/cpy/COSTM01.CPY:L25.
+          examples:
+            - '01'
+
+        categoryCode:
+          type: string
+          pattern: '^[0-9]{4}$'
+          description: >-
+            Names the transaction category, four digits. From TRNX-CAT-CD
+            PIC 9(04) at app/cpy/COSTM01.CPY:L26. The value keeps its leading
+            zeros.
+          examples:
+            - '0001'
+
+        source:
+          type: string
+          maxLength: 10
+          description: >-
+            Names where the transaction entered the platform. From TRNX-SOURCE
+            PIC X(10) at app/cpy/COSTM01.CPY:L27.
+          examples:
+            - 'POS TERM'
+
+        description:
+          type: string
+          maxLength: 100
+          description: >-
+            Describes the transaction in free text. From TRNX-DESC PIC X(100) at
+            app/cpy/COSTM01.CPY:L28.
+          examples:
+            - 'Purchase at Abshire-Lowe'
+
+        amount:
+          type: string
+          pattern: '^-?\d{1,9}\.\d{2}$'
+          description: >-
+            The transaction amount, as a decimal string with two fractional
+            digits. From TRNX-AMT PIC S9(09)V99 at app/cpy/COSTM01.CPY:L29, so
+            nine digits sit before the point. A leading minus is valid: a refund
+            carries a negative amount.
+          examples:
+            - '504.77'
+
+        merchantId:
+          type: string
+          pattern: '^[0-9]{9}$'
+          description: >-
+            Identifies the merchant, nine digits. From TRNX-MERCHANT-ID
+            PIC 9(09) at app/cpy/COSTM01.CPY:L30.
+          examples:
+            - '800000000'
+
+        merchantName:
+          type: string
+          maxLength: 50
+          description: >-
+            Names the merchant. From TRNX-MERCHANT-NAME PIC X(50) at
+            app/cpy/COSTM01.CPY:L31.
+          examples:
+            - 'Abshire-Lowe'
+
+        merchantCity:
+          type: string
+          maxLength: 50
+          description: >-
+            Names the merchant city. From TRNX-MERCHANT-CITY PIC X(50) at
+            app/cpy/COSTM01.CPY:L32.
+          examples:
+            - 'North Enoshaven'
+
+        merchantZip:
+          type: string
+          maxLength: 10
+          description: >-
+            Holds the merchant mail code. From TRNX-MERCHANT-ZIP PIC X(10) at
+            app/cpy/COSTM01.CPY:L33.
+          examples:
+            - '72112'
+
+        originTimestamp:
+          type: string
+          minLength: 26
+          maxLength: 26
+          pattern: '^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d{6}$'
+          description: >-
+            When the transaction originated, twenty-six characters shaped
+            YYYY-MM-DD HH:MM:SS.ffffff with a space between the day and the
+            hour. From TRNX-ORIG-TS PIC X(26) at app/cpy/COSTM01.CPY:L34. All
+            300 records in app/data/ASCII/dailytran.txt match the pattern.
+          examples:
+            - '2022-06-10 19:27:53.000000'
+
+        processingTimestamp:
+          type: string
+          minLength: 26
+          maxLength: 26
+          pattern: '^\d{4}-\d{2}-\d{2}-\d{2}\.\d{2}\.\d{2}\.\d{2}0{4}$'
+          description: >-
+            When the platform recorded the transaction, twenty-six characters
+            shaped YYYY-MM-DD-HH.MM.SS.ff0000 with a dash between the day and
+            the hour. From TRNX-PROC-TS PIC X(26) at app/cpy/COSTM01.CPY:L35.
+            Precision is hundredths of a second, and app/cbl/CBTRN02C.cbl:L701
+            fills the last four characters with zeros.
+          examples:
+            - '2022-07-19-23.16.01.470000'

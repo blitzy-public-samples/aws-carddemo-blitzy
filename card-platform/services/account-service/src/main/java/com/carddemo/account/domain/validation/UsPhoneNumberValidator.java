@@ -24,13 +24,13 @@ import com.carddemo.cobol.reference.UsPhoneAreaCodes;
  */
 public final class UsPhoneNumberValidator {
 
-    /** Stored width of {@code WS-EDIT-US-PHONE-NUMA PIC X(3)} at app/cbl/COACTUPC.cbl:L87. */
     /**
      * The character a COBOL comparison against the figurative constant {@code LOW-VALUES} tests
      * for, one position at a time.
      */
     private static final char NULL_CHARACTER = '\0';
 
+    /** Stored width of {@code WS-EDIT-US-PHONE-NUMA PIC X(3)} at app/cbl/COACTUPC.cbl:L87. */
     private static final int AREA_CODE_WIDTH = 3;
 
     /** Stored width of {@code WS-EDIT-US-PHONE-NUMB PIC X(3)} at app/cbl/COACTUPC.cbl:L92. */
