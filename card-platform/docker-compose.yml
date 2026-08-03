@@ -81,8 +81,8 @@ services:
       # No fallback: an unset password stops the stack rather than creating the
       # superuser with a password this repository publishes.
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set; copy .env.example to .env}
-      # Names the six databases the initialisation script creates. The script
-      # checks every name against a strict identifier pattern before it runs.
+      # Names the six databases the provisioning program creates. It checks every
+      # name against a strict identifier pattern before it runs a statement.
       SERVICE_DATABASE_NAMES: >-
         ${AUTHORIZATION_DB_NAME:-carddemo_authorization}
         ${LEDGER_DB_NAME:-carddemo_ledger}
@@ -93,18 +93,41 @@ services:
     ports:
       # Bound to the loopback address, so only this machine reaches the database.
       - "127.0.0.1:${POSTGRES_PORT:-5432}:5432"
-    # The six databases, created on first start only. Flyway then creates and
-    # migrates one schema inside each. No schema object is defined here.
+    # The program that creates the six databases. Flyway then creates and migrates
+    # one schema inside each. No schema object is defined here.
     configs:
       - source: service_databases
-        target: /docker-entrypoint-initdb.d/10-service-databases.sh
+        target: /usr/local/bin/provision-databases.sh
         mode: 0555
+    # The database entry point runs a program in /docker-entrypoint-initdb.d once,
+    # on an empty data directory, and skips it on every later start. A name
+    # refused on the first start would therefore leave databases missing with no
+    # way to add them but discarding the volume. This wrapper runs the program on
+    # every start instead, and the program creates only what is absent.
+    #
+    # The program waits for the server to answer on 127.0.0.1. It never waits for
+    # the container health state, because the healthcheck below waits for the
+    # program: each would then wait for the other.
+    command:
+      - /bin/bash
+      - -c
+      - |
+        /usr/local/bin/provision-databases.sh &
+        exec docker-entrypoint.sh postgres
     # A PostgreSQL 18 image keeps its data under /var/lib/postgresql/18, so the
     # mount point sits one level above that and covers every version directory.
     volumes:
       - postgres-data:/var/lib/postgresql
+    # Healthy means two things: the server answers, and every service database
+    # exists. A refused name leaves the file unwritten, so a partial set cannot
+    # report healthy and depends_on holds every service back until the set is
+    # complete.
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-carddemo} -d ${POSTGRES_DB:-carddemo}"]
+      test:
+        - CMD-SHELL
+        - >-
+          pg_isready -U ${POSTGRES_USER:-carddemo} -d ${POSTGRES_DB:-carddemo}
+          && test -f /tmp/service-databases-ready
       interval: 5s
       timeout: 5s
       retries: 30
@@ -137,9 +160,9 @@ services:
       KAFKA_DEFAULT_REPLICATION_FACTOR: ${KAFKA_TOPIC_REPLICATION_FACTOR:-1}
       KAFKA_NUM_PARTITIONS: ${KAFKA_TOPIC_PARTITIONS:-3}
       KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
-      # The broker creates no topic on demand. The command below creates the seven
-      # topics this platform uses, so a mistyped topic name fails loudly instead
-      # of quietly opening a new stream on an unauthenticated broker.
+      # The broker creates no topic on demand. The command below creates the nine
+      # topics this platform uses. A mistyped name then fails loudly instead of
+      # quietly opening a new stream on an unauthenticated broker.
       KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false"
       KAFKA_LOG_DIRS: /var/lib/kafka/data
       # Every topic name travels as an environment value, so the program below
@@ -158,6 +181,14 @@ services:
     # three consumed topics are transaction.authorized, transaction.posted and
     # fraud.assessed. A published-only topic carries no dead-letter counterpart,
     # since dead-letter routing carries a message a listener could not consume.
+    #
+    # These nine names are the platform's topic inventory. The same nine appear
+    # in deploy/k8s/10-kafka.yaml, and .env.example documents every one.
+    #
+    # The last act of the program is to write /tmp/kafka-topics-ready, and the
+    # healthcheck below reads that file. A refused name and a refused create both
+    # leave it unwritten, so this container never reports healthy with topics
+    # missing, and depends_on holds every listener back until they exist.
     #
     # Each name passes a gate before it reaches the broker. Apache Kafka admits
     # only letters, digits, the period, the underscore and the hyphen in a topic
@@ -200,8 +231,9 @@ services:
             /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:29092 \
               --create --if-not-exists --topic "$${topic}" \
               --partitions "$${TOPIC_PARTITIONS}" \
-              --replication-factor "$${TOPIC_REPLICATION_FACTOR}"
+              --replication-factor "$${TOPIC_REPLICATION_FACTOR}" || return 1
           done
+          : > /tmp/kafka-topics-ready
         }
         create_topics &
         exec /etc/kafka/docker/run
@@ -211,8 +243,15 @@ services:
       - "127.0.0.1:${KAFKA_PORT:-9092}:9092"
     volumes:
       - kafka-data:/var/lib/kafka/data
+    # Healthy means two things: the topic program finished, and the broker still
+    # answers. The file test comes first, so no Java virtual machine starts while
+    # the broker is still coming up.
     healthcheck:
-      test: ["CMD-SHELL", "/opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:29092 --list >/dev/null 2>&1"]
+      test:
+        - CMD-SHELL
+        - >-
+          test -f /tmp/kafka-topics-ready
+          && /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:29092 --list >/dev/null 2>&1
       interval: 10s
       timeout: 15s
       retries: 30
@@ -486,22 +525,46 @@ services:
 
 configs:
 
-  # One database per service. The script runs once, on an empty data directory, as
-  # the user the database container creates.
+  # One database per service. The postgres command runs this program on every
+  # start, so a name corrected after a refusal repairs the stack.
   #
   # It reads the six names from SERVICE_DATABASE_NAMES at run time rather than
   # taking them into the file as text, and checks each one against a strict
-  # identifier pattern. It then hands the statement to psql on standard input,
+  # identifier pattern. It then hands each statement to psql on standard input,
   # where psql interpolates :"database_name" as one quoted identifier. A name
   # carrying a semicolon, a quotation mark or a space is refused by the pattern
-  # before any statement runs, and identifier quoting means that even a name that
+  # before any statement runs. Identifier quoting means that even a name that
   # passed the pattern could not add a statement.
+  #
+  # It creates a database only when that name is absent, so a second start adds
+  # nothing. Its last statement writes the file the postgres healthcheck reads, so
+  # a refused name keeps that container out of healthy.
   service_databases:
     content: |
       #!/bin/sh
       set -eu
 
       : "$${SERVICE_DATABASE_NAMES:?SERVICE_DATABASE_NAMES must name the six service databases}"
+
+      # The entry point initialises a new data directory behind a socket the
+      # network cannot reach, so an answer on the loopback address means the
+      # server is serving. Four minutes is far longer than any first start takes.
+      attempt=0
+      until pg_isready --host 127.0.0.1 --username "$$POSTGRES_USER" \
+              --dbname "$$POSTGRES_DB" >/dev/null 2>&1; do
+        attempt=$$((attempt + 1))
+        if [ "$$attempt" -gt 120 ]; then
+          echo "the database did not answer on 127.0.0.1 within four minutes" >&2
+          exit 1
+        fi
+        sleep 2
+      done
+
+      PGHOST=127.0.0.1
+      PGUSER="$$POSTGRES_USER"
+      PGPASSWORD="$$POSTGRES_PASSWORD"
+      PGDATABASE="$$POSTGRES_DB"
+      export PGHOST PGUSER PGPASSWORD PGDATABASE
 
       for database_name in $$SERVICE_DATABASE_NAMES; do
         case "$$database_name" in
@@ -517,11 +580,21 @@ configs:
           exit 1
         fi
 
-        printf %s 'CREATE DATABASE :"database_name";' \
-          | psql --username "$$POSTGRES_USER" --dbname "$$POSTGRES_DB" \
-              --no-psqlrc --set ON_ERROR_STOP=1 \
-              --set database_name="$$database_name"
+        present=$$(printf %s "SELECT 1 FROM pg_database WHERE datname = :'database_name';" \
+          | psql --no-psqlrc --tuples-only --no-align --set ON_ERROR_STOP=1 \
+              --set database_name="$$database_name")
+
+        if [ "$$present" = 1 ]; then
+          echo "database '$$database_name' is already present"
+        else
+          printf %s 'CREATE DATABASE :"database_name";' \
+            | psql --no-psqlrc --set ON_ERROR_STOP=1 \
+                --set database_name="$$database_name"
+          echo "created database '$$database_name'"
+        fi
       done
+
+      : > /tmp/service-databases-ready
 
 volumes:
 

@@ -1,10 +1,11 @@
 # One Apache Kafka broker in Kafka Raft (KRaft) mode, plus the Service the
 # six card-platform services reach it through.
 #
-# The broker listens on 9092 here. Each service ships the Docker Compose address
-# kafka:29092 as its default, so 30-configmap.yaml must set
-# SPRING_KAFKA_BOOTSTRAP_SERVERS=kafka:9092 for every Pod. That variable is the
-# one every service application.yml already reads.
+# The broker carries two client listeners here: 9092 for the application Pods,
+# and 9094 bound to the loopback address for the tooling inside the broker Pod.
+# Each service ships the Docker Compose address kafka:29092 as its default, so
+# 30-configmap.yaml must set SPRING_KAFKA_BOOTSTRAP_SERVERS=kafka:9092 for every
+# Pod. That variable is the one every service application.yml already reads.
 #
 ---
 apiVersion: apps/v1
@@ -76,14 +77,27 @@ spec:
             - name: KAFKA_INTER_BROKER_LISTENER_NAME
               value: INTERNAL
             - name: KAFKA_LISTENER_SECURITY_PROTOCOL_MAP
-              value: CONTROLLER:PLAINTEXT,INTERNAL:PLAINTEXT
+              value: CONTROLLER:PLAINTEXT,INTERNAL:PLAINTEXT,LOCAL:PLAINTEXT
+            # Two client listeners. INTERNAL carries every application Pod on
+            # 9092, the port the Service in the second document targets. LOCAL
+            # carries the tooling inside this Pod and binds the loopback address
+            # on 9094, so no peer Pod and no Service reaches it.
             - name: KAFKA_LISTENERS
-              value: INTERNAL://:9092,CONTROLLER://:9093
-            # Clients receive kafka:9092, the Service in the second document.
-            # 30-configmap.yaml sets SPRING_KAFKA_BOOTSTRAP_SERVERS to that
-            # address, which replaces each service's compose-network default.
+              value: INTERNAL://:9092,LOCAL://127.0.0.1:9094,CONTROLLER://:9093
+            # A client receives the advertised address of the listener it
+            # connected on. An application Pod bootstraps on INTERNAL and
+            # receives kafka:9092, the Service name 30-configmap.yaml supplies as
+            # SPRING_KAFKA_BOOTSTRAP_SERVERS. The program below bootstraps on
+            # LOCAL and receives 127.0.0.1:9094, a literal address inside this
+            # Pod, so it needs neither the Domain Name System nor the Service.
+            #
+            # That separation is what keeps the Pod out of a deadlock. The
+            # readiness probe and the topic program run before this Pod is ready,
+            # and the Service publishes an endpoint only once it is. A probe or a
+            # program that bootstrapped on INTERNAL would wait for an address
+            # that waits for it. Keep every in-Pod client on LOCAL.
             - name: KAFKA_ADVERTISED_LISTENERS
-              value: INTERNAL://kafka:9092
+              value: INTERNAL://kafka:9092,LOCAL://127.0.0.1:9094
             # The broker writes the cluster identifier into its log directory.
             - name: CLUSTER_ID
               value: cardDemoPlatformKRaft1
@@ -99,9 +113,9 @@ spec:
             - name: KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS
               value: "0"
             # The broker creates no topic on demand. The command below creates the
-            # seven topics this platform uses, so a mistyped topic name fails
-            # loudly instead of quietly opening a new stream on a broker that
-            # runs without authentication.
+            # nine topics this platform uses. A mistyped name then fails loudly
+            # instead of quietly opening a new stream on a broker that runs
+            # without authentication.
             - name: KAFKA_AUTO_CREATE_TOPICS_ENABLE
               value: "false"
             - name: KAFKA_NUM_PARTITIONS
@@ -110,41 +124,67 @@ spec:
               value: /var/lib/kafka/data
             - name: KAFKA_HEAP_OPTS
               value: -Xms256m -Xmx512m
-          # This container also creates topics. It waits for the broker, then
-          # creates the four event topics and one dead-letter topic per consumed
-          # topic, and finally hands the process to the broker entry point.
+          # This container also creates topics. It waits for the broker on the
+          # LOCAL listener, then creates the six event topics and one dead-letter
+          # topic per consumed topic. It records that it finished, and hands the
+          # process to the broker entry point.
+          #
+          # The three consumed topics are transaction.authorized,
+          # transaction.posted and fraud.assessed. A published-only topic carries
+          # no dead-letter counterpart, since dead-letter routing carries a
+          # message a listener could not consume.
+          #
+          # These nine names are the platform's topic inventory. The same nine
+          # appear in card-platform/docker-compose.yml, and
+          # card-platform/.env.example documents every one. A name that exists in
+          # one path and not the other is a defect. This broker admits no topic it
+          # was not told about, so a missing name reaches a service as
+          # UNKNOWN_TOPIC_OR_PARTITION.
           command:
             - /bin/bash
             - -c
             - |
               (
-                until /opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:9092 --list >/dev/null 2>&1; do
+                until /opt/kafka/bin/kafka-topics.sh --bootstrap-server 127.0.0.1:9094 --list >/dev/null 2>&1; do
                   sleep 2
                 done
                 for topic in transaction.authorized \
                              transaction.declined \
                              transaction.posted \
                              fraud.assessed \
+                             account.state-changed \
+                             card.state-changed \
                              transaction.authorized.DLT \
                              transaction.posted.DLT \
                              fraud.assessed.DLT; do
-                  /opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:9092 \
+                  /opt/kafka/bin/kafka-topics.sh --bootstrap-server 127.0.0.1:9094 \
                     --create --if-not-exists --topic "$topic" \
-                    --partitions 3 --replication-factor 1
+                    --partitions 3 --replication-factor 1 || exit 1
                 done
+                touch /tmp/kafka-topics-ready
               ) &
               exec /etc/kafka/docker/run
-          # Readiness probe allows time for cluster formation at startup.
+          # Readiness holds until the broker answers on 9092, the port the Service
+          # targets, and the program above has created every topic. A refused
+          # topic leaves that file unwritten, so the Pod never joins the Service
+          # and kubectl get pod reports 0/1 rather than a working platform.
+          #
+          # The probe opens a socket and reads a file. It starts no Java virtual
+          # machine, so it takes no measurable share of the one core this
+          # container is limited to, and it reaches no address outside this Pod.
+          # Each branch names what is missing, so kubectl describe pod reports a
+          # slow start and a refused topic differently.
           readinessProbe:
             exec:
               command:
-                - /opt/kafka/bin/kafka-topics.sh
-                - --bootstrap-server
-                - localhost:9092
-                - --list
-            initialDelaySeconds: 40
-            periodSeconds: 20
-            timeoutSeconds: 15
+                - /bin/bash
+                - -c
+                - |
+                  exec 3<>/dev/tcp/127.0.0.1/9092 || { echo "the broker has not opened 9092 yet"; exit 1; }
+                  test -f /tmp/kafka-topics-ready || { echo "topic creation has not finished"; exit 1; }
+            initialDelaySeconds: 15
+            periodSeconds: 5
+            timeoutSeconds: 5
             failureThreshold: 6
           livenessProbe:
             tcpSocket:
@@ -172,6 +212,14 @@ spec:
 # Every Pod reaches the broker at kafka:9092, the address 30-configmap.yaml
 # supplies as SPRING_KAFKA_BOOTSTRAP_SERVERS.
 # ClusterIP only. Nothing outside the cluster connects to the broker.
+#
+# The Service carries an endpoint only while the broker Pod is ready. A service
+# that starts first therefore waits for a provisioned broker rather than reading
+# a topic that does not exist yet.
+#
+# Nothing inside the broker Pod resolves this name: its readiness probe and its
+# topic program use the loopback listener. Adding publishNotReadyAddresses here
+# would hand every service an address it cannot use yet.
 apiVersion: v1
 kind: Service
 metadata:
