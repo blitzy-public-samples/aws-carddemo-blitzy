@@ -3,30 +3,26 @@ package com.carddemo.account.domain.validation;
 /**
  * Checks that a mandatory field holds a value within its declared length.
  *
- * <p>Realises paragraph {@code 1215-EDIT-MANDATORY} at
- * {@code app/cbl/COACTUPC.cbl:L1824}, whose exit paragraph sits at
- * {@code app/cbl/COACTUPC.cbl:L1852}. A call site moves a label, a value, and a length into
- * working storage, then performs the paragraph. This class takes those three pieces directly.
+ * <p>Realises paragraph {@code 1215-EDIT-MANDATORY} at {@code app/cbl/COACTUPC.cbl:L1824}, whose
+ * exit paragraph sits at {@code app/cbl/COACTUPC.cbl:L1852}. A call site moves a label, a value,
+ * and a length into working storage, then performs the paragraph. This class takes those three
+ * pieces directly.
  *
- * <p>The not-supplied test at {@code app/cbl/COACTUPC.cbl:L1829-L1834} holds three
- * alternatives. The reference-modified substring equals {@code LOW-VALUES}, or it equals
- * {@code SPACES}, or {@code FUNCTION LENGTH(FUNCTION TRIM(...))} of it is zero. Any one of the
- * three yields the not-supplied verdict.
+ * <p>The not-supplied test at {@code app/cbl/COACTUPC.cbl:L1829-L1834} holds three alternatives.
+ * The reference-modified substring equals {@code LOW-VALUES}, or it equals {@code SPACES}, or
+ * {@code FUNCTION LENGTH(FUNCTION TRIM(...))} of it is zero. Any one of the three yields the
+ * not-supplied verdict.
  *
- * <p>Host widths: {@code WS-EDIT-VARIABLE-NAME PIC X(25)} at
- * {@code app/cbl/COACTUPC.cbl:L53}, {@code WS-EDIT-ALPHANUM-ONLY PIC X(256)} at
- * {@code app/cbl/COACTUPC.cbl:L61}, and {@code WS-EDIT-ALPHANUM-LENGTH PIC S9(4) COMP-3} at
- * {@code app/cbl/COACTUPC.cbl:L62}. A {@code MOVE} into {@code WS-EDIT-ALPHANUM-ONLY} pads on
- * the right with spaces, so a value shorter than its declared length is padded the same way
- * here.
+ * <p>Host widths: {@code WS-EDIT-VARIABLE-NAME PIC X(25)} at {@code app/cbl/COACTUPC.cbl:L53},
+ * {@code WS-EDIT-ALPHANUM-ONLY PIC X(256)} at {@code app/cbl/COACTUPC.cbl:L61}, and
+ * {@code WS-EDIT-ALPHANUM-LENGTH PIC S9(4) COMP-3} at {@code app/cbl/COACTUPC.cbl:L62}. A
+ * {@code MOVE} into {@code WS-EDIT-ALPHANUM-ONLY} pads on the right with spaces, so a value shorter
+ * than its declared length is padded the same way here.
  *
- * <p>This class tests presence only. Character class, numeric class, and maximum length each
- * belong to a separate paragraph and a separate class. The verdict carries at most one message,
- * matching the single {@code WS-RETURN-MSG} slot at {@code app/cbl/COACTUPC.cbl:L479}. Keeping
- * the first message of a pass is the caller's work.
- *
- * <p>Rationale for every choice in this file lives in
- * {@code card-platform/docs/decision-log.md}.
+ * <p>This class tests presence only. Character class, numeric class, and maximum length each belong
+ * to a separate paragraph and a separate class. The verdict carries at most one message, matching
+ * the single {@code WS-RETURN-MSG} slot at {@code app/cbl/COACTUPC.cbl:L479}. Keeping the first
+ * message of a pass is the caller's work.
  */
 public final class MandatoryFieldValidator {
 
@@ -43,7 +39,6 @@ public final class MandatoryFieldValidator {
     /** The character COBOL {@code SPACES} supplies, and the character a {@code MOVE} pads with. */
     private static final char SPACE_CHARACTER = ' ';
 
-    /** This class holds static members only. */
     private MandatoryFieldValidator() {
     }
 
@@ -104,7 +99,6 @@ public final class MandatoryFieldValidator {
      * then the literal, each delimited by size.
      *
      * @param fieldLabel the field name; may be {@code null}
-     * @return a failure verdict carrying the trimmed label and the literal
      */
     private static EditResult notSupplied(String fieldLabel) {
         return EditResult.failure(trimSpaces(fieldLabel) + NOT_SUPPLIED_SUFFIX);
@@ -118,8 +112,6 @@ public final class MandatoryFieldValidator {
      * {@code MOVE} into {@code WS-EDIT-ALPHANUM-ONLY PIC X(256)} performs.
      *
      * @param value  the submitted characters, never {@code null} and never empty
-     * @param length the declared field length, always one or above
-     * @return exactly {@code length} characters
      */
     private static String referenceModified(String value, int length) {
         if (value.length() >= length) {
@@ -135,8 +127,6 @@ public final class MandatoryFieldValidator {
      * expands to the width of the compared item.
      *
      * @param field    the reference-modified characters, never {@code null}
-     * @param expected the character every position must hold
-     * @return true when every position holds {@code expected}
      */
     private static boolean containsOnly(String field, char expected) {
         for (int index = 0; index < field.length(); index++) {

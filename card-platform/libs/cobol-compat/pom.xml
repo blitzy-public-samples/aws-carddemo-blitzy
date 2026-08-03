@@ -1,5 +1,4 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<!-- Rationale for every version, exclusion, and deviation: card-platform/docs/decision-log.md -->
 <project xmlns="http://maven.apache.org/POM/4.0.0"
          xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
          xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
@@ -26,8 +25,7 @@
     constants, a tolerant numeric parser, a date validator, and a Primary Account Number
     masker. Also holds three United States reference lists read from CSLKPCDY.cpy:
     telephone area codes, state codes, and state-plus-zip-prefix combinations. Every
-    arithmetic helper truncates toward zero. All six services and the equivalence tests
-    read these rules from here.
+    arithmetic helper truncates toward zero.
   </description>
 
   <!-- Language level. The framework parent defaults the compiler release to 17; these
@@ -38,8 +36,7 @@
   </properties>
 
   <!-- Test framework only. The compile classpath carries nothing beyond the Java
-       Development Kit. The version comes from the dependency bill of materials the
-       parent imports, which resolves junit-jupiter to 6.0.3. -->
+       Development Kit. -->
   <dependencies>
     <dependency>
       <groupId>org.junit.jupiter</groupId>

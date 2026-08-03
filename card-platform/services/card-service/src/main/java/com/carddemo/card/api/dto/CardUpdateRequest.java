@@ -13,11 +13,11 @@ import jakarta.validation.constraints.Pattern;
  * the {@code CCUP-NEW-EXPIRAION-DATE} subgroup opened at L309 holds the three expiry parts.
  *
  * <p>The three expiry parts stay separate. The card update program joins year, month and day with
- * hyphens into one ten-character date at {@code app/cbl/COCRDUPC.cbl:L1467-L1474}.
- * {@code CardUpdateService} performs that step.
+ * hyphens into one ten-character date at {@code app/cbl/COCRDUPC.cbl:L1467-L1474}, and the caller
+ * performs that step.
  *
- * <p>This record declares the shape and the constraints. {@code CardUpdateService} holds the edit
- * order and surfaces the first failing message. Every constraint below names a constant from
+ * <p>This record declares the shape and the constraints, and the caller holds the edit order and
+ * surfaces the first failing message. Every constraint below names a constant from
  * {@link CardValidationMessages}, so a new edit costs one annotation here and one constant there.
  *
  * <p>Two fields of the source payload are absent. The card number arrives as the path variable, and
@@ -25,12 +25,16 @@ import jakarta.validation.constraints.Pattern;
  * {@code CCUP-NEW-CARDID PIC X(16)} at {@code app/cbl/COCRDUPC.cbl:L305}. The source also declares a
  * card verification value on L306, and this record accepts no component for it.
  *
- * <p>Two edits absent from the source stay absent here. This record declares no card-number
+ * <p>One edit absent from the source stays absent here. This record declares no card-number
  * component, and the source tests a card number for sixteen digits only, at
- * {@code app/cbl/COCRDUPC.cbl:L194} and L784. The expiry day carries no constraint, and the
- * {@code expiryDay} component below records that evidence.
+ * {@code app/cbl/COCRDUPC.cbl:L784}.
  *
- * <p>{@code card-platform/docs/decision-log.md} carries an entry for each absence above.
+ * <p>The expiry day carries the width of its source field and no calendar rule. The source edits
+ * the name, the active status, the expiry month and the expiry year, and it edits no day, so this
+ * record adds no test of which days a month holds. It does bound the day to the two characters
+ * {@code CCUP-NEW-EXPDAY PIC X(2)} holds, because a 3270 field two characters wide cannot deliver a
+ * third character and a Representational State Transfer request can.
+ *
  *
  * @param embossedName cardholder name embossed on the card, from
  *        {@code CCUP-NEW-CRDNAME PIC X(50)} at {@code app/cbl/COCRDUPC.cbl:L308} and held as
@@ -56,13 +60,16 @@ import jakarta.validation.constraints.Pattern;
  *        L94, and paragraph {@code 1250-EDIT-EXPIRY-MON} reads it on L898. A missing value and an
  *        out-of-range value both take
  *        {@link CardValidationMessages#CARD_EXPIRY_MONTH_NOT_VALID}, set at L889 and at L904.
- * @param expiryDay two-digit expiry day, carried through with no edit, from
- *        {@code CCUP-NEW-EXPDAY PIC X(2)} at {@code app/cbl/COCRDUPC.cbl:L312}. The source edits the
- *        name, the active status, the expiry month and the expiry year, and it edits no day.
- *        Paragraph {@code 1260-EDIT-EXPIRY-YEAR-EXIT.} closes the edit chain at L945 and
+ * @param expiryDay two-digit expiry day, from {@code CCUP-NEW-EXPDAY PIC X(2)} at
+ *        {@code app/cbl/COCRDUPC.cbl:L312}. The source edits the name, the active status, the expiry
+ *        month and the expiry year, and it edits no day. Paragraph
+ *        {@code 1260-EDIT-EXPIRY-YEAR-EXIT.} closes the edit chain at L945 and
  *        {@code 2000-DECIDE-ACTION.} opens on L948, so no paragraph between them reaches the day.
- *        L621 moves the day in, L1471 joins it into the reassembled date, and this component carries
- *        no constraint.
+ *        L621 moves the day in and L1471 joins it into the reassembled date. The two constraints
+ *        below hold this component to that field's width and add no calendar rule: any pair of
+ *        digits passes, including 31 in a thirty-day month, exactly as the source accepts it. Both
+ *        take {@link CardValidationMessages#ADDITIVE_CARD_EXPIRY_DAY_WIDTH}, which carries no source
+ *        literal.
  * @param activeStatus one-character active status, from {@code CCUP-NEW-CRDSTCD PIC X(1)} at
  *        {@code app/cbl/COCRDUPC.cbl:L313}. Accepts upper-case {@code Y} and upper-case {@code N},
  *        from {@code 88 FLG-YES-NO-VALID VALUES 'Y', 'N'.} at {@code app/cbl/COCRDUPC.cbl:L91}.
@@ -92,6 +99,9 @@ public record CardUpdateRequest(
         @Max(value = 12, message = CardValidationMessages.CARD_EXPIRY_MONTH_NOT_VALID)
         String expiryMonth,
 
+        @NotBlank(message = CardValidationMessages.ADDITIVE_CARD_EXPIRY_DAY_WIDTH)
+        @Pattern(regexp = "[0-9]{2}",
+                message = CardValidationMessages.ADDITIVE_CARD_EXPIRY_DAY_WIDTH)
         String expiryDay,
 
         @NotBlank(message = CardValidationMessages.CARD_STATUS_MUST_BE_YES_NO)

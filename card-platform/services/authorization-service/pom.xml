@@ -1,5 +1,4 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<!-- Rationale for every version and exclusion: card-platform/docs/decision-log.md -->
 <project xmlns="http://maven.apache.org/POM/4.0.0"
          xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
          xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
@@ -18,9 +17,9 @@
 
   <name>Authorization Service</name>
   <description>
-    This module owns the POST /authorizations endpoint and is the only synchronous
-    entry point on the platform. The service resolves a card to an account, applies
-    four decline rules, and writes one event to the outbox per call.
+    Spring Boot application module for the CardDemo authorization service. Declares the
+    web, persistence, messaging and observability dependencies the service needs, and
+    packages an executable archive.
   </description>
 
   <!-- Language level. The parent defaults to 17; these two properties select 25. -->
@@ -42,12 +41,15 @@
       <artifactId>cobol-compat</artifactId>
     </dependency>
 
-    <!-- Versions below come from the bill of materials that the aggregator imports.
-         The one exception carries its version inline. -->
+    <!-- Every version below comes from the aggregator, either from the imported
+         bill of materials or from its dependency management. No version element
+         appears in this file. -->
 
     <!-- The web surface, persistence, bean constraints, and the health and metrics
-         endpoints. spring-boot-starter-web also supplies the client for reads from
-         the account and card endpoints. -->
+         endpoints. spring-boot-starter-web also supplies RestClient, which reads
+         the account and card endpoints named by carddemo.services.account.base-url
+         and carddemo.services.card.base-url in src/main/resources/application.yml.
+         Both reads are synchronous and neither writes. -->
     <dependency>
       <groupId>org.springframework.boot</groupId>
       <artifactId>spring-boot-starter-web</artifactId>
@@ -66,8 +68,7 @@
     </dependency>
 
     <!-- Spring Boot 4 ships auto-configuration in per-technology starters.
-         spring-boot-starter-kafka supplies that auto-configuration, and
-         spring-kafka supplies the producer and dead-letter routing types. -->
+         spring-boot-starter-kafka supplies it; spring-kafka alone supplies none. -->
     <dependency>
       <groupId>org.springframework.boot</groupId>
       <artifactId>spring-boot-starter-kafka</artifactId>
@@ -98,7 +99,8 @@
     </dependency>
 
     <!-- Metric exposition and structured log output. The encoder sits outside the
-         bill of materials and carries its version here. -->
+         bill of materials, so the aggregator's dependency management pins it and
+         this module inherits that version. -->
     <dependency>
       <groupId>io.micrometer</groupId>
       <artifactId>micrometer-registry-prometheus</artifactId>
@@ -106,7 +108,6 @@
     <dependency>
       <groupId>net.logstash.logback</groupId>
       <artifactId>logstash-logback-encoder</artifactId>
-      <version>9.0</version>
     </dependency>
 
     <!-- Test scope. The Testcontainers 2.x module names carry a testcontainers-
@@ -125,9 +126,9 @@
       <groupId>org.springframework.kafka</groupId>
       <artifactId>spring-kafka-test</artifactId>
       <scope>test</scope>
-      <!-- Keeps the cache the aggregator bans off the test classpath. Only the
-           tiered-storage index cache reaches it, and the embedded broker never
-           loads that. -->
+      <!-- Keeps the cache the aggregator bans off the test classpath. The
+           embedded broker reaches it only through the tiered-storage index
+           cache, which these tests never load. -->
       <exclusions>
         <exclusion>
           <groupId>com.github.ben-manes.caffeine</groupId>
@@ -165,8 +166,7 @@
 
   <build>
     <plugins>
-      <!-- This module is an application, so it activates the Spring Boot plugin.
-           The aggregator pins the version. -->
+      <!-- Executable-archive packaging. The aggregator pins the version. -->
       <plugin>
         <groupId>org.springframework.boot</groupId>
         <artifactId>spring-boot-maven-plugin</artifactId>

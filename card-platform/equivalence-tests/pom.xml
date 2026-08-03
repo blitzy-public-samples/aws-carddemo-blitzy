@@ -4,8 +4,6 @@
          xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
   <modelVersion>4.0.0</modelVersion>
 
-  <!-- Rationale for every version, exclusion, and deviation: card-platform/docs/decision-log.md -->
-
   <!-- The aggregator sits one level up. equivalence-tests is a direct child of card-platform. -->
   <parent>
     <groupId>com.carddemo</groupId>
@@ -19,9 +17,8 @@
 
   <name>CardDemo Equivalence Tests</name>
   <description>
-    Replays the checked-in CardDemo sample fixtures through the six services, then compares
-    balances, category balances, decline reasons, and validation messages against the
-    documented COBOL business rules. Failsafe runs every case during mvn verify.
+    Provides fixed-width fixture loading and copybook parsing support for the equivalence
+    suite. Failsafe runs the suite during mvn verify.
   </description>
 
   <!-- The framework parent defaults the compiler release to 17. These two properties pin release 25. -->
@@ -138,39 +135,23 @@
   <build>
     <plugins>
 
-      <!-- This module declares all nine platform modules at test scope, which the inherited
-           bannedDependencies rule rejects. Matching the identifier enforce-platform-rules unbinds
-           that execution here. enforce-toolchain keeps the Maven and Java version checks. -->
+      <!-- This module declares the other eight platform modules at test scope, which the service-artifact
+           ban rejects. Matching the identifier enforce-service-independence unbinds that one
+           execution here. The inherited enforce-toolchain-and-prohibited execution stays bound, so
+           this module still fails on a prohibited direct dependency and on a wrong Maven or Java
+           version. -->
       <plugin>
         <groupId>org.apache.maven.plugins</groupId>
         <artifactId>maven-enforcer-plugin</artifactId>
         <executions>
           <execution>
-            <id>enforce-platform-rules</id>
+            <id>enforce-service-independence</id>
             <phase>none</phase>
-          </execution>
-          <execution>
-            <id>enforce-toolchain</id>
-            <phase>validate</phase>
-            <goals>
-              <goal>enforce</goal>
-            </goals>
-            <configuration>
-              <fail>true</fail>
-              <rules combine.self="override">
-                <requireMavenVersion>
-                  <version>[3.9.16,4.0.0)</version>
-                </requireMavenVersion>
-                <requireJavaVersion>
-                  <version>[25,)</version>
-                </requireJavaVersion>
-              </rules>
-            </configuration>
           </execution>
         </executions>
       </plugin>
 
-      <!-- Surefire leaves the *EquivalenceTest classes to Failsafe. -->
+      <!-- Surefire leaves the *EquivalenceTest name pattern to Failsafe. -->
       <plugin>
         <groupId>org.apache.maven.plugins</groupId>
         <artifactId>maven-surefire-plugin</artifactId>
@@ -181,22 +162,27 @@
         </configuration>
       </plugin>
 
-      <!-- Failsafe runs the *EquivalenceTest classes at integration-test and fails the build at verify. -->
+      <!-- Failsafe runs the *EquivalenceTest classes at integration-test and fails the build at
+           verify.
+
+           The execution below reuses the identifier the parent declares in pluginManagement, so
+           Maven merges the two into one execution instead of adding a second. The include sits
+           inside that execution rather than at plugin level: a plugin-level include merges into
+           every execution of the plugin, so a second execution added later would select the same
+           classes again and run each one twice.
+
+           EquivalenceSuiteExecutionConfigurationTest holds both properties. -->
       <plugin>
         <groupId>org.apache.maven.plugins</groupId>
         <artifactId>maven-failsafe-plugin</artifactId>
-        <configuration>
-          <includes>
-            <include>**/*EquivalenceTest.java</include>
-          </includes>
-        </configuration>
         <executions>
           <execution>
-            <id>run-equivalence-suite</id>
-            <goals>
-              <goal>integration-test</goal>
-              <goal>verify</goal>
-            </goals>
+            <id>integration-test</id>
+            <configuration>
+              <includes>
+                <include>**/*EquivalenceTest.java</include>
+              </includes>
+            </configuration>
           </execution>
         </executions>
       </plugin>

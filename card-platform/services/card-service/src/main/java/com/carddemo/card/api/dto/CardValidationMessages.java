@@ -22,12 +22,11 @@ package com.carddemo.card.api.dto;
  * 1404 and 1445 write two spaces after {@code IF}, so a search for the single-space
  * form finds only twelve of them.</p>
  *
- * <p>This class holds message text and nothing else. {@code CardUpdateService} holds
- * the edit order and picks the first failing message.</p>
+ * <p>This class holds message text and nothing else. The caller holds the edit order
+ * and picks the first failing message.</p>
  *
  * <p>Constants appear in source line order. The six constants in the last group of
- * this class never reach a caller, and
- * {@code card-platform/docs/business-rule-flags.md} carries them as findings.</p>
+ * this class never reach a caller.</p>
  */
 public final class CardValidationMessages {
 
@@ -246,6 +245,27 @@ public final class CardValidationMessages {
      * literal.</p>
      */
     public static final String NEVER_EMITTED_CODING_TO_BE_DONE = "Looks Good.... so far";
+
+    // Additive text. The prefix marks the one constant in this class that no CardDemo program
+    // carries. It states a transport width and nothing about the calendar.
+
+    /**
+     * ADDITIVE. Text for an expiry day outside the transport width.
+     *
+     * <p>No source literal exists. The card update program moves
+     * {@code CCUP-NEW-EXPDAY PIC X(2)} at {@code app/cbl/COCRDUPC.cbl:L312} into the reassembled
+     * date at {@code app/cbl/COCRDUPC.cbl:L1471} and edits it nowhere: paragraph
+     * {@code 1260-EDIT-EXPIRY-YEAR-EXIT.} closes the edit chain at L945 and
+     * {@code 2000-DECIDE-ACTION.} opens at L948, so no paragraph between them reaches the day. A
+     * 3270 field two characters wide cannot deliver a third character, and a Representational State
+     * Transfer request can, so this text answers a value the source screen could not have
+     * produced.</p>
+     *
+     * <p>This constant adds no calendar rule. It states the two-character width of the source field
+     * carries the entry for the addition.</p>
+     */
+    public static final String ADDITIVE_CARD_EXPIRY_DAY_WIDTH =
+            "Card expiry day must be two digits";
 
     /** Holds constants only, so no instance is created. */
     private CardValidationMessages() {

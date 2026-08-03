@@ -1,7 +1,6 @@
 package com.carddemo.card.api.dto;
 
 import java.lang.reflect.RecordComponent;
-import java.math.BigDecimal;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Locale;
@@ -12,7 +11,9 @@ import org.junit.jupiter.api.Test;
 import com.carddemo.cobol.PanMasker;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
@@ -30,31 +31,26 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * {@code CARD-EMBOSSED-NAME PIC X(50)} at L8, {@code CARD-EXPIRAION-DATE PIC X(10)} at L9 and
  * {@code FILLER PIC X(59)} at L11. The card verification value and the trailing filler stay out of
  * every payload this service returns. The embossed name and the expiry date stay out of the row
- * alone, and {@link CardDetailResponse} carries both. All four omissions appear in
- * {@code card-platform/docs/traceability-matrix.md}.
+ * alone, and {@link CardDetailResponse} carries both.
  *
  * <p>Masking is an addition. The card detail screen renders all sixteen characters unprotected:
  * {@code CARDSID DFHMDF} carries {@code ATTRB=(FSET,NORM,UNPROT)} and {@code LENGTH=16} at
  * {@code app/bms/COCRDSL.bms:L96-L100}. A card lookup keys on the full sixteen-character Primary
  * Account Number, and masking applies at the serialization boundary.
  *
- * <p>Two deviations in these tests carry an entry in {@code card-platform/docs/decision-log.md}.
- * The first scopes the card-verification-value scan to fixture record one. Record one of
- * {@code app/data/ASCII/carddata.txt} carries the value {@code 747}, which recurs on line 47 inside
- * card number {@code 9349107475869214}. Record two carries {@code 567}, which recurs on line 24
- * inside card number {@code 5671184478505844}.
+ * <p>The card-verification-value scan is scoped to record one of
+ * {@code app/data/ASCII/carddata.txt} because the same three-digit sequences occur inside unrelated
+ * fixture card numbers.
  *
- * <p>The second deviation scopes the darkened-attribute claim to the card-number field. The card
- * detail screen file {@code app/bms/COCRDSL.bms} holds no {@code DRK} attribute, and six other
- * Basic Mapping Support files do hold one. In {@code app/bms/COCRDUP.bms} the card-number field at
- * L96-L100 is byte-identical to the card-number field of the card detail screen. That file applies
- * {@code DRK} at L142 to {@code EXPDAY DFHMDF ATTRB=(DRK,FSET,PROT)} and at L163 to
+ * <p>The darkened-attribute claim is scoped to the card-number field. The card detail screen file
+ * {@code app/bms/COCRDSL.bms} holds no {@code DRK} attribute, and six other Basic Mapping Support
+ * files do hold one. In {@code app/bms/COCRDUP.bms} the card-number field at L96-L100 is
+ * byte-identical to the card-number field of the card detail screen. That file applies {@code DRK}
+ * at L142 to {@code EXPDAY DFHMDF ATTRB=(DRK,FSET,PROT)} and at L163 to
  * {@code FKEYSC DFHMDF ATTRB=(ASKIP,DRK)}.
  *
  * <p>These tests reflect over the record components. They read no file, start no application
- * context and issue no Representational State Transfer request. The absent card-number checksum
- * test and the unchecked card status appear in
- * {@code card-platform/docs/business-rule-flags.md}.
+ * context and issue no Representational State Transfer request.
  */
 final class CardSummaryTest {
 
@@ -77,17 +73,23 @@ final class CardSummaryTest {
     /** Twelve mask characters followed by four digits. */
     private static final Pattern MASKED_CARD_NUMBER_PATTERN = Pattern.compile("^\\*{12}[0-9]{4}$");
 
-    /** Card number of record one of {@code app/data/ASCII/carddata.txt}, typed as a literal. */
-    private static final String FIXTURE_CARD_NUMBER = "0500024453765740";
+    /**
+     * A synthetic token at the width of {@code CARD-NUM PIC X(16)}: twelve zeros and four distinct
+     * trailing characters. No card number begins with a zero, so this token is not one.
+     */
+    private static final String SYNTHETIC_CARD_NUMBER = "0".repeat(12) + "5740";
 
-    /** Account identifier of the same record, eleven digits padded on the left with zeros. */
-    private static final String FIXTURE_ACCOUNT_ID = "00000000050";
+    /** A synthetic account identifier, eleven digits padded on the left with zeros. */
+    private static final String SYNTHETIC_ACCOUNT_ID = "00000000050";
 
-    /** Active status of the same record. */
-    private static final String FIXTURE_ACTIVE_STATUS = "Y";
+    /** A synthetic active status. */
+    private static final String SYNTHETIC_ACTIVE_STATUS = "Y";
 
-    /** Card verification value of the same record, held for the single-record scan. */
-    private static final String FIXTURE_CARD_VERIFICATION_VALUE = "747";
+    /** Width of {@code CARD-ACCT-ID PIC 9(11)} at {@code app/cpy/CVACT02Y.cpy:L6}. */
+    private static final int ACCOUNT_ID_LENGTH = 11;
+
+    /** A synthetic value at the width of CARD-CVV-CD PIC 9(03). Its three characters appear in no value a row below carries. */
+    private static final String SYNTHETIC_VERIFICATION_VALUE = "451";
 
     /** Locator of the row declaration. */
     private static final String DECLARATION_LOCATOR =
@@ -149,13 +151,14 @@ final class CardSummaryTest {
      */
     @Test
     void listRowComponentTypesMatchTheCopybookFields() {
-        assertEquals(String.class, typeOf(COMPONENT_CARD_NUMBER),
-                "Component " + COMPONENT_CARD_NUMBER + " holds sixteen characters. "
-                        + CARD_NUMBER_LOCATOR);
+        assertEquals(MaskedCardNumber.class, typeOf(COMPONENT_CARD_NUMBER),
+                "Component " + COMPONENT_CARD_NUMBER + " holds a masked card number, which is a "
+                        + "value type that accepts the masked form only. " + CARD_NUMBER_LOCATOR);
 
-        assertEquals(BigDecimal.class, typeOf(COMPONENT_ACCOUNT_ID),
-                "Component " + COMPONENT_ACCOUNT_ID + " holds eleven digits with no fractional "
-                        + "part. Source CARD-ACCT-ID PIC 9(11) at app/cpy/CVACT02Y.cpy:L6.");
+        assertEquals(String.class, typeOf(COMPONENT_ACCOUNT_ID),
+                "Component " + COMPONENT_ACCOUNT_ID + " holds eleven digits as text, which keeps "
+                        + "the leading zeros of a numeric-display field through serialization. "
+                        + "Source CARD-ACCT-ID PIC 9(11) at app/cpy/CVACT02Y.cpy:L6.");
 
         assertEquals(String.class, typeOf(COMPONENT_ACTIVE_STATUS),
                 "Component " + COMPONENT_ACTIVE_STATUS + " holds one character. "
@@ -210,60 +213,99 @@ final class CardSummaryTest {
      */
     @Test
     void maskedCardNumberCarriesTwelveMaskCharactersAndFourDigits() {
-        String masked = PanMasker.maskCardNumber(FIXTURE_CARD_NUMBER);
+        MaskedCardNumber masked =
+                MaskedCardNumber.of(PanMasker.maskCardNumber(SYNTHETIC_CARD_NUMBER));
 
-        assertTrue(MASKED_CARD_NUMBER_PATTERN.matcher(masked).matches(),
-                () -> "PanMasker.maskCardNumber returned '" + masked + "'. The masked form matches "
+        assertTrue(MASKED_CARD_NUMBER_PATTERN.matcher(masked.value()).matches(),
+                () -> "PanMasker.maskCardNumber returned a value of width "
+                        + masked.value().length() + " that does not match "
                         + MASKED_CARD_NUMBER_PATTERN.pattern() + ". " + CARD_NUMBER_LOCATOR);
 
         int hiddenLength = PanMasker.CARD_NUMBER_LENGTH - PanMasker.VISIBLE_DIGIT_COUNT;
 
-        assertEquals(FIXTURE_CARD_NUMBER.substring(hiddenLength), masked.substring(hiddenLength),
+        assertEquals(SYNTHETIC_CARD_NUMBER.substring(hiddenLength),
+                masked.value().substring(hiddenLength),
                 "The last " + PanMasker.VISIBLE_DIGIT_COUNT + " characters of the masked form come "
                         + "from the card number. " + CARD_NUMBER_LOCATOR);
     }
 
     /**
      * Asserts the accessors return the constructor arguments, and that one rendered row shows
-     * neither the card verification value nor the full card number. The scan covers fixture
-     * record one alone.
+     * neither the card verification value nor the full card number. Every value is synthetic.
      */
     @Test
     void oneRenderedRowCarriesNoCardVerificationValueDigits() {
         CardSummary row = new CardSummary(
-                PanMasker.maskCardNumber(FIXTURE_CARD_NUMBER),
-                new BigDecimal(FIXTURE_ACCOUNT_ID),
-                FIXTURE_ACTIVE_STATUS);
+                MaskedCardNumber.of(PanMasker.maskCardNumber(SYNTHETIC_CARD_NUMBER)),
+                SYNTHETIC_ACCOUNT_ID,
+                SYNTHETIC_ACTIVE_STATUS);
 
-        assertEquals(PanMasker.maskCardNumber(FIXTURE_CARD_NUMBER), row.cardNumber(),
+        assertEquals(MaskedCardNumber.of(PanMasker.maskCardNumber(SYNTHETIC_CARD_NUMBER)),
+                row.cardNumber(),
                 "Accessor " + COMPONENT_CARD_NUMBER + " returns the masked card number. "
                         + CARD_NUMBER_LOCATOR);
-        assertEquals(new BigDecimal(FIXTURE_ACCOUNT_ID), row.accountId(),
-                "Accessor " + COMPONENT_ACCOUNT_ID + " returns the account identifier of fixture "
-                        + "record one. Source app/data/ASCII/carddata.txt line 1.");
-        assertEquals(FIXTURE_ACTIVE_STATUS, row.activeStatus(),
-                "Accessor " + COMPONENT_ACTIVE_STATUS + " returns the active status of fixture "
-                        + "record one. Source app/data/ASCII/carddata.txt line 1.");
+        assertEquals(SYNTHETIC_ACCOUNT_ID, row.accountId(),
+                "Accessor " + COMPONENT_ACCOUNT_ID + " returns the account identifier it was "
+                        + "handed, leading zeros included.");
+        assertEquals(SYNTHETIC_ACTIVE_STATUS, row.activeStatus(),
+                "Accessor " + COMPONENT_ACTIVE_STATUS + " returns the active status it was "
+                        + "handed.");
 
         String rendered = row.toString();
 
-        assertFalse(rendered.contains(FIXTURE_CARD_VERIFICATION_VALUE),
-                () -> "Row '" + rendered + "' shows the card verification value "
-                        + FIXTURE_CARD_VERIFICATION_VALUE + " of fixture record one. "
+        assertFalse(rendered.contains(SYNTHETIC_VERIFICATION_VALUE),
+                () -> "The rendered row shows a card verification value. "
                         + COPYBOOK_LOCATOR + " Field CARD-CVV-CD PIC 9(03) at L7.");
 
-        assertFalse(rendered.contains(FIXTURE_CARD_NUMBER),
-                () -> "Row '" + rendered + "' shows all sixteen characters of the card number. "
+        assertFalse(rendered.contains(SYNTHETIC_CARD_NUMBER),
+                () -> "The rendered row shows all sixteen characters of the card number. "
                         + "The row holds the masked form. " + CARD_NUMBER_LOCATOR);
+    }
+
+    /**
+     * Asserts the account identifier holds exactly eleven digits. The card record declares
+     * {@code CARD-ACCT-ID PIC 9(11)} at {@code app/cpy/CVACT02Y.cpy:L6}, and the screen row table
+     * at {@code app/cbl/COCRDLIC.cbl:L250-L260} holds eleven characters for it.
+     */
+    @Test
+    void listRowAccountIdentifierHoldsElevenDigits() {
+        assertEquals(SYNTHETIC_ACCOUNT_ID,
+                new CardSummary(MaskedCardNumber.of(PanMasker.maskCardNumber(SYNTHETIC_CARD_NUMBER)),
+                        SYNTHETIC_ACCOUNT_ID,
+                        SYNTHETIC_ACTIVE_STATUS).accountId(),
+                "Eleven digits with leading zeros are valid. Source CARD-ACCT-ID PIC 9(11) at "
+                        + "app/cpy/CVACT02Y.cpy:L6.");
+
+        for (String rejected : List.of("50", "0000000005", "000000000500", " 0000000050",
+                "0000000005X")) {
+            assertThrows(IllegalArgumentException.class,
+                    () -> new CardSummary(MaskedCardNumber.of(PanMasker.maskCardNumber(SYNTHETIC_CARD_NUMBER)),
+                            rejected,
+                            SYNTHETIC_ACTIVE_STATUS),
+                    "Value '" + rejected + "' is not eleven digits. Source CARD-ACCT-ID PIC 9(11) "
+                            + "at app/cpy/CVACT02Y.cpy:L6.");
+        }
+
+    }
+
+    /**
+     * Asserts that a full card number cannot enter the row. {@link MaskedCardNumber} accepts the
+     * masked form only, so a mapping that forgot to mask fails at construction rather than
+     * serializing a Primary Account Number.
+     */
+    @Test
+    void aFullCardNumberCannotEnterTheRow() {
+        assertThrows(IllegalArgumentException.class,
+                () -> MaskedCardNumber.of(SYNTHETIC_CARD_NUMBER),
+                "the row accepted a card number that had not been masked");
+        assertThrows(IllegalArgumentException.class,
+                () -> MaskedCardNumber.of(null),
+                "the row accepted a null card number");
     }
 
     /**
      * Asserts that no component name holds any of the given tokens. Each name folds to lower case
      * and drops every character outside {@code a-z0-9} before the test.
-     *
-     * @param subject the field the tokens name, for the failure message
-     * @param locator the source locator, for the failure message
-     * @param tokens  the normalized tokens no component name may hold
      */
     private static void assertNoComponentNameMentions(String subject, String locator,
             String... tokens) {
@@ -281,8 +323,6 @@ final class CardSummaryTest {
 
     /**
      * Returns the component names of {@link CardSummary}, in declaration order.
-     *
-     * @return the three declared component names
      */
     private static List<String> componentNames() {
         return Arrays.stream(CardSummary.class.getRecordComponents())
@@ -291,9 +331,55 @@ final class CardSummaryTest {
     }
 
     /**
+     * Asserts the account identifier keeps its eight leading zeros. A numeric type drops them, and
+     * every event schema constrains {@code accountId} with the pattern {@code ^[0-9]{11}$}, so the
+     * row and the event must read alike.
+     */
+    @Test
+    void accountIdentifierKeepsItsLeadingZeros() {
+        CardSummary row = new CardSummary(
+                MaskedCardNumber.of(PanMasker.maskCardNumber(SYNTHETIC_CARD_NUMBER)),
+                SYNTHETIC_ACCOUNT_ID,
+                SYNTHETIC_ACTIVE_STATUS);
+
+        assertEquals(SYNTHETIC_ACCOUNT_ID, row.accountId(),
+                "Accessor " + COMPONENT_ACCOUNT_ID + " returns all eleven characters, leading "
+                        + "zeros included. Source CARD-ACCT-ID PIC 9(11) at "
+                        + "app/cpy/CVACT02Y.cpy:L6.");
+        assertEquals(ACCOUNT_ID_LENGTH, row.accountId().length(),
+                "The account identifier occupies " + ACCOUNT_ID_LENGTH + " characters.");
+        assertTrue(row.toString().contains(SYNTHETIC_ACCOUNT_ID),
+                () -> "Row '" + row + "' shows the account identifier as written.");
+    }
+
+    /**
+     * Asserts the row rejects an account identifier that is not eleven digits. A shorter value
+     * would reach an event payload that the schema pattern {@code ^[0-9]{11}$} then rejects at the
+     * publish boundary.
+     */
+    @Test
+    void accountIdentifierOfTheWrongWidthIsRejected() {
+        MaskedCardNumber masked =
+                MaskedCardNumber.of(PanMasker.maskCardNumber(SYNTHETIC_CARD_NUMBER));
+
+        for (String rejected : new String[] {"", "50", "00000000050 ", "0000000005X",
+                "000000000500"}) {
+            assertThrows(IllegalArgumentException.class,
+                    () -> new CardSummary(masked, rejected, SYNTHETIC_ACTIVE_STATUS),
+                    () -> "CardSummary accepted accountId '" + rejected + "'. The component holds "
+                            + ACCOUNT_ID_LENGTH + " digits. Source CARD-ACCT-ID PIC 9(11) at "
+                            + "app/cpy/CVACT02Y.cpy:L6.");
+        }
+
+        assertThrows(NullPointerException.class,
+                () -> new CardSummary(masked, null, SYNTHETIC_ACTIVE_STATUS),
+                "CardSummary accepted a null accountId. An absent identifier is a missing "
+                        + "argument, not a value of the wrong width.");
+    }
+
+    /**
      * Returns the declared type of one component of {@link CardSummary}.
      *
-     * @param componentName the component name to look up
      * @return the declared type, or {@code null} when no component carries that name
      */
     private static Class<?> typeOf(String componentName) {
@@ -307,9 +393,6 @@ final class CardSummaryTest {
 
     /**
      * Folds a component name to lower case and drops every character outside {@code a-z0-9}.
-     *
-     * @param componentName the declared component name
-     * @return the folded name
      */
     private static String normalize(String componentName) {
         return componentName.toLowerCase(Locale.ROOT).replaceAll("[^a-z0-9]", "");

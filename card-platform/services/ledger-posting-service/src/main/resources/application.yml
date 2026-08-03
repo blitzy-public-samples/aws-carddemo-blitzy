@@ -2,8 +2,6 @@
 # Every value reads an environment variable and falls back to the default that
 # card-platform/.env.example documents.
 # Source: app/cbl/CBTRN02C.cbl, invoked at app/jcl/POSTTRAN.jcl:L23.
-# Source-to-target mapping: card-platform/docs/traceability-matrix.md
-# Rationale for every setting: card-platform/docs/decision-log.md
 
 spring:
   application:
@@ -14,11 +12,14 @@ spring:
   datasource:
     url: "${SPRING_DATASOURCE_URL:jdbc:postgresql://${POSTGRES_HOST:postgres}:${POSTGRES_PORT:5432}/${LEDGER_DB_NAME:carddemo_ledger}?currentSchema=${LEDGER_DB_SCHEMA:ledger_service}}"
     username: "${SPRING_DATASOURCE_USERNAME:${POSTGRES_USER:carddemo}}"
-    password: "${SPRING_DATASOURCE_PASSWORD:${POSTGRES_PASSWORD:carddemo}}"
+    # No fallback. An unset password stops start-up rather than signing on under a
+    # password this repository publishes. docker-compose.yml sets
+    # SPRING_DATASOURCE_PASSWORD; a direct run sets POSTGRES_PASSWORD.
+    password: "${SPRING_DATASOURCE_PASSWORD:${POSTGRES_PASSWORD}}"
     driver-class-name: org.postgresql.Driver
 
-  # Jakarta Persistence API (JPA) settings. The entity mapping is validated
-  # against the migrated schema at startup. Flyway owns every schema object.
+  # Jakarta Persistence API (JPA) settings. Hibernate validates its mapping
+  # against the migrated schema at startup and writes no schema object.
   jpa:
     hibernate:
       ddl-auto: validate
@@ -30,7 +31,7 @@ spring:
         auto_quote_keyword: true
 
   # Schema migration. Flyway creates the schema when absent, then applies the
-  # Data Definition Language (DDL) migrations this module ships.
+  # Data Definition Language (DDL) migrations under db/migration.
   flyway:
     enabled: true
     schemas: "${SPRING_FLYWAY_SCHEMAS:${LEDGER_DB_SCHEMA:ledger_service}}"
@@ -51,22 +52,27 @@ spring:
         enable.idempotence: true
         max.in.flight.requests.per.connection: 5
 
-    # Manual acknowledgement, with automatic commit disabled. This service reads
-    # under a group of its own.
+    # Manual acknowledgement, with automatic commit disabled, under a group of
+    # this service's own.
     consumer:
       group-id: "${SPRING_KAFKA_CONSUMER_GROUP_ID:${GROUP_LEDGER_POSTING:ledger-posting}}"
       enable-auto-commit: false
       auto-offset-reset: "${SPRING_KAFKA_CONSUMER_AUTO_OFFSET_RESET:earliest}"
       key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
-      # ErrorHandlingDeserializer wraps the schema-validating delegate below.
+      # ErrorHandlingDeserializer wraps the delegate named below, so a failure
+      # raised inside poll surfaces as a record the error handler can route.
       value-deserializer: org.springframework.kafka.support.serializer.ErrorHandlingDeserializer
       properties:
         spring.deserializer.value.delegate.class: com.carddemo.events.serde.JsonSchemaValidatingDeserializer
 
+    # manual_immediate commits the offset the moment the listener acknowledges, which
+    # is after its own writes and its processed-event marker commit. Plain manual
+    # queues the acknowledgement until the whole poll batch finishes, so a crash
+    # mid-batch redelivers work this service already committed.
     listener:
-      ack-mode: manual
+      ack-mode: manual_immediate
 
-# Settings the messaging, outbox and observability classes bind.
+# Properties this module owns.
 carddemo:
   kafka:
     topics:
@@ -93,20 +99,27 @@ server:
   port: 8080
 
 management:
+  # /actuator answers on this port and never on the service port above, so a
+  # client of the Representational State Transfer (REST) surface reaches no
+  # runtime, database or broker internals. docker-compose.yml publishes this port
+  # on the loopback address alone.
+  server:
+    port: ${MANAGEMENT_PORT:9080}
   endpoints:
     web:
       exposure:
-        include: "${MANAGEMENT_ENDPOINTS_WEB_EXPOSURE_INCLUDE:${MANAGEMENT_ENDPOINTS:health,info,metrics,prometheus}}"
+        include: "${MANAGEMENT_ENDPOINTS_WEB_EXPOSURE_INCLUDE:${MANAGEMENT_ENDPOINTS:health,metrics,prometheus}}"
   prometheus:
     metrics:
       export:
         enabled: true
 
-# Structured console output. Metric names are constants in ObservabilityConfig.
+# Structured console output. This module carries no logging configuration file.
 logging:
   structured:
     format:
       console: logstash
   level:
     root: "${LOGGING_LEVEL_ROOT:${LOG_LEVEL:INFO}}"
-    com.carddemo: "${LOGGING_LEVEL_COM_CARDDEMO:${LOG_LEVEL_CARDDEMO:DEBUG}}"
+    # INFO by default. A DEBUG default retains identifiers in centralized logs.
+    com.carddemo: "${LOGGING_LEVEL_COM_CARDDEMO:${LOG_LEVEL_CARDDEMO:INFO}}"

@@ -10,16 +10,15 @@ import java.time.LocalDate;
  * {@code app/cbl/COCRDSLC.cbl} displays the same five values, and the card update
  * program {@code app/cbl/COCRDUPC.cbl} writes them.
  *
- * <p>The {@code maskedCardNumber} component holds the masked value. The card
- * service reads a card by its full sixteen-character Primary Account Number, which
- * arrives as the path variable. Masking runs at the serialization boundary, after
- * the read.
+ * <p>The {@code maskedCardNumber} component is typed {@link MaskedCardNumber}, which accepts the
+ * masked form only, so this response cannot hold a full Primary Account Number (PAN). The card
+ * service reads a card by its full sixteen-character PAN, which arrives as the path variable, and
+ * masks with {@code com.carddemo.cobol.PanMasker.maskCardNumber} when it builds this response.
+ * {@link MaskedCardNumber} serializes as a plain string, so the response body is unchanged by the
+ * type.
  *
- * <p>The omitted source fields and the corrected spelling of the expiration date
- * appear in {@code card-platform/docs/traceability-matrix.md}.
- *
- * @param maskedCardNumber masked form of the card number. Source
- *        {@code CARD-NUM PIC X(16)} at {@code app/cpy/CVACT02Y.cpy:L5}.
+ * @param maskedCardNumber masked form of the card number, which a raw card number cannot satisfy.
+ *        Source {@code CARD-NUM PIC X(16)} at {@code app/cpy/CVACT02Y.cpy:L5}.
  * @param accountId eleven-digit account identifier, padded on the left with zeros.
  *        Source {@code CARD-ACCT-ID PIC 9(11)} at {@code app/cpy/CVACT02Y.cpy:L6}.
  * @param embossedName cardholder name embossed on the card, up to fifty
@@ -34,7 +33,7 @@ import java.time.LocalDate;
  *        {@code CARD-ACTIVE-STATUS PIC X(01)} at {@code app/cpy/CVACT02Y.cpy:L10}.
  */
 public record CardDetailResponse(
-        String maskedCardNumber,
+        MaskedCardNumber maskedCardNumber,
         String accountId,
         String embossedName,
         LocalDate expirationDate,

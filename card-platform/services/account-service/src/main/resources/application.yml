@@ -1,6 +1,4 @@
-# Runtime configuration for account-service. The service reads and updates accounts
-# and customers, and closes the billing cycle for one account.
-# Rationale for every value below: card-platform/docs/decision-log.md
+# Runtime configuration for account-service.
 
 server:
   # Port inside the container. Dockerfile and docker-compose.yml probe
@@ -16,11 +14,14 @@ spring:
   datasource:
     url: ${SPRING_DATASOURCE_URL:jdbc:postgresql://${POSTGRES_HOST:postgres}:${POSTGRES_PORT:5432}/${ACCOUNT_DB_NAME:carddemo_account}?currentSchema=${ACCOUNT_DB_SCHEMA:account_service}}
     username: ${SPRING_DATASOURCE_USERNAME:${POSTGRES_USER:carddemo}}
-    password: ${SPRING_DATASOURCE_PASSWORD:${POSTGRES_PASSWORD:carddemo}}
+    # No fallback. An unset password stops start-up rather than signing on under a
+    # password this repository publishes. docker-compose.yml sets
+    # SPRING_DATASOURCE_PASSWORD; a direct run sets POSTGRES_PASSWORD.
+    password: ${SPRING_DATASOURCE_PASSWORD:${POSTGRES_PASSWORD}}
     driver-class-name: org.postgresql.Driver
 
-  # Flyway creates the account_service schema and its eight tables. The scripts under
-  # db/migration issue no CREATE SCHEMA.
+  # Flyway creates the account_service schema, then applies the migrations under
+  # db/migration.
   flyway:
     enabled: true
     schemas: ${SPRING_FLYWAY_SCHEMAS:${ACCOUNT_DB_SCHEMA:account_service}}
@@ -42,8 +43,13 @@ spring:
         auto_quote_keyword: true
 
   # messaging/EventPublisherPort.java passes a topic, a key and a payload, all strings.
-  # The payload arrives serialized as JavaScript Object Notation (JSON). This module
-  # registers no listener, and docker-compose.yml sets no consumer group on it.
+  # The payload arrives serialized as JavaScript Object Notation (JSON) and matches
+  # schemas/account-state-changed-v1.json, which com.carddemo:event-contracts ships.
+  # An implementation validates the payload against that document and checks the
+  # message key against the payload aggregateId and accountId before it sends. This
+  # module
+  # registers no listener, so it carries no spring.kafka.consumer and no
+  # spring.kafka.listener block.
   kafka:
     bootstrap-servers: ${SPRING_KAFKA_BOOTSTRAP_SERVERS:${KAFKA_BOOTSTRAP_SERVERS:kafka:29092}}
     producer:
@@ -56,46 +62,50 @@ spring:
         delivery.timeout.ms: 120000
         request.timeout.ms: 30000
         max.block.ms: 5000
-    consumer:
-      enable-auto-commit: false
-    listener:
-      ack-mode: manual
 
-# Properties this module owns. The broker auto-creates the topic below on first
-# publish. The suffix names the dead-letter topic account.state-changed.DLT, matching
-# the names docker-compose.yml creates. outbox/OutboxRelay sweeps on the delay below,
-# enabled by @EnableScheduling on AccountApplication.java.
+# Properties this module owns. The outbox relay sweeps on the delay below, which
+# @EnableScheduling on AccountApplication.java activates.
 carddemo:
   kafka:
     topics:
-      account-state-changed: account.state-changed
-      dead-letter-suffix: ${TOPIC_DEAD_LETTER_SUFFIX:.DLT}
+      # The one topic this module publishes, created by docker-compose.yml. No
+      # dead-letter topic accompanies it. Dead-letter routing carries a message a
+      # listener could not consume, and this module registers no listener.
+      account-state-changed: ${TOPIC_ACCOUNT_STATE_CHANGED:account.state-changed}
+    # The versioned contract every account state-change event validates against.
+    # The number matches the -v1 suffix of the schema document name and the
+    # schemaVersion field the envelope carries.
+    schema-version: 1
   outbox:
     relay:
       fixed-delay-ms: ${OUTBOX_RELAY_INTERVAL_MS:500}
       batch-size: ${OUTBOX_RELAY_BATCH_SIZE:100}
-  consumer:
-    retry:
-      max-attempts: ${CONSUMER_MAX_RETRY_ATTEMPTS:3}
-      backoff-ms: ${CONSUMER_RETRY_BACKOFF_MS:1000}
 
-# config/ObservabilityConfig.java names this endpoint list and registers seven meters.
+# config/ObservabilityConfig.java names this endpoint list and registers six meters, which it
+# publishes as the single AccountMeters bean every measured path records through.
 management:
+  # /actuator answers on this port and never on the service port above, so a
+  # client of the Representational State Transfer (REST) surface reaches no
+  # runtime, database or broker internals. docker-compose.yml publishes this port
+  # on the loopback address alone.
+  server:
+    port: ${MANAGEMENT_PORT:9080}
   endpoints:
     web:
       exposure:
-        include: ${MANAGEMENT_ENDPOINTS:health,info,metrics,prometheus}
+        include: ${MANAGEMENT_ENDPOINTS:health,metrics,prometheus}
   prometheus:
     metrics:
       export:
         enabled: true
 
-# Each log line leaves as JSON through logstash-logback-encoder 9.0, declared in
-# pom.xml. No logback-spring.xml sits beside this file.
+# Each log line leaves as JSON through logstash-logback-encoder, declared version-less in
+# pom.xml and pinned by the aggregator. No logback-spring.xml sits beside this file.
 logging:
   structured:
     format:
       console: logstash
   level:
     root: ${LOG_LEVEL:INFO}
-    com.carddemo: ${LOG_LEVEL_CARDDEMO:DEBUG}
+    # INFO by default. A DEBUG default retains identifiers in centralized logs.
+    com.carddemo: ${LOG_LEVEL_CARDDEMO:INFO}

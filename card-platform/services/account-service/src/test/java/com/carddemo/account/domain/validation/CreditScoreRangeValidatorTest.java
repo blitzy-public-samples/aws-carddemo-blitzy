@@ -17,34 +17,30 @@ import org.junit.jupiter.params.provider.ValueSource;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * Tests for {@link CreditScoreRangeValidator}, the credit score range edit.
- * FICO names a credit score.
+ * Tests for {@link CreditScoreRangeValidator}, the credit score range edit. FICO names a credit
+ * score.
  *
- * <p>The validator realises paragraph {@code 1275-EDIT-FICO-SCORE} at
- * app/cbl/COACTUPC.cbl:L2514, whose exit paragraph sits at app/cbl/COACTUPC.cbl:L2531. One call
- * site reaches it, at app/cbl/COACTUPC.cbl:L1554, and app/cbl/COACTUPC.cbl:L1545 supplies the
- * label {@code 'FICO Score'} that call site passes.</p>
+ * <p>The validator realises paragraph {@code 1275-EDIT-FICO-SCORE} at app/cbl/COACTUPC.cbl:L2514,
+ * whose exit paragraph sits at app/cbl/COACTUPC.cbl:L2531. One call site reaches it, at
+ * app/cbl/COACTUPC.cbl:L1554, and app/cbl/COACTUPC.cbl:L1545 supplies the label
+ * {@code 'FICO Score'} that call site passes.</p>
  *
  * <p>The range is inclusive at both ends. {@code 88 FICO-RANGE-IS-VALID VALUES 300} at
  * app/cbl/COACTUPC.cbl:L848 continues {@code THROUGH 850.} at app/cbl/COACTUPC.cbl:L849. Both
  * bounds pass and both neighbours fail, so 300, 850, 299, and 851 carry the weight of this
  * file.</p>
  *
- * <p>No method below asserts parsing. app/cbl/COACTUPC.cbl:L2515 tests the condition directly,
- * with no numeric re-parse, and app/cbl/COACTUPC.cbl:L1553 gates the paragraph on the numeric
- * edit at app/cbl/COACTUPC.cbl:L1549 having passed. {@code NumericRequiredValidatorTest} owns
- * that numeric edit, and {@code AccountUpdateServiceTest} owns the gate.</p>
+ * <p>No method below asserts parsing. app/cbl/COACTUPC.cbl:L2515 tests the condition directly, with
+ * no numeric re-parse, and app/cbl/COACTUPC.cbl:L1553 gates the paragraph on the numeric edit at
+ * app/cbl/COACTUPC.cbl:L1549 having passed. {@code NumericRequiredValidatorTest} owns that numeric
+ * edit, and the gate sits outside this class.</p>
  *
  * <p>One message reaches the caller. app/cbl/COACTUPC.cbl:L2521-L2526 builds it from
- * {@code FUNCTION TRIM} over the {@code PIC X(25)} label field at app/cbl/COACTUPC.cbl:L53,
- * joined to the text at app/cbl/COACTUPC.cbl:L2523.</p>
+ * {@code FUNCTION TRIM} over the {@code PIC X(25)} label field at app/cbl/COACTUPC.cbl:L53, joined
+ * to the text at app/cbl/COACTUPC.cbl:L2523.</p>
  *
  * <p>No Spring context, no container, and no database take part, so {@code mvn test} passes on a
  * clean machine.</p>
- *
- * <p>Decision record: card-platform/docs/decision-log.md. The source program carries two range
- * keyword spellings, {@code THROUGH} at app/cbl/COACTUPC.cbl:L849 and {@code THRU} at
- * app/cbl/COACTUPC.cbl:L123, and card-platform/docs/business-rule-flags.md records the pair.</p>
  */
 @DisplayName("CreditScoreRangeValidator, the inclusive 300 to 850 credit score edit")
 class CreditScoreRangeValidatorTest {
@@ -117,10 +113,6 @@ class CreditScoreRangeValidatorTest {
         assertThat(result.hasMessage()).isEqualTo(!expectedToPass);
     }
 
-    /**
-     * Restates the four boundary cases in one place and adds the message each rejection carries.
-     * A bound read as exclusive, at either end, fails here.
-     */
     @Test
     @DisplayName("Both bounds pass, both neighbours fail, and each failure carries the range message")
     void bothBoundsPassAndBothNeighboursFail() {

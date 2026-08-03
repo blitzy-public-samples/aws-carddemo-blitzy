@@ -22,9 +22,6 @@ package com.carddemo.account.domain.validation;
  * <p>The guard {@code IF WS-RETURN-MSG-OFF} on lines 1969 and 1996 keeps the first
  * message of a validation pass. {@code EditResult} carries one message, and the
  * caller that collects results applies the guard.</p>
- *
- * <p>Rationale for every choice in this class lives in
- * {@code card-platform/docs/decision-log.md}.</p>
  */
 public final class AlphanumericRequiredValidator {
 
@@ -52,6 +49,12 @@ public final class AlphanumericRequiredValidator {
     private static final char SPACE = ' ';
 
     /**
+     * The character a COBOL comparison against the figurative constant
+     * {@code LOW-VALUES} tests for, one position at a time.
+     */
+    private static final char NULL_CHARACTER = '\0';
+
+    /**
      * Message literal at {@code app/cbl/COACTUPC.cbl:L1972}, eighteen characters
      * wide, carrying a leading space and a trailing period.
      */
@@ -63,6 +66,21 @@ public final class AlphanumericRequiredValidator {
      */
     private static final String NOT_ALPHANUMERIC_MESSAGE =
             " can have numbers or alphabets only.";
+
+    /**
+     * ADDITIVE. Opens the message text for a value wider than the edited field. No source
+     * literal carries this text.
+     *
+     * <p>The source fills {@code WS-EDIT-ALPHANUM-ONLY PIC X(256)} at
+     * {@code app/cbl/COACTUPC.cbl:L61} by a {@code MOVE} from a fixed-width screen field, so a
+     * wider value cannot reach the source paragraph. A Representational State Transfer (REST)
+     * caller can supply one, and this edit refuses it instead of reading its first
+     * characters.</p>
+     */
+    private static final String ADDITIVE_NO_LONGER_THAN = " must be no longer than ";
+
+    /** ADDITIVE. Closes the message text {@link #ADDITIVE_NO_LONGER_THAN} opens. */
+    private static final String ADDITIVE_CHARACTERS = " characters.";
 
     /** This class holds static members only. */
     private AlphanumericRequiredValidator() {
@@ -86,13 +104,20 @@ public final class AlphanumericRequiredValidator {
      * @return a passing verdict, or a failing verdict carrying one message
      */
     public static EditResult validate(String fieldLabel, String value, int length) {
+        // ADDITIVE. A value wider than the edited field is refused, so the edit never passes a
+        // verdict on the first characters of a longer value.
+        if (carriesContentPastEditedWidth(value, length)) {
+            return EditResult.failure(trimmedLabel(fieldLabel) + ADDITIVE_NO_LONGER_THAN
+                    + length + ADDITIVE_CHARACTERS);
+        }
+
         String editField = referenceModifiedField(value, length);
 
         if (isNotSupplied(value, editField)) {
             return EditResult.failure(trimmedLabel(fieldLabel) + NOT_SUPPLIED_MESSAGE);
         }
 
-        if (!convertAllowedCharactersToSpaces(editField).trim().isEmpty()) {
+        if (!isAllSpaces(convertAllowedCharactersToSpaces(editField))) {
             return EditResult.failure(trimmedLabel(fieldLabel) + NOT_ALPHANUMERIC_MESSAGE);
         }
 
@@ -129,9 +154,10 @@ public final class AlphanumericRequiredValidator {
      * Applies the three-way not-supplied test at
      * {@code app/cbl/COACTUPC.cbl:L1960-L1965}.
      *
-     * <p>A null value and an empty value hold the place of {@code EQUAL LOW-VALUES}.
-     * The other two arms are {@code EQUAL SPACES} and
-     * {@code FUNCTION LENGTH(FUNCTION TRIM(...)) = 0}.</p>
+     * <p>A null value and an empty value hold the place of {@code EQUAL LOW-VALUES}, and a field
+     * of null characters answers that same arm. The other two arms are {@code EQUAL SPACES} and
+     * {@code FUNCTION LENGTH(FUNCTION TRIM(...)) = 0}. The third arm holds exactly when the
+     * second holds, because {@code FUNCTION TRIM} removes the space and no other character.</p>
      *
      * @param value     the submitted text
      * @param editField the reference-modified field content
@@ -140,8 +166,28 @@ public final class AlphanumericRequiredValidator {
     private static boolean isNotSupplied(String value, String editField) {
         return value == null
                 || value.isEmpty()
-                || isAllSpaces(editField)
-                || editField.trim().isEmpty();
+                || holdsLowValues(editField)
+                || isAllSpaces(editField);
+    }
+
+    /**
+     * Answers the {@code EQUAL LOW-VALUES} arm on line 1961. A COBOL comparison against
+     * {@code LOW-VALUES} holds when every character position carries {@code X'00'}, so one
+     * character other than the null character answers false.
+     *
+     * @param editField the reference-modified field content
+     * @return true when the field is not empty and every character is the null character
+     */
+    private static boolean holdsLowValues(String editField) {
+        if (editField.isEmpty()) {
+            return false;
+        }
+        for (int index = 0; index < editField.length(); index++) {
+            if (editField.charAt(index) != NULL_CHARACTER) {
+                return false;
+            }
+        }
+        return true;
     }
 
     /**
@@ -153,6 +199,23 @@ public final class AlphanumericRequiredValidator {
     private static boolean isAllSpaces(String text) {
         for (int index = 0; index < text.length(); index++) {
             if (text.charAt(index) != SPACE) {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    /**
+     * Answers the {@code EQUAL LOW-VALUES} arm on lines 1960 and 1961. A COBOL low value is the
+     * null character, and an empty field holds no character that is not one.
+     *
+     * @param text the field content to test
+     * @return true when the argument holds no character other than the null character
+     */
+    private static boolean isAllLowValues(String text) {
+        for (int index = 0; index < text.length(); index++) {
+            if (text.charAt(index) != NULL_CHARACTER) {
                 return false;
             }
         }
@@ -191,5 +254,35 @@ public final class AlphanumericRequiredValidator {
      */
     private static String trimmedLabel(String fieldLabel) {
         return fieldLabel == null ? "" : fieldLabel.trim();
+    }
+
+    /**
+     * Reports whether the value carries a character other than a space past the edited width.
+     *
+     * <p>ADDITIVE. The source moves a fixed-width screen field into its edit field, so the
+     * {@code MOVE} drops nothing but padding. A Representational State Transfer (REST) caller can
+     * supply a wider value, and this test separates the two cases: trailing spaces past the width
+     * are the padding the source itself holds, and any other character past the width is content
+     * the edit would not inspect.</p>
+     *
+     * <p>A width of zero or less inspects nothing, and this test reports false for it, leaving the
+     * not-supplied arm to answer.</p>
+     *
+     * @param value  submitted value, which may be null
+     * @param length count of characters the edit inspects
+     * @return true when a character other than a space sits past a positive {@code length}
+     */
+    private static boolean carriesContentPastEditedWidth(String value, int length) {
+        if (length < 1 || value == null || value.length() <= length) {
+            return false;
+        }
+
+        for (int position = length; position < value.length(); position++) {
+            if (value.charAt(position) != SPACE) {
+                return true;
+            }
+        }
+
+        return false;
     }
 }

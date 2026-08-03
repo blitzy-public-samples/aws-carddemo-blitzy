@@ -18,20 +18,19 @@ import static org.assertj.core.api.Assertions.assertThat;
 /**
  * Tests for {@link AlphabeticOptionalValidator}, the edit for an optional alphabetic field.
  *
- * <p>The subject reproduces paragraph {@code 1235-EDIT-ALPHA-OPT} at
- * app/cbl/COACTUPC.cbl:L2012, through its exit paragraph at app/cbl/COACTUPC.cbl:L2057.</p>
+ * <p>The subject reproduces paragraph {@code 1235-EDIT-ALPHA-OPT} at app/cbl/COACTUPC.cbl:L2012,
+ * through its exit paragraph at app/cbl/COACTUPC.cbl:L2057.</p>
  *
- * <p>An absent value passes. The not-supplied test at app/cbl/COACTUPC.cbl:L2017-L2022 resolves
- * to success at app/cbl/COACTUPC.cbl:L2024, and app/cbl/COACTUPC.cbl:L2025 leaves the paragraph
- * with the message slot untouched. A null value, an empty value and an all-space value each take
- * that path.</p>
+ * <p>An absent value passes. The not-supplied test at app/cbl/COACTUPC.cbl:L2017-L2022 resolves to
+ * success at app/cbl/COACTUPC.cbl:L2024, and app/cbl/COACTUPC.cbl:L2025 leaves the paragraph with
+ * the message slot untouched. A null value, an empty value and an all-space value each take that
+ * path.</p>
  *
  * <p>One message reaches the caller, {@code ' can have alphabets only.'} at
- * app/cbl/COACTUPC.cbl:L2047. The required form of the same edit is
- * {@code 1225-EDIT-ALPHA-REQD} at app/cbl/COACTUPC.cbl:L1898. That paragraph carries the same
- * literal at app/cbl/COACTUPC.cbl:L1941 and adds a second message at
- * app/cbl/COACTUPC.cbl:L1915. {@link #onlyOneMessageIsReachable()} asserts that the second
- * message never appears here.</p>
+ * app/cbl/COACTUPC.cbl:L2047. The required form of the same edit is {@code 1225-EDIT-ALPHA-REQD} at
+ * app/cbl/COACTUPC.cbl:L1898. That paragraph carries the same literal at app/cbl/COACTUPC.cbl:L1941
+ * and adds a second message at app/cbl/COACTUPC.cbl:L1915. {@link #onlyOneMessageIsReachable()}
+ * asserts that the second message never appears here.</p>
  *
  * <p>The accepted characters are {@code LIT-UPPER PIC X(26)} plus {@code LIT-LOWER PIC X(26)} at
  * app/cbl/COACTUPC.cbl:L588-L591, grouped as {@code LIT-ALL-ALPHA-FROM-X} at
@@ -41,10 +40,8 @@ import static org.assertj.core.api.Assertions.assertThat;
  * passes.</p>
  *
  * <p>The one call site is app/cbl/COACTUPC.cbl:L1571, which edits the middle name with the label
- * {@code 'Middle Name'} and a width of 25. Every method below builds its own input and runs with
- * no Spring context, no container and no database.</p>
- *
- * <p>Decision record: card-platform/docs/decision-log.md.</p>
+ * {@code 'Middle Name'} and a width of 25. Every method below builds its own input and runs with no
+ * Spring context, no container and no database.</p>
  */
 @DisplayName("AlphabeticOptionalValidator, the edit for an optional alphabetic field")
 class AlphabeticOptionalValidatorTest {
@@ -89,8 +86,22 @@ class AlphabeticOptionalValidatorTest {
     /** The message the call site produces, opening with the trimmed label. */
     private static final String CALL_SITE_MESSAGE = "Middle Name can have alphabets only.";
 
+    /**
+     * ADDITIVE message text for a value wider than the edited field. No source literal carries this
+     * text: the source moves a fixed-width screen field into its edit field, so a wider value
+     * cannot reach paragraph 1235.
+     */
+    private static final String CALL_SITE_WIDTH_MESSAGE =
+            "Middle Name must be no longer than " + CALL_SITE_LENGTH + " characters.";
+
     /** A middle name that carries a digit, which the edit rejects. */
     private static final String VALUE_WITH_A_DIGIT = "Jane1";
+
+    /**
+     * One character of the figurative constant {@code LOW-VALUES}, which a COBOL comparison tests
+     * for one position at a time.
+     */
+    private static final String LOW_VALUE = "\0";
 
     @ParameterizedTest(name = "value [{0}] passes and carries no message")
     @NullSource
@@ -105,6 +116,71 @@ class AlphabeticOptionalValidatorTest {
         assertThat(result.valid()).isTrue();
         assertThat(result.message()).isNull();
         assertThat(result.hasMessage()).isFalse();
+    }
+
+    @Test
+    @DisplayName("A field of LOW-VALUES at the edited width passes, the first arm at "
+            + "app/cbl/COACTUPC.cbl:L2018")
+    void lowValuesAtTheEditedWidthPasses() {
+        for (int width : new int[] {1, 2, CALL_SITE_LENGTH - 1, CALL_SITE_LENGTH}) {
+            EditResult result = AlphabeticOptionalValidator.validate(
+                    CALL_SITE_LABEL, LOW_VALUE.repeat(width), width);
+
+            assertThat(result.valid()).as("width %d", width).isTrue();
+            assertThat(result.message()).as("width %d", width).isNull();
+        }
+    }
+
+    @Test
+    @DisplayName("A field of LOW-VALUES narrower than the edited width fails the character-class "
+            + "test, because the padding spaces break the LOW-VALUES arm")
+    void lowValuesBelowTheEditedWidthFailsTheCharacterClassTest() {
+        for (int supplied : new int[] {1, 3, CALL_SITE_LENGTH - 1}) {
+            EditResult result = AlphabeticOptionalValidator.validate(
+                    CALL_SITE_LABEL, LOW_VALUE.repeat(supplied), CALL_SITE_LENGTH);
+
+            // FUNCTION TRIM removes the space alone, so the null characters survive both the
+            // presence test and the conversion, and the paragraph reports the character class.
+            assertThat(result.valid()).as("%d supplied of %d", supplied, CALL_SITE_LENGTH).isFalse();
+            assertThat(result.message())
+                    .as("%d supplied of %d", supplied, CALL_SITE_LENGTH)
+                    .isEqualTo(CALL_SITE_MESSAGE);
+        }
+    }
+
+    @Test
+    @DisplayName("A field of LOW-VALUES is read only to the edited width, and content past that "
+            + "width is refused")
+    void lowValuesIsReadOnlyToTheEditedWidthAndContentPastItIsRefused() {
+        String padded = LOW_VALUE.repeat(CALL_SITE_LENGTH) + "    ";
+
+        assertThat(AlphabeticOptionalValidator
+                .validate(CALL_SITE_LABEL, padded, CALL_SITE_LENGTH).valid()).isTrue();
+
+        String beyond = LOW_VALUE.repeat(CALL_SITE_LENGTH) + "Jane";
+        EditResult refused =
+                AlphabeticOptionalValidator.validate(CALL_SITE_LABEL, beyond, CALL_SITE_LENGTH);
+
+        assertThat(refused.valid()).isFalse();
+        assertThat(refused.message()).isEqualTo(CALL_SITE_WIDTH_MESSAGE);
+
+        EditResult wider = AlphabeticOptionalValidator.validate(
+                CALL_SITE_LABEL, beyond, beyond.length());
+
+        assertThat(wider.valid()).isFalse();
+        assertThat(wider.message()).isEqualTo(CALL_SITE_MESSAGE);
+    }
+
+    @Test
+    @DisplayName("One letter followed by LOW-VALUES fails the character-class test")
+    void oneLetterFollowedByLowValuesFailsTheCharacterClassTest() {
+        String letterThenNulls = "J" + LOW_VALUE.repeat(CALL_SITE_LENGTH - 1);
+
+        EditResult result = AlphabeticOptionalValidator.validate(
+                CALL_SITE_LABEL, letterThenNulls, CALL_SITE_LENGTH);
+
+        assertThat(result.valid()).isFalse();
+        assertThat(result.message()).isEqualTo(CALL_SITE_MESSAGE);
     }
 
     @Test
@@ -316,22 +392,55 @@ class AlphabeticOptionalValidatorTest {
     }
 
     @Test
-    @DisplayName("A character beyond the edited width is never read")
-    void charactersBeyondTheEditedWidthAreNotRead() {
-        // app/cbl/COACTUPC.cbl:L2032 edits the slice (1:WS-EDIT-ALPHANUM-LENGTH) alone.
-        EditResult insideWidth =
+    @DisplayName("A character beyond the edited width fails the edit")
+    void charactersBeyondTheEditedWidthFailTheEdit() {
+        // app/cbl/COACTUPC.cbl:L2032 edits the slice (1:WS-EDIT-ALPHANUM-LENGTH) alone, and the
+        // MOVE that fills it reads a screen field of that exact width, so it drops nothing but
+        // padding.
+        //
+        // ADDITIVE. A caller of this edit can supply a wider value, and the edit refuses one that
+        // carries a character the slice would not cover.
+        EditResult pastWidth =
                 AlphabeticOptionalValidator.validate(CALL_SITE_LABEL, VALUE_WITH_A_DIGIT, 4);
         EditResult atWidth =
                 AlphabeticOptionalValidator.validate(CALL_SITE_LABEL, VALUE_WITH_A_DIGIT, 5);
         EditResult fullWidth = AlphabeticOptionalValidator.validate(
                 CALL_SITE_LABEL, VALUE_WITH_A_DIGIT, CALL_SITE_LENGTH);
+        EditResult padSpacePastWidth =
+                AlphabeticOptionalValidator.validate(CALL_SITE_LABEL, "Jane   ", 4);
 
-        assertThat(insideWidth.valid()).isTrue();
-        assertThat(insideWidth.message()).isNull();
+        assertThat(pastWidth.valid()).isFalse();
+        assertThat(pastWidth.message())
+                .isEqualTo(CALL_SITE_LABEL + " must be no longer than 4 characters.");
         assertThat(atWidth.valid()).isFalse();
         assertThat(atWidth.message()).isEqualTo(CALL_SITE_MESSAGE);
         assertThat(fullWidth.valid()).isFalse();
         assertThat(fullWidth.message()).isEqualTo(CALL_SITE_MESSAGE);
+
+        // Trailing spaces past the width are the padding the source MOVE itself drops.
+        assertThat(padSpacePastWidth.valid()).isTrue();
+        assertThat(padSpacePastWidth.message()).isNull();
+    }
+
+    @Test
+    @DisplayName("A value wider than the edited field is refused whatever it holds")
+    void aValueWiderThanTheEditedFieldIsRefused() {
+        String[] wider = {
+            "A".repeat(CALL_SITE_LENGTH + 1),
+            "Jane<script>alert(1)</script>Doe",
+            "A".repeat(CALL_SITE_LENGTH) + "\n",
+            "A".repeat(CALL_SITE_LENGTH) + "\u0000",
+            "A".repeat(4096),
+        };
+
+        for (int index = 0; index < wider.length; index++) {
+            EditResult result = AlphabeticOptionalValidator.validate(
+                    CALL_SITE_LABEL, wider[index], CALL_SITE_LENGTH);
+
+            assertThat(result.valid()).as("value index %d", index).isFalse();
+            assertThat(result.message()).as("value index %d", index)
+                    .isEqualTo(CALL_SITE_WIDTH_MESSAGE);
+        }
     }
 
     @ParameterizedTest(name = "width [{0}] passes")

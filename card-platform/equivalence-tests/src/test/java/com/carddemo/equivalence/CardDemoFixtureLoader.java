@@ -4,9 +4,13 @@ import com.carddemo.cobol.PicClause;
 import java.io.IOException;
 import java.io.UncheckedIOException;
 import java.math.BigDecimal;
+import java.nio.ByteBuffer;
+import java.nio.channels.SeekableByteChannel;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
+import java.nio.file.LinkOption;
 import java.nio.file.Path;
+import java.nio.file.StandardOpenOption;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.LinkedHashMap;
@@ -17,10 +21,10 @@ import java.util.Objects;
 /**
  * Loads the nine CardDemo sample fixtures under {@code app/data/ASCII} into typed records.
  *
- * <p>Every fixture is fixed width and line feed delimited. Each load validates the record width
- * and the record count against the constants {@link PicClause} publishes, then hands each record
- * to the matching {@link CopybookRecordParser} operation. Returned lists and maps are immutable,
- * and no fixture is opened for anything other than reading.</p>
+ * <p>Every fixture is fixed width and line feed delimited. Each load validates the record width and
+ * the record count against the constants {@link PicClause} publishes, then hands each record to the
+ * matching {@link CopybookRecordParser} operation. Returned lists and maps are immutable, and no
+ * fixture is opened for anything other than reading.</p>
  *
  * <p>ADDITIVE: {@code app/data/ASCII/cardxref.txt} delivers
  * {@link PicClause#CARDXREF_FIXTURE_RECORD_WIDTH} bytes where {@code app/jcl/XREFFILE.jcl:L44}
@@ -29,7 +33,10 @@ import java.util.Objects;
  * That fixture is the only width mismatch among the nine, so width tolerance covers one named
  * case and no unknown one.</p>
  *
- * <p>Recorded decisions: {@code card-platform/docs/decision-log.md}.</p>
+ * <p>Every failure this class reports names the fixture file, the field, the one-based record
+ * ordinal, the position inside a field, and the widths and counts involved. None carries the text
+ * of a field, so a failing load discloses no card number, no account identifier and no other
+ * fixture value.</p>
  */
 public final class CardDemoFixtureLoader {
 
@@ -48,11 +55,9 @@ public final class CardDemoFixtureLoader {
     /** Third path segment below the repository root, which holds the nine text fixtures. */
     private static final String ASCII_DIRECTORY_NAME = "ASCII";
 
-    // -------------------------------------------------------------------------------------------
     // Fixture file names. Every fixture is named here and nowhere else, so no operation below
     // holds a file name of its own and no operation lists or matches a directory. Each constant
     // names its layout copybook and the PicClause constants that carry its count and width.
-    // -------------------------------------------------------------------------------------------
 
     /**
      * Account fixture, laid out by {@code app/cpy/CVACT01Y.cpy}, counted by
@@ -126,18 +131,30 @@ public final class CardDemoFixtureLoader {
      */
     public static final String TRANTYPE_FIXTURE_FILE_NAME = "trantype.txt";
 
-    // -------------------------------------------------------------------------------------------
     // Reading and projection constants.
-    // -------------------------------------------------------------------------------------------
 
     /** Character that closes every record in all nine fixtures. */
     private static final char RECORD_SEPARATOR = '\n';
 
+    /**
+     * The nine fixture files this loader reads, in the order the constants above declare them.
+     *
+     * <p>{@link #requireFixtureDirectory(Path)} checks every one, so a directory chosen through
+     * {@link #FIXTURE_DIRECTORY_PROPERTY} has to be a CardDemo fixture directory.</p>
+     */
+    private static final List<String> FIXTURE_FILE_NAMES = List.of(
+            ACCTDATA_FIXTURE_FILE_NAME,
+            CARDDATA_FIXTURE_FILE_NAME,
+            CARDXREF_FIXTURE_FILE_NAME,
+            CUSTDATA_FIXTURE_FILE_NAME,
+            DAILYTRAN_FIXTURE_FILE_NAME,
+            DISCGRP_FIXTURE_FILE_NAME,
+            TCATBAL_FIXTURE_FILE_NAME,
+            TRANCATG_FIXTURE_FILE_NAME,
+            TRANTYPE_FIXTURE_FILE_NAME);
+
     /** Characters the record separator occupies, which a scan steps over to reach the next record. */
     private static final int RECORD_SEPARATOR_WIDTH = 1;
-
-    /** Character that fills the leading positions of a short card number. */
-    private static final char CARD_NUMBER_PAD = '0';
 
     /** Character COBOL pads a {@code PIC X(n)} field with on the right. */
     private static final String COBOL_TEXT_PAD = " ";
@@ -170,8 +187,6 @@ public final class CardDemoFixtureLoader {
 
     /**
      * Parses one fixture record of a single layout.
-     *
-     * @param <T> the record type the layout produces
      */
     private interface RecordParser<T> {
 
@@ -184,9 +199,7 @@ public final class CardDemoFixtureLoader {
         T parse(String record);
     }
 
-    // -------------------------------------------------------------------------------------------
     // Loaders. One per fixture, listed in the order the fixture table names them.
-    // -------------------------------------------------------------------------------------------
 
     /**
      * Loads {@code app/data/ASCII/acctdata.txt}.
@@ -316,10 +329,8 @@ public final class CardDemoFixtureLoader {
                 CopybookRecordParser::parseTransactionType);
     }
 
-    // -------------------------------------------------------------------------------------------
     // Declared layout. The cross-reference fixture is the one file narrower than its dataset
     // definition, and this operation restores the declared width.
-    // -------------------------------------------------------------------------------------------
 
     /**
      * Reads {@code app/data/ASCII/cardxref.txt} and pads each record to the declared layout.
@@ -344,17 +355,16 @@ public final class CardDemoFixtureLoader {
         return List.copyOf(padded);
     }
 
-    // -------------------------------------------------------------------------------------------
     // Lookup projections. The cross-reference key is text and the account key is numeric, which
     // matches how card_xref.card_number and account_credit_snapshot.account_id compare.
-    // -------------------------------------------------------------------------------------------
 
     /**
      * Indexes {@code app/data/ASCII/cardxref.txt} by {@code XREF-CARD-NUM}, the dataset key
      * {@code app/jcl/XREFFILE.jcl:L43} declares as {@code KEYS(16 0)}.
      *
      * <p>Each key holds the {@link PicClause#XREF_CARD_NUM_WIDTH} characters the fixture delivers.
-     * {@link #paddedCardNumber} brings a shorter Primary Account Number (PAN) up to that width.</p>
+     * {@link #cardNumberKey} reads a card number into that same form and refuses a shorter one,
+     * because a shorter Primary Account Number (PAN) misses the row it belongs to.</p>
      *
      * @return an immutable map in fixture order, keyed by card number
      * @throws IllegalStateException when the fixture is absent, holds an unexpected record width
@@ -364,9 +374,13 @@ public final class CardDemoFixtureLoader {
             cardCrossReferencesByCardNumber() {
         Map<String, CopybookRecordParser.CardCrossReferenceRecord> byCardNumber =
                 new LinkedHashMap<>();
-        for (CopybookRecordParser.CardCrossReferenceRecord crossReference : loadCardCrossReferences()) {
+        List<CopybookRecordParser.CardCrossReferenceRecord> crossReferences =
+                loadCardCrossReferences();
+        for (int position = 0; position < crossReferences.size(); position++) {
+            CopybookRecordParser.CardCrossReferenceRecord crossReference =
+                    crossReferences.get(position);
             requireFirstOccurrence(byCardNumber.put(crossReference.cardNumber(), crossReference),
-                    CARDXREF_FIXTURE_FILE_NAME, XREF_CARD_NUM_FIELD, crossReference.cardNumber());
+                    CARDXREF_FIXTURE_FILE_NAME, XREF_CARD_NUM_FIELD, position + FIRST_ORDINAL);
         }
         return Collections.unmodifiableMap(byCardNumber);
     }
@@ -381,9 +395,11 @@ public final class CardDemoFixtureLoader {
      */
     public static Map<String, CopybookRecordParser.AccountRecord> accountsByAccountId() {
         Map<String, CopybookRecordParser.AccountRecord> byAccountId = new LinkedHashMap<>();
-        for (CopybookRecordParser.AccountRecord account : loadAccounts()) {
+        List<CopybookRecordParser.AccountRecord> accounts = loadAccounts();
+        for (int position = 0; position < accounts.size(); position++) {
+            CopybookRecordParser.AccountRecord account = accounts.get(position);
             requireFirstOccurrence(byAccountId.put(account.accountId(), account),
-                    ACCTDATA_FIXTURE_FILE_NAME, ACCT_ID_FIELD, account.accountId());
+                    ACCTDATA_FIXTURE_FILE_NAME, ACCT_ID_FIELD, position + FIRST_ORDINAL);
         }
         return Collections.unmodifiableMap(byAccountId);
     }
@@ -401,44 +417,46 @@ public final class CardDemoFixtureLoader {
      */
     public static Map<BigDecimal, CopybookRecordParser.AccountRecord> accountsByAccountIdentifier() {
         Map<BigDecimal, CopybookRecordParser.AccountRecord> byIdentifier = new LinkedHashMap<>();
-        for (CopybookRecordParser.AccountRecord account : loadAccounts()) {
+        List<CopybookRecordParser.AccountRecord> accounts = loadAccounts();
+        for (int position = 0; position < accounts.size(); position++) {
+            CopybookRecordParser.AccountRecord account = accounts.get(position);
             BigDecimal identifier = accountIdentifier(account.accountId());
             requireFirstOccurrence(byIdentifier.put(identifier, account),
-                    ACCTDATA_FIXTURE_FILE_NAME, ACCT_ID_FIELD, identifier.toPlainString());
+                    ACCTDATA_FIXTURE_FILE_NAME, ACCT_ID_FIELD, position + FIRST_ORDINAL);
         }
         return Collections.unmodifiableMap(byIdentifier);
     }
 
-    // -------------------------------------------------------------------------------------------
     // Key forms.
-    // -------------------------------------------------------------------------------------------
 
     /**
-     * Brings a card number up to {@link PicClause#XREF_CARD_NUM_WIDTH} characters by filling the
-     * leading positions with zeros.
+     * Reads a card number as the key {@code card_xref.card_number} compares.
      *
-     * <p>{@code card_xref.card_number} is a {@code VARCHAR(16)} column compared as text, so a
-     * shorter Primary Account Number (PAN) misses the row it belongs to.</p>
+     * <p>{@code card_xref.card_number} is a {@code VARCHAR(16)} column compared as text, so only a
+     * card number of exactly {@link PicClause#XREF_CARD_NUM_WIDTH} digits can match a row. A
+     * shorter value is refused rather than brought up to width. Filling its leading positions with
+     * zeros would build the key of a different card, so a lookup that ought to miss would hit, and
+     * a harness comparing a decision against the COBOL behaviour would compare the wrong row.</p>
+     *
+     * <p>Surrounding space padding is removed, because the fixture delivers a fixed-width field and
+     * {@code app/cpy/CVACT03Y.cpy:L5} declares {@code XREF-CARD-NUM PIC X(16)}.</p>
      *
      * @param cardNumber a card number, with or without surrounding space padding
-     * @return the card number at full key width
+     * @return the card number as the key, unchanged apart from that padding
      * @throws NullPointerException     when {@code cardNumber} is null
      * @throws IllegalArgumentException when {@code cardNumber} holds no digits, holds a character
-     *         other than a digit, or is longer than the key
+     *         other than a digit, or does not hold exactly
+     *         {@link PicClause#XREF_CARD_NUM_WIDTH} digits. The failure names the field and the two
+     *         widths, and never the value
      */
-    public static String paddedCardNumber(String cardNumber) {
+    public static String cardNumberKey(String cardNumber) {
         Objects.requireNonNull(cardNumber, "cardNumber");
         String digits = requireDigits(cardNumber.trim(), XREF_CARD_NUM_FIELD);
-        if (digits.length() > PicClause.XREF_CARD_NUM_WIDTH) {
-            throw new IllegalArgumentException(XREF_CARD_NUM_FIELD + " '" + digits + "' holds "
-                    + digits.length() + " digits and the key holds "
-                    + PicClause.XREF_CARD_NUM_WIDTH);
+        if (digits.length() != PicClause.XREF_CARD_NUM_WIDTH) {
+            throw new IllegalArgumentException(XREF_CARD_NUM_FIELD + " holds " + digits.length()
+                    + " digits and the key holds exactly " + PicClause.XREF_CARD_NUM_WIDTH);
         }
-        StringBuilder padded = new StringBuilder(PicClause.XREF_CARD_NUM_WIDTH);
-        for (int position = digits.length(); position < PicClause.XREF_CARD_NUM_WIDTH; position++) {
-            padded.append(CARD_NUMBER_PAD);
-        }
-        return padded.append(digits).toString();
+        return digits;
     }
 
     /**
@@ -457,26 +475,30 @@ public final class CardDemoFixtureLoader {
         Objects.requireNonNull(accountId, "accountId");
         String digits = requireDigits(accountId.trim(), ACCT_ID_FIELD);
         if (digits.length() > PicClause.ACCT_ID_WIDTH) {
-            throw new IllegalArgumentException(ACCT_ID_FIELD + " '" + digits + "' holds " + digits.length()
-                    + " digits and the field holds " + PicClause.ACCT_ID_WIDTH);
+            throw new IllegalArgumentException(ACCT_ID_FIELD + " holds " + digits.length()
+                    + " digits and the field holds at most " + PicClause.ACCT_ID_WIDTH);
         }
         return new BigDecimal(digits).setScale(ACCOUNT_IDENTIFIER_SCALE);
     }
 
-    // -------------------------------------------------------------------------------------------
     // Fixture location. The fixtures stay where the repository holds them, so the suite reads the
     // one copy the COBOL programs were delivered with.
-    // -------------------------------------------------------------------------------------------
 
     /**
      * Resolves the directory holding the nine fixtures.
      *
-     * <p>A value in {@link #FIXTURE_DIRECTORY_PROPERTY} is used as given. Otherwise the search
-     * starts at the working directory and walks up to the ancestor holding
-     * {@code app/data/ASCII}. A module directory and the repository root both resolve.</p>
+     * <p>A value in {@link #FIXTURE_DIRECTORY_PROPERTY} is read first. Otherwise the search starts
+     * at the working directory and walks up to the ancestor holding {@code app/data/ASCII}. A module
+     * directory and the repository root both resolve.</p>
      *
-     * @return the absolute, normalised fixture directory
-     * @throws IllegalStateException when the configured directory is missing, or when no ancestor
+     * <p>Whichever path is chosen, it is resolved to its real path and then checked: the directory
+     * has to hold all nine fixture files as regular files. A system property therefore cannot point
+     * this loader at an unrelated tree, and a symbolic link cannot point one check at one directory
+     * and the read at another.</p>
+     *
+     * @return the real, absolute, normalised fixture directory
+     * @throws IllegalStateException when the configured directory is missing, when it does not
+     *         resolve to a real path, when it does not hold all nine fixtures, or when no ancestor
      *         of the working directory holds the fixture path
      */
     public static Path fixtureDirectory() {
@@ -487,13 +509,13 @@ public final class CardDemoFixtureLoader {
                 throw new IllegalStateException("system property '" + FIXTURE_DIRECTORY_PROPERTY
                         + "' names '" + configured + "' and no directory sits there");
             }
-            return directory.toAbsolutePath().normalize();
+            return requireFixtureDirectory(canonicalPath(directory));
         }
         Path start = Path.of("").toAbsolutePath().normalize();
         for (Path candidate = start; candidate != null; candidate = candidate.getParent()) {
             Path fixtures = fixturePathUnder(candidate);
             if (Files.isDirectory(fixtures)) {
-                return fixtures;
+                return requireFixtureDirectory(canonicalPath(fixtures));
             }
         }
         throw new IllegalStateException("no ancestor of '" + start + "' holds '"
@@ -502,10 +524,48 @@ public final class CardDemoFixtureLoader {
     }
 
     /**
-     * Appends the three fixture path segments to a candidate repository root.
+     * Resolves a directory to its real path, following every symbolic link once and for all.
      *
-     * @param root a directory that may be the repository root
-     * @return the fixture directory that would sit under {@code root}
+     * <p>The real path is what every later check reads, so a link cannot point one check at one
+     * directory and the read at another.</p>
+     *
+     * @param directory the directory to resolve
+     * @return the real, absolute, normalised path
+     * @throws IllegalStateException when the path does not resolve
+     */
+    private static Path canonicalPath(Path directory) {
+        try {
+            return directory.toRealPath();
+        } catch (IOException failure) {
+            throw new IllegalStateException("fixture directory '" + directory
+                    + "' does not resolve to a real path", failure);
+        }
+    }
+
+    /**
+     * Checks that a resolved directory is the CardDemo fixture directory and nothing else.
+     *
+     * <p>The directory must hold all nine fixture files this class reads. A directory chosen
+     * through {@link #FIXTURE_DIRECTORY_PROPERTY} therefore cannot point this loader at an
+     * unrelated tree, and a partial or substituted directory fails before any file is read.</p>
+     *
+     * @param directory the resolved candidate directory
+     * @return the same directory
+     * @throws IllegalStateException when a fixture file is missing from the directory
+     */
+    private static Path requireFixtureDirectory(Path directory) {
+        for (String fileName : FIXTURE_FILE_NAMES) {
+            if (!Files.isRegularFile(directory.resolve(fileName))) {
+                throw new IllegalStateException("directory '" + directory + "' is not the CardDemo "
+                        + "fixture directory: it does not hold the regular file '" + fileName
+                        + "'. The nine fixtures this loader reads are " + FIXTURE_FILE_NAMES + ".");
+            }
+        }
+        return directory;
+    }
+
+    /**
+     * Appends the three fixture path segments to a candidate repository root.
      */
     private static Path fixturePathUnder(Path root) {
         return root.resolve(APP_DIRECTORY_NAME)
@@ -513,20 +573,13 @@ public final class CardDemoFixtureLoader {
                 .resolve(ASCII_DIRECTORY_NAME);
     }
 
-    // -------------------------------------------------------------------------------------------
     // Reading. Every fixture arrives through this one path, so the width check, the count check
     // and the single-byte decode apply to all nine.
-    // -------------------------------------------------------------------------------------------
 
     /**
      * Reads one fixture and parses every record.
      *
-     * @param <T>         the record type the layout produces
-     * @param fileName    fixture file name, taken from the constants above
      * @param recordWidth expected character width of each record
-     * @param recordCount expected number of records
-     * @param parser      the {@link CopybookRecordParser} operation for the layout
-     * @return the parsed records, immutable and in file order
      * @throws IllegalStateException when the fixture is absent, or holds an unexpected record
      *         width or record count
      */
@@ -547,9 +600,7 @@ public final class CardDemoFixtureLoader {
      * and every field offset holds. Sign overpunch characters are single bytes and survive
      * unchanged.</p>
      *
-     * @param fileName    fixture file name, taken from the constants above
      * @param recordWidth expected character width of each record
-     * @param recordCount expected number of records
      * @return the records, immutable and in file order, with the separator removed
      * @throws IllegalStateException when the fixture is absent, or holds an unexpected record
      *         width or record count
@@ -558,13 +609,30 @@ public final class CardDemoFixtureLoader {
     private static List<String> readRecords(String fileName, int recordWidth, int recordCount) {
         Path directory = fixtureDirectory();
         Path fixture = directory.resolve(fileName);
-        if (!Files.isRegularFile(fixture)) {
+        if (!Files.isRegularFile(fixture, LinkOption.NOFOLLOW_LINKS)) {
             throw new IllegalStateException("fixture '" + fileName + "' is absent from '"
-                    + directory + "'");
+                    + directory + "', or is not a regular file. A symbolic link is refused: the "
+                    + "loader reads the nine files of the fixture directory and nothing else.");
         }
         byte[] content;
-        try {
-            content = Files.readAllBytes(fixture);
+        try (SeekableByteChannel channel = Files.newByteChannel(fixture, StandardOpenOption.READ)) {
+            long declaredSize = channel.size();
+            long permittedSize = permittedSize(recordWidth, recordCount);
+            if (declaredSize > permittedSize) {
+                throw new IllegalStateException("fixture '" + fileName + "' holds " + declaredSize
+                        + " bytes and " + permittedSize + " is the most " + recordCount
+                        + " records of " + recordWidth + " characters can occupy");
+            }
+            content = new byte[(int) declaredSize];
+            ByteBuffer buffer = ByteBuffer.wrap(content);
+            while (buffer.hasRemaining() && channel.read(buffer) >= 0) {
+                continue;
+            }
+            if (buffer.hasRemaining()) {
+                throw new IllegalStateException("fixture '" + fileName + "' holds "
+                        + (declaredSize - buffer.remaining()) + " readable bytes and " + declaredSize
+                        + " were declared");
+            }
         } catch (IOException failure) {
             throw new UncheckedIOException("fixture '" + fixture + "' did not read", failure);
         }
@@ -575,12 +643,29 @@ public final class CardDemoFixtureLoader {
     }
 
     /**
+     * Returns the largest byte count a fixture of the stated shape can occupy.
+     *
+     * <p>Every record carries its declared width plus at most one separator byte, and the file may
+     * close with one separator. The cap is therefore exact rather than generous: the largest
+     * fixture, {@code dailytran.txt} at three hundred records of three hundred and fifty
+     * characters, is bounded at {@code 300 * 351} bytes. Reading a file no larger than its declared
+     * shape keeps a substituted or truncated file from consuming memory before the width and count
+     * checks run.</p>
+     *
+     * @param recordWidth expected character width of each record
+     * @param recordCount expected number of records
+     * @return the largest permitted byte count
+     */
+    private static long permittedSize(int recordWidth, int recordCount) {
+        return (long) recordCount * (recordWidth + RECORD_SEPARATOR_WIDTH);
+    }
+
+    /**
      * Splits fixture content on the record separator.
      *
      * <p>A separator closing the final record adds no empty record, and a final record without one
      * is kept whole.</p>
      *
-     * @param content the whole decoded fixture
      * @return the records, separator removed
      */
     private static List<String> splitRecords(String content) {
@@ -602,7 +687,6 @@ public final class CardDemoFixtureLoader {
      * Checks that every record carries the width its layout reads.
      *
      * @param fileName    fixture file name, reported when a record is the wrong width
-     * @param records     the records read from the fixture
      * @param recordWidth expected character width of each record
      * @throws IllegalStateException when a record is not exactly {@code recordWidth} characters
      */
@@ -620,9 +704,6 @@ public final class CardDemoFixtureLoader {
     /**
      * Checks that the fixture holds the number of records the inventory names.
      *
-     * @param fileName    fixture file name, reported when the count differs
-     * @param records     the records read from the fixture
-     * @param recordCount expected number of records
      * @throws IllegalStateException when the fixture holds a different number of records
      */
     private static void requireRecordCount(String fileName, List<String> records, int recordCount) {
@@ -635,28 +716,31 @@ public final class CardDemoFixtureLoader {
     /**
      * Checks that a key had not already been indexed.
      *
+     * <p>The failure names the fixture, the key field and the one-based ordinal of the record that
+     * carried the repeat. It never carries the key itself, because a key is a card number or an
+     * account identifier.</p>
+     *
      * @param displaced the value a map returned when the key was added
      * @param fileName  fixture file name, reported when the key repeats
      * @param field     COBOL field name of the key, reported when the key repeats
-     * @param key       the key that was added
+     * @param ordinal   one-based position of the record that carried the repeat
      * @throws IllegalStateException when {@code displaced} shows the key was already present
      */
     private static void requireFirstOccurrence(Object displaced, String fileName, String field,
-            String key) {
+            int ordinal) {
         if (displaced != null) {
-            throw new IllegalStateException("fixture '" + fileName + "' repeats " + field + " '"
-                    + key + "' and the key identifies one record");
+            throw new IllegalStateException("fixture '" + fileName + "' repeats its " + field
+                    + " at record " + ordinal + " and the key identifies one record");
         }
     }
 
     /**
      * Checks that a key field holds at least one character and only digits.
      *
-     * @param value the trimmed field value
      * @param field COBOL field name, reported when the check fails
-     * @return {@code value} unchanged
      * @throws IllegalArgumentException when {@code value} is empty or holds a character other than
-     *         a digit
+     *         a digit. The message names the field, the offending position, and the field width,
+     *         and never the value
      */
     private static String requireDigits(String value, String field) {
         if (value.isEmpty()) {
@@ -665,9 +749,9 @@ public final class CardDemoFixtureLoader {
         for (int position = 0; position < value.length(); position++) {
             char character = value.charAt(position);
             if (character < DIGIT_LOWER_BOUND || character > DIGIT_UPPER_BOUND) {
-                throw new IllegalArgumentException(field + " '" + value + "' holds '" + character
-                        + "' at position " + (position + FIRST_ORDINAL)
-                        + " and the field holds digits");
+                throw new IllegalArgumentException(field + " holds a character other than a "
+                        + "digit at position " + (position + FIRST_ORDINAL) + " of "
+                        + value.length());
             }
         }
         return value;

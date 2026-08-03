@@ -18,9 +18,6 @@ package com.carddemo.account.domain.validation;
  *
  * <p>One message reaches the caller, {@code ' can have alphabets only.'} at
  * {@code app/cbl/COACTUPC.cbl:L2047}.
- *
- * <p>Field widths: {@code card-platform/docs/data-model.md}. Rationale for the separate optional
- * form: {@code card-platform/docs/decision-log.md}.
  */
 public final class AlphabeticOptionalValidator {
 
@@ -50,6 +47,26 @@ public final class AlphabeticOptionalValidator {
      */
     private static final char SPACE = ' ';
 
+    /**
+     * The character a COBOL comparison against the figurative constant
+     * {@code LOW-VALUES} tests for, one position at a time.
+     */
+    private static final char NULL_CHARACTER = '\0';
+
+    /**
+     * ADDITIVE. Opens the message text for a value wider than the edited field. No source
+     * literal carries this text.
+     *
+     * <p>app/cbl/COACTUPC.cbl fills {@code WS-EDIT-ALPHANUM-ONLY PIC X(256)} at line 61 by a
+     * {@code MOVE} from a fixed-width screen field, so the source never holds a value wider
+     * than {@code WS-EDIT-ALPHANUM-LENGTH}. A Representational State Transfer (REST) caller
+     * can supply one, and this edit refuses it instead of inspecting its first characters.</p>
+     */
+    private static final String ADDITIVE_NO_LONGER_THAN = " must be no longer than ";
+
+    /** ADDITIVE. Closes the message text {@link #ADDITIVE_NO_LONGER_THAN} opens. */
+    private static final String ADDITIVE_CHARACTERS = " characters.";
+
     /** This class holds static members only. */
     private AlphabeticOptionalValidator() {
     }
@@ -78,10 +95,18 @@ public final class AlphabeticOptionalValidator {
             return EditResult.ok();
         }
 
+        // ADDITIVE. A value wider than the edited field is refused, so the edit never passes a
+        // verdict on the first characters of a longer value.
+        if (carriesContentPastEditedWidth(value, length)) {
+            return EditResult.failure(trimmedLabel(fieldLabel) + ADDITIVE_NO_LONGER_THAN
+                    + length + ADDITIVE_CHARACTERS);
+        }
+
         String slice = editSlice(value, length);
 
-        // app/cbl/COACTUPC.cbl:L2017-L2025 accepts an absent value.
-        if (holdsOnlySpaces(slice)) {
+        // app/cbl/COACTUPC.cbl:L2017-L2025 accepts an absent value. The first arm compares the
+        // slice against LOW-VALUES and the second against SPACES.
+        if (holdsLowValues(slice) || holdsOnlySpaces(slice)) {
             return EditResult.ok();
         }
 
@@ -166,6 +191,27 @@ public final class AlphabeticOptionalValidator {
     }
 
     /**
+     * Reports the {@code EQUAL LOW-VALUES} arm at {@code app/cbl/COACTUPC.cbl:L2018}. A COBOL
+     * comparison against {@code LOW-VALUES} holds when every character position of the slice
+     * carries {@code X'00'}, so one character other than the null character answers false. An
+     * empty slice carries no position and answers false, leaving the spaces arm to accept it.
+     *
+     * @param slice the slice to measure
+     * @return true when the slice is not empty and every character is the null character
+     */
+    private static boolean holdsLowValues(String slice) {
+        if (slice.isEmpty()) {
+            return false;
+        }
+        for (int position = 0; position < slice.length(); position++) {
+            if (slice.charAt(position) != NULL_CHARACTER) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    /**
      * Trims the label for the message, reproducing
      * {@code FUNCTION TRIM(WS-EDIT-VARIABLE-NAME)} at {@code app/cbl/COACTUPC.cbl:L2046}. A
      * {@code null} label yields an empty opening, matching a label field left at
@@ -176,5 +222,35 @@ public final class AlphabeticOptionalValidator {
      */
     private static String trimmedLabel(String fieldLabel) {
         return fieldLabel == null ? "" : fieldLabel.trim();
+    }
+
+    /**
+     * Reports whether the value carries a character other than a space past the edited width.
+     *
+     * <p>ADDITIVE. The source moves a fixed-width screen field into its edit field, so the
+     * {@code MOVE} drops nothing but padding. A Representational State Transfer (REST) caller can
+     * supply a wider value, and this test separates the two cases: trailing spaces past the width
+     * are the padding the source itself holds, and any other character past the width is content
+     * the edit would not inspect.</p>
+     *
+     * <p>A width of zero or less inspects nothing, and this test reports false for it, leaving the
+     * not-supplied arm to answer.</p>
+     *
+     * @param value  submitted value, which may be null
+     * @param length count of characters the edit inspects
+     * @return true when a character other than a space sits past a positive {@code length}
+     */
+    private static boolean carriesContentPastEditedWidth(String value, int length) {
+        if (length < 1 || value == null || value.length() <= length) {
+            return false;
+        }
+
+        for (int position = length; position < value.length(); position++) {
+            if (value.charAt(position) != SPACE) {
+                return true;
+            }
+        }
+
+        return false;
     }
 }

@@ -18,28 +18,26 @@ import static org.assertj.core.api.Assertions.assertThat;
  * {@code 1210-EDIT-ACCOUNT} at app/cbl/COACTUPC.cbl:L1783-L1820. One call site performs the
  * paragraph as a range, at app/cbl/COACTUPC.cbl:L1435-L1436.
  *
- * <p>The paragraph reaches two failing branches and one passing branch. Lines 1787 and 1788
- * test the field for low values or for spaces, and line 1792 sets condition name
+ * <p>The paragraph reaches two failing branches and one passing branch. Lines 1787 and 1788 test
+ * the field for low values or for spaces, and line 1792 sets condition name
  * {@code WS-PROMPT-FOR-ACCT} from app/cbl/COACTUPC.cbl:L483-L484. Lines 1802 and 1803 test the
- * field for numeric-ness and for eleven zeros. The {@code STRING} at lines 1806 to 1810 joins
- * the two literals on lines 1807 and 1808. Line 1816 marks the field valid.</p>
+ * field for numeric-ness and for eleven zeros. The {@code STRING} at lines 1806 to 1810 joins the
+ * two literals on lines 1807 and 1808. Line 1816 marks the field valid.</p>
  *
  * <p>The field is {@code CC-ACCT-ID PIC X(11)} at app/cpy/CVCRD01Y.cpy:L34-L35, and the numeric
- * redefine {@code CC-ACCT-ID-N PIC 9(11)} at app/cpy/CVCRD01Y.cpy:L36 covers the same eleven
- * bytes. Lines 1802 and 1803 carry no length limb of their own. The methods below assert a pass
- * for an eleven-digit non-zero field whatever the width of the value it holds. A field of some
- * other width fails through the numeric limb and carries the same message as a field holding a
- * letter. app/cbl/COACTUPC.cbl:L1056 pads the fixed-width field on the right with spaces, and a
- * space is not a digit.</p>
+ * redefine {@code CC-ACCT-ID-N PIC 9(11)} at app/cpy/CVCRD01Y.cpy:L36 covers the same eleven bytes.
+ * Lines 1802 and 1803 carry no length limb of their own. The methods below assert a pass for an
+ * eleven-digit non-zero field whatever the width of the value it holds. A field of some other width
+ * fails through the numeric limb and carries the same message as a field holding a letter.
+ * app/cbl/COACTUPC.cbl:L1056 pads the fixed-width field on the right with spaces, and a space is
+ * not a digit.</p>
  *
- * <p>The paragraph also writes {@code CDEMO-ACCT-ID} and {@code ACUP-NEW-ACCT-ID}, at lines
- * 1794, 1795, 1801, 1812 and 1815. {@code AccountIdValidator} writes neither field and keeps no
- * state, so no method below reads either one. Decision record:
- * card-platform/docs/decision-log.md. Source findings for paragraph 1210:
- * card-platform/docs/business-rule-flags.md.</p>
+ * <p>The paragraph also writes {@code CDEMO-ACCT-ID} and {@code ACUP-NEW-ACCT-ID}, at lines 1794,
+ * 1795, 1801, 1812 and 1815. {@code AccountIdValidator} writes neither field and keeps no state, so
+ * no method below reads either one.</p>
  *
- * <p>Each method builds every input it uses. The methods need no Spring context, no broker and
- * no database, so {@code mvn test} runs them on a machine carrying no container runtime.</p>
+ * <p>Each method builds every input it uses. The methods need no Spring context, no broker and no
+ * database, so {@code mvn test} runs them on a machine carrying no container runtime.</p>
  */
 @DisplayName("AccountIdValidator, the account number edit of paragraph 1210")
 class AccountIdValidatorTest {

@@ -7,7 +7,6 @@ package com.carddemo.account.domain.validation;
  * {@code 1220-EDIT-YESNO-EXIT} sits at {@code app/cbl/COACTUPC.cbl:L1894}. The edited field is
  * {@code WS-EDIT-YES-NO PIC X(1)} at {@code app/cbl/COACTUPC.cbl:L76-L80}. One byte there holds
  * both the value and the flag, across three condition names:
- *
  * <ul>
  *   <li>{@code 88 FLG-YES-NO-ISVALID VALUES 'Y', 'N'.} at {@code app/cbl/COACTUPC.cbl:L78}</li>
  *   <li>{@code 88 FLG-YES-NO-NOT-OK VALUE '0'.} at {@code app/cbl/COACTUPC.cbl:L79}</li>
@@ -17,32 +16,25 @@ package com.carddemo.account.domain.validation;
  * <p>The paragraph runs two tests in order. The first covers a value that was not supplied, at
  * {@code app/cbl/COACTUPC.cbl:L1861-L1863}. The second is {@code IF FLG-YES-NO-ISVALID} at
  * {@code app/cbl/COACTUPC.cbl:L1878}, which reads the two accepted characters. Each failing test
- * ends the paragraph, at {@code app/cbl/COACTUPC.cbl:L1874} and
- * {@code app/cbl/COACTUPC.cbl:L1891}.
+ * ends the paragraph, at {@code app/cbl/COACTUPC.cbl:L1874} and {@code app/cbl/COACTUPC.cbl:L1891}.
  *
  * <p>Two call sites supply the label and the value. {@code 'Account Status'} is edited at
  * {@code app/cbl/COACTUPC.cbl:L1472-L1475}, and {@code 'Primary Card Holder'} at
  * {@code app/cbl/COACTUPC.cbl:L1657-L1661}.
  *
  * <p>The message guard {@code IF WS-RETURN-MSG-OFF} at {@code app/cbl/COACTUPC.cbl:L1866} and
- * {@code app/cbl/COACTUPC.cbl:L1883} belongs to the caller. This class returns one message on
- * every failure, and {@link EditResult#hasMessage()} carries the guard.
- *
- * <p>Column mapping for the two edited fields: {@code card-platform/docs/data-model.md}. Source
- * oddities this class reproduces: {@code card-platform/docs/business-rule-flags.md}. Rationale for
- * every choice in this class: {@code card-platform/docs/decision-log.md}.
+ * {@code app/cbl/COACTUPC.cbl:L1883} belongs to the caller. This class returns one message on every
+ * failure, and {@link EditResult#hasMessage()} carries the guard.
  */
 public final class YesNoFlagValidator {
 
     /**
-     * The first value {@code 88 FLG-YES-NO-ISVALID} accepts, at
-     * {@code app/cbl/COACTUPC.cbl:L78}.
+     * The first value {@code 88 FLG-YES-NO-ISVALID} accepts, at {@code app/cbl/COACTUPC.cbl:L78}.
      */
     public static final String YES = "Y";
 
     /**
-     * The second value {@code 88 FLG-YES-NO-ISVALID} accepts, at
-     * {@code app/cbl/COACTUPC.cbl:L78}.
+     * The second value {@code 88 FLG-YES-NO-ISVALID} accepts, at {@code app/cbl/COACTUPC.cbl:L78}.
      */
     public static final String NO = "N";
 
@@ -67,7 +59,6 @@ public final class YesNoFlagValidator {
     /** The character {@code ZEROS} supplies to a {@code PIC X} field. */
     private static final char ZEROS_CHARACTER = '0';
 
-    /** This class holds static members only. */
     private YesNoFlagValidator() {
     }
 
@@ -125,8 +116,6 @@ public final class YesNoFlagValidator {
      * and the result carries no width limit.
      *
      * @param fieldLabel    the field name, which may be {@code null}
-     * @param messageSuffix one of the two message literals this class declares
-     * @return the trimmed label followed by the suffix
      */
     private static String message(String fieldLabel, String messageSuffix) {
         String trimmedLabel = fieldLabel == null ? "" : fieldLabel.trim();
@@ -139,9 +128,6 @@ public final class YesNoFlagValidator {
      * {@code EQUAL SPACES} and {@code EQUAL ZEROS} hold only when no character differs.
      *
      * @param value             the value to read, which may be {@code null}
-     * @param expectedCharacter the character every position must hold
-     * @return true when the value holds at least one character and every character equals
-     *         {@code expectedCharacter}
      */
     private static boolean isEveryCharacter(String value, char expectedCharacter) {
         if (value == null || value.isEmpty()) {

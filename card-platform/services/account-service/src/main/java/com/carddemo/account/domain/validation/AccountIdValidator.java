@@ -1,29 +1,23 @@
 package com.carddemo.account.domain.validation;
 
 /**
- * Edits one submitted account identifier. A valid identifier holds eleven digits and
- * is not zero.
+ * Edits one submitted account identifier. A valid identifier holds eleven digits and is not zero.
  *
- * <p>Realises paragraph {@code 1210-EDIT-ACCOUNT} at
- * {@code app/cbl/COACTUPC.cbl:L1783}, whose exit paragraph
- * {@code 1210-EDIT-ACCOUNT-EXIT} sits at line 1820. The field is
- * {@code CC-ACCT-ID PIC X(11)}, and the numeric redefine
- * {@code CC-ACCT-ID-N PIC 9(11)} covers the same eleven bytes, both at
- * {@code app/cpy/CVCRD01Y.cpy:L34-L36}.</p>
+ * <p>Realises paragraph {@code 1210-EDIT-ACCOUNT} at {@code app/cbl/COACTUPC.cbl:L1783}, whose exit
+ * paragraph {@code 1210-EDIT-ACCOUNT-EXIT} sits at line 1820. The field is
+ * {@code CC-ACCT-ID PIC X(11)}, and the numeric redefine {@code CC-ACCT-ID-N PIC 9(11)} covers the
+ * same eleven bytes, both at {@code app/cpy/CVCRD01Y.cpy:L34-L36}.</p>
  *
- * <p>Two branches return a failure. Lines 1787 and 1788 catch a field of low values
- * or of spaces. Lines 1802 and 1803 catch a field that is not eleven digits, and a
- * field of eleven zeros. Neither message carries a field-label prefix.</p>
+ * <p>Two branches return a failure. Lines 1787 and 1788 catch a field of low values or of spaces.
+ * Lines 1802 and 1803 catch a field that is not eleven digits, and a field of eleven zeros. Neither
+ * message carries a field-label prefix.</p>
  *
  * <p>The one call site performs the paragraph as a range, at
- * {@code app/cbl/COACTUPC.cbl:L1435-L1436}. Each
- * {@code GO TO 1210-EDIT-ACCOUNT-EXIT}, at lines 1796 and 1813, returns a verdict
- * from {@link #validate(String)}.</p>
+ * {@code app/cbl/COACTUPC.cbl:L1435-L1436}. Each {@code GO TO 1210-EDIT-ACCOUNT-EXIT}, at lines
+ * 1796 and 1813, returns a verdict from {@link #validate(String)}.</p>
  *
- * <p>The source paragraph also writes {@code CDEMO-ACCT-ID} and
- * {@code ACUP-NEW-ACCT-ID}, at lines 1794, 1795, 1801, 1812 and 1815. This class
- * writes neither field and keeps no state. Rationale for both omissions lives in
- * {@code card-platform/docs/decision-log.md}.</p>
+ * <p>The source paragraph also writes {@code CDEMO-ACCT-ID} and {@code ACUP-NEW-ACCT-ID}, at lines
+ * 1794, 1795, 1801, 1812 and 1815. This class writes neither field and keeps no state.</p>
  */
 public final class AccountIdValidator {
 
@@ -31,23 +25,20 @@ public final class AccountIdValidator {
     private static final int ACCOUNT_ID_LENGTH = 11;
 
     /**
-     * The lowest character the numeric class test at
-     * {@code app/cbl/COACTUPC.cbl:L1802} accepts, and the character
-     * {@code CC-ACCT-ID-N EQUAL ZEROS} at line 1803 looks for.
+     * The lowest character the numeric class test at {@code app/cbl/COACTUPC.cbl:L1802} accepts,
+     * and the character {@code CC-ACCT-ID-N EQUAL ZEROS} at line 1803 looks for.
      */
     private static final char DIGIT_ZERO = '0';
 
     /**
-     * The highest character the numeric class test at
-     * {@code app/cbl/COACTUPC.cbl:L1802} accepts.
+     * The highest character the numeric class test at {@code app/cbl/COACTUPC.cbl:L1802} accepts.
      */
     private static final char DIGIT_NINE = '9';
 
     /**
      * Text of condition name {@code WS-PROMPT-FOR-ACCT}, declared at
-     * {@code app/cbl/COACTUPC.cbl:L483-L484} and set at line 1792. Twenty-seven
-     * characters, copied character for character, with no prefix and no closing full
-     * stop.
+     * {@code app/cbl/COACTUPC.cbl:L483-L484} and set at line 1792. Twenty-seven characters, copied
+     * character for character, with no prefix and no closing full stop.
      */
     private static final String ACCOUNT_NUMBER_NOT_PROVIDED = "Account number not provided";
 
@@ -60,7 +51,6 @@ public final class AccountIdValidator {
     private static final String ACCOUNT_NUMBER_NOT_ELEVEN_DIGITS =
             "Account Number if supplied must be a 11 digit" + " Non-Zero Number";
 
-    /** This class holds static members only. */
     private AccountIdValidator() {
     }
 
@@ -106,7 +96,6 @@ public final class AccountIdValidator {
      * {@code SPACES}.
      *
      * @param accountId the submitted account identifier; may be {@code null}
-     * @return true when the argument holds no character other than a space
      */
     private static boolean isNotSupplied(String accountId) {
         return accountId == null || accountId.chars().allMatch(character -> character == ' ');
@@ -119,7 +108,6 @@ public final class AccountIdValidator {
      * wider, is returned as it arrived.
      *
      * @param accountId the submitted account identifier, never {@code null}
-     * @return the padded copy of the argument
      */
     private static String padToFieldWidth(String accountId) {
         if (accountId.length() >= ACCOUNT_ID_LENGTH) {
@@ -134,7 +122,6 @@ public final class AccountIdValidator {
      * wide and every character falls between {@code '0'} and {@code '9'}.
      *
      * @param field the padded field, never {@code null}
-     * @return true when the field holds eleven digits
      */
     private static boolean holdsElevenDigits(String field) {
         if (field.length() != ACCOUNT_ID_LENGTH) {
@@ -155,7 +142,6 @@ public final class AccountIdValidator {
      * bytes.
      *
      * @param field the padded field, never {@code null}
-     * @return true when every character of the field is {@code '0'}
      */
     private static boolean holdsOnlyZeros(String field) {
         return field.chars().allMatch(character -> character == DIGIT_ZERO);

@@ -1,18 +1,18 @@
 package com.carddemo.account.domain.validation;
 
 /**
- * Checks that a credit score falls inside the inclusive range 300 to 850. Both bounds pass: 300
- * and 850 pass, 299 and 851 fail.
+ * Checks that a credit score falls inside the inclusive range 300 to 850. Both bounds pass: 300 and
+ * 850 pass, 299 and 851 fail.
  *
- * <p>Realises paragraph {@code 1275-EDIT-FICO-SCORE} at {@code app/cbl/COACTUPC.cbl:L2514},
- * whose exit paragraph sits at {@code app/cbl/COACTUPC.cbl:L2531}. {@code FICO} names a credit
- * score. The two bounds are the values of {@code 88 FICO-RANGE-IS-VALID VALUES 300 THROUGH 850}
- * at {@code app/cbl/COACTUPC.cbl:L848-L849}.
+ * <p>Realises paragraph {@code 1275-EDIT-FICO-SCORE} at {@code app/cbl/COACTUPC.cbl:L2514}, whose
+ * exit paragraph sits at {@code app/cbl/COACTUPC.cbl:L2531}. {@code FICO} names a credit score. The
+ * two bounds are the values of {@code 88 FICO-RANGE-IS-VALID VALUES 300 THROUGH 850} at
+ * {@code app/cbl/COACTUPC.cbl:L848-L849}.
  *
  * <p>That condition sits on {@code ACUP-NEW-CUST-FICO-SCORE}, the {@code PIC 9(03)} redefine
  * declared at {@code app/cbl/COACTUPC.cbl:L846-L847} over the {@code PIC X(03)} field at
- * {@code app/cbl/COACTUPC.cbl:L845}. Three characters hold the value, and a leading zero reads
- * as written, so {@code "030"} reads as 30 and fails the range.
+ * {@code app/cbl/COACTUPC.cbl:L845}. Three characters hold the value, and a leading zero reads as
+ * written, so {@code "030"} reads as 30 and fails the range.
  *
  * <p>The caller owns the numeric class test and the message slot.
  * {@code app/cbl/COACTUPC.cbl:L1545} moves the label {@code 'FICO Score'},
@@ -20,35 +20,24 @@ package com.carddemo.account.domain.validation;
  * {@code app/cbl/COACTUPC.cbl:L1553} gates this paragraph on that verdict. The guard at
  * {@code app/cbl/COACTUPC.cbl:L2520} belongs to the caller too, which keeps the first message a
  * validation pass produces.
- *
- * <p>Rationale for every choice in this class: {@code card-platform/docs/decision-log.md}.
  */
 public final class CreditScoreRangeValidator {
 
-    /**
-     * Lowest passing value, from {@code VALUES 300} at {@code app/cbl/COACTUPC.cbl:L848}.
-     */
+    /** Lowest passing value, from {@code VALUES 300} at {@code app/cbl/COACTUPC.cbl:L848}. */
     private static final int LOWEST_PASSING_SCORE = 300;
 
-    /**
-     * Highest passing value, from {@code THROUGH 850} at {@code app/cbl/COACTUPC.cbl:L849}.
-     */
+    /** Highest passing value, from {@code THROUGH 850} at {@code app/cbl/COACTUPC.cbl:L849}. */
     private static final int HIGHEST_PASSING_SCORE = 850;
 
     /**
-     * Width of {@code ACUP-NEW-CUST-FICO-SCORE-X PIC X(03)} at
-     * {@code app/cbl/COACTUPC.cbl:L845}.
+     * Width of {@code ACUP-NEW-CUST-FICO-SCORE-X PIC X(03)} at {@code app/cbl/COACTUPC.cbl:L845}.
      */
     private static final int SCORE_WIDTH = 3;
 
-    /**
-     * Place value of the first of the three characters.
-     */
+    /** Place value of the first of the three characters. */
     private static final int HUNDREDS_PLACE_VALUE = 100;
 
-    /**
-     * Place value of the second of the three characters.
-     */
+    /** Place value of the second of the three characters. */
     private static final int TENS_PLACE_VALUE = 10;
 
     /**
@@ -63,7 +52,6 @@ public final class CreditScoreRangeValidator {
      */
     private static final String EMPTY_LABEL = "";
 
-    /** This class holds static members only. */
     private CreditScoreRangeValidator() {
     }
 
@@ -133,7 +121,6 @@ public final class CreditScoreRangeValidator {
      * Builds the one message of {@code app/cbl/COACTUPC.cbl:L2521-L2526}.
      *
      * @param fieldLabel the label to trim; may be {@code null}
-     * @return the trimmed label joined to the message text, with nothing between them
      */
     private static String rangeMessage(String fieldLabel) {
         String trimmedLabel = fieldLabel == null ? EMPTY_LABEL : fieldLabel.trim();

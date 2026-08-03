@@ -2,6 +2,10 @@ package com.carddemo.account.repository;
 
 import java.math.BigDecimal;
 import java.math.BigInteger;
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
+import java.util.HexFormat;
 import java.util.List;
 
 import org.junit.jupiter.api.DisplayName;
@@ -10,6 +14,7 @@ import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.CsvSource;
 
 import com.carddemo.account.repository.AsciiFixtureReader.Field;
+
 
 import static com.carddemo.account.repository.AsciiFixtureReader.ACCOUNT_ACTIVE_STATUS;
 import static com.carddemo.account.repository.AsciiFixtureReader.ACCOUNT_ADDRESS_ZIP;
@@ -83,21 +88,15 @@ import static org.assertj.core.api.Assertions.assertThatExceptionOfType;
  * brace or a letter. A {@code PIC S9(10)V99} field spans twelve bytes, and a {@code PIC S9(09)V99}
  * field spans eleven.</p>
  *
- * <p>The methods here assert fixture bytes. {@code AccountRepositoryTest} asserts the rows the
- * seed migration loads. The pair together show the seed reproduces the fixture, and neither
- * repeats the other.</p>
+ * <p>The methods here assert fixture bytes and nothing about a database row.</p>
  *
  * <p>Fifty account records hold five money fields each, and all two hundred and fifty trailing
  * bytes are the positive brace.
  * {@link #negativeOverpunchBytesDecodeToTheirNegatedDigit(char, int)} covers the negative half of
  * the table from field text built in memory.</p>
  *
- * <p>Every expected value below names the copybook line and the fixture positions it comes from.
- * The record-layout mapping and the field renames sit in
- * card-platform/docs/traceability-matrix.md, and the entity shapes drawn from the same copybooks
- * sit in card-platform/docs/data-model.md.</p>
- *
- * <p>Decision record: card-platform/docs/decision-log.md.</p>
+ * <p>Every expected value below names the copybook line and the fixture positions it comes
+ * from.</p>
  */
 @DisplayName("AsciiFixtureReader over the account, customer and disclosure group fixtures")
 class ZonedDecimalFixtureDecodingTest {
@@ -258,27 +257,59 @@ class ZonedDecimalFixtureDecodingTest {
     private static final int ACCOUNT_SIGN_BYTE_TOTAL = 250;
 
     // Customer record 1, from app/data/ASCII/custdata.txt and app/cpy/CVCUS01Y.cpy.
+    //
+    // The customer record carries personal data: three name fields at CVCUS01Y lines 6 to 8, three
+    // address lines at lines 9 to 11, a zip at line 14, two telephone numbers at lines 15 and 16, a
+    // Social Security Number at line 17, a government-issued identifier at line 18, a date of birth
+    // at line 19, an electronic funds transfer account at line 20 and a credit score at line 22.
+    //
+    // Each of those fields is pinned by the SHA-256 digest of its exact field text, padding
+    // included, rather than by the text itself. The assertion stays exact: one changed character
+    // changes the digest. Neither the value nor a failure message carries the personal data, so a
+    // build log holds none of it.
+    //
+    // The record key, the two-character state code, the three-character country code and the
+    // one-character primary-holder indicator are pinned as text. None identifies a person, and the
+    // key names the record under test.
 
     /** CUST-ID at CVCUS01Y line 5, positions 1 through 9 of record 1. */
     private static final String RECORD_1_CUSTOMER_ID = "000000001";
 
-    /** CUST-FIRST-NAME at CVCUS01Y line 6, positions 10 through 34 of record 1. */
-    private static final String RECORD_1_FIRST_NAME = "Immanuel";
+    /**
+     * SHA-256 digest of the field text of CUST-FIRST-NAME at CVCUS01Y line 6, positions 10 through 34 of record 1.
+     */
+    private static final String RECORD_1_FIRST_NAME_DIGEST =
+            "b46039dfd63d952d8880070172213eece8046e8826072b82926e19a8ecee8ebd";
 
-    /** CUST-MIDDLE-NAME at CVCUS01Y line 7, positions 35 through 59 of record 1. */
-    private static final String RECORD_1_MIDDLE_NAME = "Madeline";
+    /**
+     * SHA-256 digest of the field text of CUST-MIDDLE-NAME at CVCUS01Y line 7, positions 35 through 59 of record 1.
+     */
+    private static final String RECORD_1_MIDDLE_NAME_DIGEST =
+            "e239448b9da06a05628e9f6407cd6d6e34f00b887a5a83834b60561bfdbf8746";
 
-    /** CUST-LAST-NAME at CVCUS01Y line 8, positions 60 through 84 of record 1. */
-    private static final String RECORD_1_LAST_NAME = "Kessler";
+    /**
+     * SHA-256 digest of the field text of CUST-LAST-NAME at CVCUS01Y line 8, positions 60 through 84 of record 1.
+     */
+    private static final String RECORD_1_LAST_NAME_DIGEST =
+            "dfcd5018ccaffd0a2a06c5684aeb3716140db00ef8ceff970996274d5370371d";
 
-    /** CUST-ADDR-LINE-1 at CVCUS01Y line 9, positions 85 through 134 of record 1. */
-    private static final String RECORD_1_ADDRESS_LINE_1 = "618 Deshaun Route";
+    /**
+     * SHA-256 digest of the field text of CUST-ADDR-LINE-1 at CVCUS01Y line 9, positions 85 through 134 of record 1.
+     */
+    private static final String RECORD_1_ADDRESS_LINE_1_DIGEST =
+            "fc1bb391d3fda38ba50b411548f650a4874963be59007dac05e28f0c83cd8da5";
 
-    /** CUST-ADDR-LINE-2 at CVCUS01Y line 10, positions 135 through 184 of record 1. */
-    private static final String RECORD_1_ADDRESS_LINE_2 = "Apt. 802";
+    /**
+     * SHA-256 digest of the field text of CUST-ADDR-LINE-2 at CVCUS01Y line 10, positions 135 through 184 of record 1.
+     */
+    private static final String RECORD_1_ADDRESS_LINE_2_DIGEST =
+            "a593d398503df49f5390c0d962604f8317bb6da1d95d5d2b281550adde516317";
 
-    /** CUST-ADDR-LINE-3 at CVCUS01Y line 11, positions 185 through 234 of record 1. */
-    private static final String RECORD_1_ADDRESS_LINE_3 = "Altenwerthshire";
+    /**
+     * SHA-256 digest of the field text of CUST-ADDR-LINE-3 at CVCUS01Y line 11, positions 185 through 234 of record 1.
+     */
+    private static final String RECORD_1_ADDRESS_LINE_3_DIGEST =
+            "37e3f121bf54abe3317ff465488c7ac1fdaed6ff0b6fee2626dee6817e75542f";
 
     /** CUST-ADDR-STATE-CD at CVCUS01Y line 12, positions 235 and 236 of record 1. */
     private static final String RECORD_1_STATE_CODE = "NC";
@@ -286,41 +317,92 @@ class ZonedDecimalFixtureDecodingTest {
     /** CUST-ADDR-COUNTRY-CD at CVCUS01Y line 13, positions 237 through 239 of record 1. */
     private static final String RECORD_1_COUNTRY_CODE = "USA";
 
-    /** CUST-ADDR-ZIP at CVCUS01Y line 14, positions 240 through 249 of record 1. */
-    private static final String RECORD_1_CUSTOMER_ZIP = "12546";
-
-    /** CUST-PHONE-NUM-1 at CVCUS01Y line 15, positions 250 through 264 of record 1. */
-    private static final String RECORD_1_PHONE_NUMBER_1 = "(908)119-8310";
-
-    /** CUST-PHONE-NUM-2 at CVCUS01Y line 16, positions 265 through 279 of record 1. */
-    private static final String RECORD_1_PHONE_NUMBER_2 = "(373)693-8684";
+    /**
+     * SHA-256 digest of the field text of CUST-ADDR-ZIP at CVCUS01Y line 14, positions 240 through 249 of record 1.
+     */
+    private static final String RECORD_1_CUSTOMER_ZIP_DIGEST =
+            "513dee4c300abd4a370eaab837316922575c83e3a057d1c49ddd7646066cd810";
 
     /**
-     * CUST-SSN, the Social Security Number, at CVCUS01Y line 17, positions 280 through 288 of
-     * record 1. The fixture stores nine digits and no separator.
+     * Digest pinning CUST-SSN, the Social Security Number, at
+     * {@code app/cpy/CVCUS01Y.cpy:L17 PIC 9(09)}, positions 280 through 288 of record 1.
+     *
+     * <p>No test in this class holds a complete identifier. The digest covers the field name, a
+     * colon and the decoded value, so it pins the exact value the decode must produce without
+     * storing that value and without printing it when an assertion fails.</p>
      */
-    private static final String RECORD_1_SOCIAL_SECURITY_NUMBER = "020973888";
+    private static final String RECORD_1_SOCIAL_SECURITY_NUMBER_DIGEST =
+            "65265e07a465ed10de7ae0351e72ca1504772100476c1d4a8e07f176f600438c";
 
-    /** CUST-GOVT-ISSUED-ID at CVCUS01Y line 18, positions 289 through 308 of record 1. */
-    private static final String RECORD_1_GOVERNMENT_ISSUED_ID = "00000000000049368437";
+    /** Declared width of {@code CUST-SSN PIC 9(09)} at app/cpy/CVCUS01Y.cpy:L17. */
+    private static final int SOCIAL_SECURITY_NUMBER_WIDTH = 9;
+
+    /** The count of trailing characters a masked identifier leaves visible. */
+    private static final int VISIBLE_SUFFIX_LENGTH = 4;
+
+    /** The character that replaces a hidden identifier character. */
+    private static final char MASK_CHARACTER = '*';
+
+    /** The digest algorithm that pins each stored identifier without storing it. */
+    private static final String DIGEST_ALGORITHM = "SHA-256";
+
+    /** The masked form of record 1's Social Security Number: five masks then the last four. */
+    private static final String RECORD_1_SOCIAL_SECURITY_NUMBER_MASKED = "*****3888";
 
     /**
-     * CUST-DOB-YYYY-MM-DD at CVCUS01Y line 19, positions 309 through 318 of record 1. The field
-     * carries hyphens, matching the three account date fields.
+     * Digest pinning CUST-GOVT-ISSUED-ID at {@code app/cpy/CVCUS01Y.cpy:L18 PIC X(20)}, positions
+     * 289 through 308 of record 1. Built the same way as
+     * {@link #RECORD_1_SOCIAL_SECURITY_NUMBER_DIGEST}.
      */
-    private static final String RECORD_1_DATE_OF_BIRTH = "1961-06-08";
+    private static final String RECORD_1_GOVERNMENT_ISSUED_ID_DIGEST =
+            "8f003654c94e6bfce1accc6e0742bf3d08055fae58b82fb254197706073b28e8";
+
+    /** Declared width of {@code CUST-GOVT-ISSUED-ID PIC X(20)} at app/cpy/CVCUS01Y.cpy:L18. */
+    private static final int GOVERNMENT_ISSUED_ID_WIDTH = 20;
+
+    /** The masked form of record 1's government-issued identifier. */
+    private static final String RECORD_1_GOVERNMENT_ISSUED_ID_MASKED = "****************8437";
 
     /**
-     * CUST-EFT-ACCOUNT-ID, the electronic funds transfer account, at CVCUS01Y line 20, positions
-     * 319 through 328 of record 1.
+     * SHA-256 digest of the field text of CUST-PHONE-NUM-1 at CVCUS01Y line 15, positions 250 through 264 of record 1.
      */
-    private static final String RECORD_1_EFT_ACCOUNT_ID = "0053581756";
+    private static final String RECORD_1_PHONE_NUMBER_1_DIGEST =
+            "3380fbe69f1b2afc238b06221985762c121693fac7e956e4170e8b4d2a636825";
+
+    /**
+     * SHA-256 digest of the field text of CUST-PHONE-NUM-2 at CVCUS01Y line 16, positions 265 through 279 of record 1.
+     */
+    private static final String RECORD_1_PHONE_NUMBER_2_DIGEST =
+            "c096efeb4597bf00b1b841acfbc087e200c691442cb4c382b9af053fe50dc42c";
+
+    /**
+     * Digest pinning CUST-EFT-ACCOUNT-ID, the electronic funds transfer account identifier, at
+     * {@code app/cpy/CVCUS01Y.cpy:L20 PIC X(10)}, positions 319 through 328 of record 1. Built the
+     * same way as {@link #RECORD_1_SOCIAL_SECURITY_NUMBER_DIGEST}.
+     */
+    private static final String RECORD_1_EFT_ACCOUNT_ID_DIGEST =
+            "039c417ab60cc0836c6df4196b27f7ec19e1f1b53a4175f3b90b0b347d054ea1";
+
+    /** Declared width of {@code CUST-EFT-ACCOUNT-ID PIC X(10)} at app/cpy/CVCUS01Y.cpy:L20. */
+    private static final int EFT_ACCOUNT_ID_WIDTH = 10;
+
+    /** The masked form of record 1's electronic funds transfer account identifier. */
+    private static final String RECORD_1_EFT_ACCOUNT_ID_MASKED = "******1756";
+
+    /**
+     * SHA-256 digest of the field text of CUST-DOB-YYYY-MM-DD at CVCUS01Y line 19, positions 309 through 318 of record 1.
+     */
+    private static final String RECORD_1_DATE_OF_BIRTH_DIGEST =
+            "e50be91f748c886d810e2ba759b6b415b540588e9305e3003a2bfa5e955f32d8";
 
     /** CUST-PRI-CARD-HOLDER-IND at CVCUS01Y line 21, position 329 of record 1. */
     private static final String RECORD_1_PRIMARY_HOLDER_INDICATOR = "Y";
 
-    /** CUST-FICO-CREDIT-SCORE at CVCUS01Y line 22, positions 330 through 332 of record 1. */
-    private static final String RECORD_1_CREDIT_SCORE = "274";
+    /**
+     * SHA-256 digest of the field text of CUST-FICO-CREDIT-SCORE at CVCUS01Y line 22, positions 330 through 332 of record 1.
+     */
+    private static final String RECORD_1_CREDIT_SCORE_DIGEST =
+            "718127812c05853f0bec61582a4a3840b1c844fe11fe1a004b5b7eb8b8b59846";
 
     // Disclosure group record 1, from app/data/ASCII/discgrp.txt and app/cpy/CVTRA02Y.cpy.
 
@@ -361,6 +443,48 @@ class ZonedDecimalFixtureDecodingTest {
      * @return {@code value} padded to exactly {@code width} characters
      * @throws IllegalArgumentException if {@code value} already spans more than {@code width}
      */
+    /**
+     * Asserts one field of a record against the SHA-256 digest of its field text, and asserts the
+     * field width at the same time.
+     *
+     * <p>The digest keeps the assertion exact while keeping personal data out of this file and out
+     * of the failure message. A changed character changes the digest, and the message names the
+     * field and its width alone.</p>
+     *
+     * @param record      the fixture record
+     * @param fixtureField the field to read
+     * @param expectedDigest the lower-case hexadecimal SHA-256 digest of the field text
+     * @param description a locator for the failure message, carrying no field value
+     */
+    private static void assertFieldDigest(String record, Field fixtureField, String expectedDigest,
+            String description) {
+        String fieldText = field(record, fixtureField);
+
+        assertThat(fieldText.length())
+                .as("%s spans %d characters", description, fixtureField.length())
+                .isEqualTo(fixtureField.length());
+        assertThat(sha256Hex(fieldText))
+                .as("%s carries the expected field text, compared by digest", description)
+                .isEqualTo(expectedDigest);
+    }
+
+    /**
+     * Returns the lower-case hexadecimal SHA-256 digest of a string, read as UTF-8 bytes.
+     *
+     * <p>Every character of the fixture is ASCII, so the UTF-8 bytes are the fixture bytes.</p>
+     *
+     * @param text the text to digest
+     * @return the 64-character hexadecimal digest
+     */
+    private static String sha256Hex(String text) {
+        try {
+            MessageDigest digest = MessageDigest.getInstance("SHA-256");
+            return HexFormat.of().formatHex(digest.digest(text.getBytes(StandardCharsets.UTF_8)));
+        } catch (NoSuchAlgorithmException unavailable) {
+            throw new IllegalStateException("SHA-256 is required by every Java runtime", unavailable);
+        }
+    }
+
     private static String padded(String value, int width) {
         if (value.length() > width) {
             throw new IllegalArgumentException(
@@ -585,9 +709,12 @@ class ZonedDecimalFixtureDecodingTest {
         String blankText = padded("", MONEY_FIELD_LENGTH);
         String unrecognisedText = MONEY_ZERO_PREFIX + UNRECOGNISED_SIGN_BYTE;
 
+        // The failure text names the field width and the accepted byte sets. It carries neither the
+        // field text nor the byte it refused, so a fixture value cannot reach a build log.
         assertThatExceptionOfType(IllegalArgumentException.class)
                 .isThrownBy(() -> decodeZonedDecimal(unrecognisedText, MONEY_SCALE))
-                .withMessageContaining(String.valueOf(UNRECOGNISED_SIGN_BYTE));
+                .withMessageContaining(String.valueOf(MONEY_FIELD_LENGTH))
+                .withMessageNotContaining(unrecognisedText);
         assertThatExceptionOfType(IllegalArgumentException.class)
                 .isThrownBy(() -> decodeZonedDecimal(NON_DIGIT_MONEY_FIELD, MONEY_SCALE));
         assertThatExceptionOfType(IllegalArgumentException.class)
@@ -680,29 +807,29 @@ class ZonedDecimalFixtureDecodingTest {
         String record = readCustomerRecords().get(FIRST_RECORD);
 
         assertThat(field(record, CUSTOMER_ID)).isEqualTo(RECORD_1_CUSTOMER_ID);
-        assertThat(field(record, CUSTOMER_FIRST_NAME))
-                .isEqualTo(padded(RECORD_1_FIRST_NAME, CUSTOMER_FIRST_NAME.length()));
-        assertThat(field(record, CUSTOMER_MIDDLE_NAME))
-                .isEqualTo(padded(RECORD_1_MIDDLE_NAME, CUSTOMER_MIDDLE_NAME.length()));
-        assertThat(field(record, CUSTOMER_LAST_NAME))
-                .isEqualTo(padded(RECORD_1_LAST_NAME, CUSTOMER_LAST_NAME.length()));
+        assertFieldDigest(record, CUSTOMER_FIRST_NAME, RECORD_1_FIRST_NAME_DIGEST,
+                "CUST-FIRST-NAME at CVCUS01Y line 6");
+        assertFieldDigest(record, CUSTOMER_MIDDLE_NAME, RECORD_1_MIDDLE_NAME_DIGEST,
+                "CUST-MIDDLE-NAME at CVCUS01Y line 7");
+        assertFieldDigest(record, CUSTOMER_LAST_NAME, RECORD_1_LAST_NAME_DIGEST,
+                "CUST-LAST-NAME at CVCUS01Y line 8");
     }
 
     @Test
-    @DisplayName("record 1 of custdata.txt carries three address lines, state NC, country USA and zip 12546")
+    @DisplayName("record 1 of custdata.txt carries three address lines, state NC, country USA and a five-digit zip")
     void customerRecordOneAddressFieldsMatchTheFixture() {
         String record = readCustomerRecords().get(FIRST_RECORD);
 
-        assertThat(field(record, CUSTOMER_ADDRESS_LINE_1))
-                .isEqualTo(padded(RECORD_1_ADDRESS_LINE_1, CUSTOMER_ADDRESS_LINE_1.length()));
-        assertThat(field(record, CUSTOMER_ADDRESS_LINE_2))
-                .isEqualTo(padded(RECORD_1_ADDRESS_LINE_2, CUSTOMER_ADDRESS_LINE_2.length()));
-        assertThat(field(record, CUSTOMER_ADDRESS_LINE_3))
-                .isEqualTo(padded(RECORD_1_ADDRESS_LINE_3, CUSTOMER_ADDRESS_LINE_3.length()));
+        assertFieldDigest(record, CUSTOMER_ADDRESS_LINE_1, RECORD_1_ADDRESS_LINE_1_DIGEST,
+                "CUST-ADDR-LINE-1 at CVCUS01Y line 9");
+        assertFieldDigest(record, CUSTOMER_ADDRESS_LINE_2, RECORD_1_ADDRESS_LINE_2_DIGEST,
+                "CUST-ADDR-LINE-2 at CVCUS01Y line 10");
+        assertFieldDigest(record, CUSTOMER_ADDRESS_LINE_3, RECORD_1_ADDRESS_LINE_3_DIGEST,
+                "CUST-ADDR-LINE-3 at CVCUS01Y line 11");
         assertThat(field(record, CUSTOMER_STATE_CODE)).isEqualTo(RECORD_1_STATE_CODE);
         assertThat(field(record, CUSTOMER_COUNTRY_CODE)).isEqualTo(RECORD_1_COUNTRY_CODE);
-        assertThat(field(record, CUSTOMER_ADDRESS_ZIP))
-                .isEqualTo(padded(RECORD_1_CUSTOMER_ZIP, CUSTOMER_ADDRESS_ZIP.length()));
+        assertFieldDigest(record, CUSTOMER_ADDRESS_ZIP, RECORD_1_CUSTOMER_ZIP_DIGEST,
+                "CUST-ADDR-ZIP at CVCUS01Y line 14");
     }
 
     @Test
@@ -710,28 +837,117 @@ class ZonedDecimalFixtureDecodingTest {
     void customerRecordOnePhoneNumbersCarryTheirTrailingPadding() {
         String record = readCustomerRecords().get(FIRST_RECORD);
 
-        assertThat(field(record, CUSTOMER_PHONE_NUMBER_1))
-                .isEqualTo(padded(RECORD_1_PHONE_NUMBER_1, CUSTOMER_PHONE_NUMBER_1.length()));
-        assertThat(field(record, CUSTOMER_PHONE_NUMBER_2))
-                .isEqualTo(padded(RECORD_1_PHONE_NUMBER_2, CUSTOMER_PHONE_NUMBER_2.length()));
+        assertFieldDigest(record, CUSTOMER_PHONE_NUMBER_1, RECORD_1_PHONE_NUMBER_1_DIGEST,
+                "CUST-PHONE-NUM-1 at CVCUS01Y line 15");
+        assertFieldDigest(record, CUSTOMER_PHONE_NUMBER_2, RECORD_1_PHONE_NUMBER_2_DIGEST,
+                "CUST-PHONE-NUM-2 at CVCUS01Y line 16");
     }
 
     @Test
-    @DisplayName("record 1 of custdata.txt carries the stored identifiers, a date of birth and score 274")
-    void customerRecordOneStoredIdentifiersAndScoreMatchTheFixture() {
+    @DisplayName("record 1 of custdata.txt carries a date of birth, a primary-holder indicator and "
+            + "a three-digit score at their declared positions")
+    void customerRecordOneDateOfBirthAndScoreMatchTheFixture() {
         String record = readCustomerRecords().get(FIRST_RECORD);
 
-        assertThat(field(record, CUSTOMER_SOCIAL_SECURITY_NUMBER))
-                .isEqualTo(RECORD_1_SOCIAL_SECURITY_NUMBER);
-        assertThat(field(record, CUSTOMER_GOVERNMENT_ISSUED_ID))
-                .isEqualTo(RECORD_1_GOVERNMENT_ISSUED_ID);
-        assertThat(field(record, CUSTOMER_DATE_OF_BIRTH)).isEqualTo(RECORD_1_DATE_OF_BIRTH);
-        assertThat(field(record, CUSTOMER_EFT_ACCOUNT_ID)).isEqualTo(RECORD_1_EFT_ACCOUNT_ID);
+        assertFieldDigest(record, CUSTOMER_DATE_OF_BIRTH, RECORD_1_DATE_OF_BIRTH_DIGEST,
+                "CUST-DOB-YYYY-MM-DD at CVCUS01Y line 19");
         assertThat(field(record, CUSTOMER_PRIMARY_HOLDER_INDICATOR))
                 .isEqualTo(RECORD_1_PRIMARY_HOLDER_INDICATOR);
-        assertThat(field(record, CUSTOMER_CREDIT_SCORE)).isEqualTo(RECORD_1_CREDIT_SCORE);
+        assertFieldDigest(record, CUSTOMER_CREDIT_SCORE, RECORD_1_CREDIT_SCORE_DIGEST,
+                "CUST-FICO-CREDIT-SCORE at CVCUS01Y line 22");
         assertThat(field(record, CUSTOMER_FILLER)).isEqualTo(padded("", CUSTOMER_FILLER.length()));
         assertThat(CUSTOMER_FILLER.endInclusive()).isEqualTo(MEASURED_CUSTOMER_WIDTH);
+    }
+
+    /**
+     * Asserts the three stored identifiers of record 1 decode at their declared widths, hold digits
+     * throughout, mask to their published suffixes, and match the digest that pins each value.
+     *
+     * <p>Nothing in this test holds or prints a complete identifier. Each assertion reads a derived
+     * value: a length, a boolean, a masked form, or a digest. A wrong decode fails on the digest,
+     * and the failure report carries the digest rather than the identifier.</p>
+     */
+    @Test
+    @DisplayName("record 1 of custdata.txt carries the three stored identifiers at their declared "
+            + "widths, and each matches the digest that pins it")
+    void customerRecordOneStoredIdentifiersMatchTheirDigests() {
+        String record = readCustomerRecords().get(FIRST_RECORD);
+
+        String socialSecurityNumber = field(record, CUSTOMER_SOCIAL_SECURITY_NUMBER);
+        assertThat(socialSecurityNumber.length()).isEqualTo(SOCIAL_SECURITY_NUMBER_WIDTH);
+        assertThat(holdsOnlyDigits(socialSecurityNumber))
+                .as("CUST-SSN holds only digits")
+                .isTrue();
+        assertThat(maskedSuffix(socialSecurityNumber))
+                .isEqualTo(RECORD_1_SOCIAL_SECURITY_NUMBER_MASKED);
+        assertThat(saltedDigest("CUST-SSN", socialSecurityNumber))
+                .isEqualTo(RECORD_1_SOCIAL_SECURITY_NUMBER_DIGEST);
+
+        String governmentIssuedId = field(record, CUSTOMER_GOVERNMENT_ISSUED_ID);
+        assertThat(governmentIssuedId.length()).isEqualTo(GOVERNMENT_ISSUED_ID_WIDTH);
+        assertThat(holdsOnlyDigits(governmentIssuedId))
+                .as("CUST-GOVT-ISSUED-ID holds only digits")
+                .isTrue();
+        assertThat(maskedSuffix(governmentIssuedId))
+                .isEqualTo(RECORD_1_GOVERNMENT_ISSUED_ID_MASKED);
+        assertThat(saltedDigest("CUST-GOVT-ISSUED-ID", governmentIssuedId))
+                .isEqualTo(RECORD_1_GOVERNMENT_ISSUED_ID_DIGEST);
+
+        String eftAccountId = field(record, CUSTOMER_EFT_ACCOUNT_ID);
+        assertThat(eftAccountId.length()).isEqualTo(EFT_ACCOUNT_ID_WIDTH);
+        assertThat(holdsOnlyDigits(eftAccountId))
+                .as("CUST-EFT-ACCOUNT-ID holds only digits")
+                .isTrue();
+        assertThat(maskedSuffix(eftAccountId)).isEqualTo(RECORD_1_EFT_ACCOUNT_ID_MASKED);
+        assertThat(saltedDigest("CUST-EFT-ACCOUNT-ID", eftAccountId))
+                .isEqualTo(RECORD_1_EFT_ACCOUNT_ID_DIGEST);
+    }
+
+    /**
+     * Asserts that no expected value in this class carries a complete stored identifier.
+     *
+     * <p>The three published masked forms keep four characters each, and the three digests carry no
+     * character of the value they pin. This test walks the declared fields by reflection, so a
+     * plaintext identifier added later fails here.</p>
+     */
+    @Test
+    @DisplayName("No expected value in this class carries a complete stored identifier")
+    void noExpectedValueCarriesACompleteStoredIdentifier() {
+        String record = readCustomerRecords().get(FIRST_RECORD);
+        List<String> identifiers = List.of(
+                field(record, CUSTOMER_SOCIAL_SECURITY_NUMBER),
+                field(record, CUSTOMER_GOVERNMENT_ISSUED_ID),
+                field(record, CUSTOMER_EFT_ACCOUNT_ID));
+
+        for (java.lang.reflect.Field declared
+                : ZonedDecimalFixtureDecodingTest.class.getDeclaredFields()) {
+            if (declared.isSynthetic() || declared.getType() != String.class) {
+                continue;
+            }
+            declared.setAccessible(true);
+            String expected;
+            try {
+                expected = (String) declared.get(null);
+            } catch (IllegalAccessException failure) {
+                throw new IllegalStateException(
+                        "Reading field %s failed.".formatted(declared.getName()), failure);
+            }
+            if (expected == null) {
+                continue;
+            }
+            for (String identifier : identifiers) {
+                assertThat(expected.contains(identifier))
+                        .as("field %s carries a complete stored identifier", declared.getName())
+                        .isFalse();
+            }
+        }
+
+        for (String masked : List.of(RECORD_1_SOCIAL_SECURITY_NUMBER_MASKED,
+                RECORD_1_GOVERNMENT_ISSUED_ID_MASKED, RECORD_1_EFT_ACCOUNT_ID_MASKED)) {
+            assertThat(masked.chars().filter(Character::isDigit).count())
+                    .as("visible characters in a masked identifier")
+                    .isEqualTo(VISIBLE_SUFFIX_LENGTH);
+        }
     }
 
     // Disclosure group fixture, from app/data/ASCII/discgrp.txt laid out by app/cpy/CVTRA02Y.cpy.
@@ -775,5 +991,55 @@ class ZonedDecimalFixtureDecodingTest {
             assertThat(rate.scale()).isEqualTo(INTEREST_RATE_SCALE);
             assertThat(rate.signum()).isNotNegative();
         });
+    }
+
+    /**
+     * Masks every character of an identifier except the last {@value #VISIBLE_SUFFIX_LENGTH}.
+     *
+     * @param identifier the decoded field content
+     * @return the masked form, at the width of the argument
+     */
+    private static String maskedSuffix(String identifier) {
+        int hidden = identifier.length() - VISIBLE_SUFFIX_LENGTH;
+        return String.valueOf(MASK_CHARACTER).repeat(hidden)
+                + identifier.substring(hidden);
+    }
+
+    /**
+     * Reports whether every character of a field is a decimal digit.
+     *
+     * @param field the decoded field content
+     * @return true when the field holds at least one character and every one is a digit
+     */
+    private static boolean holdsOnlyDigits(String field) {
+        return !field.isEmpty() && field.chars().allMatch(Character::isDigit);
+    }
+
+    /**
+     * Digests a field name, a colon and a field value, and returns the digest as lower-case
+     * hexadecimal.
+     *
+     * <p>The field name salts the digest, so the result is not the digest of a bare digit string.
+     * The digest pins the exact value the decode must produce and carries no character of it.</p>
+     *
+     * @param fieldName the copybook field name
+     * @param value     the decoded field content
+     * @return the digest, sixty-four hexadecimal characters
+     */
+    private static String saltedDigest(String fieldName, String value) {
+        byte[] digest;
+        try {
+            digest = MessageDigest.getInstance(DIGEST_ALGORITHM)
+                    .digest((fieldName + ":" + value).getBytes(StandardCharsets.US_ASCII));
+        } catch (NoSuchAlgorithmException failure) {
+            throw new IllegalStateException(
+                    "The runtime supplies no %s digest.".formatted(DIGEST_ALGORITHM), failure);
+        }
+
+        StringBuilder hexadecimal = new StringBuilder(digest.length * 2);
+        for (byte octet : digest) {
+            hexadecimal.append("%02x".formatted(octet));
+        }
+        return hexadecimal.toString();
     }
 }

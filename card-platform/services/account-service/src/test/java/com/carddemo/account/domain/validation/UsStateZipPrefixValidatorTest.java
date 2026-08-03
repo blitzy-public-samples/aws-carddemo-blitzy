@@ -41,14 +41,9 @@ import static org.assertj.core.api.Assertions.assertThatCode;
  * flags surfaces as a single failing verdict. No method below asserts a flag.</p>
  *
  * <p>app/cbl/COACTUPC.cbl:L1665-L1666 gates the single call site at app/cbl/COACTUPC.cbl:L1667 on
- * the state code and the zip code each having passed its own edit. That gate is orchestration, and
- * {@code AccountUpdateServiceTest} covers it. Every input below is a literal written into this
- * file, so the suite needs no container, no database, and no substitute for
- * {@link UsStateZipPrefixes}.</p>
- *
- * <p>Decision record: card-platform/docs/decision-log.md. The {@code STRING} at
- * app/cbl/COACTUPC.cbl:L2537 closes with neither {@code END-STRING} nor {@code END-IF}, and
- * card-platform/docs/business-rule-flags.md records the terminator.</p>
+ * the state code and the zip code each having passed its own edit. That gate is orchestration and
+ * sits outside this class. Every input below is a literal written into this file, so the suite
+ * needs no container, no database, and no substitute for {@link UsStateZipPrefixes}.</p>
  */
 @DisplayName("US state and zip prefix combination edit, COBOL paragraph 1280")
 class UsStateZipPrefixValidatorTest {
@@ -105,10 +100,7 @@ class UsStateZipPrefixValidatorTest {
     /** Key formed by {@link #SEEDED_STATE_CODE} with {@link #NC_ACCEPTED_ZIP_CODE}. */
     private static final String NC_ACCEPTED_KEY = "NC27";
 
-    /**
-     * The second key listed for {@link #SEEDED_STATE_CODE} at
-     * app/cpy/CSLKPCDY.cpy:L1074-L1313.
-     */
+    /** The second key listed for {@link #SEEDED_STATE_CODE} at app/cpy/CSLKPCDY.cpy:L1074-L1313. */
     private static final String NC_SECOND_ACCEPTED_KEY = "NC28";
 
     /**
@@ -155,6 +147,15 @@ class UsStateZipPrefixValidatorTest {
 
     /** Count of two-digit prefixes, from {@code 00} through {@code 99}. */
     private static final int PREFIX_VALUE_COUNT = 100;
+
+    /** Width of the state code inside one combination key. */
+    private static final int STATE_CODE_WIDTH = 2;
+
+    /**
+     * Width of {@code WS-US-STATE-ZIP-CD2-COMBO} at app/cpy/CSLKPCDY.cpy:L1071: two characters of
+     * state code and two of postal prefix.
+     */
+    private static final int COMBINATION_KEY_WIDTH = 4;
 
     /** Count of two-letter state codes, from {@code AA} through {@code ZZ}. */
     private static final int STATE_CODE_COMBINATION_COUNT = 676;
@@ -377,7 +378,40 @@ class UsStateZipPrefixValidatorTest {
 
         assertThat(outcome.passedKeys())
                 .hasSize(BAND_SIZE)
-                .containsExactlyInAnyOrderElementsOf(UsStateZipPrefixes.validCombinations());
+                .containsExactlyInAnyOrderElementsOf(CslkpcdyCopybookOracle.stateZipCombinations());
+    }
+
+    @Test
+    @DisplayName("The production band equals the band app/cpy/CSLKPCDY.cpy:L1073 lists, value for "
+            + "value, and every listed combination is four characters wide")
+    void theProductionBandEqualsTheBandTheCopybookLists() {
+        // UsStateZipPrefixes publishes the band as an unordered set and claims no order, so the
+        // comparison is by membership.
+        assertThat(UsStateZipPrefixes.validCombinations())
+                .as("VALID-US-STATE-ZIP-CD2-COMBO at app/cpy/CSLKPCDY.cpy:L1073")
+                .containsExactlyInAnyOrderElementsOf(
+                        CslkpcdyCopybookOracle.stateZipCombinations());
+
+        assertThat(CslkpcdyCopybookOracle.stateZipCombinations()).hasSize(BAND_SIZE);
+        for (String combination : CslkpcdyCopybookOracle.stateZipCombinations()) {
+            assertThat(combination)
+                    .as("copybook literal %s", combination)
+                    .hasSize(COMBINATION_KEY_WIDTH);
+        }
+    }
+
+    @Test
+    @DisplayName("Every combination app/cpy/CSLKPCDY.cpy:L1073 lists passes the edit, with the "
+            + "copybook supplying the set")
+    void theCopybookDecidesWhichCombinationsPassTheEdit() {
+        for (String combination : CslkpcdyCopybookOracle.stateZipCombinations()) {
+            String stateCode = combination.substring(0, STATE_CODE_WIDTH);
+            String zipCode = combination.substring(STATE_CODE_WIDTH) + TRAILING_THREE_FILLER;
+
+            assertThat(UsStateZipPrefixValidator.validate(stateCode, zipCode).valid())
+                    .as("VALID-US-STATE-ZIP-CD2-COMBO lists %s", combination)
+                    .isTrue();
+        }
     }
 
     @Test

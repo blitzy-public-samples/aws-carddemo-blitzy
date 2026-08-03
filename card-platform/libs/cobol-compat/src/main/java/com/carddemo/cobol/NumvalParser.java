@@ -19,22 +19,19 @@ import java.math.BigDecimal;
  * {@code app/cbl/COACTUPC.cbl:L1078-L1080} does: gate, convert, then apply the target scale.
  * These methods apply no scale. {@link PicClause} carries the scale of every field the platform
  * stores.</p>
- *
- * <p>Rationale for the choices behind this class lives in
- * {@code card-platform/docs/decision-log.md}.</p>
  */
 public final class NumvalParser {
 
     /**
-     * The currency string {@code FUNCTION NUMVAL-C} accepts. No CardDemo program carries a
-     * {@code CURRENCY SIGN} clause and no call site supplies the optional second argument, so
-     * every one of the thirteen call sites reads the default currency symbol.
+     * The one currency character the {@code -C} grammar of this class accepts. No CardDemo
+     * program carries a {@code CURRENCY SIGN} clause and no call site supplies the optional
+     * second argument of {@code FUNCTION NUMVAL-C}.
      */
     public static final char CURRENCY_SIGN = '$';
 
     /**
-     * The grouping character {@code FUNCTION NUMVAL-C} accepts between digit groups. COBOL
-     * enforces no group width, so {@code 1,00,000} carries the same value as {@code 100000}.
+     * The grouping character the {@code -C} grammar accepts between digit groups. No group
+     * width is enforced, so {@code 1,00,000} carries the same value as {@code 100000}.
      */
     public static final char DIGIT_SEPARATOR = ',';
 
@@ -42,11 +39,24 @@ public final class NumvalParser {
     public static final char DECIMAL_POINT = '.';
 
     /**
-     * The largest count of digits an argument may hold. The CardDemo compile jobs name no
-     * {@code ARITH} option, so {@code ARITH(COMPAT)} applies and the ceiling is eighteen digits.
-     * Both gates reject an argument above the ceiling, and leading zeros count toward it.
+     * The largest count of digits an argument may hold in the grammar of this class. Both gates
+     * reject an argument above the ceiling, and leading zeros count toward it.
      */
     public static final int MAXIMUM_DIGITS = 18;
+
+    /**
+     * The longest argument either grammar accepts, in characters. Every COBOL call site passes a
+     * fixed-width alphanumeric field, and the widest of them is
+     * {@code WS-EDIT-ALPHANUM-ONLY PIC X(256)} at {@code app/cbl/COACTUPC.cbl:L61}. The next
+     * widest is {@code WS-EDIT-SIGNED-NUMBER-9V2-X PIC X(15)} at
+     * {@code app/cbl/COACTUPC.cbl:L55}, so no COBOL argument reaches this ceiling.
+     *
+     * <p>A longer argument is rejected before the scan begins, so a caller cannot make this class
+     * allocate or scan in proportion to an argument no source field could hold. Both gates report
+     * {@code false} for such an argument and both conversions throw, exactly as they do for any
+     * other invalid argument.</p>
+     */
+    public static final int MAXIMUM_ARGUMENT_LENGTH = 256;
 
     /** The sign that marks a positive argument, valid ahead of the digits or after them. */
     private static final char PLUS_SIGN = '+';
@@ -78,7 +88,6 @@ public final class NumvalParser {
     /** Names the currency-tolerant function in a rejection message. */
     private static final String CURRENCY_FUNCTION = "FUNCTION NUMVAL-C";
 
-    /** This class holds static members only. */
     private NumvalParser() {
     }
 
@@ -225,7 +234,7 @@ public final class NumvalParser {
      * @return a form {@link BigDecimal} parses, or {@code null} when the argument is invalid
      */
     private static String canonicalNumberOrNull(String text, boolean currencyTolerant) {
-        if (text == null) {
+        if (text == null || text.length() > MAXIMUM_ARGUMENT_LENGTH) {
             return null;
         }
 
@@ -246,8 +255,10 @@ public final class NumvalParser {
             at = skipSpaces(text, at + 1);
         }
 
-        StringBuilder integerDigits = new StringBuilder(end);
-        StringBuilder fractionDigits = new StringBuilder(end);
+        // Both builders hold digits only, and an argument above MAXIMUM_DIGITS digits is invalid,
+        // so the capacity comes from that ceiling rather than from the argument length.
+        StringBuilder integerDigits = new StringBuilder(MAXIMUM_DIGITS);
+        StringBuilder fractionDigits = new StringBuilder(MAXIMUM_DIGITS);
 
         if (at < end && text.charAt(at) == DECIMAL_POINT) {
             // Second alternative of the digit group: the decimal point then one or more digits.

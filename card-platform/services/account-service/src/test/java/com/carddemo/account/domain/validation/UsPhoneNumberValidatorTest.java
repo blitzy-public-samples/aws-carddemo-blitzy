@@ -17,12 +17,12 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.params.provider.Arguments.arguments;
 
 /**
- * Tests for {@link UsPhoneNumberValidator}, which realises paragraph
- * {@code 1260-EDIT-US-PHONE-NUM} at app/cbl/COACTUPC.cbl:L2225 together with the three paragraphs
- * it falls through to. Those three are {@code EDIT-AREA-CODE} at app/cbl/COACTUPC.cbl:L2246,
- * {@code EDIT-US-PHONE-PREFIX} at app/cbl/COACTUPC.cbl:L2316, and {@code EDIT-US-PHONE-LINENUM} at
- * app/cbl/COACTUPC.cbl:L2370. Two call sites reach the paragraph, at app/cbl/COACTUPC.cbl:L1635
- * under the label {@code 'Phone Number 1'} and at app/cbl/COACTUPC.cbl:L1643 under the label
+ * Tests for {@link UsPhoneNumberValidator}, which realises paragraph {@code 1260-EDIT-US-PHONE-NUM}
+ * at app/cbl/COACTUPC.cbl:L2225 together with the three paragraphs it falls through to. Those three
+ * are {@code EDIT-AREA-CODE} at app/cbl/COACTUPC.cbl:L2246, {@code EDIT-US-PHONE-PREFIX} at
+ * app/cbl/COACTUPC.cbl:L2316, and {@code EDIT-US-PHONE-LINENUM} at app/cbl/COACTUPC.cbl:L2370. Two
+ * call sites reach the paragraph, at app/cbl/COACTUPC.cbl:L1635 under the label
+ * {@code 'Phone Number 1'} and at app/cbl/COACTUPC.cbl:L1643 under the label
  * {@code 'Phone Number 2'}.
  *
  * <p>app/cpy/CSLKPCDY.cpy declares three condition names over the host item
@@ -40,14 +40,12 @@ import static org.junit.jupiter.params.provider.Arguments.arguments;
  * refused with the message at app/cbl/COACTUPC.cbl:L2306. Several tests below pin that boundary,
  * and they fail if the wider 490 code band is bound.</p>
  *
- * <p>The chain falls through. Each failing check jumps to the next part: app/cbl/COACTUPC.cbl:L2259,
- * L2277, L2291 and L2311 reach the prefix, and app/cbl/COACTUPC.cbl:L2330, L2348 and L2362 reach
- * the line number. Every part is edited on every pass, and each part carries its own verdict at
- * app/cbl/COACTUPC.cbl:L2314, app/cbl/COACTUPC.cbl:L2367 and app/cbl/COACTUPC.cbl:L2421. The
- * message slot {@code WS-RETURN-MSG PIC X(75)} at app/cbl/COACTUPC.cbl:L479 holds one message per
- * pass under the guard {@code WS-RETURN-MSG-OFF} at app/cbl/COACTUPC.cbl:L480, so the earliest
- * failing check supplies it. {@link EditResult} exposes one verdict and one message, and the tests
- * below assert the surviving message and assert no per-part flag.</p>
+ * <p>The source always edits the area code, prefix, and line number. A failure jumps to the next
+ * part, but the 75-character message slot keeps the first message. {@link EditResult} therefore
+ * exposes one overall verdict and one message, not per-part flags. The jumps sit at
+ * app/cbl/COACTUPC.cbl:L2259, L2277, L2291, L2311, L2330, L2348 and L2362, and the message slot is
+ * {@code WS-RETURN-MSG PIC X(75)} at app/cbl/COACTUPC.cbl:L479 under the guard
+ * {@code WS-RETURN-MSG-OFF} at app/cbl/COACTUPC.cbl:L480.</p>
  *
  * <p>app/cbl/COACTUPC.cbl:L2232 marks the number invalid on entry, and app/cbl/COACTUPC.cbl:L2234
  * to L2239 then joins three clauses with {@code AND}. The third clause tests the area code for
@@ -60,14 +58,10 @@ import static org.junit.jupiter.params.provider.Arguments.arguments;
  * app/cbl/COACTUPC.cbl:L82 to L100. That comment names a date where the field carries a phone
  * number, and its ruler runs to thirteen characters under a {@code PIC X(15)} field. The separator
  * bytes at app/cbl/COACTUPC.cbl:L85, L90 and L95 carry no digit, and the class under test takes the
- * three parts at app/cbl/COACTUPC.cbl:L87, L92 and L97 as separate arguments.
- * card-platform/docs/business-rule-flags.md registers the escape condition and both comment
- * readings.</p>
+ * three parts at app/cbl/COACTUPC.cbl:L87, L92 and L97 as separate arguments.</p>
  *
  * <p>Every input below is a literal written in this class. The tests need no Spring context, no
- * container and no database, so {@code mvn test} runs them on a clean machine. Decisions behind the
- * class under test: card-platform/docs/decision-log.md. Paired views of the surrounding
- * architecture: card-platform/docs/architecture-before-after.md.</p>
+ * container and no database, so {@code mvn test} runs them on a clean machine.</p>
  */
 @DisplayName("UsPhoneNumberValidator, the three part North American telephone number edit")
 class UsPhoneNumberValidatorTest {
@@ -84,14 +78,14 @@ class UsPhoneNumberValidatorTest {
     /** {@link #LABEL} padded with spaces at both ends to {@link #SOURCE_LABEL_WIDTH}. */
     private static final String PADDED_LABEL = "  Phone Number 1         ";
 
-    /** Area code of record 1 of app/data/ASCII/custdata.txt, at offsets 250 to 264. */
-    private static final String FIXTURE_AREA_CODE = "908";
+    /** A synthetic area code inside the accepted band {@code VALID-GENERAL-PURP-CODE}. */
+    private static final String ACCEPTED_AREA_CODE = "212";
 
-    /** Prefix of record 1 of app/data/ASCII/custdata.txt. */
-    private static final String FIXTURE_PREFIX = "119";
+    /** A synthetic prefix, three digits above zero. */
+    private static final String ACCEPTED_PREFIX = "555";
 
-    /** Line number of record 1 of app/data/ASCII/custdata.txt. */
-    private static final String FIXTURE_LINE_NUMBER = "8310";
+    /** A synthetic line number, four digits above zero. */
+    private static final String ACCEPTED_LINE_NUMBER = "0100";
 
     /** A {@code PIC X(3)} area code holding spaces, the state app/cbl/COACTUPC.cbl:L2247 tests. */
     private static final String BLANK_AREA_CODE = "   ";
@@ -170,6 +164,21 @@ class UsPhoneNumberValidatorTest {
     /** Literal count across the three bands of app/cpy/CSLKPCDY.cpy:L30 to L1010. */
     private static final int BAND_LITERAL_COUNT = 980;
 
+    /** Width of {@code WS-US-PHONE-AREA-CODE-TO-EDIT PIC XXX} at app/cpy/CSLKPCDY.cpy:L24. */
+    private static final int AREA_CODE_WIDTH = 3;
+
+    /** Width of {@code WS-EDIT-US-PHONE-NUMB}, the prefix part of the stored number. */
+    private static final int PREFIX_WIDTH = 3;
+
+    /** Width of {@code WS-EDIT-US-PHONE-NUMC}, the line-number part of the stored number. */
+    private static final int LINE_NUMBER_WIDTH = 4;
+
+    /**
+     * One character of the figurative constant {@code LOW-VALUES}, which a COBOL comparison tests
+     * for one position at a time.
+     */
+    private static final String LOW_VALUE = "\0";
+
     /** The character a message closes with when app/cbl/COACTUPC.cbl spells out a period. */
     private static final String CLOSING_PERIOD = ".";
 
@@ -233,6 +242,73 @@ class UsPhoneNumberValidatorTest {
         assertThat(literalCount).isEqualTo(BAND_LITERAL_COUNT);
     }
 
+    @Test
+    @DisplayName("Each of the three production bands equals the band app/cpy/CSLKPCDY.cpy lists, "
+            + "value for value")
+    void everyProductionBandEqualsTheBandTheCopybookLists() {
+        assertThat(UsPhoneAreaCodes.phoneAreaCodes())
+                .as("VALID-PHONE-AREA-CODE at app/cpy/CSLKPCDY.cpy:L30")
+                .containsExactlyElementsOf(CslkpcdyCopybookOracle.phoneAreaCodes());
+
+        assertThat(UsPhoneAreaCodes.generalPurposeCodes())
+                .as("VALID-GENERAL-PURP-CODE at app/cpy/CSLKPCDY.cpy:L521")
+                .containsExactlyElementsOf(CslkpcdyCopybookOracle.generalPurposeCodes());
+
+        assertThat(UsPhoneAreaCodes.easilyRecognisableAreaCodes())
+                .as("VALID-EASY-RECOG-AREA-CODE at app/cpy/CSLKPCDY.cpy:L931")
+                .containsExactlyElementsOf(CslkpcdyCopybookOracle.easilyRecognisableAreaCodes());
+    }
+
+    @Test
+    @DisplayName("The copybook itself holds 490, 410 and 80 codes, all three characters wide, and "
+            + "the two narrower bands partition the wider one")
+    void theCopybookItselfHoldsTheCountedBands() {
+        assertThat(CslkpcdyCopybookOracle.phoneAreaCodes()).hasSize(PHONE_AREA_BAND_SIZE);
+        assertThat(CslkpcdyCopybookOracle.generalPurposeCodes()).hasSize(GENERAL_PURPOSE_BAND_SIZE);
+        assertThat(CslkpcdyCopybookOracle.easilyRecognisableAreaCodes())
+                .hasSize(EASILY_RECOGNISABLE_BAND_SIZE);
+
+        for (String areaCode : CslkpcdyCopybookOracle.phoneAreaCodes()) {
+            assertThat(areaCode).as("copybook literal %s", areaCode).hasSize(AREA_CODE_WIDTH);
+        }
+
+        Set<String> partition = new LinkedHashSet<>(CslkpcdyCopybookOracle.generalPurposeCodes());
+        partition.addAll(CslkpcdyCopybookOracle.easilyRecognisableAreaCodes());
+
+        assertThat(partition)
+                .as("VALID-GENERAL-PURP-CODE and VALID-EASY-RECOG-AREA-CODE together")
+                .containsExactlyInAnyOrderElementsOf(CslkpcdyCopybookOracle.phoneAreaCodes());
+        assertThat(GENERAL_PURPOSE_BAND_SIZE + EASILY_RECOGNISABLE_BAND_SIZE)
+                .as("the two narrower bands are disjoint")
+                .isEqualTo(PHONE_AREA_BAND_SIZE);
+    }
+
+    @Test
+    @DisplayName("Every code app/cpy/CSLKPCDY.cpy:L521 lists passes the edit and every code it "
+            + "omits from that band fails, with the copybook supplying both sets")
+    void theCopybookDecidesWhichCodesPassTheEdit() {
+        for (String areaCode : CslkpcdyCopybookOracle.generalPurposeCodes()) {
+            assertThat(validateAreaCode(areaCode).valid())
+                    .as("VALID-GENERAL-PURP-CODE lists %s", areaCode)
+                    .isTrue();
+        }
+
+        Set<String> omitted = new LinkedHashSet<>(CslkpcdyCopybookOracle.phoneAreaCodes());
+        omitted.removeAll(CslkpcdyCopybookOracle.generalPurposeCodes());
+
+        assertThat(omitted).hasSize(EASILY_RECOGNISABLE_BAND_SIZE);
+        for (String areaCode : omitted) {
+            EditResult result = validateAreaCode(areaCode);
+
+            assertThat(result.valid())
+                    .as("VALID-GENERAL-PURP-CODE omits %s", areaCode)
+                    .isFalse();
+            assertThat(result.message())
+                    .as("VALID-GENERAL-PURP-CODE omits %s", areaCode)
+                    .isEqualTo(LABEL + AREA_CODE_NOT_IN_BAND);
+        }
+    }
+
     @ParameterizedTest
     @ValueSource(strings = {"200", "211", "311", "500", "600", "888", "999"})
     @DisplayName("An area code the 490 code band holds and the 410 code band omits yields the message at app/cbl/COACTUPC.cbl:L2306")
@@ -270,7 +346,7 @@ class UsPhoneNumberValidatorTest {
     @Test
     @DisplayName("An area code no band holds yields the message at app/cbl/COACTUPC.cbl:L2306")
     void codeNoBandHoldsYieldsTheBandMessage() {
-        // Area code of phone 2 of record 1 of app/data/ASCII/custdata.txt, at offsets 265 to 279.
+        // A synthetic three-digit code that no band in app/cpy/CSLKPCDY.cpy holds.
         String unlistedCode = "373";
 
         assertThat(UsPhoneAreaCodes.isValidPhoneAreaCode(unlistedCode)).isFalse();
@@ -338,15 +414,47 @@ class UsPhoneNumberValidatorTest {
     }
 
     @Test
-    @DisplayName("A four character area code reaches the band check as its first three characters")
-    void fourCharacterAreaCodeReachesTheBandCheckTruncated() {
+    @DisplayName("A four character area code fails the digit-count check rather than reaching the band check")
+    void fourCharacterAreaCodeFailsTheDigitCountCheck() {
         // app/cbl/COACTUPC.cbl:L87 declares the field PIC X(3), so a MOVE keeps three characters.
+        // The value it moves comes from a screen field of that exact width, so the MOVE drops
+        // nothing but padding.
         assertThat(UsPhoneAreaCodes.isValidGeneralPurposeCode("123")).isFalse();
 
-        EditResult result = validateAreaCode("1234");
+        // ADDITIVE. A caller of this edit can supply a wider value, and the edit refuses one that
+        // carries a character the field would not hold. The message is the source literal at
+        // app/cbl/COACTUPC.cbl:L2272, which reads that the area code must be a three digit number.
+        EditResult fourDigits = validateAreaCode("1234");
+        EditResult threeDigitsAndAletter = validateAreaCode("410X");
+        EditResult threeDigitsAndPadding = validateAreaCode("410  ");
 
-        assertThat(result.valid()).isFalse();
-        assertThat(result.message()).isEqualTo(LABEL + AREA_CODE_NOT_IN_BAND);
+        assertThat(fourDigits.valid()).isFalse();
+        assertThat(fourDigits.message()).isEqualTo(LABEL + AREA_CODE_NOT_NUMERIC);
+        assertThat(threeDigitsAndAletter.valid()).isFalse();
+        assertThat(threeDigitsAndAletter.message()).isEqualTo(LABEL + AREA_CODE_NOT_NUMERIC);
+
+        // Trailing spaces past the width are the padding the source MOVE itself drops, so a padded
+        // area code still reaches the band check and passes it.
+        assertThat(threeDigitsAndPadding.valid()).isTrue();
+        assertThat(threeDigitsAndPadding.message()).isNull();
+    }
+
+    @Test
+    @DisplayName("A prefix or line number wider than its field fails the digit-count check")
+    void widerPrefixAndLineNumberFailTheDigitCountCheck() {
+        // ADDITIVE. Neither part can be wider in the source: app/cbl/COACTUPC.cbl:L92 declares the
+        // prefix PIC X(3) and L97 declares the line number PIC X(4). The messages are the source
+        // literals at app/cbl/COACTUPC.cbl:L2343 and L2396.
+        EditResult widePrefix = validatePrefix("1234");
+        EditResult wideLineNumber = validateLineNumber("12345");
+        EditResult paddedPrefix = validatePrefix("410  ");
+
+        assertThat(widePrefix.valid()).isFalse();
+        assertThat(widePrefix.message()).isEqualTo(LABEL + PREFIX_NOT_NUMERIC);
+        assertThat(wideLineNumber.valid()).isFalse();
+        assertThat(wideLineNumber.message()).isEqualTo(LABEL + LINE_NUMBER_NOT_NUMERIC);
+        assertThat(paddedPrefix.valid()).isTrue();
+        assertThat(paddedPrefix.message()).isNull();
     }
 
     @Test
@@ -454,10 +562,10 @@ class UsPhoneNumberValidatorTest {
     }
 
     @Test
-    @DisplayName("The phone number of record 1 of the customer fixture passes with no message")
-    void theFixturePhoneNumberPasses() {
+    @DisplayName("A number whose three parts all pass yields no message")
+    void theAcceptedPhoneNumberPasses() {
         EditResult result = UsPhoneNumberValidator.validate(
-                LABEL, FIXTURE_AREA_CODE, FIXTURE_PREFIX, FIXTURE_LINE_NUMBER);
+                LABEL, ACCEPTED_AREA_CODE, ACCEPTED_PREFIX, ACCEPTED_LINE_NUMBER);
 
         assertThat(result.valid()).isTrue();
         assertThat(result.message()).isNull();
@@ -473,7 +581,7 @@ class UsPhoneNumberValidatorTest {
         assertThat(validateLineNumber(ZERO_LINE_NUMBER).message()).isEqualTo(LABEL + LINE_NUMBER_ZERO);
 
         EditResult result = UsPhoneNumberValidator.validate(
-                LABEL, FIXTURE_AREA_CODE, NON_NUMERIC_PREFIX, ZERO_LINE_NUMBER);
+                LABEL, ACCEPTED_AREA_CODE, NON_NUMERIC_PREFIX, ZERO_LINE_NUMBER);
 
         // app/cbl/COACTUPC.cbl:L2348 reaches the line number, which is edited and fails as well.
         // app/cbl/COACTUPC.cbl:L480 leaves one slot, so the prefix message is the one that survives.
@@ -493,7 +601,7 @@ class UsPhoneNumberValidatorTest {
         assertThat(validatePrefix(BLANK_PREFIX).message()).isEqualTo(LABEL + PREFIX_BLANK);
 
         EditResult result = UsPhoneNumberValidator.validate(
-                LABEL, REFUSED_HEAD_CODE, BLANK_PREFIX, FIXTURE_LINE_NUMBER);
+                LABEL, REFUSED_HEAD_CODE, BLANK_PREFIX, ACCEPTED_LINE_NUMBER);
 
         // app/cbl/COACTUPC.cbl:L2311 reaches the prefix, which is edited and fails as well.
         assertThat(result.valid()).isFalse();
@@ -522,12 +630,11 @@ class UsPhoneNumberValidatorTest {
         assertThat(validatePrefix(BLANK_PREFIX).message()).isEqualTo(LABEL + PREFIX_BLANK);
 
         EditResult result = UsPhoneNumberValidator.validate(
-                LABEL, BLANK_AREA_CODE, BLANK_PREFIX, FIXTURE_LINE_NUMBER);
+                LABEL, BLANK_AREA_CODE, BLANK_PREFIX, ACCEPTED_LINE_NUMBER);
 
         // app/cbl/COACTUPC.cbl:L2238 tests the area code for spaces, where app/cbl/COACTUPC.cbl:L2239
         // tests the line number for low values. All three clauses hold, and the escape at
         // app/cbl/COACTUPC.cbl:L2240 to L2241 marks the number valid.
-        // Registered in card-platform/docs/business-rule-flags.md.
         assertThat(result.valid()).isTrue();
         assertThat(result.message()).isNull();
         assertThat(result.hasMessage()).isFalse();
@@ -548,7 +655,7 @@ class UsPhoneNumberValidatorTest {
     @Test
     @DisplayName("Low values in the area code and the prefix with a populated line number reach the area code check")
     void lowValuesInTheAreaCodeAndThePrefixWithAPopulatedLineNumberReachTheAreaCodeCheck() {
-        EditResult result = UsPhoneNumberValidator.validate(LABEL, null, null, FIXTURE_LINE_NUMBER);
+        EditResult result = UsPhoneNumberValidator.validate(LABEL, null, null, ACCEPTED_LINE_NUMBER);
 
         // app/cbl/COACTUPC.cbl:L2238 names spaces on the area code, and a low values area code
         // leaves that clause unsatisfied. app/cbl/COACTUPC.cbl:L2239 names low values on the line
@@ -565,6 +672,68 @@ class UsPhoneNumberValidatorTest {
 
         assertThat(result.valid()).isTrue();
         assertThat(result.message()).isNull();
+    }
+
+    @Test
+    @DisplayName("Three parts filled with LOW-VALUES at their declared widths pass, the second "
+            + "clause of each pair at app/cbl/COACTUPC.cbl:L2235 to L2239")
+    void everyPartFilledWithLowValuesAtItsDeclaredWidthPasses() {
+        EditResult result = UsPhoneNumberValidator.validate(LABEL,
+                LOW_VALUE.repeat(AREA_CODE_WIDTH),
+                LOW_VALUE.repeat(PREFIX_WIDTH),
+                LOW_VALUE.repeat(LINE_NUMBER_WIDTH));
+
+        assertThat(result.valid()).isTrue();
+        assertThat(result.message()).isNull();
+    }
+
+    @Test
+    @DisplayName("A part filled with LOW-VALUES narrower than its declared width still reads as "
+            + "LOW-VALUES, because a COBOL comparison tests every position it holds")
+    void aPartOfLowValuesNarrowerThanItsWidthStillReadsAsLowValues() {
+        for (int supplied : new int[] {1, 2}) {
+            EditResult result = UsPhoneNumberValidator.validate(LABEL,
+                    LOW_VALUE.repeat(supplied), LOW_VALUE.repeat(supplied),
+                    LOW_VALUE.repeat(supplied));
+
+            assertThat(result.valid()).as("%d characters supplied", supplied).isTrue();
+            assertThat(result.message()).as("%d characters supplied", supplied).isNull();
+        }
+    }
+
+    @Test
+    @DisplayName("An area code of LOW-VALUES beside a populated line number reaches the area code "
+            + "check and reports the blank area code")
+    void anAreaCodeOfLowValuesBesideAPopulatedLineNumberReportsTheBlankAreaCode() {
+        EditResult result = UsPhoneNumberValidator.validate(LABEL,
+                LOW_VALUE.repeat(AREA_CODE_WIDTH), LOW_VALUE.repeat(PREFIX_WIDTH),
+                ACCEPTED_LINE_NUMBER);
+
+        assertThat(result.valid()).isFalse();
+        assertThat(result.message()).isEqualTo(LABEL + AREA_CODE_BLANK);
+    }
+
+    @Test
+    @DisplayName("A part carrying a digit followed by LOW-VALUES fails its numeric class test")
+    void aPartCarryingADigitFollowedByLowValuesFailsItsNumericClassTest() {
+        EditResult areaCode = UsPhoneNumberValidator.validate(LABEL,
+                "2" + LOW_VALUE.repeat(AREA_CODE_WIDTH - 1), ACCEPTED_PREFIX,
+                ACCEPTED_LINE_NUMBER);
+
+        assertThat(areaCode.valid()).isFalse();
+        assertThat(areaCode.message()).isEqualTo(LABEL + AREA_CODE_NOT_NUMERIC);
+
+        EditResult prefix = UsPhoneNumberValidator.validate(LABEL, ACCEPTED_AREA_CODE,
+                "5" + LOW_VALUE.repeat(PREFIX_WIDTH - 1), ACCEPTED_LINE_NUMBER);
+
+        assertThat(prefix.valid()).isFalse();
+        assertThat(prefix.message()).isEqualTo(LABEL + PREFIX_NOT_NUMERIC);
+
+        EditResult lineNumber = UsPhoneNumberValidator.validate(LABEL, ACCEPTED_AREA_CODE,
+                ACCEPTED_PREFIX, "1" + LOW_VALUE.repeat(LINE_NUMBER_WIDTH - 1));
+
+        assertThat(lineNumber.valid()).isFalse();
+        assertThat(lineNumber.message()).isEqualTo(LABEL + LINE_NUMBER_NOT_NUMERIC);
     }
 
     @ParameterizedTest
@@ -604,7 +773,7 @@ class UsPhoneNumberValidatorTest {
         assertThat(validateAreaCode(REFUSED_HEAD_CODE).message())
                 .isEqualTo(LABEL + AREA_CODE_NOT_IN_BAND);
         assertThat(UsPhoneNumberValidator.validate(
-                        SECOND_LABEL, REFUSED_TAIL_CODE, FIXTURE_PREFIX, FIXTURE_LINE_NUMBER)
+                        SECOND_LABEL, REFUSED_TAIL_CODE, ACCEPTED_PREFIX, ACCEPTED_LINE_NUMBER)
                 .message())
                 .isEqualTo(SECOND_LABEL + AREA_CODE_NOT_IN_BAND);
     }
@@ -621,20 +790,20 @@ class UsPhoneNumberValidatorTest {
      */
     private static Stream<Arguments> everyMessage() {
         return Stream.of(
-                arguments(BLANK_AREA_CODE, FIXTURE_PREFIX, FIXTURE_LINE_NUMBER, AREA_CODE_BLANK),
-                arguments(NON_NUMERIC_AREA_CODE, FIXTURE_PREFIX, FIXTURE_LINE_NUMBER,
+                arguments(BLANK_AREA_CODE, ACCEPTED_PREFIX, ACCEPTED_LINE_NUMBER, AREA_CODE_BLANK),
+                arguments(NON_NUMERIC_AREA_CODE, ACCEPTED_PREFIX, ACCEPTED_LINE_NUMBER,
                         AREA_CODE_NOT_NUMERIC),
-                arguments(ZERO_AREA_CODE, FIXTURE_PREFIX, FIXTURE_LINE_NUMBER, AREA_CODE_ZERO),
-                arguments(REFUSED_HEAD_CODE, FIXTURE_PREFIX, FIXTURE_LINE_NUMBER,
+                arguments(ZERO_AREA_CODE, ACCEPTED_PREFIX, ACCEPTED_LINE_NUMBER, AREA_CODE_ZERO),
+                arguments(REFUSED_HEAD_CODE, ACCEPTED_PREFIX, ACCEPTED_LINE_NUMBER,
                         AREA_CODE_NOT_IN_BAND),
-                arguments(FIXTURE_AREA_CODE, BLANK_PREFIX, FIXTURE_LINE_NUMBER, PREFIX_BLANK),
-                arguments(FIXTURE_AREA_CODE, NON_NUMERIC_PREFIX, FIXTURE_LINE_NUMBER,
+                arguments(ACCEPTED_AREA_CODE, BLANK_PREFIX, ACCEPTED_LINE_NUMBER, PREFIX_BLANK),
+                arguments(ACCEPTED_AREA_CODE, NON_NUMERIC_PREFIX, ACCEPTED_LINE_NUMBER,
                         PREFIX_NOT_NUMERIC),
-                arguments(FIXTURE_AREA_CODE, ZERO_PREFIX, FIXTURE_LINE_NUMBER, PREFIX_ZERO),
-                arguments(FIXTURE_AREA_CODE, FIXTURE_PREFIX, BLANK_LINE_NUMBER, LINE_NUMBER_BLANK),
-                arguments(FIXTURE_AREA_CODE, FIXTURE_PREFIX, NON_NUMERIC_LINE_NUMBER,
+                arguments(ACCEPTED_AREA_CODE, ZERO_PREFIX, ACCEPTED_LINE_NUMBER, PREFIX_ZERO),
+                arguments(ACCEPTED_AREA_CODE, ACCEPTED_PREFIX, BLANK_LINE_NUMBER, LINE_NUMBER_BLANK),
+                arguments(ACCEPTED_AREA_CODE, ACCEPTED_PREFIX, NON_NUMERIC_LINE_NUMBER,
                         LINE_NUMBER_NOT_NUMERIC),
-                arguments(FIXTURE_AREA_CODE, FIXTURE_PREFIX, ZERO_LINE_NUMBER, LINE_NUMBER_ZERO));
+                arguments(ACCEPTED_AREA_CODE, ACCEPTED_PREFIX, ZERO_LINE_NUMBER, LINE_NUMBER_ZERO));
     }
 
     /**
@@ -650,35 +819,32 @@ class UsPhoneNumberValidatorTest {
     }
 
     /**
-     * Edits one area code against the prefix and the line number of record 1 of
-     * app/data/ASCII/custdata.txt, both of which pass.
+     * Edits one area code against a prefix and a line number that both pass.
      *
      * @param areaCode the area code under test
      * @return the verdict for the whole number
      */
     private static EditResult validateAreaCode(String areaCode) {
-        return UsPhoneNumberValidator.validate(LABEL, areaCode, FIXTURE_PREFIX, FIXTURE_LINE_NUMBER);
+        return UsPhoneNumberValidator.validate(LABEL, areaCode, ACCEPTED_PREFIX, ACCEPTED_LINE_NUMBER);
     }
 
     /**
-     * Edits one prefix against the area code and the line number of record 1 of
-     * app/data/ASCII/custdata.txt, both of which pass.
+     * Edits one prefix against an area code and a line number that both pass.
      *
      * @param prefix the prefix under test
      * @return the verdict for the whole number
      */
     private static EditResult validatePrefix(String prefix) {
-        return UsPhoneNumberValidator.validate(LABEL, FIXTURE_AREA_CODE, prefix, FIXTURE_LINE_NUMBER);
+        return UsPhoneNumberValidator.validate(LABEL, ACCEPTED_AREA_CODE, prefix, ACCEPTED_LINE_NUMBER);
     }
 
     /**
-     * Edits one line number against the area code and the prefix of record 1 of
-     * app/data/ASCII/custdata.txt, both of which pass.
+     * Edits one line number against an area code and a prefix that both pass.
      *
      * @param lineNumber the line number under test
      * @return the verdict for the whole number
      */
     private static EditResult validateLineNumber(String lineNumber) {
-        return UsPhoneNumberValidator.validate(LABEL, FIXTURE_AREA_CODE, FIXTURE_PREFIX, lineNumber);
+        return UsPhoneNumberValidator.validate(LABEL, ACCEPTED_AREA_CODE, ACCEPTED_PREFIX, lineNumber);
     }
 }

@@ -15,8 +15,7 @@ import java.util.Set;
  *
  * <p>{@code app/cbl/COACTUPC.cbl} tests the condition name once, at line 2495 in
  * paragraph {@code 1270-EDIT-US-STATE-CD}.
- *
- * <p>Decision rationale: {@code card-platform/docs/decision-log.md}.
+
  */
 public final class UsStateCodes {
 
@@ -53,7 +52,6 @@ public final class UsStateCodes {
         VALID_STATE_CODES = Collections.unmodifiableSet(codes);
     }
 
-    /** This class holds static members only. */
     private UsStateCodes() {
     }
 
@@ -77,10 +75,8 @@ public final class UsStateCodes {
 
     /**
      * Returns an unmodifiable view of the 56 codes, in the order
-     * {@code app/cpy/CSLKPCDY.cpy} declares them at lines 1014 through 1069. In that
-     * declaration order the first code is {@code AL} and the last is {@code VI}. Sorted,
-     * the lowest is {@code AK} and the highest is {@code WY}. Adding to the returned set
-     * throws {@link UnsupportedOperationException}.
+     * {@code app/cpy/CSLKPCDY.cpy} declares them at lines 1014 through 1069. Adding to the
+     * returned set throws {@link UnsupportedOperationException}.
      *
      * @return the 56 state and territory codes in copybook declaration order
      */

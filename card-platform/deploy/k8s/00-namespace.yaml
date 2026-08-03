@@ -2,7 +2,6 @@
 # Apply in filename order: kubectl apply -f card-platform/deploy/k8s/
 # Short-name Domain Name System (DNS) lookups for kafka and postgres
 # depend on a shared namespace.
-# Rationale for every choice in this folder: card-platform/docs/decision-log.md
 ---
 apiVersion: v1
 kind: Namespace
@@ -12,6 +11,16 @@ metadata:
     app.kubernetes.io/name: card-platform
     app.kubernetes.io/part-of: card-platform
     app.kubernetes.io/managed-by: kubectl
+    # Pod Security admission, restricted profile. The control plane refuses a Pod
+    # that asks to run as root, to escalate privilege, to share a host namespace
+    # or to mount a host path. enforce refuses it, audit records it and warn
+    # reports it to whoever applied it, so a rejection is never silent.
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/enforce-version: latest
+    pod-security.kubernetes.io/audit: restricted
+    pod-security.kubernetes.io/audit-version: latest
+    pod-security.kubernetes.io/warn: restricted
+    pod-security.kubernetes.io/warn-version: latest
   annotations:
     card-platform/contents: >-
       Authorization, ledger posting, fraud detection, notification, account

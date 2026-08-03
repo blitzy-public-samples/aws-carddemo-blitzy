@@ -19,32 +19,27 @@ import org.junit.jupiter.params.provider.ValueSource;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * Tests for {@link AlphanumericRequiredValidator}, the edit that admits letters, digits
- * and spaces.
+ * Tests for {@link AlphanumericRequiredValidator}, the edit that admits letters, digits and spaces.
  *
  * <p>The subject translates paragraph {@code 1230-EDIT-ALPHANUM-REQD}, which spans
- * app/cbl/COACTUPC.cbl:L1955 through app/cbl/COACTUPC.cbl:L2009. Two messages are
- * reachable: the not-supplied text at app/cbl/COACTUPC.cbl:L1972 and the character-class
- * text at app/cbl/COACTUPC.cbl:L1999. The allowed set holds the 62 characters of group
+ * app/cbl/COACTUPC.cbl:L1955 through app/cbl/COACTUPC.cbl:L2009. Two messages are reachable: the
+ * not-supplied text at app/cbl/COACTUPC.cbl:L1972 and the character-class text at
+ * app/cbl/COACTUPC.cbl:L1999. The allowed set holds the 62 characters of group
  * {@code LIT-ALL-ALPHANUM-FROM-X} at app/cbl/COACTUPC.cbl:L586-L593.</p>
  *
- * <p>Census result for paragraph 1230: zero invocation sites. A whole-file scan of all
- * 4236 lines found no {@code PERFORM} of the paragraph. The scan stripped carriage
- * returns and tolerated repeated spaces after the verb. The four references are the label
- * at L1955, the {@code GO TO} statements at L1978 and L2004, and the exit label at L2009.
- * The register at card-platform/docs/business-rule-flags.md carries the finding.</p>
+ * <p>Census result for paragraph 1230: zero invocation sites. A whole-file scan of all 4236 lines
+ * found no {@code PERFORM} of the paragraph. The scan stripped carriage returns and tolerated
+ * repeated spaces after the verb. The four references are the label at L1955, the {@code GO TO}
+ * statements at L1978 and L2004, and the exit label at L2009.</p>
  *
- * <p>A digit passes the edit here. The same digit fails paragraph
- * {@code 1225-EDIT-ALPHA-REQD}, whose message at app/cbl/COACTUPC.cbl:L1941 names
- * alphabets alone. The methods below assert that boundary, both letter cases, and the
- * space the destructive conversion leaves behind. They also assert the three-way
- * not-supplied test, the order of the two tests, label trimming, and the count of
- * reachable messages.</p>
+ * <p>A digit passes the edit here. The same digit fails paragraph {@code 1225-EDIT-ALPHA-REQD},
+ * whose message at app/cbl/COACTUPC.cbl:L1941 names alphabets alone. The methods below assert that
+ * boundary, both letter cases, and the space the destructive conversion leaves behind. They also
+ * assert the three-way not-supplied test, the order of the two tests, label trimming, and the count
+ * of reachable messages.</p>
  *
- * <p>Every input below is built in the test. No container, no data source and no test
- * double takes part, so {@code mvn test} covers the class on a clean machine.</p>
- *
- * <p>Decision record: card-platform/docs/decision-log.md.</p>
+ * <p>Every input below is built in the test. No container, no data source and no test double takes
+ * part, so {@code mvn test} covers the class on a clean machine.</p>
  */
 @DisplayName("AlphanumericRequiredValidator, the letters, digits and spaces edit")
 class AlphanumericRequiredValidatorTest {
@@ -69,6 +64,16 @@ class AlphanumericRequiredValidatorTest {
      * with a space and closing with a period. The source spells the word "alphabets".
      */
     private static final String NOT_ALPHANUMERIC = " can have numbers or alphabets only.";
+
+    /**
+     * ADDITIVE message text for a value wider than the edited field. No source literal carries
+     * this text: the source moves a fixed-width screen field into its edit field, so a wider
+     * value cannot reach paragraph 1230.
+     */
+    private static final String NO_LONGER_THAN = " must be no longer than ";
+
+    /** ADDITIVE. Closes the text {@link #NO_LONGER_THAN} opens. */
+    private static final String CHARACTERS = " characters.";
 
     /**
      * The characters group {@code LIT-ALL-ALPHANUM-FROM-X} admits, restated from
@@ -99,6 +104,12 @@ class AlphanumericRequiredValidatorTest {
     private static final int EDIT_LENGTH = 20;
 
     /** Value of digits alone, the boundary case against the alphabetic-only edit. */
+    /**
+     * One character of the figurative constant {@code LOW-VALUES}, which a COBOL comparison tests
+     * for one position at a time.
+     */
+    private static final String LOW_VALUE = "\0";
+
     private static final String DIGITS_ONLY = "0123456789";
 
     /** Value of letters followed by digits. */
@@ -181,6 +192,63 @@ class AlphanumericRequiredValidatorTest {
     }
 
     @Test
+    @DisplayName("A field of LOW-VALUES at the edited width reports the field not supplied, the "
+            + "first arm at app/cbl/COACTUPC.cbl:L1961")
+    void lowValuesAtTheEditedWidthReportsNotSupplied() {
+        for (int width : new int[] {1, 2, EDIT_LENGTH - 1, EDIT_LENGTH}) {
+            EditResult result = AlphanumericRequiredValidator.validate(
+                    LABEL, LOW_VALUE.repeat(width), width);
+
+            assertThat(result.valid()).as("width %d", width).isFalse();
+            assertThat(result.message()).as("width %d", width).isEqualTo(LABEL + NOT_SUPPLIED);
+        }
+    }
+
+    @Test
+    @DisplayName("A field of LOW-VALUES narrower than the edited width reports the character class, "
+            + "because FUNCTION TRIM removes the space alone")
+    void lowValuesBelowTheEditedWidthReportsTheCharacterClass() {
+        for (int supplied : new int[] {1, 3, EDIT_LENGTH - 1}) {
+            EditResult result = AlphanumericRequiredValidator.validate(
+                    LABEL, LOW_VALUE.repeat(supplied), EDIT_LENGTH);
+
+            assertThat(result.valid()).as("%d supplied of %d", supplied, EDIT_LENGTH).isFalse();
+            assertThat(result.message())
+                    .as("%d supplied of %d", supplied, EDIT_LENGTH)
+                    .isEqualTo(LABEL + NOT_ALPHANUMERIC);
+        }
+    }
+
+    @Test
+    @DisplayName("A field of LOW-VALUES is read only to the edited width, and content past that "
+            + "width is refused")
+    void lowValuesIsReadOnlyToTheEditedWidthAndContentPastItIsRefused() {
+        String padded = LOW_VALUE.repeat(EDIT_LENGTH) + " ".repeat(LETTERS_AND_DIGITS.length());
+
+        assertThat(AlphanumericRequiredValidator.validate(LABEL, padded, EDIT_LENGTH).message())
+                .isEqualTo(LABEL + NOT_SUPPLIED);
+
+        String beyond = LOW_VALUE.repeat(EDIT_LENGTH) + LETTERS_AND_DIGITS;
+
+        assertThat(AlphanumericRequiredValidator.validate(LABEL, beyond, EDIT_LENGTH).message())
+                .isEqualTo(LABEL + NO_LONGER_THAN + EDIT_LENGTH + CHARACTERS);
+        assertThat(AlphanumericRequiredValidator.validate(LABEL, beyond, beyond.length()).message())
+                .isEqualTo(LABEL + NOT_ALPHANUMERIC);
+    }
+
+    @Test
+    @DisplayName("One allowed character followed by LOW-VALUES reports the character class")
+    void oneAllowedCharacterFollowedByLowValuesReportsTheCharacterClass() {
+        String allowedThenNulls = "G" + LOW_VALUE.repeat(EDIT_LENGTH - 1);
+
+        EditResult result =
+                AlphanumericRequiredValidator.validate(LABEL, allowedThenNulls, EDIT_LENGTH);
+
+        assertThat(result.valid()).isFalse();
+        assertThat(result.message()).isEqualTo(LABEL + NOT_ALPHANUMERIC);
+    }
+
+    @Test
     @DisplayName("A null value, an empty value and a value of spaces all report the field not supplied")
     void nullEmptyAndSpacesReportNotSupplied() {
         List<EditResult> results = List.of(
@@ -235,8 +303,27 @@ class AlphanumericRequiredValidatorTest {
     }
 
     @Test
-    @DisplayName("Exactly two messages are reachable across a broad sweep of values")
-    void exactlyTwoMessagesAreReachable() {
+    @DisplayName("A control character is not blank and fails the 62-character set test")
+    void aControlCharacterIsNotBlankAndFailsTheCharacterSetTest() {
+        // COBOL FUNCTION TRIM removes spaces and no other character, so the not-supplied arms at
+        // app/cbl/COACTUPC.cbl:L1960-L1965 do not cover a tab, a newline or a null character. Each
+        // one survives the conversion at app/cbl/COACTUPC.cbl:L1984-L1986 and fails the test at
+        // app/cbl/COACTUPC.cbl:L1988-L1991.
+        String[] controlBearing = {"\t", "\n", "\r", "\u000b", "\u0001", "GOLD\t100", "GOLD\n100"};
+
+        for (int index = 0; index < controlBearing.length; index++) {
+            EditResult result =
+                    AlphanumericRequiredValidator.validate(LABEL, controlBearing[index], EDIT_LENGTH);
+
+            assertThat(result.valid()).as("value index %d", index).isFalse();
+            assertThat(result.message()).as("value index %d", index)
+                    .isEqualTo(LABEL + NOT_ALPHANUMERIC);
+        }
+    }
+
+    @Test
+    @DisplayName("Exactly three messages are reachable across a broad sweep of values")
+    void exactlyThreeMessagesAreReachable() {
         Set<String> messages = new LinkedHashSet<>();
 
         for (String value : sweepValues()) {
@@ -247,25 +334,60 @@ class AlphanumericRequiredValidatorTest {
             }
         }
 
-        assertThat(messages)
-                .containsExactlyInAnyOrder(LABEL + NOT_SUPPLIED, LABEL + NOT_ALPHANUMERIC);
+        // The first two texts are source literals at app/cbl/COACTUPC.cbl:L1972 and L1999. The
+        // third is ADDITIVE and reports the edited width.
+        assertThat(messages).containsExactlyInAnyOrder(
+                LABEL + NOT_SUPPLIED,
+                LABEL + NOT_ALPHANUMERIC,
+                LABEL + NO_LONGER_THAN + EDIT_LENGTH + CHARACTERS);
     }
 
     @Test
-    @DisplayName("The length argument bounds the edit, and a character past it stays uninspected")
+    @DisplayName("The length argument bounds the edit, and a character past it fails the edit")
     void lengthArgumentBoundsTheEdit() {
         String value = "GOLD-";
 
         EditResult insideWindow =
                 AlphanumericRequiredValidator.validate(LABEL, value, value.length());
-        EditResult outsideWindow =
+        EditResult pastWindow =
                 AlphanumericRequiredValidator.validate(LABEL, value, value.length() - 1);
+        EditResult padSpacePastWindow =
+                AlphanumericRequiredValidator.validate(LABEL, "GOLD  ", 4);
 
         assertThat(insideWindow.valid()).isFalse();
         assertThat(insideWindow.message()).isEqualTo(LABEL + NOT_ALPHANUMERIC);
 
-        assertThat(outsideWindow.valid()).isTrue();
-        assertThat(outsideWindow.message()).isNull();
+        // ADDITIVE. A caller of this edit can supply a value wider than the edited field, and the
+        // edit refuses one that carries a character the window would not cover. It therefore never
+        // passes a verdict on the first characters of a longer value.
+        assertThat(pastWindow.valid()).isFalse();
+        assertThat(pastWindow.message())
+                .isEqualTo(LABEL + NO_LONGER_THAN + (value.length() - 1) + CHARACTERS);
+
+        // Trailing spaces past the width are the padding the source MOVE itself drops.
+        assertThat(padSpacePastWindow.valid()).isTrue();
+        assertThat(padSpacePastWindow.message()).isNull();
+    }
+
+    @Test
+    @DisplayName("A value wider than the edited field is refused whatever it holds")
+    void aValueWiderThanTheEditedFieldIsRefused() {
+        String[] wider = {
+            "GOLD100AAAAAAAAAAAAAA",
+            "GOLD100<script>alert(1)</script>",
+            "G".repeat(EDIT_LENGTH) + "\n",
+            "G".repeat(EDIT_LENGTH) + "\u0000",
+            "G".repeat(4096),
+        };
+
+        for (int index = 0; index < wider.length; index++) {
+            EditResult result =
+                    AlphanumericRequiredValidator.validate(LABEL, wider[index], EDIT_LENGTH);
+
+            assertThat(result.valid()).as("value index %d", index).isFalse();
+            assertThat(result.message()).as("value index %d", index)
+                    .isEqualTo(LABEL + NO_LONGER_THAN + EDIT_LENGTH + CHARACTERS);
+        }
     }
 
     @Test
@@ -362,6 +484,7 @@ class AlphanumericRequiredValidatorTest {
                 .forEach(values::add);
         values.add(LETTERS_SPACE_DIGITS);
         values.add(DIGITS_ONLY);
+        values.add("G".repeat(EDIT_LENGTH + 1));
 
         return values;
     }

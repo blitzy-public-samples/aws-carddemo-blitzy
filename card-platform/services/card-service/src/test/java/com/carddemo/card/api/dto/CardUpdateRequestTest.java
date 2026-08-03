@@ -6,6 +6,7 @@ import java.lang.reflect.Method;
 import java.lang.reflect.RecordComponent;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Set;
@@ -15,6 +16,7 @@ import jakarta.validation.ConstraintViolation;
 import jakarta.validation.Validation;
 import jakarta.validation.Validator;
 import jakarta.validation.ValidatorFactory;
+import jakarta.validation.constraints.Pattern;
 
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
@@ -40,7 +42,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * number arrives as the path variable of the update endpoint, and the card detail screen renders
  * all sixteen of its characters: {@code CARDSID DFHMDF ATTRB=(FSET,NORM,UNPROT)} carries
  * {@code LENGTH=16} at {@code app/bms/COCRDSL.bms:L96-L100}. Three tests below hold the three
- * absences, and {@code card-platform/docs/traceability-matrix.md} carries the mapping.
+ * absences.
  *
  * <p>The three expiry parts stay separate, and working storage slices the ten-character date at
  * {@code app/cbl/COCRDUPC.cbl:L117} through L121. The parts run four characters of year, one
@@ -71,14 +73,12 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * {@code CC-CARD-NUM PIC X(16)} at {@code app/cpy/CVCRD01Y.cpy:L37}. A search for checksum,
  * Luhn, modulo and check-digit wording across the twenty-eight programs under {@code app/cbl}
  * and the twenty-eight copybooks under {@code app/cpy} returns no hit.
- * {@code card-platform/docs/business-rule-flags.md} carries that finding as register item 24.
  *
  * <p>These tests build one {@link Validator} and reflect over the record. The constraint
  * annotations of {@code jakarta.validation.constraints} name no record component in their target
  * list. The compiler propagates each one to the field and to the accessor, and the helpers below
  * read the field. The tests read no file, start no application context and issue no
  * Representational State Transfer request. Rationale for each deviation above:
- * {@code card-platform/docs/decision-log.md}.
  */
 final class CardUpdateRequestTest {
 
@@ -99,6 +99,15 @@ final class CardUpdateRequestTest {
 
     /** Component carrying {@code CCUP-NEW-CRDSTCD PIC X(1)} at L313. */
     private static final String COMPONENT_ACTIVE_STATUS = "activeStatus";
+
+    /**
+     * The four components in the order {@code app/cbl/COCRDUPC.cbl:L698-L708} edits them:
+     * {@code 1230-EDIT-NAME}, {@code 1240-EDIT-CARDSTATUS}, {@code 1250-EDIT-EXPIRY-MON}, then
+     * {@code 1260-EDIT-EXPIRY-YEAR}. Bean Validation reports an unordered set, so a multi-invalid
+     * payload needs this order to name its earliest failing edit.
+     */
+    private static final List<String> SOURCE_EDIT_ORDER = List.of(COMPONENT_EMBOSSED_NAME,
+            COMPONENT_ACTIVE_STATUS, COMPONENT_EXPIRY_MONTH, COMPONENT_EXPIRY_YEAR);
 
     /** The five component names, in the order the source group declares its fields. */
     private static final List<String> EXPECTED_COMPONENT_NAMES = List.of(
@@ -138,6 +147,21 @@ final class CardUpdateRequestTest {
     /** Text of {@code SEARCHED-CARD-NOT-NUMERIC} at {@code app/cbl/COCRDUPC.cbl:L194}. */
     private static final String CARD_NUMBER_DIGIT_COUNT_TEXT =
             "Card number if supplied must be a 16 digit number";
+
+    /**
+     * The one additive text. It carries no source literal and reports the transport width of the
+     * expiry day, which no source paragraph edits.
+     */
+    private static final String EXPECTED_EXPIRY_DAY_WIDTH = "Card expiry day must be two digits";
+
+    /**
+     * The transport-width pattern of the expiry day: two digits and nothing else, from
+     * {@code CCUP-NEW-EXPDAY PIC X(2)} at {@code app/cbl/COCRDUPC.cbl:L312}.
+     */
+    private static final String EXPECTED_EXPIRY_DAY_PATTERN = "[0-9]{2}";
+
+    /** Length of an expiry day far past the two characters the source field holds. */
+    private static final int OVERLONG_EXPIRY_DAY_LENGTH = 4096;
 
     /** Locator of the group the five components come from. */
     private static final String GROUP_LOCATOR =
@@ -580,42 +604,68 @@ final class CardUpdateRequestTest {
                 "app/cbl/COCRDUPC.cbl:L198 reads: " + EXPECTED_MONTH_NOT_VALID);
         assertEquals(EXPECTED_YEAR_NOT_VALID, CardValidationMessages.CARD_EXPIRY_YEAR_NOT_VALID,
                 "app/cbl/COCRDUPC.cbl:L200 reads: " + EXPECTED_YEAR_NOT_VALID);
+        assertEquals(EXPECTED_EXPIRY_DAY_WIDTH,
+                CardValidationMessages.ADDITIVE_CARD_EXPIRY_DAY_WIDTH,
+                "the additive expiry-day width text reads: " + EXPECTED_EXPIRY_DAY_WIDTH);
     }
 
     /**
-     * Asserts every constraint on the record binds one of the five texts. The set is read from
-     * the {@code message} member of each annotation, so a constraint bound to a sixth text fails
-     * here.
+     * Asserts every constraint on the record binds one of the five source texts or the one declared
+     * additive text. The set is read from the {@code message} member of each annotation, so a
+     * constraint bound to a seventh text fails here.
+     *
+     * <p>{@link CardValidationMessages#ADDITIVE_CARD_EXPIRY_DAY_WIDTH} carries no source literal.
+     * It reports the transport width of the expiry day, which the source does not edit and a
+     * Representational State Transfer (REST) payload must still bound.
      */
     @Test
-    void everyConstraintBindsOneOfTheFiveSourceTexts() {
+    void everyConstraintBindsOneOfTheFiveSourceTextsOrTheDeclaredWidthText() {
         Set<String> expected = new TreeSet<>(List.of(
                 EXPECTED_NAME_NOT_PROVIDED,
                 EXPECTED_NAME_MUST_BE_ALPHA,
                 EXPECTED_STATUS_MUST_BE_YES_NO,
                 EXPECTED_MONTH_NOT_VALID,
-                EXPECTED_YEAR_NOT_VALID));
+                EXPECTED_YEAR_NOT_VALID,
+                EXPECTED_EXPIRY_DAY_WIDTH));
 
         assertEquals(expected, boundMessages(),
                 () -> "CardUpdateRequest binds " + boundMessages() + ". The four edits of "
                         + "app/cbl/COCRDUPC.cbl at L806-L945 write the five texts at L182, L184, "
-                        + "L196, L198 and L200.");
+                        + "L196, L198 and L200. The sixth text is additive and reports the "
+                        + "transport width of the expiry day alone.");
     }
 
-    // First absence: the expiry day carries no edit.
+    // First absence: the expiry day carries no calendar edit, only a width bound.
 
     /**
-     * Asserts the expiry day component carries no constraint annotation. The source declares a
-     * condition name for the month at {@code app/cbl/COCRDUPC.cbl:L95} and for the year at L99,
-     * and it declares none for the day.
+     * Asserts the expiry day component carries the transport-width bound and no calendar rule.
+     *
+     * <p>The source declares a condition name for the month at {@code app/cbl/COCRDUPC.cbl:L95} and
+     * for the year at L99, and it declares none for the day. The two annotations here reproduce that
+     * absence of a calendar rule while holding the component to the two characters of
+     * {@code CCUP-NEW-EXPDAY PIC X(2)} at {@code app/cbl/COCRDUPC.cbl:L312}. The source reads that
+     * field from a fixed-width map field; a REST payload has no such width, so the bound is
+     * additive. {@code Min} and {@code Max} stay off the component: a range would introduce the
+     * calendar rule the source does not have.
      */
     @Test
-    void expiryDayCarriesNoConstraintAnnotation() {
+    void expiryDayCarriesTheTransportWidthBoundAndNoCalendarRule() {
+        Set<String> expected = new TreeSet<>(List.of("NotBlank", "Pattern"));
         List<Annotation> annotations = annotationsOf(COMPONENT_EXPIRY_DAY);
+        Set<String> declared = new TreeSet<>(simpleNames(annotations));
 
-        assertTrue(annotations.isEmpty(),
-                () -> "Component " + COMPONENT_EXPIRY_DAY + " carries " + simpleNames(annotations)
-                        + ". " + EXPIRY_DAY_LOCATOR);
+        assertEquals(expected, declared,
+                () -> "Component " + COMPONENT_EXPIRY_DAY + " carries " + declared
+                        + ". The width bound holds the two characters of the source field and adds "
+                        + "no calendar rule. " + EXPIRY_DAY_LOCATOR);
+
+        for (Annotation annotation : annotations) {
+            if (annotation instanceof Pattern pattern) {
+                assertEquals(EXPECTED_EXPIRY_DAY_PATTERN, pattern.regexp(),
+                        () -> "Component " + COMPONENT_EXPIRY_DAY + " bounds the transport width "
+                                + "with " + EXPECTED_EXPIRY_DAY_PATTERN + ". " + EXPIRY_DAY_LOCATOR);
+            }
+        }
     }
 
     /**
@@ -641,17 +691,32 @@ final class CardUpdateRequestTest {
     }
 
     /**
-     * Asserts a non-numeric expiry day and a missing expiry day both pass. The component carries
-     * no annotation, so neither value meets a test.
+     * Asserts a non-numeric, absent, empty, overlong or control-bearing expiry day fails the
+     * transport-width bound, and that every such failure names the expiry day alone.
+     *
+     * <p>The bound is additive. The source reads the day from a two-character map field, so no value
+     * of another width or another character class can reach it. A REST payload carries no width, and
+     * an unbounded component accepts control characters, markup and arbitrarily long text. Each case
+     * below reports {@link CardValidationMessages#ADDITIVE_CARD_EXPIRY_DAY_WIDTH} and nothing else,
+     * so no other component of the payload is affected.
      */
     @Test
-    void nonNumericAndMissingExpiryDayProduceNoViolation() {
-        assertNoViolation(new CardUpdateRequest("JOHN Q PUBLIC", "2027", "03", "ZZ", "Y"),
-                EXPIRY_DAY_LOCATOR);
-        assertNoViolation(new CardUpdateRequest("JOHN Q PUBLIC", "2027", "03", null, "Y"),
-                EXPIRY_DAY_LOCATOR);
-        assertNoViolation(new CardUpdateRequest("JOHN Q PUBLIC", "2027", "03", "", "Y"),
-                EXPIRY_DAY_LOCATOR);
+    void nonNumericAbsentAndOverlongExpiryDayFailTheTransportWidthBound() {
+        List<String> rejected = new ArrayList<>();
+        rejected.add("ZZ");
+        rejected.add(null);
+        rejected.add("");
+        rejected.add("0");
+        rejected.add("012");
+        rejected.add("0\n");
+        rejected.add("<script>alert(1)</script>");
+        rejected.add("0".repeat(OVERLONG_EXPIRY_DAY_LENGTH));
+
+        for (String day : rejected) {
+            assertEveryViolationReports(
+                    new CardUpdateRequest("JOHN Q PUBLIC", "2027", "03", day, "Y"),
+                    COMPONENT_EXPIRY_DAY, EXPECTED_EXPIRY_DAY_WIDTH, EXPIRY_DAY_LOCATOR);
+        }
     }
 
     // Second absence: no component and no message names a checksum over a card number.
@@ -726,20 +791,135 @@ final class CardUpdateRequestTest {
                 "the sample card number holds sixteen digits, the width of "
                         + "CCUP-NEW-CARDID PIC X(16) at app/cbl/COCRDUPC.cbl:L305");
         assertTrue(passesLuhnCheck(LUHN_PASSING_CARD_NUMBER),
-                LUHN_PASSING_CARD_NUMBER + " passes a Luhn check");
+                "the Luhn-passing sample of width " + LUHN_PASSING_CARD_NUMBER.length()
+                        + " passes a Luhn check");
         assertFalse(passesLuhnCheck(LUHN_FAILING_CARD_NUMBER),
-                LUHN_FAILING_CARD_NUMBER + " fails a Luhn check");
+                "the Luhn-failing sample of width " + LUHN_FAILING_CARD_NUMBER.length()
+                        + " fails a Luhn check");
 
         assertNoComponentNameMentions("a card number",
-                "the payload takes no card number, so " + LUHN_FAILING_CARD_NUMBER
-                        + " reaches no constraint on it. " + CARD_NUMBER_TEST_LOCATOR,
+                "the payload takes no card number, so the Luhn-failing sample reaches no "
+                        + "constraint on it. " + CARD_NUMBER_TEST_LOCATOR,
                 CARD_NUMBER_TOKENS);
         assertNoViolation(new CardUpdateRequest("JOHN Q PUBLIC", "2027", "03", "01", "Y"),
-                "the payload that accompanies card number " + LUHN_FAILING_CARD_NUMBER
-                        + " passes every edit. " + CARD_NUMBER_TEST_LOCATOR);
+                "the payload that accompanies the Luhn-failing sample passes every edit. "
+                        + CARD_NUMBER_TEST_LOCATOR);
+    }
+
+    // Multi-invalid payloads. The source edits four components in one fixed order, and the first
+    // failing edit writes the message the caller keeps.
+
+    /**
+     * Asserts that each adjacent pair of edits, both failing at once, reports the earlier edit's
+     * message first.
+     *
+     * <p>{@code app/cbl/COCRDUPC.cbl:L698-L708} performs the four edits in one order:
+     * {@code 1230-EDIT-NAME}, then {@code 1240-EDIT-CARDSTATUS}, then
+     * {@code 1250-EDIT-EXPIRY-MON}, then {@code 1260-EDIT-EXPIRY-YEAR}. Bean Validation reports an
+     * unordered set, so {@link #firstMessageInSourceOrder} sorts the violations by that order
+     * before reading the first.</p>
+     */
+    @Test
+    void eachAdjacentPairOfFailingEditsReportsTheEarlierMessageFirst() {
+        assertEquals(EXPECTED_NAME_MUST_BE_ALPHA,
+                firstMessageInSourceOrder(new CardUpdateRequest("JOHN1", "2027", "03", "01", "X")),
+                "the name edit at app/cbl/COCRDUPC.cbl:L698 runs ahead of the status edit at "
+                        + "app/cbl/COCRDUPC.cbl:L701");
+
+        assertEquals(EXPECTED_STATUS_MUST_BE_YES_NO,
+                firstMessageInSourceOrder(
+                        new CardUpdateRequest("JOHN Q PUBLIC", "2027", "13", "01", "X")),
+                "the status edit at app/cbl/COCRDUPC.cbl:L701 runs ahead of the month edit at "
+                        + "app/cbl/COCRDUPC.cbl:L704");
+
+        assertEquals(EXPECTED_MONTH_NOT_VALID,
+                firstMessageInSourceOrder(
+                        new CardUpdateRequest("JOHN Q PUBLIC", "1949", "13", "01", "Y")),
+                "the month edit at app/cbl/COCRDUPC.cbl:L704 runs ahead of the year edit at "
+                        + "app/cbl/COCRDUPC.cbl:L707");
+    }
+
+    /**
+     * Asserts that a payload failing every edit reports the name message first, and that all four
+     * components appear among the violations.
+     */
+    @Test
+    void aPayloadFailingEveryEditReportsTheNameMessageFirst() {
+        CardUpdateRequest allInvalid = new CardUpdateRequest("JOHN1", "1949", "13", "01", "X");
+
+        assertEquals(EXPECTED_NAME_MUST_BE_ALPHA, firstMessageInSourceOrder(allInvalid),
+                "the earliest failing edit is the name edit at app/cbl/COCRDUPC.cbl:L698");
+
+        Set<String> components = new LinkedHashSet<>();
+        for (ConstraintViolation<CardUpdateRequest> violation : validator.validate(allInvalid)) {
+            components.add(violation.getPropertyPath().toString());
+        }
+
+        assertEquals(new LinkedHashSet<>(SOURCE_EDIT_ORDER), components,
+                "every one of the four edits fails on this payload");
+    }
+
+    /**
+     * Asserts that an absent name reports the presence message ahead of any later edit, and that
+     * the order holds whichever later edit also fails.
+     */
+    @Test
+    void anAbsentNameReportsThePresenceMessageAheadOfEveryLaterEdit() {
+        for (CardUpdateRequest payload : List.of(
+                new CardUpdateRequest("", "2027", "03", "01", "X"),
+                new CardUpdateRequest("", "2027", "13", "01", "Y"),
+                new CardUpdateRequest("", "1949", "03", "01", "Y"),
+                new CardUpdateRequest("", "1949", "13", "01", "X"))) {
+
+            assertEquals(EXPECTED_NAME_NOT_PROVIDED, firstMessageInSourceOrder(payload),
+                    "an absent name reports the presence text at app/cbl/COCRDUPC.cbl:L182 first");
+        }
+    }
+
+    /**
+     * Asserts that a payload failing two edits reports two components, so no edit swallows another.
+     */
+    @Test
+    void aPayloadFailingTwoEditsReportsTwoComponents() {
+        Set<String> components = new LinkedHashSet<>();
+        for (ConstraintViolation<CardUpdateRequest> violation
+                : validator.validate(new CardUpdateRequest("JOHN1", "2027", "03", "01", "X"))) {
+            components.add(violation.getPropertyPath().toString());
+        }
+
+        assertEquals(Set.of(COMPONENT_EMBOSSED_NAME, COMPONENT_ACTIVE_STATUS), components,
+                "the name edit and the status edit both report");
     }
 
     // Assertion helpers.
+
+    /**
+     * Reports the message of the earliest failing edit, ordering the violations the way
+     * {@code app/cbl/COCRDUPC.cbl:L698-L708} performs the edits.
+     *
+     * @param payload the payload to validate
+     * @return the message the earliest failing edit carries
+     */
+    private static String firstMessageInSourceOrder(CardUpdateRequest payload) {
+        Set<ConstraintViolation<CardUpdateRequest>> found = validator.validate(payload);
+
+        assertFalse(found.isEmpty(), () -> "at least one edit fails on this payload");
+
+        ConstraintViolation<CardUpdateRequest> earliest = null;
+        int earliestPosition = Integer.MAX_VALUE;
+        for (ConstraintViolation<CardUpdateRequest> violation : found) {
+            int position = SOURCE_EDIT_ORDER.indexOf(violation.getPropertyPath().toString());
+
+            assertTrue(position >= 0,
+                    () -> "component " + violation.getPropertyPath()
+                            + " sits in the source edit order " + SOURCE_EDIT_ORDER);
+            if (position < earliestPosition) {
+                earliestPosition = position;
+                earliest = violation;
+            }
+        }
+        return earliest.getMessage();
+    }
 
     /**
      * Asserts one payload reports one violation, on one component, with one text.

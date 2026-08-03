@@ -4,39 +4,33 @@ package com.carddemo.account.domain.validation;
  * Required alphabetic field edit, from paragraph {@code 1225-EDIT-ALPHA-REQD} at
  * app/cbl/COACTUPC.cbl:L1898 through its exit paragraph on line 1951.
  *
- * <p>A value passes when it is supplied and holds letters and spaces only. The
- * allowed set is the 52 characters of group {@code LIT-ALL-ALPHA-FROM-X} at
- * app/cbl/COACTUPC.cbl:L586-L591, being {@code LIT-UPPER PIC X(26)} followed by
- * {@code LIT-LOWER PIC X(26)}. Upper case and lower case both pass. A digit, a
- * hyphen, an apostrophe, a period and an accented letter each fail.</p>
+ * <p>A value passes when it is supplied and holds letters and spaces only. The allowed set is the
+ * 52 characters of group {@code LIT-ALL-ALPHA-FROM-X} at app/cbl/COACTUPC.cbl:L586-L591, being
+ * {@code LIT-UPPER PIC X(26)} followed by {@code LIT-LOWER PIC X(26)}. Upper case and lower case
+ * both pass. A digit, a hyphen, an apostrophe, a period and an accented letter each fail.</p>
  *
  * <p>A space is not a member of the 52-character set. Line 1925 moves the group into
- * {@code LIT-ALL-ALPHA-FROM PIC X(52)}, and lines 1926 to 1928 convert every member
- * to a space with {@code INSPECT ... CONVERTING}. Lines 1930 to 1933 then pass the
- * value when {@code FUNCTION LENGTH(FUNCTION TRIM(...)) = 0}. A space survives the
- * conversion, and the trim removes it.</p>
+ * {@code LIT-ALL-ALPHA-FROM PIC X(52)}, and lines 1926 to 1928 convert every member to a space with
+ * {@code INSPECT ... CONVERTING}. Lines 1930 to 1933 then pass the value when
+ * {@code FUNCTION LENGTH(FUNCTION TRIM(...)) = 0}. A space survives the conversion, and the trim
+ * removes it.</p>
  *
- * <p>This class runs those two steps over a copy. The argument is unchanged, and two
- * calls with the same value return the same verdict.</p>
+ * <p>This class runs those two steps over a copy. The argument is unchanged, and two calls with the
+ * same value return the same verdict.</p>
  *
- * <p>app/cbl/COACTUPC.cbl applies this edit to five fields: First Name at line 1563,
- * Last Name at 1579, State at 1595, City at 1618 and Country at 1627. The optional
- * form of the same edit is paragraph {@code 1235-EDIT-ALPHA-OPT} at line 2012, which
- * accepts an absent value.</p>
- *
- * <p>Rationale for every choice in this class: card-platform/docs/decision-log.md.</p>
+ * <p>app/cbl/COACTUPC.cbl applies this edit to five fields: First Name at line 1563, Last Name at
+ * 1579, State at 1595, City at 1618 and Country at 1627. The optional form of the same edit is
+ * paragraph {@code 1235-EDIT-ALPHA-OPT} at line 2012, which accepts an absent value.</p>
  */
 public final class AlphabeticRequiredValidator {
 
     /**
-     * The 26 upper-case letters of {@code LIT-UPPER PIC X(26)} at
-     * app/cbl/COACTUPC.cbl:L588-L589.
+     * The 26 upper-case letters of {@code LIT-UPPER PIC X(26)} at app/cbl/COACTUPC.cbl:L588-L589.
      */
     private static final String LIT_UPPER = "ABCDEFGHIJKLMNOPQRSTUVWXYZ";
 
     /**
-     * The 26 lower-case letters of {@code LIT-LOWER PIC X(26)} at
-     * app/cbl/COACTUPC.cbl:L590-L591.
+     * The 26 lower-case letters of {@code LIT-LOWER PIC X(26)} at app/cbl/COACTUPC.cbl:L590-L591.
      */
     private static final String LIT_LOWER = "abcdefghijklmnopqrstuvwxyz";
 
@@ -57,6 +51,12 @@ public final class AlphabeticRequiredValidator {
     private static final char SPACE = ' ';
 
     /**
+     * The character a COBOL comparison against the figurative constant
+     * {@code LOW-VALUES} tests for, one position at a time.
+     */
+    private static final char NULL_CHARACTER = '\0';
+
+    /**
      * Message text for an absent value, from the literal at
      * app/cbl/COACTUPC.cbl:L1915. The leading space separates it from the label, and
      * the period ends the sentence the source builds.
@@ -69,6 +69,20 @@ public final class AlphabeticRequiredValidator {
      */
     private static final String CAN_HAVE_ALPHABETS_ONLY = " can have alphabets only.";
 
+    /**
+     * ADDITIVE. Opens the message text for a value wider than the edited field. No source
+     * literal carries this text.
+     *
+     * <p>app/cbl/COACTUPC.cbl fills {@code WS-EDIT-ALPHANUM-ONLY PIC X(256)} at line 61 by a
+     * {@code MOVE} from a fixed-width screen field, so the source never holds a value wider
+     * than {@code WS-EDIT-ALPHANUM-LENGTH}. A Representational State Transfer (REST) caller
+     * can supply one, and this edit refuses it instead of inspecting its first characters.</p>
+     */
+    private static final String ADDITIVE_NO_LONGER_THAN = " must be no longer than ";
+
+    /** ADDITIVE. Closes the message text {@link #ADDITIVE_NO_LONGER_THAN} opens. */
+    private static final String ADDITIVE_CHARACTERS = " characters.";
+
     /** Holds one static edit, so no instance is created. */
     private AlphabeticRequiredValidator() {
     }
@@ -76,12 +90,22 @@ public final class AlphabeticRequiredValidator {
     /**
      * Applies the edit to one field and returns the verdict.
      *
-     * <p>The first {@code length} characters of {@code value} are copied and padded
+     * <p>A value wider than {@code length} is refused before any other test, and the failure
+     * text names the width. That arm is ADDITIVE: the source fills its edit field by a
+     * {@code MOVE} from a fixed-width screen field, so a wider value cannot reach the source
+     * paragraph. Refusing it keeps the inspected characters and the submitted characters the
+     * same, so a caller cannot pass one string to this edit and store another.</p>
+     *
+     * <p>Otherwise the first {@code length} characters of {@code value} are copied and padded
      * with spaces to {@code length}. That copy matches the {@code MOVE} into
      * {@code WS-EDIT-ALPHANUM-ONLY PIC X(256)} at app/cbl/COACTUPC.cbl:L61 and the
      * reference modification {@code (1:WS-EDIT-ALPHANUM-LENGTH)} at line 1903. A
      * {@code length} of zero or less yields an empty copy, and the field counts as
      * not supplied.</p>
+     *
+     * <p>Every test on the copy compares against the space character alone, as COBOL
+     * {@code FUNCTION TRIM} and {@code EQUAL SPACES} do. A tab, a newline and a null character
+     * are therefore not blank here, and each one fails the 52-character set test.</p>
      *
      * <p>Both messages start from the trimmed label, matching
      * {@code FUNCTION TRIM(WS-EDIT-VARIABLE-NAME)} at lines 1914 and 1940. Line 1915
@@ -102,21 +126,61 @@ public final class AlphabeticRequiredValidator {
      *         {@link EditResult#failure(String)} carrying one message when it fails
      */
     public static EditResult validate(String fieldLabel, String value, int length) {
+        // ADDITIVE. A value wider than the edited field is refused, so the edit never passes a
+        // verdict on the first characters of a longer value.
+        if (carriesContentPastEditedWidth(value, length)) {
+            return EditResult.failure(trimmedLabel(fieldLabel) + ADDITIVE_NO_LONGER_THAN
+                    + length + ADDITIVE_CHARACTERS);
+        }
+
         final String inspected = fixedWidthCopy(value, length);
 
-        // Not supplied: the three-way test at app/cbl/COACTUPC.cbl:L1903-L1908.
-        if (isLowValues(value) || isAllSpaces(inspected) || inspected.trim().isEmpty()) {
+        // Not supplied: the three-way test at app/cbl/COACTUPC.cbl:L1903-L1908. The third arm,
+        // FUNCTION LENGTH(FUNCTION TRIM(slice)) = 0, holds exactly when the second arm holds,
+        // because FUNCTION TRIM removes the space and no other character.
+        if (isLowValues(value) || holdsLowValues(inspected) || isAllSpaces(inspected)) {
             return EditResult.failure(trimmedLabel(fieldLabel) + MUST_BE_SUPPLIED);
         }
 
-        // Only alphabets and space allowed: app/cbl/COACTUPC.cbl:L1924-L1933.
+        // Only alphabets and space allowed: app/cbl/COACTUPC.cbl:L1924-L1933. A character
+        // outside the 52-character set survives the conversion, and only a space is trimmed.
         final String converted = convertAlphabetsToSpaces(inspected);
-        if (!converted.trim().isEmpty()) {
+        if (!isAllSpaces(converted)) {
             return EditResult.failure(trimmedLabel(fieldLabel) + CAN_HAVE_ALPHABETS_ONLY);
         }
 
         // Success: SET FLG-ALPHA-ISVALID TO TRUE at app/cbl/COACTUPC.cbl:L1949.
         return EditResult.ok();
+    }
+
+    /**
+     * Reports whether the value carries a character other than a space past the edited width.
+     *
+     * <p>ADDITIVE. The source moves a fixed-width screen field into its edit field, so the
+     * {@code MOVE} drops nothing but padding. A Representational State Transfer (REST) caller can
+     * supply a wider value, and this test separates the two cases: trailing spaces past the width
+     * are the padding the source itself holds, and any other character past the width is content
+     * the edit would not inspect.</p>
+     *
+     * <p>A width of zero or less inspects nothing, and this test reports false for it, leaving the
+     * not-supplied arm to answer.</p>
+     *
+     * @param value  submitted value, which may be null
+     * @param length count of characters the edit inspects
+     * @return true when a character other than a space sits past a positive {@code length}
+     */
+    private static boolean carriesContentPastEditedWidth(String value, int length) {
+        if (length < 1 || value == null || value.length() <= length) {
+            return false;
+        }
+
+        for (int position = length; position < value.length(); position++) {
+            if (value.charAt(position) != SPACE) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /**
@@ -127,7 +191,6 @@ public final class AlphabeticRequiredValidator {
      *
      * @param value  submitted value, which may be null or shorter than {@code length}
      * @param length width of the copy, clamped at zero
-     * @return a copy of exactly {@code max(length, 0)} characters
      */
     private static String fixedWidthCopy(String value, int length) {
         final int width = Math.max(length, 0);
@@ -144,10 +207,32 @@ public final class AlphabeticRequiredValidator {
      * and the empty string map to that arm.
      *
      * @param value submitted value, which may be null
-     * @return true when no character was supplied at all
      */
     private static boolean isLowValues(String value) {
         return value == null || value.isEmpty();
+    }
+
+    /**
+     * Reports whether the inspected copy holds the figurative constant
+     * {@code LOW-VALUES}, the first arm at app/cbl/COACTUPC.cbl:L1904. A COBOL
+     * comparison against {@code LOW-VALUES} holds when every character position of
+     * the slice carries {@code X'00'}, so one character other than the null
+     * character answers false.
+     *
+     * @param inspected the fixed-width copy
+     * @return true when the copy is not empty and every character is the null
+     *         character
+     */
+    private static boolean holdsLowValues(String inspected) {
+        if (inspected.isEmpty()) {
+            return false;
+        }
+        for (int position = 0; position < inspected.length(); position++) {
+            if (inspected.charAt(position) != NULL_CHARACTER) {
+                return false;
+            }
+        }
+        return true;
     }
 
     /**
@@ -155,7 +240,6 @@ public final class AlphabeticRequiredValidator {
      * copy holds no character that is not a space, so it reports true.
      *
      * @param inspected the fixed-width copy
-     * @return true when every character of the copy is a space
      */
     private static boolean isAllSpaces(String inspected) {
         for (int position = 0; position < inspected.length(); position++) {
@@ -173,7 +257,6 @@ public final class AlphabeticRequiredValidator {
      * at lines 1930 to 1933. The conversion writes to a new array of characters.
      *
      * @param inspected the fixed-width copy
-     * @return the converted copy, of the same length as {@code inspected}
      */
     private static String convertAlphabetsToSpaces(String inspected) {
         final char[] converted = inspected.toCharArray();

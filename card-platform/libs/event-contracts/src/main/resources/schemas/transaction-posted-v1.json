@@ -2,13 +2,17 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://carddemo.example.com/schemas/transaction-posted-v1.json",
   "title": "TransactionPosted",
-  "description": "The ledger publishes one TransactionPosted event after it applies one posting. Six payload fields carry the new account balance, the posting timestamp, and the transaction that moved the balance, with widths from app/cpy/CVACT01Y.cpy and app/cpy/CVTRA05Y.cpy. Five envelope fields precede them, and the envelope is additive in full: no source record carries one. The serializer checks an event before it reaches a topic, and the deserializer checks it again; a failed check on arrival routes the message to the dead-letter topic. Publish and consume paths appear in card-platform/docs/event-flow.md, and rationale for every choice here lives in card-platform/docs/decision-log.md.",
+  "description": "The ledger publishes one TransactionPosted event after it applies one posting. Five payload fields carry the new account balance, the posting timestamp, and the transaction that moved the balance, with widths from app/cpy/CVACT01Y.cpy and app/cpy/CVTRA05Y.cpy. Five envelope fields precede them, and the envelope is additive in full: no source record carries one. Evolution is additive only: additionalProperties stays true, so a consumer validating against this version accepts an event that carries a field added by a later version. Inside one version no field is removed, renamed, retyped or narrowed; a change of that kind takes a new schemaVersion and a new -v<n> document beside this one.",
+  "$comment": "aggregateId is the only account identifier this document declares, and the Kafka message key is that value, so the key and the payload cannot disagree.",
   "type": "object",
   "properties": {
     "eventId": {
       "type": "string",
       "format": "uuid",
-      "description": "The idempotency key. Each consumer records this identifier before it applies side effects. Additive. No source field exists.",
+      "minLength": 36,
+      "maxLength": 36,
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+      "description": "The idempotency key, a lower-case canonical Universally Unique Identifier (UUID) of thirty-six characters. Each consumer records this identifier before it applies side effects. The pattern is asserted directly, so validation does not depend on the validator enabling the optional format-assertion vocabulary. Additive. No source field exists.",
       "examples": ["3f1d9c62-8b4e-4a17-9f0c-2d6a5e73b418"]
     },
     "eventType": {
@@ -20,19 +24,22 @@
     "schemaVersion": {
       "type": "integer",
       "const": 1,
-      "description": "The contract version. The number matches the -v1 suffix in this file name, and a later version only adds fields. Additive. No source field exists.",
+      "description": "The contract version. This file is version 1, matching the -v1 suffix in its name. Additive. No source field exists.",
       "examples": [1]
     },
     "occurredAt": {
       "type": "string",
       "format": "date-time",
+      "minLength": 20,
+      "maxLength": 30,
+      "pattern": "^[0-9]{4}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])T([01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9](\\.[0-9]{1,9})?Z$",
       "description": "The publish timestamp, in Coordinated Universal Time. The ledger stamps it when it writes the event, and postedAt carries the time the posting happened. Additive. No source field exists.",
       "examples": ["2022-06-10T19:27:53.412Z"]
     },
     "aggregateId": {
       "type": "string",
       "pattern": "^[0-9]{11}$",
-      "description": "The account identifier, and always the Kafka message key. Width from XREF-ACCT-ID PIC 9(11) at app/cpy/CVACT03Y.cpy:L7. The payload field accountId carries the same value.",
+      "description": "The account identifier, eleven digits, and always the Kafka message key. Width from XREF-ACCT-ID PIC 9(11) at app/cpy/CVACT03Y.cpy:L7. This is the only account identifier the document carries, so the message key and the payload cannot disagree. A consumer maps this field onto its own account column.",
       "examples": ["00000000007"]
     },
     "transactionId": {
@@ -41,12 +48,6 @@
       "maxLength": 16,
       "description": "The transaction identifier, sixteen characters. From TRAN-ID PIC X(16) at app/cpy/CVTRA05Y.cpy:L5.",
       "examples": ["0000000000683580"]
-    },
-    "accountId": {
-      "type": "string",
-      "pattern": "^[0-9]{11}$",
-      "description": "The account identifier, eleven digits. From XREF-ACCT-ID PIC 9(11) at app/cpy/CVACT03Y.cpy:L7. A consumer maps this field onto its own account column, and the envelope field aggregateId carries the same value.",
-      "examples": ["00000000007"]
     },
     "newBalance": {
       "type": "string",
@@ -60,7 +61,7 @@
       "minLength": 26,
       "maxLength": 26,
       "pattern": "^\\d{4}-\\d{2}-\\d{2}-\\d{2}\\.\\d{2}\\.\\d{2}\\.\\d{2}0000$",
-      "description": "The posting timestamp, twenty-six characters shaped YYYY-MM-DD-HH.MM.SS.NN0000 with a dash between the date and the hour. From TRAN-PROC-TS PIC X(26) at app/cpy/CVTRA05Y.cpy:L17. The ledger stamps the field at posting time, and all 300 records in app/data/ASCII/dailytran.txt carry it blank. The last four characters are always zeros.",
+      "description": "The posting timestamp, twenty-six characters shaped YYYY-MM-DD-HH.MM.SS.NN0000 with a dash between the date and the hour. From TRAN-PROC-TS PIC X(26) at app/cpy/CVTRA05Y.cpy:L17. All 300 records in app/data/ASCII/dailytran.txt carry the field blank. The last four characters are always zeros.",
       "$comment": "Precision is hundredths of a second, from DB2-MIL PIC 9(002) at app/cbl/CBTRN02C.cbl:L173 and the '0000' move at app/cbl/CBTRN02C.cbl:L701, so a consumer truncates to hundredths before any byte-for-byte comparison.",
       "examples": ["2022-07-19-23.16.01.470000"]
     },
@@ -86,11 +87,10 @@
     "occurredAt",
     "aggregateId",
     "transactionId",
-    "accountId",
     "newBalance",
     "postedAt",
     "amount",
     "maskedCardNumber"
   ],
-  "additionalProperties": false
+  "additionalProperties": true
 }

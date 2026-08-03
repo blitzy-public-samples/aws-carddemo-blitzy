@@ -13,22 +13,14 @@ package com.carddemo.cobol;
  * {@code ATTRB=(FSET,NORM,UNPROT)} and {@code LENGTH=16} at
  * {@code app/bms/COCRDSL.bms:L96-100}.
  *
- * <p>Three facts govern every call site:
- *
- * <ol>
- *   <li>The authorization decision runs on the full Primary Account Number. The card
- *       cross-reference lookup keys on all sixteen characters.</li>
- *   <li>Masking applies at the serialization boundary. The published payload and the log line
- *       carry the masked form.</li>
- *   <li>The card verification value never reaches an event, a log, or an application
- *       programming interface response.</li>
- * </ol>
+ * <p>Two obligations fall on the caller, because a helper class cannot enforce either one.
+ * Use {@link #maskCardNumber(String)} before emitting a card number to an event, a log or an
+ * application programming interface response, and never emit a card verification value.
+ * Resolve the authorization decision on the full card number first: the card cross-reference
+ * lookup keys on all sixteen characters.
  *
  * <p>Card number validation in the source is a numeric class test only, at
  * {@code app/cbl/COCRDUPC.cbl:L782-784}. This class adds no further card-number validation.
- * That absence is recorded in {@code card-platform/docs/business-rule-flags.md}.
- *
- * <p>Rationale for the masking addition lives in {@code card-platform/docs/decision-log.md}.
  */
 public final class PanMasker {
 
@@ -59,7 +51,6 @@ public final class PanMasker {
     private static final String FULLY_MASKED_CARD_NUMBER =
             String.valueOf(MASK_CHARACTER).repeat(CARD_NUMBER_LENGTH);
 
-    /** This class holds static members only. */
     private PanMasker() {
     }
 
@@ -69,6 +60,12 @@ public final class PanMasker {
      * <p>The result is always exactly {@value #CARD_NUMBER_LENGTH} characters wide, matching
      * {@code CARD-NUM PIC X(16)}. Leading and trailing whitespace is discarded before the last
      * four characters are read.
+     *
+     * <p>An argument wider than {@value #CARD_NUMBER_LENGTH} characters normalizes to the stored
+     * width. The result keeps the last {@value #VISIBLE_DIGIT_COUNT} characters of the stripped
+     * argument and no other character of it, so the count of mask characters stays at
+     * {@value #CARD_NUMBER_LENGTH} minus {@value #VISIBLE_DIGIT_COUNT} whatever the argument
+     * width.
      *
      * <p>A {@code null} argument, a blank argument, and an argument of
      * {@value #VISIBLE_DIGIT_COUNT} characters or fewer each yield a fully masked result. No
@@ -98,8 +95,8 @@ public final class PanMasker {
      *
      * <p>Every argument yields the same result, including {@code null}. No digit of the
      * argument reaches the result. The card record stores this field as
-     * {@code CARD-CVV-CD PIC 9(03)} at {@code app/cpy/CVACT02Y.cpy:L7}, and no service
-     * emits it.
+     * {@code CARD-CVV-CD PIC 9(03)} at {@code app/cpy/CVACT02Y.cpy:L7}; a caller must not
+     * emit it in any form other than this redaction.
      *
      * @param cardVerificationValue the stored card verification value; may be {@code null}
      * @return three mask characters

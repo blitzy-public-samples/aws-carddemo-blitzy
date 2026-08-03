@@ -4,8 +4,8 @@ import com.carddemo.cobol.NumvalParser;
 import java.math.BigDecimal;
 
 /**
- * Edits a required numeric field. A valid field holds content, every character of that content is
- * a digit, and the converted value is not zero.
+ * Edits a required numeric field. A valid field holds content, every character of that content is a
+ * digit, and the converted value is not zero.
  *
  * <p>Realises paragraph {@code 1245-EDIT-NUM-REQD} at {@code app/cbl/COACTUPC.cbl:L2109}, whose
  * exit paragraph {@code 1245-EDIT-NUM-REQD-EXIT} sits at {@code app/cbl/COACTUPC.cbl:L2176}. Three
@@ -23,21 +23,16 @@ import java.math.BigDecimal;
  *
  * <p>Six call sites perform this paragraph, three of them in the customer edit sequence. A credit
  * score of width 3 arrives at {@code app/cbl/COACTUPC.cbl:L1549}, a postal code of width 5 at
- * {@code app/cbl/COACTUPC.cbl:L1608}, and an electronic funds transfer account identifier of
- * width 10 at {@code app/cbl/COACTUPC.cbl:L1652}. The other three sit in
- * {@code 1265-EDIT-US-SSN}, the Social Security Number paragraph at
- * {@code app/cbl/COACTUPC.cbl:L2431}. Their widths are 3, 2, and 4, at
- * {@code app/cbl/COACTUPC.cbl:L2442}, {@code app/cbl/COACTUPC.cbl:L2472}, and
+ * {@code app/cbl/COACTUPC.cbl:L1608}, and an electronic funds transfer account identifier of width
+ * 10 at {@code app/cbl/COACTUPC.cbl:L1652}. The other three sit in {@code 1265-EDIT-US-SSN}, the
+ * Social Security Number paragraph at {@code app/cbl/COACTUPC.cbl:L2431}. Their widths are 3, 2,
+ * and 4, at {@code app/cbl/COACTUPC.cbl:L2442}, {@code app/cbl/COACTUPC.cbl:L2472}, and
  * {@code app/cbl/COACTUPC.cbl:L2484}.</p>
  *
  * <p>The verdict carries at most one message, matching the single {@code WS-RETURN-MSG} slot at
- * {@code app/cbl/COACTUPC.cbl:L479}. Keeping the first message of a validation pass is the
- * caller's work. This class reads its arguments and changes none of them, so a second call on the
- * same arguments returns the same verdict.</p>
- *
- * <p>Rationale for every choice in this class lives in
- * {@code card-platform/docs/decision-log.md}. The stored fields this edit guards appear in
- * {@code card-platform/docs/data-model.md}.</p>
+ * {@code app/cbl/COACTUPC.cbl:L479}. Keeping the first message of a validation pass is the caller's
+ * work. This class reads its arguments and changes none of them, so a second call on the same
+ * arguments returns the same verdict.</p>
  */
 public final class NumericRequiredValidator {
 
@@ -60,6 +55,21 @@ public final class NumericRequiredValidator {
     private static final String IS_ZERO_MESSAGE = " must not be zero.";
 
     /**
+     * ADDITIVE. Opens the message text for a value wider than the edited field. No source
+     * literal carries this text.
+     *
+     * <p>The source fills {@code WS-EDIT-ALPHANUM-ONLY PIC X(256)} at
+     * {@code app/cbl/COACTUPC.cbl:L61} by a {@code MOVE} from a fixed-width screen field, so a
+     * wider value cannot reach the source paragraph. A Representational State Transfer (REST)
+     * caller can supply one, and this edit refuses it instead of reading its first
+     * characters.</p>
+     */
+    private static final String ADDITIVE_NO_LONGER_THAN = " must be no longer than ";
+
+    /** ADDITIVE. Closes the message text {@link #ADDITIVE_NO_LONGER_THAN} opens. */
+    private static final String ADDITIVE_CHARACTERS = " characters.";
+
+    /**
      * Width of {@code WS-EDIT-ALPHANUM-ONLY PIC X(256)} at {@code app/cbl/COACTUPC.cbl:L61}. A
      * {@code MOVE} into that item drops every character past this position.
      */
@@ -77,7 +87,6 @@ public final class NumericRequiredValidator {
     /** Highest of the ten characters {@code IS NUMERIC} accepts on an alphanumeric item. */
     private static final char NINE_DIGIT = '9';
 
-    /** This class holds static members only. */
     private NumericRequiredValidator() {
     }
 
@@ -92,7 +101,13 @@ public final class NumericRequiredValidator {
      *
      * <p>A {@code null} value, an empty value, and a {@code length} of zero or below each yield
      * the not-supplied verdict. The label is trimmed and never truncated to its
-     * {@code PIC X(25)} host width. No argument is modified, and no failed check throws.</p>
+     * {@code PIC X(25)} host width. No argument is modified.</p>
+     *
+     * <p>The not-zero check converts through {@link NumvalParser#numval(String)}, which refuses an
+     * argument holding more than {@link NumvalParser#MAXIMUM_DIGITS} digits and throws
+     * {@link NumberFormatException}. That ceiling is the {@code ARITH(COMPAT)} ceiling the source's
+     * own {@code FUNCTION NUMVAL} carries. Every one of the six call-site widths is 10 or below, so
+     * no migrated path reaches it.</p>
      *
      * @param fieldLabel the field name the message opens with, held in
      *                   {@code WS-EDIT-VARIABLE-NAME}; may be {@code null}
@@ -109,6 +124,13 @@ public final class NumericRequiredValidator {
         // A width of zero or below yields the not-supplied verdict.
         if (length <= 0) {
             return EditResult.failure(trimSpaces(fieldLabel) + NOT_SUPPLIED_MESSAGE);
+        }
+
+        // ADDITIVE. A value wider than the edited field is refused, so the edit never passes a
+        // verdict on the first characters of a longer value.
+        if (carriesContentPastEditedWidth(value, length)) {
+            return EditResult.failure(trimSpaces(fieldLabel) + ADDITIVE_NO_LONGER_THAN
+                    + length + ADDITIVE_CHARACTERS);
         }
 
         String editField = referenceModifiedField(value, length);
@@ -147,7 +169,6 @@ public final class NumericRequiredValidator {
      *
      * @param value  the submitted characters, which this method never changes; may be {@code null}
      * @param length the declared field width, one or above
-     * @return the reference-modified field content
      */
     private static String referenceModifiedField(String value, int length) {
         int width = Math.min(length, EDIT_FIELD_WIDTH);
@@ -174,8 +195,6 @@ public final class NumericRequiredValidator {
      * stands as the source writes it.</p>
      *
      * @param value     the submitted characters; may be {@code null}
-     * @param editField the reference-modified field content
-     * @return {@code true} when the field arrived with no content
      */
     private static boolean isNotSupplied(String value, String editField) {
         return value == null
@@ -192,8 +211,6 @@ public final class NumericRequiredValidator {
      * to the width of the compared item.</p>
      *
      * @param editField the reference-modified field content, never {@code null}
-     * @param expected  the character every position must hold
-     * @return {@code true} when every position holds {@code expected}
      */
     private static boolean containsOnly(String editField, char expected) {
         for (int index = 0; index < editField.length(); index++) {
@@ -212,9 +229,6 @@ public final class NumericRequiredValidator {
      * {@code app/cbl/COACTUPC.cbl:L61}, an alphanumeric item. On such an item {@code IS NUMERIC}
      * holds only when every character of the tested range is a digit. A sign, a decimal point, and
      * a space each fail the test, including the space a {@code MOVE} pads short content with.</p>
-     *
-     * @param editField the reference-modified field content, one character wide or wider
-     * @return {@code true} when every character is a digit
      */
     private static boolean isNumeric(String editField) {
         for (int index = 0; index < editField.length(); index++) {
@@ -233,9 +247,6 @@ public final class NumericRequiredValidator {
      * that class to the ten characters {@code 0} through {@code 9}, which are the digits COBOL
      * tests in a single-byte character set and the digits
      * {@link NumvalParser#numval(String)} converts.</p>
-     *
-     * @param character the character to test
-     * @return {@code true} for a decimal digit in the range {@code 0} through {@code 9}
      */
     private static boolean isDigit(char character) {
         return Character.isDigit(character)
@@ -288,5 +299,35 @@ public final class NumericRequiredValidator {
         }
 
         return text.substring(start, end);
+    }
+
+    /**
+     * Reports whether the value carries a character other than a space past the edited width.
+     *
+     * <p>ADDITIVE. The source moves a fixed-width screen field into its edit field, so the
+     * {@code MOVE} drops nothing but padding. A Representational State Transfer (REST) caller can
+     * supply a wider value, and this test separates the two cases: trailing spaces past the width
+     * are the padding the source itself holds, and any other character past the width is content
+     * the edit would not inspect.</p>
+     *
+     * <p>A width of zero or less inspects nothing, and this test reports false for it, leaving the
+     * not-supplied arm to answer.</p>
+     *
+     * @param value  submitted value, which may be null
+     * @param length count of characters the edit inspects
+     * @return true when a character other than a space sits past a positive {@code length}
+     */
+    private static boolean carriesContentPastEditedWidth(String value, int length) {
+        if (length < 1 || value == null || value.length() <= length) {
+            return false;
+        }
+
+        for (int position = length; position < value.length(); position++) {
+            if (value.charAt(position) != SPACE) {
+                return true;
+            }
+        }
+
+        return false;
     }
 }

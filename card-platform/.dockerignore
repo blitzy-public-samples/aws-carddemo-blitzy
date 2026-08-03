@@ -1,0 +1,28 @@
+# Paths every service image build excludes from the card-platform build context.
+# docker-compose.yml and each services/*/Dockerfile share this one context, so
+# this file governs all six image builds.
+
+# Build output. Stage 1 of every Dockerfile packages the module inside the image,
+# so no archive built on the host belongs in the context.
+**/target/
+
+# Local environment values. .env.example travels with the repository; the .env a
+# developer copies from it carries their own credentials.
+.env
+.env.*
+!.env.example
+
+# Documentation, the executive presentation and the Kubernetes manifests. No
+# stage of any image build reads them.
+docs/
+presentation/
+deploy/
+
+# The image builds resolve dependencies through the cache mount declared in each
+# Dockerfile, not through a repository checked into the context.
+.m2/
+
+# Editor and operating-system artifacts.
+**/*.swp
+**/*~
+**/.DS_Store

@@ -33,8 +33,8 @@ import java.util.Objects;
  *
  * <p>{@link FeedbackCondition#DATE_IS_VALID} carries the name {@code FC-INVALID-DATE} in the
  * source, at {@code app/cbl/CSUTLDTC.cbl:L62}. That condition tests the all-zeros feedback token,
- * and {@code app/cbl/CSUTLDTC.cbl:L129-L130} moves {@code 'Date is valid'} when it holds. The
- * rename is recorded in {@code card-platform/docs/traceability-matrix.md}.
+ * and {@code app/cbl/CSUTLDTC.cbl:L129-L130} moves {@code 'Date is valid'} when it holds, so the
+ * name here states what the condition means.
  *
  * <p>{@code app/cbl/CSUTLDTC.cbl:L116-L120} calls {@code CEEDAYS}, the date service of IBM
  * Language Environment. No equivalent service exists away from the mainframe.
@@ -43,17 +43,12 @@ import java.util.Objects;
  * <p>{@link #editDateCcyymmdd(String, String)} carries the field-level rules of
  * {@code app/cpy/CSUTLDPY.cpy}, which one program includes: {@code app/cbl/COACTUPC.cbl:L166}
  * copies the working storage and {@code app/cbl/COACTUPC.cbl:L4232} copies the paragraphs.
- *
- * <p>Flagged source anomalies are listed in {@code card-platform/docs/business-rule-flags.md}.
- * Rationale for every choice behind this class lives in
- * {@code card-platform/docs/decision-log.md}.
+
  */
 public final class CobolDateValidator {
 
-    // -----------------------------------------------------------------------------------------
     // Date masks. app/cbl/CSUTLDTC.cbl:L85 declares the parameter as LS-DATE-FORMAT PIC X(10),
     // and the two policies fill it with different values.
-    // -----------------------------------------------------------------------------------------
 
     /**
      * The mask the strict policy passes, {@code WS-DATE-FORMAT PIC X(08) VALUE 'YYYYMMDD'} at
@@ -68,10 +63,8 @@ public final class CobolDateValidator {
      */
     public static final String TOLERANT_POLICY_DATE_MASK = "YYYY-MM-DD";
 
-    // -----------------------------------------------------------------------------------------
     // Acceptance literals. The tolerant policy compares text; the strict policy compares an
     // integer. Both forms appear here.
-    // -----------------------------------------------------------------------------------------
 
     /**
      * The severity text both policies accept, compared at {@code app/cbl/COTRN02C.cbl:L397} and
@@ -100,10 +93,8 @@ public final class CobolDateValidator {
      */
     public static final int TOLERATED_MESSAGE_NUMBER = 2513;
 
-    // -----------------------------------------------------------------------------------------
     // The 80-byte result layout. app/cbl/CSUTLDTC.cbl:L42-L57 and app/cpy/CSUTLDWY.cpy:L60-L85
     // declare it byte for byte alike. The widths below sum to 80.
-    // -----------------------------------------------------------------------------------------
 
     /** Width of {@code WS-SEVERITY PIC X(04)} at {@code app/cbl/CSUTLDTC.cbl:L43}. */
     public static final int SEVERITY_WIDTH = 4;
@@ -130,14 +121,11 @@ public final class CobolDateValidator {
      */
     public static final int RENDERED_RESULT_WIDTH = 80;
 
-    // -----------------------------------------------------------------------------------------
     // Field-edit widths, from app/cpy/CSUTLDWY.cpy and its one consumer app/cbl/COACTUPC.cbl.
-    // -----------------------------------------------------------------------------------------
 
     /**
      * Width of {@code WS-EDIT-DATE-CCYYMMDD} at {@code app/cpy/CSUTLDWY.cpy:L4-L27}, whose four
-     * subordinate fields hold two characters of century, two of year, two of month, and two of
-     * day.
+     * subordinate fields hold two characters of century, two of year, two of month, and two of day.
      */
     public static final int EDIT_DATE_WIDTH = 8;
 
@@ -155,10 +143,8 @@ public final class CobolDateValidator {
      */
     public static final int RETURN_MESSAGE_WIDTH = 75;
 
-    // -----------------------------------------------------------------------------------------
     // Century bounds. app/cpy/CSUTLDWY.cpy:L9-L10 names the only two values the year edit
     // accepts. The source comment at app/cpy/CSUTLDPY.cpy:L66-L68 records the same limit.
-    // -----------------------------------------------------------------------------------------
 
     /** {@code 88 THIS-CENTURY VALUE 20} at {@code app/cpy/CSUTLDWY.cpy:L9}. */
     public static final int THIS_CENTURY = 20;
@@ -166,10 +152,8 @@ public final class CobolDateValidator {
     /** {@code 88 LAST-CENTURY VALUE 19} at {@code app/cpy/CSUTLDWY.cpy:L10}. */
     public static final int LAST_CENTURY = 19;
 
-    // -----------------------------------------------------------------------------------------
     // Supported date range. CEEDAYS numbers days from the start of the Gregorian calendar, and
     // reports FeedbackCondition.UNSUPPORTED_RANGE for a date outside these two bounds.
-    // -----------------------------------------------------------------------------------------
 
     /**
      * The earliest date {@link #validateDate(String, String)} accepts. Day one of the day count
@@ -183,10 +167,8 @@ public final class CobolDateValidator {
      */
     public static final LocalDate LATEST_SUPPORTED_DATE = LocalDate.of(9999, 12, 31);
 
-    // -----------------------------------------------------------------------------------------
     // The thirteen message literals of app/cpy/CSUTLDPY.cpy, character for character. Spacing,
     // casing, and punctuation are copied from the source and are not normalised.
-    // -----------------------------------------------------------------------------------------
 
     /** {@code app/cpy/CSUTLDPY.cpy:L37}. */
     public static final String YEAR_NOT_SUPPLIED_MESSAGE = " : Year must be supplied.";
@@ -225,9 +207,7 @@ public final class CobolDateValidator {
     public static final String DAY_30_NOT_IN_MONTH_MESSAGE =
             ":Cannot have 30 days in this month.";
 
-    /**
-     * {@code app/cpy/CSUTLDPY.cpy:L266}. No space follows the first full stop.
-     */
+    /** {@code app/cpy/CSUTLDPY.cpy:L266}. No space follows the first full stop. */
     public static final String NOT_A_LEAP_YEAR_MESSAGE =
             ":Not a leap year.Cannot have 29 days in this month.";
 
@@ -253,9 +233,13 @@ public final class CobolDateValidator {
      */
     public static final String UNRECOGNISED_FEEDBACK_RESULT_TEXT = "Date is invalid";
 
-    // -----------------------------------------------------------------------------------------
+    /**
+     * Text that stands in for a tested date in a diagnostic rendering. ADDITIVE, with no COBOL
+     * ancestor. {@link DateValidationResult#toString()} carries it in place of the date.
+     */
+    public static final String REDACTED = "<redacted>";
+
     // Private constants.
-    // -----------------------------------------------------------------------------------------
 
     /** {@code FILLER PIC X(11) VALUE 'Mesg Code:'} at {@code app/cbl/CSUTLDTC.cbl:L45}. */
     private static final String MESSAGE_CODE_FILLER = "Mesg Code: ";
@@ -335,9 +319,7 @@ public final class CobolDateValidator {
     /** {@code 88 WS-FEBRUARY VALUE 2} at {@code app/cpy/CSUTLDWY.cpy:L24}. */
     private static final int FEBRUARY = 2;
 
-    /**
-     * The seven values of {@code 88 WS-31-DAY-MONTH} at {@code app/cpy/CSUTLDWY.cpy:L21-L23}.
-     */
+    /** The seven values of {@code 88 WS-31-DAY-MONTH} at {@code app/cpy/CSUTLDWY.cpy:L21-L23}. */
     private static final int[] MONTHS_WITH_31_DAYS = {1, 3, 5, 7, 8, 10, 12};
 
     /** An empty {@code WS-RETURN-MSG}, which {@code 88 WS-RETURN-MSG-OFF VALUE SPACES} tests. */
@@ -379,13 +361,10 @@ public final class CobolDateValidator {
     /** The radix of every field this class reads as digits. */
     private static final int DECIMAL_RADIX = 10;
 
-    /** This class holds static members only. */
     private CobolDateValidator() {
     }
 
-    // -----------------------------------------------------------------------------------------
     // Nested types.
-    // -----------------------------------------------------------------------------------------
 
     /**
      * The ten conditions {@code app/cbl/CSUTLDTC.cbl:L62-L70} names over the feedback token that
@@ -425,10 +404,9 @@ public final class CobolDateValidator {
         BAD_DATE_VALUE("000309CC59C3C5C5", "Datevalue error"),
 
         /**
-         * {@code 88 FC-INVALID-ERA VALUE X'000309CD59C3C5C5'} at
-         * {@code app/cbl/CSUTLDTC.cbl:L65}. Neither source mask names an era, and
-         * {@link CobolDateValidator#validateDate(String, String)} returns no result carrying this
-         * condition.
+         * {@code 88 FC-INVALID-ERA VALUE X'000309CD59C3C5C5'} at {@code app/cbl/CSUTLDTC.cbl:L65}.
+         * Neither source mask names an era, and {@link CobolDateValidator#validateDate(String,
+         * String)} returns no result carrying this condition.
          */
         INVALID_ERA("000309CD59C3C5C5", "Invalid Era    "),
 
@@ -448,8 +426,7 @@ public final class CobolDateValidator {
 
         /**
          * {@code 88 FC-BAD-PIC-STRING VALUE X'000309D659C3C5C5'} at
-         * {@code app/cbl/CSUTLDTC.cbl:L68}. The condition holds when the mask itself is
-         * unreadable.
+         * {@code app/cbl/CSUTLDTC.cbl:L68}. The condition holds when the mask itself is unreadable.
          */
         BAD_PICTURE_STRING("000309D659C3C5C5", "Bad Pic String "),
 
@@ -672,6 +649,32 @@ public final class CobolDateValidator {
                     + ONE_SPACE
                     + THREE_SPACES;
         }
+
+        /**
+         * Renders this outcome for a log line or an exception message, with the tested date left
+         * out.
+         *
+         * <p>{@link #testedDate()} can hold a date of birth, so this rendering carries the literal
+         * {@value CobolDateValidator#REDACTED} in its place and names the width the field holds.
+         * {@link #renderedResult()} still carries the date, matching {@code WS-MESSAGE} at
+         * {@code app/cbl/CSUTLDTC.cbl:L42-L57}.
+         *
+         * @return the condition, the severity, the message number, the result text, the mask, the
+         *         day count, and the width of the tested date
+         */
+        @Override
+        public String toString() {
+            return "DateValidationResult[condition=" + condition
+                    + ", severityText=" + severityText
+                    + ", severityNumber=" + severityNumber
+                    + ", messageNumberText=" + messageNumberText
+                    + ", messageNumber=" + messageNumber
+                    + ", resultText=" + resultText
+                    + ", testedDate=" + REDACTED + "(" + testedDate.length() + " characters)"
+                    + ", dateMask=" + dateMask
+                    + ", dayCount=" + dayCount
+                    + "]";
+        }
     }
 
     /**
@@ -737,6 +740,9 @@ public final class CobolDateValidator {
      * second failure in the same pass composes nothing, so the first message of a pass is the one
      * a caller reads. The component name states that contract.
      *
+     * <p>The generated rendering of this record carries the four flag and message components, then
+     * the rendering of {@link DateValidationResult}, which leaves the tested date out.
+     *
      * @param inputError         the state of {@code 88 INPUT-ERROR VALUE '1'} at
      *                           {@code app/cbl/COACTUPC.cbl:L173} after the pass
      * @param yearFlag           the byte {@code WS-EDIT-YEAR-FLG} holds after the pass
@@ -797,10 +803,8 @@ public final class CobolDateValidator {
         }
     }
 
-    // -----------------------------------------------------------------------------------------
     // The called program. app/cbl/CSUTLDTC.cbl:L116-L120 calls CEEDAYS; the methods below
     // reimplement what that call reports.
-    // -----------------------------------------------------------------------------------------
 
     /**
      * Validates a date against a mask and reports what {@code app/cbl/CSUTLDTC.cbl} reports.
@@ -906,10 +910,8 @@ public final class CobolDateValidator {
         return condition.resultText();
     }
 
-    // -----------------------------------------------------------------------------------------
     // The two acceptance policies. Each call site in the source reads one of them, and each
     // predicate below carries one.
-    // -----------------------------------------------------------------------------------------
 
     /**
      * Reports whether the tolerant policy accepts a date.
@@ -979,16 +981,14 @@ public final class CobolDateValidator {
         return result.acceptedByStrictPolicy();
     }
 
-    // -----------------------------------------------------------------------------------------
     // The field edits of app/cpy/CSUTLDPY.cpy. app/cbl/COACTUPC.cbl:L1480-L1481 performs the
     // whole run as PERFORM EDIT-DATE-CCYYMMDD THRU EDIT-DATE-CCYYMMDD-EXIT.
-    // -----------------------------------------------------------------------------------------
 
     /**
-     * Runs the six field-edit paragraphs of {@code app/cpy/CSUTLDPY.cpy} over an eight-character
+     * Runs the five field-edit paragraphs of {@code app/cpy/CSUTLDPY.cpy} over an eight-character
      * date.
      *
-     * <p>Five paragraphs run in source order. The year edit sits at
+     * <p>The five run in source order. The year edit sits at
      * {@code app/cpy/CSUTLDPY.cpy:L25-L87}, the month edit at
      * {@code app/cpy/CSUTLDPY.cpy:L91-L144}, and the day edit at
      * {@code app/cpy/CSUTLDPY.cpy:L150-L204}. The combination edit sits at
@@ -1126,9 +1126,7 @@ public final class CobolDateValidator {
                 FieldEditFlag.NOT_OK, composed, edits.dateValidation());
     }
 
-    // -----------------------------------------------------------------------------------------
     // One private method per source paragraph.
-    // -----------------------------------------------------------------------------------------
 
     /**
      * Runs {@code EDIT-YEAR-CCYY} at {@code app/cpy/CSUTLDPY.cpy:L25-L87}.
@@ -1336,9 +1334,7 @@ public final class CobolDateValidator {
         }
     }
 
-    // -----------------------------------------------------------------------------------------
     // Private helpers.
-    // -----------------------------------------------------------------------------------------
 
     /**
      * Builds one outcome carrying no day count.
@@ -1664,9 +1660,7 @@ public final class CobolDateValidator {
         return String.valueOf(LOWEST_DIGIT_CHARACTER).repeat(width - digits.length()) + digits;
     }
 
-    // -----------------------------------------------------------------------------------------
     // Private nested types.
-    // -----------------------------------------------------------------------------------------
 
     /**
      * The offsets a mask names.

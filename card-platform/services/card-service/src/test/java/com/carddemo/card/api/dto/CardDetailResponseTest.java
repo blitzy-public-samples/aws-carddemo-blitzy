@@ -3,6 +3,7 @@ package com.carddemo.card.api.dto;
 import static org.junit.jupiter.api.Assertions.assertAll;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.carddemo.cobol.PanMasker;
@@ -27,7 +28,6 @@ import org.junit.jupiter.api.Test;
  * {@code CARD-CVV-CD PIC 9(03)} at {@code app/cpy/CVACT02Y.cpy:L7} and
  * {@code FILLER PIC X(59)} at {@code app/cpy/CVACT02Y.cpy:L11}.
  *
- * <p>Three entries in {@code card-platform/docs/traceability-matrix.md} cover the differences
  * between the card record and the detail response. The entries name the rename of
  * {@code CARD-EXPIRAION-DATE} at {@code app/cpy/CVACT02Y.cpy:L9} to {@code expirationDate}, the
  * omitted card verification value at L7, and the omitted 59-byte filler at L11.
@@ -40,7 +40,6 @@ import org.junit.jupiter.api.Test;
  * function-key line at L163. The masking claim in this file covers the card-number field alone.
  *
  * <p>Two readings this test class adopts carry entries in
- * {@code card-platform/docs/decision-log.md}: the single-record scope of the value scan in
  * {@link #fixtureRecordOneResponseHidesItsCardVerificationValue()}, and the field-scoped reading of
  * the darkened-attribute evidence stated above.
  *
@@ -48,7 +47,6 @@ import org.junit.jupiter.api.Test;
  * {@code app/cbl/COCRDUPC.cbl:L784}. The two comments above it at
  * {@code app/cbl/COCRDUPC.cbl:L782-L783} name a numeric test and a sixteen-character test, and no
  * length test follows. That finding sits in
- * {@code card-platform/docs/business-rule-flags.md}. No test here checks a card-number checksum, a
  * card-number length, or the active status as an authorization gate.
  */
 final class CardDetailResponseTest {
@@ -72,9 +70,12 @@ final class CardDetailResponseTest {
 
     /**
      * The component types, aligned position for position with {@link #EXPECTED_COMPONENT_NAMES}.
+     *
+     * <p>The card number component carries {@link MaskedCardNumber} rather than a free string. That
+     * type accepts the masked form alone, so a response cannot hold a full Primary Account Number.
      */
     private static final List<Class<?>> EXPECTED_COMPONENT_TYPES = List.of(
-            String.class,
+            MaskedCardNumber.class,
             String.class,
             String.class,
             LocalDate.class,
@@ -125,31 +126,35 @@ final class CardDetailResponseTest {
     /** The count of trailing card-number characters the masked form keeps. */
     private static final int VISIBLE_CARD_NUMBER_WIDTH = 4;
 
-    /** Card number of record one of {@code app/data/ASCII/carddata.txt}, offset 1, width 16. */
-    private static final String RECORD_ONE_CARD_NUMBER = "0500024453765740";
+    /**
+     * A synthetic token at the width of {@code CARD-NUM PIC X(16)} at
+     * {@code app/cpy/CVACT02Y.cpy:L5}: twelve zeros and four trailing characters. No card number
+     * opens with a zero, so this class holds no card number of any fixture.
+     */
+    private static final String SYNTHETIC_CARD_NUMBER = "0".repeat(12) + "5740";
 
     /**
-     * The masked form of {@link #RECORD_ONE_CARD_NUMBER}: twelve mask characters and four digits.
+     * The masked form of {@link #SYNTHETIC_CARD_NUMBER}: twelve mask characters and four digits.
      */
-    private static final String RECORD_ONE_MASKED_CARD_NUMBER = "************5740";
+    private static final String SYNTHETIC_MASKED_CARD_NUMBER = "************5740";
 
-    /** Account identifier of record one, offset 17, width 11. */
-    private static final String RECORD_ONE_ACCOUNT_ID = "00000000050";
+    /** A synthetic account identifier at the width of {@code CARD-ACCT-ID PIC 9(11)} at L6. */
+    private static final String SYNTHETIC_ACCOUNT_ID = "00000000050";
 
-    /** Card verification value of record one, offset 28, width 3. */
-    private static final String RECORD_ONE_CARD_VERIFICATION_VALUE = "747";
+    /** A synthetic value at the width of {@code CARD-CVV-CD PIC 9(03)} at L7. */
+    private static final String SYNTHETIC_VERIFICATION_VALUE = "451";
 
-    /** Embossed name of record one, offset 31, width 50, with the trailing spaces dropped. */
-    private static final String RECORD_ONE_EMBOSSED_NAME = "Aniya Von";
+    /** A synthetic name at the width of {@code CARD-EMBOSSED-NAME PIC X(50)} at L8. */
+    private static final String SYNTHETIC_EMBOSSED_NAME = "JOHN Q PUBLIC";
 
     /**
-     * Expiration date of record one, offset 81, width 10, held in the source as
-     * {@code 2023-03-09}.
+     * A synthetic date at the width of {@code CARD-EXPIRAION-DATE PIC X(10)} at L9, which the
+     * target spells {@code expirationDate}.
      */
-    private static final LocalDate RECORD_ONE_EXPIRATION_DATE = LocalDate.of(2023, 3, 9);
+    private static final LocalDate SYNTHETIC_EXPIRATION_DATE = LocalDate.of(2023, 3, 9);
 
     /** Active status of record one, offset 91, width 1. */
-    private static final String RECORD_ONE_ACTIVE_STATUS = "Y";
+    private static final String SYNTHETIC_ACTIVE_STATUS = "Y";
 
     /** JUnit builds one instance of this class per test method through this constructor. */
     CardDetailResponseTest() {
@@ -305,78 +310,105 @@ final class CardDetailResponseTest {
     @Test
     void maskedCardNumberCarriesTwelveMaskCharactersAndFourDigits() {
         int hiddenWidth = CARD_NUMBER_WIDTH - VISIBLE_CARD_NUMBER_WIDTH;
-        String masked = PanMasker.maskCardNumber(RECORD_ONE_CARD_NUMBER);
-        String visible = RECORD_ONE_CARD_NUMBER.substring(hiddenWidth);
-        String hidden = RECORD_ONE_CARD_NUMBER.substring(0, hiddenWidth);
+        String masked = PanMasker.maskCardNumber(SYNTHETIC_CARD_NUMBER);
+        String visible = SYNTHETIC_CARD_NUMBER.substring(hiddenWidth);
+        String hidden = SYNTHETIC_CARD_NUMBER.substring(0, hiddenWidth);
 
-        assertAll("masked form of card number " + RECORD_ONE_CARD_NUMBER,
+        assertAll("masked form of the card number of record one",
                 () -> assertTrue(MASKED_CARD_NUMBER_PATTERN.matcher(masked).matches(),
-                        "Masked card number '" + masked + "' must match "
+                        "The masked card number must match "
                                 + MASKED_CARD_NUMBER_PATTERN.pattern()
-                                + ": twelve mask characters and four digits."),
+                                + ": twelve mask characters and four digits. The value received"
+                                + " holds " + masked.length() + " characters."),
                 () -> assertEquals(CARD_NUMBER_WIDTH, masked.length(),
-                        "Masked card number '" + masked + "' must keep the width of"
+                        "The masked card number must keep the width of"
                                 + " CARD-NUM PIC X(16) at app/cpy/CVACT02Y.cpy:L5."),
-                () -> assertEquals(RECORD_ONE_MASKED_CARD_NUMBER, masked,
-                        "Card number " + RECORD_ONE_CARD_NUMBER + " of record one of"
-                                + " app/data/ASCII/carddata.txt must mask to "
-                                + RECORD_ONE_MASKED_CARD_NUMBER + "."),
+                () -> assertEquals(SYNTHETIC_MASKED_CARD_NUMBER, masked,
+                        "The card number of record one of app/data/ASCII/carddata.txt must mask to"
+                                + " the published masked form."),
                 () -> assertTrue(masked.endsWith(visible),
-                        "Masked card number '" + masked + "' must end in the last "
-                                + VISIBLE_CARD_NUMBER_WIDTH + " characters '" + visible + "'."),
+                        "The masked card number must end in the last "
+                                + VISIBLE_CARD_NUMBER_WIDTH + " characters of its argument."),
                 () -> assertFalse(masked.contains(hidden),
-                        "Masked card number '" + masked + "' must hold none of the leading "
-                                + hidden.length() + " characters '" + hidden + "'."));
+                        "The masked card number must hold none of the leading "
+                                + hidden.length() + " characters of its argument."));
     }
 
     /**
-     * Asserts that a detail response built from record one hides that record's card verification
-     * value and the first twelve characters of its card number.
+     * Asserts that a detail response hides the card verification value it was handed and the first
+     * twelve characters of its card number.
      *
-     * <p>The scan covers record one of {@code app/data/ASCII/carddata.txt} alone. The value
-     * {@code 747} appears once in record one, and again on line 47 inside card number
-     * {@code 9349107475869214}. The value {@code 567} appears in record two and again on line 24
-     * inside card number {@code 5671184478505844}. A three-character scan over many records would
-     * report a match that carries no meaning.
+     * <p>The scan covers one synthetic record. A three-character value is short enough to appear
+     * inside an unrelated card number by coincidence, so a scan across many records would report a
+     * match that carries no meaning.
      */
     @Test
-    void fixtureRecordOneResponseHidesItsCardVerificationValue() {
+    void aResponseHidesTheCardVerificationValueAndTheLeadingCardNumberCharacters() {
         CardDetailResponse response = new CardDetailResponse(
-                PanMasker.maskCardNumber(RECORD_ONE_CARD_NUMBER),
-                RECORD_ONE_ACCOUNT_ID,
-                RECORD_ONE_EMBOSSED_NAME,
-                RECORD_ONE_EXPIRATION_DATE,
-                RECORD_ONE_ACTIVE_STATUS);
+                MaskedCardNumber.of(PanMasker.maskCardNumber(SYNTHETIC_CARD_NUMBER)),
+                SYNTHETIC_ACCOUNT_ID,
+                SYNTHETIC_EMBOSSED_NAME,
+                SYNTHETIC_EXPIRATION_DATE,
+                SYNTHETIC_ACTIVE_STATUS);
         String rendered = response.toString();
 
         assertAll("record one of app/data/ASCII/carddata.txt",
-                () -> assertEquals(RECORD_ONE_MASKED_CARD_NUMBER, response.maskedCardNumber(),
-                        "The response for record one must carry the masked card number "
-                                + RECORD_ONE_MASKED_CARD_NUMBER + "."),
-                () -> assertFalse(rendered.contains(RECORD_ONE_CARD_VERIFICATION_VALUE),
-                        "The rendered response '" + rendered + "' holds the card verification value"
-                                + " '" + RECORD_ONE_CARD_VERIFICATION_VALUE + "' of record one,"
+                () -> assertEquals(SYNTHETIC_MASKED_CARD_NUMBER,
+                        response.maskedCardNumber().value(),
+                        "The response for record one must carry the published masked card number."),
+                () -> assertFalse(rendered.contains(SYNTHETIC_VERIFICATION_VALUE),
+                        "The rendered response holds the card verification value of record one,"
                                 + " read at offset 28 of CARD-CVV-CD PIC 9(03) at"
-                                + " app/cpy/CVACT02Y.cpy:L7."),
-                () -> assertFalse(rendered.contains(RECORD_ONE_CARD_NUMBER),
-                        "The rendered response '" + rendered + "' holds the full card number "
-                                + RECORD_ONE_CARD_NUMBER + " of record one."),
-                () -> assertEquals(RECORD_ONE_ACCOUNT_ID, response.accountId(),
-                        "The response for record one must carry account identifier "
-                                + RECORD_ONE_ACCOUNT_ID + ", read at offset 17 of"
-                                + " CARD-ACCT-ID PIC 9(11) at app/cpy/CVACT02Y.cpy:L6."),
-                () -> assertEquals(RECORD_ONE_EMBOSSED_NAME, response.embossedName(),
-                        "The response for record one must carry embossed name '"
-                                + RECORD_ONE_EMBOSSED_NAME + "', read at offset 31 of"
-                                + " CARD-EMBOSSED-NAME PIC X(50) at app/cpy/CVACT02Y.cpy:L8."),
-                () -> assertEquals(RECORD_ONE_EXPIRATION_DATE, response.expirationDate(),
-                        "The response for record one must carry expiration date "
-                                + RECORD_ONE_EXPIRATION_DATE + ", read at offset 81 of"
-                                + " CARD-EXPIRAION-DATE PIC X(10) at app/cpy/CVACT02Y.cpy:L9."),
-                () -> assertEquals(RECORD_ONE_ACTIVE_STATUS, response.activeStatus(),
-                        "The response for record one must carry active status '"
-                                + RECORD_ONE_ACTIVE_STATUS + "', read at offset 91 of"
-                                + " CARD-ACTIVE-STATUS PIC X(01) at app/cpy/CVACT02Y.cpy:L10."));
+                                + " app/cpy/CVACT02Y.cpy:L7. The rendered text is withheld from"
+                                + " this message so a failure cannot copy the value into a log."),
+                () -> assertFalse(rendered.contains(SYNTHETIC_CARD_NUMBER),
+                        "The rendered response holds the full card number of record one."),
+                () -> assertEquals(SYNTHETIC_ACCOUNT_ID, response.accountId(),
+                        "The response for record one must carry the account identifier read at"
+                                + " offset 17 of CARD-ACCT-ID PIC 9(11) at"
+                                + " app/cpy/CVACT02Y.cpy:L6."),
+                () -> assertEquals(SYNTHETIC_EMBOSSED_NAME, response.embossedName(),
+                        "The response for record one must carry the embossed name read at"
+                                + " offset 31 of CARD-EMBOSSED-NAME PIC X(50) at"
+                                + " app/cpy/CVACT02Y.cpy:L8."),
+                () -> assertEquals(SYNTHETIC_EXPIRATION_DATE, response.expirationDate(),
+                        "The response for record one must carry the expiration date read at"
+                                + " offset 81 of CARD-EXPIRAION-DATE PIC X(10) at"
+                                + " app/cpy/CVACT02Y.cpy:L9."),
+                () -> assertEquals(SYNTHETIC_ACTIVE_STATUS, response.activeStatus(),
+                        "The response for record one must carry the active status read at"
+                                + " offset 91 of CARD-ACTIVE-STATUS PIC X(01) at"
+                                + " app/cpy/CVACT02Y.cpy:L10."));
+    }
+
+    /**
+     * Asserts that a full card number cannot enter the detail response.
+     *
+     * <p>{@link MaskedCardNumber} accepts twelve mask characters followed by four digits and
+     * nothing else. A mapping that forgot to call
+     * {@link PanMasker#maskCardNumber(String)} therefore fails at construction rather than
+     * serializing a Primary Account Number to a client. The rejection text names the pattern and
+     * the length received, never the value.
+     */
+    @Test
+    void aFullCardNumberCannotEnterTheDetailResponse() {
+        IllegalArgumentException rejectedCardNumber = assertThrows(IllegalArgumentException.class,
+                () -> MaskedCardNumber.of(SYNTHETIC_CARD_NUMBER),
+                "the detail response accepted a card number that had not been masked");
+        IllegalArgumentException rejectedNull = assertThrows(IllegalArgumentException.class,
+                () -> MaskedCardNumber.of(null),
+                "the detail response accepted a null card number");
+
+        assertAll("rejection of an unmasked card number",
+                () -> assertFalse(rejectedCardNumber.getMessage().contains(SYNTHETIC_CARD_NUMBER),
+                        "The rejection text holds the card number it refused. The text names the"
+                                + " pattern and the length received alone."),
+                () -> assertTrue(
+                        rejectedCardNumber.getMessage().contains(MaskedCardNumber.MASKED_PATTERN),
+                        "The rejection text must name the pattern "
+                                + MaskedCardNumber.MASKED_PATTERN + "."),
+                () -> assertTrue(rejectedNull.getMessage().contains("null"),
+                        "The rejection text for a null card number must say so."));
     }
 
     /**

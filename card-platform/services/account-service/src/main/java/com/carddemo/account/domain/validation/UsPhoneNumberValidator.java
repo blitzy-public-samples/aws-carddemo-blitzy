@@ -21,13 +21,16 @@ import com.carddemo.cobol.reference.UsPhoneAreaCodes;
  * <p>{@code WS-RETURN-MSG} at app/cbl/COACTUPC.cbl:L479 holds one message per validation pass, so
  * this class returns the first message its checks produce. app/cbl/COACTUPC.cbl:L2233 records that
  * a phone number is optional.</p>
- *
- * <p>Column and key mappings for the customer phone fields: card-platform/docs/data-model.md.
- * Decisions behind this class: card-platform/docs/decision-log.md.</p>
  */
 public final class UsPhoneNumberValidator {
 
     /** Stored width of {@code WS-EDIT-US-PHONE-NUMA PIC X(3)} at app/cbl/COACTUPC.cbl:L87. */
+    /**
+     * The character a COBOL comparison against the figurative constant {@code LOW-VALUES} tests
+     * for, one position at a time.
+     */
+    private static final char NULL_CHARACTER = '\0';
+
     private static final int AREA_CODE_WIDTH = 3;
 
     /** Stored width of {@code WS-EDIT-US-PHONE-NUMB PIC X(3)} at app/cbl/COACTUPC.cbl:L92. */
@@ -132,8 +135,6 @@ public final class UsPhoneNumberValidator {
      * blank prefix, and a populated line number therefore reach app/cbl/COACTUPC.cbl:L2240, which
      * marks all three parts valid.</p>
      *
-     * <p>This condition is registered in card-platform/docs/business-rule-flags.md and a correction
-     * is proposed in card-platform/docs/suggested-next-tasks.md.</p>
      *
      * @param areaCode   the area code as supplied
      * @param prefix     the prefix as supplied
@@ -162,7 +163,7 @@ public final class UsPhoneNumberValidator {
             return EditResult.failure(label + AREA_CODE_BLANK);
         }
         // app/cbl/COACTUPC.cbl:L2264.
-        if (!isNumeric(stored)) {
+        if (!isNumericAtWidth(stored, AREA_CODE_WIDTH)) {
             return EditResult.failure(label + AREA_CODE_NOT_NUMERIC);
         }
         // app/cbl/COACTUPC.cbl:L2280, on the PIC 9(3) redefine at app/cbl/COACTUPC.cbl:L88 to L89.
@@ -194,7 +195,7 @@ public final class UsPhoneNumberValidator {
             return EditResult.failure(label + PREFIX_BLANK);
         }
         // app/cbl/COACTUPC.cbl:L2335.
-        if (!isNumeric(stored)) {
+        if (!isNumericAtWidth(stored, PREFIX_WIDTH)) {
             return EditResult.failure(label + PREFIX_NOT_NUMERIC);
         }
         // app/cbl/COACTUPC.cbl:L2351, on the PIC 9(3) redefine at app/cbl/COACTUPC.cbl:L93 to L94.
@@ -221,7 +222,7 @@ public final class UsPhoneNumberValidator {
             return EditResult.failure(label + LINE_NUMBER_BLANK);
         }
         // app/cbl/COACTUPC.cbl:L2388.
-        if (!isNumeric(stored)) {
+        if (!isNumericAtWidth(stored, LINE_NUMBER_WIDTH)) {
             return EditResult.failure(label + LINE_NUMBER_NOT_NUMERIC);
         }
         // app/cbl/COACTUPC.cbl:L2404, on the PIC 9(4) redefine at app/cbl/COACTUPC.cbl:L98 to L99.
@@ -233,23 +234,52 @@ public final class UsPhoneNumberValidator {
     }
 
     /**
-     * Returns the value as a {@code PIC X(n)} field of the given width holds it. A shorter value
-     * gains trailing spaces and a longer value loses its tail, which is what a {@code MOVE} into
-     * the field at app/cbl/COACTUPC.cbl:L87, L92 or L97 stores.
+     * Returns the value as a {@code PIC X(n)} field of the given width holds it, with one
+     * difference from the source: a longer value keeps its tail.
      *
-     * <p>A short value therefore fails the {@code IS NUMERIC} class test, since a trailing space is
-     * not a digit.</p>
+     * <p>A shorter value gains trailing spaces, which is what a {@code MOVE} into the field at
+     * app/cbl/COACTUPC.cbl:L87, L92 or L97 stores. A short value therefore fails the digit test,
+     * since a trailing space is not a digit.</p>
+     *
+     * <p>ADDITIVE. The source {@code MOVE} drops every character past the declared width, and no
+     * source path supplies one: the value arrives from a fixed-width screen field. A
+     * Representational State Transfer (REST) caller can supply a longer value, so this method
+     * keeps every character and {@link #isNumericAtWidth(String, int)} refuses the result. The
+     * edit then passes no verdict on the first characters of a longer value.</p>
      *
      * @param value the value as supplied, possibly null
      * @param width the declared width of the field
-     * @return exactly {@code width} characters
+     * @return exactly {@code width} characters, and the whole value when a character other than a
+     *         space sits past that width
      */
     private static String storedAs(String value, int width) {
         String supplied = value == null ? "" : value;
         if (supplied.length() >= width) {
-            return supplied.substring(0, width);
+            return carriesContentPastWidth(supplied, width) ? supplied : supplied.substring(0, width);
         }
         return supplied + " ".repeat(width - supplied.length());
+    }
+
+    /**
+     * Reports whether the value carries a character other than a space past the declared width.
+     *
+     * <p>ADDITIVE. The {@code MOVE} at app/cbl/COACTUPC.cbl:L87, L92 or L97 drops everything past
+     * the declared width, and the value it moves comes from a screen field of that exact width, so
+     * it drops nothing but padding. This test separates the two cases for a wider argument:
+     * trailing spaces are the padding the source itself holds, and any other character is content
+     * the edit would not read.</p>
+     *
+     * @param supplied the value as supplied, never null
+     * @param width    the declared width of the field
+     * @return true when a character other than a space sits past {@code width}
+     */
+    private static boolean carriesContentPastWidth(String supplied, int width) {
+        for (int position = width; position < supplied.length(); position++) {
+            if (supplied.charAt(position) != ' ') {
+                return true;
+            }
+        }
+        return false;
     }
 
     /**
@@ -273,23 +303,42 @@ public final class UsPhoneNumberValidator {
 
     /**
      * Reports the {@code EQUAL LOW-VALUES} test. A null value and an empty value both match, since
-     * neither carries a character the field could hold.
+     * neither carries a character the field could hold. A field carrying the null character in
+     * every position matches as well, which is what the COBOL comparison answers.
      *
      * @param value the value as supplied, possibly null
-     * @return true when the value carries no character
+     * @return true when the value carries no character, or carries the null character throughout
      */
     private static boolean isLowValues(String value) {
-        return value == null || value.isEmpty();
+        if (value == null || value.isEmpty()) {
+            return true;
+        }
+        for (int position = 0; position < value.length(); position++) {
+            if (value.charAt(position) != NULL_CHARACTER) {
+                return false;
+            }
+        }
+        return true;
     }
 
     /**
-     * Reports the {@code IS NUMERIC} class test over a stored field. Every character must be a
-     * digit.
+     * Reports the {@code IS NUMERIC} class test over a stored field, and reports the field width
+     * at the same time. Every character must be a digit and the field must hold exactly
+     * {@code width} of them.
      *
-     * @param stored the field contents, already at its declared width
-     * @return true when every character is a digit
+     * <p>The width clause is ADDITIVE and it is unreachable from the source, where the field
+     * cannot hold more than {@code width} characters. It makes a wider value fail the check that
+     * the message at app/cbl/COACTUPC.cbl:L2272, L2343 or L2396 already describes: each one reads
+     * that the part must be a number of a stated digit count.</p>
+     *
+     * @param stored the field contents, at its declared width or wider
+     * @param width  the declared width of the field
+     * @return true when the field holds exactly {@code width} characters and every one is a digit
      */
-    private static boolean isNumeric(String stored) {
+    private static boolean isNumericAtWidth(String stored, int width) {
+        if (stored.length() != width) {
+            return false;
+        }
         for (int position = 0; position < stored.length(); position++) {
             char character = stored.charAt(position);
             if (character < '0' || character > '9') {
@@ -303,7 +352,7 @@ public final class UsPhoneNumberValidator {
      * Reports whether a numeric redefine holds zero. The digits are compared character by
      * character, so the check runs on the stored field with no conversion.
      *
-     * @param stored the field contents, already passed by {@link #isNumeric(String)}
+     * @param stored the field contents, already passed by {@link #isNumericAtWidth(String, int)}
      * @return true when every digit is zero
      */
     private static boolean isZero(String stored) {

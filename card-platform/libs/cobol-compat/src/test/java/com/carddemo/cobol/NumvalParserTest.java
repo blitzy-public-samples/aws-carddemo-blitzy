@@ -1,9 +1,23 @@
 package com.carddemo.cobol;
 
+import java.io.IOException;
+import java.io.UncheckedIOException;
 import java.lang.reflect.Constructor;
 import java.lang.reflect.Method;
 import java.lang.reflect.Modifier;
 import java.math.BigDecimal;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
+import java.util.TreeMap;
+import java.util.TreeSet;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
+import java.util.stream.Stream;
 
 import org.junit.jupiter.api.Test;
 
@@ -43,14 +57,77 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  *
  * <p>Two properties fall outside this class. No test asserts a scale, which {@link PicClause}
  * carries. No test asserts a validation message, which the account service holds.
- *
- * <p>Rationale lives in {@code card-platform/docs/decision-log.md}. Flagged source rules live in
- * {@code card-platform/docs/business-rule-flags.md}.
+
  */
 class NumvalParserTest {
 
     /** The count of public operations {@link NumvalParser} declares, one per COBOL function. */
     private static final int PUBLIC_OPERATION_COUNT = 4;
+
+    // The source census. The counts below are measured, and the two tests that read them scan
+    // app/cbl and app/cpy rather than trusting this list.
+
+    /** Directory under the repository root that holds the COBOL tree. */
+    private static final String SOURCE_MARKER_DIRECTORY = "app";
+
+    /** Directory under {@link #SOURCE_MARKER_DIRECTORY} that holds the programs. */
+    private static final String COBOL_DIRECTORY = "cbl";
+
+    /** Directory under {@link #SOURCE_MARKER_DIRECTORY} that holds the copybooks. */
+    private static final String COPYBOOK_DIRECTORY = "cpy";
+
+    /** Zero-based index of the COBOL indicator area, which is column 7. */
+    private static final int COMMENT_COLUMN = 6;
+
+    /** The keyword that opens every intrinsic function reference. */
+    private static final String COBOL_FUNCTION_KEYWORD = "FUNCTION";
+
+    /**
+     * Matches one intrinsic function reference. The alternation names the longest form first, so
+     * {@code FUNCTION TEST-NUMVAL-C} never counts as a shorter name. The trailing look-ahead keeps
+     * {@code FUNCTION NUMVAL} from matching inside {@code FUNCTION NUMVAL-C}.
+     */
+    private static final Pattern COBOL_FUNCTION_CALL = Pattern.compile(
+            COBOL_FUNCTION_KEYWORD + "\\s+(TEST-NUMVAL-C|TEST-NUMVAL|NUMVAL-C|NUMVAL)(?![-\\w])");
+
+    /** The name {@link NumvalParser#numval(String)} reproduces. */
+    private static final String NUMVAL_FUNCTION = "FUNCTION NUMVAL";
+
+    /** The name {@link NumvalParser#numvalCurrency(String)} reproduces. */
+    private static final String NUMVAL_CURRENCY_FUNCTION = "FUNCTION NUMVAL-C";
+
+    /** The name {@link NumvalParser#isValidNumval(String)} reproduces. */
+    private static final String TEST_NUMVAL_FUNCTION = "FUNCTION TEST-NUMVAL";
+
+    /** The name {@link NumvalParser#isValidNumvalCurrency(String)} reproduces. */
+    private static final String TEST_NUMVAL_CURRENCY_FUNCTION = "FUNCTION TEST-NUMVAL-C";
+
+    /**
+     * Call sites of {@code FUNCTION NUMVAL}: one in {@code app/cbl/COACTUPC.cbl}, two in
+     * {@code app/cbl/COTRN02C.cbl} and two in {@code app/cpy/CSUTLDPY.cpy}.
+     */
+    private static final int EXPECTED_NUMVAL_CALL_SITES = 5;
+
+    /**
+     * Call sites of {@code FUNCTION NUMVAL-C}: five in {@code app/cbl/COACTUPC.cbl}, six in
+     * {@code app/cbl/CORPT00C.cbl} and two in {@code app/cbl/COTRN02C.cbl}.
+     */
+    private static final int EXPECTED_NUMVAL_CURRENCY_CALL_SITES = 13;
+
+    /** Call sites of {@code FUNCTION TEST-NUMVAL}, both in {@code app/cpy/CSUTLDPY.cpy}. */
+    private static final int EXPECTED_TEST_NUMVAL_CALL_SITES = 2;
+
+    /** Call sites of {@code FUNCTION TEST-NUMVAL-C}, all six in {@code app/cbl/COACTUPC.cbl}. */
+    private static final int EXPECTED_TEST_NUMVAL_CURRENCY_CALL_SITES = 6;
+
+    /** The four counts above, added. */
+    private static final int EXPECTED_CALL_SITE_TOTAL = EXPECTED_NUMVAL_CALL_SITES
+            + EXPECTED_NUMVAL_CURRENCY_CALL_SITES
+            + EXPECTED_TEST_NUMVAL_CALL_SITES
+            + EXPECTED_TEST_NUMVAL_CURRENCY_CALL_SITES;
+
+    /** The closing sentence of every rejection that names a length rather than a value. */
+    private static final String EXPECTED_LENGTH_SENTENCE_SUFFIX = " characters.";
 
     /** The widest digit count {@link NumvalParser#MAXIMUM_DIGITS} accepts. */
     private static final int MAXIMUM_DIGIT_COUNT = 18;
@@ -63,8 +140,7 @@ class NumvalParserTest {
     private static final int SIGNED_MONEY_FIELD_WIDTH = 15;
 
     /**
-     * Byte width of {@code WS-EDIT-ALPHANUM-ONLY PIC X(256)} at
-     * {@code app/cbl/COACTUPC.cbl:L61}.
+     * Byte width of {@code WS-EDIT-ALPHANUM-ONLY PIC X(256)} at {@code app/cbl/COACTUPC.cbl:L61}.
      */
     private static final int ALPHANUMERIC_FIELD_WIDTH = 256;
 
@@ -144,18 +220,18 @@ class NumvalParserTest {
     private static final BigDecimal ACCOUNT_IDENTIFIER_VALUE = new BigDecimal("11");
 
     /**
-     * A card number at {@link #CARD_NUMBER_WIDTH}, converted at
-     * {@code app/cbl/COTRN02C.cbl:L218}.
+     * A synthetic token at {@link #CARD_NUMBER_WIDTH}, the width of the field converted at
+     * {@code app/cbl/COTRN02C.cbl:L218}. Twelve zeros and four trailing digits, and no card
+     * number begins with a zero.
      */
-    private static final String CARD_NUMBER = "4111222233334444";
+    private static final String CARD_NUMBER_FIELD = "0".repeat(12) + "4444";
 
-    /** The value {@link #CARD_NUMBER} represents. */
-    private static final BigDecimal CARD_NUMBER_VALUE = new BigDecimal("4111222233334444");
+    /** The value {@link #CARD_NUMBER_FIELD} represents, since leading zeros carry no weight. */
+    private static final BigDecimal CARD_NUMBER_FIELD_VALUE = new BigDecimal("4444");
 
     /**
-     * An alphanumeric field holding three zero digits, padded to
-     * {@link #ALPHANUMERIC_FIELD_WIDTH}. Its slice is the argument
-     * {@code app/cbl/COACTUPC.cbl:L2156} tests for zero.
+     * An alphanumeric field holding three zero digits, padded to {@link #ALPHANUMERIC_FIELD_WIDTH}.
+     * Its slice is the argument {@code app/cbl/COACTUPC.cbl:L2156} tests for zero.
      */
     private static final String ALL_ZERO_ALPHANUMERIC_FIELD =
             "000" + " ".repeat(ALPHANUMERIC_FIELD_WIDTH - ALPHANUMERIC_SLICE_LENGTH);
@@ -214,9 +290,8 @@ class NumvalParserTest {
 
     /**
      * Proves the currency-tolerant conversion reads a currency sign and the plain conversion
-     * refuses one. {@code app/cbl/COACTUPC.cbl:L1080} through
-     * {@code app/cbl/COACTUPC.cbl:L1136} send five account money fields through the tolerant
-     * conversion.
+     * refuses one. {@code app/cbl/COACTUPC.cbl:L1080} through {@code app/cbl/COACTUPC.cbl:L1136}
+     * send five account money fields through the tolerant conversion.
      */
     @Test
     void currencySignIsAcceptedByNumvalCurrencyAndRejectedByNumval() {
@@ -236,7 +311,8 @@ class NumvalParserTest {
                 () -> NumvalParser.numval(MONEY_ARGUMENT_WITH_CURRENCY_SIGN),
                 "the plain conversion accepted a currency sign");
 
-        assertTrue(NumvalParser.isValidNumval(PLAIN_MONEY_ARGUMENT));
+        assertTrue(NumvalParser.isValidNumval(PLAIN_MONEY_ARGUMENT),
+                "the plain gate rejected an argument carrying no currency sign");
         assertEquals(0, NumvalParser.numval(PLAIN_MONEY_ARGUMENT).compareTo(MONEY_VALUE));
     }
 
@@ -313,8 +389,10 @@ class NumvalParserTest {
         assertEquals(0, firstPass.compareTo(MONEY_VALUE));
         assertEquals(0, secondPass.compareTo(MONEY_VALUE));
 
-        assertTrue(NumvalParser.isValidNumvalCurrency(MONEY_ARGUMENT_WITH_SIGN_AND_SEPARATOR));
-        assertTrue(NumvalParser.isValidNumvalCurrency(MONEY_ARGUMENT_WITH_SIGN_AND_SEPARATOR));
+        assertTrue(NumvalParser.isValidNumvalCurrency(MONEY_ARGUMENT_WITH_SIGN_AND_SEPARATOR),
+                "the first gate call refused a signed argument carrying a grouping comma");
+        assertTrue(NumvalParser.isValidNumvalCurrency(MONEY_ARGUMENT_WITH_SIGN_AND_SEPARATOR),
+                "the second gate call refused a signed argument carrying a grouping comma");
 
         assertEquals(firstPass,
                 NumvalParser.numvalCurrency(MONEY_ARGUMENT_WITH_SIGN_AND_SEPARATOR),
@@ -329,18 +407,18 @@ class NumvalParserTest {
     @Test
     void numvalConvertsAnElevenDigitAccountIdentifierAndASixteenDigitCardNumber() {
         assertEquals(ACCOUNT_IDENTIFIER_WIDTH, ACCOUNT_IDENTIFIER.length());
-        assertEquals(CARD_NUMBER_WIDTH, CARD_NUMBER.length());
+        assertEquals(CARD_NUMBER_WIDTH, CARD_NUMBER_FIELD.length());
 
         assertTrue(NumvalParser.isValidNumval(ACCOUNT_IDENTIFIER),
                 "the plain gate rejected an account identifier");
-        assertTrue(NumvalParser.isValidNumval(CARD_NUMBER),
-                "the plain gate rejected a card number");
+        assertTrue(NumvalParser.isValidNumval(CARD_NUMBER_FIELD),
+                "the plain gate rejected a sixteen-character card-number field");
 
         assertEquals(0, NumvalParser.numval(ACCOUNT_IDENTIFIER)
                         .compareTo(ACCOUNT_IDENTIFIER_VALUE),
                 "the account identifier converted to another value");
-        assertEquals(0, NumvalParser.numval(CARD_NUMBER).compareTo(CARD_NUMBER_VALUE),
-                "the card number converted to another value");
+        assertEquals(0, NumvalParser.numval(CARD_NUMBER_FIELD).compareTo(CARD_NUMBER_FIELD_VALUE),
+                "the card-number field converted to another value");
     }
 
     /**
@@ -393,9 +471,8 @@ class NumvalParserTest {
 
     /**
      * Proves the currency-tolerant gate reports valid for a money argument and reports invalid for
-     * a malformed one. {@code app/cbl/COACTUPC.cbl:L2201} reads valid as
-     * {@code FUNCTION TEST-NUMVAL-C(WS-EDIT-SIGNED-NUMBER-9V2-X) = 0} and answers with
-     * {@code CONTINUE} at L2202.
+     * a malformed one. {@code app/cbl/COACTUPC.cbl:L2201} reads valid as {@code FUNCTION
+     * TEST-NUMVAL-C(WS-EDIT-SIGNED-NUMBER-9V2-X) = 0} and answers with {@code CONTINUE} at L2202.
      */
     @Test
     void isValidNumvalCurrencyReportsValidForAMoneyArgumentAndInvalidForAMalformedOne() {
@@ -441,10 +518,9 @@ class NumvalParserTest {
     }
 
     /**
-     * Proves both gates report invalid for a field of spaces and for a field of
-     * {@code LOW-VALUES}. {@code app/cbl/COACTUPC.cbl:L1074} screens {@code SPACES} and L1075
-     * moves {@code LOW-VALUES} into the target field. {@code app/cbl/COACTUPC.cbl:L2184} reads
-     * both as not supplied.
+     * Proves both gates report invalid for a field of spaces and for a field of {@code LOW-VALUES}.
+     * {@code app/cbl/COACTUPC.cbl:L1074} screens {@code SPACES} and L1075 moves {@code LOW-VALUES}
+     * into the target field. {@code app/cbl/COACTUPC.cbl:L2184} reads both as not supplied.
      */
     @Test
     void bothGatesReportInvalidForSpacesAndForLowValues() {
@@ -538,7 +614,7 @@ class NumvalParserTest {
         assertEquals(MAXIMUM_DIGIT_COUNT, EIGHTEEN_DIGIT_ARGUMENT.length());
         assertEquals(MAXIMUM_DIGIT_COUNT + 1, NINETEEN_DIGIT_ARGUMENT.length());
         assertTrue(CARD_NUMBER_WIDTH <= NumvalParser.MAXIMUM_DIGITS,
-                "a card number no longer fits inside the widest digit count");
+                "a card-number field no longer fits inside the widest digit count");
 
         assertTrue(NumvalParser.isValidNumval(EIGHTEEN_DIGIT_ARGUMENT),
                 "the plain gate rejected an argument of eighteen digits");
@@ -557,12 +633,48 @@ class NumvalParserTest {
     }
 
     /**
+     * Proves both gates and both conversions stop at {@link NumvalParser#MAXIMUM_ARGUMENT_LENGTH}
+     * characters, and that an argument at exactly that length still converts.
+     *
+     * <p>The ceiling is the width of the widest field a call site passes,
+     * {@code WS-EDIT-ALPHANUM-ONLY PIC X(256)} at {@code app/cbl/COACTUPC.cbl:L61}. Every other
+     * call site passes a narrower field, so no argument a COBOL program could build reaches the
+     * ceiling and no accepted value changes.
+     */
+    @Test
+    void bothGatesStopAtTheWidestFieldWidthAnyCallSitePasses() {
+        assertEquals(256, NumvalParser.MAXIMUM_ARGUMENT_LENGTH,
+                "the ceiling no longer matches WS-EDIT-ALPHANUM-ONLY PIC X(256)");
+
+        String atCeiling = " ".repeat(NumvalParser.MAXIMUM_ARGUMENT_LENGTH - 2) + "42";
+        String pastCeiling = " ".repeat(NumvalParser.MAXIMUM_ARGUMENT_LENGTH - 1) + "42";
+
+        assertEquals(NumvalParser.MAXIMUM_ARGUMENT_LENGTH, atCeiling.length(),
+                "the argument at the ceiling is not the ceiling width");
+        assertEquals(NumvalParser.MAXIMUM_ARGUMENT_LENGTH + 1, pastCeiling.length(),
+                "the argument past the ceiling is not one character wider");
+
+        assertTrue(NumvalParser.isValidNumval(atCeiling),
+                "the plain gate rejected an argument at the ceiling width");
+        assertTrue(NumvalParser.isValidNumvalCurrency(atCeiling),
+                "the currency gate rejected an argument at the ceiling width");
+        assertEquals(new BigDecimal("42"), NumvalParser.numval(atCeiling));
+        assertEquals(new BigDecimal("42"), NumvalParser.numvalCurrency(atCeiling));
+
+        assertFalse(NumvalParser.isValidNumval(pastCeiling),
+                "the plain gate accepted an argument past the ceiling width");
+        assertFalse(NumvalParser.isValidNumvalCurrency(pastCeiling),
+                "the currency gate accepted an argument past the ceiling width");
+        assertThrows(NumberFormatException.class, () -> NumvalParser.numval(pastCeiling));
+        assertThrows(NumberFormatException.class, () -> NumvalParser.numvalCurrency(pastCeiling));
+    }
+
+    /**
      * Proves {@link NumvalParser} declares four public operations and no public constructor. The
-     * four cover {@code FUNCTION NUMVAL} at {@code app/cbl/COTRN02C.cbl:L204},
-     * {@code FUNCTION NUMVAL-C} at {@code app/cbl/COTRN02C.cbl:L383},
-     * {@code FUNCTION TEST-NUMVAL} at {@code app/cpy/CSUTLDPY.cpy:L126}, and
-     * {@code FUNCTION TEST-NUMVAL-C} at {@code app/cbl/COACTUPC.cbl:L2201}. Each reads one text
-     * argument and holds no state.
+     * four cover {@code FUNCTION NUMVAL} at {@code app/cbl/COTRN02C.cbl:L204}, {@code FUNCTION
+     * NUMVAL-C} at {@code app/cbl/COTRN02C.cbl:L383}, {@code FUNCTION TEST-NUMVAL} at
+     * {@code app/cpy/CSUTLDPY.cpy:L126}, and {@code FUNCTION TEST-NUMVAL-C} at
+     * {@code app/cbl/COACTUPC.cbl:L2201}. Each reads one text argument and holds no state.
      */
     @Test
     void numvalParserDeclaresFourPublicOperationsAndNoPublicConstructor() {
@@ -590,5 +702,254 @@ class NumvalParserTest {
             assertFalse(Modifier.isPublic(constructor.getModifiers()),
                     "NumvalParser declares a public constructor");
         }
+    }
+
+    // The source census, read from app/cbl and app/cpy rather than narrated.
+
+    /**
+     * Asserts the call-site count of each of the four COBOL numeric functions across
+     * {@code app/cbl} and {@code app/cpy}, and asserts that each count comes from the files the
+     * class documentation names.
+     *
+     * <p>The scan reads every member of both directories and skips a line carrying {@code *} or
+     * {@code /} in column 7, the COBOL comment indicators. A name is matched at its longest form
+     * first, so {@code FUNCTION TEST-NUMVAL-C} is never counted as {@code FUNCTION NUMVAL-C} or as
+     * {@code FUNCTION TEST-NUMVAL}. Both directories hold members whose extension is upper case,
+     * so the scan names no extension.
+     */
+    @Test
+    void everyCobolNumericFunctionCallSiteIsCounted() {
+        Map<String, Integer> tally = countCobolFunctionCallSites();
+
+        assertEquals(EXPECTED_NUMVAL_CALL_SITES, tally.getOrDefault(NUMVAL_FUNCTION, 0),
+                "the FUNCTION NUMVAL call-site count changed");
+        assertEquals(EXPECTED_NUMVAL_CURRENCY_CALL_SITES,
+                tally.getOrDefault(NUMVAL_CURRENCY_FUNCTION, 0),
+                "the FUNCTION NUMVAL-C call-site count changed");
+        assertEquals(EXPECTED_TEST_NUMVAL_CALL_SITES, tally.getOrDefault(TEST_NUMVAL_FUNCTION, 0),
+                "the FUNCTION TEST-NUMVAL call-site count changed");
+        assertEquals(EXPECTED_TEST_NUMVAL_CURRENCY_CALL_SITES,
+                tally.getOrDefault(TEST_NUMVAL_CURRENCY_FUNCTION, 0),
+                "the FUNCTION TEST-NUMVAL-C call-site count changed");
+
+        assertEquals(EXPECTED_CALL_SITE_TOTAL,
+                tally.values().stream().mapToInt(Integer::intValue).sum(),
+                "the total call-site count changed");
+    }
+
+    /**
+     * Asserts that the four call-site counts come from exactly the four members the class
+     * documentation names, and from no other member of {@code app/cbl} or {@code app/cpy}.
+     */
+    @Test
+    void onlyFourSourceMembersCallACobolNumericFunction() {
+        assertEquals(Set.of("COACTUPC.cbl", "CORPT00C.cbl", "COTRN02C.cbl", "CSUTLDPY.cpy"),
+                new TreeSet<>(callingSourceMembers()),
+                "the set of members calling a COBOL numeric function changed");
+    }
+
+    /**
+     * Asserts that a rejection names the COBOL function and the length of the argument, and
+     * nothing else.
+     *
+     * <p>{@code app/cbl/COACTUPC.cbl:L2201} gates a fifteen-character signed money field, and a
+     * caller logging the rejection must not publish the value that field held. The assertions pin
+     * the whole message, so a later addition of the argument to the message fails here.</p>
+     */
+    @Test
+    void aRejectionNamesTheFunctionAndTheLengthAndNothingElse() {
+        String argument = "$4,111-2222.33XX";
+
+        assertEquals(NUMVAL_FUNCTION + " rejects this argument. The argument holds "
+                        + argument.length() + " characters.",
+                assertThrows(NumberFormatException.class,
+                        () -> NumvalParser.numval(argument)).getMessage(),
+                "the FUNCTION NUMVAL rejection message changed");
+
+        assertEquals(NUMVAL_CURRENCY_FUNCTION + " rejects this argument. The argument holds "
+                        + argument.length() + " characters.",
+                assertThrows(NumberFormatException.class,
+                        () -> NumvalParser.numvalCurrency(argument)).getMessage(),
+                "the FUNCTION NUMVAL-C rejection message changed");
+
+        assertEquals(NUMVAL_FUNCTION + " rejects this argument. The argument is null.",
+                assertThrows(NumberFormatException.class, () -> NumvalParser.numval(null))
+                        .getMessage(),
+                "the null-argument rejection message changed");
+
+        assertEquals(NUMVAL_CURRENCY_FUNCTION + " rejects this argument. The argument is null.",
+                assertThrows(NumberFormatException.class,
+                        () -> NumvalParser.numvalCurrency(null)).getMessage(),
+                "the currency-tolerant null-argument rejection message changed");
+    }
+
+    /**
+     * Asserts that no rejection message carries a card number, a card verification value, or a
+     * money value, whatever the argument held.
+     *
+     * <p>The oracle bans every two-character run of the argument rather than every single
+     * character, because the message closes with a full stop and reports a length in digits.
+     * Banning single characters would fail on that punctuation and on those digits while proving
+     * nothing about the argument.</p>
+     */
+    @Test
+    void noRejectionMessageCarriesASensitiveArgument() {
+        String[] sensitiveArguments = {
+                "4111222233334444X",
+                "451X",
+                "$9,999,999.99CRX",
+                "\u0000".repeat(SIGNED_MONEY_FIELD_WIDTH) + "X",
+        };
+
+        for (String argument : sensitiveArguments) {
+            for (String message : new String[] {
+                    assertThrows(NumberFormatException.class,
+                            () -> NumvalParser.numval(argument)).getMessage(),
+                    assertThrows(NumberFormatException.class,
+                            () -> NumvalParser.numvalCurrency(argument)).getMessage()}) {
+
+                assertFalse(message.contains(argument),
+                        "a rejection carried an argument of length " + argument.length());
+                assertTrue(message.endsWith(EXPECTED_LENGTH_SENTENCE_SUFFIX),
+                        "a rejection stopped closing with the length sentence");
+
+                for (int position = 0; position + 2 <= argument.length(); position++) {
+                    String run = argument.substring(position, position + 2);
+                    assertFalse(message.contains(run),
+                            "a rejection carried a two-character run of the argument at position "
+                                    + position);
+                }
+            }
+        }
+    }
+
+    // Private helpers for the source census.
+
+    /**
+     * Counts every call site of the four COBOL numeric functions across {@code app/cbl} and
+     * {@code app/cpy}.
+     *
+     * @return the count per function name, holding no entry for a function with no call site
+     */
+    private static Map<String, Integer> countCobolFunctionCallSites() {
+        Map<String, Integer> tally = new TreeMap<>();
+
+        for (Path member : cobolSourceMembers()) {
+            for (String line : sourceLines(member)) {
+                countFunctionsOnLine(line, tally);
+            }
+        }
+        return tally;
+    }
+
+    /**
+     * Names every member of {@code app/cbl} or {@code app/cpy} that holds at least one call site.
+     *
+     * @return the file names, without their directory
+     */
+    private static Set<String> callingSourceMembers() {
+        Set<String> members = new TreeSet<>();
+
+        for (Path member : cobolSourceMembers()) {
+            Map<String, Integer> tally = new TreeMap<>();
+            for (String line : sourceLines(member)) {
+                countFunctionsOnLine(line, tally);
+            }
+            if (!tally.isEmpty()) {
+                members.add(member.getFileName().toString());
+            }
+        }
+        return members;
+    }
+
+    /**
+     * Adds the call sites one line holds to a running tally. A name is matched at its longest form
+     * first, so a longer name never contributes to a shorter one.
+     *
+     * @param line  one source line, with its sequence area intact
+     * @param tally the running count per function name
+     */
+    private static void countFunctionsOnLine(String line, Map<String, Integer> tally) {
+        if (isCommentLine(line)) {
+            return;
+        }
+
+        Matcher matcher = COBOL_FUNCTION_CALL.matcher(line);
+        while (matcher.find()) {
+            String function = COBOL_FUNCTION_KEYWORD + " " + matcher.group(1);
+            tally.merge(function, 1, Integer::sum);
+        }
+    }
+
+    /**
+     * Reports whether a line carries a COBOL comment indicator in column 7.
+     *
+     * @param line one source line
+     * @return {@code true} when column 7 holds {@code *} or {@code /}
+     */
+    private static boolean isCommentLine(String line) {
+        return line.length() > COMMENT_COLUMN
+                && (line.charAt(COMMENT_COLUMN) == '*' || line.charAt(COMMENT_COLUMN) == '/');
+    }
+
+    /**
+     * Reads one member of {@code app/cbl} or {@code app/cpy}. The member is opened for reading and
+     * never written.
+     *
+     * @param member absolute path of the member
+     * @return the lines in file order
+     */
+    private static List<String> sourceLines(Path member) {
+        try {
+            return Files.readAllLines(member, StandardCharsets.ISO_8859_1);
+        } catch (IOException unreadable) {
+            throw new UncheckedIOException("reading " + member + " failed", unreadable);
+        }
+    }
+
+    /**
+     * Lists every regular file under {@code app/cbl} and {@code app/cpy}. Both directories hold
+     * members whose extension is upper case, so no extension filter is applied.
+     *
+     * @return the members in path order
+     */
+    private static List<Path> cobolSourceMembers() {
+        List<Path> members = new ArrayList<>();
+
+        for (String directory : new String[] {COBOL_DIRECTORY, COPYBOOK_DIRECTORY}) {
+            Path resolved = sourceRoot().resolve(directory);
+
+            assertTrue(Files.isDirectory(resolved), resolved + " is not a directory");
+            try (Stream<Path> children = Files.list(resolved)) {
+                children.filter(Files::isRegularFile).sorted().forEach(members::add);
+            } catch (IOException unreadable) {
+                throw new UncheckedIOException("listing " + resolved + " failed", unreadable);
+            }
+        }
+        assertFalse(members.isEmpty(), "no source member was found");
+        return members;
+    }
+
+    /**
+     * Resolves the {@code app} directory by walking upward from the working directory. Maven runs a
+     * module build from the module directory and an aggregator build from the aggregator directory,
+     * and the walk finds the same directory from either.
+     *
+     * @return the absolute path of {@code app}
+     */
+    private static Path sourceRoot() {
+        Path start = Path.of("").toAbsolutePath().normalize();
+
+        for (Path candidate = start; candidate != null; candidate = candidate.getParent()) {
+            Path application = candidate.resolve(SOURCE_MARKER_DIRECTORY);
+            if (Files.isDirectory(application.resolve(COBOL_DIRECTORY))
+                    && Files.isDirectory(application.resolve(COPYBOOK_DIRECTORY))) {
+                return application;
+            }
+        }
+        throw new IllegalStateException("walked upward from " + start
+                + " to the filesystem root without finding a directory named '"
+                + SOURCE_MARKER_DIRECTORY + "' holding '" + COBOL_DIRECTORY + "' and '"
+                + COPYBOOK_DIRECTORY + "'");
     }
 }

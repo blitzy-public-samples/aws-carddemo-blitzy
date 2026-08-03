@@ -6,8 +6,8 @@ import java.math.BigDecimal;
 import java.util.List;
 
 /**
- * Renders one cardholder alert in one output format, and holds the fixed-width formatting
- * helpers that every renderer shares.
+ * Contract for rendering one cardholder alert in one output format, with the fixed-width
+ * formatting helpers an implementation calls.
  *
  * <p>ADDITIVE. No COBOL program declares this abstraction. {@code app/cbl/CBSTM03A.CBL} writes
  * two formats from a single procedure division: the text records at
@@ -28,20 +28,36 @@ import java.util.List;
  * as {@code NotificationRenderer.pic(value, width)} or through a static import. The constants
  * are fields and are inherited, so an implementation names them directly.</p>
  *
- * <p>Rationale for this abstraction lives in {@code card-platform/docs/decision-log.md}.</p>
+ * <p>Two obligations bind every implementation. An implementation reporting
+ * {@link RenderedFormat#HTML} routes every value-bearing field through
+ * {@link #escapeHtmlText(String)} after {@link #pic(String, int)} has set the field width, so a
+ * cardholder value cannot open an element, close one, or break out of an attribute. An
+ * implementation of either format reads the fields of {@link CardholderContext} and
+ * {@link TransactionRow} through their accessors and never through {@code toString()}: both
+ * records redact their rendering, because both carry personal data.</p>
  */
 public interface NotificationRenderer {
 
     /**
-     * Separator every renderer places between rendered records.
+     * Separator placed between rendered records.
      *
      * <p>The source writes one fixed-length record per line, through
      * {@code WRITE FD-STMTFILE-REC} at {@code app/cbl/CBSTM03A.CBL:L488-L502} and
-     * {@code WRITE FD-HTMLFILE-REC} at {@code app/cbl/CBSTM03A.CBL:L558-L669}. Renderers join
-     * records with this constant rather than with the separator of the host operating
-     * system.</p>
+     * {@code WRITE FD-HTMLFILE-REC} at {@code app/cbl/CBSTM03A.CBL:L558-L669}. Records are
+     * joined with this constant, not with the separator of the host operating system.</p>
      */
     String LINE_SEPARATOR = "\n";
+
+    /**
+     * Text a diagnostic rendering carries in place of a component value. ADDITIVE, with no COBOL
+     * ancestor.
+     *
+     * <p>{@link CardholderContext#toString()} and {@link TransactionRow#toString()} carry this
+     * text in place of every component that names a cardholder, an account, or an amount. Each
+     * rendering reports the width the component holds, so a fixed-width fault stays diagnosable.
+     * The rendered statement itself carries every value, matching the source records.</p>
+     */
+    String REDACTED = "<redacted>";
 
     /**
      * Width of {@code ST-NAME}, {@code PIC X(75)} at {@code app/cbl/CBSTM03A.CBL:L91}.
@@ -92,8 +108,7 @@ public interface NotificationRenderer {
      *
      * <p>{@code TRNX-DESC} is {@code PIC X(100)} at {@code app/cpy/COSTM01.CPY:L28}, so the
      * {@code MOVE TRNX-DESC TO ST-TRANDT} at {@code app/cbl/CBSTM03A.CBL:L677} drops the last 51
-     * characters. The loss happens at rendering time only. The stored column keeps all 100
-     * characters.</p>
+     * characters. The loss belongs to this rendering width alone.</p>
      */
     int ST_TRANDT_WIDTH = 49;
 
@@ -114,9 +129,6 @@ public interface NotificationRenderer {
 
     /**
      * Reports which output format this renderer produces.
-     *
-     * <p>A caller holding every implementation selects one by comparing this value. No
-     * implementation inspects the format of another.</p>
      *
      * @return the format this renderer produces, never {@code null}
      */
@@ -167,17 +179,59 @@ public interface NotificationRenderer {
                             List<String> triggeredRules);
 
     /**
+     * Escapes the five characters that carry meaning in markup, so a value renders as text.
+     *
+     * <p>ADDITIVE. {@code app/cbl/CBSTM03A.CBL} escapes nothing. Its markup path moves cardholder
+     * values straight into {@code FD-HTMLFILE-REC} at
+     * {@code app/cbl/CBSTM03A.CBL:L558-L669}, because a 3270 screen and a fixed-width dataset
+     * carry no markup meaning. A rendering this service sends to a browser or an electronic mail
+     * client does, so an implementation reporting {@link RenderedFormat#HTML} must route every
+     * value-bearing field through this method. {@link RenderedFormat#PLAIN_TEXT} does not: an
+     * escaped ampersand would change the fixed-width text the source writes.</p>
+     *
+     * <p>The five replacements are the ones that end an element, open an element, close an
+     * attribute value and end an entity: {@code &} first so a later replacement is not escaped
+     * twice, then {@code <}, {@code >}, {@code "} and {@code '}. A field of spaces, a field of
+     * digits and a field of letters are returned unchanged, so escaping does not alter the width
+     * of a normal field.</p>
+     *
+     * <p>Escaping runs after {@link #pic(String, int)}, never before: escaping first would push
+     * characters past the field width and the fixed-width copy would then split an entity.</p>
+     *
+     * @param value the value to render as text, or {@code null} for an empty result
+     * @return the value with every markup character replaced by its entity, and the empty string
+     *         for {@code null}
+     */
+    static String escapeHtmlText(String value) {
+        if (value == null) {
+            return "";
+        }
+
+        StringBuilder escaped = new StringBuilder(value.length());
+
+        for (int position = 0; position < value.length(); position++) {
+            char character = value.charAt(position);
+            switch (character) {
+                case '&' -> escaped.append("&amp;");
+                case '<' -> escaped.append("&lt;");
+                case '>' -> escaped.append("&gt;");
+                case '"' -> escaped.append("&quot;");
+                case '\'' -> escaped.append("&#39;");
+                default -> escaped.append(character);
+            }
+        }
+
+        return escaped.toString();
+    }
+
+    /**
      * Renders a value at a fixed width, reproducing a {@code PIC X(n)} field.
      *
      * <p>A shorter value gains trailing spaces and a longer value loses its tail, which is what
      * a COBOL {@code MOVE} into an alphanumeric field does. The result holds exactly
      * {@code width} characters for every input, including {@code null}.</p>
      *
-     * <p>A {@code null} value renders as spaces rather than raising an exception. Nine fields of
-     * the statement read model are absent from the {@code TransactionPosted} event, so a
-     * renderer receives space-filled values in normal operation.</p>
-     *
-     * <p>This helper produces every fixed-width field and every filler in both renderers.</p>
+     * <p>A {@code null} value renders as spaces rather than raising an exception.</p>
      *
      * @param value the value to render, or {@code null} for an all-spaces field
      * @param width the field width, taken from a Picture clause; must not be negative
@@ -461,6 +515,22 @@ public interface NotificationRenderer {
             editedCurrentBalance = pic(editedCurrentBalance, EDITED_AMOUNT_WIDTH);
             ficoScore = pic(ficoScore, ST_FICO_SCORE_WIDTH);
         }
+
+        /**
+         * Renders the type and the component count, and no component value.
+         *
+         * <p>Every component of this record is personal data: the cardholder name, three address
+         * lines, the account identifier, the current balance and the credit score. A generated
+         * record rendering carries all seven, and a rendering reaches a log line, an exception
+         * message or a debugger view without a caller intending it. This override closes that
+         * path. A renderer reads the fields through their accessors.</p>
+         *
+         * @return a fixed description carrying no cardholder value
+         */
+        @Override
+        public String toString() {
+            return "CardholderContext[7 cardholder fields redacted]";
+        }
     }
 
     /**
@@ -493,6 +563,23 @@ public interface NotificationRenderer {
             transactionId = pic(transactionId, ST_TRANID_WIDTH);
             description = pic(description, ST_TRANDT_WIDTH);
             editedAmount = pic(editedAmount, EDITED_AMOUNT_WIDTH);
+        }
+
+        /**
+         * Renders the type, the transaction identifier and the component count, and no other
+         * component value.
+         *
+         * <p>The description and the amount describe a cardholder's spending, so a generated
+         * record rendering places both in any log line or exception message that names the row.
+         * The transaction identifier stays: it names the row under discussion and identifies no
+         * person on its own.</p>
+         *
+         * @return a description carrying the transaction identifier and no other value
+         */
+        @Override
+        public String toString() {
+            return "TransactionRow[transactionId=" + transactionId
+                    + ", description and amount redacted]";
         }
     }
 }

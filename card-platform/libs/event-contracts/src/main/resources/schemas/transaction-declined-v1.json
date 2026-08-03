@@ -2,14 +2,17 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://carddemo.example.com/schemas/transaction-declined-v1.json",
   "title": "TransactionDeclined",
-  "description": "One declined authorization call publishes one TransactionDeclined event. Six payload fields name the attempt and the reason it failed, shaped after the 80-byte validation trailer at app/cbl/CBTRN02C.cbl:L180-L182 and the 350-byte daily transaction record at app/cpy/CVTRA06Y.cpy. Five envelope fields precede them, and the envelope is additive in full, because no source record carries one. The serializer checks an event before it reaches a topic, and the deserializer checks it again; a failed check on arrival routes the message to the dead-letter topic. Publish and consume paths appear in card-platform/docs/event-flow.md, and rationale for every choice here lives in card-platform/docs/decision-log.md.",
-  "$comment": "app/cbl/CBTRN02C.cbl:L370-L378 runs the card cross-reference check first and the account check only while the reason code is still zero, so one event carries one code.",
+  "description": "One declined authorization call publishes one TransactionDeclined event. Five payload fields name the attempt and the reason it failed, shaped after the 80-byte validation trailer at app/cbl/CBTRN02C.cbl:L180-L182 and the 350-byte daily transaction record at app/cpy/CVTRA06Y.cpy. Five envelope fields precede them, and the envelope is additive in full, because no source record carries one. Evolution is additive only: additionalProperties stays true, so a consumer validating against this version accepts an event that carries a field added by a later version. Inside one version no field is removed, renamed, retyped or narrowed; a change of that kind takes a new schemaVersion and a new -v<n> document beside this one.",
+  "$comment": "app/cbl/CBTRN02C.cbl:L370-L378 runs the card cross-reference check first and the account check only while the reason code is still zero, so one event carries one code. The oneOf block below pins each reason code to the one description the source writes beside it, so a code paired with another code's text fails validation. aggregateId is the only account identifier this document declares, and the Kafka message key is that value, so the key and the payload cannot disagree.",
   "type": "object",
   "properties": {
     "eventId": {
       "type": "string",
       "format": "uuid",
-      "description": "The idempotency key. Each consumer records this identifier before it applies side effects. Additive. No source field exists.",
+      "minLength": 36,
+      "maxLength": 36,
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+      "description": "The idempotency key, a lower-case canonical Universally Unique Identifier (UUID) of thirty-six characters. Each consumer records this identifier before it applies side effects. The pattern is asserted directly, so validation does not depend on the validator enabling the optional format-assertion vocabulary. Additive. No source field exists.",
       "examples": ["3f1d9c62-8b4e-4a17-9f0c-2d6a5e73b418"]
     },
     "eventType": {
@@ -21,19 +24,22 @@
     "schemaVersion": {
       "type": "integer",
       "const": 1,
-      "description": "The contract version. The number matches the -v1 suffix in this file name, and a later version only adds fields. Additive. No source field exists.",
+      "description": "The contract version. This file is version 1, matching the -v1 suffix in its name. Additive. No source field exists.",
       "examples": [1]
     },
     "occurredAt": {
       "type": "string",
       "format": "date-time",
+      "minLength": 20,
+      "maxLength": 30,
+      "pattern": "^[0-9]{4}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])T([01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9](\\.[0-9]{1,9})?Z$",
       "description": "The publish timestamp, in Coordinated Universal Time. The authorization service stamps it when it writes the event, and authorizedAt carries the time the authorization happened. Additive. No source field exists.",
       "examples": ["2022-06-10T19:27:53.412Z"]
     },
     "aggregateId": {
       "type": "string",
       "pattern": "^[0-9]{11}$",
-      "description": "The account identifier, and always the Kafka message key. Width from XREF-ACCT-ID PIC 9(11) at app/cpy/CVACT03Y.cpy:L7. The payload field accountId carries the same value.",
+      "description": "The account identifier, eleven digits, and always the Kafka message key. Width from XREF-ACCT-ID PIC 9(11) at app/cpy/CVACT03Y.cpy:L7. This is the only account identifier the document carries, so the message key and the payload cannot disagree. A consumer maps this field onto its own account column.",
       "examples": ["00000000007"]
     },
     "transactionId": {
@@ -43,16 +49,10 @@
       "description": "The transaction identifier, sixteen characters. From TRAN-ID PIC X(16) at app/cpy/CVTRA05Y.cpy:L5 and DALYTRAN-ID at app/cpy/CVTRA06Y.cpy:L5.",
       "examples": ["0000000000683580"]
     },
-    "accountId": {
-      "type": "string",
-      "pattern": "^[0-9]{11}$",
-      "description": "The account identifier, eleven digits. From XREF-ACCT-ID PIC 9(11) at app/cpy/CVACT03Y.cpy:L7. A consumer maps this field onto its own account column, and the envelope field aggregateId carries the same value.",
-      "examples": ["00000000007"]
-    },
     "declineReasonCode": {
       "type": "string",
       "enum": ["0100", "0101", "0102", "0103"],
-      "description": "The reject reason code, four digits zero-padded to the width the source writes. From WS-VALIDATION-FAIL-REASON PIC 9(04) at app/cbl/CBTRN02C.cbl:L181. These four values are the whole set: 0100 at app/cbl/CBTRN02C.cbl:L385, 0101 at L397, 0102 at L410, and 0103 at L417. Any other code fails validation, and the message routes to the dead-letter topic.",
+      "description": "The reject reason code, four digits zero-padded to the width the source writes. From WS-VALIDATION-FAIL-REASON PIC 9(04) at app/cbl/CBTRN02C.cbl:L181. These four values are the whole set: 0100 at app/cbl/CBTRN02C.cbl:L385, 0101 at L397, 0102 at L410, and 0103 at L417. Any other code fails validation. The oneOf block at the root of this document binds each code to the one text the source writes beside it.",
       "examples": ["0102"]
     },
     "declineReasonDescription": {
@@ -64,7 +64,7 @@
         "OVERLIMIT TRANSACTION",
         "TRANSACTION RECEIVED AFTER ACCT EXPIRATION"
       ],
-      "description": "The reject reason text that pairs with the code, reproduced character for character from the source. From WS-VALIDATION-FAIL-REASON-DESC PIC X(76) at app/cbl/CBTRN02C.cbl:L182. The four texts sit at app/cbl/CBTRN02C.cbl:L386, L398, L411 and L418.",
+      "description": "The reject reason text that pairs with the code, reproduced character for character from the source. From WS-VALIDATION-FAIL-REASON-DESC PIC X(76) at app/cbl/CBTRN02C.cbl:L182. The four texts sit at app/cbl/CBTRN02C.cbl:L386, L398, L411 and L418. The declineReason keyword at the root of this schema binds each text to one code.",
       "examples": ["OVERLIMIT TRANSACTION"]
     },
     "amount": {
@@ -90,11 +90,48 @@
     "occurredAt",
     "aggregateId",
     "transactionId",
-    "accountId",
     "declineReasonCode",
     "declineReasonDescription",
     "amount",
     "maskedCardNumber"
   ],
-  "additionalProperties": false
+  "additionalProperties": true,
+  "oneOf": [
+    {
+      "title": "Reason 0100",
+      "description": "app/cbl/CBTRN02C.cbl:L385-L387 moves 100 and INVALID CARD NUMBER FOUND together.",
+      "properties": {
+        "declineReasonCode": {"const": "0100"},
+        "declineReasonDescription": {"const": "INVALID CARD NUMBER FOUND"}
+      },
+      "required": ["declineReasonCode", "declineReasonDescription"]
+    },
+    {
+      "title": "Reason 0101",
+      "description": "app/cbl/CBTRN02C.cbl:L397-L399 moves 101 and ACCOUNT RECORD NOT FOUND together.",
+      "properties": {
+        "declineReasonCode": {"const": "0101"},
+        "declineReasonDescription": {"const": "ACCOUNT RECORD NOT FOUND"}
+      },
+      "required": ["declineReasonCode", "declineReasonDescription"]
+    },
+    {
+      "title": "Reason 0102",
+      "description": "app/cbl/CBTRN02C.cbl:L410-L412 moves 102 and OVERLIMIT TRANSACTION together.",
+      "properties": {
+        "declineReasonCode": {"const": "0102"},
+        "declineReasonDescription": {"const": "OVERLIMIT TRANSACTION"}
+      },
+      "required": ["declineReasonCode", "declineReasonDescription"]
+    },
+    {
+      "title": "Reason 0103",
+      "description": "app/cbl/CBTRN02C.cbl:L417-L419 moves 103 and TRANSACTION RECEIVED AFTER ACCT EXPIRATION together.",
+      "properties": {
+        "declineReasonCode": {"const": "0103"},
+        "declineReasonDescription": {"const": "TRANSACTION RECEIVED AFTER ACCT EXPIRATION"}
+      },
+      "required": ["declineReasonCode", "declineReasonDescription"]
+    }
+  ]
 }

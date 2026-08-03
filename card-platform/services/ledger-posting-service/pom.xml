@@ -1,5 +1,4 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<!-- Rationale for every version and exclusion: card-platform/docs/decision-log.md -->
 <project xmlns="http://maven.apache.org/POM/4.0.0"
          xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
          xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
@@ -18,7 +17,9 @@
   <packaging>jar</packaging>
 
   <name>CardDemo Platform :: Ledger Posting Service</name>
-  <description>Consumes TransactionAuthorized, applies the posting arithmetic of app/cbl/CBTRN02C.cbl, maintains the transaction and category balances, and publishes TransactionPosted.</description>
+  <description>Spring Boot application module for the CardDemo ledger posting service, whose
+    posting arithmetic comes from app/cbl/CBTRN02C.cbl. Declares the web, persistence,
+    messaging and observability dependencies the service needs.</description>
 
   <!-- Java Development Kit (JDK) release level for compilation and packaging. -->
   <properties>
@@ -28,8 +29,8 @@
 
   <dependencies>
 
-    <!-- Shared platform libraries: the event records with their schema-validating
-         serializers, and the fixed-point decimal helpers. -->
+    <!-- Shared platform libraries: the event schemas and the fixed-point decimal
+         helpers. -->
     <dependency>
       <groupId>com.carddemo</groupId>
       <artifactId>event-contracts</artifactId>
@@ -38,14 +39,13 @@
       <groupId>com.carddemo</groupId>
       <artifactId>cobol-compat</artifactId>
     </dependency>
-    <!-- The com.carddemo list ends there. No dependency on another platform
-         service appears at any scope. The enforcer fails the build on one. -->
+    <!-- The com.carddemo list ends there. The enforcer fails the build on a
+         dependency from one service module onto another. -->
 
     <!-- Every dependency below takes its version from the aggregator's bill of
          materials (BOM). Declare none here. -->
 
-    <!-- Representational State Transfer (REST) surface for the balance query
-         endpoint, plus bean constraints on the request and payload types. -->
+    <!-- Representational State Transfer (REST) surface and bean constraints. -->
     <dependency>
       <groupId>org.springframework.boot</groupId>
       <artifactId>spring-boot-starter-web</artifactId>
@@ -56,8 +56,7 @@
     </dependency>
 
     <!-- Persistence and schema migration for the private ledger schema. The two
-         starters carry the auto-configuration; flyway-core and the PostgreSQL
-         dialect module carry the migration engine. -->
+         starters carry the auto-configuration; flyway-core alone carries none. -->
     <dependency>
       <groupId>org.springframework.boot</groupId>
       <artifactId>spring-boot-starter-data-jpa</artifactId>
@@ -80,8 +79,7 @@
     </dependency>
 
     <!-- Messaging. The starter carries the auto-configuration; spring-kafka
-         carries the listener container, the producer template, and routing to
-         the dead-letter topic. -->
+         carries the listener container and the producer template. -->
     <dependency>
       <groupId>org.springframework.boot</groupId>
       <artifactId>spring-boot-starter-kafka</artifactId>
@@ -148,9 +146,8 @@
 
   <build>
     <plugins>
-      <!-- The repackage goal builds the layered, executable Java archive (JAR)
-           that the Dockerfile copies. The execution identifier matches the one
-           the framework parent declares. -->
+      <!-- The repackage goal builds the executable Java archive (JAR) that the
+           Dockerfile copies. -->
       <plugin>
         <groupId>org.springframework.boot</groupId>
         <artifactId>spring-boot-maven-plugin</artifactId>

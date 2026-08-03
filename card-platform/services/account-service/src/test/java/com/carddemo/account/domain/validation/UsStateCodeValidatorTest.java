@@ -17,39 +17,33 @@ import static org.assertj.core.api.Assertions.assertThat;
 /**
  * Tests for {@link UsStateCodeValidator}, the state-code edit.
  *
- * <p>The subject realises paragraph {@code 1270-EDIT-US-STATE-CD} at
- * app/cbl/COACTUPC.cbl:L2493, whose exit paragraph sits at app/cbl/COACTUPC.cbl:L2511.
- * The accepted band is app/cpy/CSLKPCDY.cpy:L1012-L1069. The host field
- * {@code 01 US-STATE-CODE-TO-EDIT PIC X(2).} sits at L1012 and the condition name
- * {@code VALID-US-STATE-CODE} at L1013. Lines L1014 through L1069 hold 56 literals.</p>
+ * <p>The subject realises paragraph {@code 1270-EDIT-US-STATE-CD} at app/cbl/COACTUPC.cbl:L2493,
+ * whose exit paragraph sits at app/cbl/COACTUPC.cbl:L2511. The accepted band is
+ * app/cpy/CSLKPCDY.cpy:L1012-L1069. The host field {@code 01 US-STATE-CODE-TO-EDIT PIC X(2).} sits
+ * at L1012 and the condition name {@code VALID-US-STATE-CODE} at L1013. Lines L1014 through L1069
+ * hold 56 literals.</p>
  *
- * <p>A census across the 28 members of app/cbl finds one reference to that condition
- * name, at app/cbl/COACTUPC.cbl:L2495. The edit tests band membership and nothing
- * more.</p>
+ * <p>A census across the 28 members of app/cbl finds one reference to that condition name, at
+ * app/cbl/COACTUPC.cbl:L2495. The edit tests band membership and nothing more.</p>
  *
- * <p>app/cbl/COACTUPC.cbl:L2494 fills the host field with a plain {@code MOVE} and
- * applies no {@code FUNCTION TRIM} to the submitted value. The phone edit at
- * app/cbl/COACTUPC.cbl:L2296-L2297 does apply one. The methods below assert the
- * consequence: a value carrying a leading space reaches the comparison with that space
- * in place, and it matches no literal.</p>
+ * <p>app/cbl/COACTUPC.cbl:L2494 fills the host field with a plain {@code MOVE} and applies no
+ * {@code FUNCTION TRIM} to the submitted value. The phone edit at app/cbl/COACTUPC.cbl:L2296-L2297
+ * does apply one. The methods below assert the consequence: a value carrying a leading space
+ * reaches the comparison with that space in place, and it matches no literal.</p>
  *
- * <p>The paragraph only ever condemns. app/cbl/COACTUPC.cbl:L2496 answers a match with
- * a bare {@code CONTINUE} and sets no flag. app/cbl/COACTUPC.cbl:L2499 sets a failure
- * flag on the one path that leaves the band, and app/cbl/COACTUPC.cbl:L2502-L2503
- * builds the text: the label under {@code FUNCTION TRIM}, then
- * {@code ': is not a valid state code'}. That literal carries no trailing period.</p>
+ * <p>The paragraph only ever condemns. app/cbl/COACTUPC.cbl:L2496 answers a match with a bare
+ * {@code CONTINUE} and sets no flag. app/cbl/COACTUPC.cbl:L2499 sets a failure flag on the one path
+ * that leaves the band, and app/cbl/COACTUPC.cbl:L2502-L2503 builds the text: the label under
+ * {@code FUNCTION TRIM}, then {@code ': is not a valid state code'}. That literal carries no
+ * trailing period.</p>
  *
  * <p>Every value below is built in the test method that uses it. The gate at
- * app/cbl/COACTUPC.cbl:L1599 guarding the call at app/cbl/COACTUPC.cbl:L1600 is
- * orchestration, and {@code AccountUpdateServiceTest} covers it. The seeded
- * {@code us_state_code} table is the subject of {@code ReferenceDataMigrationTest}.</p>
+ * app/cbl/COACTUPC.cbl:L1599 guarding the call at app/cbl/COACTUPC.cbl:L1600 is orchestration and
+ * sits outside this class, as does the seeded reference table.</p>
  *
- * <p>The comment at app/cpy/CSLKPCDY.cpy:L1011 reads
- * {@code *Search list of valid Phone area codes} and sits directly above the state host
- * field at L1012. The phone band that comment names ends at app/cpy/CSLKPCDY.cpy:L1010.
- * See card-platform/docs/business-rule-flags.md.</p>
- *
- * <p>Decision rationale: card-platform/docs/decision-log.md.</p>
+ * <p>The comment at app/cpy/CSLKPCDY.cpy:L1011 reads {@code *Search list of valid Phone area codes}
+ * and sits directly above the state host field at L1012. The phone band that comment names ends at
+ * app/cpy/CSLKPCDY.cpy:L1010.</p>
  */
 @DisplayName("UsStateCodeValidator, the state-code edit at COACTUPC paragraph 1270")
 class UsStateCodeValidatorTest {
@@ -68,8 +62,7 @@ class UsStateCodeValidatorTest {
 
     /**
      * Declared width of {@code WS-EDIT-VARIABLE-NAME}, {@code PIC X(25)} at
-     * app/cbl/COACTUPC.cbl:L53. A caller assignment fills the unused positions with
-     * spaces.
+     * app/cbl/COACTUPC.cbl:L53. A caller assignment fills the unused positions with spaces.
      */
     private static final int LABEL_FIELD_WIDTH = 25;
 
@@ -120,7 +113,7 @@ class UsStateCodeValidatorTest {
     @Test
     @DisplayName("All 56 declared codes pass, and each is two characters wide")
     void allDeclaredCodesPass() {
-        Set<String> band = UsStateCodes.stateAndTerritoryCodes();
+        Set<String> band = CslkpcdyCopybookOracle.stateCodes();
 
         assertThat(band).hasSize(DECLARED_CODE_COUNT);
         for (String stateCode : band) {
@@ -129,6 +122,15 @@ class UsStateCodeValidatorTest {
                     .as("declared code %s", stateCode)
                     .isTrue();
         }
+    }
+
+    @Test
+    @DisplayName("The production band equals the band app/cpy/CSLKPCDY.cpy:L1013 lists, value for "
+            + "value and in declaration order")
+    void theProductionBandEqualsTheBandTheCopybookLists() {
+        assertThat(UsStateCodes.stateAndTerritoryCodes())
+                .as("VALID-US-STATE-CODE at app/cpy/CSLKPCDY.cpy:L1013")
+                .containsExactlyElementsOf(CslkpcdyCopybookOracle.stateCodes());
     }
 
     @ParameterizedTest(name = "state code {0} fails the edit")
@@ -215,14 +217,26 @@ class UsStateCodeValidatorTest {
     }
 
     @Test
-    @DisplayName("The two-character host field holds the first two characters, and the rest of the value never reaches the comparison")
+    @DisplayName("The two-character host field holds the first two characters, and a third character fails the edit")
     void hostFieldHoldsTheFirstTwoCharacters() {
         // app/cbl/COACTUPC.cbl:L2494 moves into the PIC X(2) field at
-        // app/cpy/CSLKPCDY.cpy:L1012, and a fixed-width MOVE keeps two characters.
+        // app/cpy/CSLKPCDY.cpy:L1012, and a fixed-width MOVE keeps two characters. The value it
+        // moves comes from a PIC X(02) screen field at app/cbl/COACTUPC.cbl:L807, so the MOVE drops
+        // nothing but padding.
         assertThat(UsStateCodeValidator.validate(STATE_LABEL, "AL ").valid()).isTrue();
         assertThat(UsStateCodeValidator.validate(STATE_LABEL, "AL   ").valid()).isTrue();
-        assertThat(UsStateCodeValidator.validate(STATE_LABEL, "ALX").valid()).isTrue();
-        assertThat(UsStateCodeValidator.validate(STATE_LABEL, "ALABAMA").valid()).isTrue();
+
+        // ADDITIVE. A caller of this edit can supply a wider value. The membership list holds
+        // two-character codes alone, so a wider value fails it and takes the message the source
+        // writes at app/cbl/COACTUPC.cbl:L2501-L2506. The edit passes no verdict on the first two
+        // characters of a longer value.
+        assertThat(UsStateCodeValidator.validate(STATE_LABEL, "ALX").valid()).isFalse();
+        assertThat(UsStateCodeValidator.validate(STATE_LABEL, "ALX").message())
+                .isEqualTo(STATE_LABEL + SOURCE_FAILURE_LITERAL);
+        assertThat(UsStateCodeValidator.validate(STATE_LABEL, "ALABAMA").valid()).isFalse();
+        assertThat(UsStateCodeValidator.validate(STATE_LABEL, "AL<script>").valid()).isFalse();
+        assertThat(UsStateCodeValidator.validate(STATE_LABEL, "AL<script>").message())
+                .isEqualTo(STATE_LABEL + SOURCE_FAILURE_LITERAL);
 
         // The first two characters decide the outcome on the failing side as well.
         assertThat(UsStateCodeValidator.validate(STATE_LABEL, "APX").valid()).isFalse();
@@ -317,13 +331,13 @@ class UsStateCodeValidatorTest {
                 .containsExactly(STATE_LABEL + SOURCE_FAILURE_LITERAL);
         assertThat(passingPairs)
                 .hasSize(DECLARED_CODE_COUNT)
-                .containsExactlyInAnyOrderElementsOf(UsStateCodes.stateAndTerritoryCodes());
+                .containsExactlyInAnyOrderElementsOf(CslkpcdyCopybookOracle.stateCodes());
     }
 
     @Test
     @DisplayName("The band holds 56 codes, opening at AL and closing at VI in copybook declaration order")
     void bandHoldsFiftySixCodesInDeclarationOrder() {
-        Set<String> band = UsStateCodes.stateAndTerritoryCodes();
+        Set<String> band = CslkpcdyCopybookOracle.stateCodes();
 
         assertThat(band).hasSize(DECLARED_CODE_COUNT);
 

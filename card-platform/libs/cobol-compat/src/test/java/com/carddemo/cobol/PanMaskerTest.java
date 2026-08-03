@@ -1,7 +1,12 @@
 package com.carddemo.cobol;
 
+import java.lang.reflect.Field;
 import java.lang.reflect.Method;
-import java.util.Locale;
+import java.lang.reflect.Modifier;
+import java.util.ArrayList;
+import java.util.LinkedHashSet;
+import java.util.List;
+import java.util.Set;
 
 import org.junit.jupiter.api.Test;
 
@@ -9,6 +14,8 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertNotSame;
+import static org.junit.jupiter.api.Assertions.assertSame;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * Asserts that {@link PanMasker} hides a Primary Account Number (PAN) and never reveals a card
@@ -27,12 +34,16 @@ import static org.junit.jupiter.api.Assertions.assertNotSame;
  * {@code app/cbl/COCRDUPC.cbl:L784} and nothing more. No test here checks a card number beyond
  * sixteen numeric digits.
  *
- * <p>Every test below asserts one of three properties. A masked value hides all but the last four
- * characters and stays sixteen characters wide. The argument survives the call unmasked, and no
- * returned string carries a digit of a card verification value.
+ * <p>Every test below asserts one of five properties. A masked value equals twelve mask characters
+ * followed by the last four characters of its own argument. Every masked value is sixteen
+ * characters wide, whatever the argument width. Every card verification value redacts to three
+ * mask characters, and any method fed a value of card-verification-value width returns a value
+ * holding no digit. No field of the class retains an argument. Masking is not injective, so no
+ * inverse of it can exist.
  *
- * <p>Rationale lives in {@code card-platform/docs/decision-log.md}. Flagged source rules live in
- * {@code card-platform/docs/business-rule-flags.md}.
+ * <p>No assertion description in this class concatenates an argument or a result. A failure reports
+ * a case label and a width, because a security test that fails must not print the value it
+ * protects.
  */
 class PanMaskerTest {
 
@@ -48,6 +59,9 @@ class PanMaskerTest {
     /** The stored width of a card verification value, from {@code CARD-CVV-CD PIC 9(03)}. */
     private static final int STORED_VERIFICATION_VALUE_WIDTH = 3;
 
+    /** Twelve mask characters, the fixed leading part of every masked card number. */
+    private static final String MASK_PREFIX = "************";
+
     /** A card number at the stored width. */
     private static final String FULL_CARD_NUMBER = "4111222233337823";
 
@@ -60,17 +74,27 @@ class PanMaskerTest {
     /** The masked form of {@link #FIFTEEN_CHARACTER_CARD_NUMBER}. */
     private static final String MASKED_FIFTEEN_CHARACTER_CARD_NUMBER = "************3782";
 
+    /** A digit string one character longer than the stored width. */
+    private static final String SEVENTEEN_CHARACTER_CARD_NUMBER = "41112222333378234";
+
+    /** A digit string three characters longer than the stored width. */
+    private static final String NINETEEN_CHARACTER_CARD_NUMBER = "4111222233337823456";
+
+    /** A digit string twice the stored width. */
+    private static final String THIRTY_TWO_CHARACTER_CARD_NUMBER =
+            "41112222333378234111222233330199";
+
     /** Sixteen mask characters, the result for an argument of four characters or fewer. */
     private static final String FULLY_MASKED_CARD_NUMBER = "****************";
 
-    /**
-     * A card verification value at the stored width. Digits 4, 5 and 1 appear in no masked value
-     * this class expects.
-     */
+    /** A card verification value at the stored width. */
     private static final String CARD_VERIFICATION_VALUE = "451";
 
     /** Three mask characters, the complete result of a card verification value redaction. */
     private static final String EXPECTED_REDACTION = "***";
+
+    /** The count of three-digit values a {@code PIC 9(03)} field can hold. */
+    private static final int STORED_VERIFICATION_VALUE_COMBINATIONS = 1000;
 
     /**
      * Asserts that a masked card number carries twelve mask characters and the last four
@@ -85,7 +109,7 @@ class PanMaskerTest {
 
         for (int position = 0; position < HIDDEN_CHARACTER_COUNT; position++) {
             assertEquals(PanMasker.MASK_CHARACTER, masked.charAt(position),
-                    "position " + position + " kept a card-number character: " + masked);
+                    "a masked card number kept a hidden character at position " + position);
         }
 
         String lastFourOfArgument =
@@ -98,76 +122,263 @@ class PanMaskerTest {
 
     /**
      * Asserts that every masked card number is sixteen characters wide, the width of
-     * {@code CARD-NUM PIC X(16)} at {@code app/cpy/CVACT02Y.cpy:L5}.
+     * {@code CARD-NUM PIC X(16)} at {@code app/cpy/CVACT02Y.cpy:L5}. The arguments run from
+     * {@code null} through twice the stored width.
      */
     @Test
     void maskCardNumberAlwaysReturnsSixteenCharacters() {
-        String[] arguments = {
-                FULL_CARD_NUMBER,
-                "  " + FULL_CARD_NUMBER + "  ",
-                FIFTEEN_CHARACTER_CARD_NUMBER,
-                "41112222333",
-                "12345",
-                "1234",
-                "1",
-                "",
-                "   ",
-                null,
-        };
-
-        for (String argument : arguments) {
+        for (String argument : maskingArguments()) {
             assertEquals(STORED_CARD_NUMBER_WIDTH, PanMasker.maskCardNumber(argument).length(),
-                    "masked width changed for argument: " + argument);
+                    "a masked card number changed width for " + describe(argument));
         }
     }
 
     /**
-     * Asserts that no CVV digit reaches a masked card number or a redaction. The card record holds
-     * the field in the clear at {@code app/cpy/CVACT02Y.cpy:L7}.
+     * Asserts that an argument longer than the stored width normalizes to the stored width and
+     * still reveals only its own last four characters.
+     *
+     * <p>The cases run one, three and sixteen characters past {@code CARD-NUM PIC X(16)}, and a
+     * padded over-length case proves the strip happens before the last four are read.</p>
      */
     @Test
-    void cardVerificationValueNeverAppearsInAnyMaskedOutput() {
-        String[] outputs = {
-                PanMasker.maskCardNumber(FULL_CARD_NUMBER),
-                PanMasker.maskCardNumber(FIFTEEN_CHARACTER_CARD_NUMBER),
-                PanMasker.maskCardNumber("  " + FULL_CARD_NUMBER + "  "),
-                PanMasker.maskCardNumber(null),
-                PanMasker.redactCardVerificationValue(CARD_VERIFICATION_VALUE),
+    void maskCardNumberNormalizesAnArgumentLongerThanTheStoredWidth() {
+        String[] overLengthArguments = {
+                SEVENTEEN_CHARACTER_CARD_NUMBER,
+                NINETEEN_CHARACTER_CARD_NUMBER,
+                THIRTY_TWO_CHARACTER_CARD_NUMBER,
+                "  " + SEVENTEEN_CHARACTER_CARD_NUMBER + "  ",
         };
 
-        for (String output : outputs) {
-            assertFalse(output.contains(CARD_VERIFICATION_VALUE),
-                    "output carried the card verification value: " + output);
+        for (String argument : overLengthArguments) {
+            String stripped = argument.strip();
+            assertTrue(stripped.length() > STORED_CARD_NUMBER_WIDTH,
+                    "the case stopped exceeding the stored width: " + describe(argument));
 
-            for (int index = 0; index < CARD_VERIFICATION_VALUE.length(); index++) {
-                char digit = CARD_VERIFICATION_VALUE.charAt(index);
-                assertEquals(-1, output.indexOf(digit),
-                        "output carried card verification value digit " + digit + ": " + output);
+            String masked = PanMasker.maskCardNumber(argument);
+            String lastFour =
+                    stripped.substring(stripped.length() - VISIBLE_CHARACTER_COUNT);
+
+            assertEquals(MASK_PREFIX + lastFour, masked,
+                    "an over-length card number stopped normalizing for " + describe(argument));
+            assertEquals(STORED_CARD_NUMBER_WIDTH, masked.length(),
+                    "an over-length masked card number changed width for " + describe(argument));
+            assertEquals(HIDDEN_CHARACTER_COUNT,
+                    masked.chars().filter(character -> character == PanMasker.MASK_CHARACTER)
+                            .count(),
+                    "an over-length masked card number changed its mask count for "
+                            + describe(argument));
+        }
+
+        String twentyCharacterCardNumber = "55000000000000008234";
+        assertNotEquals(SEVENTEEN_CHARACTER_CARD_NUMBER, twentyCharacterCardNumber,
+                "the two over-length arguments stopped differing");
+        assertEquals(PanMasker.maskCardNumber(SEVENTEEN_CHARACTER_CARD_NUMBER),
+                PanMasker.maskCardNumber(twentyCharacterCardNumber),
+                "two over-length arguments sharing a suffix stopped masking alike");
+    }
+
+    /**
+     * Asserts that every value a {@code PIC 9(03)} field can hold redacts to exactly three mask
+     * characters.
+     *
+     * <p>The loop covers all {@value #STORED_VERIFICATION_VALUE_COMBINATIONS} stored values, so
+     * the assertion is exhaustive rather than a sample. No expected value names a digit, which is
+     * what makes the oracle valid: a masked card number may legitimately end in any digit,
+     * including a digit a card verification value also holds.</p>
+     */
+    @Test
+    void everyStoredCardVerificationValueRedactsToThreeMaskCharacters() {
+        for (int value = 0; value < STORED_VERIFICATION_VALUE_COMBINATIONS; value++) {
+            String stored = String.format("%03d", value);
+
+            String redacted = PanMasker.redactCardVerificationValue(stored);
+
+            assertEquals(EXPECTED_REDACTION, redacted,
+                    "a redaction changed for a stored value at index " + value);
+            assertFalse(holdsAnyDigit(redacted),
+                    "a redaction carried a digit for a stored value at index " + value);
+        }
+
+        assertEquals(EXPECTED_REDACTION, PanMasker.redactCardVerificationValue(null),
+                "a null card verification value stopped redacting");
+        assertEquals(EXPECTED_REDACTION, PanMasker.REDACTED_CARD_VERIFICATION_VALUE,
+                "the published redaction constant changed");
+    }
+
+    /**
+     * Asserts that a masked card number equals twelve mask characters followed by the last four
+     * characters of its own argument, and holds no other digit.
+     *
+     * <p>The expected value comes from the argument at run time, so the assertion checks the
+     * masking rule rather than a stored string. An argument of four characters or fewer expects
+     * sixteen mask characters and no digit at all.</p>
+     */
+    @Test
+    void everyMaskedCardNumberIsTwelveMasksAndTheLastFourOfItsArgument() {
+        for (String argument : maskingArguments()) {
+            String masked = PanMasker.maskCardNumber(argument);
+            String stripped = argument == null ? "" : argument.strip();
+
+            String expected = stripped.length() <= VISIBLE_CHARACTER_COUNT
+                    ? FULLY_MASKED_CARD_NUMBER
+                    : MASK_PREFIX
+                            + stripped.substring(stripped.length() - VISIBLE_CHARACTER_COUNT);
+
+            assertEquals(expected, masked,
+                    "a masked card number stopped following the masking rule for "
+                            + describe(argument));
+
+            assertEquals(MASK_PREFIX, masked.substring(0, HIDDEN_CHARACTER_COUNT),
+                    "a masked card number stopped hiding its leading twelve characters for "
+                            + describe(argument));
+
+            long digitsInMasked = masked.chars().filter(Character::isDigit).count();
+            long digitsInVisibleTail = expected.substring(HIDDEN_CHARACTER_COUNT).chars()
+                    .filter(Character::isDigit).count();
+            assertEquals(digitsInVisibleTail, digitsInMasked,
+                    "a masked card number carried a digit outside its visible tail for "
+                            + describe(argument));
+        }
+    }
+
+    /**
+     * Asserts that every single-argument method on the class returns a value holding no digit when
+     * fed a value of card-verification-value width.
+     *
+     * <p>The loop walks the declared methods by reflection rather than naming two of them, so a
+     * method added later that echoes an argument of that width fails here. A card verification
+     * value is {@value #STORED_VERIFICATION_VALUE_WIDTH} characters wide, which is inside the
+     * {@value #VISIBLE_CHARACTER_COUNT}-character floor of the masking rule, so no digit of it may
+     * ever surface.</p>
+     */
+    @Test
+    void noMethodEmitsADigitOfAValueAtCardVerificationValueWidth() throws Exception {
+        List<Method> stringMethods = declaredStringMethods();
+
+        assertEquals(2, stringMethods.size(),
+                "the count of single-argument string methods changed");
+
+        for (Method method : stringMethods) {
+            for (int value = 0; value < STORED_VERIFICATION_VALUE_COMBINATIONS; value++) {
+                String stored = String.format("%03d", value);
+
+                String returned = (String) method.invoke(null, stored);
+
+                assertFalse(holdsAnyDigit(returned),
+                        "method " + method.getName() + " emitted a digit for a stored value at "
+                                + "index " + value);
             }
         }
     }
 
     /**
+     * Asserts that the class holds no mutable state and retains no argument.
+     *
+     * <p>Every declared field must be static and final, so no instance can carry a card number.
+     * Every declared field of type {@link String} must hold mask characters only, both before and
+     * after a masking call, so no field can accumulate an argument.</p>
+     */
+    @Test
+    void panMaskerRetainsNoArgumentValueInAnyField() throws Exception {
+        List<Field> fields = new ArrayList<>();
+        for (Field field : PanMasker.class.getDeclaredFields()) {
+            if (!field.isSynthetic()) {
+                fields.add(field);
+            }
+        }
+
+        assertFalse(fields.isEmpty(), "PanMasker stopped declaring any field");
+
+        PanMasker.maskCardNumber(FULL_CARD_NUMBER);
+        PanMasker.maskCardNumber(THIRTY_TWO_CHARACTER_CARD_NUMBER);
+        PanMasker.redactCardVerificationValue(CARD_VERIFICATION_VALUE);
+
+        for (Field field : fields) {
+            assertTrue(Modifier.isStatic(field.getModifiers()),
+                    "field " + field.getName() + " stopped being static");
+            assertTrue(Modifier.isFinal(field.getModifiers()),
+                    "field " + field.getName() + " stopped being final");
+
+            if (field.getType() != String.class) {
+                continue;
+            }
+
+            field.setAccessible(true);
+            String held = (String) field.get(null);
+
+            assertFalse(holdsAnyDigit(held),
+                    "field " + field.getName() + " retained a digit after a masking call");
+            for (int position = 0; position < held.length(); position++) {
+                assertEquals(PanMasker.MASK_CHARACTER, held.charAt(position),
+                        "field " + field.getName() + " retained a non-mask character at position "
+                                + position);
+            }
+        }
+    }
+
+    /**
+     * Asserts that masking is not injective, so no inverse of it exists.
+     *
+     * <p>Four card numbers that differ across their leading twelve characters and share a suffix
+     * collapse onto one masked value. A function that maps many arguments onto one result cannot
+     * be reversed, which is a property of the behaviour rather than of a method name.</p>
+     */
+    @Test
+    void maskingIsNotInjectiveSoNoInverseExists() {
+        String[] sharingOneSuffix = {
+                "4111222233337823",
+                "5500000000007823",
+                "3400000000007823",
+                "6011000000007823",
+        };
+
+        Set<String> maskedValues = new LinkedHashSet<>();
+        for (String argument : sharingOneSuffix) {
+            maskedValues.add(PanMasker.maskCardNumber(argument));
+        }
+
+        assertEquals(1, maskedValues.size(),
+                "four arguments sharing a suffix stopped collapsing onto one masked value");
+        assertEquals(sharingOneSuffix.length,
+                new LinkedHashSet<>(List.of(sharingOneSuffix)).size(),
+                "the four arguments stopped being distinct");
+
+        Set<String> maskedAcrossTwoSuffixes = new LinkedHashSet<>();
+        for (String argument : sharingOneSuffix) {
+            maskedAcrossTwoSuffixes.add(PanMasker.maskCardNumber(argument));
+        }
+        maskedAcrossTwoSuffixes.add(PanMasker.maskCardNumber(FIFTEEN_CHARACTER_CARD_NUMBER));
+
+        assertEquals(2, maskedAcrossTwoSuffixes.size(),
+                "the count of masked values stopped tracking the count of distinct suffixes");
+    }
+
+    /**
      * Asserts that the redaction returns three mask characters for every argument, including
-     * {@code null}, and keeps no digit of that argument.
+     * {@code null}, and keeps no character of that argument.
      */
     @Test
     void redactCardVerificationValueRevealsNoDigitOfItsArgument() {
         String[] arguments = {CARD_VERIFICATION_VALUE, "000", "999", "7", "", null};
 
-        for (String argument : arguments) {
-            String redacted = PanMasker.redactCardVerificationValue(argument);
+        for (int index = 0; index < arguments.length; index++) {
+            String redacted = PanMasker.redactCardVerificationValue(arguments[index]);
 
-            assertEquals(EXPECTED_REDACTION, redacted, "redaction changed for argument: " + argument);
-            assertEquals(STORED_VERIFICATION_VALUE_WIDTH, redacted.length());
+            assertEquals(EXPECTED_REDACTION, redacted,
+                    "a redaction changed for the argument at index " + index);
+            assertEquals(STORED_VERIFICATION_VALUE_WIDTH, redacted.length(),
+                    "a redaction changed width for the argument at index " + index);
 
             for (int position = 0; position < redacted.length(); position++) {
                 assertEquals(PanMasker.MASK_CHARACTER, redacted.charAt(position),
-                        "redaction kept a character of argument: " + argument);
+                        "a redaction kept a character of the argument at index " + index);
             }
         }
 
         assertEquals(EXPECTED_REDACTION, PanMasker.REDACTED_CARD_VERIFICATION_VALUE);
+        assertSame(PanMasker.REDACTED_CARD_VERIFICATION_VALUE,
+                PanMasker.redactCardVerificationValue(CARD_VERIFICATION_VALUE),
+                "the redaction stopped returning the published constant");
     }
 
     /**
@@ -180,8 +391,11 @@ class PanMaskerTest {
 
         String masked = PanMasker.maskCardNumber(cardNumber);
 
-        assertEquals("4111222233337823", cardNumber);
-        assertEquals(STORED_CARD_NUMBER_WIDTH, cardNumber.length());
+        assertEquals(STORED_CARD_NUMBER_WIDTH, cardNumber.length(),
+                "the argument changed width across the call");
+        assertEquals(STORED_CARD_NUMBER_WIDTH,
+                cardNumber.chars().filter(Character::isDigit).count(),
+                "the argument lost a digit across the call");
         assertNotSame(cardNumber, masked);
         assertNotEquals(cardNumber, masked);
     }
@@ -217,14 +431,17 @@ class PanMaskerTest {
                 FIFTEEN_CHARACTER_CARD_NUMBER, "41112222333", "12345", "1234", "1", "", "   ",
         };
 
-        for (String argument : shortArguments) {
+        for (int index = 0; index < shortArguments.length; index++) {
+            String argument = shortArguments[index];
             String masked = PanMasker.maskCardNumber(argument);
 
-            assertNotEquals(argument, masked, "argument passed through unmasked: " + argument);
+            assertNotEquals(argument, masked,
+                    "an argument passed through unmasked: " + describe(argument));
             assertEquals(STORED_CARD_NUMBER_WIDTH, masked.length(),
-                    "masked width changed for argument: " + argument);
+                    "a masked card number changed width for " + describe(argument));
             assertEquals(PanMasker.MASK_CHARACTER, masked.charAt(0),
-                    "masked value opened with a card-number character: " + masked);
+                    "a masked card number opened with a visible character for "
+                            + describe(argument));
         }
     }
 
@@ -240,29 +457,89 @@ class PanMaskerTest {
         assertEquals(HIDDEN_CHARACTER_COUNT,
                 PanMasker.CARD_NUMBER_LENGTH - PanMasker.VISIBLE_DIGIT_COUNT);
         assertEquals('*', PanMasker.MASK_CHARACTER);
+        assertEquals(MASK_PREFIX.length(), HIDDEN_CHARACTER_COUNT);
 
         for (Method method : PanMasker.class.getDeclaredMethods()) {
+            if (method.isSynthetic()) {
+                continue;
+            }
             assertEquals(1, method.getParameterCount(),
-                    "method accepts a second argument: " + method.getName());
+                    "method " + method.getName() + " accepts a second argument");
         }
     }
 
+    // Private helpers.
+
     /**
-     * Asserts that {@code PanMasker} declares no method that turns a masked value back into a card
-     * number.
+     * Supplies the argument set the width and rule assertions share, from {@code null} through
+     * twice the stored card-number width.
+     *
+     * @return the arguments, holding one {@code null} entry
      */
-    @Test
-    void noMethodReversesTheMaskedValue() {
-        String[] forbiddenFragments = {"unmask", "reverse", "restore", "roundtrip", "unredact", "reveal"};
+    private static String[] maskingArguments() {
+        return new String[] {
+                FULL_CARD_NUMBER,
+                "  " + FULL_CARD_NUMBER + "  ",
+                FIFTEEN_CHARACTER_CARD_NUMBER,
+                SEVENTEEN_CHARACTER_CARD_NUMBER,
+                NINETEEN_CHARACTER_CARD_NUMBER,
+                THIRTY_TWO_CHARACTER_CARD_NUMBER,
+                "  " + THIRTY_TWO_CHARACTER_CARD_NUMBER + " ",
+                "41112222333",
+                "12345",
+                "1234",
+                "1",
+                "",
+                "   ",
+                null,
+        };
+    }
 
+    /**
+     * Collects the declared static methods that take one {@link String} and return one.
+     *
+     * @return the methods, in declaration order
+     */
+    private static List<Method> declaredStringMethods() {
+        List<Method> methods = new ArrayList<>();
         for (Method method : PanMasker.class.getDeclaredMethods()) {
-            String name = method.getName().toLowerCase(Locale.ROOT);
-
-            for (String fragment : forbiddenFragments) {
-                assertFalse(name.contains(fragment),
-                        "PanMasker declared a method that reverses a masked value: "
-                                + method.getName());
+            if (method.isSynthetic() || !Modifier.isStatic(method.getModifiers())) {
+                continue;
             }
+            if (method.getParameterCount() != 1
+                    || method.getParameterTypes()[0] != String.class
+                    || method.getReturnType() != String.class) {
+                continue;
+            }
+            method.setAccessible(true);
+            methods.add(method);
         }
+        return methods;
+    }
+
+    /**
+     * Reports whether a value holds a decimal digit.
+     *
+     * @param value the value to inspect; must not be {@code null}
+     * @return {@code true} when at least one character is a digit
+     */
+    private static boolean holdsAnyDigit(String value) {
+        return value.chars().anyMatch(Character::isDigit);
+    }
+
+    /**
+     * Labels an argument by case and width, holding no character of it.
+     *
+     * <p>A failing security assertion prints this label instead of the value it protects.</p>
+     *
+     * @param argument the argument to label; may be {@code null}
+     * @return the label
+     */
+    private static String describe(String argument) {
+        if (argument == null) {
+            return "a null argument";
+        }
+        return "an argument of width " + argument.length() + " and stripped width "
+                + argument.strip().length();
     }
 }

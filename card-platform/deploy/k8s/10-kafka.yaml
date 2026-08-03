@@ -1,7 +1,11 @@
 # One Apache Kafka broker in Kafka Raft (KRaft) mode, plus the Service the
 # six card-platform services reach it through.
-# Architecture before and after: card-platform/docs/architecture-before-after.md
-# Rationale for every choice in this folder: card-platform/docs/decision-log.md
+#
+# The broker listens on 9092 here. Each service ships the Docker Compose address
+# kafka:29092 as its default, so 30-configmap.yaml must set
+# SPRING_KAFKA_BOOTSTRAP_SERVERS=kafka:9092 for every Pod. That variable is the
+# one every service application.yml already reads.
+#
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -28,6 +32,10 @@ spec:
         app.kubernetes.io/component: event-broker
         app.kubernetes.io/part-of: card-platform
     spec:
+      # The broker calls no Kubernetes application programming interface, so no
+      # token is projected into it. A token in the filesystem would let a process
+      # that reached this container read the interface as this Pod.
+      automountServiceAccountToken: false
       # The image runs as user 1000 in group 1000.
       # fsGroup gives that group the volume.
       securityContext:
@@ -39,7 +47,10 @@ spec:
           type: RuntimeDefault
       containers:
         - name: kafka
-          image: apache/kafka:4.2.1
+          # Digest-pinned, so a rebuilt tag cannot change the image under the
+          # cluster. The digest names apache/kafka:4.2.1, the version the
+          # kafka-clients dependency is pinned to.
+          image: apache/kafka:4.2.1@sha256:9916d60eca5d599550e2c320230808fda342124ba550bb4ac4ea8591803262a0
           imagePullPolicy: IfNotPresent
           securityContext:
             allowPrivilegeEscalation: false
@@ -69,12 +80,14 @@ spec:
             - name: KAFKA_LISTENERS
               value: INTERNAL://:9092,CONTROLLER://:9093
             # Clients receive kafka:9092, the Service in the second document.
+            # 30-configmap.yaml sets SPRING_KAFKA_BOOTSTRAP_SERVERS to that
+            # address, which replaces each service's compose-network default.
             - name: KAFKA_ADVERTISED_LISTENERS
               value: INTERNAL://kafka:9092
             # The broker writes the cluster identifier into its log directory.
             - name: CLUSTER_ID
               value: cardDemoPlatformKRaft1
-            # Replication factor 1. One broker cannot replicate.
+            # Replication factor 1. One broker holds one copy of a partition.
             - name: KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR
               value: "1"
             - name: KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR
@@ -85,16 +98,42 @@ spec:
               value: "1"
             - name: KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS
               value: "0"
-            # The broker creates a topic on first use, with 3 partitions.
-            # Auto-create covers the event topics and every dead-letter topic.
+            # The broker creates no topic on demand. The command below creates the
+            # seven topics this platform uses, so a mistyped topic name fails
+            # loudly instead of quietly opening a new stream on a broker that
+            # runs without authentication.
             - name: KAFKA_AUTO_CREATE_TOPICS_ENABLE
-              value: "true"
+              value: "false"
             - name: KAFKA_NUM_PARTITIONS
               value: "3"
             - name: KAFKA_LOG_DIRS
               value: /var/lib/kafka/data
             - name: KAFKA_HEAP_OPTS
               value: -Xms256m -Xmx512m
+          # This container also creates topics. It waits for the broker, then
+          # creates the four event topics and one dead-letter topic per consumed
+          # topic, and finally hands the process to the broker entry point.
+          command:
+            - /bin/bash
+            - -c
+            - |
+              (
+                until /opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:9092 --list >/dev/null 2>&1; do
+                  sleep 2
+                done
+                for topic in transaction.authorized \
+                             transaction.declined \
+                             transaction.posted \
+                             fraud.assessed \
+                             transaction.authorized.DLT \
+                             transaction.posted.DLT \
+                             fraud.assessed.DLT; do
+                  /opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:9092 \
+                    --create --if-not-exists --topic "$topic" \
+                    --partitions 3 --replication-factor 1
+                done
+              ) &
+              exec /etc/kafka/docker/run
           # Readiness probe allows time for cluster formation at startup.
           readinessProbe:
             exec:
@@ -124,13 +163,14 @@ spec:
           volumeMounts:
             - name: kafka-data
               mountPath: /var/lib/kafka/data
-      # Storage is an emptyDir volume. The broker log starts empty after
-      # every Pod restart.
+      # Storage is an emptyDir volume. It survives a container restart inside
+      # this Pod. Data is lost when the Pod is replaced or deleted.
       volumes:
         - name: kafka-data
           emptyDir: {}
 ---
-# Every service reads kafka:9092 as its bootstrap address.
+# Every Pod reaches the broker at kafka:9092, the address 30-configmap.yaml
+# supplies as SPRING_KAFKA_BOOTSTRAP_SERVERS.
 # ClusterIP only. Nothing outside the cluster connects to the broker.
 apiVersion: v1
 kind: Service
@@ -151,3 +191,38 @@ spec:
       port: 9092
       targetPort: internal
       protocol: TCP
+---
+# The broker listens without authentication, authorization or transport
+# encryption, so reachability is the only control standing between a Pod and
+# every event on the platform. This policy is that control: the broker accepts
+# a connection from a Pod carrying the card-platform part-of label, in this
+# namespace, and from nothing else. Every other Pod in the cluster is refused
+# at the network layer.
+#
+# A cluster whose Container Network Interface plug-in does not implement
+# NetworkPolicy ignores this object. Confirm support before treating the broker
+# as isolated.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: kafka-ingress
+  namespace: carddemo
+  labels:
+    app.kubernetes.io/name: kafka
+    app.kubernetes.io/component: event-broker
+    app.kubernetes.io/part-of: card-platform
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: kafka
+      app.kubernetes.io/part-of: card-platform
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/part-of: card-platform
+      ports:
+        - port: 9092
+          protocol: TCP

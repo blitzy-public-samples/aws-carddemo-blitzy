@@ -1,65 +1,145 @@
-# Container build for the CardDemo account service.
-# Rationale for every choice below: card-platform/docs/decision-log.md
+# Container image for the CardDemo account service. It publishes on a mutation and consumes nothing.
+#
+# The build context is card-platform, the aggregator directory, so this build
+# reaches the aggregator descriptor and both shared libraries. Stage 1 packages
+# the module inside the image, so nothing has to be built on the host first:
+#
+#     docker build -f services/account-service/Dockerfile -t account-service .
+#
+# docker-compose.yml passes that same context and this dockerfile path, so
+# `cp .env.example .env && docker compose up -d --build` needs no earlier step.
+#
+# Read path: app/cbl/COACTVWC.cbl. Update path and concurrent-change detection:
+# app/cbl/COACTUPC.cbl. Cycle-counter reset: app/cbl/CBACT04C.cbl:L350-L356.
+
+# The one build image and the one runtime image every service in this mono-repo
+# shares. Apache Maven 3.9.16 on Java Development Kit (JDK) 25 builds, and the
+# Java Runtime Environment (JRE) 25.0.4 security baseline runs. The runtime
+# reference carries a digest as well as a tag, so a re-tagged upstream image
+# cannot enter the shipped layer. The build stage ships nothing. Neither image
+# installs a package, so no package pin can go stale.
+ARG BUILD_IMAGE=maven:3.9.16-eclipse-temurin-25@sha256:7e461cec477077c1d9e50b13df8aef9018764410f4c4cd7c34803f10c4c99e4c
+ARG RUNTIME_IMAGE=bellsoft/liberica-openjre-debian:25.0.4-9@sha256:1671b2ce27ad4ab213800a07c4631aa35528418636be5bce32d027f1926b8b0d
 
 # --------------------------------------------------------------------------- #
-# Stage 1 — stage the packaged jar on a Java Development Kit (JDK) image.
-#
-# docker-compose.yml builds this image from context ./services/account-service,
-# so target/ must already hold the jar. Package it from card-platform first:
-#
-#     mvn -pl services/account-service -am package
-#
-# The aggregator descriptor and the two shared libraries sit outside this
-# context, and no stage here can reach them.
+# Stage 1. Resolves dependencies, packages this module together with the two
+# libraries it depends on, and splits the repackaged archive into the four
+# Spring Boot layers.
 # --------------------------------------------------------------------------- #
-FROM eclipse-temurin:25.0.3_9-jdk AS build
+FROM ${BUILD_IMAGE} AS build
+
+# The reactor path and the artifact identifier this image packages. Every
+# instruction below reads these two values, and none repeats a version.
+ARG MODULE=services/account-service
+ARG ARTIFACT_ID=account-service
 
 WORKDIR /build
 
-# bash with pipefail, so a failure anywhere in the pipeline below stops the build.
-SHELL ["/bin/bash", "-o", "pipefail", "-c"]
+# Every descriptor in the reactor arrives before any source file. Maven needs
+# all of them to load the reactor, and this layer stays valid while only
+# sources change.
+COPY pom.xml ./
+COPY libs/event-contracts/pom.xml libs/event-contracts/
+COPY libs/cobol-compat/pom.xml libs/cobol-compat/
+COPY services/authorization-service/pom.xml services/authorization-service/
+COPY services/ledger-posting-service/pom.xml services/ledger-posting-service/
+COPY services/fraud-detection-service/pom.xml services/fraud-detection-service/
+COPY services/notification-service/pom.xml services/notification-service/
+COPY services/account-service/pom.xml services/account-service/
+COPY services/card-service/pom.xml services/card-service/
+COPY equivalence-tests/pom.xml equivalence-tests/
 
-# The version travels in the file name. The destination name drops it.
-COPY target/account-service-*.jar app.jar
+# Populates the local repository for this module and its two library
+# dependencies. The cache mount carries the repository between builds, and a
+# cold cache resolves from Maven Central.
+RUN --mount=type=cache,target=/root/.m2/repository,sharing=locked \
+    mvn --batch-mode -pl "${MODULE}" --also-make dependency:go-offline -DskipTests
 
-# Every repackaged Spring Boot jar carries BOOT-INF/classes/. This listing fails
-# the build when target/ held a plain jar or an empty file.
-RUN jar --list --file app.jar | grep -q '^BOOT-INF/classes/$'
+# Sources arrive last, so editing one reuses every layer above.
+COPY libs libs
+COPY services/account-service services/account-service
+
+# The reactor test phases run in continuous integration, ahead of this build.
+RUN --mount=type=cache,target=/root/.m2/repository,sharing=locked \
+    mvn --batch-mode -pl "${MODULE}" --also-make package -DskipTests
+
+# Stops the build unless the package produced exactly one archive for this
+# module, and unless that archive is a repackaged Spring Boot one. Maven leaves
+# a second file named .jar.original, which the pattern below does not match.
+RUN set -eu; \
+    set -- "${MODULE}"/target/"${ARTIFACT_ID}"-*.jar; \
+    if [ ! -f "$1" ]; then set --; fi; \
+    if [ "$#" -ne 1 ]; then \
+        echo "Expected exactly one ${ARTIFACT_ID} archive under ${MODULE}/target, found $#: $*" >&2; \
+        exit 1; \
+    fi; \
+    jar --list --file "$1" > /tmp/archive-entries.txt; \
+    if ! grep -q '^BOOT-INF/' /tmp/archive-entries.txt; then \
+        echo "$1 carries no BOOT-INF directory, so java cannot launch it." >&2; \
+        exit 1; \
+    fi; \
+    cp "$1" /build/application.jar
+
+# Extraction writes dependencies, spring-boot-loader, snapshot-dependencies and
+# application under /build/extracted.
+RUN java -Djarmode=tools -jar /build/application.jar \
+        extract --layers --launcher --destination /build/extracted
 
 # --------------------------------------------------------------------------- #
-# Stage 2 — run the jar on a Java Runtime Environment (JRE) image, which carries
-# no compiler.
+# Stage 2. The shipped image. It carries the extracted layers and a Java
+# Runtime Environment. No compiler, no build tool and no source reach it.
 # --------------------------------------------------------------------------- #
-FROM eclipse-temurin:25.0.3_9-jre
+FROM ${RUNTIME_IMAGE} AS runtime
 
-# Clock the Java runtime reads at start. The base image already sets a UTF-8 locale.
-ENV TZ=UTC
+LABEL org.opencontainers.image.title="carddemo-account-service" \
+      org.opencontainers.image.description="Serves account and customer reads and updates, closes the billing cycle, and publishes account.state-changed on a mutation." \
+      org.opencontainers.image.vendor="CardDemo Card Platform" \
+      org.opencontainers.image.licenses="Apache-2.0" \
+      org.opencontainers.image.source="https://github.com/blitzy-public-samples/aws-carddemo-blitzy" \
+      com.carddemo.module="card-platform/services/account-service"
 
-# Ceiling the heap may reach, as a share of the container memory limit. The Java
-# runtime reads this variable at start, and docker-compose.yml can replace it.
-ENV JAVA_TOOL_OPTIONS="-XX:MaxRAMPercentage=75.0"
+# One group and one account, both at the fixed numeric identifier 10001, so a
+# Kubernetes runAsUser of 10001 matches this image. /app belongs to that
+# account. This image installs no package, so no package pin can go stale.
+RUN groupadd --gid 10001 carddemo \
+ && useradd --uid 10001 --gid 10001 --home-dir /app --no-create-home \
+      --no-log-init --shell /usr/sbin/nologin carddemo \
+ && install --directory --owner 10001 --group 10001 --mode 0755 /app
 
 WORKDIR /app
 
-# Runtime account. Both numeric identifiers are fixed at 10001.
-RUN groupadd --gid 10001 carddemo \
-    && useradd --uid 10001 --gid 10001 --home-dir /app --no-create-home \
-       --shell /usr/sbin/nologin carddemo \
-    && chown 10001:10001 /app
+# The four layers, in the order Spring Boot lists them. Dependencies land first
+# and application classes last, so a source change rewrites only the last layer.
+COPY --from=build --chown=10001:10001 /build/extracted/dependencies/ ./
+COPY --from=build --chown=10001:10001 /build/extracted/spring-boot-loader/ ./
+COPY --from=build --chown=10001:10001 /build/extracted/snapshot-dependencies/ ./
+COPY --from=build --chown=10001:10001 /build/extracted/application/ ./
 
-COPY --from=build --chown=10001:10001 /build/app.jar /app/app.jar
-
+# Every instruction that writes to the image has already run.
 USER 10001:10001
 
-# Port the service serves on inside the container. docker-compose.yml maps a
-# host port onto it.
+# The container clock reads Coordinated Universal Time. The heap ceiling follows
+# the container memory limit. docker-compose.yml replaces either value, and
+# every other setting arrives from the environment at run time.
+ENV TZ=UTC
+ENV JAVA_TOOL_OPTIONS="-XX:MaxRAMPercentage=75.0"
+
+# The server listens on 8080. docker-compose.yml maps a host port onto it.
 EXPOSE 8080
 
-# Readiness probe. This image carries bash and neither curl nor wget, so the probe
-# opens the socket through bash. The start period covers startup and the Flyway
-# migration.
-HEALTHCHECK --interval=10s --timeout=10s --start-period=60s --retries=24 \
-    CMD ["bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/8080 && printf 'GET /actuator/health HTTP/1.0\\r\\n\\r\\n' >&3 && head -1 <&3 | grep -q 200"]
+# /actuator answers on this port alone, which docker-compose.yml publishes on the
+# loopback address, so metrics and Prometheus scraping stay off the service port.
+ENV MANAGEMENT_PORT=9080
+EXPOSE 9080
 
-# SIGTERM reaches the Java process directly in this form.
-ENTRYPOINT ["java", "-jar", "/app/app.jar"]
+# One probe form across all six images. The base image carries curl. The shell form
+# substitutes MANAGEMENT_PORT, which the exec form would not. Spring Boot answers 200
+# on /actuator/health once Flyway has migrated the schema, and 503 while a health
+# indicator reports down. The start period covers a cold start, that migration and any
+# consumer group join.
+HEALTHCHECK --interval=15s --timeout=10s --start-period=60s --retries=12 \
+    CMD curl -fsS -o /dev/null "http://127.0.0.1:${MANAGEMENT_PORT}/actuator/health"
+
+# The exec form leaves the Java Virtual Machine at process 1, so SIGTERM
+# reaches it directly. JarLauncher starts the extracted layers.
+ENTRYPOINT ["java", "org.springframework.boot.loader.launch.JarLauncher"]

@@ -20,9 +20,6 @@ package com.carddemo.account.domain.validation;
  * <p>A failing value yields one message, built at {@code app/cbl/COACTUPC.cbl:L2092-L2098}
  * from the trimmed field label and the literal
  * {@code ' can have numbers or alphabets only.'}. This class produces no second message.
- *
- * <p>Rationale for every choice in this class lives in
- * {@code card-platform/docs/decision-log.md}.
  */
 public final class AlphanumericOptionalValidator {
 
@@ -52,6 +49,12 @@ public final class AlphanumericOptionalValidator {
     private static final char SPACE = ' ';
 
     /**
+     * The character a COBOL comparison against the figurative constant
+     * {@code LOW-VALUES} tests for, one position at a time.
+     */
+    private static final char NULL_CHARACTER = '\0';
+
+    /**
      * The message literal at {@code app/cbl/COACTUPC.cbl:L2095}. It is 36 characters wide and
      * carries its leading space and its trailing period.
      */
@@ -62,6 +65,21 @@ public final class AlphanumericOptionalValidator {
      * {@code app/cbl/COACTUPC.cbl:L61}. The inspected width never exceeds it.
      */
     private static final int EDIT_FIELD_WIDTH = 256;
+
+    /**
+     * ADDITIVE. Opens the message text for a value wider than the inspected field. No source
+     * literal carries this text.
+     *
+     * <p>The source fills {@code WS-EDIT-ALPHANUM-ONLY PIC X(256)} at
+     * {@code app/cbl/COACTUPC.cbl:L61} by a {@code MOVE} from a fixed-width screen field, so a
+     * wider value cannot reach the source paragraph. A Representational State Transfer (REST)
+     * caller can supply one, and this edit refuses it instead of reading its first
+     * characters.</p>
+     */
+    private static final String ADDITIVE_NO_LONGER_THAN = " must be no longer than ";
+
+    /** ADDITIVE. Closes the message text {@link #ADDITIVE_NO_LONGER_THAN} opens. */
+    private static final String ADDITIVE_CHARACTERS = " characters.";
 
     /** This class holds static members only. */
     private AlphanumericOptionalValidator() {
@@ -86,23 +104,55 @@ public final class AlphanumericOptionalValidator {
      *         {@link EditResult#failure(String)} carrying one message when it fails
      */
     public static EditResult validate(String fieldLabel, String value, int length) {
+        // ADDITIVE. A value wider than the inspected field is refused, so the edit never passes a
+        // verdict on the first characters of a longer value.
+        if (carriesContentPastEditedWidth(value, length)) {
+            return EditResult.failure(trimmedLabel(fieldLabel) + ADDITIVE_NO_LONGER_THAN
+                    + length + ADDITIVE_CHARACTERS);
+        }
+
         String inspected = inspectionWindow(value, length);
 
-        // Not supplied: app/cbl/COACTUPC.cbl:L2065-L2073 accepts an absent optional value.
-        if (inspected.trim().isEmpty()) {
+        // Not supplied: app/cbl/COACTUPC.cbl:L2065-L2073 accepts an absent optional value. The
+        // first arm compares the window against LOW-VALUES and the second against SPACES. The
+        // third holds exactly when the second holds, because FUNCTION TRIM removes the space and
+        // no other character.
+        if (holdsLowValues(inspected) || holdsOnlySpaces(inspected)) {
             return EditResult.ok();
         }
 
         // app/cbl/COACTUPC.cbl:L2079-L2087. Group members become spaces, and any character
-        // surviving the trim sits outside the group.
+        // surviving the space-only trim sits outside the group. A tab, a newline and a null
+        // character each survive, so each one fails.
         String survivors = replaceAllowedCharactersWithSpaces(inspected);
-        if (survivors.trim().isEmpty()) {
+        if (holdsOnlySpaces(survivors)) {
             // app/cbl/COACTUPC.cbl:L2103.
             return EditResult.ok();
         }
 
         // app/cbl/COACTUPC.cbl:L2090-L2100.
         return EditResult.failure(trimmedLabel(fieldLabel) + CHARACTER_CLASS_MESSAGE);
+    }
+
+    /**
+     * Reports whether every character of a field equals one character.
+     *
+     * <p>Reproduces a COBOL comparison against a figurative constant, which the compiler expands
+     * to the width of the compared item. An empty field holds no character that differs, so it
+     * reports true.</p>
+     *
+     * @param field    the inspected characters, never {@code null}
+     * @param expected the character every position must hold
+     * @return {@code true} when every position holds {@code expected}
+     */
+    private static boolean holdsOnly(String field, char expected) {
+        for (int position = 0; position < field.length(); position++) {
+            if (field.charAt(position) != expected) {
+                return false;
+            }
+        }
+
+        return true;
     }
 
     /**
@@ -149,6 +199,46 @@ public final class AlphanumericOptionalValidator {
     }
 
     /**
+     * Reports whether a window holds no character other than a space, which is what
+     * {@code FUNCTION LENGTH(FUNCTION TRIM(...)) = 0} answers at
+     * {@code app/cbl/COACTUPC.cbl:L2070-L2071} and {@code app/cbl/COACTUPC.cbl:L2086-L2089}.
+     * {@code FUNCTION TRIM} removes the space and no other character, so a null character, a tab
+     * and a line break each survive and each answer false. An empty window answers true.
+     *
+     * @param window the window to measure
+     * @return true when the window holds no character other than a space
+     */
+    private static boolean holdsOnlySpaces(String window) {
+        for (int position = 0; position < window.length(); position++) {
+            if (window.charAt(position) != SPACE) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    /**
+     * Reports the {@code EQUAL LOW-VALUES} arm at {@code app/cbl/COACTUPC.cbl:L2067}. A COBOL
+     * comparison against {@code LOW-VALUES} holds when every character position carries
+     * {@code X'00'}, so one character other than the null character answers false. An empty
+     * window carries no position and answers false, leaving the spaces arm to accept it.
+     *
+     * @param window the window to measure
+     * @return true when the window is not empty and every character is the null character
+     */
+    private static boolean holdsLowValues(String window) {
+        if (window.isEmpty()) {
+            return false;
+        }
+        for (int position = 0; position < window.length(); position++) {
+            if (window.charAt(position) != NULL_CHARACTER) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    /**
      * Trims the field label for the message, as {@code FUNCTION TRIM(WS-EDIT-VARIABLE-NAME)}
      * does at {@code app/cbl/COACTUPC.cbl:L2094}. The label keeps its full width; the source
      * truncates it at the assignment its caller makes.
@@ -158,5 +248,35 @@ public final class AlphanumericOptionalValidator {
      */
     private static String trimmedLabel(String fieldLabel) {
         return fieldLabel == null ? "" : fieldLabel.trim();
+    }
+
+    /**
+     * Reports whether the value carries a character other than a space past the edited width.
+     *
+     * <p>ADDITIVE. The source moves a fixed-width screen field into its edit field, so the
+     * {@code MOVE} drops nothing but padding. A Representational State Transfer (REST) caller can
+     * supply a wider value, and this test separates the two cases: trailing spaces past the width
+     * are the padding the source itself holds, and any other character past the width is content
+     * the edit would not inspect.</p>
+     *
+     * <p>A width of zero or less inspects nothing, and this test reports false for it, leaving the
+     * not-supplied arm to answer.</p>
+     *
+     * @param value  submitted value, which may be null
+     * @param length count of characters the edit inspects
+     * @return true when a character other than a space sits past a positive {@code length}
+     */
+    private static boolean carriesContentPastEditedWidth(String value, int length) {
+        if (length < 1 || value == null || value.length() <= length) {
+            return false;
+        }
+
+        for (int position = length; position < value.length(); position++) {
+            if (value.charAt(position) != SPACE) {
+                return true;
+            }
+        }
+
+        return false;
     }
 }

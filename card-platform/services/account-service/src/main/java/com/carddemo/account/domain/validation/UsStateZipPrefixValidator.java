@@ -20,9 +20,6 @@ import com.carddemo.cobol.reference.UsStateZipPrefixes;
  * <p>app/cbl/COACTUPC.cbl:L1665-L1666 gates the single call site on the state code and the zip code
  * each having passed its own edit. The caller owns that gate. This class tests the combination, and
  * the characters of the zip code past the second take no part in the key.</p>
- *
- * <p>Keys and column widths: card-platform/docs/data-model.md. Decisions:
- * card-platform/docs/decision-log.md.</p>
  */
 public final class UsStateZipPrefixValidator {
 
@@ -57,6 +54,13 @@ public final class UsStateZipPrefixValidator {
      */
     private static final int ZIP_PREFIX_WIDTH = 2;
 
+    /**
+     * Width of the whole zip field, {@code ACUP-NEW-CUST-ADDR-ZIP PIC X(10)} at
+     * app/cbl/COACTUPC.cbl:L809. The combination key takes the first two characters, and this
+     * width bounds what the field can hold.
+     */
+    private static final int ZIP_FIELD_WIDTH = 10;
+
     /** No instances. Every member of this class is static. */
     private UsStateZipPrefixValidator() {
     }
@@ -79,6 +83,13 @@ public final class UsStateZipPrefixValidator {
      *         app/cbl/COACTUPC.cbl:L2550
      */
     public static EditResult validate(String stateCode, String zipCode) {
+        // ADDITIVE. A value wider than its source field forms no listed combination, so the test
+        // never runs on the first characters of a longer value.
+        if (exceedsDeclaredWidth(stateCode, STATE_CODE_WIDTH)
+                || exceedsDeclaredWidth(zipCode, ZIP_FIELD_WIDTH)) {
+            return EditResult.failure(INVALID_ZIP_FOR_STATE_MESSAGE);
+        }
+
         String stateAndFirstZip2 = combinationKey(stateCode, zipCode);
         if (UsStateZipPrefixes.isValidUsStateZipCd2Combo(stateAndFirstZip2)) {
             return EditResult.ok();
@@ -103,6 +114,12 @@ public final class UsStateZipPrefixValidator {
      * and a shorter or null value is padded on the right with spaces. This is the fixed-width
      * operand that {@code DELIMITED BY SIZE} at app/cbl/COACTUPC.cbl:L2539 contributes in full.
      *
+     * <p>The zip operand is a reference modification of the source field:
+     * {@code ACUP-NEW-CUST-ADDR-ZIP(1:2)} at app/cbl/COACTUPC.cbl:L2538 names the first two
+     * characters of a {@code PIC X(10)} field. Cutting to width is therefore the source
+     * behaviour for the zip, and {@link #exceedsDeclaredWidth(String, int)} covers the case the
+     * source cannot reach.</p>
+     *
      * @param value the value to size, null counts as spaces
      * @param width the declared width in characters
      * @return a string of exactly {@code width} characters
@@ -115,5 +132,34 @@ public final class UsStateZipPrefixValidator {
             return value.substring(0, width);
         }
         return value + " ".repeat(width - value.length());
+    }
+
+    /**
+     * Reports whether a value holds more characters than its source field declares.
+     *
+     * <p>ADDITIVE. The state code arrives from {@code PIC X(02)} at app/cbl/COACTUPC.cbl:L807 and
+     * the zip code from {@code PIC X(10)} at app/cbl/COACTUPC.cbl:L809, so no source path supplies
+     * a wider value. A Representational State Transfer (REST) caller can, and a wider value forms
+     * no combination the list at app/cpy/CSLKPCDY.cpy:L1074-L1313 holds.</p>
+     *
+     * <p>Trailing spaces past the declared width are the padding the source field itself holds, so
+     * they are not content and this test reports false for them.</p>
+     *
+     * @param value         the submitted value, null counts as spaces
+     * @param declaredWidth the width of the source field
+     * @return true when a character other than a space sits past the declared width
+     */
+    private static boolean exceedsDeclaredWidth(String value, int declaredWidth) {
+        if (value == null || value.length() <= declaredWidth) {
+            return false;
+        }
+
+        for (int position = declaredWidth; position < value.length(); position++) {
+            if (value.charAt(position) != ' ') {
+                return true;
+            }
+        }
+
+        return false;
     }
 }

@@ -10,17 +10,15 @@ import static org.assertj.core.api.Assertions.assertThat;
 /**
  * Tests for {@link EditResult}, the verdict every field edit in this package returns.
  *
- * <p>{@code EditResult} carries one message slot and one guard on that slot. The slot is
- * {@code WS-RETURN-MSG}, declared {@code PIC X(75)} at app/cbl/COACTUPC.cbl:L479. The guard
- * is the condition name {@code WS-RETURN-MSG-OFF VALUE SPACES} at app/cbl/COACTUPC.cbl:L480.
- * app/cbl/COACTUPC.cbl:L876 sets {@code WS-RETURN-MSG-OFF} to true once per validation pass,
- * and one slot with one guard holds one message for that pass.</p>
+ * <p> {@code EditResult} carries one message slot and one guard on that slot. The slot is
+ * {@code WS-RETURN-MSG}, declared {@code PIC X(75)} at app/cbl/COACTUPC.cbl:L479. The guard is the
+ * condition name {@code WS-RETURN-MSG-OFF VALUE SPACES} at app/cbl/COACTUPC.cbl:L480.
+ * app/cbl/COACTUPC.cbl:L876 sets {@code WS-RETURN-MSG-OFF} to true once per validation pass, and
+ * one slot with one guard holds one message for that pass.</p>
  *
- * <p>The methods below assert the record shape, the two-component surface, the verdict each
- * factory returns, and message survival character for character. Ordering messages across
- * several fields is orchestration, and {@code AccountUpdateServiceTest} covers it.</p>
- *
- * <p>Decision record: card-platform/docs/decision-log.md.</p>
+ * <p>The methods below assert the record shape, the two-component surface, the verdict each factory
+ * returns, and message survival character for character. Ordering messages across several fields is
+ * orchestration and sits outside this class.</p>
  */
 @DisplayName("EditResult, the verdict returned by every field edit")
 class EditResultTest {

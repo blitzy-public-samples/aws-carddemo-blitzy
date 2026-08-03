@@ -10,8 +10,6 @@
     libs/*             no dependency on another module of this build
     services/*         the two libraries only, never another service
     equivalence-tests  every module, at test scope
-
-  Rationale for every version and exclusion: card-platform/docs/decision-log.md
 -->
 <project xmlns="http://maven.apache.org/POM/4.0.0"
          xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
@@ -60,6 +58,19 @@
     <json-schema-validator.version>3.0.6</json-schema-validator.version>
     <logstash-logback-encoder.version>9.0</logstash-logback-encoder.version>
 
+    <!--
+      Security floors. Each version below is higher than the version
+      spring-boot-dependencies:4.1.0 manages, and the dependencyManagement block
+      re-declares every affected artifact. A property alone changes nothing here,
+      because a bill of materials imported with scope import ignores the importing
+      project's properties.
+        tomcat.version    4.1.0 resolves 11.0.22
+        postgresql        4.1.0 resolves 42.7.11
+      Remove an entry once the bill of materials manages that version or higher.
+    -->
+    <tomcat.version>11.0.24</tomcat.version>
+    <postgresql.version>42.7.13</postgresql.version>
+
     <!-- Plugin versions. -->
     <maven-compiler-plugin.version>3.15.0</maven-compiler-plugin.version>
     <maven-surefire-plugin.version>3.5.6</maven-surefire-plugin.version>
@@ -90,6 +101,35 @@
         <version>${logstash-logback-encoder.version}</version>
       </dependency>
 
+      <!--
+        Embedded servlet container. spring-boot-starter-web pulls these three
+        artifacts, and every service module declares that starter. The three
+        entries below raise all three from the version the bill of materials
+        manages to ${tomcat.version}.
+      -->
+      <dependency>
+        <groupId>org.apache.tomcat.embed</groupId>
+        <artifactId>tomcat-embed-core</artifactId>
+        <version>${tomcat.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>org.apache.tomcat.embed</groupId>
+        <artifactId>tomcat-embed-el</artifactId>
+        <version>${tomcat.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>org.apache.tomcat.embed</groupId>
+        <artifactId>tomcat-embed-websocket</artifactId>
+        <version>${tomcat.version}</version>
+      </dependency>
+
+      <!-- Database driver. Every service module declares it at runtime scope. -->
+      <dependency>
+        <groupId>org.postgresql</groupId>
+        <artifactId>postgresql</artifactId>
+        <version>${postgresql.version}</version>
+      </dependency>
+
       <!-- Shared libraries of this build, available to modules with no version element. -->
       <dependency>
         <groupId>com.carddemo</groupId>
@@ -108,7 +148,7 @@
     <pluginManagement>
       <plugins>
         <!-- Executable jar packaging. The six service modules declare this plugin
-             in their own build section; the two libraries do not. -->
+             in their own build section. -->
         <plugin>
           <groupId>org.springframework.boot</groupId>
           <artifactId>spring-boot-maven-plugin</artifactId>
@@ -172,13 +212,18 @@
     </pluginManagement>
 
     <plugins>
-      <!-- Checks that run in every module at the validate phase and break the build on failure. -->
+      <!--
+        Checks that run in every module at the validate phase and break the build on failure. The
+        two executions carry different scopes. enforce-toolchain-and-prohibited applies to every
+        module with no exception. enforce-service-independence applies to every module except
+        equivalence-tests, which unbinds that one execution and keeps the other.
+      -->
       <plugin>
         <groupId>org.apache.maven.plugins</groupId>
         <artifactId>maven-enforcer-plugin</artifactId>
         <executions>
           <execution>
-            <id>enforce-platform-rules</id>
+            <id>enforce-toolchain-and-prohibited</id>
             <phase>validate</phase>
             <goals>
               <goal>enforce</goal>
@@ -195,25 +240,10 @@
                   <message>This build runs on JDK 25 or later. Every module compiles at release 25.</message>
                 </requireJavaVersion>
                 <bannedDependencies>
-                  <searchTransitive>true</searchTransitive>
-                  <message>A service module must not depend on another service module. A service depends on libs/event-contracts and libs/cobol-compat only, and reaches other services through Kafka events. The equivalence-tests module is the single exception, and its dependencies are test scope.</message>
-                  <excludes>
-                    <exclude>com.carddemo:authorization-service</exclude>
-                    <exclude>com.carddemo:ledger-posting-service</exclude>
-                    <exclude>com.carddemo:fraud-detection-service</exclude>
-                    <exclude>com.carddemo:notification-service</exclude>
-                    <exclude>com.carddemo:account-service</exclude>
-                    <exclude>com.carddemo:card-service</exclude>
-                  </excludes>
-                  <includes>
-                    <include>com.carddemo:*:*:*:test</include>
-                  </includes>
-                </bannedDependencies>
-                <bannedDependencies>
                   <!-- Checked against the dependencies a module declares, not
                        against the transitive graph. -->
                   <searchTransitive>false</searchTransitive>
-                  <message>Excluded by design: see card-platform/docs/decision-log.md. Services use Java records with explicit mapper classes, a hand written openapi.yaml, and PostgreSQL tables for state.</message>
+                  <message>This artifact is excluded from every module of this build. Services use Java records with explicit mapper classes, a hand written openapi.yaml, and PostgreSQL tables for state.</message>
                   <excludes>
                     <exclude>org.projectlombok:lombok</exclude>
                     <exclude>org.mapstruct:*</exclude>
@@ -229,6 +259,30 @@
                     <exclude>com.github.ben-manes.caffeine:*</exclude>
                     <exclude>org.ehcache:*</exclude>
                     <exclude>net.sf.ehcache:*</exclude>
+                  </excludes>
+                </bannedDependencies>
+              </rules>
+            </configuration>
+          </execution>
+          <execution>
+            <id>enforce-service-independence</id>
+            <phase>validate</phase>
+            <goals>
+              <goal>enforce</goal>
+            </goals>
+            <configuration>
+              <fail>true</fail>
+              <rules>
+                <bannedDependencies>
+                  <searchTransitive>true</searchTransitive>
+                  <message>A service module must not depend on another service module. A service depends on libs/event-contracts and libs/cobol-compat only, and reaches other services through Kafka events. The equivalence-tests module is the single exception, and it unbinds this execution in its own module descriptor.</message>
+                  <excludes>
+                    <exclude>com.carddemo:authorization-service</exclude>
+                    <exclude>com.carddemo:ledger-posting-service</exclude>
+                    <exclude>com.carddemo:fraud-detection-service</exclude>
+                    <exclude>com.carddemo:notification-service</exclude>
+                    <exclude>com.carddemo:account-service</exclude>
+                    <exclude>com.carddemo:card-service</exclude>
                   </excludes>
                 </bannedDependencies>
               </rules>

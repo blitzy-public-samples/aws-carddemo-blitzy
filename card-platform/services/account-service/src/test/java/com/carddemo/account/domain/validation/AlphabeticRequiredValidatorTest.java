@@ -20,38 +20,34 @@ import org.junit.jupiter.params.provider.ValueSource;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * Tests for {@link AlphabeticRequiredValidator}, the required alphabetic field edit of
- * paragraph {@code 1225-EDIT-ALPHA-REQD} at app/cbl/COACTUPC.cbl:L1898 through its exit
- * paragraph on line 1951.
+ * Tests for {@link AlphabeticRequiredValidator}, the required alphabetic field edit of paragraph
+ * {@code 1225-EDIT-ALPHA-REQD} at app/cbl/COACTUPC.cbl:L1898 through its exit paragraph on line
+ * 1951.
  *
  * <p>The allowed set holds 52 characters. Group {@code LIT-ALL-ALPHA-FROM-X} at
  * app/cbl/COACTUPC.cbl:L587 spans {@code LIT-UPPER PIC X(26)} at lines 588 and 589 and
- * {@code LIT-LOWER PIC X(26)} at lines 590 and 591. Upper case and lower case both pass.
- * A digit belongs to the wider 62-character group at line 586, which also spans
+ * {@code LIT-LOWER PIC X(26)} at lines 590 and 591. Upper case and lower case both pass. A digit
+ * belongs to the wider 62-character group at line 586, which also spans
  * {@code LIT-NUMBERS PIC X(10)} at lines 592 and 593. The wider group serves
  * {@code AlphanumericRequiredValidator}, and a digit fails the edit under test.</p>
  *
- * <p>Line 1900 raises the failure flag before any test runs. Lines 1903 to 1908 then test
- * three ways for an absent value, and line 1921 jumps to the exit paragraph. An absent
- * value therefore carries {@code " must be supplied."} from line 1915, and the
- * character-class test never reads it.</p>
+ * <p>Line 1900 raises the failure flag before any test runs. Lines 1903 to 1908 then test three
+ * ways for an absent value, and line 1921 jumps to the exit paragraph. An absent value therefore
+ * carries {@code " must be supplied."} from line 1915, and the character-class test never reads
+ * it.</p>
  *
- * <p>Lines 1925 to 1928 convert every member of the 52-character set to a space, and
- * lines 1930 to 1933 pass the value once the trimmed remainder is empty. A space survives
- * the conversion untouched, so a value holding a space between two words passes. A
- * surviving digit or punctuation mark carries {@code " can have alphabets only."} from
- * line 1941. Line 1949 records success.</p>
+ * <p>Lines 1925 to 1928 convert every member of the 52-character set to a space, and lines 1930 to
+ * 1933 pass the value once the trimmed remainder is empty. A space survives the conversion
+ * untouched, so a value holding a space between two words passes. A surviving digit or punctuation
+ * mark carries {@code " can have alphabets only."} from line 1941. Line 1949 records success.</p>
  *
- * <p>app/cbl/COACTUPC.cbl applies the edit to five fields. First Name at line 1563 and
- * Last Name at 1579 each run over 25 characters. State at 1595 runs over 2, City at 1618
- * over 50, and Country at 1627 over 3. The gate at line 1599 reaches the state code edit
- * only once the alphabetic edit has passed, and {@code AccountUpdateServiceTest} covers
- * that gate.</p>
+ * <p>app/cbl/COACTUPC.cbl applies the edit to five fields. First Name at line 1563 and Last Name at
+ * 1579 each run over 25 characters. State at 1595 runs over 2, City at 1618 over 50, and Country at
+ * 1627 over 3. The gate at line 1599 reaches the state code edit only once the alphabetic edit has
+ * passed, and that gate sits outside this class.</p>
  *
- * <p>Every method below runs on a plain Java virtual machine. No Spring context, no
- * database, and no container starts, so {@code mvn test} passes on a clean machine.</p>
- *
- * <p>Decision record: card-platform/docs/decision-log.md.</p>
+ * <p>Every method below runs on a plain Java virtual machine. No Spring context, no database, and
+ * no container starts, so {@code mvn test} passes on a clean machine.</p>
  */
 @DisplayName("AlphabeticRequiredValidator, the required alphabetic edit of paragraph 1225")
 class AlphabeticRequiredValidatorTest {
@@ -114,7 +110,31 @@ class AlphabeticRequiredValidatorTest {
      */
     private static final String CAN_HAVE_ALPHABETS_ONLY = " can have alphabets only.";
 
+    /**
+     * ADDITIVE message text for a value wider than the edited field. No source literal carries
+     * this text: the source moves a fixed-width screen field into its edit field, so a wider
+     * value cannot reach paragraph 1225.
+     */
+    private static final String NO_LONGER_THAN = " must be no longer than ";
+
+    /** ADDITIVE. Closes the text {@link #NO_LONGER_THAN} opens. */
+    private static final String CHARACTERS = " characters.";
+
+    /** The width message a State call site produces. */
+    private static final String STATE_NO_LONGER_THAN_WIDTH =
+            STATE_LABEL + NO_LONGER_THAN + STATE_LENGTH + CHARACTERS;
+
+    /** The width message a Country call site produces. */
+    private static final String COUNTRY_NO_LONGER_THAN_WIDTH =
+            COUNTRY_LABEL + NO_LONGER_THAN + COUNTRY_LENGTH + CHARACTERS;
+
     /** The 26 characters of {@code LIT-UPPER} at app/cbl/COACTUPC.cbl:L588-L589. */
+    /**
+     * One character of the figurative constant {@code LOW-VALUES}, which a COBOL comparison tests
+     * for one position at a time.
+     */
+    private static final String LOW_VALUE = "\0";
+
     private static final String LIT_UPPER = "ABCDEFGHIJKLMNOPQRSTUVWXYZ";
 
     /** The 26 characters of {@code LIT-LOWER} at app/cbl/COACTUPC.cbl:L590-L591. */
@@ -288,6 +308,76 @@ class AlphabeticRequiredValidatorTest {
     }
 
     @Test
+    @DisplayName("A field of LOW-VALUES at the inspected width carries the presence message, the "
+            + "first arm at app/cbl/COACTUPC.cbl:L1904")
+    void lowValuesAtTheInspectedWidthCarriesThePresenceMessage() {
+        for (int width : new int[] {STATE_LENGTH, COUNTRY_LENGTH, NAME_LENGTH, CITY_LENGTH}) {
+            EditResult result = AlphabeticRequiredValidator.validate(
+                    FIRST_NAME_LABEL, LOW_VALUE.repeat(width), width);
+
+            assertThat(result.valid()).as("width %d", width).isFalse();
+            assertThat(result.message()).as("width %d", width).isEqualTo(FIRST_NAME_NOT_SUPPLIED);
+        }
+    }
+
+    @Test
+    @DisplayName("A field of LOW-VALUES narrower than the inspected width still carries the "
+            + "presence message, because the MOVE pads the rest with spaces")
+    void lowValuesBelowTheInspectedWidthCarriesThePresenceMessage() {
+        for (int supplied : new int[] {1, 3, NAME_LENGTH - 1}) {
+            EditResult result = AlphabeticRequiredValidator.validate(
+                    FIRST_NAME_LABEL, LOW_VALUE.repeat(supplied), NAME_LENGTH);
+
+            // Arm 1 fails: the slice is null characters then spaces. Arm 2 fails for the same
+            // reason. Arm 3 measures FUNCTION TRIM, which removes the space alone, so the null
+            // characters survive and the slice falls through to the character-class test.
+            assertThat(result.valid()).as("%d supplied of %d", supplied, NAME_LENGTH).isFalse();
+            assertThat(result.message())
+                    .as("%d supplied of %d", supplied, NAME_LENGTH)
+                    .isEqualTo(FIRST_NAME_WRONG_CLASS);
+        }
+    }
+
+    @Test
+    @DisplayName("A field of LOW-VALUES is read only to the inspected width, and content past that "
+            + "width is refused")
+    void lowValuesIsReadOnlyToTheInspectedWidthAndContentPastItIsRefused() {
+        String padded = LOW_VALUE.repeat(STATE_LENGTH) + "  ";
+
+        EditResult stateWidth =
+                AlphabeticRequiredValidator.validate(STATE_LABEL, padded, STATE_LENGTH);
+
+        assertThat(stateWidth.valid()).isFalse();
+        assertThat(stateWidth.message()).isEqualTo(STATE_LABEL + MUST_BE_SUPPLIED);
+
+        String beyond = LOW_VALUE.repeat(STATE_LENGTH) + "AB";
+        EditResult refused =
+                AlphabeticRequiredValidator.validate(STATE_LABEL, beyond, STATE_LENGTH);
+
+        assertThat(refused.valid()).isFalse();
+        assertThat(refused.message()).isEqualTo(STATE_NO_LONGER_THAN_WIDTH);
+
+        EditResult fullWidth =
+                AlphabeticRequiredValidator.validate(STATE_LABEL, beyond, beyond.length());
+
+        assertThat(fullWidth.valid()).isFalse();
+        assertThat(fullWidth.message()).isEqualTo(STATE_LABEL + CAN_HAVE_ALPHABETS_ONLY);
+    }
+
+    @Test
+    @DisplayName("One alphabetic character followed by LOW-VALUES fails the character-class test, "
+            + "because FUNCTION TRIM leaves a null character standing")
+    void oneLetterFollowedByLowValuesFailsTheCharacterClassTest() {
+        String letterThenNulls = "A" + LOW_VALUE.repeat(NAME_LENGTH - 1);
+
+        EditResult result = AlphabeticRequiredValidator.validate(
+                FIRST_NAME_LABEL, letterThenNulls, NAME_LENGTH);
+
+        assertThat(result.valid()).isFalse();
+        assertThat(result.message()).isEqualTo(FIRST_NAME_WRONG_CLASS);
+    }
+
+    @Test
     @DisplayName("An all-spaces value carries the presence message and not the character-class message")
     void allSpacesCarriesThePresenceMessage() {
         String allSpaces = " ".repeat(NAME_LENGTH);
@@ -390,20 +480,57 @@ class AlphabeticRequiredValidatorTest {
     }
 
     @Test
-    @DisplayName("The inspected window covers the first length characters only")
-    void inspectedWindowCoversTheFirstLengthCharactersOnly() {
-        // Reference modification (1:WS-EDIT-ALPHANUM-LENGTH) at app/cbl/COACTUPC.cbl:L1903
-        // and line 1926 bounds the window the State call site inspects at line 1594.
+    @DisplayName("A character past the inspected window fails the edit, and pad spaces do not")
+    void aCharacterPastTheInspectedWindowFailsTheEdit() {
+        // Reference modification (1:WS-EDIT-ALPHANUM-LENGTH) at app/cbl/COACTUPC.cbl:L1903 and
+        // line 1926 bounds the window the State call site inspects at line 1594. The source moves
+        // a PIC X(02) screen field into that window, so it drops nothing but padding.
+        //
+        // ADDITIVE: a caller of this edit can supply a wider value, and the edit refuses one that
+        // carries a character the window would not cover. It therefore never passes a verdict on
+        // the first characters of a longer value.
         EditResult insideWindow = AlphabeticRequiredValidator.validate(STATE_LABEL, "N1", STATE_LENGTH);
-        EditResult beyondWindow = AlphabeticRequiredValidator.validate(STATE_LABEL, "NY1", STATE_LENGTH);
+        EditResult pastWindow = AlphabeticRequiredValidator.validate(STATE_LABEL, "NY1", STATE_LENGTH);
+        EditResult markupPastWindow =
+                AlphabeticRequiredValidator.validate(STATE_LABEL, "NY<script>", STATE_LENGTH);
+        EditResult padSpacePastWindow =
+                AlphabeticRequiredValidator.validate(STATE_LABEL, "NY   ", STATE_LENGTH);
         EditResult twoLetters = AlphabeticRequiredValidator.validate(STATE_LABEL, "NY", STATE_LENGTH);
 
         assertThat(insideWindow.valid()).isFalse();
         assertThat(insideWindow.message()).isEqualTo(STATE_LABEL + CAN_HAVE_ALPHABETS_ONLY);
-        assertThat(beyondWindow.valid()).isTrue();
-        assertThat(beyondWindow.message()).isNull();
+        assertThat(pastWindow.valid()).isFalse();
+        assertThat(pastWindow.message()).isEqualTo(STATE_NO_LONGER_THAN_WIDTH);
+        assertThat(markupPastWindow.valid()).isFalse();
+        assertThat(markupPastWindow.message()).isEqualTo(STATE_NO_LONGER_THAN_WIDTH);
+        assertThat(padSpacePastWindow.valid()).isTrue();
+        assertThat(padSpacePastWindow.message()).isNull();
         assertThat(twoLetters.valid()).isTrue();
         assertThat(twoLetters.message()).isNull();
+    }
+
+    @Test
+    @DisplayName("A value wider than the edited field is refused whatever it holds")
+    void aValueWiderThanTheEditedFieldIsRefused() {
+        // ADDITIVE. No source path supplies a value wider than WS-EDIT-ALPHANUM-LENGTH: the MOVE
+        // at app/cbl/COACTUPC.cbl:L61 reads a screen field of that exact width.
+        String[] wider = {
+            "Johnsonn",
+            "Jo hnsonn",
+            "Johnson\n",
+            "Johnson\u0000",
+            "J".repeat(COUNTRY_LENGTH + 1),
+            "U".repeat(4096),
+        };
+
+        for (int index = 0; index < wider.length; index++) {
+            EditResult result =
+                    AlphabeticRequiredValidator.validate(COUNTRY_LABEL, wider[index], COUNTRY_LENGTH);
+
+            assertThat(result.valid()).as("value index %d", index).isFalse();
+            assertThat(result.message()).as("value index %d", index)
+                    .isEqualTo(COUNTRY_NO_LONGER_THAN_WIDTH);
+        }
     }
 
     @ParameterizedTest

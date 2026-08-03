@@ -1,15 +1,17 @@
 package com.carddemo.ledger.messaging;
 
+import java.util.List;
 import java.util.regex.Pattern;
 
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
+import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertIterableEquals;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
-import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
@@ -17,10 +19,19 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * {@code 01 ABEND-DATA} at {@code app/cpy/CSMSG02Y.cpy:L21-L29}. Each component is exercised at
  * its maximum length and one character past it.
  *
+ * <p>The constructor throws nothing. A dead-letter record describes a failure that already
+ * happened, so a second failure raised while building it would suppress the dead-letter message
+ * and leave the broker redelivering for ever. An over-long component therefore keeps its leading
+ * characters and {@code truncatedComponents} names it.</p>
+ *
  * <p>ADDITIVE. Dead-letter routing has no CardDemo ancestor: the posting job sends rejected
  * records to a fresh generation of an output dataset at {@code app/jcl/POSTTRAN.jcl:L34-L38},
- * which no program reads back. Decisions behind the contract asserted here sit in
- * {@code card-platform/docs/decision-log.md}.</p>
+ * which no program reads back.</p>
+ *
+ * <p>This record is service-local. Five services each declare their own record of this name, and
+ * each truncates an over-length component rather than refusing it. Two tests below hold that
+ * policy and hold the record inside this service's own package, so a move into a shared library
+ * fails here rather than in production.</p>
  */
 class DeadLetterMetadataTest {
 
@@ -73,6 +84,9 @@ class DeadLetterMetadataTest {
     private static final Pattern STANDALONE_THREE_DIGIT_RUN =
             Pattern.compile("(?<!\\d)\\d{3}(?!\\d)");
 
+    /** Package this record belongs to. A shared, interoperable payload would sit elsewhere. */
+    private static final String OWNING_PACKAGE = "com.carddemo.ledger.messaging";
+
     /**
      * Asserts that values at the four maximum lengths construct and survive unchanged. Widths from
      * {@code app/cpy/CSMSG02Y.cpy:L21-L29}.
@@ -85,7 +99,7 @@ class DeadLetterMetadataTest {
         String classificationAtMaximum = "C".repeat(REASON_MAX_LENGTH);
         String detailAtMaximum = "D".repeat(MESSAGE_MAX_LENGTH);
 
-        DeadLetterMetadata metadata = new DeadLetterMetadata(
+        DeadLetterMetadata metadata = DeadLetterMetadata.of(
                 codeAtMaximum, culpritAtMaximum, classificationAtMaximum, detailAtMaximum);
 
         assertEquals(codeAtMaximum, metadata.abendCode());
@@ -105,7 +119,7 @@ class DeadLetterMetadataTest {
     @Test
     @DisplayName("Short values keep their own length")
     void constructorPadsNothingAndTrimsNothing() {
-        DeadLetterMetadata metadata = new DeadLetterMetadata("L", CULPRIT, REASON, MESSAGE);
+        DeadLetterMetadata metadata = DeadLetterMetadata.of("L", CULPRIT, REASON, MESSAGE);
 
         assertEquals("L", metadata.abendCode());
         assertEquals(1, metadata.abendCode().length());
@@ -117,85 +131,112 @@ class DeadLetterMetadataTest {
     }
 
     /**
-     * Asserts that a code one character over its maximum is rejected. Width from
-     * {@code app/cpy/CSMSG02Y.cpy:L22}.
+     * Asserts that a component one character over its maximum keeps its leading characters and is
+     * named in {@code truncatedComponents}, and that the constructor throws nothing. Widths from
+     * {@code app/cpy/CSMSG02Y.cpy:L21-L29}.
      */
     @Test
-    @DisplayName("An abend code one character over its maximum is rejected")
-    void constructorRejectsAbendCodeOverItsMaximum() {
-        String oversized = "A".repeat(ABEND_CODE_MAX_LENGTH + 1);
+    @DisplayName("A component over its maximum is shortened and named, and nothing throws")
+    void constructorShortensAnOverLongComponentAndNamesIt() {
+        String longCode = "A".repeat(ABEND_CODE_MAX_LENGTH + 1);
+        String longCulprit = "B".repeat(CULPRIT_MAX_LENGTH + 1);
+        String longReason = "C".repeat(REASON_MAX_LENGTH + 1);
+        String longDetail = "D".repeat(MESSAGE_MAX_LENGTH + 1);
 
-        IllegalArgumentException thrown = assertThrows(IllegalArgumentException.class,
-                () -> new DeadLetterMetadata(oversized, CULPRIT, REASON, MESSAGE));
+        DeadLetterMetadata metadata = assertDoesNotThrow(() -> DeadLetterMetadata.of(
+                longCode, longCulprit, longReason, longDetail));
 
-        assertMessageNamesComponentAndLengths(
-                thrown, "abendCode", ABEND_CODE_MAX_LENGTH, oversized.length());
+        assertEquals("A".repeat(ABEND_CODE_MAX_LENGTH), metadata.abendCode());
+        assertEquals("B".repeat(CULPRIT_MAX_LENGTH), metadata.culprit());
+        assertEquals("C".repeat(REASON_MAX_LENGTH), metadata.reason());
+        assertEquals("D".repeat(MESSAGE_MAX_LENGTH), metadata.message());
+        assertIterableEquals(List.of("abendCode", "culprit", "reason", "message"),
+                metadata.truncatedComponents());
     }
 
     /**
-     * Asserts that a culprit one character over its maximum is rejected. Width from
-     * {@code app/cpy/CSMSG02Y.cpy:L24}.
+     * Asserts that one over-long component names only itself, and that a record built entirely
+     * from values within their maxima names none.
      */
     @Test
-    @DisplayName("A culprit one character over its maximum is rejected")
-    void constructorRejectsCulpritOverItsMaximum() {
-        String oversized = "B".repeat(CULPRIT_MAX_LENGTH + 1);
+    @DisplayName("Only the components actually shortened are named")
+    void truncatedComponentsNamesOnlyTheShortenedComponents() {
+        DeadLetterMetadata onlyReason = DeadLetterMetadata.of(
+                ABEND_CODE, CULPRIT, "C".repeat(REASON_MAX_LENGTH + 1), MESSAGE);
 
-        IllegalArgumentException thrown = assertThrows(IllegalArgumentException.class,
-                () -> new DeadLetterMetadata(ABEND_CODE, oversized, REASON, MESSAGE));
+        assertIterableEquals(List.of("reason"), onlyReason.truncatedComponents());
 
-        assertMessageNamesComponentAndLengths(
-                thrown, "culprit", CULPRIT_MAX_LENGTH, oversized.length());
+        DeadLetterMetadata nothingShortened =
+                DeadLetterMetadata.of(ABEND_CODE, CULPRIT, REASON, MESSAGE);
+
+        assertTrue(nothingShortened.truncatedComponents().isEmpty(),
+                "a record within every maximum named a shortened component");
     }
 
     /**
-     * Asserts that a classification one character over its maximum is rejected. Width from
-     * {@code app/cpy/CSMSG02Y.cpy:L26}.
+     * Asserts that a Java class name is shortened to the culprit width rather than refused. The
+     * component holds an eight-character program name at {@code app/cpy/CSMSG02Y.cpy:L24}.
      */
     @Test
-    @DisplayName("A classification one character over its maximum is rejected")
-    void constructorRejectsReasonOverItsMaximum() {
-        String oversized = "C".repeat(REASON_MAX_LENGTH + 1);
-
-        IllegalArgumentException thrown = assertThrows(IllegalArgumentException.class,
-                () -> new DeadLetterMetadata(ABEND_CODE, CULPRIT, oversized, MESSAGE));
-
-        assertMessageNamesComponentAndLengths(
-                thrown, "reason", REASON_MAX_LENGTH, oversized.length());
-    }
-
-    /**
-     * Asserts that a detail one character over its maximum is rejected. Width from
-     * {@code app/cpy/CSMSG02Y.cpy:L28}.
-     */
-    @Test
-    @DisplayName("A detail one character over its maximum is rejected")
-    void constructorRejectsMessageOverItsMaximum() {
-        String oversized = "D".repeat(MESSAGE_MAX_LENGTH + 1);
-
-        IllegalArgumentException thrown = assertThrows(IllegalArgumentException.class,
-                () -> new DeadLetterMetadata(ABEND_CODE, CULPRIT, REASON, oversized));
-
-        assertMessageNamesComponentAndLengths(
-                thrown, "message", MESSAGE_MAX_LENGTH, oversized.length());
-    }
-
-    /**
-     * Asserts that a Java class name does not fit the culprit component, which holds an
-     * eight-character program name at {@code app/cpy/CSMSG02Y.cpy:L24}.
-     */
-    @Test
-    @DisplayName("A Java class name does not fit the culprit component")
-    void constructorRejectsJavaClassNameAsCulprit() {
+    @DisplayName("A Java class name is shortened to the culprit width")
+    void constructorShortensAJavaClassNameToTheCulpritWidth() {
         String className = "CategoryBalanceUpdater";
 
         assertTrue(className.length() > CULPRIT_MAX_LENGTH, className);
 
-        IllegalArgumentException thrown = assertThrows(IllegalArgumentException.class,
-                () -> new DeadLetterMetadata(ABEND_CODE, className, REASON, MESSAGE));
+        DeadLetterMetadata metadata = assertDoesNotThrow(() -> DeadLetterMetadata.of(
+                ABEND_CODE, className, REASON, MESSAGE));
 
-        assertMessageNamesComponentAndLengths(
-                thrown, "culprit", CULPRIT_MAX_LENGTH, className.length());
+        assertEquals(className.substring(0, CULPRIT_MAX_LENGTH), metadata.culprit());
+        assertIterableEquals(List.of("culprit"), metadata.truncatedComponents());
+    }
+
+    /**
+     * Asserts that a control character, a line break and a character outside the American Standard
+     * Code for Information Interchange (ASCII) range each become one substitute character, and that
+     * a supplementary code point is replaced whole rather than split.
+     */
+    @Test
+    @DisplayName("Every character outside printable ASCII becomes one substitute character")
+    void constructorReplacesEveryCharacterOutsidePrintableAscii() {
+        DeadLetterMetadata metadata = DeadLetterMetadata.of(
+                "A\u0000B", "C\r\nD", "E\u00e9F", "G\ud83d\ude00H");
+
+        assertEquals("A.B", metadata.abendCode());
+        assertEquals("C..D", metadata.culprit());
+        assertEquals("E.F", metadata.reason());
+        assertEquals("G.H", metadata.message());
+        assertTrue(metadata.truncatedComponents().isEmpty(),
+                "no component was over its maximum, so none should be named");
+
+        String rendered = metadata.toString();
+
+        assertFalse(rendered.contains("\n"), "the rendered record carried a line break");
+        assertFalse(rendered.contains("\u0000"), "the rendered record carried a control character");
+    }
+
+    /**
+     * Asserts that the factory reading a failure copies only the failure type, never the text the
+     * failure carries.
+     */
+    @Test
+    @DisplayName("The failure factory copies the failure type and no failure text")
+    void failureFactoryCopiesOnlyTheFailureType() {
+        Exception failure = new IllegalStateException("card 4111222233337065 balance 1250.75");
+
+        DeadLetterMetadata metadata =
+                DeadLetterMetadata.fromFailure(ABEND_CODE, failure, REASON, MESSAGE);
+
+        assertEquals("IllegalS", metadata.culprit());
+        assertFalse(metadata.toString().contains("4111222233337065"),
+                "the record carried a card number from the failure text");
+        assertFalse(metadata.toString().contains("1250.75"),
+                "the record carried a monetary value from the failure text");
+
+        DeadLetterMetadata noFailure =
+                DeadLetterMetadata.fromFailure(ABEND_CODE, null, REASON, MESSAGE);
+
+        assertEquals("", noFailure.culprit());
     }
 
     /**
@@ -208,9 +249,9 @@ class DeadLetterMetadataTest {
         String shortName = "DataAccessException";
 
         DeadLetterMetadata fromLongName =
-                new DeadLetterMetadata(ABEND_CODE, CULPRIT, REASON, MESSAGE);
+                DeadLetterMetadata.of(ABEND_CODE, CULPRIT, REASON, MESSAGE);
         DeadLetterMetadata fromShortName =
-                new DeadLetterMetadata(ABEND_CODE, CULPRIT, REASON, shortName);
+                DeadLetterMetadata.of(ABEND_CODE, CULPRIT, REASON, shortName);
 
         assertEquals(MESSAGE, fromLongName.message());
         assertEquals(shortName, fromShortName.message());
@@ -218,24 +259,24 @@ class DeadLetterMetadataTest {
     }
 
     /**
-     * Asserts that equality and hash code cover all four components of the record at
+     * Asserts that equality and hash code cover the four text components of the record at
      * {@code app/cpy/CSMSG02Y.cpy:L21-L29}.
      */
     @Test
-    @DisplayName("Equality and hash code cover all four components")
-    void equalityCoversAllFourComponents() {
-        DeadLetterMetadata first = new DeadLetterMetadata(ABEND_CODE, CULPRIT, REASON, MESSAGE);
-        DeadLetterMetadata second = new DeadLetterMetadata(ABEND_CODE, CULPRIT, REASON, MESSAGE);
+    @DisplayName("Equality and hash code cover all four text components")
+    void equalityCoversAllFourTextComponents() {
+        DeadLetterMetadata first = DeadLetterMetadata.of(ABEND_CODE, CULPRIT, REASON, MESSAGE);
+        DeadLetterMetadata second = DeadLetterMetadata.of(ABEND_CODE, CULPRIT, REASON, MESSAGE);
 
         assertEquals(first, second);
         assertEquals(first.hashCode(), second.hashCode());
 
-        assertNotEquals(first, new DeadLetterMetadata("POST", CULPRIT, REASON, MESSAGE));
-        assertNotEquals(first, new DeadLetterMetadata(ABEND_CODE, "POSTTRAN", REASON, MESSAGE));
+        assertNotEquals(first, DeadLetterMetadata.of("POST", CULPRIT, REASON, MESSAGE));
+        assertNotEquals(first, DeadLetterMetadata.of(ABEND_CODE, "POSTTRAN", REASON, MESSAGE));
         assertNotEquals(first,
-                new DeadLetterMetadata(ABEND_CODE, CULPRIT, "ACCOUNT BALANCE ROW ABSENT", MESSAGE));
+                DeadLetterMetadata.of(ABEND_CODE, CULPRIT, "ACCOUNT BALANCE ROW ABSENT", MESSAGE));
         assertNotEquals(first,
-                new DeadLetterMetadata(ABEND_CODE, CULPRIT, REASON, "DataAccessException"));
+                DeadLetterMetadata.of(ABEND_CODE, CULPRIT, REASON, "DataAccessException"));
     }
 
     /**
@@ -245,11 +286,11 @@ class DeadLetterMetadataTest {
     @Test
     @DisplayName("Rendered text carries no digit run that could be card data")
     void toStringCarriesNoCardDigits() {
-        DeadLetterMetadata metadata = new DeadLetterMetadata(ABEND_CODE, CULPRIT, REASON, MESSAGE);
+        DeadLetterMetadata metadata = DeadLetterMetadata.of(ABEND_CODE, CULPRIT, REASON, MESSAGE);
 
         String rendered = metadata.toString();
 
-        assertNotNull(rendered);
+        assertNotNull(rendered, "the rendered record was null");
         assertFalse(LONG_DIGIT_RUN.matcher(rendered).find(), rendered);
         assertFalse(STANDALONE_THREE_DIGIT_RUN.matcher(rendered).find(), rendered);
     }
@@ -261,14 +302,14 @@ class DeadLetterMetadataTest {
     @Test
     @DisplayName("A null component becomes the empty string")
     void constructorTurnsNullComponentsIntoEmptyStrings() {
-        DeadLetterMetadata allNull = new DeadLetterMetadata(null, null, null, null);
+        DeadLetterMetadata allNull = DeadLetterMetadata.of(null, null, null, null);
 
         assertEquals("", allNull.abendCode());
         assertEquals("", allNull.culprit());
         assertEquals("", allNull.reason());
         assertEquals("", allNull.message());
 
-        DeadLetterMetadata oneNull = new DeadLetterMetadata(ABEND_CODE, null, REASON, MESSAGE);
+        DeadLetterMetadata oneNull = DeadLetterMetadata.of(ABEND_CODE, null, REASON, MESSAGE);
 
         assertEquals("", oneNull.culprit());
         assertEquals(ABEND_CODE, oneNull.abendCode());
@@ -277,22 +318,60 @@ class DeadLetterMetadataTest {
     }
 
     /**
-     * Asserts that a width violation message names its component, that component's maximum, and
-     * the length of the value supplied.
-     *
-     * @param thrown         the exception the constructor threw
-     * @param component      the component name the message carries
-     * @param maxLength      the maximum the message carries
-     * @param suppliedLength the length of the value the constructor refused
+     * Asserts that this record stays inside the ledger posting service. A shared, interoperable
+     * dead-letter payload would sit alongside the event contracts under
+     * {@code com.carddemo.events}, and its widths and its over-length policy would then bind every
+     * service. Neither holds: the record is service-local and carries no annotation that would
+     * publish it.
      */
-    private static void assertMessageNamesComponentAndLengths(
-            IllegalArgumentException thrown, String component, int maxLength, int suppliedLength) {
+    @Test
+    @DisplayName("Belongs to this service alone and to no shared library")
+    void recordBelongsToThisServiceAloneAndToNoSharedLibrary() {
+        String actualPackage = DeadLetterMetadata.class.getPackageName();
 
-        String violation = thrown.getMessage();
+        assertEquals(OWNING_PACKAGE, actualPackage,
+                "DeadLetterMetadata belongs to the ledger posting service alone");
+        assertFalse(actualPackage.startsWith("com.carddemo.events"),
+                "a shared event contract would sit under com.carddemo.events, and this record "
+                        + "does not");
+        assertFalse(actualPackage.startsWith("com.carddemo.cobol"),
+                "a shared compatibility type would sit under com.carddemo.cobol, and this record "
+                        + "does not");
+        assertEquals(0, DeadLetterMetadata.class.getAnnotations().length,
+                "DeadLetterMetadata carries no annotation, so no framework publishes it as a "
+                        + "shared contract");
+    }
 
-        assertNotNull(violation);
-        assertTrue(violation.contains(component), violation);
-        assertTrue(violation.contains(String.valueOf(maxLength)), violation);
-        assertTrue(violation.contains(String.valueOf(suppliedLength)), violation);
+    /**
+     * Asserts that an over-length component is truncated and never refused, and that the value cut
+     * to its maximum reaches the component unchanged. A record that describes a failure which
+     * already happened cannot raise a second failure of its own, because that would suppress the
+     * dead-letter message and leave the broker redelivering the same message for ever.
+     */
+    @Test
+    @DisplayName("Truncates an over-length component instead of refusing it")
+    void recordTruncatesAnOverLengthComponentInsteadOfRefusingIt() {
+        String overLength = "E".repeat(CULPRIT_MAX_LENGTH + 1);
+
+        DeadLetterMetadata truncated = assertDoesNotThrow(
+                () -> DeadLetterMetadata.of(ABEND_CODE, overLength, REASON, MESSAGE),
+                "building the record raised a failure of its own");
+
+        assertEquals(CULPRIT_MAX_LENGTH, truncated.culprit().length(),
+                "the culprit holds its leading " + CULPRIT_MAX_LENGTH + " characters");
+        assertEquals(overLength.substring(0, CULPRIT_MAX_LENGTH), truncated.culprit(),
+                "the culprit keeps the leading characters of the value supplied");
+        assertNotEquals(overLength, truncated.culprit(),
+                "the culprit differs from the value supplied, so the record truncated it");
+        assertEquals(List.of("culprit"), truncated.truncatedComponents(),
+                "the truncation list names the culprit and nothing else");
+
+        DeadLetterMetadata atMaximum = DeadLetterMetadata.of(
+                ABEND_CODE, overLength.substring(0, CULPRIT_MAX_LENGTH), REASON, MESSAGE);
+        assertEquals(truncated.culprit(), atMaximum.culprit(),
+                "the value already cut to width " + CULPRIT_MAX_LENGTH + " reaches the component "
+                        + "unchanged, which shows the truncation is about length alone");
+        assertTrue(atMaximum.truncatedComponents().isEmpty(),
+                "a value of exactly the maximum length is not recorded as truncated");
     }
 }

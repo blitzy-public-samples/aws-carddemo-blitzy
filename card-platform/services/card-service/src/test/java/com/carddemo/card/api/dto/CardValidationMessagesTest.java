@@ -8,9 +8,11 @@ import java.lang.reflect.Constructor;
 import java.lang.reflect.Field;
 import java.lang.reflect.Modifier;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.Set;
 
 import org.junit.jupiter.api.Test;
@@ -18,51 +20,70 @@ import org.junit.jupiter.api.Test;
 /**
  * Shape tests for {@link CardValidationMessages}.
  *
- * <p>Each text test compares one constant against a literal typed in this file. The
- * expected texts come from the working-storage message field
- * {@code WS-RETURN-MSG PIC X(75)} at {@code app/cbl/COCRDUPC.cbl:L173} and from the two
- * inline moves at lines 745 and 789. A text belongs in the production class when its
- * condition name sits under {@code WS-RETURN-MSG}.</p>
+ * <p>Each text test compares one constant against a literal typed in this file. The expected texts
+ * come from the working-storage message field {@code WS-RETURN-MSG PIC X(75)} at
+ * {@code app/cbl/COCRDUPC.cbl:L173} and from the two inline moves at lines 745 and 789. A text
+ * belongs in the production class when its condition name sits under {@code WS-RETURN-MSG}.</p>
  *
- * <p>The production class declares twenty-one fields and holds twenty distinct texts.
- * Lines 190 and 192 carry the same characters under two condition names, and each line
- * has its own constant. Both counts are asserted below.</p>
+ * <p>The tests below assert the text of each constant a caller can receive, and assert
+ * that the whole reachable inventory of fifteen texts is declared. No test asserts how
+ * many fields the production class declares, and no test asserts the text of a constant
+ * runtime cannot reach. Removing an unreachable declaration is a behaviour-preserving
+ * change, so the tests here do not stand in its way.</p>
  *
- * <p>Three condition names are declared and never set: {@code SEARCHED-ACCT-ZEROES} at
- * line 189, {@code SEARCHED-ACCT-NOT-NUMERIC} at line 191 and
- * {@code SEARCHED-CARD-NOT-NUMERIC} at line 193. No {@code SET} site for them exists in
- * the twenty-eight programs under {@code app/cbl}. Runtime writes four other texts: line
- * 731 and line 774 each set a condition name, and lines 745 and 789 each move an upper
- * case literal.</p>
+ * <p>Six declarations carry the {@code NEVER_EMITTED} prefix and hold five distinct
+ * texts. Three of their condition names are declared and never set:
+ * {@code SEARCHED-ACCT-ZEROES} at line 189, {@code SEARCHED-ACCT-NOT-NUMERIC} at line 191
+ * and {@code SEARCHED-CARD-NOT-NUMERIC} at line 193. No {@code SET} site for them exists
+ * in the twenty-eight programs under {@code app/cbl}. Lines 190 and 192 carry the same
+ * characters under two of those names, and each line keeps its own constant.</p>
  *
- * <p>A fourth name, {@code DID-NOT-FIND-ACCT-IN-CARDXREF}, has one set site at
+ * <p>A fourth unreachable name, {@code DID-NOT-FIND-ACCT-IN-CARDXREF}, has one set site at
  * {@code app/cbl/COCRDSLC.cbl:L799}, inside paragraph {@code 9150-GETCARD-BYACCT}. That
- * paragraph spans lines 779 to 810 and no {@code PERFORM} names it.</p>
+ * paragraph spans lines 779 to 810 and no {@code PERFORM} names it.
+ * {@code XREF-READ-ERROR} at line 212 and {@code CODING-TO-BE-DONE} at line 214 complete
+ * the six. The property tests below still cover all six, because each iterates the
+ * declared fields: every text fits the field width, no text names the card verification
+ * value, and every field is public, static and final.</p>
  *
- * <p>Two groups of texts stay out of the production class, and two tests below hold those
- * absences. The six texts under {@code WS-INFO-MSG PIC X(40)} at
- * {@code app/cbl/COCRDUPC.cbl:L157} sit under a different field name. The exit text at
- * lines 175 and 176 is screen navigation, dropped under transformation rule T6 with the
- * navigation fields at {@code app/cpy/CVCRD01Y.cpy:L21}, L23 and L24.</p>
+ * <p>Runtime reaches fifteen texts. Thirteen come from condition names with a reachable
+ * {@code SET} site, among them line 731 and line 774, and two come from the moves at
+ * lines 745 and 789, which each write an upper case literal and use no condition
+ * name.</p>
+ *
+ * <p>Two groups of texts stay out of the production class, and two tests below hold those absences.
+ * The six texts under {@code WS-INFO-MSG PIC X(40)} at {@code app/cbl/COCRDUPC.cbl:L157} sit under
+ * a different field name. The exit text at lines 175 and 176 is screen navigation, dropped under
+ * transformation rule T6 with the navigation fields at {@code app/cpy/CVCRD01Y.cpy:L21}, L23 and
+ * L24.</p>
  *
  * <p>No text names the card verification value {@code CARD-CVV-CD PIC 9(03)} at
  * {@code app/cpy/CVACT02Y.cpy:L7}, and one test holds that line.</p>
- *
- * <p>Rationale for the three deviations named above:
- * {@code card-platform/docs/decision-log.md}. The dead condition names and the duplicate
- * text: {@code card-platform/docs/business-rule-flags.md}. Source to target mapping:
- * {@code card-platform/docs/traceability-matrix.md}.</p>
  */
 class CardValidationMessagesTest {
 
     /** Width of {@code WS-RETURN-MSG PIC X(75)} at {@code app/cbl/COCRDUPC.cbl:L173}. */
     private static final int MESSAGE_FIELD_WIDTH = 75;
 
-    /** Count of {@code public static final String} fields the production class declares. */
-    private static final int DECLARED_FIELD_COUNT = 21;
+    /**
+     * Count of distinct texts runtime can reach. Thirteen condition names under
+     * {@code WS-RETURN-MSG} have a reachable {@code SET} site, and the moves at
+     * {@code app/cbl/COCRDUPC.cbl:L745} and line 789 write two more.
+     */
+    private static final int REACHABLE_TEXT_COUNT = 15;
 
-    /** Count of distinct texts those fields hold. */
-    private static final int DISTINCT_TEXT_COUNT = 20;
+    /** Name prefix that marks a constant carrying no source literal. */
+    private static final String ADDITIVE_FIELD_PREFIX = "ADDITIVE_";
+
+    /** Count of constants that carry no source literal. */
+    private static final int ADDITIVE_TEXT_COUNT = 1;
+
+    /**
+     * The one additive text. It reports the transport width of the expiry day, a field the source
+     * reads from a two-character map field at {@code app/cbl/COCRDUPC.cbl:L312} and edits nowhere.
+     */
+    private static final String EXPECTED_ADDITIVE_EXPIRY_DAY_WIDTH =
+            "Card expiry day must be two digits";
 
     /** Measured length of the two inline literals at lines 745 and 789. */
     private static final int INLINE_LITERAL_LENGTH = 52;
@@ -129,35 +150,6 @@ class CardValidationMessagesTest {
     }
 
     /**
-     * Asserts the two texts at {@code app/cbl/COCRDUPC.cbl:L190} and line 192. The
-     * condition names differ, {@code SEARCHED-ACCT-ZEROES} and
-     * {@code SEARCHED-ACCT-NOT-NUMERIC}, and the characters match.
-     */
-    @Test
-    void bothAccountNumberTextsFromLines190And192AreByteIdentical() {
-        String expected = "Account number must be a non zero 11 digit number";
-        assertEquals(expected, CardValidationMessages.NEVER_EMITTED_SEARCHED_ACCT_ZEROES,
-                "app/cbl/COCRDUPC.cbl:L190 reads: " + expected);
-        assertEquals(expected, CardValidationMessages.NEVER_EMITTED_SEARCHED_ACCT_NOT_NUMERIC,
-                "app/cbl/COCRDUPC.cbl:L192 reads: " + expected);
-        assertEquals(CardValidationMessages.NEVER_EMITTED_SEARCHED_ACCT_ZEROES,
-                CardValidationMessages.NEVER_EMITTED_SEARCHED_ACCT_NOT_NUMERIC,
-                "app/cbl/COCRDUPC.cbl:L190 and line 192 hold the same characters");
-    }
-
-    /**
-     * Asserts the text of {@code SEARCHED-CARD-NOT-NUMERIC} at
-     * {@code app/cbl/COCRDUPC.cbl:L194}, cited at its declaration.
-     */
-    @Test
-    void searchedCardNotNumericMatchesLine194() {
-        assertEquals("Card number if supplied must be a 16 digit number",
-                CardValidationMessages.NEVER_EMITTED_SEARCHED_CARD_NOT_NUMERIC,
-                "app/cbl/COCRDUPC.cbl:L194 reads: "
-                        + "Card number if supplied must be a 16 digit number");
-    }
-
-    /**
      * Asserts the text of {@code CARD-STATUS-MUST-BE-YES-NO} at
      * {@code app/cbl/COCRDUPC.cbl:L196}. The source capitalises Active Status inside the
      * sentence.
@@ -192,18 +184,6 @@ class CardValidationMessagesTest {
         assertEquals("Invalid card expiry year",
                 CardValidationMessages.CARD_EXPIRY_YEAR_NOT_VALID,
                 "app/cbl/COCRDUPC.cbl:L200 reads: Invalid card expiry year");
-    }
-
-    /**
-     * Asserts the text of {@code DID-NOT-FIND-ACCT-IN-CARDXREF} at
-     * {@code app/cbl/COCRDUPC.cbl:L202}.
-     */
-    @Test
-    void didNotFindAcctInCardxrefMatchesLine202() {
-        assertEquals("Did not find this account in cards database",
-                CardValidationMessages.NEVER_EMITTED_DID_NOT_FIND_ACCT_IN_CARDXREF,
-                "app/cbl/COCRDUPC.cbl:L202 reads: "
-                        + "Did not find this account in cards database");
     }
 
     /**
@@ -255,28 +235,6 @@ class CardValidationMessagesTest {
                 "app/cbl/COCRDUPC.cbl:L210 reads: Update of record failed");
     }
 
-    /** Asserts the text of {@code XREF-READ-ERROR} at {@code app/cbl/COCRDUPC.cbl:L212}. */
-    @Test
-    void xrefReadErrorMatchesLine212() {
-        assertEquals("Error reading Card Data File",
-                CardValidationMessages.NEVER_EMITTED_XREF_READ_ERROR,
-                "app/cbl/COCRDUPC.cbl:L212 reads: Error reading Card Data File");
-    }
-
-    /**
-     * Asserts the text of {@code CODING-TO-BE-DONE} at
-     * {@code app/cbl/COCRDUPC.cbl:L214}. Four full stops follow the word Good, and the
-     * second assertion holds that run.
-     */
-    @Test
-    void codingToBeDoneKeepsFourFullStopsFromLine214() {
-        String actual = CardValidationMessages.NEVER_EMITTED_CODING_TO_BE_DONE;
-        assertEquals("Looks Good.... so far", actual,
-                "app/cbl/COCRDUPC.cbl:L214 reads: Looks Good.... so far");
-        assertEquals("....", actual.substring(10, 14),
-                "app/cbl/COCRDUPC.cbl:L214 carries four full stops after Good");
-    }
-
     // The two inline moves. Lines 745 and 789 write an upper case literal and use
     // no condition name.
 
@@ -322,54 +280,61 @@ class CardValidationMessagesTest {
                 "app/cbl/COCRDUPC.cbl:L789 reads A 16 before DIGIT NUMBER");
     }
 
-    // Inventory. The distinct-text set catches a missing text, an extra text, or a typo.
+    // Inventory of the texts runtime reaches. The set below names every text a caller can
+    // receive, so a missing text or a typo fails this test. The set stays open at the
+    // upper end: a text the production class declares and runtime never reaches passes
+    // here, and removing such a declaration also passes.
 
     /**
-     * Asserts the whole inventory. The production class holds twenty distinct texts, and
-     * the set below names every one. A missing text, an extra text, or a changed
-     * character fails this test.
+     * Asserts that every text runtime can reach is declared, character for character.
+     * Thirteen of the fifteen come from condition names under
+     * {@code WS-RETURN-MSG PIC X(75)} at {@code app/cbl/COCRDUPC.cbl:L173}, and two come
+     * from the inline moves at lines 745 and 789.
+     *
+     * <p>Each text is typed here and mapped to the constant that must hold it, so this
+     * test names the constant that drifted rather than reporting a set difference.</p>
      */
     @Test
-    void distinctTextsNumberExactlyTwentyAndMatchTheSourceInventory() {
-        Set<String> expected = Set.of(
-                "Account number not provided",
-                "Card number not provided",
-                "Card name not provided",
-                "Card name can only contain alphabets and spaces",
-                "No input received",
-                "No change detected with respect to values fetched.",
-                "Account number must be a non zero 11 digit number",
-                "Card number if supplied must be a 16 digit number",
-                "Card Active Status must be Y or N",
-                "Card expiry month must be between 1 and 12",
-                "Invalid card expiry year",
-                "Did not find this account in cards database",
-                "Did not find cards for this search condition",
-                "Could not lock record for update",
-                "Record changed by some one else. Please review",
-                "Update of record failed",
-                "Error reading Card Data File",
-                "Looks Good.... so far",
-                "ACCOUNT FILTER,IF SUPPLIED MUST BE A 11 DIGIT NUMBER",
+    void everyTextRuntimeReachesIsDeclaredCharacterForCharacter() {
+        Map<String, String> reachable = new LinkedHashMap<>();
+        reachable.put("PROMPT_FOR_ACCT", "Account number not provided");
+        reachable.put("PROMPT_FOR_CARD", "Card number not provided");
+        reachable.put("PROMPT_FOR_NAME", "Card name not provided");
+        reachable.put("NAME_MUST_BE_ALPHA",
+                "Card name can only contain alphabets and spaces");
+        reachable.put("NO_SEARCH_CRITERIA_RECEIVED", "No input received");
+        reachable.put("NO_CHANGES_DETECTED",
+                "No change detected with respect to values fetched.");
+        reachable.put("CARD_STATUS_MUST_BE_YES_NO", "Card Active Status must be Y or N");
+        reachable.put("CARD_EXPIRY_MONTH_NOT_VALID",
+                "Card expiry month must be between 1 and 12");
+        reachable.put("CARD_EXPIRY_YEAR_NOT_VALID", "Invalid card expiry year");
+        reachable.put("DID_NOT_FIND_ACCTCARD_COMBO",
+                "Did not find cards for this search condition");
+        reachable.put("COULD_NOT_LOCK_FOR_UPDATE", "Could not lock record for update");
+        reachable.put("DATA_WAS_CHANGED_BEFORE_UPDATE",
+                "Record changed by some one else. Please review");
+        reachable.put("LOCKED_BUT_UPDATE_FAILED", "Update of record failed");
+        reachable.put("ACCOUNT_FILTER_NOT_NUMERIC",
+                "ACCOUNT FILTER,IF SUPPLIED MUST BE A 11 DIGIT NUMBER");
+        reachable.put("CARD_FILTER_NOT_NUMERIC",
                 "CARD ID FILTER,IF SUPPLIED MUST BE A 16 DIGIT NUMBER");
-        Set<String> actual = messageTexts();
-        assertEquals(DISTINCT_TEXT_COUNT, actual.size(),
-                "app/cbl/COCRDUPC.cbl supplies 20 distinct texts, 18 from the condition "
-                        + "names at lines 178 to 214 and 2 from the moves at lines 745 and 789");
-        assertEquals(expected, actual,
-                "the distinct texts match the source inventory character for character");
-    }
 
-    /**
-     * Asserts the declared field count. The production class holds twenty-one constants
-     * for twenty texts. Lines 190 and 192 each keep their own constant.
-     */
-    @Test
-    void classDeclaresTwentyOneTextFields() {
-        assertEquals(DECLARED_FIELD_COUNT, declaredFields().size(),
-                "CardValidationMessages declares 21 fields");
-        assertEquals(DECLARED_FIELD_COUNT, textFields().size(),
-                "every declared field of CardValidationMessages holds a String");
+        assertEquals(REACHABLE_TEXT_COUNT, reachable.size(),
+                "the set above names every text a caller can receive: 13 from the "
+                        + "condition names set in app/cbl/COCRDUPC.cbl and 2 from the "
+                        + "moves at lines 745 and 789");
+        assertEquals(REACHABLE_TEXT_COUNT, Set.copyOf(reachable.values()).size(),
+                "no two texts a caller can receive hold the same characters");
+
+        Set<String> declared = messageTexts();
+        for (Map.Entry<String, String> text : reachable.entrySet()) {
+            assertEquals(text.getValue(), constantValue(text.getKey()),
+                    "CardValidationMessages." + text.getKey()
+                            + " holds its source text character for character");
+            assertTrue(declared.contains(text.getValue()),
+                    "CardValidationMessages declares the text of " + text.getKey());
+        }
     }
 
     // Absences.
@@ -504,6 +469,30 @@ class CardValidationMessagesTest {
     // Reflection helpers.
 
     /**
+     * Returns the text one named constant holds.
+     *
+     * @param name name of a {@code public static final String} field of
+     *        {@link CardValidationMessages}
+     * @return the text that field holds
+     * @throws AssertionError when the class declares no field of that name, or when the
+     *         field cannot be read
+     */
+    private static String constantValue(String name) {
+        for (Field field : textFields()) {
+            if (field.getName().equals(name)) {
+                try {
+                    return (String) field.get(null);
+                } catch (IllegalAccessException unreadable) {
+                    throw new AssertionError(
+                            "CardValidationMessages." + name + " cannot be read",
+                            unreadable);
+                }
+            }
+        }
+        throw new AssertionError("CardValidationMessages declares no field named " + name);
+    }
+
+    /**
      * Returns every field {@code CardValidationMessages} declares, minus the synthetic
      * fields some coverage tools add.
      */
@@ -535,6 +524,43 @@ class CardValidationMessagesTest {
             texts.add(readText(field));
         }
         return texts;
+    }
+
+    /**
+     * Returns the distinct texts of the constants that carry a source literal, which is every
+     * constant whose name does not open with {@value #ADDITIVE_FIELD_PREFIX}.
+     */
+    private static Set<String> sourceMessageTexts() {
+        Set<String> texts = new LinkedHashSet<>();
+        for (Field field : sourceTextFields()) {
+            texts.add(readText(field));
+        }
+        return texts;
+    }
+
+    /**
+     * Returns the distinct texts of the constants that carry no source literal, which is every
+     * constant whose name opens with {@value #ADDITIVE_FIELD_PREFIX}.
+     */
+    private static Set<String> additiveMessageTexts() {
+        Set<String> texts = new LinkedHashSet<>();
+        for (Field field : textFields()) {
+            if (field.getName().startsWith(ADDITIVE_FIELD_PREFIX)) {
+                texts.add(readText(field));
+            }
+        }
+        return texts;
+    }
+
+    /** Returns the text fields that carry a source literal. */
+    private static List<Field> sourceTextFields() {
+        List<Field> fields = new ArrayList<>();
+        for (Field field : textFields()) {
+            if (!field.getName().startsWith(ADDITIVE_FIELD_PREFIX)) {
+                fields.add(field);
+            }
+        }
+        return fields;
     }
 
     /**

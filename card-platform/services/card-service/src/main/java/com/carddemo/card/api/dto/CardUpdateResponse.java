@@ -6,9 +6,9 @@ import java.util.Objects;
  * Body returned by {@code PUT /cards/{cardNumber}}.
  *
  * <p>Three components carry the result: the outcome, at most one message, and a
- * refreshed snapshot of the stored card. {@code CardController} maps each outcome
- * to a HyperText Transfer Protocol (HTTP) status and writes this record as the
- * response body.</p>
+ * refreshed snapshot of the stored card. The canonical constructor checks the
+ * relationship between the outcome and the snapshot, and the seven factory methods
+ * below build the seven outcomes.</p>
  *
  * <p>Paragraph {@code 9300-CHECK-CHANGE-IN-REC} at
  * {@code app/cbl/COCRDUPC.cbl:L1498} re-reads the stored card and compares six
@@ -24,20 +24,19 @@ import java.util.Objects;
  *
  * <p>The message slot holds one text and never a list. Fifteen
  * {@code IF WS-RETURN-MSG-OFF} guards in {@code app/cbl/COCRDUPC.cbl} let every
- * field edit run and keep the first failing text. {@code CardUpdateService} runs
- * those edits and picks that text. Every fixed text this record carries comes
- * from {@link CardValidationMessages}.</p>
+ * guarded field edit run and keep the first failing text. The caller runs those
+ * edits and picks that text. Every fixed text this record carries comes from
+ * {@link CardValidationMessages}.</p>
  *
- * <p>Rationale for the five-value snapshot, for the corrected spelling of the
- * expiry components, and for detecting a conflict by field comparison:
- * {@code card-platform/docs/decision-log.md}.</p>
- *
- * @param outcome what happened to the stored card record. Required.
- * @param message the single text this outcome carries. Null on
- *        {@link UpdateOutcome#UPDATED}.
- * @param refreshedCard the five values re-read from the stored card. Present on
- *        {@link UpdateOutcome#CHANGED_BEFORE_UPDATE} and null on every other
- *        outcome.
+ * @param outcome what happened to the stored card record. The canonical constructor
+ *        rejects null.
+ * @param message the single text this response carries; nullable. The canonical
+ *        constructor accepts any text with any outcome, and {@link #updated()} is
+ *        the one factory that leaves the slot empty.
+ * @param refreshedCard the five values re-read from the stored card. The canonical
+ *        constructor requires one for
+ *        {@link UpdateOutcome#CHANGED_BEFORE_UPDATE} and rejects one for every
+ *        other outcome.
  */
 public record CardUpdateResponse(
         UpdateOutcome outcome,
@@ -45,15 +44,43 @@ public record CardUpdateResponse(
         RefreshedCard refreshedCard) {
 
     /**
-     * Checks the two invariants of this response.
+     * Marks an outcome that carries no fixed text. {@link UpdateOutcome#UPDATED} carries
+     * no message at all, and {@link UpdateOutcome#VALIDATION_REJECTED} carries the text
+     * of the edit that failed.
+     */
+    private static final String NO_REQUIRED_MESSAGE = null;
+
+    /**
+     * Checks the whole outcome, message and snapshot matrix.
+     *
+     * <p>{@link UpdateOutcome#UPDATED} carries no message.
+     * {@link UpdateOutcome#VALIDATION_REJECTED} carries the text of the failing edit,
+     * so any non-blank text is valid there. Each of the five remaining outcomes
+     * carries the one fixed text {@link UpdateOutcome#requiredMessage()} names.
+     * {@link UpdateOutcome#CHANGED_BEFORE_UPDATE} is the one outcome that carries a
+     * snapshot, and it always carries one.</p>
      *
      * @throws NullPointerException when the outcome is null
-     * @throws IllegalArgumentException when
-     *         {@link UpdateOutcome#CHANGED_BEFORE_UPDATE} arrives with no snapshot,
-     *         or when any other outcome arrives with one
+     * @throws IllegalArgumentException when the message does not match the outcome, or
+     *         when {@link UpdateOutcome#CHANGED_BEFORE_UPDATE} arrives with no
+     *         snapshot, or when any other outcome arrives with one
      */
     public CardUpdateResponse {
         Objects.requireNonNull(outcome, "outcome is required");
+        String requiredMessage = outcome.requiredMessage();
+        if (outcome == UpdateOutcome.UPDATED) {
+            if (message != null) {
+                throw new IllegalArgumentException("UPDATED carries no message");
+            }
+        } else if (requiredMessage == null) {
+            if (message == null || message.isBlank()) {
+                throw new IllegalArgumentException(
+                        outcome + " requires the text of the failing edit");
+            }
+        } else if (!requiredMessage.equals(message)) {
+            throw new IllegalArgumentException(
+                    outcome + " carries one fixed text and this message is not that text");
+        }
         boolean changedByAnotherWriter = outcome == UpdateOutcome.CHANGED_BEFORE_UPDATE;
         if (changedByAnotherWriter && refreshedCard == null) {
             throw new IllegalArgumentException(
@@ -161,9 +188,12 @@ public record CardUpdateResponse(
     }
 
     /**
-     * Reports whether the message slot holds text. A null message and a message of
-     * only white space both leave the slot empty, matching
-     * {@code WS-RETURN-MSG-OFF VALUE SPACES} at {@code app/cbl/COCRDUPC.cbl:L174}.
+     * Reports whether the message slot holds text. The test is
+     * {@code message != null && !message.isBlank()}, and {@link String#isBlank()} is
+     * true for an empty string and for a string of white space only, so a null
+     * message, an empty message and a white-space message all report false. The
+     * source condition name {@code WS-RETURN-MSG-OFF VALUE SPACES} at
+     * {@code app/cbl/COCRDUPC.cbl:L174} tests one fixed-width field for spaces.
      *
      * @return true when the message holds at least one character that is not white
      *         space
@@ -193,10 +223,10 @@ public record CardUpdateResponse(
         /**
          * The stored card record was rewritten. The rewrite runs at
          * {@code app/cbl/COCRDUPC.cbl:L1477-L1483} and line 1488 tests it for
-         * success. {@code CardController} answers with HTTP status 200. This outcome
-         * carries no message and no snapshot.
+         * success. {@link #updated()} builds this outcome with no message and no
+         * snapshot.
          */
-        UPDATED,
+        UPDATED(NO_REQUIRED_MESSAGE),
 
         /**
          * The submitted values match the stored values, so nothing was written.
@@ -204,58 +234,82 @@ public record CardUpdateResponse(
          * card group against the whole old card group, after folding both to upper
          * case. Line 682 sets the text.
          *
-         * <p>A caller who changes only letter case reaches this outcome.
-         * {@code CardController} answers with HTTP status 200. This outcome carries
-         * {@link CardValidationMessages#NO_CHANGES_DETECTED}.</p>
+         * <p>A caller who changes only letter case reaches this outcome, which
+         * carries {@link CardValidationMessages#NO_CHANGES_DETECTED}.</p>
          */
-        NO_CHANGE_DETECTED,
+        NO_CHANGE_DETECTED(CardValidationMessages.NO_CHANGES_DETECTED),
 
         /**
          * One field edit rejected its value, so nothing was written. The first of
          * the fifteen guarded edits sits at {@code app/cbl/COCRDUPC.cbl:L730} and
-         * the last at line 1445. {@code CardController} answers with HTTP status
-         * 422. This outcome carries the text of the first failing edit, taken from
-         * {@link CardValidationMessages}.
+         * the last at line 1445. This outcome carries the text of the first failing
+         * edit, taken from {@link CardValidationMessages}.
          */
-        VALIDATION_REJECTED,
+        VALIDATION_REJECTED(NO_REQUIRED_MESSAGE),
 
         /**
          * No stored card matches the account and card numbers supplied.
          * {@code app/cbl/COCRDUPC.cbl:L1400} sets the text, under the guard on line
-         * 1399, in the not-found branch of the card read. {@code CardController}
-         * answers with HTTP status 404. This outcome carries
+         * 1399, in the not-found branch of the card read. This outcome carries
          * {@link CardValidationMessages#DID_NOT_FIND_ACCTCARD_COMBO}.
          */
-        CARD_NOT_FOUND,
+        CARD_NOT_FOUND(CardValidationMessages.DID_NOT_FIND_ACCTCARD_COMBO),
 
         /**
          * Another writer changed the stored card between the read and the rewrite.
          * The comparison at {@code app/cbl/COCRDUPC.cbl:L1503-L1508} fails, line
          * 1511 sets the text, and lines 1512 to 1517 refresh the saved values.
          *
-         * <p>{@code CardController} answers with HTTP status 409. This is the one
-         * outcome that carries a {@link RefreshedCard}, alongside
+         * <p>This is the one outcome that carries a {@link RefreshedCard},
+         * alongside
          * {@link CardValidationMessages#DATA_WAS_CHANGED_BEFORE_UPDATE}.</p>
          */
-        CHANGED_BEFORE_UPDATE,
+        CHANGED_BEFORE_UPDATE(CardValidationMessages.DATA_WAS_CHANGED_BEFORE_UPDATE),
 
         /**
          * The read for update did not return the stored card, so no rewrite ran.
          * Line 1441 of {@code app/cbl/COCRDUPC.cbl} tests that read and line 1446
-         * sets the text, under the guard on line 1445. {@code CardController}
-         * answers with HTTP status 409. This outcome carries
+         * sets the text, under the guard on line 1445. This outcome carries
          * {@link CardValidationMessages#COULD_NOT_LOCK_FOR_UPDATE}.
          */
-        LOCK_NOT_ACQUIRED,
+        LOCK_NOT_ACQUIRED(CardValidationMessages.COULD_NOT_LOCK_FOR_UPDATE),
 
         /**
          * The rewrite failed after the read for update had succeeded. Line 1488 of
          * {@code app/cbl/COCRDUPC.cbl} tests the rewrite and line 1491 sets the
-         * text. {@code CardController} answers with a retryable status in the 500
-         * range. This outcome carries
+         * text. This outcome carries
          * {@link CardValidationMessages#LOCKED_BUT_UPDATE_FAILED}.
          */
-        UPDATE_FAILED_AFTER_LOCK
+        UPDATE_FAILED_AFTER_LOCK(CardValidationMessages.LOCKED_BUT_UPDATE_FAILED);
+
+        /**
+         * The fixed text this outcome carries, or {@code null} when it carries none and
+         * when it carries the text of a failing edit.
+         */
+        private final String requiredMessage;
+
+        /**
+         * Records the fixed text of one outcome.
+         *
+         * @param requiredMessage the one text this outcome carries, or {@code null} for
+         *        {@link #UPDATED} and {@link #VALIDATION_REJECTED}
+         */
+        UpdateOutcome(String requiredMessage) {
+            this.requiredMessage = requiredMessage;
+        }
+
+        /**
+         * Returns the fixed text this outcome carries.
+         *
+         * <p>{@link #UPDATED} carries no message and {@link #VALIDATION_REJECTED}
+         * carries the text of the failing edit, so both return {@code null}. The
+         * canonical constructor of {@link CardUpdateResponse} separates those two.</p>
+         *
+         * @return the one text this outcome carries, or {@code null}
+         */
+        public String requiredMessage() {
+            return requiredMessage;
+        }
     }
 
     /**

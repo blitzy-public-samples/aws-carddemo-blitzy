@@ -20,22 +20,21 @@ import static org.assertj.core.api.Assertions.assertThat;
  * Tests for {@link YesNoFlagValidator}, which realises {@code 1220-EDIT-YESNO} at
  * app/cbl/COACTUPC.cbl:L1856 and ends at app/cbl/COACTUPC.cbl:L1894.
  *
- * <p>The paragraph edits {@code WS-EDIT-YES-NO PIC X(1) VALUE 'N'} at
- * app/cbl/COACTUPC.cbl:L76-L77. One byte carries the value and the flag, under three condition
- * names at app/cbl/COACTUPC.cbl:L78-L80. The dual-purpose byte is recorded in
- * card-platform/docs/business-rule-flags.md.</p>
+ * <p>The paragraph edits {@code WS-EDIT-YES-NO PIC X(1) VALUE 'N'} at app/cbl/COACTUPC.cbl:L76-L77.
+ * One byte carries the value and the flag, under three condition names at
+ * app/cbl/COACTUPC.cbl:L78-L80.</p>
  *
  * <p>Two tests run in order, and each failing test ends the paragraph. The presence test at
- * app/cbl/COACTUPC.cbl:L1861-L1863 reads {@code LOW-VALUES}, {@code SPACES} and {@code ZEROS}.
- * It carries no trim-length clause, and the presence test of {@code 1215-EDIT-MANDATORY} at
- * app/cbl/COACTUPC.cbl:L1829-L1834 carries one. A value of {@code 0} therefore reaches the
- * message at app/cbl/COACTUPC.cbl:L1869. The character-class test at app/cbl/COACTUPC.cbl:L1878
- * reaches the message at app/cbl/COACTUPC.cbl:L1886.</p>
+ * app/cbl/COACTUPC.cbl:L1861-L1863 reads {@code LOW-VALUES}, {@code SPACES} and {@code ZEROS}. It
+ * carries no trim-length clause, and the presence test of {@code 1215-EDIT-MANDATORY} at
+ * app/cbl/COACTUPC.cbl:L1829-L1834 carries one. A value of {@code 0} therefore reaches the message
+ * at app/cbl/COACTUPC.cbl:L1869. The character-class test at app/cbl/COACTUPC.cbl:L1878 reaches the
+ * message at app/cbl/COACTUPC.cbl:L1886.</p>
  *
  * <p>Two source facts shape the assertions below. The entry {@code SET} at
  * app/cbl/COACTUPC.cbl:L1858 is commented out. The callers copy the edited byte back out at
  * app/cbl/COACTUPC.cbl:L1476 and app/cbl/COACTUPC.cbl:L1662, and the target drops that
- * write-back. Both facts are recorded in card-platform/docs/decision-log.md.</p>
+ * write-back.</p>
  *
  * <p>Every input below is built in the test. The class reads plain strings, and {@code mvn test}
  * runs it with no database, no broker and no container runtime.</p>
@@ -71,7 +70,19 @@ class YesNoFlagValidatorTest {
     /** The one character {@code LOW-VALUES} moves into a {@code PIC X} field. */
     private static final String LOW_VALUES_VALUE = Character.toString('\0');
 
-    /** Values wider than the one-character source field, read by the reachable-message sweep. */
+    /**
+     * Declared width of {@code WS-EDIT-YES-NO PIC X(1)} at app/cbl/COACTUPC.cbl:L76. The two call
+     * sites reach the paragraph through a {@code MOVE} into that one byte, at
+     * app/cbl/COACTUPC.cbl:L1473 and app/cbl/COACTUPC.cbl:L1659.
+     */
+    private static final int HOST_FIELD_WIDTH = 1;
+
+    /**
+     * Values wider than the one-character host field. A {@code MOVE} into {@code PIC X(1)} keeps
+     * the leftmost character and discards the rest, so none of these reaches the edit paragraph as
+     * written. {@link #hostFieldByte(String)} performs that truncation, and
+     * {@link #aWiderValueReachesTheEditAsItsLeftmostByte()} reads the outcome.
+     */
     private static final List<String> WIDER_THAN_SOURCE_VALUES =
             List.of("YY", "NN", "YN", "Y ", " N", "0X", "X0", "yes", "no", "  0", "B0", "000");
 
@@ -158,6 +169,40 @@ class YesNoFlagValidatorTest {
     }
 
     @Test
+    @DisplayName("A value wider than the one-byte host field reaches the edit as its leftmost byte, "
+            + "so the mapping and not the edit decides the outcome")
+    void aWiderValueReachesTheEditAsItsLeftmostByte() {
+        // The mapping layer first: a MOVE into PIC X(1) at app/cbl/COACTUPC.cbl:L1473 keeps the
+        // leftmost character alone.
+        assertThat(hostFieldByte("Y ")).isEqualTo("Y");
+        assertThat(hostFieldByte("YN")).isEqualTo("Y");
+        assertThat(hostFieldByte(" N")).isEqualTo(" ");
+        assertThat(hostFieldByte("0X")).isEqualTo("0");
+        assertThat(hostFieldByte("no")).isEqualTo("n");
+        assertThat(hostFieldByte("")).isEqualTo(" ");
+        assertThat(hostFieldByte(null)).isEqualTo(" ");
+
+        for (String value : WIDER_THAN_SOURCE_VALUES) {
+            assertThat(hostFieldByte(value))
+                    .as("host field byte of a %d-character value", value.length())
+                    .hasSize(HOST_FIELD_WIDTH);
+        }
+
+        // Then the edit, reading the one byte the mapping produced. A value opening with Y passes,
+        // even though the caller supplied two characters.
+        assertThat(YesNoFlagValidator.validate(ACCOUNT_STATUS_LABEL, hostFieldByte("Y ")).valid())
+                .isTrue();
+        assertThat(YesNoFlagValidator.validate(ACCOUNT_STATUS_LABEL, hostFieldByte("YN")).valid())
+                .isTrue();
+        assertThat(YesNoFlagValidator.validate(ACCOUNT_STATUS_LABEL, hostFieldByte(" N")).message())
+                .isEqualTo(ACCOUNT_STATUS_LABEL + NOT_SUPPLIED_LITERAL);
+        assertThat(YesNoFlagValidator.validate(ACCOUNT_STATUS_LABEL, hostFieldByte("0X")).message())
+                .isEqualTo(ACCOUNT_STATUS_LABEL + NOT_SUPPLIED_LITERAL);
+        assertThat(YesNoFlagValidator.validate(ACCOUNT_STATUS_LABEL, hostFieldByte("no")).message())
+                .isEqualTo(ACCOUNT_STATUS_LABEL + NOT_YES_OR_NO_LITERAL);
+    }
+
+    @Test
     @DisplayName("A value of low values reports the supplied message")
     void lowValuesReportsTheNotSuppliedMessage() {
         // app/cbl/COACTUPC.cbl:L1861 - IF WS-EDIT-YES-NO EQUAL LOW-VALUES.
@@ -177,7 +222,7 @@ class YesNoFlagValidatorTest {
      * @param value the value to edit
      */
     @ParameterizedTest
-    @ValueSource(strings = {"X", "B", "Z", "1", "9", "-", "*", "YN", "Y ", " N", "0X"})
+    @ValueSource(strings = {"X", "B", "Z", "1", "9", "-", "*", "+", "/", "\t"})
     @DisplayName("Any other value reports the Y or N message")
     void otherValuesReportTheYesOrNoMessage(String value) {
         // app/cbl/COACTUPC.cbl:L1886 - ' must be Y or N.'
@@ -257,7 +302,7 @@ class YesNoFlagValidatorTest {
             collectOutcome(String.valueOf((char) character), passingValues, messages);
         }
         for (String value : WIDER_THAN_SOURCE_VALUES) {
-            collectOutcome(value, passingValues, messages);
+            collectOutcome(hostFieldByte(value), passingValues, messages);
         }
         collectOutcome(null, passingValues, messages);
 
@@ -356,5 +401,23 @@ class YesNoFlagValidatorTest {
         } else {
             messages.add(result.message());
         }
+    }
+
+    /**
+     * Reproduces the {@code MOVE} into {@code WS-EDIT-YES-NO PIC X(1)} that both call sites make,
+     * at app/cbl/COACTUPC.cbl:L1473 and app/cbl/COACTUPC.cbl:L1659.
+     *
+     * <p>A COBOL {@code MOVE} of an alphanumeric item into a narrower alphanumeric item aligns to
+     * the left and truncates on the right, so a wider value arrives at the edit paragraph as its
+     * leftmost character alone. A shorter value pads on the right with a space.</p>
+     *
+     * @param value the value a caller holds; may be {@code null}
+     * @return the one character the host field holds after the move
+     */
+    private static String hostFieldByte(String value) {
+        if (value == null || value.isEmpty()) {
+            return " ";
+        }
+        return value.substring(0, HOST_FIELD_WIDTH);
     }
 }

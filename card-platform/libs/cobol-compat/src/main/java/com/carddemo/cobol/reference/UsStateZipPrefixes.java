@@ -1,5 +1,8 @@
 package com.carddemo.cobol.reference;
 
+import java.util.Arrays;
+import java.util.Collections;
+import java.util.LinkedHashSet;
 import java.util.Set;
 
 /**
@@ -20,18 +23,16 @@ import java.util.Set;
  * data origin.</p>
  *
  * <p>The account service owns the failure message and the branch at
- * {@code app/cbl/COACTUPC.cbl:L2544-L2555}. Flagged items for that paragraph are listed in
- * {@code card-platform/docs/business-rule-flags.md}.</p>
- *
- * <p>Decisions behind this library: {@code card-platform/docs/decision-log.md}.</p>
+ * {@code app/cbl/COACTUPC.cbl:L2544-L2555}.</p>
  */
 public final class UsStateZipPrefixes {
 
     /**
      * The 240 values listed under {@code VALID-US-STATE-ZIP-CD2-COMBO} at
-     * {@code app/cpy/CSLKPCDY.cpy:L1074-L1313}, transcribed in copybook order.
+     * {@code app/cpy/CSLKPCDY.cpy:L1074-L1313}, transcribed in copybook order. The set preserves
+     * that order on iteration, and {@link #validCombinations} exposes it unmodifiable.
      */
-    private static final Set<String> VALID_STATE_ZIP_CD2_COMBINATIONS = Set.of(
+    private static final Set<String> VALID_STATE_ZIP_CD2_COMBINATIONS = orderedSetOf(
             "AA34", "AE90", "AE91", "AE92", "AE93", "AE94", "AE95", "AE96",
             "AE97", "AE98", "AK99", "AL35", "AL36", "AP96", "AR71", "AR72",
             "AS96", "AZ85", "AZ86", "CA90", "CA91", "CA92", "CA93", "CA94",
@@ -63,8 +64,17 @@ public final class UsStateZipPrefixes {
             "VT52", "VT53", "VT54", "VT56", "VT57", "VT58", "VT59", "WA98",
             "WA99", "WI53", "WI54", "WV24", "WV25", "WV26", "WY82", "WY83");
 
-    /** No instances. Every member of this class is static. */
     private UsStateZipPrefixes() {
+    }
+
+    /**
+     * Collects the listed values into a set that iterates in the order they arrive.
+     *
+     * @param combinations the copybook values, in copybook order
+     * @return an unmodifiable set holding those values in that order
+     */
+    private static Set<String> orderedSetOf(String... combinations) {
+        return Collections.unmodifiableSet(new LinkedHashSet<>(Arrays.asList(combinations)));
     }
 
     /**
@@ -86,9 +96,10 @@ public final class UsStateZipPrefixes {
 
     /**
      * Returns the 240 combinations of {@code app/cpy/CSLKPCDY.cpy:L1074-L1313} as an unmodifiable
-     * set. A call to {@code add} on the returned set throws {@link UnsupportedOperationException}.
+     * set that iterates in copybook order. A call to {@code add} on the returned set throws
+     * {@link UnsupportedOperationException}.
      *
-     * @return the 240 four-character combinations, unmodifiable
+     * @return the 240 four-character combinations in copybook order, unmodifiable
      */
     public static Set<String> validCombinations() {
         return VALID_STATE_ZIP_CD2_COMBINATIONS;

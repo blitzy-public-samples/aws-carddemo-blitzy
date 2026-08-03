@@ -6,12 +6,14 @@ import java.time.LocalDateTime;
 import java.util.Objects;
 
 /**
- * Fixed-point arithmetic for every monetary field in the platform. Each method returns a
- * {@link BigDecimal} truncated toward zero at a scale the caller supplies.
+ * Fixed-point arithmetic for every monetary field in the platform. Arithmetic methods return
+ * {@link BigDecimal} values truncated toward zero at a scale the caller supplies;
+ * {@link #formatProcessingTimestamp(LocalDateTime)} returns a {@link String} and performs no
+ * arithmetic.
  *
  * <p>The {@code ROUNDED} phrase appears zero times across all 28 programs in {@code app/cbl/},
- * so every COBOL arithmetic store truncates. Each method here pins {@link RoundingMode#DOWN}.
- * No method takes a rounding mode, and no overload offers one.</p>
+ * so every COBOL arithmetic store truncates. Every arithmetic method here pins
+ * {@link RoundingMode#DOWN}, takes no rounding mode, and offers no overload that does.</p>
  *
  * <p>The source statements that move money sit at these locators, and each one is reachable
  * through a method below.</p>
@@ -29,20 +31,13 @@ import java.util.Objects;
  *       and divides by 1200.</li>
  * </ol>
  *
- * <p>A negative amount reaches the debit accumulator at {@code app/cbl/CBTRN02C.cbl:L551}, and
- * the overlimit formula subtracts that accumulator at {@code app/cbl/CBTRN02C.cbl:L404}. Every
- * method here truncates toward zero for a negative value and for a positive one.</p>
+ * <p>Three source working fields hold nine integer digits, one fewer than the five account money
+ * fields at {@code app/cpy/CVACT01Y.cpy:L7-L9} and {@code app/cpy/CVACT01Y.cpy:L13-L14}. The
+ * three are {@code WS-TEMP-BAL} at {@code app/cbl/CBTRN02C.cbl:L187}, and
+ * {@code WS-MONTHLY-INT} and {@code WS-TOTAL-INT} at {@code app/cbl/CBACT04C.cbl:L168-L169}.
+ * {@link #truncateToPictureField(BigDecimal, int, int)} reproduces all three narrowings.</p>
  *
- * <p>Three source working fields hold nine integer digits, one fewer than the five account
- * money fields at {@code app/cpy/CVACT01Y.cpy:L7-L9} and {@code app/cpy/CVACT01Y.cpy:L13-L14}.
- * The three are {@code WS-TEMP-BAL} at
- * {@code app/cbl/CBTRN02C.cbl:L187}, and {@code WS-MONTHLY-INT} and {@code WS-TOTAL-INT} at
- * {@code app/cbl/CBACT04C.cbl:L168-L169}.
- * {@link #truncateToPictureField(BigDecimal, int, int)} reproduces all three narrowings, which
- * are listed in {@code card-platform/docs/business-rule-flags.md}.</p>
- *
- * <p>Scales, precisions, and timestamp widths come from {@link PicClause}. Rationale for the
- * choices behind this class lives in {@code card-platform/docs/decision-log.md}.</p>
+ * <p>Scales, precisions, and timestamp widths come from {@link PicClause}.</p>
  */
 public final class CobolDecimal {
 
@@ -52,7 +47,7 @@ public final class CobolDecimal {
      */
     public static final BigDecimal INTEREST_DIVISOR = BigDecimal.valueOf(1200L);
 
-    /** Nanoseconds in one second, the unit {@link LocalDateTime#getNano()} reports. */
+    /** The unit {@link LocalDateTime#getNano()} reports. */
     private static final int NANOSECONDS_PER_SECOND = 1_000_000_000;
 
     /**
@@ -75,19 +70,16 @@ public final class CobolDecimal {
             .pow(PicClause.PROCESSING_TIMESTAMP_YEAR_WIDTH)
             .intValueExact() - 1;
 
-    /** The character each zero-padded timestamp component is padded with. */
     private static final char PADDING_DIGIT = '0';
 
-    /** This class holds static members only. */
     private CobolDecimal() {
     }
 
     /**
      * Adds two values and truncates the result toward zero at the given scale.
      *
-     * <p>The {@code ROUNDED} phrase appears zero times across all 28 programs in
-     * {@code app/cbl/}, so every COBOL arithmetic store truncates. This method reproduces the
-     * {@code ADD} statements at {@code app/cbl/CBTRN02C.cbl:L508},
+     * <p>This method reproduces the {@code ADD} statements at
+     * {@code app/cbl/CBTRN02C.cbl:L508},
      * {@code app/cbl/CBTRN02C.cbl:L527}, {@code app/cbl/CBTRN02C.cbl:L547-L551},
      * {@code app/cbl/CBACT04C.cbl:L352}, and {@code app/cbl/CBACT04C.cbl:L467}.</p>
      *
@@ -308,8 +300,7 @@ public final class CobolDecimal {
      * <p>The shape is {@value PicClause#PROCESSING_TIMESTAMP_SHAPE}, and the result is always
      * {@value PicClause#PROCESSING_TIMESTAMP_WIDTH} characters. A dash separates the day from
      * the hour, at index 10. Two digits carry hundredths of a second, and the final four
-     * characters are literal zeros. Neither ISO 8601 nor the standard Db2 timestamp text carries
-     * a dash at index 10.</p>
+     * characters are literal zeros.</p>
      *
      * <p>Five points in the source fix that shape. {@code app/cbl/CBTRN02C.cbl:L149} carries the
      * author's own ruler for it. {@code app/cbl/CBTRN02C.cbl:L166} places the third dash between
@@ -364,24 +355,12 @@ public final class CobolDecimal {
         return rendered.toString();
     }
 
-    /**
-     * Counts the digits a value carries in front of the decimal point. A magnitude below one
-     * yields a count of zero or less, which stays below any field width.
-     *
-     * @param value the value to measure
-     * @return the count of integer digits
-     */
+    /** Counts the digits a value carries in front of the decimal point. */
     private static int integerDigitCount(BigDecimal value) {
         return value.precision() - value.scale();
     }
 
-    /**
-     * Appends one timestamp component, padded on the left with zeros to a fixed width.
-     *
-     * @param target the buffer the component is appended to
-     * @param value  the component value, never wider than {@code width} digits
-     * @param width  the count of characters the component occupies
-     */
+    /** Appends one timestamp component, padded on the left with zeros to a fixed width. */
     private static void appendZeroPadded(StringBuilder target, int value, int width) {
         String digits = Integer.toString(value);
         for (int written = digits.length(); written < width; written++) {
@@ -390,12 +369,7 @@ public final class CobolDecimal {
         target.append(digits);
     }
 
-    /**
-     * Rejects a negative scale.
-     *
-     * @param scale the scale a caller supplied
-     * @throws IllegalArgumentException if {@code scale} is negative
-     */
+    /** Rejects a negative scale. */
     private static void requireNonNegativeScale(int scale) {
         if (scale < 0) {
             throw new IllegalArgumentException("scale must not be negative: scale=" + scale);

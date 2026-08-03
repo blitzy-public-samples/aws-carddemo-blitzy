@@ -20,41 +20,22 @@ import java.util.List;
  * {@link #decodeZonedDecimal(String, int)} converts one signed COBOL display field into a
  * {@link BigDecimal} at an exact scale.</p>
  *
- * <p>The field positions published as {@link Field} constants below are one-based, so they read
- * the same way as the column positions in the copybooks. Four test classes in this package share
- * those constants: {@code ZonedDecimalFixtureDecodingTest}, {@code AccountRepositoryTest},
- * {@code CustomerRepositoryTest} and {@code DisclosureGroupRepositoryTest}.</p>
+ * <p>The field positions published as {@link Field} constants below are one-based, so they read the
+ * same way as the column positions in the copybooks. {@code ZonedDecimalFixtureDecodingTest} reads
+ * those constants.</p>
  *
  * <p>Every operation opens its fixture for reading. No operation writes to, copies or moves any
- * file under {@code app/}.</p>
+ * file under {@code app/}.</p> <h2>Source artifacts</h2> <table> <caption>Fixture files and the
+ * copybooks that declare their record layouts</caption> <tr><th>Fixture</th><th>Record
+ * layout</th><th>Records</th><th>Width</th></tr> <tr> <td> {@code app/data/ASCII/acctdata.txt}
+ * </td> <td> {@code app/cpy/CVACT01Y.cpy} </td> <td>50</td><td>300</td> </tr> <tr> <td>
+ * {@code app/data/ASCII/custdata.txt} </td> <td> {@code app/cpy/CVCUS01Y.cpy} </td>
+ * <td>50</td><td>500</td> </tr> <tr> <td> {@code app/data/ASCII/discgrp.txt} </td> <td>
+ * {@code app/cpy/CVTRA02Y.cpy} </td> <td>51</td><td>50</td> </tr> </table>
  *
- * <h2>Source artifacts</h2>
+ * <p>The counts and widths in that table come from measuring the three files.</p>
  *
- * <table>
- *   <caption>Fixture files and the copybooks that declare their record layouts</caption>
- *   <tr><th>Fixture</th><th>Record layout</th><th>Records</th><th>Width</th></tr>
- *   <tr>
- *     <td>{@code app/data/ASCII/acctdata.txt}</td>
- *     <td>{@code app/cpy/CVACT01Y.cpy}</td>
- *     <td>50</td><td>300</td>
- *   </tr>
- *   <tr>
- *     <td>{@code app/data/ASCII/custdata.txt}</td>
- *     <td>{@code app/cpy/CVCUS01Y.cpy}</td>
- *     <td>50</td><td>500</td>
- *   </tr>
- *   <tr>
- *     <td>{@code app/data/ASCII/discgrp.txt}</td>
- *     <td>{@code app/cpy/CVTRA02Y.cpy}</td>
- *     <td>51</td><td>50</td>
- *   </tr>
- * </table>
- *
- * <p>The counts and widths in that table come from measuring the three files. The entity shapes
- * drawn from the same three copybooks appear in {@code card-platform/docs/data-model.md}.</p>
- *
- * <p>Decision: module-local fixture reader. Recorded in
- * {@code card-platform/docs/decision-log.md}.</p>
+ * <p>Decision: module-local fixture reader.</p>
  */
 final class AsciiFixtureReader {
 
@@ -124,8 +105,7 @@ final class AsciiFixtureReader {
 
     /**
      * ACCT-EXPIRAION-DATE, {@code PIC X(10)} at CVACT01Y line 11. The copybook spells the field
-     * name with a transposed word. The target name corrects the spelling, and
-     * {@code card-platform/docs/traceability-matrix.md} carries the rename.
+     * name with a transposed word.
      */
     static final Field ACCOUNT_EXPIRATION_DATE = new Field(59, 10);
 
@@ -576,10 +556,10 @@ final class AsciiFixtureReader {
 
         int signBytePosition = digitsWithSignByte.length() - 1;
         String leadingDigits = digitsWithSignByte.substring(0, signBytePosition);
-        requireDigits(leadingDigits, fieldText);
+        requireDigits(leadingDigits, fieldText.length());
 
         SignedDigit signedDigit =
-                decodeSignByte(digitsWithSignByte.charAt(signBytePosition), fieldText);
+                decodeSignByte(digitsWithSignByte.charAt(signBytePosition), fieldText.length());
 
         String unscaledText = (signedDigit.negative() ? "-" : "")
                 + leadingDigits
@@ -590,19 +570,24 @@ final class AsciiFixtureReader {
     /**
      * Checks that every character of the leading run is an ASCII digit.
      *
+     * <p>The failure text names the position and the field width. It carries neither the field
+     * text nor the character it refused, so a fixture value cannot reach a build log through this
+     * path.</p>
+     *
      * @param leadingDigits characters ahead of the trailing sign byte
-     * @param fieldText     original field text, quoted in the failure message
+     * @param fieldWidth    width of the field, reported in the failure message
      * @throws IllegalArgumentException if any character is not a digit from 0 through 9
      */
-    private static void requireDigits(String leadingDigits, String fieldText) {
+    private static void requireDigits(String leadingDigits, int fieldWidth) {
         for (int index = 0; index < leadingDigits.length(); index++) {
             char character = leadingDigits.charAt(index);
             if (character < '0' || character > '9') {
                 throw new IllegalArgumentException(
-                        ("Position %d of signed display field \"%s\" holds '%s', and every "
-                                + "position ahead of the trailing sign byte must hold a digit "
-                                + "from 0 through 9")
-                                .formatted(index + 1, fieldText, character));
+                        ("Position %d of a signed display field of %d characters holds a character "
+                                + "that is not a digit. Every position ahead of the trailing sign "
+                                + "byte must hold a digit from 0 through 9. The field text is "
+                                + "withheld from this message.")
+                                .formatted(index + 1, fieldWidth));
             }
         }
     }
@@ -610,12 +595,16 @@ final class AsciiFixtureReader {
     /**
      * Decodes the trailing sign byte into the digit it carries and the sign it sets.
      *
-     * @param signByte  trailing byte of the field
-     * @param fieldText original field text, quoted in the failure message
+     * <p>The failure text names the field width and the accepted byte sets. It carries neither the
+     * field text nor the byte it refused, so a fixture value cannot reach a build log through this
+     * path.</p>
+     *
+     * @param signByte   trailing byte of the field
+     * @param fieldWidth width of the field, reported in the failure message
      * @return the digit and the sign the trailing byte carries
      * @throws IllegalArgumentException if the byte is outside the four accepted sets
      */
-    private static SignedDigit decodeSignByte(char signByte, String fieldText) {
+    private static SignedDigit decodeSignByte(char signByte, int fieldWidth) {
         if (signByte == POSITIVE_ZERO_SIGN_BYTE) {
             return new SignedDigit(0, false);
         }
@@ -629,10 +618,11 @@ final class AsciiFixtureReader {
             return new SignedDigit(signByte - NEGATIVE_RANGE_FIRST + 1, true);
         }
         throw new IllegalArgumentException(
-                ("Trailing byte '%s' of signed display field \"%s\" carries no overpunched sign. "
-                        + "The accepted bytes are '%s', '%s' through '%s', '%s', and '%s' "
-                        + "through '%s'.")
-                        .formatted(signByte, fieldText, POSITIVE_ZERO_SIGN_BYTE,
+                ("The trailing byte of a signed display field of %d characters carries no "
+                        + "overpunched sign. The accepted bytes are '%s', '%s' through '%s', "
+                        + "'%s', and '%s' through '%s'. The field text and the refused byte are "
+                        + "withheld from this message.")
+                        .formatted(fieldWidth, POSITIVE_ZERO_SIGN_BYTE,
                                 POSITIVE_RANGE_FIRST, POSITIVE_RANGE_LAST, NEGATIVE_ZERO_SIGN_BYTE,
                                 NEGATIVE_RANGE_FIRST, NEGATIVE_RANGE_LAST));
     }

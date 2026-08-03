@@ -4,8 +4,7 @@
          xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
   <modelVersion>4.0.0</modelVersion>
 
-  <!-- Rationale for every version and exclusion: card-platform/docs/decision-log.md -->
-  <!-- Net new capability. No COBOL ancestor. Mapping: card-platform/docs/traceability-matrix.md -->
+    <!-- Net new capability. No COBOL ancestor. -->
 
   <!-- Parent is two levels up: services/ has no POM of its own. -->
   <parent>
@@ -21,12 +20,9 @@
 
   <name>card-platform :: fraud-detection-service</name>
   <description>
-    Scores authorized card transactions for risk. The service consumes the
-    transaction.authorized event, applies velocity, amount-anomaly and
-    merchant-category rules, then publishes FraudFlagged or FraudCleared to the
-    fraud.assessed topic. Assessments persist in a private PostgreSQL schema,
-    and one read-only endpoint returns them. A message that stays unprocessable
-    after the configured retries goes to the dead-letter topic.
+    Spring Boot application module for the CardDemo fraud detection service, a capability
+    with no COBOL ancestor. Declares the web, persistence, messaging and observability
+    dependencies the service needs.
   </description>
 
   <properties>
@@ -49,7 +45,7 @@
       <artifactId>cobol-compat</artifactId>
     </dependency>
 
-    <!-- The read-only assessment query endpoint and its request constraints. -->
+    <!-- Web surface and bean constraints. -->
     <dependency>
       <groupId>org.springframework.boot</groupId>
       <artifactId>spring-boot-starter-web</artifactId>
@@ -59,7 +55,7 @@
       <artifactId>spring-boot-starter-validation</artifactId>
     </dependency>
 
-    <!-- The private fraud schema: fraud_assessment, velocity_window, outbox_event, processed_event. -->
+    <!-- Persistence against the private fraud schema. -->
     <dependency>
       <groupId>org.springframework.boot</groupId>
       <artifactId>spring-boot-starter-data-jpa</artifactId>
@@ -69,7 +65,7 @@
       <artifactId>postgresql</artifactId>
     </dependency>
 
-    <!-- Flyway owns schema creation. The starter carries its auto-configuration in this Spring Boot line. -->
+    <!-- Flyway owns schema creation. Only the starter carries its auto-configuration. -->
     <dependency>
       <groupId>org.springframework.boot</groupId>
       <artifactId>spring-boot-starter-flyway</artifactId>
@@ -84,8 +80,7 @@
       <artifactId>flyway-database-postgresql</artifactId>
     </dependency>
 
-    <!-- The transaction.authorized consumer, the fraud.assessed producer, and dead-letter routing.
-         The starter carries the Kafka auto-configuration in this Spring Boot line. -->
+    <!-- Messaging. Only the starter carries the Kafka auto-configuration. -->
     <dependency>
       <groupId>org.springframework.boot</groupId>
       <artifactId>spring-boot-starter-kafka</artifactId>
@@ -95,7 +90,7 @@
       <artifactId>spring-kafka</artifactId>
     </dependency>
 
-    <!-- Health, the event-consumed count, processing latency and the failure count. -->
+    <!-- Health and metrics endpoints, counters and timers. -->
     <dependency>
       <groupId>org.springframework.boot</groupId>
       <artifactId>spring-boot-starter-actuator</artifactId>
@@ -123,8 +118,8 @@
       <scope>test</scope>
     </dependency>
 
-    <!-- Container-backed integration tests against PostgreSQL and Kafka.
-         Testcontainers module artifact ids carry a testcontainers- prefix in the 2.x line. -->
+    <!-- Container-backed integration tests. Testcontainers module artifact
+         identifiers carry a testcontainers- prefix in the 2.x line. -->
     <dependency>
       <groupId>org.testcontainers</groupId>
       <artifactId>testcontainers</artifactId>
@@ -156,8 +151,7 @@
 
   <build>
     <plugins>
-      <!-- Packages the executable Java archive (JAR) that the Dockerfile copies.
-           The aggregator pins the plugin version. -->
+      <!-- Packages the executable Java archive (JAR) that the Dockerfile copies. -->
       <plugin>
         <groupId>org.springframework.boot</groupId>
         <artifactId>spring-boot-maven-plugin</artifactId>

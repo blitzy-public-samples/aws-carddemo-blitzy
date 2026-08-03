@@ -3,6 +3,7 @@ package com.carddemo.card.api.dto;
 import static org.junit.jupiter.api.Assertions.assertAll;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.lang.reflect.GenericArrayType;
@@ -24,7 +25,7 @@ import org.junit.jupiter.api.Test;
  * Maven and nothing else.
  *
  * <p>The record declares three components: the Hypertext Transfer Protocol status code, one
- * message, and the request path. The message component carries one working-storage field,
+ * message, and the failing route template. The message component carries one working-storage field,
  * {@code WS-RETURN-MSG PIC X(75)} at {@code app/cbl/COCRDUPC.cbl:L173}.
  * {@code app/cbl/COCRDSLC.cbl} declares the counterpart field at L134, and
  * {@code app/cpy/CVCRD01Y.cpy} declares {@code CCARD-RETURN-MSG PIC X(75)} at L29 with its off
@@ -42,21 +43,15 @@ import org.junit.jupiter.api.Test;
  * bare {@code ELSE}, line 1491 reads {@code SET LOCKED-BUT-UPDATE-FAILED TO TRUE}, and line 1492
  * closes the test. That write carries no {@code IF WS-RETURN-MSG-OFF} wrapper and overwrites a
  * message the pass already set. Line 995 reads {@code LOCKED-BUT-UPDATE-FAILED} inside the
- * {@code EVALUATE TRUE} that opens at line 992. The fifteen-guard count and the unguarded write
- * carry an entry in {@code card-platform/docs/decision-log.md}.
+ * {@code EVALUATE TRUE} that opens at line 992.
  *
  * <p>Three condition names under {@code WS-RETURN-MSG} are declared and never set:
  * {@code SEARCHED-ACCT-ZEROES}, {@code SEARCHED-ACCT-NOT-NUMERIC} and
- * {@code SEARCHED-CARD-NOT-NUMERIC} at {@code app/cbl/COCRDUPC.cbl:L189-L194}. A declared condition
- * name is no evidence of an emitted message, and
- * {@code card-platform/docs/business-rule-flags.md} carries those findings.
+ * {@code SEARCHED-CARD-NOT-NUMERIC} at {@code app/cbl/COCRDUPC.cbl:L189-L194}.
  * {@code CardValidationMessagesTest} holds the text inventory.
  *
- * <p>{@code card-platform/docs/traceability-matrix.md} maps {@code WS-RETURN-MSG PIC X(75)} at
- * {@code app/cbl/COCRDUPC.cbl:L173}, together with its counterpart at
- * {@code app/cbl/COCRDSLC.cbl:L134}, onto the single message component.
- * {@code CardControllerTest} holds the status code each source outcome carries, and no test in
- * this file asserts that mapping.
+ * <p>Mapping a source outcome onto a status code is orchestration and sits outside this record,
+ * so no test in this file asserts that mapping.
  */
 final class ApiErrorResponseTest {
 
@@ -66,13 +61,16 @@ final class ApiErrorResponseTest {
     /** The name of the component that carries the message. */
     private static final String MESSAGE_COMPONENT_NAME = "message";
 
+    /** The name of the component that carries the failing route template. */
+    private static final String ROUTE_COMPONENT_NAME = "route";
+
     /**
      * The three component names, in record declaration order.
      *
-     * <p>{@code ApiErrorResponse} declares {@code status}, {@code message} and {@code path}.
+     * <p>{@code ApiErrorResponse} declares {@code status}, {@code message} and {@code route}.
      */
     private static final List<String> EXPECTED_COMPONENT_NAMES =
-            List.of("status", MESSAGE_COMPONENT_NAME, "path");
+            List.of("status", MESSAGE_COMPONENT_NAME, ROUTE_COMPONENT_NAME);
 
     /**
      * The component types, aligned position for position with
@@ -86,7 +84,7 @@ final class ApiErrorResponseTest {
             "the Hypertext Transfer Protocol status code of the failing response",
             "the first failing message, carrying WS-RETURN-MSG PIC X(75) at"
                     + " app/cbl/COCRDUPC.cbl:L173 and its counterpart at app/cbl/COCRDSLC.cbl:L134",
-            "the request path that produced the failing response");
+            "the route template of the endpoint that produced the failing response");
 
     /** Width of {@code WS-RETURN-MSG PIC X(75)} at {@code app/cbl/COCRDUPC.cbl:L173}. */
     private static final int MESSAGE_FIELD_WIDTH = 75;
@@ -142,8 +140,11 @@ final class ApiErrorResponseTest {
     /** The status code the payload under test carries. */
     private static final int SUPPLIED_STATUS = 503;
 
-    /** The request path the payload under test carries. */
-    private static final String SUPPLIED_PATH = "/cards";
+    /** The route template the payload under test carries. */
+    private static final String SUPPLIED_ROUTE = "/cards";
+
+    /** Route template of the endpoint that takes a card number as a path variable. */
+    private static final String CARD_NUMBER_ROUTE = "/cards/{cardNumber}";
 
     /** JUnit builds one instance of this class per test method through this constructor. */
     ApiErrorResponseTest() {
@@ -155,14 +156,14 @@ final class ApiErrorResponseTest {
      * Asserts that the error payload declares exactly three components.
      *
      * <p>The three carry the Hypertext Transfer Protocol status code, the one message of
-     * {@code WS-RETURN-MSG PIC X(75)} at {@code app/cbl/COCRDUPC.cbl:L173}, and the request path.
+     * {@code WS-RETURN-MSG PIC X(75)} at {@code app/cbl/COCRDUPC.cbl:L173}, and the route template.
      */
     @Test
     void errorResponseDeclaresExactlyThreeComponents() {
         assertEquals(EXPECTED_COMPONENT_COUNT, components().length,
                 "ApiErrorResponse must declare exactly " + EXPECTED_COMPONENT_COUNT
                         + " components: a status code, the one message of WS-RETURN-MSG PIC X(75)"
-                        + " at app/cbl/COCRDUPC.cbl:L173, and the request path."
+                        + " at app/cbl/COCRDUPC.cbl:L173, and the route template."
                         + " Declared components: " + componentNames());
     }
 
@@ -190,7 +191,7 @@ final class ApiErrorResponseTest {
     /**
      * Asserts the three component types, position by position.
      *
-     * <p>The status arrives as an {@code int}, and the message and the path arrive as a
+     * <p>The status arrives as an {@code int}, and the message and the route arrive as a
      * {@link String}. The message type matches the alphanumeric {@code PIC X(75)} of
      * {@code app/cbl/COCRDUPC.cbl:L173}.
      */
@@ -287,7 +288,7 @@ final class ApiErrorResponseTest {
      * list.
      *
      * <p>The scan folds every component name to lower case and looks for the fragments a violation
-     * list would carry. The declared names read {@code status}, {@code message} and {@code path}.
+     * list would carry. The declared names read {@code status}, {@code message} and {@code route}.
      */
     @Test
     void errorResponseDeclaresNoViolationOrDetailComponent() {
@@ -359,13 +360,13 @@ final class ApiErrorResponseTest {
      * <p>The literal sits at {@code app/cbl/COCRDUPC.cbl:L210} and line 1491 sets the condition
      * name. The second assertion compares the typed literal against
      * {@link CardValidationMessages#LOCKED_BUT_UPDATE_FAILED}, so a changed character in either
-     * place fails here. The status and the path assertions read back the two values the caller
+     * place fails here. The status and the route assertions read back the two values the caller
      * supplied.
      */
     @Test
     void payloadCarriesTheUpdateFailedTextFromLine210() {
         ApiErrorResponse response =
-                new ApiErrorResponse(SUPPLIED_STATUS, UPDATE_FAILED_TEXT, SUPPLIED_PATH);
+                new ApiErrorResponse(SUPPLIED_STATUS, UPDATE_FAILED_TEXT, SUPPLIED_ROUTE);
 
         assertAll("payload carrying the text of app/cbl/COCRDUPC.cbl:L210",
                 () -> assertEquals(UPDATE_FAILED_TEXT, response.message(),
@@ -385,9 +386,9 @@ final class ApiErrorResponseTest {
                 () -> assertEquals(SUPPLIED_STATUS, response.status(),
                         "The payload must read back the status code its caller supplied, "
                                 + SUPPLIED_STATUS + "."),
-                () -> assertEquals(SUPPLIED_PATH, response.path(),
-                        "The payload must read back the request path its caller supplied, "
-                                + SUPPLIED_PATH + "."));
+                () -> assertEquals(SUPPLIED_ROUTE, response.route(),
+                        "The payload must read back the route template its caller supplied, "
+                                + SUPPLIED_ROUTE + "."));
     }
 
     /**
@@ -424,8 +425,7 @@ final class ApiErrorResponseTest {
     /**
      * Asserts that the record and its three components carry no annotation.
      *
-     * <p>The exception handler methods on {@code CardController} supply every value the payload
-     * holds.
+     * <p>The caller supplies every value the payload holds.
      */
     @Test
     void errorResponseAndItsComponentsCarryNoAnnotation() {
@@ -440,26 +440,48 @@ final class ApiErrorResponseTest {
         }
     }
 
+    /**
+     * Asserts the route component carries a template and refuses a resolved path.
+     *
+     * <p>The endpoint that reads one card takes the card number as a path variable, so a resolved
+     * path would place a full Primary Account Number in the response body. The card record
+     * declares {@code CARD-NUM PIC X(16)} at {@code app/cpy/CVACT02Y.cpy:L5}, and
+     * {@code CARD-ACCT-ID PIC 9(11)} at L6 is eleven digits.
+     */
+    @Test
+    void errorResponseRouteCarriesATemplateAndRefusesAResolvedPath() {
+        ApiErrorResponse templated =
+                new ApiErrorResponse(SUPPLIED_STATUS, UPDATE_FAILED_TEXT, CARD_NUMBER_ROUTE);
+        assertEquals(CARD_NUMBER_ROUTE, templated.route(),
+                "A route template is valid. The card number stays a path variable name.");
+        assertFalse(templated.route().matches(".*[0-9]{5,}.*"),
+                "A route template holds no run of five digits or more.");
+
+        for (String resolved : List.of("/cards/" + "0".repeat(12) + "5740", "/cards/00000000050",
+                "/accounts/00000000050/cards")) {
+            assertThrows(IllegalArgumentException.class,
+                    () -> new ApiErrorResponse(SUPPLIED_STATUS, UPDATE_FAILED_TEXT, resolved),
+                    "Route '" + resolved + "' holds a resolved identifier, and the response body "
+                            + "must not carry one.");
+        }
+    }
+
     // Reflection helpers.
 
     /**
      * Reads the record components of {@link ApiErrorResponse}. The record check runs first, so a
      * class that stops being a record fails with a named assertion.
-     *
-     * @return the record components, in declaration order
      */
     private static RecordComponent[] components() {
         assertTrue(ApiErrorResponse.class.isRecord(),
                 "ApiErrorResponse must be a record. Its three components carry a status code, the"
                         + " one message of WS-RETURN-MSG PIC X(75) at app/cbl/COCRDUPC.cbl:L173,"
-                        + " and the request path.");
+                        + " and the route template.");
         return ApiErrorResponse.class.getRecordComponents();
     }
 
     /**
      * Reads the component names of {@link ApiErrorResponse}.
-     *
-     * @return the component names, in declaration order
      */
     private static List<String> componentNames() {
         List<String> names = new ArrayList<>();
@@ -471,8 +493,6 @@ final class ApiErrorResponseTest {
 
     /**
      * Reads the component names and folds each one to lower case for a fragment search.
-     *
-     * @return the lower-cased component names, in declaration order
      */
     private static List<String> lowerCaseComponentNames() {
         List<String> names = new ArrayList<>();
@@ -484,8 +504,6 @@ final class ApiErrorResponseTest {
 
     /**
      * Reads the one component named {@value #MESSAGE_COMPONENT_NAME}.
-     *
-     * @return the message component of {@link ApiErrorResponse}
      */
     private static RecordComponent messageComponent() {
         for (RecordComponent component : components()) {

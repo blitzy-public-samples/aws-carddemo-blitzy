@@ -1,34 +1,48 @@
 # card-platform — the local demo environment.
 # Starts one Kafka broker, one PostgreSQL instance and the six services.
-# From this directory, run: cp .env.example .env && docker compose up -d
-# Walkthrough: card-platform/docs/onboarding.md
-# Rationale for every choice below: card-platform/docs/decision-log.md
+#
+# From this directory, and from a clean clone:
+#
+#     cp .env.example .env
+#     docker compose up -d --build
+#
+# Every services/*/Dockerfile packages its module inside the image from the
+# card-platform build context, so no archive has to be built on the host first.
+# Two of the six modules do not yet carry an application entry point and their
+# image build stops on that; the other four build and start.
+#
 ---
 # CLONE_INDEX suffixes the project name. A second checkout runs its own stack.
 name: card-platform${CLONE_INDEX:-}
 
-# --------------------------------------------------------------------------- #
 # Shared blocks. Each service below points at these with a YAML alias.
-# --------------------------------------------------------------------------- #
 
-# Startup order. A service waits for the broker and the database, and for
-# nothing else. No service waits for another service.
-x-backing-services: &backing-services
+# Startup order for a service that reaches the broker only through its outbox
+# relay. The relay retries on a timer, so the broker does not have to answer for
+# the service to start and serve. No service waits for another service.
+x-database-only: &database-only
+  postgres:
+    condition: service_healthy
+
+# Startup order for a service that registers a listener. A listener joins a
+# consumer group at startup, so the broker answers first.
+x-database-and-broker: &database-and-broker
   postgres:
     condition: service_healthy
   kafka:
     condition: service_healthy
 
-# Readiness probe. It reads /actuator/health on port 8080 with curl, wget or
-# bash, whichever the runtime image carries. /bin/sh cannot open /dev/tcp, so
-# the bash form names bash.
+# Readiness probe. It reads /actuator/health on the management port with curl,
+# wget or bash, whichever the runtime image carries. /bin/sh cannot open
+# /dev/tcp, so the bash form names bash. Actuator answers on the management port
+# alone, so the probe does not name the service port.
 x-actuator-healthcheck: &actuator-healthcheck
   test:
     - CMD-SHELL
     - >-
-      curl -fsS http://127.0.0.1:8080/actuator/health >/dev/null 2>&1
-      || wget -q -O /dev/null http://127.0.0.1:8080/actuator/health 2>/dev/null
-      || bash -c 'exec 3<>/dev/tcp/127.0.0.1/8080
+      curl -fsS http://127.0.0.1:${MANAGEMENT_PORT:-9080}/actuator/health >/dev/null 2>&1
+      || wget -q -O /dev/null http://127.0.0.1:${MANAGEMENT_PORT:-9080}/actuator/health 2>/dev/null
+      || bash -c 'exec 3<>/dev/tcp/127.0.0.1/${MANAGEMENT_PORT:-9080}
       && printf "GET /actuator/health HTTP/1.0\r\n\r\n" >&3
       && head -1 <&3 | grep -q 200'
   interval: 10s
@@ -40,35 +54,53 @@ x-actuator-healthcheck: &actuator-healthcheck
 # on 5432 and the broker on kafka:29092, whatever the host ports are.
 x-service-environment: &service-environment
   SERVER_PORT: 8080
+  # /actuator answers here and nowhere else, and the mapping below publishes this
+  # port on 127.0.0.1 alone. A client of the service port reaches no runtime,
+  # database or broker internals.
+  MANAGEMENT_PORT: ${MANAGEMENT_PORT:-9080}
   SPRING_DATASOURCE_USERNAME: ${POSTGRES_USER:-carddemo}
-  SPRING_DATASOURCE_PASSWORD: ${POSTGRES_PASSWORD:-carddemo}
+  # No fallback: an unset POSTGRES_PASSWORD stops the stack rather than signing on
+  # under a password this repository publishes. Set it in .env.
+  SPRING_DATASOURCE_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set; copy .env.example to .env}
   SPRING_KAFKA_BOOTSTRAP_SERVERS: ${KAFKA_BOOTSTRAP_SERVERS:-kafka:29092}
   LOGGING_LEVEL_ROOT: ${LOG_LEVEL:-INFO}
-  LOGGING_LEVEL_COM_CARDDEMO: ${LOG_LEVEL_CARDDEMO:-DEBUG}
-  MANAGEMENT_ENDPOINTS_WEB_EXPOSURE_INCLUDE: ${MANAGEMENT_ENDPOINTS:-health,info,metrics,prometheus}
+  # INFO by default. A DEBUG default retains identifiers in centralized logs.
+  LOGGING_LEVEL_COM_CARDDEMO: ${LOG_LEVEL_CARDDEMO:-INFO}
+  MANAGEMENT_ENDPOINTS_WEB_EXPOSURE_INCLUDE: ${MANAGEMENT_ENDPOINTS:-health,metrics,prometheus}
 
 services:
 
-  # ------------------------------------------------------------------------- #
   # PostgreSQL. One instance, six private databases, one per service.
-  # ------------------------------------------------------------------------- #
   postgres:
-    image: postgres:18.4
+    # Digest-pinned so a rebuilt tag cannot change the image under the stack.
+    image: postgres:18.4@sha256:3a82e1f56c8f0f5616a11103ac3d47e632c3938698946a7ad26da0df1334744a
     container_name: card-platform${CLONE_INDEX:-}-postgres
     environment:
       POSTGRES_DB: ${POSTGRES_DB:-carddemo}
       POSTGRES_USER: ${POSTGRES_USER:-carddemo}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-carddemo}
+      # No fallback: an unset password stops the stack rather than creating the
+      # superuser with a password this repository publishes.
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set; copy .env.example to .env}
+      # Names the six databases the initialisation script creates. The script
+      # checks every name against a strict identifier pattern before it runs.
+      SERVICE_DATABASE_NAMES: >-
+        ${AUTHORIZATION_DB_NAME:-carddemo_authorization}
+        ${LEDGER_DB_NAME:-carddemo_ledger}
+        ${FRAUD_DB_NAME:-carddemo_fraud}
+        ${NOTIFICATION_DB_NAME:-carddemo_notification}
+        ${ACCOUNT_DB_NAME:-carddemo_account}
+        ${CARD_DB_NAME:-carddemo_card}
     ports:
-      - "${POSTGRES_PORT:-5432}:5432"
+      # Bound to the loopback address, so only this machine reaches the database.
+      - "127.0.0.1:${POSTGRES_PORT:-5432}:5432"
     # The six databases, created on first start only. Flyway then creates and
     # migrates one schema inside each. No schema object is defined here.
     configs:
       - source: service_databases
-        target: /docker-entrypoint-initdb.d/10-service-databases.sql
+        target: /docker-entrypoint-initdb.d/10-service-databases.sh
+        mode: 0555
     # A PostgreSQL 18 image keeps its data under /var/lib/postgresql/18, so the
-    # volume mounts one level above that. A volume at
-    # /var/lib/postgresql/data makes the container exit 1 on start.
+    # mount point sits one level above that and covers every version directory.
     volumes:
       - postgres-data:/var/lib/postgresql
     healthcheck:
@@ -81,13 +113,12 @@ services:
       - carddemo
     restart: unless-stopped
 
-  # ------------------------------------------------------------------------- #
   # Apache Kafka. One node runs as broker and controller in Kafka Raft (KRaft)
   # mode. Three listeners: services reach kafka:29092, host tooling reaches
   # localhost:${KAFKA_PORT:-9092}, and KRaft talks to itself on 9093.
-  # ------------------------------------------------------------------------- #
   kafka:
-    image: apache/kafka:4.2.1
+    # Digest-pinned so a rebuilt tag cannot change the image under the stack.
+    image: apache/kafka:4.2.1@sha256:9916d60eca5d599550e2c320230808fda342124ba550bb4ac4ea8591803262a0
     container_name: card-platform${CLONE_INDEX:-}-kafka
     environment:
       CLUSTER_ID: ${KAFKA_CLUSTER_ID:-cardDemoPlatformKRaft1}
@@ -106,34 +137,78 @@ services:
       KAFKA_DEFAULT_REPLICATION_FACTOR: ${KAFKA_TOPIC_REPLICATION_FACTOR:-1}
       KAFKA_NUM_PARTITIONS: ${KAFKA_TOPIC_PARTITIONS:-3}
       KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
-      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+      # The broker creates no topic on demand. The command below creates the seven
+      # topics this platform uses, so a mistyped topic name fails loudly instead
+      # of quietly opening a new stream on an unauthenticated broker.
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false"
       KAFKA_LOG_DIRS: /var/lib/kafka/data
+      # Every topic name travels as an environment value, so the program below
+      # reads each one as data. None becomes part of the program text.
+      TOPIC_TRANSACTION_AUTHORIZED: ${TOPIC_TRANSACTION_AUTHORIZED:-transaction.authorized}
+      TOPIC_TRANSACTION_DECLINED: ${TOPIC_TRANSACTION_DECLINED:-transaction.declined}
+      TOPIC_TRANSACTION_POSTED: ${TOPIC_TRANSACTION_POSTED:-transaction.posted}
+      TOPIC_FRAUD_ASSESSED: ${TOPIC_FRAUD_ASSESSED:-fraud.assessed}
+      TOPIC_ACCOUNT_STATE_CHANGED: ${TOPIC_ACCOUNT_STATE_CHANGED:-account.state-changed}
+      TOPIC_CARD_STATE_CHANGED: ${TOPIC_CARD_STATE_CHANGED:-card.state-changed}
+      TOPIC_DEAD_LETTER_SUFFIX: ${TOPIC_DEAD_LETTER_SUFFIX:-.DLT}
+      TOPIC_PARTITIONS: ${KAFKA_TOPIC_PARTITIONS:-3}
+      TOPIC_REPLICATION_FACTOR: ${KAFKA_TOPIC_REPLICATION_FACTOR:-1}
     # This container also creates topics. It waits for the broker, then creates
-    # the four event topics and one dead-letter topic per consumed topic.
+    # the six event topics and one dead-letter topic per consumed topic. The
+    # three consumed topics are transaction.authorized, transaction.posted and
+    # fraud.assessed. A published-only topic carries no dead-letter counterpart,
+    # since dead-letter routing carries a message a listener could not consume.
+    #
+    # Each name passes a gate before it reaches the broker. Apache Kafka admits
+    # only letters, digits, the period, the underscore and the hyphen in a topic
+    # name, up to 249 characters, and admits neither "." nor "..". The case
+    # statement admits exactly that set, so a name can carry no semicolon, no
+    # whitespace, no quote and no command substitution. Every expansion below is
+    # quoted, so a name reaching kafka-topics.sh stays one argument.
     command:
       - /bin/bash
       - -c
       - |
-        (
+        create_topics() {
+          local topic
           until /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:29092 --list >/dev/null 2>&1; do
             sleep 2
           done
-          for topic in ${TOPIC_TRANSACTION_AUTHORIZED:-transaction.authorized} \
-                       ${TOPIC_TRANSACTION_DECLINED:-transaction.declined} \
-                       ${TOPIC_TRANSACTION_POSTED:-transaction.posted} \
-                       ${TOPIC_FRAUD_ASSESSED:-fraud.assessed} \
-                       ${TOPIC_TRANSACTION_AUTHORIZED:-transaction.authorized}${TOPIC_DEAD_LETTER_SUFFIX:-.DLT} \
-                       ${TOPIC_TRANSACTION_POSTED:-transaction.posted}${TOPIC_DEAD_LETTER_SUFFIX:-.DLT} \
-                       ${TOPIC_FRAUD_ASSESSED:-fraud.assessed}${TOPIC_DEAD_LETTER_SUFFIX:-.DLT}; do
+          for topic in "$${TOPIC_TRANSACTION_AUTHORIZED}" \
+                       "$${TOPIC_TRANSACTION_DECLINED}" \
+                       "$${TOPIC_TRANSACTION_POSTED}" \
+                       "$${TOPIC_FRAUD_ASSESSED}" \
+                       "$${TOPIC_ACCOUNT_STATE_CHANGED}" \
+                       "$${TOPIC_CARD_STATE_CHANGED}" \
+                       "$${TOPIC_TRANSACTION_AUTHORIZED}$${TOPIC_DEAD_LETTER_SUFFIX}" \
+                       "$${TOPIC_TRANSACTION_POSTED}$${TOPIC_DEAD_LETTER_SUFFIX}" \
+                       "$${TOPIC_FRAUD_ASSESSED}$${TOPIC_DEAD_LETTER_SUFFIX}"; do
+            case "$${topic}" in
+              ''|.|..)
+                echo "Topic name '$${topic}' is one Apache Kafka reserves." >&2
+                return 1
+                ;;
+              *[!a-zA-Z0-9._-]*)
+                echo "Topic name '$${topic}' carries a character outside a-z A-Z 0-9 . _ and -." >&2
+                return 1
+                ;;
+            esac
+            if [ "$${#topic}" -gt 249 ]; then
+              echo "Topic name '$${topic}' is longer than the 249 characters Apache Kafka admits." >&2
+              return 1
+            fi
             /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:29092 \
-              --create --if-not-exists --topic "$$topic" \
-              --partitions ${KAFKA_TOPIC_PARTITIONS:-3} \
-              --replication-factor ${KAFKA_TOPIC_REPLICATION_FACTOR:-1}
+              --create --if-not-exists --topic "$${topic}" \
+              --partitions "$${TOPIC_PARTITIONS}" \
+              --replication-factor "$${TOPIC_REPLICATION_FACTOR}"
           done
-        ) &
+        }
+        create_topics &
         exec /etc/kafka/docker/run
     ports:
-      - "${KAFKA_PORT:-9092}:9092"
+      # Bound to the loopback address. The broker runs without authentication, so
+      # only this machine reaches it.
+      - "127.0.0.1:${KAFKA_PORT:-9092}:9092"
     volumes:
       - kafka-data:/var/lib/kafka/data
     healthcheck:
@@ -146,15 +221,15 @@ services:
       - carddemo
     restart: unless-stopped
 
-  # ------------------------------------------------------------------------- #
-  # Authorization service. Answers POST /authorizations, applies the four
-  # decline rules, and writes one event per call to its outbox. It is the only
-  # service a client calls, and the only writer of the authorization decision.
-  # ------------------------------------------------------------------------- #
+  # Authorization service container. Built from
+  # services/authorization-service/Dockerfile and configured with its own
+  # database, schema, event topic names and outbox relay settings.
   authorization-service:
     build:
-      context: ./services/authorization-service
-      dockerfile: Dockerfile
+      # The card-platform directory, so stage 1 reaches the aggregator
+      # descriptor and both shared libraries and packages the module in-image.
+      context: .
+      dockerfile: services/authorization-service/Dockerfile
     container_name: card-platform${CLONE_INDEX:-}-authorization-service
     env_file:
       - path: .env
@@ -169,22 +244,33 @@ services:
       TOPIC_TRANSACTION_DECLINED: ${TOPIC_TRANSACTION_DECLINED:-transaction.declined}
       OUTBOX_RELAY_INTERVAL_MS: ${OUTBOX_RELAY_INTERVAL_MS:-500}
       OUTBOX_RELAY_BATCH_SIZE: ${OUTBOX_RELAY_BATCH_SIZE:-100}
+      # The two supporting services this one reads to resolve a card to an
+      # account and to read the credit limit, both cycle counters and the expiry
+      # date the decline rules test. Inside this network a service answers on its
+      # own name and port 8080. Both reads are synchronous and neither writes.
+      ACCOUNT_SERVICE_BASE_URL: ${ACCOUNT_SERVICE_BASE_URL:-http://account-service:8080}
+      CARD_SERVICE_BASE_URL: ${CARD_SERVICE_BASE_URL:-http://card-service:8080}
     ports:
-      - "${AUTHORIZATION_PORT:-8081}:8080"
-    depends_on: *backing-services
+      # Both mappings bind the loopback address. The service port carries the
+      # Representational State Transfer (REST) surface; the management port
+      # carries /actuator and reaches no further than this machine.
+      - "127.0.0.1:${AUTHORIZATION_PORT:-8081}:8080"
+      - "127.0.0.1:${AUTHORIZATION_MANAGEMENT_PORT:-9081}:${MANAGEMENT_PORT:-9080}"
+    # This service publishes through its outbox relay and registers no listener.
+    depends_on: *database-only
     healthcheck: *actuator-healthcheck
     networks:
       - carddemo
     restart: unless-stopped
 
-  # ------------------------------------------------------------------------- #
-  # Ledger posting service. Reads transaction.authorized, adds the amount to
-  # the balance and to one cycle counter, and publishes transaction.posted.
-  # ------------------------------------------------------------------------- #
+  # Ledger posting service container. Configured to read transaction.authorized
+  # under the ledger-posting group and to write transaction.posted.
   ledger-posting-service:
     build:
-      context: ./services/ledger-posting-service
-      dockerfile: Dockerfile
+      # The card-platform directory, so stage 1 reaches the aggregator
+      # descriptor and both shared libraries and packages the module in-image.
+      context: .
+      dockerfile: services/ledger-posting-service/Dockerfile
     container_name: card-platform${CLONE_INDEX:-}-ledger-posting-service
     env_file:
       - path: .env
@@ -205,21 +291,27 @@ services:
       OUTBOX_RELAY_INTERVAL_MS: ${OUTBOX_RELAY_INTERVAL_MS:-500}
       OUTBOX_RELAY_BATCH_SIZE: ${OUTBOX_RELAY_BATCH_SIZE:-100}
     ports:
-      - "${LEDGER_PORT:-8082}:8080"
-    depends_on: *backing-services
+      # Both mappings bind the loopback address. The service port carries the
+      # Representational State Transfer (REST) surface; the management port
+      # carries /actuator and reaches no further than this machine.
+      - "127.0.0.1:${LEDGER_PORT:-8082}:8080"
+      - "127.0.0.1:${LEDGER_MANAGEMENT_PORT:-9082}:${MANAGEMENT_PORT:-9080}"
+    # This service registers a listener on transaction.authorized.
+    depends_on: *database-and-broker
     healthcheck: *actuator-healthcheck
     networks:
       - carddemo
     restart: unless-stopped
 
-  # ------------------------------------------------------------------------- #
-  # Fraud detection service. Reads transaction.authorized, scores the risk, and
-  # publishes fraud.assessed. It never sits in the authorization response path.
-  # ------------------------------------------------------------------------- #
+  # Fraud detection service container. Configured to read
+  # transaction.authorized under the fraud-detection group and to write
+  # fraud.assessed. It has no port any other service calls.
   fraud-detection-service:
     build:
-      context: ./services/fraud-detection-service
-      dockerfile: Dockerfile
+      # The card-platform directory, so stage 1 reaches the aggregator
+      # descriptor and both shared libraries and packages the module in-image.
+      context: .
+      dockerfile: services/fraud-detection-service/Dockerfile
     container_name: card-platform${CLONE_INDEX:-}-fraud-detection-service
     env_file:
       - path: .env
@@ -240,21 +332,32 @@ services:
       OUTBOX_RELAY_INTERVAL_MS: ${OUTBOX_RELAY_INTERVAL_MS:-500}
       OUTBOX_RELAY_BATCH_SIZE: ${OUTBOX_RELAY_BATCH_SIZE:-100}
     ports:
-      - "${FRAUD_PORT:-8083}:8080"
-    depends_on: *backing-services
+      # Both mappings bind the loopback address. The service port carries the
+      # Representational State Transfer (REST) surface; the management port
+      # carries /actuator and reaches no further than this machine.
+      - "127.0.0.1:${FRAUD_PORT:-8083}:8080"
+      - "127.0.0.1:${FRAUD_MANAGEMENT_PORT:-9083}:${MANAGEMENT_PORT:-9080}"
+    # This service registers a listener on transaction.authorized.
+    depends_on: *database-and-broker
     healthcheck: *actuator-healthcheck
     networks:
       - carddemo
     restart: unless-stopped
 
   # ------------------------------------------------------------------------- #
-  # Notification service. Reads transaction.posted and fraud.assessed on two
-  # consumer groups, keeps a card-keyed read model, and renders the alert.
+  # Notification service. Reads transaction.authorized, transaction.posted and
+  # fraud.assessed, each on a consumer group of its own. Its subscription to
+  # transaction.authorized
+  # makes it the third independent consumer of the one event an authorization
+  # call publishes, alongside ledger posting and fraud detection. It publishes
+  # no event and calls no other service.
   # ------------------------------------------------------------------------- #
   notification-service:
     build:
-      context: ./services/notification-service
-      dockerfile: Dockerfile
+      # The card-platform directory, so stage 1 reaches the aggregator
+      # descriptor and both shared libraries and packages the module in-image.
+      context: .
+      dockerfile: services/notification-service/Dockerfile
     container_name: card-platform${CLONE_INDEX:-}-notification-service
     env_file:
       - path: .env
@@ -265,30 +368,43 @@ services:
       SPRING_FLYWAY_SCHEMAS: ${NOTIFICATION_DB_SCHEMA:-notification_service}
       SPRING_FLYWAY_DEFAULT_SCHEMA: ${NOTIFICATION_DB_SCHEMA:-notification_service}
       SPRING_JPA_PROPERTIES_HIBERNATE_DEFAULT_SCHEMA: ${NOTIFICATION_DB_SCHEMA:-notification_service}
-      SPRING_KAFKA_CONSUMER_GROUP_ID: ${GROUP_NOTIFICATION_POSTED:-notification-posted}
+      # One group per listener. Three listeners sharing one group would split the
+      # messages between them, so each carries its own. The group below is the
+      # framework default a listener falls back to when it names no group.
+      SPRING_KAFKA_CONSUMER_GROUP_ID: ${GROUP_NOTIFICATION_AUTHORIZED:-notification-authorized}
+      GROUP_NOTIFICATION_AUTHORIZED: ${GROUP_NOTIFICATION_AUTHORIZED:-notification-authorized}
       GROUP_NOTIFICATION_POSTED: ${GROUP_NOTIFICATION_POSTED:-notification-posted}
       GROUP_NOTIFICATION_FRAUD: ${GROUP_NOTIFICATION_FRAUD:-notification-fraud}
+      # transaction.authorized is this service's direct subscription to the one
+      # event an authorization call publishes. Ledger posting and fraud detection
+      # subscribe to that same topic under their own groups.
+      TOPIC_TRANSACTION_AUTHORIZED: ${TOPIC_TRANSACTION_AUTHORIZED:-transaction.authorized}
       TOPIC_TRANSACTION_POSTED: ${TOPIC_TRANSACTION_POSTED:-transaction.posted}
       TOPIC_FRAUD_ASSESSED: ${TOPIC_FRAUD_ASSESSED:-fraud.assessed}
       TOPIC_DEAD_LETTER_SUFFIX: ${TOPIC_DEAD_LETTER_SUFFIX:-.DLT}
       CONSUMER_MAX_RETRY_ATTEMPTS: ${CONSUMER_MAX_RETRY_ATTEMPTS:-3}
       CONSUMER_RETRY_BACKOFF_MS: ${CONSUMER_RETRY_BACKOFF_MS:-1000}
     ports:
-      - "${NOTIFICATION_PORT:-8084}:8080"
-    depends_on: *backing-services
+      # Both mappings bind the loopback address. The service port carries the
+      # Representational State Transfer (REST) surface; the management port
+      # carries /actuator and reaches no further than this machine.
+      - "127.0.0.1:${NOTIFICATION_PORT:-8084}:8080"
+      - "127.0.0.1:${NOTIFICATION_MANAGEMENT_PORT:-9084}:${MANAGEMENT_PORT:-9080}"
+    # This service registers three listeners.
+    depends_on: *database-and-broker
     healthcheck: *actuator-healthcheck
     networks:
       - carddemo
     restart: unless-stopped
 
-  # ------------------------------------------------------------------------- #
-  # Account service. Serves account and customer reads and updates, and closes
-  # the billing cycle, which zeroes the two cycle counters.
-  # ------------------------------------------------------------------------- #
+  # Account service container. Configured with the account database, its schema
+  # and the outbox relay settings. It subscribes to no topic.
   account-service:
     build:
-      context: ./services/account-service
-      dockerfile: Dockerfile
+      # The card-platform directory, so stage 1 reaches the aggregator
+      # descriptor and both shared libraries and packages the module in-image.
+      context: .
+      dockerfile: services/account-service/Dockerfile
     container_name: card-platform${CLONE_INDEX:-}-account-service
     env_file:
       - path: .env
@@ -299,24 +415,32 @@ services:
       SPRING_FLYWAY_SCHEMAS: ${ACCOUNT_DB_SCHEMA:-account_service}
       SPRING_FLYWAY_DEFAULT_SCHEMA: ${ACCOUNT_DB_SCHEMA:-account_service}
       SPRING_JPA_PROPERTIES_HIBERNATE_DEFAULT_SCHEMA: ${ACCOUNT_DB_SCHEMA:-account_service}
+      # The one topic this service publishes, on a mutation only. Its payload
+      # matches schemas/account-state-changed-v1.json in event-contracts.
+      TOPIC_ACCOUNT_STATE_CHANGED: ${TOPIC_ACCOUNT_STATE_CHANGED:-account.state-changed}
       OUTBOX_RELAY_INTERVAL_MS: ${OUTBOX_RELAY_INTERVAL_MS:-500}
       OUTBOX_RELAY_BATCH_SIZE: ${OUTBOX_RELAY_BATCH_SIZE:-100}
     ports:
-      - "${ACCOUNT_PORT:-8085}:8080"
-    depends_on: *backing-services
+      # Both mappings bind the loopback address. The service port carries the
+      # Representational State Transfer (REST) surface; the management port
+      # carries /actuator and reaches no further than this machine.
+      - "127.0.0.1:${ACCOUNT_PORT:-8085}:8080"
+      - "127.0.0.1:${ACCOUNT_MANAGEMENT_PORT:-9085}:${MANAGEMENT_PORT:-9080}"
+    # This service publishes through its outbox relay and registers no listener.
+    depends_on: *database-only
     healthcheck: *actuator-healthcheck
     networks:
       - carddemo
     restart: unless-stopped
 
-  # ------------------------------------------------------------------------- #
-  # Card service. Serves the card list, the card detail and the card update.
-  # The card list returns seven rows a page.
-  # ------------------------------------------------------------------------- #
+  # Card service container. Configured with the card database, its schema and
+  # the outbox relay settings. It subscribes to no topic.
   card-service:
     build:
-      context: ./services/card-service
-      dockerfile: Dockerfile
+      # The card-platform directory, so stage 1 reaches the aggregator
+      # descriptor and both shared libraries and packages the module in-image.
+      context: .
+      dockerfile: services/card-service/Dockerfile
     container_name: card-platform${CLONE_INDEX:-}-card-service
     env_file:
       - path: .env
@@ -327,11 +451,34 @@ services:
       SPRING_FLYWAY_SCHEMAS: ${CARD_DB_SCHEMA:-card_service}
       SPRING_FLYWAY_DEFAULT_SCHEMA: ${CARD_DB_SCHEMA:-card_service}
       SPRING_JPA_PROPERTIES_HIBERNATE_DEFAULT_SCHEMA: ${CARD_DB_SCHEMA:-card_service}
+      # The one topic this service publishes, on a mutation only. Its payload
+      # matches schemas/card-state-changed-v1.json in event-contracts.
+      TOPIC_CARD_STATE_CHANGED: ${TOPIC_CARD_STATE_CHANGED:-card.state-changed}
+      # Producer reliability, the same set the other two publishers carry.
+      # messaging/KafkaEventPublisher.java reads these back from the producer
+      # factory at construction and refuses to start unless every one holds.
+      # acks all waits for every in-sync replica. Idempotent production plus an
+      # in-flight ceiling of five keeps one account's events in publish order
+      # through a retry. The three timeouts bound a send rather than blocking a
+      # request thread until the broker answers.
+      SPRING_KAFKA_PRODUCER_ACKS: all
+      SPRING_KAFKA_PRODUCER_KEY_SERIALIZER: org.apache.kafka.common.serialization.StringSerializer
+      SPRING_KAFKA_PRODUCER_VALUE_SERIALIZER: org.apache.kafka.common.serialization.StringSerializer
+      SPRING_KAFKA_PRODUCER_PROPERTIES_ENABLE_IDEMPOTENCE: "true"
+      SPRING_KAFKA_PRODUCER_PROPERTIES_MAX_IN_FLIGHT_REQUESTS_PER_CONNECTION: "5"
+      SPRING_KAFKA_PRODUCER_PROPERTIES_DELIVERY_TIMEOUT_MS: "120000"
+      SPRING_KAFKA_PRODUCER_PROPERTIES_REQUEST_TIMEOUT_MS: "30000"
+      SPRING_KAFKA_PRODUCER_PROPERTIES_MAX_BLOCK_MS: "5000"
       OUTBOX_RELAY_INTERVAL_MS: ${OUTBOX_RELAY_INTERVAL_MS:-500}
       OUTBOX_RELAY_BATCH_SIZE: ${OUTBOX_RELAY_BATCH_SIZE:-100}
     ports:
-      - "${CARD_PORT:-8086}:8080"
-    depends_on: *backing-services
+      # Both mappings bind the loopback address. The service port carries the
+      # Representational State Transfer (REST) surface; the management port
+      # carries /actuator and reaches no further than this machine.
+      - "127.0.0.1:${CARD_PORT:-8086}:8080"
+      - "127.0.0.1:${CARD_MANAGEMENT_PORT:-9086}:${MANAGEMENT_PORT:-9080}"
+    # This service publishes through its outbox relay and registers no listener.
+    depends_on: *database-only
     healthcheck: *actuator-healthcheck
     networks:
       - carddemo
@@ -339,16 +486,42 @@ services:
 
 configs:
 
-  # One database per service. The statements run once, on an empty data
-  # directory, as the user the database container creates.
+  # One database per service. The script runs once, on an empty data directory, as
+  # the user the database container creates.
+  #
+  # It reads the six names from SERVICE_DATABASE_NAMES at run time rather than
+  # taking them into the file as text, and checks each one against a strict
+  # identifier pattern. It then hands the statement to psql on standard input,
+  # where psql interpolates :"database_name" as one quoted identifier. A name
+  # carrying a semicolon, a quotation mark or a space is refused by the pattern
+  # before any statement runs, and identifier quoting means that even a name that
+  # passed the pattern could not add a statement.
   service_databases:
     content: |
-      CREATE DATABASE ${AUTHORIZATION_DB_NAME:-carddemo_authorization};
-      CREATE DATABASE ${LEDGER_DB_NAME:-carddemo_ledger};
-      CREATE DATABASE ${FRAUD_DB_NAME:-carddemo_fraud};
-      CREATE DATABASE ${NOTIFICATION_DB_NAME:-carddemo_notification};
-      CREATE DATABASE ${ACCOUNT_DB_NAME:-carddemo_account};
-      CREATE DATABASE ${CARD_DB_NAME:-carddemo_card};
+      #!/bin/sh
+      set -eu
+
+      : "$${SERVICE_DATABASE_NAMES:?SERVICE_DATABASE_NAMES must name the six service databases}"
+
+      for database_name in $$SERVICE_DATABASE_NAMES; do
+        case "$$database_name" in
+          *[!abcdefghijklmnopqrstuvwxyz0123456789_]* | [!abcdefghijklmnopqrstuvwxyz_]* | "")
+            echo "refusing database name '$$database_name': a name holds lower-case" \
+                 "letters, digits and underscores, and does not open with a digit" >&2
+            exit 1
+            ;;
+        esac
+
+        if [ "$${#database_name}" -gt 63 ]; then
+          echo "refusing database name: a name holds at most 63 characters" >&2
+          exit 1
+        fi
+
+        printf %s 'CREATE DATABASE :"database_name";' \
+          | psql --username "$$POSTGRES_USER" --dbname "$$POSTGRES_DB" \
+              --no-psqlrc --set ON_ERROR_STOP=1 \
+              --set database_name="$$database_name"
+      done
 
 volumes:
 

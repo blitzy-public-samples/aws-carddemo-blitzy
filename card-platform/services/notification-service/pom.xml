@@ -1,8 +1,5 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<!--
-  Module descriptor for the CardDemo notification service.
-  Rationale for every version and exclusion: card-platform/docs/decision-log.md
--->
+<!-- Module descriptor for the CardDemo notification service. -->
 <project xmlns="http://maven.apache.org/POM/4.0.0"
          xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
          xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
@@ -22,9 +19,12 @@
   <packaging>jar</packaging>
 
   <name>CardDemo Notification Service</name>
-  <description>The notification service consumes posted transactions and fraud
-    assessments, maintains a card-keyed statement read model, renders cardholder
-    alerts, and serves one read-only history endpoint.</description>
+  <description>The notification service consumes three topics under three
+    consumer groups of its own: transaction.authorized, which makes it the third
+    independent consumer of the one event an authorization call publishes,
+    alongside ledger posting and fraud detection; transaction.posted, which
+    carries the new balance; and fraud.assessed. It publishes no event and calls
+    no other service.</description>
 
   <properties>
     <!-- Compiler release for this module. The Spring Boot parent defaults it to 17. -->
@@ -44,7 +44,7 @@
       <artifactId>cobol-compat</artifactId>
     </dependency>
 
-    <!-- The read-only history endpoint, persistence, and bean constraints. -->
+    <!-- Web surface, persistence and bean constraints. -->
     <dependency>
       <groupId>org.springframework.boot</groupId>
       <artifactId>spring-boot-starter-web</artifactId>
@@ -64,8 +64,8 @@
       <artifactId>spring-boot-starter-actuator</artifactId>
     </dependency>
 
-    <!-- Consumer side: two listeners, manual acknowledgement, and dead-letter
-         routing. Spring Boot 4 ships Kafka auto-configuration in its own starter. -->
+    <!-- Messaging. Spring Boot 4 ships Kafka auto-configuration in its own
+         starter; spring-kafka alone ships none. -->
     <dependency>
       <groupId>org.springframework.boot</groupId>
       <artifactId>spring-boot-starter-kafka</artifactId>
@@ -76,7 +76,7 @@
     </dependency>
 
     <!-- Database driver and schema migration. Flyway ships its PostgreSQL dialect
-         as a separate artifact. Spring Boot 4 ships Flyway auto-configuration
+         as a separate artifact, and Spring Boot 4 ships Flyway auto-configuration
          in its own starter. -->
     <dependency>
       <groupId>org.postgresql</groupId>
@@ -147,7 +147,7 @@
 
   <build>
     <plugins>
-      <!-- Repackages the module as an executable Java archive. The aggregator pins the version. -->
+      <!-- Repackages the module as an executable Java archive. -->
       <plugin>
         <groupId>org.springframework.boot</groupId>
         <artifactId>spring-boot-maven-plugin</artifactId>

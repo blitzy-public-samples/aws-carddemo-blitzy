@@ -28,8 +28,7 @@ import java.util.Set;
  *
  * <p>The codes come from the North American Numbering Plan Administrator report cited at
  * {@code app/cpy/CSLKPCDY.cpy} lines 26 to 28.</p>
- *
- * <p>Decisions behind this class: {@code card-platform/docs/decision-log.md}.</p>
+
  */
 public final class UsPhoneAreaCodes {
 

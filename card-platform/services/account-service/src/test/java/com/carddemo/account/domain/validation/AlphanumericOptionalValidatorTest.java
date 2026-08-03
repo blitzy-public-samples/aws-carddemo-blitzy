@@ -19,18 +19,15 @@ import static org.assertj.core.api.Assertions.assertThat;
  * Tests for {@link AlphanumericOptionalValidator}, which realises COBOL paragraph
  * {@code 1240-EDIT-ALPHANUM-OPT} at app/cbl/COACTUPC.cbl:L2061-L2105.
  *
- * <p>A census of all 4236 lines of app/cbl/COACTUPC.cbl found zero {@code PERFORM} sites for
- * {@code 1240-EDIT-ALPHANUM-OPT}. The paragraph carries four references in total: its label at
- * app/cbl/COACTUPC.cbl:L2061, its two {@code GO TO} statements at app/cbl/COACTUPC.cbl:L2073
- * and app/cbl/COACTUPC.cbl:L2100, and its exit label at app/cbl/COACTUPC.cbl:L2105. The count
- * tolerated extra spaces after {@code PERFORM} and ran with carriage returns stripped.
- * {@code AccountUpdateService} names no member of the class under test.</p>
+ * <p>A repository-wide scan found no {@code PERFORM 1240-EDIT-ALPHANUM-OPT} call. Its only
+ * references are the paragraph label, two exits, and the exit label.
+ * {@code AccountUpdateService} does not use this validator.</p>
  *
  * <p>The paragraph is optional, so one message is reachable. The three-way not-supplied test at
- * app/cbl/COACTUPC.cbl:L2066-L2071 resolves to success at app/cbl/COACTUPC.cbl:L2072 and leaves
- * at app/cbl/COACTUPC.cbl:L2073. The one message stands at app/cbl/COACTUPC.cbl:L2095 and
- * carries the literal {@code ' can have numbers or alphabets only.'}. The required sibling
- * paragraph carries the same literal at app/cbl/COACTUPC.cbl:L1999.</p>
+ * app/cbl/COACTUPC.cbl:L2066-L2071 resolves to success at app/cbl/COACTUPC.cbl:L2072 and leaves at
+ * app/cbl/COACTUPC.cbl:L2073. The one message stands at app/cbl/COACTUPC.cbl:L2095 and carries the
+ * literal {@code ' can have numbers or alphabets only.'}. The required sibling paragraph carries
+ * the same literal at app/cbl/COACTUPC.cbl:L1999.</p>
  *
  * <p>The paragraph is alphanumeric, so 62 characters pass. The group
  * {@code LIT-ALL-ALPHANUM-FROM-X} at app/cbl/COACTUPC.cbl:L586 spans {@code LIT-UPPER} at
@@ -39,15 +36,11 @@ import static org.assertj.core.api.Assertions.assertThat;
  * app/cbl/COACTUPC.cbl:L2079-L2082, and the verification follows at
  * app/cbl/COACTUPC.cbl:L2084-L2087.</p>
  *
- * <p>The comment at app/cbl/COACTUPC.cbl:L2078 reads
- * {@code *    Only Alphabets and space allowed}. The comment stands above the alphanumeric
- * conversion, and the conversion admits digits. The zero-invocation count and the comment both
- * appear in card-platform/docs/business-rule-flags.md.</p>
+ * <p>The comment at app/cbl/COACTUPC.cbl:L2078 reads {@code *    Only Alphabets and space allowed}.
+ * The comment stands above the alphanumeric conversion, and the conversion admits digits.</p>
  *
- * <p>Every input below is built in this file, and no fixture row is read. The methods run on
- * plain JUnit Jupiter with no Spring context, no container and no database.</p>
- *
- * <p>Decision record: card-platform/docs/decision-log.md.</p>
+ * <p>Every input below is built in this file, and no fixture row is read. The methods run on plain
+ * JUnit Jupiter with no Spring context, no container and no database.</p>
  */
 @DisplayName("AlphanumericOptionalValidator, the optional alphanumeric field edit")
 class AlphanumericOptionalValidatorTest {
@@ -59,6 +52,16 @@ class AlphanumericOptionalValidatorTest {
      * paragraph {@code 1230-EDIT-ALPHANUM-REQD}.
      */
     private static final String CHARACTER_CLASS_MESSAGE = " can have numbers or alphabets only.";
+
+    /**
+     * ADDITIVE message text for a value wider than the inspected field. No source literal carries
+     * this text: the source moves a fixed-width screen field into its edit field, so a wider value
+     * cannot reach paragraph 1240.
+     */
+    private static final String NO_LONGER_THAN = " must be no longer than ";
+
+    /** ADDITIVE. Closes the text {@link #NO_LONGER_THAN} opens. */
+    private static final String CHARACTERS = " characters.";
 
     /** Character count of {@link #CHARACTER_CLASS_MESSAGE}. */
     private static final int MESSAGE_WIDTH = 36;
@@ -104,6 +107,12 @@ class AlphanumericOptionalValidatorTest {
      */
     private static final String LOW_VALUES = "\u0000\u0000\u0000";
 
+    /**
+     * One character of {@code LOW-VALUES}, which a COBOL comparison tests for one position at a
+     * time.
+     */
+    private static final String ONE_LOW_VALUE = "\u0000";
+
     /** Code point of the first printable ASCII character above the space. */
     private static final int FIRST_PRINTABLE = 0x21;
 
@@ -118,6 +127,57 @@ class AlphanumericOptionalValidatorTest {
         assertPasses(AlphanumericOptionalValidator.validate(FIELD_LABEL, null, LABEL_HOST_WIDTH));
         assertPasses(AlphanumericOptionalValidator.validate(FIELD_LABEL, LOW_VALUES, LOW_VALUES.length()));
         assertPasses(AlphanumericOptionalValidator.validate(FIELD_LABEL, "ANY", 0));
+    }
+
+    @Test
+    @DisplayName("A window of LOW-VALUES at the edited width passes at every width, the first arm "
+            + "at app/cbl/COACTUPC.cbl:L2067")
+    void lowValuesAtTheEditedWidthPassesAtEveryWidth() {
+        for (int width : new int[] {1, 2, LOW_VALUES.length(), LABEL_HOST_WIDTH - 1,
+                LABEL_HOST_WIDTH}) {
+            assertPasses(AlphanumericOptionalValidator.validate(
+                    FIELD_LABEL, ONE_LOW_VALUE.repeat(width), width));
+        }
+    }
+
+    @Test
+    @DisplayName("A window of LOW-VALUES narrower than the edited width reports the character "
+            + "class, because FUNCTION TRIM removes the space alone")
+    void lowValuesBelowTheEditedWidthReportsTheCharacterClass() {
+        for (int supplied : new int[] {1, 3, LABEL_HOST_WIDTH - 1}) {
+            EditResult result = AlphanumericOptionalValidator.validate(
+                    FIELD_LABEL, ONE_LOW_VALUE.repeat(supplied), LABEL_HOST_WIDTH);
+
+            assertThat(result.valid())
+                    .as("%d supplied of %d", supplied, LABEL_HOST_WIDTH)
+                    .isFalse();
+            assertThat(result.message())
+                    .as("%d supplied of %d", supplied, LABEL_HOST_WIDTH)
+                    .isEqualTo(FIELD_LABEL + CHARACTER_CLASS_MESSAGE);
+        }
+    }
+
+    @Test
+    @DisplayName("A window of LOW-VALUES is read only to the edited width, and content past that "
+            + "width is refused")
+    void lowValuesIsReadOnlyToTheEditedWidthAndContentPastItIsRefused() {
+        String padded = ONE_LOW_VALUE.repeat(LABEL_HOST_WIDTH) + "       ";
+
+        assertPasses(AlphanumericOptionalValidator.validate(FIELD_LABEL, padded, LABEL_HOST_WIDTH));
+
+        String beyond = ONE_LOW_VALUE.repeat(LABEL_HOST_WIDTH) + "MAIN ST";
+        EditResult refused =
+                AlphanumericOptionalValidator.validate(FIELD_LABEL, beyond, LABEL_HOST_WIDTH);
+
+        assertThat(refused.valid()).isFalse();
+        assertThat(refused.message())
+                .isEqualTo(FIELD_LABEL + NO_LONGER_THAN + LABEL_HOST_WIDTH + CHARACTERS);
+
+        EditResult wider =
+                AlphanumericOptionalValidator.validate(FIELD_LABEL, beyond, beyond.length());
+
+        assertThat(wider.valid()).isFalse();
+        assertThat(wider.message()).isEqualTo(FIELD_LABEL + CHARACTER_CLASS_MESSAGE);
     }
 
     @Test
@@ -240,15 +300,49 @@ class AlphanumericOptionalValidatorTest {
     }
 
     @Test
-    @DisplayName("The inspected width bounds the edit, so a character past the width is not read")
+    @DisplayName("The inspected width bounds the edit, and a character past the width fails it")
     void inspectedWidthBoundsTheEdit() {
-        assertPasses(AlphanumericOptionalValidator.validate(FIELD_LABEL, "AB-", 2));
         assertPasses(AlphanumericOptionalValidator.validate(FIELD_LABEL, "AB", LABEL_HOST_WIDTH));
+
+        // Trailing spaces past the width are the padding the source MOVE itself drops.
+        assertPasses(AlphanumericOptionalValidator.validate(FIELD_LABEL, "AB   ", 2));
 
         EditResult wholeValue = AlphanumericOptionalValidator.validate(FIELD_LABEL, "AB-", 3);
 
         assertThat(wholeValue.valid()).isFalse();
         assertThat(wholeValue.message()).isEqualTo(FIELD_LABEL + CHARACTER_CLASS_MESSAGE);
+
+        // ADDITIVE. A caller can supply a value wider than the inspected field, and the edit
+        // refuses one that carries a character the window would not cover. An optional field
+        // therefore cannot pass on its first two characters while the caller holds markup.
+        EditResult pastWidth = AlphanumericOptionalValidator.validate(FIELD_LABEL, "AB-", 2);
+        EditResult markupPastWidth =
+                AlphanumericOptionalValidator.validate(FIELD_LABEL, "AB<script>alert(1)</script>", 2);
+
+        assertThat(pastWidth.valid()).isFalse();
+        assertThat(pastWidth.message()).isEqualTo(FIELD_LABEL + NO_LONGER_THAN + 2 + CHARACTERS);
+        assertThat(markupPastWidth.valid()).isFalse();
+        assertThat(markupPastWidth.message())
+                .isEqualTo(FIELD_LABEL + NO_LONGER_THAN + 2 + CHARACTERS);
+    }
+
+    @Test
+    @DisplayName("A control character is not absent and fails the 62-character set test")
+    void aControlCharacterIsNotAbsentAndFailsTheCharacterSetTest() {
+        // COBOL FUNCTION TRIM removes spaces and no other character, so the not-supplied arms at
+        // app/cbl/COACTUPC.cbl:L2066-L2071 do not cover a tab, a newline or a null character mixed
+        // with other characters. Each one survives the conversion at
+        // app/cbl/COACTUPC.cbl:L2080-L2082 and fails the test at app/cbl/COACTUPC.cbl:L2084-L2087.
+        String[] controlBearing = {"\t", "\n", "\r", "\u000b", "\u0001", "A\tB", "A\nB"};
+
+        for (int index = 0; index < controlBearing.length; index++) {
+            EditResult result = AlphanumericOptionalValidator.validate(
+                    FIELD_LABEL, controlBearing[index], LABEL_HOST_WIDTH);
+
+            assertThat(result.valid()).as("value index %d", index).isFalse();
+            assertThat(result.message()).as("value index %d", index)
+                    .isEqualTo(FIELD_LABEL + CHARACTER_CLASS_MESSAGE);
+        }
     }
 
     @Test

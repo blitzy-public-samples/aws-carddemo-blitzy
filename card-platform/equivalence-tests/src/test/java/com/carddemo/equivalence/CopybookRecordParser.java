@@ -1,5 +1,6 @@
 package com.carddemo.equivalence;
 
+import com.carddemo.cobol.PanMasker;
 import com.carddemo.cobol.PicClause;
 import java.math.BigDecimal;
 import java.util.Objects;
@@ -7,9 +8,20 @@ import java.util.Objects;
 /**
  * Reads fixed-width CardDemo fixture records into typed values.
  *
- * <p>Every record layout has one nested record type and one parse method. Field offsets are
- * running sums over the byte widths {@link PicClause} publishes, taken in copybook declaration
- * order. Each nested type names its copybook and line range.</p>
+ * <p>Every record layout has one nested record type and one parse method. Field offsets are running
+ * sums over the byte widths {@link PicClause} publishes, taken in copybook declaration order. Each
+ * nested type names its copybook and line range.</p>
+ *
+ * <p>Each parse method checks the whole record width before it reads a field. Ten layouts accept
+ * one width each, the length their copybook declares. The card cross-reference accepts two, the
+ * {@link PicClause#CARDXREF_FIXTURE_RECORD_WIDTH} the text fixture delivers and the
+ * {@link PicClause#CARD_XREF_RECORD_LENGTH} the dataset definition declares. Any other width
+ * raises {@link IllegalArgumentException}.</p>
+ *
+ * <p>No rendering and no failure message here carries a field value. Every nested type whose
+ * components identify a card, an account, a customer, or a money amount renders that component as
+ * {@link #REDACTED}, and a failed read names the layout, the field, the width, and the character
+ * position.</p>
  *
  * <p>Signed numeric fields carry the sign as an overpunch on the trailing digit, which
  * {@code new BigDecimal(String)} rejects. The nine fixtures under {@code app/data/ASCII} hold 651
@@ -20,7 +32,18 @@ import java.util.Objects;
  * overpunch decode at {@link #signedDecimal}, tolerance of a short record, and the hundredths
  * truncation at {@link #truncateProcessingTimestampToHundredths}.</p>
  *
- * <p>Recorded decisions: {@code card-platform/docs/decision-log.md}.</p>
+ * <p>Six nested types override {@link Object#toString()} so that no rendered record can carry a
+ * full Primary Account Number (PAN), a card verification value, a social security number, a
+ * government-issued identifier or an electronic funds transfer account identifier.
+ * {@link CardRecord}, {@link CardCrossReferenceRecord}, {@link PostedTransactionRecord} and
+ * {@link DailyTransactionRecord} publish a masked card number. {@link CardRecord} redacts its
+ * verification value, {@link CustomerRecord} redacts its three identifiers, and
+ * {@link RejectedTransactionRecord} redacts the whole 350-byte transaction blob, which carries a
+ * card number at its offset 15. Each redaction preserves the width of the value it replaces, so a
+ * failure still reports the width a reader needs to find an offset drift.</p>
+ *
+ * <p>Every failure this class reports names the field, the position inside the field and the width
+ * involved. None quotes the text of the field, so a failing parse discloses no fixture value.</p>
  */
 public final class CopybookRecordParser {
 
@@ -39,111 +62,24 @@ public final class CopybookRecordParser {
     /** Character COBOL pads a {@code PIC X(n)} field with on the right. */
     private static final char COBOL_TEXT_PAD = ' ';
 
-    // ---------------------------------------------------------------------------------------
-    // Field widths for the three copybooks PicClause does not itemise. PicClause publishes a
-    // record width for each of these three fixtures and no field width. Every constant below
-    // names its copybook and line.
-    // ---------------------------------------------------------------------------------------
-
-    /** Byte width of {@code CUST-ID}, {@code PIC 9(09)} at {@code app/cpy/CVCUS01Y.cpy:L5}. */
-    private static final int CUST_ID_WIDTH = 9;
-
-    /** Byte width of {@code CUST-FIRST-NAME}, {@code PIC X(25)} at {@code app/cpy/CVCUS01Y.cpy:L6}. */
-    private static final int CUST_FIRST_NAME_WIDTH = 25;
-
-    /** Byte width of {@code CUST-MIDDLE-NAME}, {@code PIC X(25)} at {@code app/cpy/CVCUS01Y.cpy:L7}. */
-    private static final int CUST_MIDDLE_NAME_WIDTH = 25;
-
-    /** Byte width of {@code CUST-LAST-NAME}, {@code PIC X(25)} at {@code app/cpy/CVCUS01Y.cpy:L8}. */
-    private static final int CUST_LAST_NAME_WIDTH = 25;
-
-    /** Byte width of {@code CUST-ADDR-LINE-1}, {@code PIC X(50)} at {@code app/cpy/CVCUS01Y.cpy:L9}. */
-    private static final int CUST_ADDR_LINE_1_WIDTH = 50;
-
-    /** Byte width of {@code CUST-ADDR-LINE-2}, {@code PIC X(50)} at {@code app/cpy/CVCUS01Y.cpy:L10}. */
-    private static final int CUST_ADDR_LINE_2_WIDTH = 50;
-
-    /** Byte width of {@code CUST-ADDR-LINE-3}, {@code PIC X(50)} at {@code app/cpy/CVCUS01Y.cpy:L11}. */
-    private static final int CUST_ADDR_LINE_3_WIDTH = 50;
-
-    /** Byte width of {@code CUST-ADDR-STATE-CD}, {@code PIC X(02)} at {@code app/cpy/CVCUS01Y.cpy:L12}. */
-    private static final int CUST_ADDR_STATE_CD_WIDTH = 2;
-
-    /** Byte width of {@code CUST-ADDR-COUNTRY-CD}, {@code PIC X(03)} at {@code app/cpy/CVCUS01Y.cpy:L13}. */
-    private static final int CUST_ADDR_COUNTRY_CD_WIDTH = 3;
-
-    /** Byte width of {@code CUST-ADDR-ZIP}, {@code PIC X(10)} at {@code app/cpy/CVCUS01Y.cpy:L14}. */
-    private static final int CUST_ADDR_ZIP_WIDTH = 10;
-
-    /** Byte width of {@code CUST-PHONE-NUM-1}, {@code PIC X(15)} at {@code app/cpy/CVCUS01Y.cpy:L15}. */
-    private static final int CUST_PHONE_NUM_1_WIDTH = 15;
-
-    /** Byte width of {@code CUST-PHONE-NUM-2}, {@code PIC X(15)} at {@code app/cpy/CVCUS01Y.cpy:L16}. */
-    private static final int CUST_PHONE_NUM_2_WIDTH = 15;
-
-    /** Byte width of {@code CUST-SSN}, {@code PIC 9(09)} at {@code app/cpy/CVCUS01Y.cpy:L17}. */
-    private static final int CUST_SSN_WIDTH = 9;
-
-    /** Byte width of {@code CUST-GOVT-ISSUED-ID}, {@code PIC X(20)} at {@code app/cpy/CVCUS01Y.cpy:L18}. */
-    private static final int CUST_GOVT_ISSUED_ID_WIDTH = 20;
-
     /**
-     * Byte width of {@code CUST-DOB-YYYY-MM-DD}, {@code PIC X(10)} at
-     * {@code app/cpy/CVCUS01Y.cpy:L19}.
+     * Text a diagnostic rendering carries in place of a component value. ADDITIVE, with no COBOL
+     * ancestor. Every record below whose components identify a card, an account, a customer, or a
+     * money amount renders that component as this text.
      */
-    private static final int CUST_DOB_WIDTH = 10;
+    public static final String REDACTED = "<redacted>";
 
-    /** Byte width of {@code CUST-EFT-ACCOUNT-ID}, {@code PIC X(10)} at {@code app/cpy/CVCUS01Y.cpy:L20}. */
-    private static final int CUST_EFT_ACCOUNT_ID_WIDTH = 10;
-
-    /**
-     * Byte width of {@code CUST-PRI-CARD-HOLDER-IND}, {@code PIC X(01)} at
-     * {@code app/cpy/CVCUS01Y.cpy:L21}.
-     */
-    private static final int CUST_PRI_CARD_HOLDER_IND_WIDTH = 1;
-
-    /**
-     * Byte width of {@code CUST-FICO-CREDIT-SCORE}, {@code PIC 9(03)} at
-     * {@code app/cpy/CVCUS01Y.cpy:L22}.
-     */
-    private static final int CUST_FICO_CREDIT_SCORE_WIDTH = 3;
-
-    /** Byte width of {@code TRAN-TYPE}, {@code PIC X(02)} at {@code app/cpy/CVTRA03Y.cpy:L5}. */
-    private static final int TRAN_TYPE_WIDTH = 2;
-
-    /** Byte width of {@code TRAN-TYPE-DESC}, {@code PIC X(50)} at {@code app/cpy/CVTRA03Y.cpy:L6}. */
-    private static final int TRAN_TYPE_DESC_WIDTH = 50;
-
-    /**
-     * Byte width of {@code TRAN-TYPE-CD}, {@code PIC X(02)} at {@code app/cpy/CVTRA04Y.cpy:L6}.
-     * The field is the first of two parts of the six-byte {@code TRAN-CAT-KEY} group at
-     * {@code app/cpy/CVTRA04Y.cpy:L5}.
-     */
-    private static final int TRAN_CAT_RECORD_TYPE_CD_WIDTH = 2;
-
-    /**
-     * Byte width of {@code TRAN-CAT-CD}, {@code PIC 9(04)} at {@code app/cpy/CVTRA04Y.cpy:L7}.
-     * The field is the second of two parts of the six-byte {@code TRAN-CAT-KEY} group at
-     * {@code app/cpy/CVTRA04Y.cpy:L5}.
-     */
-    private static final int TRAN_CAT_RECORD_CAT_CD_WIDTH = 4;
-
-    /**
-     * Byte width of {@code TRAN-CAT-TYPE-DESC}, {@code PIC X(50)} at
-     * {@code app/cpy/CVTRA04Y.cpy:L8}.
-     */
-    private static final int TRAN_CAT_TYPE_DESC_WIDTH = 50;
+    /** Ordinal of the first character of a record, used when a read reports a position. */
+    private static final int FIRST_POSITION = 1;
 
     /** Holds no instance state. The class exposes static operations only. */
     private CopybookRecordParser() {
         throw new AssertionError(CopybookRecordParser.class.getName() + " holds static operations only");
     }
 
-    // ---------------------------------------------------------------------------------------
     // Record layouts. One nested type per copybook, in the order the copybooks are numbered.
     // Identifier and key fields keep their zero padding as text; the COBOL programs compare
     // several of them as text. Descriptive fields arrive with the space padding removed.
-    // ---------------------------------------------------------------------------------------
 
     /**
      * Fields of {@code ACCOUNT-RECORD} at {@code app/cpy/CVACT01Y.cpy:L4-L17}. The trailing
@@ -175,7 +111,24 @@ public final class CopybookRecordParser {
             BigDecimal currentCycleCredit,
             BigDecimal currentCycleDebit,
             String addressZip,
-            String groupId) { }
+            String groupId) {
+
+        /**
+         * Renders the type alone, and no field value.
+         *
+         * <p>Every field of an account record is protected: the account identifier, five money fields,
+         * three dates, the address zip and the group identifier. A generated record rendering carries
+         * every field, and a rendering reaches an
+         * assertion message, a log line or a debugger view without a caller intending it. A test
+         * that needs a field reads it through its accessor.</p>
+         *
+         * @return a fixed description carrying no field value
+         */
+        @Override
+        public String toString() {
+            return "AccountRecord[all fields redacted]";
+        }
+    }
 
     /**
      * Fields of {@code CARD-RECORD} at {@code app/cpy/CVACT02Y.cpy:L4-L11}. The trailing
@@ -197,7 +150,24 @@ public final class CopybookRecordParser {
             String cardVerificationValue,
             String embossedName,
             String expirationDate,
-            String activeStatus) { }
+            String activeStatus) {
+
+        /**
+         * Renders this record with its card number masked and its verification value redacted.
+         *
+         * @return the six components, the card number as twelve mask characters and its last four
+         *         digits, and the verification value as mask characters at its own width
+         */
+        @Override
+        public String toString() {
+            return "CardRecord[cardNumber=" + PanMasker.maskCardNumber(cardNumber)
+                    + ", accountId=" + accountId
+                    + ", cardVerificationValue=" + redacted(cardVerificationValue)
+                    + ", embossedName=" + embossedName
+                    + ", expirationDate=" + expirationDate
+                    + ", activeStatus=" + activeStatus + "]";
+        }
+    }
 
     /**
      * Fields of {@code CARD-XREF-RECORD} at {@code app/cpy/CVACT03Y.cpy:L4-L8}. The trailing
@@ -212,7 +182,21 @@ public final class CopybookRecordParser {
     public static record CardCrossReferenceRecord(
             String cardNumber,
             String customerId,
-            String accountId) { }
+            String accountId) {
+
+        /**
+         * Renders this record with its card number masked.
+         *
+         * @return the three components, the card number as twelve mask characters and its last
+         *         four digits
+         */
+        @Override
+        public String toString() {
+            return "CardCrossReferenceRecord[cardNumber=" + PanMasker.maskCardNumber(cardNumber)
+                    + ", customerId=" + customerId
+                    + ", accountId=" + accountId + "]";
+        }
+    }
 
     /**
      * Fields of {@code CUSTOMER-RECORD} at {@code app/cpy/CVCUS01Y.cpy:L4-L23}. The trailing
@@ -255,7 +239,37 @@ public final class CopybookRecordParser {
             String dateOfBirth,
             String eftAccountId,
             String primaryCardHolderIndicator,
-            int ficoCreditScore) { }
+            int ficoCreditScore) {
+
+        /**
+         * Renders this record with its three identifiers redacted.
+         *
+         * @return the eighteen components, with {@code CUST-SSN},
+         *         {@code CUST-GOVT-ISSUED-ID} and {@code CUST-EFT-ACCOUNT-ID} each replaced by
+         *         mask characters at their own width
+         */
+        @Override
+        public String toString() {
+            return "CustomerRecord[customerId=" + customerId
+                    + ", firstName=" + firstName
+                    + ", middleName=" + middleName
+                    + ", lastName=" + lastName
+                    + ", addressLine1=" + addressLine1
+                    + ", addressLine2=" + addressLine2
+                    + ", addressLine3=" + addressLine3
+                    + ", stateCode=" + stateCode
+                    + ", countryCode=" + countryCode
+                    + ", addressZip=" + addressZip
+                    + ", phoneNumber1=" + phoneNumber1
+                    + ", phoneNumber2=" + phoneNumber2
+                    + ", socialSecurityNumber=" + redacted(socialSecurityNumber)
+                    + ", governmentIssuedId=" + redacted(governmentIssuedId)
+                    + ", dateOfBirth=" + dateOfBirth
+                    + ", eftAccountId=" + redacted(eftAccountId)
+                    + ", primaryCardHolderIndicator=" + primaryCardHolderIndicator
+                    + ", ficoCreditScore=" + ficoCreditScore + "]";
+        }
+    }
 
     /**
      * Fields of {@code TRAN-CAT-BAL-RECORD} at {@code app/cpy/CVTRA01Y.cpy:L4-L10}. The trailing
@@ -277,7 +291,25 @@ public final class CopybookRecordParser {
             String accountId,
             String typeCode,
             String categoryCode,
-            BigDecimal balance) { }
+            BigDecimal balance) {
+
+        /**
+         * Renders the two reference codes, and neither the account identifier nor the balance.
+         *
+         * <p>The type code and the category code are reference values shared by every account, so
+         * they identify nothing. The account identifier and the balance are protected, and a
+         * generated record rendering would carry both into any assertion message that named the
+         * record.</p>
+         *
+         * @return a description carrying the two reference codes alone
+         */
+        @Override
+        public String toString() {
+            return "TransactionCategoryBalanceRecord[typeCode=" + typeCode
+                    + ", categoryCode=" + categoryCode
+                    + ", accountId and balance redacted]";
+        }
+    }
 
     /**
      * Fields of {@code DIS-GROUP-RECORD} at {@code app/cpy/CVTRA02Y.cpy:L4-L10}. The trailing
@@ -367,7 +399,30 @@ public final class CopybookRecordParser {
             String merchantZip,
             String cardNumber,
             String originTimestamp,
-            String processingTimestamp) { }
+            String processingTimestamp) {
+        /**
+         * Renders this record with its card number masked.
+         *
+         * @return the thirteen components, the card number as twelve mask characters and its last
+         *         four digits
+         */
+        @Override
+        public String toString() {
+            return "PostedTransactionRecord[transactionId=" + transactionId
+                    + ", typeCode=" + typeCode
+                    + ", categoryCode=" + categoryCode
+                    + ", source=" + source
+                    + ", description=" + description
+                    + ", amount=" + amount
+                    + ", merchantId=" + merchantId
+                    + ", merchantName=" + merchantName
+                    + ", merchantCity=" + merchantCity
+                    + ", merchantZip=" + merchantZip
+                    + ", cardNumber=" + PanMasker.maskCardNumber(cardNumber)
+                    + ", originTimestamp=" + originTimestamp
+                    + ", processingTimestamp=" + processingTimestamp + "]";
+        }
+    }
 
     /**
      * Fields of {@code DALYTRAN-RECORD} at {@code app/cpy/CVTRA06Y.cpy:L4-L18}. The trailing
@@ -408,7 +463,30 @@ public final class CopybookRecordParser {
             String merchantZip,
             String cardNumber,
             String originTimestamp,
-            String processingTimestamp) { }
+            String processingTimestamp) {
+        /**
+         * Renders this record with its card number masked.
+         *
+         * @return the thirteen components, the card number as twelve mask characters and its last
+         *         four digits
+         */
+        @Override
+        public String toString() {
+            return "DailyTransactionRecord[transactionId=" + transactionId
+                    + ", typeCode=" + typeCode
+                    + ", categoryCode=" + categoryCode
+                    + ", source=" + source
+                    + ", description=" + description
+                    + ", amount=" + amount
+                    + ", merchantId=" + merchantId
+                    + ", merchantName=" + merchantName
+                    + ", merchantCity=" + merchantCity
+                    + ", merchantZip=" + merchantZip
+                    + ", cardNumber=" + PanMasker.maskCardNumber(cardNumber)
+                    + ", originTimestamp=" + originTimestamp
+                    + ", processingTimestamp=" + processingTimestamp + "]";
+        }
+    }
 
     /**
      * Fields of {@code REJECT-RECORD} at {@code app/cbl/CBTRN02C.cbl:L176-L178} joined to
@@ -428,22 +506,36 @@ public final class CopybookRecordParser {
     public static record RejectedTransactionRecord(
             String transactionData,
             int failReason,
-            String failReasonDescription) { }
+            String failReasonDescription) {
 
-    // ---------------------------------------------------------------------------------------
+        /**
+         * Renders this record with its transaction blob redacted. The blob holds the whole daily
+         * transaction record, whose card number sits at offset 15, so the blob is replaced by mask
+         * characters at its own width.
+         *
+         * @return the three components, the transaction blob as mask characters
+         */
+        @Override
+        public String toString() {
+            return "RejectedTransactionRecord[transactionData=" + redacted(transactionData)
+                    + ", failReason=" + failReason
+                    + ", failReasonDescription=" + failReasonDescription + "]";
+        }
+    }
+
     // Parse operations. Each one walks its layout once through a Cursor, listing fields in
     // copybook declaration order, so every field offset is a running sum of the widths above it.
-    // ---------------------------------------------------------------------------------------
 
     /**
      * Parses one {@code ACCOUNT-RECORD}, the layout of {@code app/data/ASCII/acctdata.txt}.
      *
      * @param record one fixture record
      * @return the twelve modelled fields of {@code app/cpy/CVACT01Y.cpy}
-     * @throws IllegalArgumentException when a field runs past the end of {@code record}, or holds
-     *         a character its Picture clause forbids
+     * @throws IllegalArgumentException when {@code record} is not the width its layout declares,
+     *         or when a field holds a character its Picture clause forbids
      */
     public static AccountRecord parseAccount(String record) {
+        requireDeclaredWidth(record, "CVACT01Y ACCOUNT-RECORD", PicClause.ACCOUNT_RECORD_LENGTH);
         Cursor cursor = new Cursor(record, "CVACT01Y ACCOUNT-RECORD");
         return new AccountRecord(
                 cursor.fixedText(PicClause.ACCT_ID_WIDTH, "ACCT-ID"),
@@ -470,9 +562,10 @@ public final class CopybookRecordParser {
      *
      * @param record one fixture record
      * @return the six modelled fields of {@code app/cpy/CVACT02Y.cpy}
-     * @throws IllegalArgumentException when a field runs past the end of {@code record}
+     * @throws IllegalArgumentException when {@code record} is not the width its layout declares
      */
     public static CardRecord parseCard(String record) {
+        requireDeclaredWidth(record, "CVACT02Y CARD-RECORD", PicClause.CARD_RECORD_LENGTH);
         Cursor cursor = new Cursor(record, "CVACT02Y CARD-RECORD");
         return new CardRecord(
                 cursor.fixedText(PicClause.CARD_NUM_WIDTH, "CARD-NUM"),
@@ -493,9 +586,11 @@ public final class CopybookRecordParser {
      *
      * @param record one fixture record, at either width
      * @return the three modelled fields of {@code app/cpy/CVACT03Y.cpy}
-     * @throws IllegalArgumentException when a field runs past the end of {@code record}
+     * @throws IllegalArgumentException when {@code record} is neither of those two widths
      */
     public static CardCrossReferenceRecord parseCardCrossReference(String record) {
+        requireEitherWidth(record, "CVACT03Y CARD-XREF-RECORD",
+                PicClause.CARDXREF_FIXTURE_RECORD_WIDTH, PicClause.CARD_XREF_RECORD_LENGTH);
         Cursor cursor = new Cursor(record, "CVACT03Y CARD-XREF-RECORD");
         return new CardCrossReferenceRecord(
                 cursor.fixedText(PicClause.XREF_CARD_NUM_WIDTH, "XREF-CARD-NUM"),
@@ -508,30 +603,33 @@ public final class CopybookRecordParser {
      *
      * @param record one fixture record
      * @return the eighteen modelled fields of {@code app/cpy/CVCUS01Y.cpy}
-     * @throws IllegalArgumentException when a field runs past the end of {@code record}, or when
-     *         {@code CUST-FICO-CREDIT-SCORE} holds a character other than a digit
+     * @throws IllegalArgumentException when {@code record} is not the width its layout declares,
+     *         or when {@code CUST-FICO-CREDIT-SCORE} holds a character other than a digit
      */
     public static CustomerRecord parseCustomer(String record) {
+        requireDeclaredWidth(record, "CVCUS01Y CUSTOMER-RECORD", PicClause.CUSTOMER_RECORD_LENGTH);
         Cursor cursor = new Cursor(record, "CVCUS01Y CUSTOMER-RECORD");
         return new CustomerRecord(
-                cursor.fixedText(CUST_ID_WIDTH, "CUST-ID"),
-                cursor.text(CUST_FIRST_NAME_WIDTH, "CUST-FIRST-NAME"),
-                cursor.text(CUST_MIDDLE_NAME_WIDTH, "CUST-MIDDLE-NAME"),
-                cursor.text(CUST_LAST_NAME_WIDTH, "CUST-LAST-NAME"),
-                cursor.text(CUST_ADDR_LINE_1_WIDTH, "CUST-ADDR-LINE-1"),
-                cursor.text(CUST_ADDR_LINE_2_WIDTH, "CUST-ADDR-LINE-2"),
-                cursor.text(CUST_ADDR_LINE_3_WIDTH, "CUST-ADDR-LINE-3"),
-                cursor.fixedText(CUST_ADDR_STATE_CD_WIDTH, "CUST-ADDR-STATE-CD"),
-                cursor.fixedText(CUST_ADDR_COUNTRY_CD_WIDTH, "CUST-ADDR-COUNTRY-CD"),
-                cursor.text(CUST_ADDR_ZIP_WIDTH, "CUST-ADDR-ZIP"),
-                cursor.text(CUST_PHONE_NUM_1_WIDTH, "CUST-PHONE-NUM-1"),
-                cursor.text(CUST_PHONE_NUM_2_WIDTH, "CUST-PHONE-NUM-2"),
-                cursor.fixedText(CUST_SSN_WIDTH, "CUST-SSN"),
-                cursor.text(CUST_GOVT_ISSUED_ID_WIDTH, "CUST-GOVT-ISSUED-ID"),
-                cursor.fixedText(CUST_DOB_WIDTH, "CUST-DOB-YYYY-MM-DD"),
-                cursor.text(CUST_EFT_ACCOUNT_ID_WIDTH, "CUST-EFT-ACCOUNT-ID"),
-                cursor.fixedText(CUST_PRI_CARD_HOLDER_IND_WIDTH, "CUST-PRI-CARD-HOLDER-IND"),
-                cursor.unsignedInteger(CUST_FICO_CREDIT_SCORE_WIDTH, "CUST-FICO-CREDIT-SCORE"));
+                cursor.fixedText(PicClause.CUST_ID_WIDTH, "CUST-ID"),
+                cursor.text(PicClause.CUST_FIRST_NAME_WIDTH, "CUST-FIRST-NAME"),
+                cursor.text(PicClause.CUST_MIDDLE_NAME_WIDTH, "CUST-MIDDLE-NAME"),
+                cursor.text(PicClause.CUST_LAST_NAME_WIDTH, "CUST-LAST-NAME"),
+                cursor.text(PicClause.CUST_ADDR_LINE_1_WIDTH, "CUST-ADDR-LINE-1"),
+                cursor.text(PicClause.CUST_ADDR_LINE_2_WIDTH, "CUST-ADDR-LINE-2"),
+                cursor.text(PicClause.CUST_ADDR_LINE_3_WIDTH, "CUST-ADDR-LINE-3"),
+                cursor.fixedText(PicClause.CUST_ADDR_STATE_CD_WIDTH, "CUST-ADDR-STATE-CD"),
+                cursor.fixedText(PicClause.CUST_ADDR_COUNTRY_CD_WIDTH, "CUST-ADDR-COUNTRY-CD"),
+                cursor.text(PicClause.CUST_ADDR_ZIP_WIDTH, "CUST-ADDR-ZIP"),
+                cursor.text(PicClause.CUST_PHONE_NUM_1_WIDTH, "CUST-PHONE-NUM-1"),
+                cursor.text(PicClause.CUST_PHONE_NUM_2_WIDTH, "CUST-PHONE-NUM-2"),
+                cursor.fixedText(PicClause.CUST_SSN_WIDTH, "CUST-SSN"),
+                cursor.text(PicClause.CUST_GOVT_ISSUED_ID_WIDTH, "CUST-GOVT-ISSUED-ID"),
+                cursor.fixedText(PicClause.CUST_DOB_WIDTH, "CUST-DOB-YYYY-MM-DD"),
+                cursor.text(PicClause.CUST_EFT_ACCOUNT_ID_WIDTH, "CUST-EFT-ACCOUNT-ID"),
+                cursor.fixedText(PicClause.CUST_PRI_CARD_HOLDER_IND_WIDTH,
+                        "CUST-PRI-CARD-HOLDER-IND"),
+                cursor.unsignedInteger(PicClause.CUST_FICO_CREDIT_SCORE_WIDTH,
+                        "CUST-FICO-CREDIT-SCORE"));
     }
 
     /**
@@ -540,10 +638,12 @@ public final class CopybookRecordParser {
      * @param record one fixture record
      * @return the four modelled fields of {@code app/cpy/CVTRA01Y.cpy}, the first three being the
      *         seventeen-byte composite key
-     * @throws IllegalArgumentException when a field runs past the end of {@code record}, or when
-     *         {@code TRAN-CAT-BAL} holds an unreadable sign overpunch
+     * @throws IllegalArgumentException when {@code record} is not the width its layout declares,
+     *         or when {@code TRAN-CAT-BAL} holds an unreadable sign overpunch
      */
     public static TransactionCategoryBalanceRecord parseTransactionCategoryBalance(String record) {
+        requireDeclaredWidth(record, "CVTRA01Y TRAN-CAT-BAL-RECORD",
+                PicClause.TRAN_CAT_BAL_RECORD_LENGTH);
         Cursor cursor = new Cursor(record, "CVTRA01Y TRAN-CAT-BAL-RECORD");
         return new TransactionCategoryBalanceRecord(
                 cursor.fixedText(PicClause.TRANCAT_ACCT_ID_WIDTH, "TRANCAT-ACCT-ID"),
@@ -559,10 +659,12 @@ public final class CopybookRecordParser {
      * @param record one fixture record
      * @return the four modelled fields of {@code app/cpy/CVTRA02Y.cpy}, the first three being the
      *         sixteen-byte composite key
-     * @throws IllegalArgumentException when a field runs past the end of {@code record}, or when
-     *         {@code DIS-INT-RATE} holds an unreadable sign overpunch
+     * @throws IllegalArgumentException when {@code record} is not the width its layout declares,
+     *         or when {@code DIS-INT-RATE} holds an unreadable sign overpunch
      */
     public static DisclosureGroupRecord parseDisclosureGroup(String record) {
+        requireDeclaredWidth(record, "CVTRA02Y DIS-GROUP-RECORD",
+                PicClause.DIS_GROUP_RECORD_LENGTH);
         Cursor cursor = new Cursor(record, "CVTRA02Y DIS-GROUP-RECORD");
         return new DisclosureGroupRecord(
                 cursor.fixedText(PicClause.DIS_ACCT_GROUP_ID_WIDTH, "DIS-ACCT-GROUP-ID"),
@@ -577,13 +679,15 @@ public final class CopybookRecordParser {
      *
      * @param record one fixture record
      * @return the two modelled fields of {@code app/cpy/CVTRA03Y.cpy}
-     * @throws IllegalArgumentException when a field runs past the end of {@code record}
+     * @throws IllegalArgumentException when {@code record} is not the width its layout declares
      */
     public static TransactionTypeRecord parseTransactionType(String record) {
+        requireDeclaredWidth(record, "CVTRA03Y TRAN-TYPE-RECORD",
+                PicClause.TRAN_TYPE_RECORD_LENGTH);
         Cursor cursor = new Cursor(record, "CVTRA03Y TRAN-TYPE-RECORD");
         return new TransactionTypeRecord(
-                cursor.fixedText(TRAN_TYPE_WIDTH, "TRAN-TYPE"),
-                cursor.text(TRAN_TYPE_DESC_WIDTH, "TRAN-TYPE-DESC"));
+                cursor.fixedText(PicClause.TRAN_TYPE_WIDTH, "TRAN-TYPE"),
+                cursor.text(PicClause.TRAN_TYPE_DESC_WIDTH, "TRAN-TYPE-DESC"));
     }
 
     /**
@@ -592,14 +696,15 @@ public final class CopybookRecordParser {
      * @param record one fixture record
      * @return the three modelled fields of {@code app/cpy/CVTRA04Y.cpy}, the first two being the
      *         six-byte composite key
-     * @throws IllegalArgumentException when a field runs past the end of {@code record}
+     * @throws IllegalArgumentException when {@code record} is not the width its layout declares
      */
     public static TransactionCategoryRecord parseTransactionCategory(String record) {
+        requireDeclaredWidth(record, "CVTRA04Y TRAN-CAT-RECORD", PicClause.TRAN_CAT_RECORD_LENGTH);
         Cursor cursor = new Cursor(record, "CVTRA04Y TRAN-CAT-RECORD");
         return new TransactionCategoryRecord(
-                cursor.fixedText(TRAN_CAT_RECORD_TYPE_CD_WIDTH, "TRAN-TYPE-CD"),
-                cursor.fixedText(TRAN_CAT_RECORD_CAT_CD_WIDTH, "TRAN-CAT-CD"),
-                cursor.text(TRAN_CAT_TYPE_DESC_WIDTH, "TRAN-CAT-TYPE-DESC"));
+                cursor.fixedText(PicClause.TRAN_CAT_RECORD_TYPE_CD_WIDTH, "TRAN-TYPE-CD"),
+                cursor.fixedText(PicClause.TRAN_CAT_RECORD_CAT_CD_WIDTH, "TRAN-CAT-CD"),
+                cursor.text(PicClause.TRAN_CAT_TYPE_DESC_WIDTH, "TRAN-CAT-TYPE-DESC"));
     }
 
     /**
@@ -608,10 +713,11 @@ public final class CopybookRecordParser {
      *
      * @param record one posted transaction record
      * @return the thirteen modelled fields of {@code app/cpy/CVTRA05Y.cpy}
-     * @throws IllegalArgumentException when a field runs past the end of {@code record}, or when
-     *         {@code TRAN-AMT} holds an unreadable sign overpunch
+     * @throws IllegalArgumentException when {@code record} is not the width its layout declares,
+     *         or when {@code TRAN-AMT} holds an unreadable sign overpunch
      */
     public static PostedTransactionRecord parsePostedTransaction(String record) {
+        requireDeclaredWidth(record, "CVTRA05Y TRAN-RECORD", PicClause.TRAN_RECORD_LENGTH);
         Cursor cursor = new Cursor(record, "CVTRA05Y TRAN-RECORD");
         return new PostedTransactionRecord(
                 cursor.fixedText(PicClause.TRAN_ID_WIDTH, "TRAN-ID"),
@@ -637,10 +743,11 @@ public final class CopybookRecordParser {
      *
      * @param record one fixture record
      * @return the thirteen modelled fields of {@code app/cpy/CVTRA06Y.cpy}
-     * @throws IllegalArgumentException when a field runs past the end of {@code record}, or when
-     *         {@code DALYTRAN-AMT} holds an unreadable sign overpunch
+     * @throws IllegalArgumentException when {@code record} is not the width its layout declares,
+     *         or when {@code DALYTRAN-AMT} holds an unreadable sign overpunch
      */
     public static DailyTransactionRecord parseDailyTransaction(String record) {
+        requireDeclaredWidth(record, "CVTRA06Y DALYTRAN-RECORD", PicClause.DALYTRAN_RECORD_LENGTH);
         Cursor cursor = new Cursor(record, "CVTRA06Y DALYTRAN-RECORD");
         return new DailyTransactionRecord(
                 cursor.fixedText(PicClause.DALYTRAN_ID_WIDTH, "DALYTRAN-ID"),
@@ -669,10 +776,11 @@ public final class CopybookRecordParser {
      *
      * @param record one reject record
      * @return the daily transaction bytes joined to the two trailer fields
-     * @throws IllegalArgumentException when a field runs past the end of {@code record}, or when
-     *         {@code WS-VALIDATION-FAIL-REASON} holds a character other than a digit
+     * @throws IllegalArgumentException when {@code record} is not the width its layout declares,
+     *         or when {@code WS-VALIDATION-FAIL-REASON} holds a character other than a digit
      */
     public static RejectedTransactionRecord parseRejectedTransaction(String record) {
+        requireDeclaredWidth(record, "CBTRN02C REJECT-RECORD", PicClause.REJECT_RECORD_LENGTH);
         Cursor cursor = new Cursor(record, "CBTRN02C REJECT-RECORD");
         return new RejectedTransactionRecord(
                 cursor.fixedText(PicClause.REJECT_TRAN_DATA_WIDTH, "REJECT-TRAN-DATA"),
@@ -682,9 +790,7 @@ public final class CopybookRecordParser {
                         "WS-VALIDATION-FAIL-REASON-DESC"));
     }
 
-    // ---------------------------------------------------------------------------------------
     // Timestamp operations. Both keep the field as text.
-    // ---------------------------------------------------------------------------------------
 
     /**
      * Returns the leading characters of a timestamp that the account expiration test reads.
@@ -700,8 +806,8 @@ public final class CopybookRecordParser {
     public static String timestampDatePart(String timestamp) {
         Objects.requireNonNull(timestamp, "timestamp");
         if (timestamp.length() < PicClause.ACCOUNT_EXPIRATION_COMPARISON_WIDTH) {
-            throw new IllegalArgumentException("timestamp '" + timestamp + "' holds "
-                    + timestamp.length() + " characters and the expiration comparison reads "
+            throw new IllegalArgumentException("timestamp holds " + timestamp.length()
+                    + " characters and the expiration comparison reads "
                     + PicClause.ACCOUNT_EXPIRATION_COMPARISON_WIDTH);
         }
         return timestamp.substring(0, PicClause.ACCOUNT_EXPIRATION_COMPARISON_WIDTH);
@@ -723,13 +829,13 @@ public final class CopybookRecordParser {
      */
     public static String truncateProcessingTimestampToHundredths(String timestamp) {
         Objects.requireNonNull(timestamp, "timestamp");
+        if (timestamp.length() != PicClause.PROCESSING_TIMESTAMP_WIDTH) {
+            throw new IllegalArgumentException("TRAN-PROC-TS holds " + timestamp.length()
+                    + " characters and the field holds "
+                    + PicClause.PROCESSING_TIMESTAMP_WIDTH);
+        }
         if (isAllPadding(timestamp)) {
             return timestamp;
-        }
-        if (timestamp.length() != PicClause.PROCESSING_TIMESTAMP_WIDTH) {
-            throw new IllegalArgumentException("TRAN-PROC-TS '" + timestamp + "' holds "
-                    + timestamp.length() + " characters and the field holds "
-                    + PicClause.PROCESSING_TIMESTAMP_WIDTH);
         }
         int significantEnd = PicClause.PROCESSING_TIMESTAMP_FRACTION_OFFSET
                 + PicClause.PROCESSING_TIMESTAMP_SIGNIFICANT_FRACTION_DIGITS;
@@ -737,10 +843,8 @@ public final class CopybookRecordParser {
                 + PicClause.PROCESSING_TIMESTAMP_TRAILING_ZEROS;
     }
 
-    // ---------------------------------------------------------------------------------------
     // Field operations. Every read names its own offset and width, so no read touches a byte
     // outside the field it was asked for.
-    // ---------------------------------------------------------------------------------------
 
     /**
      * Reads a {@code PIC X(n)} or {@code PIC 9(n)} field and keeps every padding character.
@@ -785,7 +889,8 @@ public final class CopybookRecordParser {
      * @return the signed value of the field
      * @throws IllegalArgumentException when the field runs past the end of {@code record}, when a
      *         leading character is not a digit, or when the trailing character is neither a digit
-     *         nor a sign overpunch
+     *         nor a sign overpunch. The failure names the field, the position inside it and its
+     *         width, and never the text of the field
      */
     public static BigDecimal signedDecimal(String record, int offset, int width, int scale, String field) {
         String encoded = slice(record, offset, width, field);
@@ -809,16 +914,16 @@ public final class CopybookRecordParser {
             trailingDigit = negativeIndex;
             negative = true;
         } else {
-            throw new IllegalArgumentException(field + ": trailing character '" + trailing
-                    + "' is neither a digit nor a sign overpunch, in field text '" + encoded + "'");
+            throw new IllegalArgumentException(field + ": the character at field position "
+                    + signPosition + " of " + encoded.length() + " is neither a digit nor a sign "
+                    + "overpunch");
         }
         StringBuilder digits = new StringBuilder(encoded.length());
         for (int index = 0; index < signPosition; index++) {
             char current = encoded.charAt(index);
             if (!isAsciiDigit(current)) {
-                throw new IllegalArgumentException(field + ": character '" + current
-                        + "' at field position " + index + " is not a digit, in field text '"
-                        + encoded + "'");
+                throw new IllegalArgumentException(field + ": the character at field position "
+                        + index + " of " + encoded.length() + " is not a digit");
             }
             digits.append(current);
         }
@@ -836,7 +941,9 @@ public final class CopybookRecordParser {
      * @param field  COBOL field name, reported when the read fails
      * @return the value of the field, with its leading zeros dropped
      * @throws IllegalArgumentException when the field runs past the end of {@code record}, holds a
-     *         character other than a digit, or holds more digits than an {@code int} carries
+     *         character other than a digit, or holds more digits than an {@code int} carries. The
+     *         failure names the field, the position inside it and its width, and never the text of
+     *         the field
      */
     public static int unsignedInteger(String record, int offset, int width, String field) {
         String encoded = slice(record, offset, width, field);
@@ -847,22 +954,27 @@ public final class CopybookRecordParser {
         for (int index = 0; index < encoded.length(); index++) {
             char current = encoded.charAt(index);
             if (!isAsciiDigit(current)) {
-                throw new IllegalArgumentException(field + ": character '" + current
-                        + "' at field position " + index + " is not a digit, in field text '"
-                        + encoded + "'");
+                throw new IllegalArgumentException(field + ": the character at field position "
+                        + index + " of " + encoded.length() + " is not a digit");
             }
         }
-        return Integer.parseInt(encoded);
+        try {
+            return Integer.parseInt(encoded);
+        } catch (NumberFormatException tooWide) {
+            // Integer.parseInt quotes the whole input in its own message, so it is replaced here.
+            throw new IllegalArgumentException(field + ": a field of " + width
+                    + " characters at offset " + offset + " holds more digits than an int carries. "
+                    + "The field text is withheld from this message.");
+        }
     }
 
-    // ---------------------------------------------------------------------------------------
     // Internals.
-    // ---------------------------------------------------------------------------------------
 
     /**
-     * Returns {@code width} characters of {@code record} starting at {@code offset}. A record
-     * shorter than its declared length reads cleanly while every missing byte falls past the
-     * requested field.
+     * Returns {@code width} characters of {@code record} starting at {@code offset}.
+     *
+     * <p>The bounds test subtracts the offset from the record length, so a width close to
+     * {@link Integer#MAX_VALUE} reports the documented failure and no arithmetic overflows.</p>
      */
     private static String slice(String record, int offset, int width, String field) {
         Objects.requireNonNull(record, "record");
@@ -873,12 +985,49 @@ public final class CopybookRecordParser {
         if (width < 0) {
             throw new IllegalArgumentException(field + ": width " + width + " is negative");
         }
-        int end = offset + width;
-        if (end > record.length()) {
+        if (offset > record.length() || record.length() - offset < width) {
             throw new IllegalArgumentException(field + ": needs " + width + " bytes at offset "
                     + offset + " and the supplied record holds " + record.length() + " bytes");
         }
-        return record.substring(offset, end);
+        return record.substring(offset, offset + width);
+    }
+
+    /**
+     * Checks that a record holds exactly the byte width its layout declares.
+     *
+     * @param record        the record about to be parsed
+     * @param layout        copybook and record name, reported when the width differs
+     * @param declaredWidth the byte width the layout declares
+     * @throws NullPointerException     when {@code record} is null
+     * @throws IllegalArgumentException when {@code record} is any other width
+     */
+    private static void requireDeclaredWidth(String record, String layout, int declaredWidth) {
+        Objects.requireNonNull(record, "record");
+        if (record.length() != declaredWidth) {
+            throw new IllegalArgumentException(layout + ": record holds " + record.length()
+                    + " characters and the layout declares " + declaredWidth);
+        }
+    }
+
+    /**
+     * Checks that a record holds one of the two byte widths the cross-reference fixture and its
+     * dataset definition declare.
+     *
+     * @param record         the record about to be parsed
+     * @param layout         copybook and record name, reported when the width differs
+     * @param deliveredWidth the narrower width the text fixture delivers
+     * @param declaredWidth  the wider width the dataset definition declares
+     * @throws NullPointerException     when {@code record} is null
+     * @throws IllegalArgumentException when {@code record} is any other width
+     */
+    private static void requireEitherWidth(String record, String layout, int deliveredWidth,
+            int declaredWidth) {
+        Objects.requireNonNull(record, "record");
+        if (record.length() != deliveredWidth && record.length() != declaredWidth) {
+            throw new IllegalArgumentException(layout + ": record holds " + record.length()
+                    + " characters and the layout reads either " + deliveredWidth + " or "
+                    + declaredWidth);
+        }
     }
 
     /** Removes the trailing {@link #COBOL_TEXT_PAD} characters of a field. */
@@ -898,6 +1047,23 @@ public final class CopybookRecordParser {
             }
         }
         return true;
+    }
+
+    /**
+     * Replaces every character of a value with {@link PanMasker#MASK_CHARACTER}, keeping the width.
+     *
+     * <p>The width survives because it is what a reader needs to spot an offset drift, and it
+     * discloses nothing. A null value renders as the four characters {@code null}, which is what
+     * the record's generated rendering would have produced.</p>
+     *
+     * @param value the value to redact; may be null
+     * @return mask characters at the width of {@code value}
+     */
+    private static String redacted(String value) {
+        if (value == null) {
+            return "null";
+        }
+        return String.valueOf(PanMasker.MASK_CHARACTER).repeat(value.length());
     }
 
     /** Reports whether {@code candidate} is one of the ten ASCII digit characters. */
