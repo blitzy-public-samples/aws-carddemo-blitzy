@@ -1,0 +1,177 @@
+# One PostgreSQL instance for the six card-platform services, plus the Service
+# they reach it through and the claim that holds its data. The workload is a
+# Deployment of one replica.
+#
+# Each service owns one schema inside the database named below, and its own
+# Flyway migration creates and migrates that schema. Nothing here declares a
+# schema object or a table.
+#
+# A service runs its Flyway migration while it starts, so it needs a database
+# that already answers. The readiness probe holds the Service endpoint back
+# until then.
+#
+# Rationale for every choice in this folder: card-platform/docs/decision-log.md
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: postgres
+  namespace: carddemo
+  labels:
+    app.kubernetes.io/name: postgres
+    app.kubernetes.io/component: database
+    app.kubernetes.io/part-of: card-platform
+spec:
+  replicas: 1
+  # Recreate stops the running instance before it starts the replacement. The
+  # claim below is ReadWriteOnce and admits one Pod at a time.
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: postgres
+      app.kubernetes.io/part-of: card-platform
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: postgres
+        app.kubernetes.io/component: database
+        app.kubernetes.io/part-of: card-platform
+    spec:
+      automountServiceAccountToken: false
+      # The image carries the postgres user as 999 in group 999. fsGroup gives
+      # that group the volume, and 00-namespace.yaml admits no Pod that runs
+      # as root.
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 999
+        runAsGroup: 999
+        fsGroup: 999
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: postgres
+          # Digest-pinned, so a rebuilt tag cannot change the image under the
+          # cluster. The digest names postgres:18.4, the version
+          # card-platform/docker-compose.yml runs.
+          image: postgres:18.4@sha256:3a82e1f56c8f0f5616a11103ac3d47e632c3938698946a7ad26da0df1334744a
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+          ports:
+            - name: postgresql
+              containerPort: 5432
+          env:
+            # 30-configmap.yaml carries the name of the database the server
+            # creates on first start.
+            - name: POSTGRES_DB
+              valueFrom:
+                configMapKeyRef:
+                  name: carddemo-config
+                  key: POSTGRES_DB
+            # The user the server creates, and the password it sets. Both come
+            # from the Secret that 31-secret.example.yaml templates, so neither
+            # value appears here.
+            - name: POSTGRES_USER
+              valueFrom:
+                secretKeyRef:
+                  name: carddemo-secret
+                  key: POSTGRES_USER
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: carddemo-secret
+                  key: POSTGRES_PASSWORD
+            # The data directory, one level below the mount point. A volume root
+            # can arrive carrying a lost+found directory, and the server refuses
+            # to build a data directory in one that is not empty.
+            - name: PGDATA
+              value: /var/lib/postgresql/data/pgdata
+          # Both probes run pg_isready, the command
+          # card-platform/docker-compose.yml also runs. pg_isready reports
+          # whether the server accepts connections, and reads the user and the
+          # database from the environment above.
+          readinessProbe:
+            exec:
+              command:
+                - /bin/sh
+                - -c
+                - pg_isready -U "$POSTGRES_USER" -d "$POSTGRES_DB"
+            initialDelaySeconds: 10
+            periodSeconds: 5
+            timeoutSeconds: 5
+            failureThreshold: 6
+          livenessProbe:
+            exec:
+              command:
+                - /bin/sh
+                - -c
+                - pg_isready -U "$POSTGRES_USER" -d "$POSTGRES_DB"
+            initialDelaySeconds: 60
+            periodSeconds: 20
+            timeoutSeconds: 5
+            failureThreshold: 6
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: "1"
+              memory: 1Gi
+          volumeMounts:
+            - name: postgres-data
+              mountPath: /var/lib/postgresql/data
+      # Storage is the PersistentVolumeClaim in the third document. Data outlives
+      # a container restart and a Pod replacement, and goes with the claim.
+      volumes:
+        - name: postgres-data
+          persistentVolumeClaim:
+            claimName: postgres-data
+---
+# Every service Pod reaches the database at postgres:5432, a short name the
+# Domain Name System (DNS) resolves inside the namespace. 30-configmap.yaml,
+# card-platform/.env.example and card-platform/docker-compose.yml all carry
+# postgres as POSTGRES_HOST.
+#
+# ClusterIP only. Nothing outside the cluster connects to the database, and the
+# Service carries an endpoint only while the Pod is ready.
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres
+  namespace: carddemo
+  labels:
+    app.kubernetes.io/name: postgres
+    app.kubernetes.io/component: database
+    app.kubernetes.io/part-of: card-platform
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: postgres
+    app.kubernetes.io/part-of: card-platform
+  ports:
+    - name: postgresql
+      port: 5432
+      targetPort: 5432
+      protocol: TCP
+---
+# The Deployment mounts this claim. The claim names no storage class, so the
+# cluster binds the volume with its default class.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: postgres-data
+  namespace: carddemo
+  labels:
+    app.kubernetes.io/name: postgres
+    app.kubernetes.io/component: database
+    app.kubernetes.io/part-of: card-platform
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 2Gi
