@@ -1,0 +1,144 @@
+# card-platform fraud-detection-service — runtime contract for one container.
+#
+# Every value that changes between environments reads an environment variable
+# and falls back to the default card-platform/.env.example documents, so this
+# service starts with no .env file present. docker-compose.yml overrides what
+# it injects.
+# Rationale for the settings below: card-platform/docs/decision-log.md.
+#
+# This service is net new: no COBOL program in app/cbl/ is an ancestor.
+
+server:
+  # The container listens on 8080, and docker-compose.yml publishes a host port
+  # onto it.
+  port: 8080
+
+spring:
+
+  application:
+    name: fraud-detection-service
+
+  datasource:
+    url: "${SPRING_DATASOURCE_URL:jdbc:postgresql://${POSTGRES_HOST:postgres}:${POSTGRES_PORT:5432}/${FRAUD_DB_NAME:carddemo_fraud}?currentSchema=${FRAUD_DB_SCHEMA:fraud_service}}"
+    username: "${SPRING_DATASOURCE_USERNAME:${POSTGRES_USER:carddemo}}"
+    # No fallback. An unset password stops start-up. docker-compose.yml sets
+    # SPRING_DATASOURCE_PASSWORD; a direct run sets POSTGRES_PASSWORD.
+    password: "${SPRING_DATASOURCE_PASSWORD:${POSTGRES_PASSWORD}}"
+    driver-class-name: org.postgresql.Driver
+
+  # Flyway creates the schema named below, then applies the Data Definition
+  # Language (DDL) migrations under db/migration.
+  flyway:
+    enabled: true
+    create-schemas: true
+    schemas: "${SPRING_FLYWAY_SCHEMAS:${FRAUD_DB_SCHEMA:fraud_service}}"
+    default-schema: "${SPRING_FLYWAY_DEFAULT_SCHEMA:${FRAUD_DB_SCHEMA:fraud_service}}"
+    baseline-on-migrate: false
+    validate-on-migrate: true
+
+  # Jakarta Persistence. Hibernate checks its mapping against the migrated
+  # schema at start-up and writes no schema object.
+  jpa:
+    hibernate:
+      ddl-auto: validate
+    open-in-view: false
+    show-sql: false
+    properties:
+      hibernate:
+        default_schema: "${SPRING_JPA_PROPERTIES_HIBERNATE_DEFAULT_SCHEMA:${FRAUD_DB_SCHEMA:fraud_service}}"
+
+  kafka:
+    bootstrap-servers: "${SPRING_KAFKA_BOOTSTRAP_SERVERS:${KAFKA_BOOTSTRAP_SERVERS:kafka:29092}}"
+
+    # Idempotent production, acknowledged by every in-sync replica. The key
+    # serializer takes the account identifier as text, and XREF-ACCT-ID
+    # PIC 9(11) at app/cpy/CVACT03Y.cpy:L7 carries eleven digits with leading
+    # zeros.
+    producer:
+      acks: all
+      key-serializer: org.apache.kafka.common.serialization.StringSerializer
+      value-serializer: com.carddemo.events.serde.JsonSchemaValidatingSerializer
+      properties:
+        enable.idempotence: true
+        max.in.flight.requests.per.connection: 5
+        delivery.timeout.ms: 120000
+        request.timeout.ms: 30000
+        max.block.ms: 5000
+
+    # One listener reads one topic, under a consumer group of this service's
+    # own, with automatic commit off. Schema validation runs inside poll, and
+    # the wrapper named below turns a failure there into a record the listener
+    # error handler routes to the dead-letter topic.
+    consumer:
+      group-id: "${SPRING_KAFKA_CONSUMER_GROUP_ID:${GROUP_FRAUD_DETECTION:fraud-detection}}"
+      enable-auto-commit: false
+      auto-offset-reset: "${SPRING_KAFKA_CONSUMER_AUTO_OFFSET_RESET:earliest}"
+      key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+      value-deserializer: org.springframework.kafka.support.serializer.ErrorHandlingDeserializer
+      properties:
+        spring.deserializer.value.delegate.class: com.carddemo.events.serde.JsonSchemaValidatingDeserializer
+        max.poll.interval.ms: 300000
+
+    # The listener acknowledges once its own writes commit, and manual_immediate
+    # commits the offset at that acknowledgement.
+    listener:
+      ack-mode: manual_immediate
+      concurrency: 1
+
+carddemo:
+
+  kafka:
+    # transaction.authorized is the one topic this service reads. FraudFlagged
+    # and FraudCleared both travel on fraud.assessed, and a reader routes on
+    # the envelope eventType field. The dead-letter topic name is the consumed
+    # topic plus the suffix.
+    topics:
+      transaction-authorized: "${TOPIC_TRANSACTION_AUTHORIZED:transaction.authorized}"
+      fraud-assessed: "${TOPIC_FRAUD_ASSESSED:fraud.assessed}"
+      dead-letter: "${TOPIC_TRANSACTION_AUTHORIZED:transaction.authorized}${TOPIC_DEAD_LETTER_SUFFIX:.DLT}"
+
+  consumer:
+    retry:
+      max-attempts: "${CONSUMER_MAX_RETRY_ATTEMPTS:3}"
+      backoff-ms: "${CONSUMER_RETRY_BACKOFF_MS:1000}"
+
+  outbox:
+    relay:
+      fixed-delay-ms: "${OUTBOX_RELAY_INTERVAL_MS:500}"
+      batch-size: "${OUTBOX_RELAY_BATCH_SIZE:100}"
+
+  fraud:
+    # Demonstration values. No measurement stands behind any of the four. A risk
+    # score runs from 0 to 100 and carries no decimal place. The amount is money
+    # and carries two.
+    risk:
+      flag-threshold: 50
+      velocity-window-minutes: 60
+      velocity-count-threshold: 5
+      amount-anomaly-threshold: "500.00"
+
+management:
+  # /actuator answers on this port and never on the service port above. The
+  # container health check reads /actuator/health here.
+  server:
+    port: ${MANAGEMENT_PORT:9080}
+  endpoints:
+    web:
+      exposure:
+        include: "${MANAGEMENT_ENDPOINTS_WEB_EXPOSURE_INCLUDE:${MANAGEMENT_ENDPOINTS:health,metrics,prometheus}}"
+  prometheus:
+    metrics:
+      export:
+        enabled: true
+
+# The console format key below turns every log line into JavaScript Object
+# Notation (JSON), and this module carries no logging configuration file. INFO
+# is the default for com.carddemo. A DEBUG default retains identifiers in
+# centralized logs.
+logging:
+  structured:
+    format:
+      console: logstash
+  level:
+    root: "${LOGGING_LEVEL_ROOT:${LOG_LEVEL:INFO}}"
+    com.carddemo: "${LOGGING_LEVEL_COM_CARDDEMO:${LOG_LEVEL_CARDDEMO:INFO}}"

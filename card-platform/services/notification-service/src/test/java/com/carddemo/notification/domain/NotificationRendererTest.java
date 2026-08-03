@@ -1,681 +1,1297 @@
 package com.carddemo.notification.domain;
 
-import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertNotEquals;
-import static org.junit.jupiter.api.Assertions.assertSame;
-import static org.junit.jupiter.api.Assertions.assertThrows;
-import static org.junit.jupiter.api.Assertions.assertTrue;
-
+import java.lang.reflect.Field;
+import java.lang.reflect.Method;
+import java.lang.reflect.Modifier;
+import java.lang.reflect.RecordComponent;
 import java.math.BigDecimal;
-import java.util.LinkedHashMap;
+import java.util.Arrays;
 import java.util.List;
-import java.util.Map;
+import java.util.Locale;
 
+import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
+
 /**
- * Tests for {@link NotificationRenderer}, its fixed-width helpers, its two nested payload records
- * and its format enumeration.
+ * Tests the fixed-width helpers, the two nested payload records and the format enumeration of
+ * {@link NotificationRenderer}.
  *
- * <p>Every expected string below is typed as a literal, computed by hand from the Picture clause it
- * reproduces. No expected value is produced by calling the helper under test, and no expected value
- * is read from a fixture, so a helper that changed its padding, its truncation or its sign position
- * fails here.</p>
+ * <p>Every expected value below is typed by hand from the Picture clause it reproduces. A Picture
+ * clause, written {@code PIC}, fixes the width and the form of a Common Business Oriented Language
+ * (COBOL) field. No expected value comes from calling the helper under test, and none comes from a
+ * fixture file. A helper that changes its padding, its truncation or its sign position fails
+ * here.</p>
  *
- * <p>The widths come from the statement lines of {@code app/cbl/CBSTM03A.CBL}:
- * {@code ST-NAME PIC X(75)} at L91, {@code ST-ADD1 PIC X(50)} at L94,
- * {@code ST-ADD2 PIC X(50)} at L97, {@code ST-ADD3 PIC X(80)} at L100,
- * {@code ST-ACCT-ID PIC X(20)} at L109, {@code ST-CURR-BAL PIC 9(9).99-} at L113,
- * {@code ST-FICO-SCORE PIC X(20)} at L118, {@code ST-TRANID PIC X(16)} at L133,
- * {@code ST-TRANDT PIC X(49)} at L135, {@code ST-TRANAMT PIC Z(9).99-} at L137 and
+ * <p>The widths come from the statement lines of app/cbl/CBSTM03A.CBL. The name and address fields
+ * are {@code ST-NAME PIC X(75)} at L91, {@code ST-ADD1 PIC X(50)} at L94,
+ * {@code ST-ADD2 PIC X(50)} at L97 and {@code ST-ADD3 PIC X(80)} at L100. The detail fields are
+ * {@code ST-TRANID PIC X(16)} at L133, {@code ST-TRANDT PIC X(49)} at L135 and
+ * {@code ST-FICO-SCORE PIC X(20)} at L118. The amount fields are
+ * {@code ST-CURR-BAL PIC 9(9).99-} at L113, {@code ST-TRANAMT PIC Z(9).99-} at L137 and
  * {@code ST-TOTAL-TRAMT PIC Z(9).99-} at L142.</p>
  *
- * <p>Two amount forms differ in one respect only. A {@code 9} digit position renders a leading zero
- * as a zero and a {@code Z} digit position renders it as a space. Both hold nine digit positions, a
+ * <p>Two edits carry two amount forms. A {@code 9} digit position renders a leading zero as a zero
+ * and a {@code Z} digit position renders it as a space. Both forms hold nine digit positions, a
  * decimal point, two decimal digits and one trailing sign position.</p>
  *
- * <p>The two abstract operations render one alert each, and this module declares no implementation
- * of them. A minimal implementation below exercises the contract shape and the format
- * discriminator, and asserts nothing about the content of a rendered alert, which belongs to the
- * two renderer implementations.</p>
+ * <p>Two source losses are reproduced and asserted here. A balance of ten integer digits, declared
+ * {@code ACCT-CURR-BAL PIC S9(10)V99} at app/cpy/CVACT01Y.cpy:L7, drops its high-order digit in the
+ * nine digit positions of app/cbl/CBSTM03A.CBL:L113. Three full name components emit 78 characters
+ * into the 75 of app/cbl/CBSTM03A.CBL:L91 and lose the last three. Both losses are recorded in
+ * card-platform/docs/business-rule-flags.md.</p>
  *
+ * <p>No Spring context, no broker and no database take part, so {@code mvn test} passes on a clean
+ * machine. The two render operations belong to their own implementations, and no assertion here
+ * reads the content of a rendered alert.</p>
  */
+@DisplayName("NotificationRenderer, the fixed-width edits and field assembly of CBSTM03A")
 class NotificationRendererTest {
 
-    /** Nine digit positions plus a decimal point plus two decimals plus one sign position. */
+    /**
+     * Characters an edited amount holds: nine digit positions, a decimal point, two decimal digits
+     * and one trailing sign position. The form sits at app/cbl/CBSTM03A.CBL:L113.
+     */
     private static final int EDITED_WIDTH = 13;
 
-    /** Integer digit positions an edited amount holds. */
+    /** Integer digit positions of {@code PIC 9(9).99-} at app/cbl/CBSTM03A.CBL:L113. */
     private static final int INTEGER_POSITIONS = 9;
 
-    /** Width of {@code FD-STMTFILE-REC PIC X(80)} at {@code app/cbl/CBSTM03A.CBL:L45}. */
-    private static final int TEXT_RECORD_WIDTH = 80;
+    /** Index of the decimal point in an edited amount, from app/cbl/CBSTM03A.CBL:L113. */
+    private static final int DECIMAL_POINT_INDEX = 9;
 
-    /** Width of {@code FD-HTMLFILE-REC PIC X(100)} at {@code app/cbl/CBSTM03A.CBL:L47}. */
-    private static final int MARKUP_RECORD_WIDTH = 100;
+    /** Index of the trailing sign position in an edited amount, from app/cbl/CBSTM03A.CBL:L113. */
+    private static final int SIGN_INDEX = 12;
 
-    /** Width of {@code TRNX-DESC PIC X(100)} at {@code app/cpy/COSTM01.CPY:L28}. */
+    /**
+     * Width of each name component: {@code CUST-FIRST-NAME PIC X(25)} at app/cpy/CUSTREC.cpy:L6,
+     * {@code CUST-MIDDLE-NAME} at L7 and {@code CUST-LAST-NAME} at L8.
+     */
+    private static final int NAME_COMPONENT_WIDTH = 25;
+
+    /** Width of {@code CUST-ADDR-LINE-3 PIC X(50)} at app/cpy/CUSTREC.cpy:L11. */
+    private static final int ADDRESS_LINE_WIDTH = 50;
+
+    /** Width of {@code CUST-ADDR-STATE-CD PIC X(02)} at app/cpy/CUSTREC.cpy:L12. */
+    private static final int STATE_CODE_WIDTH = 2;
+
+    /** Width of {@code CUST-ADDR-COUNTRY-CD PIC X(03)} at app/cpy/CUSTREC.cpy:L13. */
+    private static final int COUNTRY_CODE_WIDTH = 3;
+
+    /** Width of {@code CUST-ADDR-ZIP PIC X(10)} at app/cpy/CUSTREC.cpy:L14. */
+    private static final int POSTAL_CODE_WIDTH = 10;
+
+    /** Digits in {@code ACCT-ID PIC 9(11)} at app/cpy/CVACT01Y.cpy:L5, a zero-filled field. */
+    private static final int ACCOUNT_ID_DIGITS = 11;
+
+    /**
+     * Digits in {@code CUST-FICO-CREDIT-SCORE PIC 9(03)} at app/cpy/CUSTREC.cpy:L22. FICO names a
+     * credit score.
+     */
+    private static final int CREDIT_SCORE_DIGITS = 3;
+
+    /** Width of {@code L23-NAME PIC X(50)} at app/cbl/CBSTM03A.CBL:L220, the markup name field. */
+    private static final int MARKUP_NAME_WIDTH = 50;
+
+    /** Width of {@code TRNX-DESC PIC X(100)} at app/cpy/COSTM01.CPY:L28, the stored description. */
     private static final int STORED_DESCRIPTION_WIDTH = 100;
 
-    // Constants against the Picture clauses they reproduce.
+    /** Width of {@code TRNX-ID PIC X(16)} at app/cpy/COSTM01.CPY:L23. */
+    private static final int STORED_TRANSACTION_ID_WIDTH = 16;
+
+    // Declared widths, each against the Picture clause it reproduces.
 
     /**
-     * Asserts every published width against the Picture clause it reproduces. Each expected value
-     * is typed here from {@code app/cbl/CBSTM03A.CBL} rather than read from the interface.
+     * Asserts every width the interface declares against the field it reproduces at
+     * app/cbl/CBSTM03A.CBL:L91-L142. Each expected number is typed here from the source and read
+     * from no constant of the interface.
      */
     @Test
-    void everyPublishedWidthMatchesItsPictureClause() {
-        assertEquals(75, NotificationRenderer.ST_NAME_WIDTH,
-                "ST-NAME PIC X(75) at app/cbl/CBSTM03A.CBL:L91");
-        assertEquals(50, NotificationRenderer.ST_ADD1_WIDTH,
-                "ST-ADD1 PIC X(50) at app/cbl/CBSTM03A.CBL:L94");
-        assertEquals(50, NotificationRenderer.ST_ADD2_WIDTH,
-                "ST-ADD2 PIC X(50) at app/cbl/CBSTM03A.CBL:L97");
-        assertEquals(80, NotificationRenderer.ST_ADD3_WIDTH,
-                "ST-ADD3 PIC X(80) at app/cbl/CBSTM03A.CBL:L100");
-        assertEquals(20, NotificationRenderer.ST_ACCT_ID_WIDTH,
-                "ST-ACCT-ID PIC X(20) at app/cbl/CBSTM03A.CBL:L109");
-        assertEquals(20, NotificationRenderer.ST_FICO_SCORE_WIDTH,
-                "ST-FICO-SCORE PIC X(20) at app/cbl/CBSTM03A.CBL:L118");
-        assertEquals(16, NotificationRenderer.ST_TRANID_WIDTH,
-                "ST-TRANID PIC X(16) at app/cbl/CBSTM03A.CBL:L133");
-        assertEquals(49, NotificationRenderer.ST_TRANDT_WIDTH,
-                "ST-TRANDT PIC X(49) at app/cbl/CBSTM03A.CBL:L135");
-        assertEquals(EDITED_WIDTH, NotificationRenderer.EDITED_AMOUNT_WIDTH,
-                "an edited amount holds " + INTEGER_POSITIONS
-                        + " digit positions, a decimal point, two decimals and a sign position");
-        assertEquals("\n", NotificationRenderer.LINE_SEPARATOR,
-                "records are joined with a line feed and not with the host separator");
+    @DisplayName("Every declared width matches the Picture clause it reproduces")
+    void everyDeclaredWidthMatchesItsPictureClause() {
+        assertThat(NotificationRenderer.ST_NAME_WIDTH)
+                .as("ST-NAME PIC X(75) at app/cbl/CBSTM03A.CBL:L91")
+                .isEqualTo(75);
+        assertThat(NotificationRenderer.ST_ADD1_WIDTH)
+                .as("ST-ADD1 PIC X(50) at app/cbl/CBSTM03A.CBL:L94")
+                .isEqualTo(50);
+        assertThat(NotificationRenderer.ST_ADD2_WIDTH)
+                .as("ST-ADD2 PIC X(50) at app/cbl/CBSTM03A.CBL:L97")
+                .isEqualTo(50);
+        assertThat(NotificationRenderer.ST_ADD3_WIDTH)
+                .as("ST-ADD3 PIC X(80) at app/cbl/CBSTM03A.CBL:L100")
+                .isEqualTo(80);
+        assertThat(NotificationRenderer.ST_ACCT_ID_WIDTH)
+                .as("the account field the MOVE at app/cbl/CBSTM03A.CBL:L483 fills, repeated as"
+                        + " L11-ACCT PIC X(20) at app/cbl/CBSTM03A.CBL:L215")
+                .isEqualTo(20);
+        assertThat(NotificationRenderer.ST_FICO_SCORE_WIDTH)
+                .as("ST-FICO-SCORE PIC X(20) at app/cbl/CBSTM03A.CBL:L118")
+                .isEqualTo(20);
+        assertThat(NotificationRenderer.ST_TRANID_WIDTH)
+                .as("ST-TRANID PIC X(16) at app/cbl/CBSTM03A.CBL:L133")
+                .isEqualTo(STORED_TRANSACTION_ID_WIDTH);
+        assertThat(NotificationRenderer.ST_TRANDT_WIDTH)
+                .as("ST-TRANDT PIC X(49) at app/cbl/CBSTM03A.CBL:L135")
+                .isEqualTo(49);
+        assertThat(NotificationRenderer.EDITED_AMOUNT_WIDTH)
+                .as("ST-CURR-BAL PIC 9(9).99- at app/cbl/CBSTM03A.CBL:L113 holds 13 characters")
+                .isEqualTo(EDITED_WIDTH);
+        assertThat(NotificationRenderer.LINE_SEPARATOR)
+                .as("the records of app/cbl/CBSTM03A.CBL:L488-L502 join with a line feed")
+                .isEqualTo("\n");
     }
 
     /**
-     * Asserts that a stored description is 51 characters wider than the field that renders it, so
-     * the loss the source accepts at {@code app/cbl/CBSTM03A.CBL:L677} is 51 characters exactly.
+     * Asserts the loss the {@code MOVE TRNX-DESC TO ST-TRANDT} at app/cbl/CBSTM03A.CBL:L677
+     * accepts. {@code TRNX-DESC PIC X(100)} at app/cpy/COSTM01.CPY:L28 is 51 characters wider than
+     * the field that renders it.
      */
     @Test
-    void theRenderedDescriptionIsFiftyOneCharactersNarrowerThanTheStoredColumn() {
-        assertEquals(51, STORED_DESCRIPTION_WIDTH - NotificationRenderer.ST_TRANDT_WIDTH,
-                "TRNX-DESC PIC X(100) at app/cpy/COSTM01.CPY:L28 loses 51 characters when "
-                        + "app/cbl/CBSTM03A.CBL:L677 moves it into ST-TRANDT PIC X(49)");
+    @DisplayName("The rendered description is 51 characters narrower than the stored description")
+    void theRenderedDescriptionIsFiftyOneCharactersNarrowerThanTheStoredDescription() {
+        assertThat(STORED_DESCRIPTION_WIDTH - NotificationRenderer.ST_TRANDT_WIDTH)
+                .as("app/cbl/CBSTM03A.CBL:L677 drops 51 characters of TRNX-DESC")
+                .isEqualTo(51);
     }
 
-    // pic. Reproduces a MOVE into a PIC X(n) field.
+    // pic. Reproduces a COBOL MOVE into a PIC X(n) field.
 
     /**
-     * Asserts that {@code pic} pads a short value on the right and truncates a long one, the two
-     * behaviours of a COBOL {@code MOVE} into an alphanumeric field.
+     * Asserts that a value shorter than the field gains trailing spaces. The
+     * {@code MOVE CUST-FICO-CREDIT-SCORE TO ST-FICO-SCORE} at app/cbl/CBSTM03A.CBL:L485 carries
+     * three digits into a field of 20.
      */
     @Test
-    void picPadsAShortValueAndTruncatesALongOne() {
-        assertEquals("AB   ", NotificationRenderer.pic("AB", 5),
-                "a value of width 2 gains three trailing spaces at width 5");
-        assertEquals("ABC", NotificationRenderer.pic("ABC", 3),
-                "a value already at the width passes through unchanged");
-        assertEquals("ABC", NotificationRenderer.pic("ABCDEF", 3),
-                "a value of width 6 loses its tail at width 3");
-        assertEquals("A", NotificationRenderer.pic("AB", 1),
-                "a value of width 2 keeps only its first character at width 1");
-        assertEquals("", NotificationRenderer.pic("ABC", 0),
-                "a width of zero renders the empty string");
-    }
+    @DisplayName("A short value is left justified and padded with trailing spaces")
+    void picPadsAShortValueOnTheRight() {
+        String padded = NotificationRenderer.pic("742", NotificationRenderer.ST_FICO_SCORE_WIDTH);
 
-    /**
-     * Asserts that a null value and a value of only spaces both render as an all-spaces field of
-     * the requested width. Nine fields of the statement read model are absent from the
-     * {@code TransactionPosted} event, so a renderer receives space-filled values in normal use.
-     */
-    @Test
-    void picRendersNullAndSpacesAsAnAllSpacesField() {
-        assertEquals("    ", NotificationRenderer.pic(null, 4),
-                "a null value renders as four spaces and raises no exception");
-        assertEquals("", NotificationRenderer.pic(null, 0),
-                "a null value at width zero renders the empty string");
-        assertEquals("   ", NotificationRenderer.pic("", 3),
-                "an empty value renders as three spaces");
-        assertEquals("  ", NotificationRenderer.pic("  ", 2),
-                "a value of only spaces passes through at its own width");
-        assertEquals("  ", NotificationRenderer.pic("    ", 2),
-                "a value of only spaces truncates like any other value");
+        assertThat(padded)
+                .as("a credit score of three digits reaches the field width of 20")
+                .hasSize(NotificationRenderer.ST_FICO_SCORE_WIDTH);
+        assertThat(padded)
+                .as("the digits stay at the front and spaces fill the tail")
+                .isEqualTo("742" + " ".repeat(
+                        NotificationRenderer.ST_FICO_SCORE_WIDTH - CREDIT_SCORE_DIGITS));
+        assertThat(NotificationRenderer.pic("", 4))
+                .as("an empty value fills the field with spaces")
+                .isEqualTo("    ");
+        assertThat(NotificationRenderer.pic(null, 4))
+                .as("a null value fills the field with spaces and raises no exception")
+                .isEqualTo("    ");
     }
 
     /**
-     * Asserts that every width from zero to the widest field renders exactly that many characters,
-     * for a short value, a long value and a null. The width invariant is what every fixed-width
-     * record depends on.
+     * Asserts that a value longer than the field loses its tail. The
+     * {@code MOVE ST-NAME TO L23-NAME} at app/cbl/CBSTM03A.CBL:L560 carries
+     * {@code ST-NAME PIC X(75)} into {@code L23-NAME PIC X(50)}.
      */
     @Test
-    void picRendersExactlyTheRequestedWidthForEveryInput() {
+    @DisplayName("A long value keeps its leading characters and loses its tail")
+    void picTruncatesALongValueToItsLeadingCharacters() {
+        String assembledName = NotificationRenderer.assembleName("ALPHA", "BETA", "GAMMA");
+        String markupName = NotificationRenderer.pic(assembledName, MARKUP_NAME_WIDTH);
+
+        assertThat(assembledName)
+                .as("the sending field holds 75 characters")
+                .hasSize(NotificationRenderer.ST_NAME_WIDTH);
+        assertThat(markupName)
+                .as("the receiving field of app/cbl/CBSTM03A.CBL:L220 holds 50 characters")
+                .hasSize(MARKUP_NAME_WIDTH);
+        assertThat(markupName)
+                .as("the first 50 characters of the sending field survive the move")
+                .isEqualTo(assembledName.substring(0, MARKUP_NAME_WIDTH));
+        assertThat(NotificationRenderer.pic("ABCDEF", 3))
+                .as("a value of six characters keeps its first three at width 3")
+                .isEqualTo("ABC");
+        assertThat(NotificationRenderer.pic("ABC", 0))
+                .as("a width of zero renders the empty string")
+                .isEmpty();
+    }
+
+    /**
+     * Asserts that a value already at the field width passes through unchanged. Nine of the
+     * statement fields of app/cbl/CBSTM03A.CBL:L91-L142 receive a value already at their width.
+     */
+    @Test
+    @DisplayName("A value already at the field width passes through unchanged")
+    void picReturnsAnExactFitUnchanged() {
+        String atWidth = "A".repeat(NotificationRenderer.ST_TRANID_WIDTH);
+        String moved = NotificationRenderer.pic(atWidth, NotificationRenderer.ST_TRANID_WIDTH);
+
+        assertThat(moved)
+                .as("the result holds the width of ST-TRANID at app/cbl/CBSTM03A.CBL:L133")
+                .hasSize(NotificationRenderer.ST_TRANID_WIDTH);
+        assertThat(moved)
+                .as("no character changes when the value already fits")
+                .isEqualTo(atWidth);
+        assertThat(NotificationRenderer.pic("     ", 5))
+                .as("a value of only spaces passes through at its own width")
+                .isEqualTo("     ");
+    }
+
+    /**
+     * Asserts that an eleven-digit account identifier keeps its leading zeros. {@code ACCT-ID} is
+     * {@code PIC 9(11)} at app/cpy/CVACT01Y.cpy:L5, and the {@code MOVE} at
+     * app/cbl/CBSTM03A.CBL:L483 carries it into an alphanumeric field of 20.
+     */
+    @Test
+    @DisplayName("An eleven-digit account identifier keeps its leading zeros")
+    void picKeepsTheLeadingZerosOfAnElevenDigitAccountIdentifier() {
+        String accountId = "00000000011";
+        String moved = NotificationRenderer.pic(accountId, NotificationRenderer.ST_ACCT_ID_WIDTH);
+
+        assertThat(accountId)
+                .as("the sending field holds 11 digits")
+                .hasSize(ACCOUNT_ID_DIGITS);
+        assertThat(moved)
+                .as("the result holds the width of the account field of app/cbl/CBSTM03A.CBL:L483")
+                .hasSize(NotificationRenderer.ST_ACCT_ID_WIDTH);
+        assertThat(moved.substring(0, ACCOUNT_ID_DIGITS))
+                .as("all nine leading zeros survive the move")
+                .isEqualTo(accountId);
+        assertThat(moved)
+                .as("the nine spare positions hold spaces")
+                .isEqualTo(accountId + " ".repeat(
+                        NotificationRenderer.ST_ACCT_ID_WIDTH - ACCOUNT_ID_DIGITS));
+    }
+
+    /**
+     * Asserts the width invariant across every field width of app/cbl/CBSTM03A.CBL:L91-L142, for a
+     * short value, a long value and a null.
+     */
+    @Test
+    @DisplayName("Every result holds exactly the requested width")
+    void picHoldsExactlyTheRequestedWidthForEveryInput() {
         String shortValue = "AB";
         String longValue = "X".repeat(NotificationRenderer.ST_ADD3_WIDTH + 10);
 
         for (int width = 0; width <= NotificationRenderer.ST_ADD3_WIDTH; width++) {
-            assertEquals(width, NotificationRenderer.pic(shortValue, width).length(),
-                    "a short value renders exactly " + width + " characters");
-            assertEquals(width, NotificationRenderer.pic(longValue, width).length(),
-                    "a long value renders exactly " + width + " characters");
-            assertEquals(width, NotificationRenderer.pic(null, width).length(),
-                    "a null value renders exactly " + width + " characters");
+            assertThat(NotificationRenderer.pic(shortValue, width))
+                    .as("a short value at width %d", width)
+                    .hasSize(width);
+            assertThat(NotificationRenderer.pic(longValue, width))
+                    .as("a long value at width %d", width)
+                    .hasSize(width);
+            assertThat(NotificationRenderer.pic(null, width))
+                    .as("a null value at width %d", width)
+                    .hasSize(width);
         }
     }
 
-    /** Asserts that a negative width is refused, and that the refusal names the width. */
+    /**
+     * Asserts that a negative width is refused. No field of app/cbl/CBSTM03A.CBL:L91-L142 declares
+     * one.
+     */
     @Test
+    @DisplayName("A negative width is refused and the refusal names the width")
     void picRefusesANegativeWidth() {
-        IllegalArgumentException refusal = assertThrows(IllegalArgumentException.class,
-                () -> NotificationRenderer.pic("AB", -1),
-                "a negative width names no Picture clause and is refused");
-        assertEquals("width must not be negative: width=-1", refusal.getMessage(),
-                "the refusal names the width supplied");
-        assertThrows(IllegalArgumentException.class,
-                () -> NotificationRenderer.pic(null, -5),
-                "a negative width is refused before the null check runs");
+        assertThatThrownBy(() -> NotificationRenderer.pic("AB", -1))
+                .as("a negative width names no Picture clause")
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessage("width must not be negative: width=-1");
+        assertThatThrownBy(() -> NotificationRenderer.pic(null, -5))
+                .as("the width check runs ahead of the null check")
+                .isInstanceOf(IllegalArgumentException.class);
     }
 
-    // editTrailingSign9. Reproduces ST-CURR-BAL PIC 9(9).99-.
+    // editTrailingSign9. Reproduces ST-CURR-BAL PIC 9(9).99- at app/cbl/CBSTM03A.CBL:L113.
 
     /**
-     * Asserts the {@code PIC 9(9).99-} form for a positive, a negative and a zero amount. Every
-     * digit position renders a digit, including a leading zero.
+     * Asserts the width invariant of the zero-filled edit. Every result matches
+     * {@code ST-CURR-BAL PIC 9(9).99-} at app/cbl/CBSTM03A.CBL:L113, and the decimal point sits at
+     * one fixed index.
      */
     @Test
-    void editTrailingSign9RendersEveryDigitPositionAsADigit() {
-        assertEquals("000001234.56 ",
-                NotificationRenderer.editTrailingSign9(new BigDecimal("1234.56")),
-                "1234.56 renders as five leading zeros, 1234.56 and a space sign position");
-        assertEquals("000001234.56-",
-                NotificationRenderer.editTrailingSign9(new BigDecimal("-1234.56")),
-                "a negative amount renders a hyphen in the sign position");
-        assertEquals("000000000.00 ",
-                NotificationRenderer.editTrailingSign9(new BigDecimal("0.00")),
-                "zero renders nine zero digits, a decimal point, two zeros and a space");
-        assertEquals("000000001.99 ",
-                NotificationRenderer.editTrailingSign9(new BigDecimal("1.99")),
-                "1.99 renders eight leading zeros before its single integer digit");
-        assertEquals("999999999.99 ",
-                NotificationRenderer.editTrailingSign9(new BigDecimal("999999999.99")),
-                "the largest value the nine integer positions hold renders every digit");
-    }
-
-    /**
-     * Asserts that the third and later decimals are dropped toward zero rather than rounded. The
-     * amount passes through the shared truncation, which offers no rounding mode, so 1.999 renders
-     * as 1.99 and never as 2.00.
-     */
-    @Test
-    void editTrailingSign9TruncatesTowardZeroAndNeverRounds() {
-        assertEquals("000000001.99 ",
-                NotificationRenderer.editTrailingSign9(new BigDecimal("1.999")),
-                "1.999 truncates to 1.99 and does not round to 2.00");
-        assertEquals("000000001.99-",
-                NotificationRenderer.editTrailingSign9(new BigDecimal("-1.999")),
-                "-1.999 truncates toward zero to -1.99 and does not round to -2.00");
-        assertNotEquals("000000002.00 ",
-                NotificationRenderer.editTrailingSign9(new BigDecimal("1.999")),
-                "half-up rounding would render 2.00, and the source never rounds");
-        assertEquals("000000000.00 ",
-                NotificationRenderer.editTrailingSign9(new BigDecimal("0.009")),
-                "0.009 truncates to 0.00");
-    }
-
-    /**
-     * Asserts that an amount past the nine integer positions loses its high-order digits, and that
-     * a negative amount whose magnitude truncates to zero renders a space in the sign position.
-     * Both are reproduced from the source field width and both are recorded behaviour.
-     */
-    @Test
-    void editTrailingSign9DropsDigitsAboveTheNinthAndThenReportsNoSign() {
-        assertEquals("000000000.00 ",
-                NotificationRenderer.editTrailingSign9(new BigDecimal("1000000000.00")),
-                "an amount of ten integer digits loses its high-order digit and holds zero");
-        assertEquals("345678901.99 ",
-                NotificationRenderer.editTrailingSign9(new BigDecimal("12345678901.99")),
-                "an amount of eleven integer digits keeps only its low nine");
-        assertEquals("000000000.00 ",
-                NotificationRenderer.editTrailingSign9(new BigDecimal("-1000000000.00")),
-                "a negative amount that truncates to zero renders a space, not a hyphen, "
-                        + "because the sign position reflects the value the field holds");
-        assertEquals("000000000.00 ",
-                NotificationRenderer.editTrailingSign9(new BigDecimal("-0.001")),
-                "a negative amount below one cent renders a space in the sign position");
-    }
-
-    /** Asserts that a null amount is refused rather than rendered as spaces. */
-    @Test
-    void editTrailingSign9RefusesANullAmount() {
-        assertThrows(NullPointerException.class,
-                () -> NotificationRenderer.editTrailingSign9(null),
-                "an amount is required, unlike a text field, which renders null as spaces");
-    }
-
-    // editTrailingSignZ. Reproduces ST-TRANAMT and ST-TOTAL-TRAMT PIC Z(9).99-.
-
-    /**
-     * Asserts the {@code PIC Z(9).99-} form. A {@code Z} digit position renders a leading zero as a
-     * space, and suppression stops at the first digit that is not zero.
-     */
-    @Test
-    void editTrailingSignZRendersALeadingZeroAsASpace() {
-        assertEquals("     1234.56 ",
-                NotificationRenderer.editTrailingSignZ(new BigDecimal("1234.56")),
-                "1234.56 renders as five spaces, 1234.56 and a space sign position");
-        assertEquals("     1234.56-",
-                NotificationRenderer.editTrailingSignZ(new BigDecimal("-1234.56")),
-                "a negative amount renders a hyphen in the sign position");
-        assertEquals("        1.99 ",
-                NotificationRenderer.editTrailingSignZ(new BigDecimal("1.99")),
-                "1.99 renders eight spaces before its single integer digit");
-        assertEquals("       10.00 ",
-                NotificationRenderer.editTrailingSignZ(new BigDecimal("10.00")),
-                "10.00 renders seven spaces before its two integer digits");
-        assertEquals("100000000.00 ",
-                NotificationRenderer.editTrailingSignZ(new BigDecimal("100000000.00")),
-                "a value filling the first integer position suppresses nothing");
-        assertEquals("999999999.99 ",
-                NotificationRenderer.editTrailingSignZ(new BigDecimal("999999999.99")),
-                "a value with no leading zero suppresses nothing");
-    }
-
-    /**
-     * Asserts that suppression stops at the decimal point when every integer digit is zero, so an
-     * amount below one renders nine spaces and keeps its decimals.
-     */
-    @Test
-    void editTrailingSignZSuppressesEveryIntegerPositionOfAnAmountBelowOne() {
-        assertEquals("         .00 ",
-                NotificationRenderer.editTrailingSignZ(new BigDecimal("0.00")),
-                "zero renders nine spaces, a decimal point, two zeros and a space");
-        assertEquals("         .05 ",
-                NotificationRenderer.editTrailingSignZ(new BigDecimal("0.05")),
-                "0.05 keeps its decimals and suppresses every integer position");
-        assertEquals("         .99-",
-                NotificationRenderer.editTrailingSignZ(new BigDecimal("-0.99")),
-                "a negative amount below one keeps its hyphen and suppresses every integer "
-                        + "position");
-    }
-
-    /**
-     * Asserts that the suppressed form truncates and overflows exactly as the zero-filled form
-     * does, so the two differ in leading zeros alone.
-     */
-    @Test
-    void editTrailingSignZTruncatesAndOverflowsLikeTheZeroFilledForm() {
-        assertEquals("        1.99 ",
-                NotificationRenderer.editTrailingSignZ(new BigDecimal("1.999")),
-                "1.999 truncates to 1.99 in the suppressed form too");
-        assertEquals("         .00 ",
-                NotificationRenderer.editTrailingSignZ(new BigDecimal("1000000000.00")),
-                "an amount of ten integer digits truncates to zero and suppresses every "
-                        + "integer position");
-        assertEquals("345678901.99 ",
-                NotificationRenderer.editTrailingSignZ(new BigDecimal("12345678901.99")),
-                "an amount of eleven integer digits keeps only its low nine");
-        assertEquals("         .00 ",
-                NotificationRenderer.editTrailingSignZ(new BigDecimal("-0.001")),
-                "a negative amount below one cent renders a space in the sign position");
-    }
-
-    /**
-     * Asserts that the two forms differ in leading zeros alone. For each amount, replacing every
-     * leading space of the suppressed form with a zero gives the zero-filled form.
-     */
-    @Test
-    void theTwoFormsDifferInLeadingZerosAlone() {
-        List<String> amounts = List.of("1234.56", "-1234.56", "0.00", "1.99", "-0.99",
-                "999999999.99", "100000000.00", "1.999", "12345678901.99");
+    @DisplayName("The zero-filled edit holds 13 characters for every amount")
+    void editTrailingSign9HoldsThirteenCharactersForEveryAmount() {
+        List<String> amounts = List.of("42.50", "-42.50", "0.00", "1.99", "1234.56",
+                "999999999.99", "1.999", "1234567890.12", "-0.001");
 
         for (String amount : amounts) {
-            BigDecimal value = new BigDecimal(amount);
-            String zeroFilled = NotificationRenderer.editTrailingSign9(value);
-            String suppressed = NotificationRenderer.editTrailingSignZ(value);
+            String edited = NotificationRenderer.editTrailingSign9(new BigDecimal(amount));
 
-            assertEquals(EDITED_WIDTH, zeroFilled.length(),
-                    "the zero-filled form of " + amount + " holds " + EDITED_WIDTH
-                            + " characters");
-            assertEquals(EDITED_WIDTH, suppressed.length(),
-                    "the suppressed form of " + amount + " holds " + EDITED_WIDTH
-                            + " characters");
-            String zeroFilledIntegerPart = zeroFilled.substring(0, INTEGER_POSITIONS);
-            String suppressedIntegerPart = suppressed.substring(0, INTEGER_POSITIONS);
-            assertEquals(zeroFilledIntegerPart, suppressedIntegerPart.replace(' ', '0'),
-                    "replacing every suppressed integer position of " + amount
-                            + " with a zero gives the zero-filled integer part");
-            assertEquals(zeroFilled.substring(INTEGER_POSITIONS, EDITED_WIDTH - 1),
-                    suppressed.substring(INTEGER_POSITIONS, EDITED_WIDTH - 1),
-                    "the decimal point and the two decimals of " + amount
-                            + " are identical in both forms");
-            assertEquals(zeroFilled.charAt(EDITED_WIDTH - 1),
-                    suppressed.charAt(EDITED_WIDTH - 1),
-                    "both forms of " + amount + " render the same sign position");
-            assertEquals('.', zeroFilled.charAt(INTEGER_POSITIONS),
-                    "the decimal point of " + amount + " sits after position "
-                            + INTEGER_POSITIONS);
-            assertEquals('.', suppressed.charAt(INTEGER_POSITIONS),
-                    "the decimal point of " + amount + " sits after position "
-                            + INTEGER_POSITIONS + " in the suppressed form too");
+            assertThat(edited)
+                    .as("the edit of %s holds 13 characters", amount)
+                    .hasSize(EDITED_WIDTH);
+            assertThat(edited.charAt(DECIMAL_POINT_INDEX))
+                    .as("the decimal point of %s follows nine digit positions", amount)
+                    .isEqualTo('.');
         }
     }
 
-    /** Asserts that a null amount is refused by the suppressed form too. */
+    /**
+     * Asserts that every digit position renders a digit. The {@code 9} symbol of
+     * {@code ST-CURR-BAL PIC 9(9).99-} at app/cbl/CBSTM03A.CBL:L113 keeps a leading zero as a
+     * zero.
+     */
     @Test
-    void editTrailingSignZRefusesANullAmount() {
-        assertThrows(NullPointerException.class,
-                () -> NotificationRenderer.editTrailingSignZ(null),
-                "an amount is required in the suppressed form too");
+    @DisplayName("Every digit position of the zero-filled edit renders a digit")
+    void editTrailingSign9RendersEveryDigitPositionAsADigit() {
+        String edited = NotificationRenderer.editTrailingSign9(new BigDecimal("42.50"));
+
+        assertThat(edited)
+                .as("42.50 fills all nine digit positions")
+                .hasSize(EDITED_WIDTH);
+        assertThat(edited.substring(0, INTEGER_POSITIONS - 2))
+                .as("the seven positions ahead of the two significant digits render zeros")
+                .isEqualTo("0000000");
+        assertThat(edited)
+                .as("42.50 renders seven zeros, the two digits, the point, the decimals and a"
+                        + " blank sign position")
+                .isEqualTo("000000042.50 ");
+        assertThat(NotificationRenderer.editTrailingSign9(new BigDecimal("1234.56")))
+                .as("1234.56 renders five leading zeros")
+                .isEqualTo("000001234.56 ");
+        assertThat(NotificationRenderer.editTrailingSign9(new BigDecimal("999999999.99")))
+                .as("the widest amount the nine digit positions hold suppresses nothing")
+                .isEqualTo("999999999.99 ");
     }
+
+    /**
+     * Asserts that a negative amount carries a minus in the trailing position of
+     * {@code ST-CURR-BAL PIC 9(9).99-} at app/cbl/CBSTM03A.CBL:L113, after both decimal digits.
+     */
+    @Test
+    @DisplayName("A negative amount carries its minus after the decimal digits")
+    void editTrailingSign9PlacesTheMinusInTheTrailingPosition() {
+        String edited = NotificationRenderer.editTrailingSign9(new BigDecimal("-42.50"));
+
+        assertThat(edited)
+                .as("the negative edit holds 13 characters")
+                .hasSize(EDITED_WIDTH);
+        assertThat(edited.charAt(SIGN_INDEX))
+                .as("the sign occupies the final position")
+                .isEqualTo('-');
+        assertThat(edited.substring(DECIMAL_POINT_INDEX))
+                .as("the minus follows the point and both decimal digits")
+                .isEqualTo(".50-");
+        assertThat(edited.indexOf('-'))
+                .as("no minus appears ahead of the digits")
+                .isEqualTo(SIGN_INDEX);
+        assertThat(edited)
+                .as("-42.50 renders the magnitude and a trailing minus")
+                .isEqualTo("000000042.50-");
+    }
+
+    /**
+     * Asserts that a positive amount leaves the trailing sign position of
+     * app/cbl/CBSTM03A.CBL:L113 blank.
+     */
+    @Test
+    @DisplayName("A positive amount leaves the trailing sign position blank")
+    void editTrailingSign9LeavesTheSignPositionBlankForAPositiveAmount() {
+        String edited = NotificationRenderer.editTrailingSign9(new BigDecimal("42.50"));
+
+        assertThat(edited)
+                .as("the positive edit holds 13 characters")
+                .hasSize(EDITED_WIDTH);
+        assertThat(edited.charAt(SIGN_INDEX))
+                .as("the sign position holds a space")
+                .isEqualTo(' ');
+        assertThat(edited)
+                .as("no minus appears anywhere in a positive edit")
+                .doesNotContain("-");
+    }
+
+    /**
+     * Asserts that zero renders every digit position, the decimal point and both decimal digits.
+     * The declaration at app/cbl/CBSTM03A.CBL:L113 carries no {@code BLANK WHEN ZERO} clause, so
+     * the field is not blanked.
+     */
+    @Test
+    @DisplayName("Zero renders nine zero digits, the point and both decimal digits")
+    void editTrailingSign9RendersZeroWithItsPointAndBothDecimalDigits() {
+        String edited = NotificationRenderer.editTrailingSign9(new BigDecimal("0.00"));
+
+        assertThat(edited)
+                .as("the edit of zero holds 13 characters")
+                .hasSize(EDITED_WIDTH);
+        assertThat(edited)
+                .as("zero renders nine zeros, the point, two zeros and a blank sign position")
+                .isEqualTo("000000000.00 ");
+        assertThat(edited.substring(0, INTEGER_POSITIONS))
+                .as("every integer position renders a zero digit")
+                .isEqualTo("000000000");
+        assertThat(edited.substring(DECIMAL_POINT_INDEX + 1, SIGN_INDEX))
+                .as("both decimal digits survive")
+                .isEqualTo("00");
+        assertThat(edited.isBlank())
+                .as("no BLANK WHEN ZERO clause sits at app/cbl/CBSTM03A.CBL:L113")
+                .isFalse();
+    }
+
+    /**
+     * Asserts that the third decimal digit and beyond fall away toward zero. The
+     * {@code MOVE ACCT-CURR-BAL TO ST-CURR-BAL} at app/cbl/CBSTM03A.CBL:L484 carries no
+     * {@code ROUNDED} phrase, and no program of the source names one.
+     */
+    @Test
+    @DisplayName("The third decimal digit falls away toward zero and never rounds")
+    void editTrailingSign9TruncatesTowardZeroAndNeverRounds() {
+        assertThat(NotificationRenderer.editTrailingSign9(new BigDecimal("1.999")))
+                .as("the truncated edit holds 13 characters")
+                .hasSize(EDITED_WIDTH);
+        assertThat(NotificationRenderer.editTrailingSign9(new BigDecimal("1.999")))
+                .as("1.999 holds 1.99")
+                .isEqualTo("000000001.99 ");
+        assertThat(NotificationRenderer.editTrailingSign9(new BigDecimal("1.999")))
+                .as("half-up rounding would render 2.00 and fail here")
+                .isNotEqualTo("000000002.00 ");
+        assertThat(NotificationRenderer.editTrailingSign9(new BigDecimal("-1.999")))
+                .as("-1.999 truncates toward zero to -1.99")
+                .isEqualTo("000000001.99-");
+        assertThat(NotificationRenderer.editTrailingSign9(new BigDecimal("0.009")))
+                .as("0.009 holds 0.00")
+                .isEqualTo("000000000.00 ");
+    }
+
+    /**
+     * Asserts the high-order digit loss the two field widths produce.
+     * {@code ACCT-CURR-BAL PIC S9(10)V99} at app/cpy/CVACT01Y.cpy:L7 carries ten integer digits and
+     * {@code ST-CURR-BAL PIC 9(9).99-} at app/cbl/CBSTM03A.CBL:L113 carries nine, so a balance at or
+     * above one billion loses its high-order digit in both rendered outputs.
+     */
+    @Test
+    @DisplayName("A ten-digit balance loses its high-order digit and keeps the low nine")
+    void editTrailingSign9DropsTheHighOrderDigitOfATenDigitBalance() {
+        String edited = NotificationRenderer.editTrailingSign9(new BigDecimal("1234567890.12"));
+
+        assertThat(edited)
+                .as("the narrowed edit still holds 13 characters")
+                .hasSize(EDITED_WIDTH);
+        assertThat(edited.substring(0, INTEGER_POSITIONS))
+                .as("the low nine integer digits survive")
+                .isEqualTo("234567890");
+        assertThat(edited)
+                .as("the tenth integer digit reaches no output")
+                .doesNotContain("1234567890");
+        assertThat(edited)
+                .as("the balance renders as its low nine digits and both decimals")
+                .isEqualTo("234567890.12 ");
+        assertThat(NotificationRenderer.editTrailingSign9(new BigDecimal("1000000000.00")))
+                .as("a balance of one billion renders zero")
+                .isEqualTo("000000000.00 ");
+        assertThat(NotificationRenderer.editTrailingSign9(new BigDecimal("-1000000000.00")))
+                .as("a negative balance whose magnitude narrows to zero renders a blank sign")
+                .isEqualTo("000000000.00 ");
+    }
+
+    /**
+     * Asserts that a null amount is refused. Every call site of app/cbl/CBSTM03A.CBL:L484 supplies
+     * a numeric field, which holds no absent value.
+     */
+    @Test
+    @DisplayName("The zero-filled edit refuses a null amount")
+    void editTrailingSign9RefusesANullAmount() {
+        assertThatThrownBy(() -> NotificationRenderer.editTrailingSign9(null))
+                .as("an amount is required, unlike a text field")
+                .isInstanceOf(NullPointerException.class);
+    }
+
+    // editTrailingSignZ. Reproduces ST-TRANAMT at app/cbl/CBSTM03A.CBL:L137 and ST-TOTAL-TRAMT
+    // at app/cbl/CBSTM03A.CBL:L142, both PIC Z(9).99-.
+
+    /**
+     * Asserts the width invariant of the suppressed edit. Every result matches
+     * {@code ST-TRANAMT PIC Z(9).99-} at app/cbl/CBSTM03A.CBL:L137, which
+     * {@code ST-TOTAL-TRAMT} at app/cbl/CBSTM03A.CBL:L142 repeats.
+     */
+    @Test
+    @DisplayName("The suppressed edit holds 13 characters for every amount")
+    void editTrailingSignZHoldsThirteenCharactersForEveryAmount() {
+        List<String> amounts = List.of("42.50", "-42.50", "0.00", "0.05", "-0.99", "1.99",
+                "1234.56", "100000000.00", "999999999.99", "1234567890.12");
+
+        for (String amount : amounts) {
+            String edited = NotificationRenderer.editTrailingSignZ(new BigDecimal(amount));
+
+            assertThat(edited)
+                    .as("the suppressed edit of %s holds 13 characters", amount)
+                    .hasSize(EDITED_WIDTH);
+            assertThat(edited.charAt(DECIMAL_POINT_INDEX))
+                    .as("the decimal point of %s follows nine digit positions", amount)
+                    .isEqualTo('.');
+        }
+    }
+
+    /**
+     * Asserts that the {@code Z} symbol of {@code ST-TRANAMT PIC Z(9).99-} at
+     * app/cbl/CBSTM03A.CBL:L137 renders a leading zero as a space, and that suppression stops at
+     * the first digit above zero.
+     */
+    @Test
+    @DisplayName("The suppressed edit renders a leading zero as a space")
+    void editTrailingSignZRendersALeadingZeroAsASpace() {
+        String edited = NotificationRenderer.editTrailingSignZ(new BigDecimal("42.50"));
+
+        assertThat(edited)
+                .as("the suppressed edit of 42.50 holds 13 characters")
+                .hasSize(EDITED_WIDTH);
+        assertThat(edited.substring(0, INTEGER_POSITIONS - 2))
+                .as("the seven unused digit positions hold spaces")
+                .isEqualTo("       ");
+        assertThat(edited)
+                .as("42.50 renders seven spaces, the two digits, the point and the decimals")
+                .isEqualTo("       42.50 ");
+        assertThat(NotificationRenderer.editTrailingSignZ(new BigDecimal("1.99")))
+                .as("1.99 leaves eight positions blank ahead of its single digit")
+                .isEqualTo("        1.99 ");
+        assertThat(NotificationRenderer.editTrailingSignZ(new BigDecimal("100000000.00")))
+                .as("an amount filling the first digit position suppresses nothing")
+                .isEqualTo("100000000.00 ");
+    }
+
+    /**
+     * Asserts that the two edits disagree on one amount. {@code ST-CURR-BAL PIC 9(9).99-} at
+     * app/cbl/CBSTM03A.CBL:L113 renders a leading zero as a zero and
+     * {@code ST-TRANAMT PIC Z(9).99-} at app/cbl/CBSTM03A.CBL:L137 renders it as a space, and the
+     * two renderings of one amount differ.
+     */
+    @Test
+    @DisplayName("The two edits disagree on the same amount")
+    void theTwoEditsDisagreeOnTheSameAmount() {
+        BigDecimal amount = new BigDecimal("42.50");
+        String zeroFilled = NotificationRenderer.editTrailingSign9(amount);
+        String suppressed = NotificationRenderer.editTrailingSignZ(amount);
+
+        assertThat(zeroFilled)
+                .as("the zero-filled form of 42.50 holds 13 characters")
+                .hasSize(EDITED_WIDTH);
+        assertThat(suppressed)
+                .as("the suppressed form of 42.50 holds 13 characters")
+                .hasSize(EDITED_WIDTH);
+        assertThat(suppressed)
+                .as("the two forms of 42.50 differ")
+                .isNotEqualTo(zeroFilled);
+        assertThat(zeroFilled)
+                .as("app/cbl/CBSTM03A.CBL:L113 renders the unused positions as zeros")
+                .isEqualTo("000000042.50 ");
+        assertThat(suppressed)
+                .as("app/cbl/CBSTM03A.CBL:L137 renders the unused positions as spaces")
+                .isEqualTo("       42.50 ");
+        assertThat(suppressed.substring(0, INTEGER_POSITIONS).replace(' ', '0'))
+                .as("the two forms differ in the leading positions alone")
+                .isEqualTo(zeroFilled.substring(0, INTEGER_POSITIONS));
+        assertThat(suppressed.substring(INTEGER_POSITIONS))
+                .as("the point, the decimals and the sign position match in both forms")
+                .isEqualTo(zeroFilled.substring(INTEGER_POSITIONS));
+    }
+
+    /**
+     * Asserts that the suppressed edit carries a negative amount's minus in the trailing position
+     * of app/cbl/CBSTM03A.CBL:L137, after both decimal digits.
+     */
+    @Test
+    @DisplayName("The suppressed edit carries its minus after the decimal digits")
+    void editTrailingSignZPlacesTheMinusInTheTrailingPosition() {
+        String edited = NotificationRenderer.editTrailingSignZ(new BigDecimal("-42.50"));
+
+        assertThat(edited)
+                .as("the negative suppressed edit holds 13 characters")
+                .hasSize(EDITED_WIDTH);
+        assertThat(edited.charAt(SIGN_INDEX))
+                .as("the sign occupies the final position")
+                .isEqualTo('-');
+        assertThat(edited.substring(DECIMAL_POINT_INDEX))
+                .as("the minus follows the point and both decimal digits")
+                .isEqualTo(".50-");
+        assertThat(edited)
+                .as("-42.50 renders spaces, the magnitude and a trailing minus")
+                .isEqualTo("       42.50-");
+        assertThat(NotificationRenderer.editTrailingSignZ(new BigDecimal("-0.99")))
+                .as("an amount below one keeps its minus and blanks every digit position")
+                .isEqualTo("         .99-");
+    }
+
+    /**
+     * Asserts that zero blanks all nine digit positions and keeps the point and both decimal
+     * digits. Neither app/cbl/CBSTM03A.CBL:L137 nor app/cbl/CBSTM03A.CBL:L142 carries a
+     * {@code BLANK WHEN ZERO} clause.
+     */
+    @Test
+    @DisplayName("Zero blanks all nine digit positions and keeps the point and decimals")
+    void editTrailingSignZRendersZeroWithNineBlankDigitPositions() {
+        String edited = NotificationRenderer.editTrailingSignZ(new BigDecimal("0.00"));
+
+        assertThat(edited)
+                .as("the suppressed edit of zero holds 13 characters")
+                .hasSize(EDITED_WIDTH);
+        assertThat(edited.substring(0, INTEGER_POSITIONS))
+                .as("all nine digit positions hold spaces")
+                .isEqualTo("         ");
+        assertThat(edited.charAt(DECIMAL_POINT_INDEX))
+                .as("the decimal point survives")
+                .isEqualTo('.');
+        assertThat(edited.substring(DECIMAL_POINT_INDEX + 1, SIGN_INDEX))
+                .as("both decimal digits survive")
+                .isEqualTo("00");
+        assertThat(edited)
+                .as("zero renders nine spaces, the point, two zeros and a blank sign position")
+                .isEqualTo("         .00 ");
+        assertThat(edited.isBlank())
+                .as("no BLANK WHEN ZERO clause sits at app/cbl/CBSTM03A.CBL:L137")
+                .isFalse();
+        assertThat(NotificationRenderer.editTrailingSignZ(new BigDecimal("0.05")))
+                .as("0.05 keeps its decimals and blanks every digit position")
+                .isEqualTo("         .05 ");
+    }
+
+    /**
+     * Asserts that the suppressed edit meets the same nine-digit ceiling as
+     * {@code ST-CURR-BAL} at app/cbl/CBSTM03A.CBL:L113. {@code ST-TRANAMT PIC Z(9).99-} at
+     * app/cbl/CBSTM03A.CBL:L137 holds nine digit positions too.
+     */
+    @Test
+    @DisplayName("The suppressed edit meets the same nine-digit ceiling")
+    void editTrailingSignZMeetsTheSameNineDigitCeiling() {
+        String edited = NotificationRenderer.editTrailingSignZ(new BigDecimal("1234567890.12"));
+
+        assertThat(edited)
+                .as("the narrowed suppressed edit holds 13 characters")
+                .hasSize(EDITED_WIDTH);
+        assertThat(edited.substring(0, INTEGER_POSITIONS))
+                .as("the low nine integer digits survive")
+                .isEqualTo("234567890");
+        assertThat(edited)
+                .as("the tenth integer digit reaches no output")
+                .doesNotContain("1234567890");
+        assertThat(NotificationRenderer.editTrailingSignZ(new BigDecimal("1000000000.00")))
+                .as("an amount of one billion narrows to zero and blanks every digit position")
+                .isEqualTo("         .00 ");
+        assertThat(NotificationRenderer.editTrailingSignZ(new BigDecimal("1.999")))
+                .as("the third decimal digit falls away in the suppressed form too")
+                .isEqualTo("        1.99 ");
+    }
+
+    /**
+     * Asserts that neither edit follows the default locale. The fields at
+     * app/cbl/CBSTM03A.CBL:L113 and app/cbl/CBSTM03A.CBL:L137 fix a point as the decimal
+     * separator, no grouping separator and a trailing sign, whatever locale the Java virtual
+     * machine (JVM) runs under.
+     */
+    @Test
+    @DisplayName("Neither edit follows the default locale")
+    void neitherEditFollowsTheDefaultLocale() {
+        Locale original = Locale.getDefault();
+        try {
+            Locale.setDefault(Locale.GERMANY);
+
+            String zeroFilled = NotificationRenderer.editTrailingSign9(new BigDecimal("-1234.56"));
+            String suppressed = NotificationRenderer.editTrailingSignZ(new BigDecimal("1234.56"));
+            String platformFormat = String.format(Locale.getDefault(), "%,.2f",
+                    new BigDecimal("-1234.56"));
+
+            assertThat(zeroFilled)
+                    .as("the zero-filled edit holds 13 characters under a comma-decimal locale")
+                    .hasSize(EDITED_WIDTH);
+            assertThat(suppressed)
+                    .as("the suppressed edit holds 13 characters under the same locale")
+                    .hasSize(EDITED_WIDTH);
+            assertThat(zeroFilled)
+                    .as("the zero-filled edit keeps its point, its zeros and its trailing minus")
+                    .isEqualTo("000001234.56-");
+            assertThat(suppressed)
+                    .as("the suppressed edit keeps its point and its blank positions")
+                    .isEqualTo("     1234.56 ");
+            assertThat(zeroFilled)
+                    .as("no grouping separator reaches a fixed-width field")
+                    .doesNotContain(",");
+            assertThat(suppressed)
+                    .as("no grouping separator reaches the suppressed field either")
+                    .doesNotContain(",");
+            assertThat(platformFormat)
+                    .as("a locale-sensitive formatter groups digits and leads with the sign")
+                    .contains(",")
+                    .startsWith("-");
+            assertThat(zeroFilled)
+                    .as("a substituted locale-sensitive formatter fails these assertions")
+                    .isNotEqualTo(platformFormat);
+        } finally {
+            Locale.setDefault(original);
+        }
+    }
+
+    /**
+     * Asserts that the suppressed edit refuses a null amount. The
+     * {@code MOVE TRNX-AMT TO ST-TRANAMT} at app/cbl/CBSTM03A.CBL:L678 supplies a numeric field.
+     */
+    @Test
+    @DisplayName("The suppressed edit refuses a null amount")
+    void editTrailingSignZRefusesANullAmount() {
+        assertThatThrownBy(() -> NotificationRenderer.editTrailingSignZ(null))
+                .as("an amount is required in the suppressed form too")
+                .isInstanceOf(NullPointerException.class);
+    }
+
 
     // assembleName. Reproduces the STRING at app/cbl/CBSTM03A.CBL:L462-L469.
 
     /**
-     * Asserts that each name component contributes only the characters before its first space, and
-     * that one literal space follows each of the three, including the last.
+     * Asserts the three-part join. The {@code STRING} at app/cbl/CBSTM03A.CBL:L462-L469 follows each
+     * component with one space through the {@code ' ' DELIMITED BY SIZE} inserts at
+     * app/cbl/CBSTM03A.CBL:L463, app/cbl/CBSTM03A.CBL:L465 and app/cbl/CBSTM03A.CBL:L467, so a
+     * space follows the last component too.
      */
     @Test
-    void assembleNameTakesEachComponentUpToItsFirstSpace() {
-        assertEquals(NotificationRenderer.pic("ALPHA BET DEL ",
-                        NotificationRenderer.ST_NAME_WIDTH),
-                NotificationRenderer.assembleName("ALPHA", "BET GAMMA", "DEL"),
-                "a two-word middle name contributes its first word only, and one space "
-                        + "follows each of the three components");
-        assertEquals("ALPHA BET DEL " + " ".repeat(NotificationRenderer.ST_NAME_WIDTH - 14),
-                NotificationRenderer.assembleName("ALPHA", "BET GAMMA", "DEL"),
-                "the assembled name holds the three words, three separating spaces and "
-                        + "trailing spaces to the field width");
-        assertEquals("A B C " + " ".repeat(NotificationRenderer.ST_NAME_WIDTH - 6),
-                NotificationRenderer.assembleName("A", "B", "C"),
-                "one literal space follows each component, including the last");
+    @DisplayName("Three name components join with single spaces and one trailing space")
+    void assembleNameJoinsThreeComponentsWithSingleSpaces() {
+        String assembled = NotificationRenderer.assembleName("ALPHA", "BETA", "GAMMA");
+
+        assertThat(assembled)
+                .as("the assembled name holds the width of ST-NAME at app/cbl/CBSTM03A.CBL:L91")
+                .hasSize(NotificationRenderer.ST_NAME_WIDTH);
+        assertThat(assembled)
+                .as("the three components join with single spaces and pad to the field width")
+                .isEqualTo("ALPHA BETA GAMMA "
+                        + " ".repeat(NotificationRenderer.ST_NAME_WIDTH - 17));
+        assertThat(assembled.charAt(5))
+                .as("one space separates the first component from the second")
+                .isEqualTo(' ');
+        assertThat(assembled.charAt(10))
+                .as("one space separates the second component from the third")
+                .isEqualTo(' ');
+        assertThat(assembled.charAt(16))
+                .as("the third insert places one space after the last component")
+                .isEqualTo(' ');
+        assertThat(assembled.substring(17))
+                .as("the unused tail stays blank, as INITIALIZE at app/cbl/CBSTM03A.CBL:L459"
+                        + " leaves it")
+                .isBlank();
     }
 
     /**
-     * Asserts that a null component, an empty component and a component starting with a space each
-     * contribute no characters, and that none raises an exception.
+     * Asserts the width invariant of the assembled name against
+     * {@code ST-NAME PIC X(75)} at app/cbl/CBSTM03A.CBL:L91.
      */
     @Test
-    void assembleNameTreatsNullEmptyAndLeadingSpaceAsNoContribution() {
-        String allSpaces = " ".repeat(NotificationRenderer.ST_NAME_WIDTH);
-
-        assertEquals(allSpaces, NotificationRenderer.assembleName(null, null, null),
-                "three null components contribute nothing, leaving three separating spaces "
-                        + "inside an all-spaces field");
-        assertEquals(allSpaces, NotificationRenderer.assembleName("", "", ""),
-                "three empty components contribute nothing");
-        assertEquals(allSpaces, NotificationRenderer.assembleName(" Leading", "  ", " X"),
-                "a component starting with a space contributes nothing");
-        assertEquals("ALPHA  DEL " + " ".repeat(NotificationRenderer.ST_NAME_WIDTH - 11),
-                NotificationRenderer.assembleName("ALPHA", null, "DEL"),
-                "a null middle name leaves two adjacent separating spaces");
-    }
-
-    /**
-     * Asserts that an assembled name longer than the field loses its tail, and that every result
-     * holds exactly the field width.
-     */
-    @Test
-    void assembleNameAlwaysHoldsExactlyTheFieldWidth() {
-        String longFirst = "F".repeat(NotificationRenderer.ST_NAME_WIDTH + 10);
-
-        assertEquals(NotificationRenderer.ST_NAME_WIDTH,
-                NotificationRenderer.assembleName(longFirst, "M", "L").length(),
-                "an over-long first name is truncated to the field width");
-        assertEquals("F".repeat(NotificationRenderer.ST_NAME_WIDTH),
-                NotificationRenderer.assembleName(longFirst, "M", "L"),
-                "the tail of the assembled name is dropped, so the later components are lost");
-
-        List<List<String>> cases = List.of(
-                List.of("ALPHA", "BET", "DEL"),
+    @DisplayName("Every assembled name holds exactly 75 characters")
+    void assembleNameHoldsSeventyFiveCharactersForEveryInput() {
+        String full = "F".repeat(NAME_COMPONENT_WIDTH);
+        List<List<String>> componentSets = List.of(
+                List.of("ALPHA", "BETA", "GAMMA"),
                 List.of("A", "B", "C"),
                 List.of("", "", ""),
-                List.of(longFirst, "M", "L"));
-        for (List<String> components : cases) {
-            assertEquals(NotificationRenderer.ST_NAME_WIDTH,
-                    NotificationRenderer.assembleName(components.get(0), components.get(1),
-                            components.get(2)).length(),
-                    "every assembled name holds exactly " + NotificationRenderer.ST_NAME_WIDTH
-                            + " characters");
+                List.of(" ", "  ", "   "),
+                List.of(full, full, full));
+
+        for (List<String> components : componentSets) {
+            assertThat(NotificationRenderer.assembleName(
+                    components.get(0), components.get(1), components.get(2)))
+                    .as("the name assembled from %s holds 75 characters", components)
+                    .hasSize(NotificationRenderer.ST_NAME_WIDTH);
         }
+        assertThat(NotificationRenderer.assembleName(null, null, null))
+                .as("three absent components leave an all-spaces field of 75 characters")
+                .hasSize(NotificationRenderer.ST_NAME_WIDTH)
+                .isBlank();
+    }
+
+    /**
+     * Asserts that {@code DELIMITED BY ' '} stops each component at its first internal space. The
+     * three operands at app/cbl/CBSTM03A.CBL:L462, app/cbl/CBSTM03A.CBL:L464 and
+     * app/cbl/CBSTM03A.CBL:L466 each carry that phrase.
+     */
+    @Test
+    @DisplayName("A component holding two words contributes its first word alone")
+    void assembleNameStopsEachComponentAtItsFirstInternalSpace() {
+        String assembled = NotificationRenderer.assembleName("ANNE", "MARY JANE", "SMITH");
+
+        assertThat(assembled)
+                .as("the truncated join still holds 75 characters")
+                .hasSize(NotificationRenderer.ST_NAME_WIDTH);
+        assertThat(assembled)
+                .as("MARY JANE contributes MARY alone")
+                .isEqualTo("ANNE MARY SMITH "
+                        + " ".repeat(NotificationRenderer.ST_NAME_WIDTH - 16));
+        assertThat(assembled)
+                .as("the characters after the internal space reach no output")
+                .doesNotContain("JANE");
+        assertThat(NotificationRenderer.assembleName("ANNE MARIE", "J", "SMITH"))
+                .as("a two-word first name contributes its first word alone")
+                .isEqualTo("ANNE J SMITH "
+                        + " ".repeat(NotificationRenderer.ST_NAME_WIDTH - 13));
+    }
+
+    /**
+     * Asserts that an all-spaces component contributes no characters while its insert still fires,
+     * leaving two adjacent spaces. The insert at app/cbl/CBSTM03A.CBL:L465 follows
+     * {@code CUST-MIDDLE-NAME PIC X(25)} at app/cpy/CUSTREC.cpy:L7 whatever that field holds.
+     */
+    @Test
+    @DisplayName("An all-spaces middle name leaves two adjacent spaces")
+    void assembleNameLeavesTwoSpacesWhereAComponentIsAllSpaces() {
+        String blankMiddle = " ".repeat(NAME_COMPONENT_WIDTH);
+        String assembled = NotificationRenderer.assembleName("ALPHA", blankMiddle, "GAMMA");
+
+        assertThat(assembled)
+                .as("the join still holds 75 characters")
+                .hasSize(NotificationRenderer.ST_NAME_WIDTH);
+        assertThat(assembled)
+                .as("two spaces separate the two surviving components")
+                .isEqualTo("ALPHA  GAMMA "
+                        + " ".repeat(NotificationRenderer.ST_NAME_WIDTH - 13));
+        assertThat(assembled.substring(5, 7))
+                .as("the separating insert and the empty component together render two spaces")
+                .isEqualTo("  ");
+        assertThat(assembled.charAt(7))
+                .as("the third component starts after the two spaces")
+                .isEqualTo('G');
+        assertThat(NotificationRenderer.assembleName("ALPHA", null, "GAMMA"))
+                .as("an absent middle name leaves the same two spaces")
+                .isEqualTo(assembled);
+    }
+
+    /**
+     * Asserts the overflow the two widths produce. Three components of
+     * {@code PIC X(25)} at app/cpy/CUSTREC.cpy:L6-L8 emit 78 characters with their three inserts,
+     * and {@code ST-NAME PIC X(75)} at app/cbl/CBSTM03A.CBL:L91 holds 75, so the last three
+     * characters fall away.
+     */
+    @Test
+    @DisplayName("Three full name components lose the last three of 78 characters")
+    void assembleNameLosesTheLastThreeOfSeventyEightCharacters() {
+        String first = "F".repeat(NAME_COMPONENT_WIDTH);
+        String middle = "M".repeat(NAME_COMPONENT_WIDTH);
+        String last = "L".repeat(NAME_COMPONENT_WIDTH);
+        int emitted = 3 * NAME_COMPONENT_WIDTH + 3;
+        String assembled = NotificationRenderer.assembleName(first, middle, last);
+
+        assertThat(emitted)
+                .as("three components and three inserts emit 78 characters")
+                .isEqualTo(78);
+        assertThat(emitted - NotificationRenderer.ST_NAME_WIDTH)
+                .as("the field holds 75, so three characters fall away")
+                .isEqualTo(3);
+        assertThat(assembled)
+                .as("the assembled name still holds 75 characters")
+                .hasSize(NotificationRenderer.ST_NAME_WIDTH);
+        assertThat(assembled)
+                .as("the first two components survive whole and the third loses two characters")
+                .isEqualTo(first + " " + middle + " " + "L".repeat(NAME_COMPONENT_WIDTH - 2));
+        assertThat(assembled.chars().filter(character -> character == 'L').count())
+                .as("23 of the 25 last-name characters reach the field")
+                .isEqualTo(NAME_COMPONENT_WIDTH - 2);
+        assertThat(assembled)
+                .as("the trailing insert falls away with them")
+                .doesNotEndWith(" ");
     }
 
     // assembleAddress3. Reproduces the STRING at app/cbl/CBSTM03A.CBL:L472-L481.
 
     /**
-     * Asserts that each of the four address components contributes only the characters before its
-     * first space, and that one literal space follows each.
+     * Asserts the four-part join. The {@code STRING} at app/cbl/CBSTM03A.CBL:L472-L481 follows each
+     * of its four components with one space through the inserts at app/cbl/CBSTM03A.CBL:L473,
+     * app/cbl/CBSTM03A.CBL:L475, app/cbl/CBSTM03A.CBL:L477 and app/cbl/CBSTM03A.CBL:L479.
      */
     @Test
-    void assembleAddress3TakesEachComponentUpToItsFirstSpace() {
-        assertEquals("123 NY USA 10001 "
-                        + " ".repeat(NotificationRenderer.ST_ADD3_WIDTH - 17),
-                NotificationRenderer.assembleAddress3("123 Main St", "NY", "USA", "10001"),
-                "a city line holding 123 Main St contributes 123 only, and one space follows "
-                        + "each of the four components");
-        assertEquals("A B C D " + " ".repeat(NotificationRenderer.ST_ADD3_WIDTH - 8),
-                NotificationRenderer.assembleAddress3("A", "B", "C", "D"),
-                "one literal space follows each of the four components, including the last");
+    @DisplayName("Four address components join with single spaces and one trailing space")
+    void assembleAddress3JoinsFourComponentsWithSingleSpaces() {
+        String assembled = NotificationRenderer.assembleAddress3("500", "NY", "USA", "12345");
+
+        assertThat(assembled)
+                .as("the assembled line holds the width of ST-ADD3 at app/cbl/CBSTM03A.CBL:L100")
+                .hasSize(NotificationRenderer.ST_ADD3_WIDTH);
+        assertThat(assembled)
+                .as("the four components join with single spaces and pad to the field width")
+                .isEqualTo("500 NY USA 12345 "
+                        + " ".repeat(NotificationRenderer.ST_ADD3_WIDTH - 17));
+        assertThat(assembled.charAt(16))
+                .as("the fourth insert places one space after the postal code")
+                .isEqualTo(' ');
+        assertThat(assembled.substring(17))
+                .as("the unused tail stays blank")
+                .isBlank();
     }
 
     /**
-     * Asserts that a null component, an empty component and a component starting with a space each
-     * contribute no characters, and that every result holds exactly the field width.
+     * Asserts the width invariant of the assembled address line against
+     * {@code ST-ADD3 PIC X(80)} at app/cbl/CBSTM03A.CBL:L100.
      */
     @Test
-    void assembleAddress3TreatsNullEmptyAndLeadingSpaceAsNoContribution() {
-        String allSpaces = " ".repeat(NotificationRenderer.ST_ADD3_WIDTH);
+    @DisplayName("Every assembled address line holds exactly 80 characters")
+    void assembleAddress3HoldsEightyCharactersForEveryInput() {
+        String overLongLine = "A".repeat(NotificationRenderer.ST_ADD3_WIDTH + 10);
+        List<List<String>> componentSets = List.of(
+                List.of("500", "NY", "USA", "12345"),
+                List.of("A", "B", "C", "D"),
+                List.of("", "", "", ""),
+                List.of(" ", "  ", "   ", "    "),
+                List.of(overLongLine, "NY", "USA", "12345"));
 
-        assertEquals(allSpaces,
-                NotificationRenderer.assembleAddress3(null, null, null, null),
-                "four null components contribute nothing, leaving four separating spaces "
-                        + "inside an all-spaces field");
-        assertEquals(allSpaces, NotificationRenderer.assembleAddress3("", " ", "  ", null),
-                "an empty component and a component starting with a space contribute nothing");
-        assertEquals("123  USA 10001 "
-                        + " ".repeat(NotificationRenderer.ST_ADD3_WIDTH - 15),
-                NotificationRenderer.assembleAddress3("123", null, "USA", "10001"),
-                "a null state code leaves two adjacent separating spaces");
-
-        String longLine = "L".repeat(NotificationRenderer.ST_ADD3_WIDTH + 10);
-        assertEquals(NotificationRenderer.ST_ADD3_WIDTH,
-                NotificationRenderer.assembleAddress3(longLine, "NY", "USA", "10001").length(),
-                "an over-long line is truncated to exactly "
-                        + NotificationRenderer.ST_ADD3_WIDTH + " characters");
-    }
-
-    // Nested payload records.
-
-    /**
-     * Asserts that {@code CardholderContext} normalises every component to the width its source
-     * field declares, whatever the caller supplies.
-     */
-    @Test
-    void theCardholderContextNormalisesEveryComponentToItsFieldWidth() {
-        Map<String, Integer> widths = new LinkedHashMap<>();
-        widths.put("assembledName", NotificationRenderer.ST_NAME_WIDTH);
-        widths.put("addressLine1", NotificationRenderer.ST_ADD1_WIDTH);
-        widths.put("addressLine2", NotificationRenderer.ST_ADD2_WIDTH);
-        widths.put("addressLine3", NotificationRenderer.ST_ADD3_WIDTH);
-        widths.put("accountId", NotificationRenderer.ST_ACCT_ID_WIDTH);
-        widths.put("editedCurrentBalance", NotificationRenderer.EDITED_AMOUNT_WIDTH);
-        widths.put("ficoScore", NotificationRenderer.ST_FICO_SCORE_WIDTH);
-        assertEquals(7, widths.size(), "the context declares seven components");
-
-        NotificationRenderer.CardholderContext fromShort =
-                new NotificationRenderer.CardholderContext("N", "A1", "A2", "A3", "7", "1", "7");
-        assertEquals(widths.get("assembledName"), fromShort.assembledName().length(),
-                "a short name is padded to ST-NAME PIC X(75)");
-        assertEquals(widths.get("addressLine1"), fromShort.addressLine1().length(),
-                "a short first address line is padded to ST-ADD1 PIC X(50)");
-        assertEquals(widths.get("addressLine2"), fromShort.addressLine2().length(),
-                "a short second address line is padded to ST-ADD2 PIC X(50)");
-        assertEquals(widths.get("addressLine3"), fromShort.addressLine3().length(),
-                "a short third address line is padded to ST-ADD3 PIC X(80)");
-        assertEquals(widths.get("accountId"), fromShort.accountId().length(),
-                "a short account identifier is padded to ST-ACCT-ID PIC X(20)");
-        assertEquals(widths.get("editedCurrentBalance"),
-                fromShort.editedCurrentBalance().length(),
-                "a short balance is padded to the edited amount width");
-        assertEquals(widths.get("ficoScore"), fromShort.ficoScore().length(),
-                "a short score is padded to ST-FICO-SCORE PIC X(20)");
-
-        assertEquals("N" + " ".repeat(NotificationRenderer.ST_NAME_WIDTH - 1),
-                fromShort.assembledName(),
-                "the padding is trailing, so the supplied characters stay at the front");
-    }
-
-    /**
-     * Asserts that a null component of {@code CardholderContext} becomes an all-spaces field, and
-     * that an over-long component loses its tail.
-     */
-    @Test
-    void theCardholderContextRendersNullAsSpacesAndTruncatesAnOverLongComponent() {
-        NotificationRenderer.CardholderContext fromNulls =
-                new NotificationRenderer.CardholderContext(null, null, null, null, null, null,
-                        null);
-
-        assertEquals(" ".repeat(NotificationRenderer.ST_NAME_WIDTH), fromNulls.assembledName(),
-                "a null name becomes an all-spaces ST-NAME");
-        assertEquals(" ".repeat(NotificationRenderer.ST_ACCT_ID_WIDTH), fromNulls.accountId(),
-                "a null account identifier becomes an all-spaces ST-ACCT-ID");
-        assertEquals(" ".repeat(NotificationRenderer.EDITED_AMOUNT_WIDTH),
-                fromNulls.editedCurrentBalance(),
-                "a null balance becomes an all-spaces edited amount");
-
-        String longValue = "X".repeat(NotificationRenderer.ST_NAME_WIDTH + 20);
-        NotificationRenderer.CardholderContext fromLong =
-                new NotificationRenderer.CardholderContext(longValue, longValue, longValue,
-                        longValue, longValue, longValue, longValue);
-        assertEquals("X".repeat(NotificationRenderer.ST_NAME_WIDTH), fromLong.assembledName(),
-                "an over-long name loses its tail at ST-NAME PIC X(75)");
-        assertEquals("X".repeat(NotificationRenderer.EDITED_AMOUNT_WIDTH),
-                fromLong.editedCurrentBalance(),
-                "an over-long balance loses its tail at the edited amount width");
-    }
-
-    /**
-     * Asserts that {@code TransactionRow} normalises its three components, and that a description
-     * longer than the rendered field loses exactly the characters the source drops.
-     */
-    @Test
-    void theTransactionRowNormalisesItsThreeComponents() {
-        String storedDescription = "D".repeat(STORED_DESCRIPTION_WIDTH);
-        NotificationRenderer.TransactionRow row = new NotificationRenderer.TransactionRow(
-                "T1", storedDescription, "1.00");
-
-        assertEquals(NotificationRenderer.ST_TRANID_WIDTH, row.transactionId().length(),
-                "a short identifier is padded to ST-TRANID PIC X(16)");
-        assertEquals("T1" + " ".repeat(NotificationRenderer.ST_TRANID_WIDTH - 2),
-                row.transactionId(),
-                "the identifier keeps its characters at the front");
-        assertEquals(NotificationRenderer.ST_TRANDT_WIDTH, row.description().length(),
-                "a stored description of " + STORED_DESCRIPTION_WIDTH
-                        + " characters renders at ST-TRANDT PIC X(49)");
-        assertEquals("D".repeat(NotificationRenderer.ST_TRANDT_WIDTH), row.description(),
-                "the description keeps its leading characters and loses its tail");
-        assertEquals(NotificationRenderer.EDITED_AMOUNT_WIDTH, row.editedAmount().length(),
-                "a short edited amount is padded to the edited amount width");
-
-        NotificationRenderer.TransactionRow fromNulls =
-                new NotificationRenderer.TransactionRow(null, null, null);
-        assertEquals(" ".repeat(NotificationRenderer.ST_TRANID_WIDTH), fromNulls.transactionId(),
-                "a null identifier becomes an all-spaces ST-TRANID");
-        assertEquals(" ".repeat(NotificationRenderer.ST_TRANDT_WIDTH), fromNulls.description(),
-                "a null description becomes an all-spaces ST-TRANDT");
-        assertEquals(" ".repeat(NotificationRenderer.EDITED_AMOUNT_WIDTH),
-                fromNulls.editedAmount(),
-                "a null amount becomes an all-spaces edited amount");
-    }
-
-    /**
-     * Asserts that an edited amount survives a round trip through a payload record unchanged, so
-     * the normalisation never disturbs a value already at the edited width.
-     */
-    @Test
-    void anEditedAmountSurvivesAPayloadRecordUnchanged() {
-        for (String amount : List.of("1234.56", "-1234.56", "0.00", "999999999.99")) {
-            String editedForBalance =
-                    NotificationRenderer.editTrailingSign9(new BigDecimal(amount));
-            String editedForRow = NotificationRenderer.editTrailingSignZ(new BigDecimal(amount));
-
-            assertEquals(editedForBalance, new NotificationRenderer.CardholderContext(
-                            "N", "A1", "A2", "A3", "7", editedForBalance, "7")
-                            .editedCurrentBalance(),
-                    "the balance of " + amount + " reaches the context unchanged");
-            assertEquals(editedForRow, new NotificationRenderer.TransactionRow(
-                            "T1", "D", editedForRow).editedAmount(),
-                    "the row amount of " + amount + " reaches the row unchanged");
+        for (List<String> components : componentSets) {
+            assertThat(NotificationRenderer.assembleAddress3(components.get(0), components.get(1),
+                    components.get(2), components.get(3)))
+                    .as("the line assembled from %s holds 80 characters", components)
+                    .hasSize(NotificationRenderer.ST_ADD3_WIDTH);
         }
+        assertThat(NotificationRenderer.assembleAddress3(null, null, null, null))
+                .as("four absent components leave an all-spaces field of 80 characters")
+                .hasSize(NotificationRenderer.ST_ADD3_WIDTH)
+                .isBlank();
     }
 
-    // Format enumeration and the interface contract.
-
     /**
-     * Asserts that the enumeration holds exactly the two formats
-     * {@code app/cbl/CBSTM03A.CBL:L44-L47} declares one file for each of, and no third.
+     * Asserts that the widest input survives whole. The four components at
+     * app/cpy/CUSTREC.cpy:L11-L14 measure 50, 2, 3 and 10, and their four inserts bring the
+     * emission to 69 against the 80 of {@code ST-ADD3} at app/cbl/CBSTM03A.CBL:L100.
      */
     @Test
-    void theEnumerationHoldsExactlyTheTwoFormatsTheSourceWrites() {
+    @DisplayName("The widest address input survives whole inside 80 characters")
+    void assembleAddress3KeepsTheWidestInputWhole() {
+        String line = "A".repeat(ADDRESS_LINE_WIDTH);
+        String state = "N".repeat(STATE_CODE_WIDTH);
+        String country = "U".repeat(COUNTRY_CODE_WIDTH);
+        String postalCode = "1234567890";
+        int widestEmission = ADDRESS_LINE_WIDTH + STATE_CODE_WIDTH + COUNTRY_CODE_WIDTH
+                + POSTAL_CODE_WIDTH + 4;
+        String assembled = NotificationRenderer.assembleAddress3(line, state, country, postalCode);
+
+        assertThat(postalCode)
+                .as("the postal code fills CUST-ADDR-ZIP PIC X(10) at app/cpy/CUSTREC.cpy:L14")
+                .hasSize(POSTAL_CODE_WIDTH);
+        assertThat(widestEmission)
+                .as("the four components and their four inserts emit 69 characters")
+                .isEqualTo(69);
+        assertThat(widestEmission)
+                .as("69 characters fit the 80 of app/cbl/CBSTM03A.CBL:L100, so nothing falls away")
+                .isLessThanOrEqualTo(NotificationRenderer.ST_ADD3_WIDTH);
+        assertThat(assembled)
+                .as("the assembled line holds 80 characters")
+                .hasSize(NotificationRenderer.ST_ADD3_WIDTH);
+        assertThat(assembled)
+                .as("all four components survive and 11 spaces fill the tail")
+                .isEqualTo(line + " " + state + " " + country + " " + postalCode + " "
+                        + " ".repeat(NotificationRenderer.ST_ADD3_WIDTH - widestEmission));
+        assertThat(assembled)
+                .as("the widest address line reaches the field whole")
+                .contains(line);
+    }
+
+    /**
+     * Asserts that each of the four operands at app/cbl/CBSTM03A.CBL:L472,
+     * app/cbl/CBSTM03A.CBL:L474, app/cbl/CBSTM03A.CBL:L476 and app/cbl/CBSTM03A.CBL:L478 stops at
+     * its first internal space, and that an all-spaces component leaves two adjacent spaces.
+     */
+    @Test
+    @DisplayName("Each address component stops at its first internal space")
+    void assembleAddress3StopsEachComponentAtItsFirstInternalSpace() {
+        String assembled = NotificationRenderer.assembleAddress3("500 MAIN ST", "NY", "USA",
+                "12345 6789");
+
+        assertThat(assembled)
+                .as("the truncated join still holds 80 characters")
+                .hasSize(NotificationRenderer.ST_ADD3_WIDTH);
+        assertThat(assembled)
+                .as("the city line contributes 500 and the postal code contributes 12345")
+                .isEqualTo("500 NY USA 12345 "
+                        + " ".repeat(NotificationRenderer.ST_ADD3_WIDTH - 17));
+        assertThat(assembled)
+                .as("the characters after each internal space reach no output")
+                .doesNotContain("MAIN")
+                .doesNotContain("6789");
+
+        String blankState = " ".repeat(STATE_CODE_WIDTH);
+        String withBlankState = NotificationRenderer.assembleAddress3("500", blankState, "USA",
+                "12345");
+
+        assertThat(withBlankState)
+                .as("the join over an all-spaces component holds 80 characters")
+                .hasSize(NotificationRenderer.ST_ADD3_WIDTH);
+        assertThat(withBlankState)
+                .as("an all-spaces state code leaves two adjacent spaces")
+                .isEqualTo("500  USA 12345 "
+                        + " ".repeat(NotificationRenderer.ST_ADD3_WIDTH - 15));
+        assertThat(withBlankState.substring(3, 5))
+                .as("the empty component and its insert together render two spaces")
+                .isEqualTo("  ");
+    }
+
+
+    // escapeHtmlText. Guards the markup records of app/cbl/CBSTM03A.CBL:L560 and L622.
+
+    /**
+     * Asserts the five replacements. The markup path of app/cbl/CBSTM03A.CBL:L560 and
+     * app/cbl/CBSTM03A.CBL:L622 carries cardholder values into markup records, and a normal field
+     * of letters, digits and spaces passes through at its own width.
+     */
+    @Test
+    @DisplayName("The five markup characters become entities and a normal field is unchanged")
+    void escapeHtmlTextReplacesTheFiveMarkupCharacters() {
+        assertThat(NotificationRenderer.escapeHtmlText("A & B"))
+                .as("an ampersand becomes an entity")
+                .isEqualTo("A &amp; B");
+        assertThat(NotificationRenderer.escapeHtmlText("<p>"))
+                .as("both angle brackets become entities")
+                .isEqualTo("&lt;p&gt;");
+        assertThat(NotificationRenderer.escapeHtmlText("\"NY\""))
+                .as("a double quotation mark becomes an entity")
+                .isEqualTo("&quot;NY&quot;");
+        assertThat(NotificationRenderer.escapeHtmlText("O'HARA"))
+                .as("an apostrophe becomes a numeric entity")
+                .isEqualTo("O&#39;HARA");
+        assertThat(NotificationRenderer.escapeHtmlText("&lt;"))
+                .as("the ampersand replacement runs first, so no entity is escaped twice")
+                .isEqualTo("&amp;lt;");
+        assertThat(NotificationRenderer.escapeHtmlText(null))
+                .as("a null value escapes to the empty string")
+                .isEmpty();
+
+        String normalField = NotificationRenderer.pic("ALPHA 742", 20);
+
+        assertThat(NotificationRenderer.escapeHtmlText(normalField))
+                .as("a field of letters, digits and spaces passes through unchanged")
+                .isEqualTo(normalField);
+        assertThat(NotificationRenderer.escapeHtmlText(normalField))
+                .as("escaping leaves the width of a normal field alone")
+                .hasSize(20);
+    }
+
+    // The nested types: the format enumeration and the two payload records.
+
+    /**
+     * Asserts that the enumeration carries one constant for each output file
+     * app/cbl/CBSTM03A.CBL:L44-L47 declares, and no third.
+     */
+    @Test
+    @DisplayName("The format enumeration carries exactly two constants")
+    void theFormatEnumerationCarriesExactlyTwoConstants() {
         NotificationRenderer.RenderedFormat[] formats =
                 NotificationRenderer.RenderedFormat.values();
 
-        assertEquals(2, formats.length,
-                "app/cbl/CBSTM03A.CBL:L44-L47 declares two output files, so the enumeration "
-                        + "holds two constants");
-        assertEquals(List.of("PLAIN_TEXT", "HTML"),
-                List.of(formats[0].name(), formats[1].name()),
-                "the two constants name the fixed-width text file and the markup file");
-        assertSame(NotificationRenderer.RenderedFormat.PLAIN_TEXT,
-                NotificationRenderer.RenderedFormat.valueOf("PLAIN_TEXT"),
-                "the text format resolves by name");
-        assertSame(NotificationRenderer.RenderedFormat.HTML,
-                NotificationRenderer.RenderedFormat.valueOf("HTML"),
-                "the markup format resolves by name");
-        assertThrows(IllegalArgumentException.class,
-                () -> NotificationRenderer.RenderedFormat.valueOf("CSV"),
-                "a format the source does not write resolves to nothing");
-        assertEquals(MARKUP_RECORD_WIDTH - TEXT_RECORD_WIDTH, 20,
-                "FD-HTMLFILE-REC PIC X(100) at app/cbl/CBSTM03A.CBL:L47 is 20 characters wider "
-                        + "than FD-STMTFILE-REC PIC X(80) at line 45");
+        assertThat(formats)
+                .as("app/cbl/CBSTM03A.CBL:L44-L47 declares two output files")
+                .hasSize(2);
+        assertThat(Arrays.stream(formats).map(Enum::name).toList())
+                .as("the constants name the fixed-width text file and the markup file, in order")
+                .isEqualTo(List.of("PLAIN_TEXT", "HTML"));
+        assertThat(NotificationRenderer.RenderedFormat.valueOf("PLAIN_TEXT"))
+                .as("FD-STMTFILE-REC PIC X(80) at app/cbl/CBSTM03A.CBL:L45 maps to the text form")
+                .isSameAs(NotificationRenderer.RenderedFormat.PLAIN_TEXT);
+        assertThat(NotificationRenderer.RenderedFormat.valueOf("HTML"))
+                .as("FD-HTMLFILE-REC PIC X(100) at app/cbl/CBSTM03A.CBL:L47 maps to the markup"
+                        + " form")
+                .isSameAs(NotificationRenderer.RenderedFormat.HTML);
+        assertThatThrownBy(() -> NotificationRenderer.RenderedFormat.valueOf("CSV"))
+                .as("a format the source writes to no file resolves to nothing")
+                .isInstanceOf(IllegalArgumentException.class);
     }
 
     /**
-     * Asserts that the interface is implementable and that {@code format()} discriminates one
-     * implementation from another. Two minimal implementations stand in for the two renderers,
-     * which are separate files, so no assertion here concerns the content of a rendered alert.
+     * Asserts the seven components of the cardholder payload, each at the width its source field
+     * declares. Paragraph {@code 5000-CREATE-STATEMENT} at app/cbl/CBSTM03A.CBL:L458-L504 fills all
+     * seven once, and both output paths read them back.
      */
     @Test
-    void theInterfaceIsImplementableAndTheFormatDiscriminates() {
-        NotificationRenderer text =
-                new RecordingRenderer(NotificationRenderer.RenderedFormat.PLAIN_TEXT);
-        NotificationRenderer markup =
-                new RecordingRenderer(NotificationRenderer.RenderedFormat.HTML);
+    @DisplayName("The cardholder payload carries seven components at their source widths")
+    void theCardholderContextCarriesSevenComponentsAtTheirSourceWidths() {
+        NotificationRenderer.CardholderContext context = cardholderContext();
 
-        assertSame(NotificationRenderer.RenderedFormat.PLAIN_TEXT, text.format(),
-                "an implementation reports the format it produces");
-        assertSame(NotificationRenderer.RenderedFormat.HTML, markup.format(),
-                "a second implementation reports its own format");
-        assertNotEquals(text.format(), markup.format(),
-                "a caller holding both selects one by comparing the reported format");
-
-        NotificationRenderer.CardholderContext context =
-                new NotificationRenderer.CardholderContext("N", "A1", "A2", "A3", "7", "0.00",
-                        "742");
-        NotificationRenderer.TransactionRow row =
-                new NotificationRenderer.TransactionRow("T1", "D", "0.00");
-
-        assertTrue(text.renderStatementAlert(context, List.of(row), BigDecimal.ZERO)
-                        .contains("PLAIN_TEXT"),
-                "the statement operation reaches the implementation that produces the format");
-        assertTrue(markup.renderFraudAlert(context, "T1", 90, List.of("VELOCITY"))
-                        .contains("HTML"),
-                "the fraud operation reaches the implementation that produces the format");
+        assertThat(NotificationRenderer.CardholderContext.class.getRecordComponents())
+                .as("the payload declares seven components")
+                .hasSize(7);
+        assertThat(Arrays.stream(NotificationRenderer.CardholderContext.class
+                        .getRecordComponents()).map(RecordComponent::getName).toList())
+                .as("the components name the fields app/cbl/CBSTM03A.CBL:L462-L485 fills")
+                .isEqualTo(List.of("assembledName", "addressLine1", "addressLine2", "addressLine3",
+                        "accountId", "editedCurrentBalance", "ficoScore"));
+        assertThat(context.assembledName())
+                .as("the assembled name holds ST-NAME PIC X(75) at app/cbl/CBSTM03A.CBL:L91")
+                .hasSize(NotificationRenderer.ST_NAME_WIDTH);
+        assertThat(context.addressLine1())
+                .as("the first address line holds ST-ADD1 PIC X(50) at app/cbl/CBSTM03A.CBL:L94")
+                .hasSize(NotificationRenderer.ST_ADD1_WIDTH);
+        assertThat(context.addressLine2())
+                .as("the second address line holds ST-ADD2 PIC X(50) at app/cbl/CBSTM03A.CBL:L97")
+                .hasSize(NotificationRenderer.ST_ADD2_WIDTH);
+        assertThat(context.addressLine3())
+                .as("the third address line holds ST-ADD3 PIC X(80) at app/cbl/CBSTM03A.CBL:L100")
+                .hasSize(NotificationRenderer.ST_ADD3_WIDTH);
+        assertThat(context.accountId())
+                .as("the account identifier holds the field app/cbl/CBSTM03A.CBL:L483 fills")
+                .hasSize(NotificationRenderer.ST_ACCT_ID_WIDTH);
+        assertThat(context.editedCurrentBalance())
+                .as("the balance holds ST-CURR-BAL PIC 9(9).99- at app/cbl/CBSTM03A.CBL:L113")
+                .hasSize(EDITED_WIDTH);
+        assertThat(context.ficoScore())
+                .as("the credit score holds ST-FICO-SCORE PIC X(20) at app/cbl/CBSTM03A.CBL:L118")
+                .hasSize(NotificationRenderer.ST_FICO_SCORE_WIDTH);
+        assertThat(context.editedCurrentBalance())
+                .as("the edited balance reaches the payload unchanged")
+                .isEqualTo("000000042.50 ");
+        assertThat(context.accountId().substring(0, ACCOUNT_ID_DIGITS))
+                .as("the eleven digits of app/cpy/CVACT01Y.cpy:L5 keep their leading zeros")
+                .isEqualTo("00000000011");
     }
 
     /**
-     * A minimal implementation that records which operation ran and which format it reports.
+     * Asserts that the cardholder payload permits no mutation. Both output paths read the fields
+     * app/cbl/CBSTM03A.CBL:L458-L504 assembles, and neither writes one back.
+     */
+    @Test
+    @DisplayName("The cardholder payload exposes no mutator and holds only final fields")
+    void theCardholderContextPermitsNoMutation() {
+        Class<?> payload = NotificationRenderer.CardholderContext.class;
+        NotificationRenderer.CardholderContext context = cardholderContext();
+
+        assertThat(payload.isRecord())
+                .as("the payload of app/cbl/CBSTM03A.CBL:L458-L504 is a record")
+                .isTrue();
+        for (Field field : payload.getDeclaredFields()) {
+            assertThat(Modifier.isFinal(field.getModifiers()))
+                    .as("the field %s is final", field.getName())
+                    .isTrue();
+            assertThat(Modifier.isPrivate(field.getModifiers()))
+                    .as("the field %s is private", field.getName())
+                    .isTrue();
+        }
+        assertThat(Arrays.stream(payload.getDeclaredMethods())
+                        .map(Method::getName)
+                        .filter(name -> name.startsWith("set"))
+                        .toList())
+                .as("no accessor writes a component")
+                .isEmpty();
+        assertThat(context.assembledName())
+                .as("a repeated read returns the same name")
+                .isEqualTo(context.assembledName());
+        assertThat(cardholderContext())
+                .as("two payloads built from the same components are equal")
+                .isEqualTo(context);
+    }
+
+    /**
+     * Asserts the three components of one detail row at the widths the source fixes.
+     * {@code TRNX-ID PIC X(16)} sits at app/cpy/COSTM01.CPY:L23, the
+     * {@code MOVE TRNX-DESC TO ST-TRANDT} at app/cbl/CBSTM03A.CBL:L677 renders 49 characters, and
+     * {@code ST-TRANAMT PIC Z(9).99-} at app/cbl/CBSTM03A.CBL:L137 renders 13.
+     */
+    @Test
+    @DisplayName("A detail row carries three components at 16, 49 and 13 characters")
+    void theTransactionRowCarriesItsThreeComponentsAtTheirSourceWidths() {
+        String storedTransactionId = "TRAN000000000001";
+        String storedDescription = "D".repeat(STORED_DESCRIPTION_WIDTH);
+        NotificationRenderer.TransactionRow row = new NotificationRenderer.TransactionRow(
+                storedTransactionId, storedDescription,
+                NotificationRenderer.editTrailingSignZ(new BigDecimal("42.50")));
+
+        assertThat(storedTransactionId)
+                .as("the stored identifier fills app/cpy/COSTM01.CPY:L23")
+                .hasSize(STORED_TRANSACTION_ID_WIDTH);
+        assertThat(NotificationRenderer.TransactionRow.class.getRecordComponents())
+                .as("the row declares three components")
+                .hasSize(3);
+        assertThat(Arrays.stream(NotificationRenderer.TransactionRow.class.getRecordComponents())
+                        .map(RecordComponent::getName).toList())
+                .as("the components name the fields app/cbl/CBSTM03A.CBL:L676-L678 fills")
+                .isEqualTo(List.of("transactionId", "description", "editedAmount"));
+        assertThat(row.transactionId())
+                .as("the identifier holds ST-TRANID PIC X(16) at app/cbl/CBSTM03A.CBL:L133")
+                .hasSize(STORED_TRANSACTION_ID_WIDTH);
+        assertThat(row.transactionId())
+                .as("an identifier already at 16 characters passes through unchanged")
+                .isEqualTo(storedTransactionId);
+        assertThat(row.description())
+                .as("the description holds ST-TRANDT PIC X(49) at app/cbl/CBSTM03A.CBL:L135")
+                .hasSize(NotificationRenderer.ST_TRANDT_WIDTH);
+        assertThat(row.description())
+                .as("the move at app/cbl/CBSTM03A.CBL:L677 keeps the leading 49 characters")
+                .isEqualTo("D".repeat(NotificationRenderer.ST_TRANDT_WIDTH));
+        assertThat(row.editedAmount())
+                .as("the amount holds the 13 characters of app/cbl/CBSTM03A.CBL:L137")
+                .hasSize(EDITED_WIDTH);
+        assertThat(row.editedAmount())
+                .as("the edited amount reaches the row unchanged")
+                .isEqualTo("       42.50 ");
+    }
+
+    /**
+     * Asserts that a diagnostic rendering of either payload carries no cardholder value. Paragraph
+     * app/cbl/CBSTM03A.CBL:L458-L504 assembles a name, an address, a balance and a credit score,
+     * and each stays inside the rendered statement.
+     */
+    @Test
+    @DisplayName("A diagnostic rendering of either payload carries no cardholder value")
+    void neitherPayloadRendersACardholderValue() {
+        NotificationRenderer.CardholderContext context = cardholderContext();
+        NotificationRenderer.TransactionRow row = new NotificationRenderer.TransactionRow(
+                "TRAN000000000001", "D".repeat(STORED_DESCRIPTION_WIDTH),
+                NotificationRenderer.editTrailingSignZ(new BigDecimal("42.50")));
+
+        assertThat(NotificationRenderer.REDACTED)
+                .as("the declared placeholder names no cardholder value")
+                .isEqualTo("<redacted>");
+        assertThat(context.toString())
+                .as("the name, the balance and the credit score of app/cbl/CBSTM03A.CBL:L462-L485"
+                        + " stay out of a diagnostic rendering")
+                .doesNotContain("ALPHA")
+                .doesNotContain("42.50")
+                .doesNotContain("742");
+        assertThat(row.toString())
+                .as("the row names itself and hides the description and the amount")
+                .contains("TRAN000000000001")
+                .doesNotContain("DDD")
+                .doesNotContain("42.50");
+    }
+
+    /**
+     * Asserts that two implementations report distinct formats. app/cbl/CBSTM03A.CBL:L44-L47
+     * declares one output file for each, and the reported format is what a caller holding both
+     * compares. No assertion here reads the content of a rendered alert.
+     */
+    @Test
+    @DisplayName("Two implementations report distinct formats")
+    void theTwoImplementationsReportDistinctFormats() {
+        NotificationRenderer text =
+                new FormatReportingRenderer(NotificationRenderer.RenderedFormat.PLAIN_TEXT);
+        NotificationRenderer markup =
+                new FormatReportingRenderer(NotificationRenderer.RenderedFormat.HTML);
+
+        assertThat(text.format())
+                .as("the text implementation reports the format of app/cbl/CBSTM03A.CBL:L45")
+                .isSameAs(NotificationRenderer.RenderedFormat.PLAIN_TEXT);
+        assertThat(markup.format())
+                .as("the markup implementation reports the format of app/cbl/CBSTM03A.CBL:L47")
+                .isSameAs(NotificationRenderer.RenderedFormat.HTML);
+        assertThat(text.format())
+                .as("the two reported formats differ, so a caller selects one of them")
+                .isNotEqualTo(markup.format());
+        assertThat(text.renderStatementAlert(cardholderContext(), List.of(), BigDecimal.ZERO))
+                .as("the statement operation reaches an implementation")
+                .isNotBlank();
+        assertThat(markup.renderFraudAlert(cardholderContext(), "TRAN000000000001", 90,
+                List.of("VELOCITY")))
+                .as("the fraud operation reaches an implementation")
+                .isNotBlank();
+    }
+
+    /**
+     * Builds one cardholder payload from the helpers, matching the field order paragraph
+     * {@code 5000-CREATE-STATEMENT} fills at app/cbl/CBSTM03A.CBL:L462-L485.
      *
-     * <p>It renders no statement content. The two production renderers are separate files, and
-     * their content is theirs to assert.</p>
+     * @return a payload whose seven components each sit at their source width
+     */
+    private static NotificationRenderer.CardholderContext cardholderContext() {
+        return new NotificationRenderer.CardholderContext(
+                NotificationRenderer.assembleName("ALPHA", "BETA", "GAMMA"),
+                "500 MAIN ST",
+                "SUITE 2",
+                NotificationRenderer.assembleAddress3("500", "NY", "USA", "12345"),
+                "00000000011",
+                NotificationRenderer.editTrailingSign9(new BigDecimal("42.50")),
+                "742");
+    }
+
+    /**
+     * An implementation that reports one format and renders no statement content. The two
+     * production renderers are separate files, and app/cbl/CBSTM03A.CBL:L44-L47 declares one output
+     * file for each format they carry.
      *
      * @param reportedFormat the format this implementation reports
      */
-    private record RecordingRenderer(NotificationRenderer.RenderedFormat reportedFormat)
+    private record FormatReportingRenderer(NotificationRenderer.RenderedFormat reportedFormat)
             implements NotificationRenderer {
 
         @Override
@@ -687,15 +1303,15 @@ class NotificationRendererTest {
         public String renderStatementAlert(CardholderContext context, List<TransactionRow> rows,
                                            BigDecimal total) {
             return "statement " + reportedFormat.name() + " rows=" + rows.size()
-                    + " total=" + total.toPlainString() + " name=" + context.assembledName();
+                    + " total=" + total.toPlainString();
         }
 
         @Override
         public String renderFraudAlert(CardholderContext context, String transactionId,
                                        int riskScore, List<String> triggeredRules) {
             return "fraud " + reportedFormat.name() + " tran=" + transactionId
-                    + " score=" + riskScore + " rules=" + triggeredRules.size()
-                    + " name=" + context.assembledName();
+                    + " score=" + riskScore + " rules=" + triggeredRules.size();
         }
     }
+
 }

@@ -148,7 +148,13 @@
     <pluginManagement>
       <plugins>
         <!-- Executable jar packaging. The six service modules declare this plugin
-             in their own build section. -->
+             in their own build section.
+
+             attach false leaves the executable archive at target/<artifactId>-<version>.jar,
+             which the Dockerfiles read, and points each module's Maven artifact at the plain
+             archive this plugin backs up as target/<artifactId>-<version>.jar.original, which
+             equivalence-tests reads. The executable archive carries its classes under
+             BOOT-INF/classes, a location both a javac classpath and a test classpath skip. -->
         <plugin>
           <groupId>org.springframework.boot</groupId>
           <artifactId>spring-boot-maven-plugin</artifactId>
@@ -159,6 +165,9 @@
               <goals>
                 <goal>repackage</goal>
               </goals>
+              <configuration>
+                <attach>false</attach>
+              </configuration>
             </execution>
           </executions>
         </plugin>

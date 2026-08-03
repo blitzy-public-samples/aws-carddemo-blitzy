@@ -16,12 +16,10 @@ package com.carddemo.account.domain.validation;
  * app/cbl/COACTUPC.cbl:L2488 closes the first. Part two and part three sit inside that gate, so
  * they are edited only once part one has cleared its numeric edit.</p>
  *
- * <p>The header comments at app/cbl/COACTUPC.cbl:L2434-L2435 describe part two as 01 through 99
- * and part three as 0001 through 9999. The body carries no separate range test. At those two
- * widths the all-digits and not-zero checks of the numeric edit admit exactly those two ranges, so
- * comment and body agree. The first value of the excluded-value condition is unreachable, because a
- * part one of zeros fails the not-zero check ahead of it. The verdict carries at most one
- * message, and no message repeats a supplied digit.</p>
+ * <p>Part two and part three each carry the numeric edit alone. The body of the paragraph holds no
+ * separate range test for either one. A part one of zeros fails the not-zero check of that same
+ * numeric edit, which closes the gate ahead of the excluded-value test. The verdict carries at most
+ * one message, and no message repeats a supplied digit.</p>
  */
 public final class UsSocialSecurityNumberValidator {
 

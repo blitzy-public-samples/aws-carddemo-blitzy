@@ -1,0 +1,112 @@
+# Runtime configuration for card-service. One document, no profile.
+# card-platform/docs/decision-log.md records the choices behind these values.
+
+server:
+  # Port inside the container. docker-compose.yml publishes it on a host port.
+  port: 8080
+
+spring:
+  application:
+    name: card-service
+
+  # docker-compose.yml points this container at the carddemo_card database and the
+  # card_service schema, one private pair per service. The password carries no
+  # fallback, so an unset value stops start-up. docker-compose.yml sets
+  # SPRING_DATASOURCE_PASSWORD, and a direct run sets POSTGRES_PASSWORD.
+  datasource:
+    url: ${SPRING_DATASOURCE_URL:jdbc:postgresql://${POSTGRES_HOST:postgres}:${POSTGRES_PORT:5432}/${CARD_DB_NAME:carddemo_card}?currentSchema=${CARD_DB_SCHEMA:card_service}}
+    username: ${SPRING_DATASOURCE_USERNAME:${POSTGRES_USER:carddemo}}
+    password: ${SPRING_DATASOURCE_PASSWORD:${POSTGRES_PASSWORD}}
+    driver-class-name: org.postgresql.Driver
+
+  flyway:
+    enabled: true
+    schemas: ${SPRING_FLYWAY_SCHEMAS:${CARD_DB_SCHEMA:card_service}}
+    default-schema: ${SPRING_FLYWAY_DEFAULT_SCHEMA:${CARD_DB_SCHEMA:card_service}}
+    # Flyway creates the schema named above, then applies db/migration in version order.
+    create-schemas: true
+    baseline-on-migrate: false
+    validate-on-migrate: true
+
+  # Jakarta Persistence (JPA) checks the entity mapping against the migrated schema at
+  # boot and writes no Data Definition Language (DDL). A mapping that disagrees with the
+  # migration stops start-up. Statement logging stays off, so no bind parameter reaches
+  # the log.
+  jpa:
+    open-in-view: false
+    show-sql: false
+    hibernate:
+      ddl-auto: validate
+    properties:
+      hibernate:
+        default_schema: ${SPRING_JPA_PROPERTIES_HIBERNATE_DEFAULT_SCHEMA:${CARD_DB_SCHEMA:card_service}}
+        auto_quote_keyword: true
+
+  # messaging/EventPublisherPort.java passes a topic, a key and a payload, all strings.
+  # The payload arrives serialized as JavaScript Object Notation (JSON) and matches
+  # schemas/card-state-changed-v1.json, which com.carddemo:event-contracts ships.
+  # messaging/KafkaEventPublisher.java reads the seven producer settings back at
+  # construction and stops start-up unless every one holds. The key serializer takes the
+  # account identifier as text, so XREF-ACCT-ID PIC 9(11) at app/cpy/CVACT03Y.cpy:L7
+  # keeps its leading zero.
+  kafka:
+    bootstrap-servers: ${SPRING_KAFKA_BOOTSTRAP_SERVERS:${KAFKA_BOOTSTRAP_SERVERS:kafka:29092}}
+    producer:
+      acks: all
+      key-serializer: org.apache.kafka.common.serialization.StringSerializer
+      value-serializer: org.apache.kafka.common.serialization.StringSerializer
+      properties:
+        enable.idempotence: true
+        max.in.flight.requests.per.connection: 5
+        delivery.timeout.ms: 120000
+        request.timeout.ms: 30000
+        max.block.ms: 5000
+    # This module registers no listener. The two settings below hold the platform
+    # acknowledgement discipline: a listener commits its own offset, after its own
+    # writes commit.
+    consumer:
+      enable-auto-commit: false
+    listener:
+      ack-mode: manual
+
+# Properties this module owns. The one topic below carries a card state change, and a
+# card list or a card read publishes nothing. docker-compose.yml creates the topic, and
+# the version matches the -v1 suffix of the schema document name. The outbox relay
+# sweeps on the delay below, which @EnableScheduling on CardApplication.java activates.
+carddemo:
+  kafka:
+    topics:
+      card-state-changed: ${TOPIC_CARD_STATE_CHANGED:card.state-changed}
+    schema-version: 1
+  outbox:
+    relay:
+      fixed-delay-ms: ${OUTBOX_RELAY_INTERVAL_MS:500}
+      batch-size: ${OUTBOX_RELAY_BATCH_SIZE:100}
+  consumer:
+    retry:
+      max-attempts: ${CONSUMER_MAX_RETRY_ATTEMPTS:3}
+      backoff-ms: ${CONSUMER_RETRY_BACKOFF_MS:1000}
+
+# /actuator answers on this port and never on the service port above. The Dockerfile
+# health check and docker-compose.yml both read /actuator/health on it, and
+# docker-compose.yml publishes it on the loopback address alone.
+management:
+  server:
+    port: ${MANAGEMENT_PORT:9080}
+  endpoints:
+    web:
+      exposure:
+        include: ${MANAGEMENT_ENDPOINTS:health,metrics,prometheus}
+  prometheus:
+    metrics:
+      export:
+        enabled: true
+
+# Each log line leaves the console as one JSON record.
+logging:
+  structured:
+    format:
+      console: logstash
+  level:
+    root: ${LOG_LEVEL:INFO}
+    com.carddemo: ${LOG_LEVEL_CARDDEMO:INFO}
