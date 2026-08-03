@@ -203,6 +203,15 @@ button:disabled {
   color: inherit;
 }
 
+/* Same reset where the class sits on the heading itself; typography only, so the
+ * YELLOW title color keeps coming from .appHeader__center / .title. */
+h1.appHeader__center,
+h2.appHeader__center {
+  margin: 0;
+  font: inherit;
+  font-weight: normal;
+}
+
 /* ------------------------------------------------------------------ */
 /* Error region (BMS line 23: ERRMSG X(78), ATTRB BRT, COLOR RED)     */
 /* ------------------------------------------------------------------ */
