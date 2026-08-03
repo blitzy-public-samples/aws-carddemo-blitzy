@@ -21,17 +21,20 @@
 # carddemo-common sibling and will fail — the compose entry is coordinated to
 # root context alongside this file.)
 #
-# A repository-root .dockerignore (excluding "**/target", "frontend/node_modules"
-# and ".git") is recommended to keep the build context small; creating it is out
-# of scope for this file.
+# A repository-root .dockerignore now keeps this root context small: it excludes
+# "**/target", "**/node_modules", ".git", the local environment files and the
+# retained legacy app/ sources, none of which this build reads. The nine
+# module-context builds carry their own <module>/.dockerignore.
 #
 # The service listens on container port 8080 so Prometheus can scrape
 # /actuator/prometheus and the Actuator /actuator/health endpoint backs the
-# compose / Kubernetes probes. No Dockerfile HEALTHCHECK is declared: the
-# eclipse-temurin:21-jre base ships neither curl nor wget, and health is owned
-# by the docker-compose bash /dev/tcp probe and the Kubernetes readiness/
-# liveness probes. Rationale for non-trivial choices lives in
-# docs/decision-log.md (Docstring and Comments rule, AAP 0.7.2).
+# compose / Kubernetes probes. No Dockerfile HEALTHCHECK is declared here because
+# health is owned by the docker-compose bash /dev/tcp probe and the Kubernetes
+# readiness/liveness probes, which would override an image-level one anyway. (For
+# the record, the eclipse-temurin:21-jre base IS Ubuntu-based and does ship curl
+# 8.18.0, wget 1.25.0 and bash; the absence of a HEALTHCHECK is not a tooling
+# limitation.) Rationale for non-trivial choices lives in docs/decision-log.md
+# (Docstring and Comments rule, AAP 0.7.2).
 # =============================================================================
 
 # --- Stage 1: build the executable fat jar with the Maven reactor ------------

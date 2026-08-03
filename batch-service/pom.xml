@@ -32,6 +32,21 @@
             <version>${project.version}</version>
         </dependency>
 
+        <!--
+          Shared test-support utilities from carddemo-common (test-jar), above all
+          com.carddemo.common.testsupport.CardDemoSchemaMigrations: it applies the real
+          committed Flyway migrations of every owning module to the throwaway test
+          database so integration tests run against the deployed schema instead of DDL
+          fabricated inside the test.
+        -->
+        <dependency>
+            <groupId>com.carddemo</groupId>
+            <artifactId>carddemo-common</artifactId>
+            <version>${project.version}</version>
+            <type>test-jar</type>
+            <scope>test</scope>
+        </dependency>
+
         <!-- Spring Batch: JCL job -> Job, step -> Step, program -> chunk reader/processor/writer or tasklet. -->
         <dependency>
             <groupId>org.springframework.boot</groupId>
@@ -50,7 +65,44 @@
             <artifactId>spring-boot-starter-validation</artifactId>
         </dependency>
 
+        <!--
+          Spring Security. Every service enforces authentication itself
+          (defence in depth): the api-gateway is not a trust boundary, so a
+          request that reaches this service over the internal network still has
+          to present the shared, Redis-backed session principal. It also
+          protects the Actuator telemetry endpoints with the dedicated
+          monitoring principal (carddemo-common ManagementSecurityConfig).
+        -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-security</artifactId>
+        </dependency>
+
         <!-- Actuator health/readiness/liveness and metrics endpoints. -->
+
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-data-redis</artifactId>
+        </dependency>
+
+        <dependency>
+            <groupId>org.springframework.session</groupId>
+            <artifactId>spring-session-data-redis</artifactId>
+        </dependency>
+        <!--
+          Spring Boot 4 modularized auto-configuration: SessionAutoConfiguration and
+          SessionDataRedisAutoConfiguration live in the spring-boot-session-data-redis module
+          (they are NOT bundled with org.springframework.session:spring-session-data-redis).
+          Without it the `spring.session.*` properties are inert, SessionRepositoryFilter is
+          never registered, and HttpSession silently falls back to in-memory servlet-container
+          storage - so the /batch launch surface could not see the shared CardDemo session and
+          rejected every authenticated caller with 401.
+        -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-session-data-redis</artifactId>
+        </dependency>
+
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-actuator</artifactId>
@@ -69,11 +121,48 @@
             <artifactId>micrometer-registry-prometheus</artifactId>
         </dependency>
 
-        <!-- Distributed tracing via the OpenTelemetry bridge. -->
+        <!--
+          Distributed tracing (AAP 0.7.5). The Boot OpenTelemetry starter brings the
+          Micrometer Tracing OTel bridge TOGETHER WITH the tracing/OTel
+          auto-configuration and the OTLP span exporter. The bridge alone leaves
+          no Tracer in the context, so no trace context is created and every
+          traceId/spanId stays empty (QA F28).
+        -->
         <dependency>
-            <groupId>io.micrometer</groupId>
-            <artifactId>micrometer-tracing-bridge-otel</artifactId>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-opentelemetry</artifactId>
         </dependency>
+
+        <!--
+          Tracing auto-configuration. Spring Boot 4 ships auto-configuration in
+          dedicated modules, so the bridge above is inert on its own: without these
+          two modules no Tracer or ObservationRegistry tracing handler is created and
+          no traceId/spanId ever reaches the SLF4J MDC, leaving the structured log
+          lines uncorrelatable across service boundaries (AAP 0.7.5).
+        -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-micrometer-tracing</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-micrometer-tracing-opentelemetry</artifactId>
+        </dependency>
+
+        <!--
+          Spring Boot 4 extracted tracing auto-configuration out of spring-boot-actuator into
+          dedicated modules. Without BOTH of the modules below the bridge above is completely
+          inert: no io.micrometer.tracing.Tracer bean is created, no spans are produced, the
+          management.tracing.sampling.probability setting is ignored, and the traceId/spanId
+          fields of the logback-spring.xml pattern stay permanently empty.
+            * spring-boot-micrometer-tracing               -> MicrometerTracingAutoConfiguration
+                                                              (span-producing observation handlers)
+            * spring-boot-micrometer-tracing-opentelemetry -> OpenTelemetryTracingAutoConfiguration
+                                                              (SdkTracerProvider + OtelTracer +
+                                                               W3C context propagators)
+          No OTLP/Zipkin exporter artifact is declared, so spans are created and correlated into
+          the MDC but not shipped off-box; adding an exporter is a deployment-time choice.
+        -->
 
         <!-- PostgreSQL JDBC driver; a runtime concern added by the runnable service. -->
         <dependency>

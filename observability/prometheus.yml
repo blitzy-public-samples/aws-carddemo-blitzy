@@ -11,21 +11,28 @@
 # its docker-compose service name (DNS), so targets use the INTERNAL port 8080
 # (never the host-published ports).
 #
-# PROTECTED MONITORING PATH (QA CR-11/CR-12).
-# The Actuator management endpoints (including /actuator/prometheus) are NOT
-# anonymous - the service SecurityConfig requires an authenticated principal.
-# Two controls protect the scrape:
-#   1. Network isolation - management ports are never host-published; scrape
-#      traffic stays on the private carddemo-net bridge.
-#   2. Authenticated scrape - Prometheus presents a dedicated least-privilege
-#      monitoring principal via HTTP basic auth. The password is NEVER committed:
-#      it is read at runtime from a mounted secret file (password_file), supplied
-#      by the docker-compose/k8s secret wiring. The shared &carddemo_scrape_auth
-#      anchor keeps one definition for every service job.
-# Cross-cutting dependencies (wired by the compose/secret layer and the per-
-# service security chains): the monitoring principal is seeded read-only, the
-# management security chain accepts HTTP basic for that principal, and the
-# secret file is mounted at the path below.
+# HOW THE MONITORING PATH IS PROTECTED — TWO INDEPENDENT CONTROLS.
+#   1. AUTHENTICATION. Every service installs a dedicated management filter chain
+#      (carddemo-common ManagementSecurityConfig) that requires HTTP basic
+#      authentication as the least-privilege `monitoring` principal for
+#      /actuator/prometheus and /actuator/metrics/**. The principal is seeded from
+#      MONITORING_PASSWORD, the SAME secret this file reads through password_file,
+#      so the scrape authenticates and an unauthenticated caller receives 401. The
+#      credential is never committed: docker-compose.yml projects it as a file and
+#      k8s/secret.yaml supplies it from carddemo-monitoring-secret.
+#   2. NETWORK ISOLATION (defence in depth). No service publishes its management
+#      port. In Docker Compose only the api-gateway binds a host port and it does
+#      not proxy /actuator; in Kubernetes k8s/networkpolicy.yaml restricts ingress
+#      on the service port to the gateway and the monitoring namespace. Scrape
+#      traffic therefore never leaves the private network.
+#
+# Confidentiality of the sensitive part of the health payload is preserved
+# independently by management.endpoint.health.show-details=when-authorized, which
+# keeps component-level detail invisible to anonymous callers. The liveness and
+# readiness probe paths stay anonymous so the Compose healthcheck and the
+# Kubernetes probes, which carry no principal, can reach them.
+#
+# Rationale: docs/decision-log.md.
 # ------------------------------------------------------------------------------
 
 global:

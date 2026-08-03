@@ -16,15 +16,29 @@
  */
 package com.carddemo.user;
 
+import com.carddemo.common.config.GlobalExceptionHandler;
+import com.carddemo.common.config.ObservabilityConfig;
+import com.carddemo.common.config.SessionRedisConfig;
+import com.carddemo.common.config.WebHardeningConfig;
+import com.carddemo.common.config.WebObservabilityConfig;
+
 import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
+import org.springframework.boot.security.autoconfigure.UserDetailsServiceAutoConfiguration;
 import org.springframework.boot.persistence.autoconfigure.EntityScan;
 import org.springframework.context.annotation.Import;
 import org.springframework.data.jpa.repository.config.EnableJpaRepositories;
 
+import com.carddemo.common.config.CardDemoErrorController;
+import com.carddemo.common.config.ContainerErrorReportConfig;
 import com.carddemo.common.config.GlobalExceptionHandler;
+import com.carddemo.common.config.SecurityExceptionHandler;
 import com.carddemo.common.config.ObservabilityConfig;
-
+import com.carddemo.common.config.PersistenceExceptionHandler;
+import com.carddemo.common.config.RedisCommandMetricsConfig;
+import com.carddemo.common.config.SessionRedisConfig;
+import com.carddemo.common.config.WebObservabilityConfig;
+import com.carddemo.common.config.SchemaMigrationConfig;
 /**
  * Executable entry point for the CardDemo User Management microservice.
  *
@@ -37,10 +51,17 @@ import com.carddemo.common.config.ObservabilityConfig;
  *     user-management REST endpoints together with Actuator health and metrics
  *     endpoints.
  */
-@SpringBootApplication
+// UserDetailsServiceAutoConfiguration is excluded: user-service verifies no
+// credential (auth-service does) and its principal is rebuilt from the shared
+// session, so Boot's fallback in-memory user is never used - and its generated
+// password must never be printed to the log.
+@SpringBootApplication(exclude = UserDetailsServiceAutoConfiguration.class)
 @EntityScan("com.carddemo.common.domain")
 @EnableJpaRepositories("com.carddemo.user.repository")
-@Import({ObservabilityConfig.class, GlobalExceptionHandler.class})
+@Import({ ObservabilityConfig.class, WebObservabilityConfig.class, GlobalExceptionHandler.class,
+        CardDemoErrorController.class, SecurityExceptionHandler.class, ContainerErrorReportConfig.class,
+        PersistenceExceptionHandler.class, SessionRedisConfig.class, RedisCommandMetricsConfig.class,
+        SchemaMigrationConfig.class, WebHardeningConfig.class })
 public class UserServiceApplication {
 
     /**

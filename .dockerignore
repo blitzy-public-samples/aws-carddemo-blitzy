@@ -1,0 +1,96 @@
+# =============================================================================
+# .dockerignore (repository root)
+# -----------------------------------------------------------------------------
+# Docker build-context exclusions for every image whose build context is the
+# repository ROOT. Today that is exactly one: reporting-service, whose Dockerfile
+# compiles the Maven reactor in-container and therefore needs the aggregator
+# pom.xml, every module pom.xml, carddemo-common/ and reporting-service/
+# (docker-compose.yml: `context: .` + `dockerfile: reporting-service/Dockerfile`).
+#
+# Docker resolves .dockerignore relative to the CONTEXT root, not the repository
+# root, so this file governs root-context builds only. The nine module-context
+# builds carry their own <module>/.dockerignore, and the frontend carries
+# frontend/.dockerignore.
+#
+# Why this matters: without any ignore file the root context measured about
+# 1.8 GB (host target/ output across ten modules, frontend/node_modules, the
+# .git history and a local Maven repository), and every backend build logged
+# "load .dockerignore … 2B" with 70-75 MB transferred (QA Issue 20). The image
+# CONTENTS were already correct - this is build time, cache hygiene and secret
+# hygiene, not a packaging defect.
+#
+# Kept consistent with the repository-root .gitignore (Respecting .gitignore
+# rule, AAP 0.7.2). This file complements .gitignore; it does not replace it,
+# because the two answer different questions ("may it be committed?" versus "must
+# it be uploaded to the build daemon?").
+#
+# The following build inputs are intentionally NOT ignored and REMAIN copyable:
+#   pom.xml, */pom.xml, carddemo-common/src/, reporting-service/src/
+# =============================================================================
+
+# --- Host build output (the reactor is rebuilt inside the image) -------------
+# reporting-service/Dockerfile runs `mvn -pl reporting-service -am clean package`
+# in its build stage, so no host-produced jar or class file is ever needed.
+**/target
+
+# --- Node dependencies and build output (frontend has its own context) -------
+**/node_modules
+frontend/dist
+frontend/build
+frontend/coverage
+frontend/.vite
+
+# --- Version control and CI metadata ----------------------------------------
+.git
+.gitignore
+.gitattributes
+.github
+
+# --- Secrets: never upload local environment files to the build daemon ------
+# Compose injects every credential as an environment variable at RUN time; no
+# secret is ever baked into an image layer.
+.env
+.env.*
+*.pem
+*.key
+*.p12
+*.jks
+
+# --- Docker and Kubernetes descriptors (not build inputs) -------------------
+Dockerfile
+**/Dockerfile
+.dockerignore
+**/.dockerignore
+docker-compose.yml
+docker-compose.*.yml
+k8s
+
+# --- Local Maven repository, if one was materialized inside the checkout -----
+.m2
+
+# --- Retained legacy mainframe sources and reference assets ------------------
+# The COBOL/JCL/BMS originals are the transformation reference (AAP 0.2.1) and
+# the diagram/sample assets are reference-only (AAP 0.2.2); none is compiled
+# into, or copied into, any container image.
+app
+diagrams
+samples
+
+# --- Documentation and observability templates -------------------------------
+# Mounted at run time by docker-compose / Kubernetes, never copied into an image.
+docs
+observability
+*.md
+
+# --- Logs, caches and OS/editor cruft ---------------------------------------
+*.log
+.DS_Store
+.vscode
+.idea
+*.iml
+
+# --- Transient QA and validation scratch ------------------------------------
+# Ad-hoc validation artifacts are prefixed blitzy_adhoc_test_ and are never
+# committed; excluding them keeps a working checkout from bloating the context.
+blitzy
+blitzy_adhoc_test_*

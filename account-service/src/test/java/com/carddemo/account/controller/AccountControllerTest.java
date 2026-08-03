@@ -53,12 +53,14 @@ import org.mockito.Answers;
 import org.mockito.ArgumentCaptor;
 
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
 import org.springframework.boot.webmvc.test.autoconfigure.WebMvcTest;
 import org.springframework.context.annotation.Import;
 import org.springframework.http.MediaType;
 import org.springframework.mock.web.MockHttpSession;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.web.servlet.MockMvc;
+import org.springframework.test.web.servlet.MvcResult;
 
 import tools.jackson.databind.ObjectMapper;
 
@@ -72,6 +74,12 @@ import tools.jackson.databind.ObjectMapper;
  *  the shared {@link GlobalExceptionHandler}. The business-logic service is mocked; there
  *  is no database, no Redis, and no security on the account-service classpath.
  */
+// This slice verifies the controller contract only, so the security filter chain is
+// not applied here. Authentication and authorization are configured centrally
+// (carddemo-common SecurityHardening plus this service's SecurityConfig), unit-tested
+// in carddemo-common, asserted for this service by its SecurityContractTest, and
+// verified against the running service.
+@AutoConfigureMockMvc(addFilters = false)
 @WebMvcTest(AccountController.class)
 @Import(GlobalExceptionHandler.class)
 class AccountControllerTest {
@@ -310,5 +318,35 @@ class AccountControllerTest {
         verify(accountService, times(2)).viewAccount(eq(VALID_ID_LONG), captor.capture());
         assertThat(captor.getAllValues().get(1)).isSameAs(existing);
         assertThat(existingSession.getAttribute(SESSION_ATTR)).isSameAs(existing);
+    }
+
+    /**
+     * :purpose: Regression guard for QA Issue 22 (Redis session churn). A caller that
+     *  arrives without a session must leave without one: the endpoints take
+     *  ``HttpServletRequest`` and read the context through ``getSession(false)``, so no
+     *  Spring Session entry is created (and therefore none is persisted to Redis) for an
+     *  anonymous one-off call. Declaring an ``HttpSession`` parameter instead made
+     *  Spring's argument resolver call ``getSession()`` on every request.
+     */
+    @Test
+    @DisplayName("QA Issue 22: neither account endpoint creates an HTTP session for a sessionless caller")
+    void accountEndpointsCreateNoSessionForSessionlessCaller() throws Exception {
+        when(accountService.viewAccount(eq(VALID_ID_LONG), any(SessionContext.class)))
+                .thenReturn(stubViewResponse());
+        when(accountService.updateAccount(eq(VALID_ID_LONG), any(AccountUpdateRequestDto.class),
+                any(SessionContext.class)))
+                .thenReturn(stubUpdateResponse());
+
+        MvcResult viewResult = mockMvc.perform(get("/accounts/{id}", VALID_ID))
+                .andExpect(status().isOk())
+                .andReturn();
+        assertThat(viewResult.getRequest().getSession(false)).isNull();
+
+        MvcResult updateResult = mockMvc.perform(put("/accounts/{id}", VALID_ID)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(validUpdateRequest())))
+                .andExpect(status().isOk())
+                .andReturn();
+        assertThat(updateResult.getRequest().getSession(false)).isNull();
     }
 }

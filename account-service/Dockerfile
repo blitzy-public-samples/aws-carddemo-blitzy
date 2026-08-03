@@ -22,7 +22,8 @@
 # reactor build could not resolve the parent BOM or the shared dependency.
 #
 # The image stays minimal and hardened: a JRE (no build tooling), a non-root
-# runtime user, no baked-in credentials, and a curl/wget-free health probe.
+# runtime user, no baked-in credentials, and a health probe that depends on
+# nothing beyond the shell (see the HEALTHCHECK below).
 # =============================================================================
 
 # Exact, pinned base image (AAP 0.5.1): the Eclipse Temurin 21 JRE. A JRE (not a
@@ -64,9 +65,12 @@ EXPOSE 8080
 ENV JAVA_OPTS=""
 
 # Self-contained liveness probe for standalone `docker run` (docker-compose
-# defines and thus overrides its own). The Temurin base image ships neither curl
-# nor wget, so the probe uses bash's /dev/tcp pseudo-device to issue a minimal
-# HTTP request and assert the Actuator payload reports UP.
+# defines and thus overrides its own). The probe uses bash's /dev/tcp
+# pseudo-device to issue a minimal HTTP request and assert the Actuator payload
+# reports UP. This is NOT because the base image lacks an HTTP client -
+# eclipse-temurin:21-jre is Ubuntu-based and ships curl 8.18.0, wget 1.25.0 and
+# bash - but because asserting on the response BODY catches a 200 whose aggregate
+# health status is DOWN, which a bare `curl -f` would accept.
 HEALTHCHECK --interval=15s --timeout=5s --start-period=60s --retries=5 \
   CMD bash -c 'exec 3<>/dev/tcp/127.0.0.1/8080 && printf "GET /actuator/health HTTP/1.0\r\n\r\n" >&3 && cat <&3 | grep -q UP'
 

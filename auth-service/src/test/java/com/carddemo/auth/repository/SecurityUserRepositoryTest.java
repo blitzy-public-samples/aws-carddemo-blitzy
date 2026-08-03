@@ -41,15 +41,20 @@ import static org.assertj.core.api.Assertions.assertThat;
  *     then ``V2__seed_security_users.sql`` against the container database, and
  *     the {@link SecurityUser} mapping is exercised through the repository. The
  *     test asserts the ``findBySecUsrId`` keyed lookup, the ten-user seed (five
- *     admin plus five user) with frozen names, and the bare-BCrypt password
- *     contract including the documented case-sensitivity behavior.
+ *     admin plus five user) with frozen names, and the stored-credential contract:
+ *     a ``{bcrypt}``-prefixed hash that the wired ``DelegatingPasswordEncoder`` can
+ *     verify, including the documented case-sensitivity behavior.
  */
 @TestPropertySource(properties = "spring.jpa.hibernate.ddl-auto=none")
 class SecurityUserRepositoryTest extends AbstractIntegrationTest {
 
-    /** :purpose: Bare 60-char BCrypt hash of ``PASSWORD`` seeded for all users. */
+    /**
+     * :purpose: Seeded credential for all users: BCrypt hash of ``PASSWORD`` in
+     *     Spring Security storage format, i.e. carrying the ``{bcrypt}`` algorithm
+     *     identifier the wired ``DelegatingPasswordEncoder`` requires.
+     */
     private static final String EXPECTED_BCRYPT_HASH =
-            "$2a$10$ucIRth.iIafhA4MgE1RXZ.0whYamgfRIpJebWmPswpnxmLKA/peYm";
+            "{bcrypt}$2a$10$ucIRth.iIafhA4MgE1RXZ.0whYamgfRIpJebWmPswpnxmLKA/peYm";
 
     /**
      * :purpose: Repository under test; the Spring Data JPA re-platforming of the
@@ -132,27 +137,33 @@ class SecurityUserRepositoryTest extends AbstractIntegrationTest {
     }
 
     /**
-     * :purpose: Verify the seeded credential is a bare 60-character BCrypt hash
-     *     (no algorithm prefix) that matches ``PASSWORD`` but not ``password``,
-     *     and that the wired delegating encoder applies an algorithm prefix and
-     *     is likewise case-sensitive.
+     * :purpose: Verify the seeded credential is a ``{bcrypt}``-prefixed BCrypt hash in
+     *     Spring Security storage format, that the WIRED delegating encoder (the one the
+     *     sign-on service injects) verifies it against ``PASSWORD`` and rejects
+     *     ``password``, and that the same holds for every seeded row. The prefix is the
+     *     contract: without it the delegating encoder raises
+     *     ``IllegalArgumentException`` and no seeded user can sign on at all.
      */
     @Test
-    @DisplayName("Seeded password is a bare BCrypt hash; matching is case-sensitive (deviation)")
-    void seededPasswordIsBareBcryptAndCaseSensitive() {
+    @DisplayName("Seeded password is a {bcrypt}-prefixed hash the wired encoder verifies (case-sensitive)")
+    void seededPasswordIsPrefixedBcryptAndCaseSensitive() {
         SecurityUser admin = securityUserRepository.findBySecUsrId("ADMIN001").orElseThrow();
         String storedHash = admin.getSecUsrPwd();
 
         assertThat(storedHash).isEqualTo(EXPECTED_BCRYPT_HASH);
-        assertThat(storedHash).startsWith("$2a$");
-        assertThat(storedHash).hasSize(60);
-        assertThat(storedHash).doesNotStartWith("{");
+        assertThat(storedHash).startsWith("{bcrypt}$2a$");
+        assertThat(storedHash).hasSize("{bcrypt}".length() + 60);
 
-        assertThat(bcryptPasswordEncoder.matches("PASSWORD", storedHash)).isTrue();
-        assertThat(bcryptPasswordEncoder.matches("password", storedHash)).isFalse();
+        assertThat(bcryptPasswordEncoder.matches("PASSWORD", storedHash.substring("{bcrypt}".length()))).isTrue();
+        assertThat(bcryptPasswordEncoder.matches("password", storedHash.substring("{bcrypt}".length()))).isFalse();
+
+        // The wired encoder must verify the seeded hash as stored: this is exactly what
+        // sign-on does, and it is what an unprefixed hash made impossible.
+        assertThat(passwordEncoder.matches("PASSWORD", storedHash)).isTrue();
+        assertThat(passwordEncoder.matches("password", storedHash)).isFalse();
 
         String encoded = passwordEncoder.encode("PASSWORD");
-        assertThat(encoded).startsWith("{");
+        assertThat(encoded).startsWith("{bcrypt}");
         assertThat(passwordEncoder.matches("PASSWORD", encoded)).isTrue();
         assertThat(passwordEncoder.matches("password", encoded)).isFalse();
 

@@ -80,6 +80,19 @@ spec:
         - name: postgres
           image: postgres:18
           imagePullPolicy: IfNotPresent
+          # Connection budget (QA Issue 13). Each JPA service now holds a bounded
+          # HikariCP pool (steady state 15 connections in total, ceiling 68 for a
+          # single replica of every service - see the spring.datasource.hikari block
+          # in every service's application.yml), but the image default of
+          # max_connections=100 leaves no headroom: with HikariCP's own defaults the
+          # eight services consumed 80 of the 100 slots while completely idle and any
+          # two further pods were refused with "FATAL: sorry, too many clients
+          # already". 200 accommodates two replicas of every service plus operator and
+          # monitoring sessions. Kept in step with docker-compose.yml.
+          args:
+            - postgres
+            - -c
+            - max_connections=200
           securityContext:
             allowPrivilegeEscalation: false
             capabilities:
@@ -110,16 +123,73 @@ spec:
             # trip over a volume-root "lost+found" directory.
             - name: PGDATA
               value: /var/lib/postgresql/data/pgdata
+            # Per-service role passwords consumed by the first-boot DB-init script
+            # below (QA Issue 17: the eight roles the service Secrets reference were
+            # never created). Each value is read from the SAME Secret the owning
+            # service consumes, so a credential has exactly one source of truth.
+            - name: CARDDEMO_AUTH_DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: carddemo-auth-service-db
+                  key: SPRING_DATASOURCE_PASSWORD
+            - name: CARDDEMO_USER_DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: carddemo-user-service-db
+                  key: SPRING_DATASOURCE_PASSWORD
+            - name: CARDDEMO_ACCOUNT_DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: carddemo-account-service-db
+                  key: SPRING_DATASOURCE_PASSWORD
+            - name: CARDDEMO_CARD_DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: carddemo-card-service-db
+                  key: SPRING_DATASOURCE_PASSWORD
+            - name: CARDDEMO_TRANSACTION_DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: carddemo-transaction-service-db
+                  key: SPRING_DATASOURCE_PASSWORD
+            - name: CARDDEMO_BILLPAY_DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: carddemo-billpay-service-db
+                  key: SPRING_DATASOURCE_PASSWORD
+            - name: CARDDEMO_REPORTING_DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: carddemo-reporting-service-db
+                  key: SPRING_DATASOURCE_PASSWORD
+            - name: CARDDEMO_BATCH_DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: carddemo-batch-service-db
+                  key: SPRING_DATASOURCE_PASSWORD
           volumeMounts:
             - name: postgres-data
               mountPath: /var/lib/postgresql/data
+            # First-boot hook directory. The postgres image executes every
+            # *.sh/*.sql here exactly once, while initializing an empty PGDATA, as
+            # POSTGRES_USER. 01-create-service-roles.sh provisions the eight
+            # per-service login roles and the shared carddemo_app group role. The
+            # projection is read-only and mode 0555 so the script is executable.
+            - name: postgres-init
+              mountPath: /docker-entrypoint-initdb.d
+              readOnly: true
+          # Sized for the raised max_connections above (QA Issue 13): the shared
+          # structures scale with max_connections and each established backend adds
+          # a few MB of private memory, so the 68-connection ceiling of a
+          # single-replica deployment needs more than the previous 512Mi ceiling
+          # on top of the default 128MB shared_buffers.
           resources:
             requests:
               cpu: 250m
-              memory: 256Mi
+              memory: 512Mi
             limits:
               cpu: "1"
-              memory: 512Mi
+              memory: 1Gi
           # pg_isready confirms the server is accepting connections. It is
           # checked without -U/-d so the probe is independent of the (now
           # externalized) role and database names.
@@ -151,3 +221,12 @@ spec:
         - name: postgres-data
           persistentVolumeClaim:
             claimName: postgres-pvc
+        # Carries db/init/01-create-service-roles.sh verbatim. Create or refresh it
+        # from the file in the repository so the two never drift:
+        #   kubectl create configmap carddemo-postgres-init \
+        #     --from-file=db/init/01-create-service-roles.sh \
+        #     --dry-run=client -o yaml | kubectl apply -f -
+        - name: postgres-init
+          configMap:
+            name: carddemo-postgres-init
+            defaultMode: 0555

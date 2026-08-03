@@ -16,6 +16,8 @@
  */
 package com.carddemo.user.service;
 
+import org.springframework.beans.factory.annotation.Autowired;
+import com.carddemo.common.security.SessionPrincipalIndex;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
@@ -35,7 +37,9 @@ import org.springframework.transaction.annotation.Transactional;
 import com.carddemo.common.domain.SecurityUser;
 import com.carddemo.common.dto.AddUserRequestDto;
 import com.carddemo.common.dto.UpdateUserRequestDto;
+import com.carddemo.common.dto.UserListResponseDto;
 import com.carddemo.common.dto.UserResponseDto;
+import com.carddemo.common.dto.UserWriteResponseDto;
 import com.carddemo.common.exception.CardDemoException;
 import com.carddemo.common.exception.RecordNotFoundException;
 import com.carddemo.user.mapper.UserMapper;
@@ -92,9 +96,27 @@ public class UserService {
     private static final String MSG_PRESS_PF5_DELETE = "Press PF5 key to delete this user ...";
     private static final String MSG_DELETED_SUFFIX = " has been deleted ...";
 
+    /** :purpose: Audit reason recorded when a user's own record is removed. */
+    private static final String REASON_USER_DELETED = "USER_DELETED";
+
+    /** :purpose: Audit reason recorded when ``SEC-USR-TYPE`` changes, altering authority. */
+    private static final String REASON_ROLE_CHANGED = "ROLE_CHANGED";
+
+    /** :purpose: Audit reason recorded when the stored credential is replaced. */
+    private static final String REASON_CREDENTIAL_CHANGED = "CREDENTIAL_CHANGED";
+
     private final UserRepository userRepository;
     private final UserMapper userMapper;
     private final PasswordEncoder passwordEncoder;
+
+    /**
+     * :purpose: Principal-to-session index used to invalidate the shared Redis sessions of a
+     *     user whose authority or credential just changed, so a change that removes access
+     *     takes effect immediately instead of at the next natural session expiry. May be
+     *     ``null`` when no session store is wired (unit tests), in which case revocation is
+     *     a no-op.
+     */
+    private final SessionPrincipalIndex sessionPrincipalIndex;
 
     /**
      * :purpose: Construct the service with its collaborators via constructor injection.
@@ -102,13 +124,46 @@ public class UserService {
      * :param userMapper: mapper between {@link SecurityUser} entities and the user DTOs.
      * :param passwordEncoder: encoder used to hash and verify user credentials.
      */
+    @Autowired
+    public UserService(UserRepository userRepository,
+                       UserMapper userMapper,
+                       PasswordEncoder passwordEncoder,
+                       SessionPrincipalIndex sessionPrincipalIndex) {
+        this.userRepository = userRepository;
+        this.userMapper = userMapper;
+        this.passwordEncoder = passwordEncoder;
+        this.sessionPrincipalIndex = sessionPrincipalIndex;
+    }
+
+    /**
+     * :purpose: Construct the service without a session index, so a unit test can exercise
+     *     the CRUD contract without a Redis-backed session store. Session revocation is a
+     *     no-op in that configuration.
+     * :param userRepository: the security-user repository.
+     * :param userMapper: the entity/DTO mapper.
+     * :param passwordEncoder: the shared delegating password encoder.
+     */
     public UserService(UserRepository userRepository,
                        UserMapper userMapper,
                        PasswordEncoder passwordEncoder) {
         this.userRepository = userRepository;
         this.userMapper = userMapper;
         this.passwordEncoder = passwordEncoder;
+        this.sessionPrincipalIndex = null;
     }
+    /**
+     * :purpose: Invalidate every live session of a user so a maintenance action takes
+     *     effect on the caller's very next request instead of at session expiry.
+     * :param userId: the maintained user id.
+     * :param reason: short machine-readable reason recorded in the audit trail.
+     */
+    private void revokeSessions(String userId, String reason) {
+        if (sessionPrincipalIndex == null) {
+            return;
+        }
+        sessionPrincipalIndex.revokeSessions(userId, reason);
+    }
+
 
     /**
      * :purpose: Report whether a request value is empty, modeling the legacy
@@ -141,27 +196,53 @@ public class UserService {
 
     /**
      * :purpose: List security users one ascending page at a time (``COUSR00C`` / ``CU00``),
-     *     ordered by user id.
+     *     ordered by user id, and surface the paging banner the legacy screen displays.
      * :param pageNumber: zero-based page index (page size is ten).
-     * :returns: the users on the requested page, or an empty list when the page holds none.
-     * :raises CardDemoException: when the ordered browse fails unexpectedly.
+     * :returns: the page of users together with its paging cursors and, when the page holds
+     *     no rows, the ``WS-MESSAGE`` banner ``COUSR00C`` moves to ``ERRMSGO`` (L526).
+     * :raises CardDemoException: when the requested page precedes the first page, or when
+     *     the ordered browse fails unexpectedly.
      */
     @Transactional(readOnly = true)
-    public List<UserResponseDto> listUsers(int pageNumber) {
+    public UserListResponseDto listUsers(int pageNumber) {
+        // A page index before the first page has no legacy analogue -- the 3270 screen can
+        // only ask for the page before the current one -- so it reports the same top
+        // boundary the PF7 key reports (COUSR00C L251) rather than failing unexpectedly.
+        if (pageNumber < 0) {
+            throw new CardDemoException(MSG_ALREADY_TOP);
+        }
         Page<SecurityUser> page;
         try {
             page = userRepository.findAllByOrderBySecUsrIdAsc(PageRequest.of(pageNumber, PAGE_SIZE));
         } catch (DataAccessException ex) {
             throw new CardDemoException(MSG_UNABLE_LOOKUP, ex);
         }
-        if (page.getContent().isEmpty()) {
-            if (pageNumber == 0) {
-                LOG.info(MSG_BROWSE_TOP);
-            } else {
-                LOG.info(MSG_REACHED_BOTTOM);
-            }
+        List<SecurityUser> rows = page.getContent();
+        UserListResponseDto response = toListResponse(rows, pageNumber);
+        response.setNextPage(page.hasNext());
+        if (rows.isEmpty()) {
+            response.setMessage(pageNumber == 0 ? MSG_BROWSE_TOP : MSG_REACHED_BOTTOM);
         }
-        return userMapper.toResponseList(page.getContent());
+        return response;
+    }
+
+    /**
+     * :purpose: Assemble the user-list response from a page of rows, populating the
+     *     ``CDEMO-CU00-USRID-FIRST``/``-LAST`` cursors the PF7 and PF8 keys carry in the
+     *     COMMAREA.
+     * :param rows: the security users on this page, in ascending id order.
+     * :param pageNumber: zero-based index of this page.
+     * :returns: the populated response, without a banner or selection.
+     */
+    private UserListResponseDto toListResponse(List<SecurityUser> rows, int pageNumber) {
+        UserListResponseDto response = new UserListResponseDto();
+        response.setUsers(userMapper.toResponseList(rows));
+        response.setPageNumber(pageNumber);
+        if (!rows.isEmpty()) {
+            response.setUserIdFirst(rows.get(0).getSecUsrId());
+            response.setUserIdLast(rows.get(rows.size() - 1).getSecUsrId());
+        }
+        return response;
     }
 
     /**
@@ -173,7 +254,7 @@ public class UserService {
      *     browse fails unexpectedly.
      */
     @Transactional(readOnly = true)
-    public List<UserResponseDto> pageForward(String lastUserId) {
+    public UserListResponseDto pageForward(String lastUserId) {
         List<SecurityUser> next;
         try {
             next = userRepository.findBySecUsrIdGreaterThanOrderBySecUsrIdAsc(lastUserId, Pageable.ofSize(PAGE_SIZE));
@@ -183,7 +264,13 @@ public class UserService {
         if (next.isEmpty()) {
             throw new CardDemoException(MSG_ALREADY_BOTTOM);
         }
-        return userMapper.toResponseList(next);
+        UserListResponseDto response = toListResponse(next, 0);
+        // A short page means the browse hit end-of-file, so PF8 can advance no further.
+        response.setNextPage(next.size() == PAGE_SIZE);
+        if (next.size() < PAGE_SIZE) {
+            response.setMessage(MSG_REACHED_BOTTOM);
+        }
+        return response;
     }
 
     /**
@@ -195,7 +282,7 @@ public class UserService {
      *     browse fails unexpectedly.
      */
     @Transactional(readOnly = true)
-    public List<UserResponseDto> pageBackward(String firstUserId) {
+    public UserListResponseDto pageBackward(String firstUserId) {
         List<SecurityUser> previous;
         try {
             previous = userRepository.findBySecUsrIdLessThanOrderBySecUsrIdDesc(firstUserId, Pageable.ofSize(PAGE_SIZE));
@@ -205,12 +292,15 @@ public class UserService {
         if (previous.isEmpty()) {
             throw new CardDemoException(MSG_ALREADY_TOP);
         }
-        if (previous.size() < PAGE_SIZE) {
-            LOG.info(MSG_REACHED_TOP);
-        }
         List<SecurityUser> ascending = new ArrayList<>(previous);
         Collections.reverse(ascending);
-        return userMapper.toResponseList(ascending);
+        UserListResponseDto response = toListResponse(ascending, 0);
+        // Paging back always leaves a forward page available (COUSR00C SET NEXT-PAGE-YES).
+        response.setNextPage(true);
+        if (previous.size() < PAGE_SIZE) {
+            response.setMessage(MSG_REACHED_TOP);
+        }
+        return response;
     }
 
     /**
@@ -240,12 +330,13 @@ public class UserService {
      * :param request: the entered user id, first name, last name, and user type.
      * :param rawPassword: the entered raw password, encoded here before persistence and
      *     never stored or logged in clear text.
-     * :returns: the persisted user projection (id, first name, last name, user type).
+     * :returns: the persisted user projection plus the verbatim ``COUSR01C`` outcome
+     *     message ``'User <id> has been added ...'``.
      * :raises CardDemoException: when a required field is empty, the user id already
      *     exists, or the insert fails unexpectedly.
      */
     @Transactional
-    public UserResponseDto addUser(AddUserRequestDto request, String rawPassword) {
+    public UserWriteResponseDto addUser(AddUserRequestDto request, String rawPassword) {
         if (request == null || isBlank(request.getFirstName())) {
             throw new CardDemoException(MSG_FIRST_NAME_EMPTY);
         }
@@ -277,8 +368,21 @@ public class UserService {
             throw new CardDemoException(MSG_UNABLE_ADD, ex);
         }
 
-        LOG.info(MSG_USER_PREFIX + userId + MSG_ADDED_SUFFIX);
-        return userMapper.toResponse(saved);
+        String message = MSG_USER_PREFIX + userId + MSG_ADDED_SUFFIX;
+        LOG.info(message);
+        return toWriteResponse(saved, message);
+    }
+
+    /**
+     * :purpose: Project a persisted security user together with the verbatim legacy
+     *     message the corresponding screen displays.
+     * :param user: the persisted security user.
+     * :param message: the verbatim legacy outcome or prompt message.
+     * :returns: the populated write response; the stored credential is never projected.
+     */
+    private UserWriteResponseDto toWriteResponse(SecurityUser user, String message) {
+        return new UserWriteResponseDto(user.getSecUsrId(), user.getSecUsrFname(),
+                user.getSecUsrLname(), user.getSecUsrType(), message);
     }
 
     /**
@@ -297,13 +401,14 @@ public class UserService {
      * :purpose: Read a user for the update screen (``COUSR02C`` read-for-display), surfacing
      *     the update confirmation prompt.
      * :param userId: the user id to look up.
-     * :returns: the user projection to pre-fill the update form.
+     * :returns: the user projection to pre-fill the update form, carrying the verbatim
+     *     ``COUSR02C`` prompt ``'Press PF5 key to save your updates ...'``.
      * :raises RecordNotFoundException: when no user exists for ``userId``.
      * :raises CardDemoException: when the keyed read fails unexpectedly.
      */
     @Transactional(readOnly = true)
-    public UserResponseDto getUserForUpdate(String userId) {
-        UserResponseDto response = userMapper.toResponse(readUser(userId));
+    public UserWriteResponseDto getUserForUpdate(String userId) {
+        UserWriteResponseDto response = toWriteResponse(readUser(userId), MSG_PRESS_PF5_UPDATE);
         LOG.info(MSG_PRESS_PF5_UPDATE);
         return response;
     }
@@ -312,13 +417,14 @@ public class UserService {
      * :purpose: Read a user for the delete screen (``COUSR03C`` read-for-display), surfacing
      *     the delete confirmation prompt.
      * :param userId: the user id to look up.
-     * :returns: the user projection to confirm before deletion.
+     * :returns: the user projection to confirm before deletion, carrying the verbatim
+     *     ``COUSR03C`` prompt ``'Press PF5 key to delete this user ...'``.
      * :raises RecordNotFoundException: when no user exists for ``userId``.
      * :raises CardDemoException: when the keyed read fails unexpectedly.
      */
     @Transactional(readOnly = true)
-    public UserResponseDto getUserForDelete(String userId) {
-        UserResponseDto response = userMapper.toResponse(readUser(userId));
+    public UserWriteResponseDto getUserForDelete(String userId) {
+        UserWriteResponseDto response = toWriteResponse(readUser(userId), MSG_PRESS_PF5_DELETE);
         LOG.info(MSG_PRESS_PF5_DELETE);
         return response;
     }
@@ -331,13 +437,14 @@ public class UserService {
      * :param request: the entered first name, last name, and user type.
      * :param rawPassword: the entered raw password, compared against the stored hash and
      *     re-encoded only when it changes; never stored or logged in clear text.
-     * :returns: the updated user projection (id, first name, last name, user type).
+     * :returns: the updated user projection plus the verbatim ``COUSR02C`` outcome
+     *     message ``'User <id> has been updated ...'``.
      * :raises RecordNotFoundException: when no user exists for ``userId``.
      * :raises CardDemoException: when a required field is empty, no field changed, or the
      *     update fails unexpectedly.
      */
     @Transactional
-    public UserResponseDto updateUser(String userId, UpdateUserRequestDto request, String rawPassword) {
+    public UserWriteResponseDto updateUser(String userId, UpdateUserRequestDto request, String rawPassword) {
         if (isBlank(userId)) {
             throw new CardDemoException(MSG_USER_ID_EMPTY);
         }
@@ -367,7 +474,8 @@ public class UserService {
         if (passwordChanged) {
             modified = true;
         }
-        if (!Objects.equals(request.getUserType(), user.getSecUsrType())) {
+        boolean roleChanged = !Objects.equals(request.getUserType(), user.getSecUsrType());
+        if (roleChanged) {
             modified = true;
         }
 
@@ -387,8 +495,20 @@ public class UserService {
             throw new CardDemoException(MSG_UNABLE_UPDATE, ex);
         }
 
-        LOG.info(MSG_USER_PREFIX + userId.trim() + MSG_UPDATED_SUFFIX);
-        return userMapper.toResponse(saved);
+        // A changed user type changes the granted authority carried by the session
+        // context, and a changed credential invalidates the proof the session was
+        // issued against: in both cases the live sessions must stop authorizing. The
+        // role change is reported in preference to the credential change because it is
+        // the authorization-relevant one.
+        if (roleChanged) {
+            revokeSessions(userId, REASON_ROLE_CHANGED);
+        } else if (passwordChanged) {
+            revokeSessions(userId, REASON_CREDENTIAL_CHANGED);
+        }
+
+        String message = MSG_USER_PREFIX + userId.trim() + MSG_UPDATED_SUFFIX;
+        LOG.info(message);
+        return toWriteResponse(saved, message);
     }
 
     /**
@@ -411,6 +531,8 @@ public class UserService {
         } catch (DataAccessException ex) {
             throw new CardDemoException(MSG_UNABLE_UPDATE, ex);
         }
+
+        revokeSessions(userId, REASON_USER_DELETED);
 
         LOG.info(MSG_USER_PREFIX + userId.trim() + MSG_DELETED_SUFFIX);
     }

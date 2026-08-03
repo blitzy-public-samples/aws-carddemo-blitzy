@@ -16,9 +16,13 @@
  */
 package com.carddemo.user.controller;
 
+import com.carddemo.common.constant.Messages;
 import com.carddemo.common.dto.AddUserRequestDto;
 import com.carddemo.common.dto.UpdateUserRequestDto;
+import com.carddemo.common.dto.UserListResponseDto;
 import com.carddemo.common.dto.UserResponseDto;
+import com.carddemo.common.dto.UserWriteResponseDto;
+import com.carddemo.common.exception.CardDemoException;
 import com.carddemo.user.service.UserService;
 import jakarta.validation.Valid;
 import org.springframework.http.HttpStatus;
@@ -34,7 +38,6 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
-import java.util.List;
 
 /**
  * :purpose: Administrator-only user-CRUD REST endpoints re-platformed from the CICS
@@ -55,31 +58,107 @@ public class UserController {
      * :purpose: Construct the controller with its service collaborator via constructor injection.
      * :param userService: the user-management service holding all business logic.
      */
+    /** :purpose: Legacy page-back action (``DFHPF7``), shared vocabulary with COTRN00C. */
+    private static final String ACTION_PF7 = "PF7";
+
+    /** :purpose: Legacy page-forward action (``DFHPF8``), shared vocabulary with COTRN00C. */
+    private static final String ACTION_PF8 = "PF8";
+
+    /** :purpose: Accepted alias of {@link #ACTION_PF7} retained for existing clients. */
+    private static final String ALIAS_BACKWARD = "backward";
+
+    /** :purpose: Accepted alias of {@link #ACTION_PF8} retained for existing clients. */
+    private static final String ALIAS_FORWARD = "forward";
+
+    /** :purpose: Row-selection flag transferring to the update program (``COUSR02C``). */
+    private static final String SELECTION_UPDATE = "U";
+
     public UserController(UserService userService) {
         this.userService = userService;
     }
 
     /**
-     * :purpose: List users (10 per page, ascending by id); supports PF7-back / PF8-forward
-     *     paging via ``direction`` + ``cursor``, else page-based via ``page``.
+     * :purpose: List users (10 per page, ascending by id) exactly as ``COUSR00C`` /
+     *     ``CU00`` does: keyset paging driven by the legacy ``PF7``/``PF8`` actions with a
+     *     ``cursor``, otherwise page-based via ``page``, plus the row-selection handling
+     *     that the legacy screen uses to reach the update and delete programs.
      * :param page: zero-based page index for page-based listing; defaults to ``0``.
-     * :param direction: optional paging direction, ``"forward"`` (PF8) or ``"backward"`` (PF7).
+     * :param direction: optional paging action. The legacy vocabulary is ``"PF7"``
+     *     (page back) and ``"PF8"`` (page forward); ``"backward"`` and ``"forward"`` are
+     *     accepted aliases. Any other non-blank value is an unrecognised key press.
      * :param cursor: optional user id anchoring keyset paging when ``direction`` is supplied.
-     * :returns: the users on the requested page.
-     * :raises CardDemoException: when a paging boundary is reached or the ordered browse fails.
+     * :param selection: optional row-selection flag, ``U`` (update, ``COUSR02C``) or ``D``
+     *     (delete, ``COUSR03C``), matching ``CDEMO-CU00-USR-SEL-FLG``.
+     * :param selectedUserId: the user id of the selected row (``CDEMO-CU00-USR-SELECTED``).
+     * :returns: the page of users with its paging cursors, the resolved selection, and the
+     *     legacy banner when one applies.
+     * :raises CardDemoException: when a paging boundary is reached, the paging action is not
+     *     a recognised key, the row selection is neither ``U`` nor ``D``, or the ordered
+     *     browse fails.
+     * :raises RecordNotFoundException: when a selected row names a user that does not exist.
      */
     @GetMapping
-    public List<UserResponseDto> listUsers(
+    public UserListResponseDto listUsers(
             @RequestParam(name = "page", defaultValue = "0") int page,
             @RequestParam(name = "direction", required = false) String direction,
-            @RequestParam(name = "cursor", required = false) String cursor) {
-        if ("forward".equalsIgnoreCase(direction) && cursor != null && !cursor.isBlank()) {
-            return userService.pageForward(cursor);
+            @RequestParam(name = "cursor", required = false) String cursor,
+            @RequestParam(name = "selection", required = false) String selection,
+            @RequestParam(name = "selectedUserId", required = false) String selectedUserId) {
+        UserListResponseDto response = pageUsers(page, direction, cursor);
+        applySelection(response, selection, selectedUserId);
+        return response;
+    }
+
+    /**
+     * :purpose: Resolve the requested paging action to the corresponding browse, preserving
+     *     the legacy ``PF7``/``PF8`` vocabulary and rejecting an unrecognised action with the
+     *     verbatim ``CSMSG01Y`` invalid-key message rather than silently ignoring it.
+     * :param page: zero-based page index used when no paging action is supplied.
+     * :param direction: the requested paging action, possibly ``null``.
+     * :param cursor: the user id anchoring keyset paging.
+     * :returns: the page of users.
+     * :raises CardDemoException: when the paging action is not a recognised key.
+     */
+    private UserListResponseDto pageUsers(int page, String direction, String cursor) {
+        if (direction == null || direction.isBlank()) {
+            return userService.listUsers(page);
         }
-        if ("backward".equalsIgnoreCase(direction) && cursor != null && !cursor.isBlank()) {
-            return userService.pageBackward(cursor);
+        String action = direction.trim();
+        boolean forward = ACTION_PF8.equalsIgnoreCase(action) || ALIAS_FORWARD.equalsIgnoreCase(action);
+        boolean backward = ACTION_PF7.equalsIgnoreCase(action) || ALIAS_BACKWARD.equalsIgnoreCase(action);
+        if (!forward && !backward) {
+            throw new CardDemoException(Messages.CCDA_MSG_INVALID_KEY);
         }
-        return userService.listUsers(page);
+        if (cursor == null || cursor.isBlank()) {
+            // Without a cursor there is no browse position, so the request degrades to the
+            // page-based listing exactly as COUSR00C starts its browse at LOW-VALUES.
+            return userService.listUsers(page);
+        }
+        return forward ? userService.pageForward(cursor) : userService.pageBackward(cursor);
+    }
+
+    /**
+     * :purpose: Apply the ``COUSR00C`` row selection: validate the selection flag, confirm
+     *     the selected user exists, and carry the read-for-display prompt of the program the
+     *     legacy screen would have transferred to (``COUSR02C`` for ``U``, ``COUSR03C`` for
+     *     ``D``).
+     * :param response: the list response to enrich in place.
+     * :param selection: the row-selection flag, possibly ``null``.
+     * :param selectedUserId: the user id of the selected row.
+     * :raises CardDemoException: when the selection is neither ``U`` nor ``D``.
+     * :raises RecordNotFoundException: when the selected user does not exist.
+     */
+    private void applySelection(UserListResponseDto response, String selection, String selectedUserId) {
+        if (selection == null || selection.isBlank()) {
+            return;
+        }
+        String action = userService.resolveSelection(selection);
+        response.setSelectedAction(action);
+        response.setSelectedUserId(selectedUserId == null ? null : selectedUserId.trim());
+        UserWriteResponseDto selected = SELECTION_UPDATE.equals(action)
+                ? userService.getUserForUpdate(selectedUserId)
+                : userService.getUserForDelete(selectedUserId);
+        response.setMessage(selected.getMessage());
     }
 
     /**
@@ -90,10 +169,10 @@ public class UserController {
      * :raises CardDemoException: on a duplicate id, an empty field, or a persistence failure.
      */
     @PostMapping
-    public ResponseEntity<UserResponseDto> addUser(
+    public ResponseEntity<UserWriteResponseDto> addUser(
             @Valid @RequestBody AddUserRequestDto request,
             @RequestParam(name = "password", required = false) String password) {
-        UserResponseDto created = userService.addUser(request, password);
+        UserWriteResponseDto created = userService.addUser(request, password);
         return ResponseEntity.status(HttpStatus.CREATED).body(created);
     }
 
@@ -118,7 +197,7 @@ public class UserController {
      * :raises CardDemoException: when no field changed, a required field is empty, or the update fails.
      */
     @PutMapping("/{id}")
-    public UserResponseDto updateUser(
+    public UserWriteResponseDto updateUser(
             @PathVariable("id") String id,
             @Valid @RequestBody UpdateUserRequestDto request,
             @RequestParam(name = "password", required = false) String password) {

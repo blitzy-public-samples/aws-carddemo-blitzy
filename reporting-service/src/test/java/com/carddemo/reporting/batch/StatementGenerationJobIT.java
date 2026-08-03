@@ -20,6 +20,7 @@ import com.carddemo.common.domain.Account;
 import com.carddemo.common.domain.CardXref;
 import com.carddemo.common.domain.Customer;
 import com.carddemo.common.domain.Transaction;
+import com.carddemo.common.testsupport.MigratedSchemaContainer;
 import com.carddemo.reporting.repository.AccountRepository;
 import com.carddemo.reporting.repository.CardXrefRepository;
 import com.carddemo.reporting.repository.CustomerRepository;
@@ -35,6 +36,7 @@ import org.springframework.batch.core.job.parameters.JobParametersBuilder;
 import org.springframework.batch.test.JobLauncherTestUtils;
 import org.springframework.batch.test.context.SpringBatchTest;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.context.DynamicPropertyRegistry;
@@ -52,8 +54,8 @@ import static org.junit.jupiter.api.Assertions.assertAll;
 /**
  * :purpose: End-to-end integration test for the re-platformed batch statement
  *   engine. It boots the full reporting-service Spring context against a real
- *   PostgreSQL (Testcontainers ``postgres:18`` via the ``jdbc:tc`` datasource in
- *   the ``test`` profile), seeds a deterministic minimal dataset through the
+ *   PostgreSQL (the shared ``postgres:18`` container carrying the schema the
+ *   committed Flyway migrations produce), seeds a deterministic minimal dataset through the
  *   shared ``carddemo-common`` repositories, launches the on-demand
  *   ``statementGenerationJob`` through {@link JobLauncherTestUtils}, and asserts
  *   the produced plain-text (80-column) and HTML (100-column) statement files are
@@ -87,21 +89,28 @@ class StatementGenerationJobIT {
     @Autowired
     private TransactionRepository transactionRepository;
 
+    /** :purpose: Raw JDBC access used only to clear the seeded cards before their parents. */
+    @Autowired
+    private JdbcTemplate jdbcTemplate;
+
     /**
-     * :purpose: Provision the schema the throwaway ``postgres:18`` container lacks.
-     *   The ``test`` profile disables Flyway and sets ``ddl-auto: none``, so this
-     *   override lets Hibernate auto-create the shared ``com.carddemo.common.domain``
-     *   entity tables (``create-drop``) and runs the Spring Batch metadata DDL
-     *   (``BATCH_*`` tables/sequences) that the JDBC-backed ``JobRepository``
-     *   requires, since Spring Boot 4.x no longer auto-initializes it.
+     * :purpose: Bind the datasource to the shared, already-migrated ``postgres:18`` container
+     *   from :java:class:`com.carddemo.common.testsupport.MigratedSchemaContainer`. Both the
+     *   business tables and the Spring Batch metadata schema (``BATCH_*`` tables and
+     *   sequences, created by the shared migration ``V5__batch_metadata.sql``) come
+     *   from the owning modules' committed migrations, so nothing is generated from the
+     *   entities and Hibernate only validates the mapping.
      * :param registry: the dynamic property registry supplied by the test context.
      */
     @DynamicPropertySource
     static void provisionSchema(DynamicPropertyRegistry registry) {
-        registry.add("spring.jpa.hibernate.ddl-auto", () -> "create-drop");
-        registry.add("spring.sql.init.mode", () -> "always");
-        registry.add("spring.sql.init.schema-locations",
-                () -> "classpath:org/springframework/batch/core/schema-postgresql.sql");
+        MigratedSchemaContainer.registerDataSource(registry);
+        registry.add("spring.jpa.hibernate.ddl-auto", () -> "validate");
+        // Every batch path is resolved inside carddemo.batch.output-dir and a path escaping
+        // it is refused (CWE-22). The per-test ``@TempDir`` lives under the JVM temporary
+        // directory, so that directory is declared as the root: the containment check stays
+        // in force and the statement artifacts still land in a JUnit-managed directory.
+        registry.add("carddemo.batch.output-dir", () -> System.getProperty("java.io.tmpdir"));
     }
 
     /**
@@ -117,6 +126,13 @@ class StatementGenerationJobIT {
     void seedData() {
         transactionRepository.deleteAll();
         cardXrefRepository.deleteAll();
+        // The migration seed carries 50 cards that foreign-key into accounts, so they are
+        // removed before their parents; this job reads whole tables, so the test owns their
+        // content.
+        jdbcTemplate.update("DELETE FROM cards");
+        // tran_cat_bal foreign-keys into accounts (fk_tran_cat_bal_acct), so the seeded
+        // category balances go before their parent accounts.
+        jdbcTemplate.update("DELETE FROM tran_cat_bal");
         accountRepository.deleteAll();
         customerRepository.deleteAll();
 
@@ -131,7 +147,16 @@ class StatementGenerationJobIT {
         customer.setCustAddrStateCd("WA");
         customer.setCustAddrCountryCd("USA");
         customer.setCustAddrZip("99999");
+        customer.setCustPhoneNum1("(000)000-0000");
+        customer.setCustPhoneNum2("(000)000-0000");
+        customer.setCustDobYyyyMmDd("1970-01-01");
+        customer.setCustPriCardHolderInd("Y");
         customer.setCustFicoCreditScore(750);
+        // The migrated NOT NULL PII columns carry blank values: no PII is seeded (AAP 0.6.7)
+        // and the CryptoConverter passes empty strings through unchanged.
+        customer.setCustSsn("");
+        customer.setCustGovtIssuedId("");
+        customer.setCustEftAccountId("");
         customerRepository.save(customer);
 
         Account account = new Account();
@@ -141,8 +166,12 @@ class StatementGenerationJobIT {
         account.setAcctCreditLimit(new BigDecimal("5000.00"));
         account.setAcctCashCreditLimit(new BigDecimal("1000.00"));
         account.setAcctOpenDate("2020-01-01");
+        // The legacy copybook misspelling ACCT-EXPIRAION-DATE is preserved verbatim.
+        account.setAcctExpiraionDate("2099-12-31");
+        account.setAcctReissueDate("2020-01-01");
         account.setAcctCurrCycCredit(new BigDecimal("0.00"));
         account.setAcctCurrCycDebit(new BigDecimal("0.00"));
+        account.setAcctAddrZip("99999");
         accountRepository.save(account);
 
         CardXref cardXref = new CardXref();

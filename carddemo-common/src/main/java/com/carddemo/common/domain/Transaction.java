@@ -3,7 +3,11 @@ package com.carddemo.common.domain;
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
 import jakarta.persistence.Id;
+import jakarta.persistence.PostLoad;
+import jakarta.persistence.PostPersist;
 import jakarta.persistence.Table;
+import jakarta.persistence.Transient;
+import org.springframework.data.domain.Persistable;
 
 import java.math.BigDecimal;
 
@@ -18,10 +22,17 @@ import java.math.BigDecimal;
  *     preserved exactly; timestamp fields retain their 26-character wire format as
  *     {@link String} values, and the card number is a scalar foreign-key column
  *     rather than a mapped association.
+ * :note: The entity implements {@link Persistable} because ``tran_id`` is an
+ *     APPLICATION-ASSIGNED key drawn from the ``transaction_id_seq`` database
+ *     sequence rather than a generated identity. Without it Spring Data's default
+ *     ``isNew`` rule (id is null) reports every instance as already persisted, so
+ *     ``save`` performs a ``merge`` that turns an id collision into a silent UPDATE
+ *     over an existing financial record instead of the duplicate-key rejection the
+ *     legacy ``WRITE`` produced (``COTRN02C`` ``DUPKEY``/``DUPREC``, ``COBIL00C``).
  */
 @Entity
 @Table(name = "transactions")
-public class Transaction {
+public class Transaction implements Persistable<String> {
 
     /** ``TRAN-ID`` PIC X(16) — 16-character transaction identifier (primary key). */
     @Id
@@ -370,6 +381,47 @@ public class Transaction {
                 + ", tranOrigTs='" + tranOrigTs + '\''
                 + ", tranProcTs='" + tranProcTs + '\''
                 + '}';
+    }
+
+    /**
+     * :purpose: Tracks whether this instance represents a row that already exists in
+     *     the ``transactions`` table. It is ``false`` for an instance built in Java
+     *     (a new posting) and flipped to ``true`` once the row has been inserted or
+     *     loaded, so JPA never converts an insert into an update.
+     */
+    @Transient
+    private boolean persisted;
+
+    /**
+     * :purpose: Return the entity identifier required by {@link Persistable}.
+     * :output: the 16-character ``TRAN-ID`` primary key.
+     */
+    @Override
+    public String getId() {
+        return tranId;
+    }
+
+    /**
+     * :purpose: Report whether this instance must be INSERTed rather than merged.
+     *     A ``true`` result makes Spring Data call ``EntityManager.persist``, so an
+     *     id already present in the table raises a duplicate-key violation instead
+     *     of silently overwriting the existing transaction.
+     * :output: ``true`` until the row has been inserted or loaded from the database.
+     */
+    @Override
+    public boolean isNew() {
+        return !persisted;
+    }
+
+    /**
+     * :purpose: Mark the instance as representing an existing row after it has been
+     *     loaded from or inserted into the database, so a subsequent ``save`` on the
+     *     same instance updates rather than attempting a second insert.
+     */
+    @PostLoad
+    @PostPersist
+    void markPersisted() {
+        this.persisted = true;
     }
 
 }

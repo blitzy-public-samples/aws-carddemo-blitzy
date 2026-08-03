@@ -78,8 +78,71 @@
                     <groupId>org.springframework.boot</groupId>
                     <artifactId>spring-boot-maven-plugin</artifactId>
                 </plugin>
+
+                <!--
+                  A deterministic, NON-PRODUCTION AES-256 key is supplied to every forked test JVM
+                  (unit and integration) so the carddemo-common PII key validation, which now runs
+                  EAGERLY at context startup for any service that declares a DataSource, is
+                  satisfiable in tests. Production and deployed environments MUST still supply the
+                  real key through the CARDDEMO_PII_KEY environment variable (docker-compose.yml and
+                  k8s/secret.yaml do); a service started without it fails fast rather than reporting
+                  UP and then failing every request that touches an encrypted column. The value
+                  below is an obviously-fake fixture ("carddemo-test-pii-key-32bytes!!!") used only
+                  by the test phases - see docs/decision-log.md. Plugin versions are inherited from
+                  the Spring Boot parent BOM.
+                  A deterministic, NON-PRODUCTION AES-256 key is supplied to every forked
+                  test JVM so the carddemo-common CryptoConverter can initialize and
+                  round-trip the encrypted PII columns (customer SSN, government-issued id,
+                  EFT account id, card CVV) wherever a test boots a context that reads
+                  them. CryptoConverter and the startup PII-encryption pass both fail fast
+                  when no key is configured, so a production deployment MUST still provide
+                  the real key through the CARDDEMO_PII_KEY environment variable (see
+                  docs/decision-log.md). This value is an obviously-fake, test-only fixture
+                  and is never used outside the test phases. Declared here for surefire AND
+                  failsafe so unit tests and Testcontainers integration tests behave
+                  identically; a module that declares its own systemPropertyVariables must
+                  repeat it. Plugin versions are inherited from the Spring Boot parent.
+                -->
+                <plugin>
+                    <groupId>org.apache.maven.plugins</groupId>
+                    <artifactId>maven-surefire-plugin</artifactId>
+                    <configuration>
+                        <systemPropertyVariables>
+                            <carddemo.pii.key>Y2FyZGRlbW8tdGVzdC1waWkta2V5LTMyYnl0ZXMhISE=</carddemo.pii.key>
+                        </systemPropertyVariables>
+                    </configuration>
+                </plugin>
+                <plugin>
+                    <groupId>org.apache.maven.plugins</groupId>
+                    <artifactId>maven-failsafe-plugin</artifactId>
+                    <configuration>
+                        <systemPropertyVariables>
+                            <carddemo.pii.key>Y2FyZGRlbW8tdGVzdC1waWkta2V5LTMyYnl0ZXMhISE=</carddemo.pii.key>
+                        </systemPropertyVariables>
+                    </configuration>
+                </plugin>
             </plugins>
         </pluginManagement>
+
+        <plugins>
+            <!--
+              Integration-test execution is a BUILD-WIDE guarantee, not a per-module
+              opt-in. The Spring Boot parent's pluginManagement already binds the
+              maven-failsafe-plugin integration-test and verify goals (and points the
+              plugin at the module's own output directory), so declaring the plugin
+              once here activates it for every module: any class matching Failsafe's
+              default patterns (**/IT*.java, **/*IT.java, **/*ITCase.java) runs during
+              `mvn verify` in whichever module it lives. Surefire keeps the fast
+              unit-test phase and never re-runs an IT, so each integration test executes
+              exactly once per build. Version and executions are inherited; modules that
+              need extra Failsafe configuration (for example a forked-JVM system
+              property) refine it in their own POM.
+            -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-failsafe-plugin</artifactId>
+            </plugin>
+        </plugins>
     </build>
 
 </project>

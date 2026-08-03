@@ -50,11 +50,13 @@ import com.carddemo.common.domain.SecurityUser;
 class UserDetailsServiceImplTest {
 
     /**
-     * :purpose: Frozen BCrypt hash fixture proving the stored credential is
-     *     returned verbatim (never re-encoded or upper-cased).
+     * :purpose: Frozen credential fixture proving the stored value is returned verbatim (never
+     *     re-encoded, re-prefixed or upper-cased). It carries the ``{bcrypt}`` algorithm prefix that
+     *     the seeded rows and the delegating encoder both use, so the fixture matches the real
+     *     at-rest format.
      */
     private static final String BCRYPT_HASH =
-            "$2a$10$ucIRth.iIafhA4MgE1RXZ.0whYamgfRIpJebWmPswpnxmLKA/peYm";
+            "{bcrypt}$2a$10$ucIRth.iIafhA4MgE1RXZ.0whYamgfRIpJebWmPswpnxmLKA/peYm";
 
     @Mock
     private SecurityUserRepository securityUserRepository;

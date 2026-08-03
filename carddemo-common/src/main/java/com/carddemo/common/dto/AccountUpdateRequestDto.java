@@ -18,10 +18,25 @@ package com.carddemo.common.dto;
 import java.math.BigDecimal;
 
 /**
- * :purpose: Inbound DTO for the account update screen (COACTUPC, CICS CAUP). Carries the editable account and customer master fields; the account id and customer id primary keys and the optimistic-lock version are never carried here. Monetary fields are BigDecimal.
- * :output: A mutable carrier of the editable account and customer master fields.
+ * :purpose: Inbound DTO for the account update screen (COACTUPC, CICS CAUP). Carries the editable account and customer master fields plus the optimistic-lock ``version`` snapshot the client read when the screen was displayed; the account id and customer id primary keys are never carried here (the account id identifies the target through the request path and the customer id is derived server-side). Monetary fields are BigDecimal.
+ * :output: A mutable carrier of the editable account and customer master fields and the version snapshot the server compares before rewriting.
  */
 public class AccountUpdateRequestDto {
+
+    /**
+     * :purpose: the optimistic-lock version of the account record as read at display
+     *  time. The server compares it against the current record before rewriting, which
+     *  is the ``COACTUPC`` read-snapshot-compare-rewrite check
+     *  (``DATA-WAS-CHANGED-BEFORE-UPDATE``): a mismatch is reported as the legacy
+     *  conflict "Record changed by some one else. Please review" instead of overwriting
+     *  the concurrent change (AAP 0.6.2).
+     * :note: The snapshot is mandatory, but it is enforced by that comparison (a missing
+     *  snapshot can never match, so the rewrite is refused) rather than by a bean-validation
+     *  constraint. Body constraints are evaluated during argument resolution, i.e. before
+     *  the handler runs, which would pre-empt the account-id edit
+     *  (``2210-EDIT-ACCOUNT``) and replace its verbatim legacy message.
+     */
+    private Long version;
 
     /** :purpose: the account active status (``ACCT-ACTIVE-STATUS``). */
     private String acctActiveStatus;
@@ -108,6 +123,22 @@ public class AccountUpdateRequestDto {
      * :purpose: Create an empty AccountUpdateRequestDto. Required for JSON (Jackson) serialization.
      */
     public AccountUpdateRequestDto() {
+    }
+
+    /**
+     * :purpose: Return the optimistic-lock version snapshot read at display time.
+     * :output: the ``version`` value the server compares before rewriting.
+     */
+    public Long getVersion() {
+        return version;
+    }
+
+    /**
+     * :purpose: Set the optimistic-lock version snapshot read at display time.
+     * :param version: the ``version`` value echoed back from the view response.
+     */
+    public void setVersion(Long version) {
+        this.version = version;
     }
 
     /**
@@ -540,6 +571,532 @@ public class AccountUpdateRequestDto {
      */
     public void setCustFicoCreditScore(Integer custFicoCreditScore) {
         this.custFicoCreditScore = custFicoCreditScore;
+    }
+
+
+    // ------------------------------------------------------------------------
+    // ACUP-OLD-* display-time snapshot (COACTUPC ``ACUP-OLD-ACCT-DATA`` /
+    // ``ACUP-OLD-CUST-DATA``). The legacy program stores the values rendered on the
+    // screen and, before rewriting, compares the freshly re-read record field by
+    // field against them; any difference aborts with
+    // ``DATA-WAS-CHANGED-BEFORE-UPDATE`` rather than overwriting a concurrent edit
+    // (COACTUPC 9300-CHECK-CHANGE-IN-REC, L4131-4189). Callers echo the values they
+    // read from the view response here; when the snapshot is omitted the check is
+    // skipped, preserving the behaviour of callers that do not carry it.
+    // ------------------------------------------------------------------------
+
+    /** ``ACUP-OLD-ACTIVE-STATUS`` — display-time snapshot of {@code acctActiveStatus}. */
+    private String oldAcctActiveStatus;
+    /** ``ACUP-OLD-CURR-BAL`` — display-time snapshot of {@code acctCurrBal}. */
+    private BigDecimal oldAcctCurrBal;
+    /** ``ACUP-OLD-CREDIT-LIMIT`` — display-time snapshot of {@code acctCreditLimit}. */
+    private BigDecimal oldAcctCreditLimit;
+    /** ``ACUP-OLD-CASH-CREDIT-LIMIT`` — display-time snapshot of {@code acctCashCreditLimit}. */
+    private BigDecimal oldAcctCashCreditLimit;
+    /** ``ACUP-OLD-CURR-CYC-CREDIT`` — display-time snapshot of {@code acctCurrCycCredit}. */
+    private BigDecimal oldAcctCurrCycCredit;
+    /** ``ACUP-OLD-CURR-CYC-DEBIT`` — display-time snapshot of {@code acctCurrCycDebit}. */
+    private BigDecimal oldAcctCurrCycDebit;
+    /** ``ACUP-OLD-OPEN-DATE`` — display-time snapshot of {@code acctOpenDate}. */
+    private String oldAcctOpenDate;
+    /** ``ACUP-OLD-EXPIRAION-DATE`` — display-time snapshot of {@code acctExpiraionDate}. */
+    private String oldAcctExpiraionDate;
+    /** ``ACUP-OLD-REISSUE-DATE`` — display-time snapshot of {@code acctReissueDate}. */
+    private String oldAcctReissueDate;
+    /** ``ACUP-OLD-GROUP-ID`` — display-time snapshot of {@code acctGroupId}. */
+    private String oldAcctGroupId;
+    /** ``ACUP-OLD-CUST-FIRST-NAME`` — display-time snapshot of {@code custFirstName}. */
+    private String oldCustFirstName;
+    /** ``ACUP-OLD-CUST-MIDDLE-NAME`` — display-time snapshot of {@code custMiddleName}. */
+    private String oldCustMiddleName;
+    /** ``ACUP-OLD-CUST-LAST-NAME`` — display-time snapshot of {@code custLastName}. */
+    private String oldCustLastName;
+    /** ``ACUP-OLD-CUST-ADDR-LINE-1`` — display-time snapshot of {@code custAddrLine1}. */
+    private String oldCustAddrLine1;
+    /** ``ACUP-OLD-CUST-ADDR-LINE-2`` — display-time snapshot of {@code custAddrLine2}. */
+    private String oldCustAddrLine2;
+    /** ``ACUP-OLD-CUST-ADDR-LINE-3`` — display-time snapshot of {@code custAddrLine3}. */
+    private String oldCustAddrLine3;
+    /** ``ACUP-OLD-CUST-ADDR-STATE-CD`` — display-time snapshot of {@code custAddrStateCd}. */
+    private String oldCustAddrStateCd;
+    /** ``ACUP-OLD-CUST-ADDR-COUNTRY-CD`` — display-time snapshot of {@code custAddrCountryCd}. */
+    private String oldCustAddrCountryCd;
+    /** ``ACUP-OLD-CUST-ADDR-ZIP`` — display-time snapshot of {@code custAddrZip}. */
+    private String oldCustAddrZip;
+    /** ``ACUP-OLD-CUST-PHONE-NUM-1`` — display-time snapshot of {@code custPhoneNum1}. */
+    private String oldCustPhoneNum1;
+    /** ``ACUP-OLD-CUST-PHONE-NUM-2`` — display-time snapshot of {@code custPhoneNum2}. */
+    private String oldCustPhoneNum2;
+    /** ``ACUP-OLD-CUST-SSN`` — display-time snapshot of {@code custSsn}. */
+    private String oldCustSsn;
+    /** ``ACUP-OLD-CUST-GOVT-ISSUED-ID`` — display-time snapshot of {@code custGovtIssuedId}. */
+    private String oldCustGovtIssuedId;
+    /** ``ACUP-OLD-CUST-DOB-YYYY-MM-DD`` — display-time snapshot of {@code custDobYyyyMmDd}. */
+    private String oldCustDobYyyyMmDd;
+    /** ``ACUP-OLD-CUST-EFT-ACCOUNT-ID`` — display-time snapshot of {@code custEftAccountId}. */
+    private String oldCustEftAccountId;
+    /** ``ACUP-OLD-CUST-PRI-HOLDER-IND`` — display-time snapshot of {@code custPriCardHolderInd}. */
+    private String oldCustPriCardHolderInd;
+    /** ``ACUP-OLD-CUST-FICO-SCORE`` — display-time snapshot of {@code custFicoCreditScore}. */
+    private Integer oldCustFicoCreditScore;
+
+    /**
+     * :purpose: Return the display-time snapshot of {@code acctActiveStatus} (``ACUP-OLD-ACTIVE-STATUS``).
+     * :output: the value the caller read before editing, or ``null`` when the caller
+     *     supplied no snapshot.
+     */
+    public String getOldAcctActiveStatus() {
+        return oldAcctActiveStatus;
+    }
+
+    /**
+     * :purpose: Set the display-time snapshot of {@code acctActiveStatus} (``ACUP-OLD-ACTIVE-STATUS``).
+     * :param oldAcctActiveStatus: the value the caller read before editing.
+     */
+    public void setOldAcctActiveStatus(String oldAcctActiveStatus) {
+        this.oldAcctActiveStatus = oldAcctActiveStatus;
+    }
+
+    /**
+     * :purpose: Return the display-time snapshot of {@code acctCurrBal} (``ACUP-OLD-CURR-BAL``).
+     * :output: the value the caller read before editing, or ``null`` when the caller
+     *     supplied no snapshot.
+     */
+    public BigDecimal getOldAcctCurrBal() {
+        return oldAcctCurrBal;
+    }
+
+    /**
+     * :purpose: Set the display-time snapshot of {@code acctCurrBal} (``ACUP-OLD-CURR-BAL``).
+     * :param oldAcctCurrBal: the value the caller read before editing.
+     */
+    public void setOldAcctCurrBal(BigDecimal oldAcctCurrBal) {
+        this.oldAcctCurrBal = oldAcctCurrBal;
+    }
+
+    /**
+     * :purpose: Return the display-time snapshot of {@code acctCreditLimit} (``ACUP-OLD-CREDIT-LIMIT``).
+     * :output: the value the caller read before editing, or ``null`` when the caller
+     *     supplied no snapshot.
+     */
+    public BigDecimal getOldAcctCreditLimit() {
+        return oldAcctCreditLimit;
+    }
+
+    /**
+     * :purpose: Set the display-time snapshot of {@code acctCreditLimit} (``ACUP-OLD-CREDIT-LIMIT``).
+     * :param oldAcctCreditLimit: the value the caller read before editing.
+     */
+    public void setOldAcctCreditLimit(BigDecimal oldAcctCreditLimit) {
+        this.oldAcctCreditLimit = oldAcctCreditLimit;
+    }
+
+    /**
+     * :purpose: Return the display-time snapshot of {@code acctCashCreditLimit} (``ACUP-OLD-CASH-CREDIT-LIMIT``).
+     * :output: the value the caller read before editing, or ``null`` when the caller
+     *     supplied no snapshot.
+     */
+    public BigDecimal getOldAcctCashCreditLimit() {
+        return oldAcctCashCreditLimit;
+    }
+
+    /**
+     * :purpose: Set the display-time snapshot of {@code acctCashCreditLimit} (``ACUP-OLD-CASH-CREDIT-LIMIT``).
+     * :param oldAcctCashCreditLimit: the value the caller read before editing.
+     */
+    public void setOldAcctCashCreditLimit(BigDecimal oldAcctCashCreditLimit) {
+        this.oldAcctCashCreditLimit = oldAcctCashCreditLimit;
+    }
+
+    /**
+     * :purpose: Return the display-time snapshot of {@code acctCurrCycCredit} (``ACUP-OLD-CURR-CYC-CREDIT``).
+     * :output: the value the caller read before editing, or ``null`` when the caller
+     *     supplied no snapshot.
+     */
+    public BigDecimal getOldAcctCurrCycCredit() {
+        return oldAcctCurrCycCredit;
+    }
+
+    /**
+     * :purpose: Set the display-time snapshot of {@code acctCurrCycCredit} (``ACUP-OLD-CURR-CYC-CREDIT``).
+     * :param oldAcctCurrCycCredit: the value the caller read before editing.
+     */
+    public void setOldAcctCurrCycCredit(BigDecimal oldAcctCurrCycCredit) {
+        this.oldAcctCurrCycCredit = oldAcctCurrCycCredit;
+    }
+
+    /**
+     * :purpose: Return the display-time snapshot of {@code acctCurrCycDebit} (``ACUP-OLD-CURR-CYC-DEBIT``).
+     * :output: the value the caller read before editing, or ``null`` when the caller
+     *     supplied no snapshot.
+     */
+    public BigDecimal getOldAcctCurrCycDebit() {
+        return oldAcctCurrCycDebit;
+    }
+
+    /**
+     * :purpose: Set the display-time snapshot of {@code acctCurrCycDebit} (``ACUP-OLD-CURR-CYC-DEBIT``).
+     * :param oldAcctCurrCycDebit: the value the caller read before editing.
+     */
+    public void setOldAcctCurrCycDebit(BigDecimal oldAcctCurrCycDebit) {
+        this.oldAcctCurrCycDebit = oldAcctCurrCycDebit;
+    }
+
+    /**
+     * :purpose: Return the display-time snapshot of {@code acctOpenDate} (``ACUP-OLD-OPEN-DATE``).
+     * :output: the value the caller read before editing, or ``null`` when the caller
+     *     supplied no snapshot.
+     */
+    public String getOldAcctOpenDate() {
+        return oldAcctOpenDate;
+    }
+
+    /**
+     * :purpose: Set the display-time snapshot of {@code acctOpenDate} (``ACUP-OLD-OPEN-DATE``).
+     * :param oldAcctOpenDate: the value the caller read before editing.
+     */
+    public void setOldAcctOpenDate(String oldAcctOpenDate) {
+        this.oldAcctOpenDate = oldAcctOpenDate;
+    }
+
+    /**
+     * :purpose: Return the display-time snapshot of {@code acctExpiraionDate} (``ACUP-OLD-EXPIRAION-DATE``).
+     * :output: the value the caller read before editing, or ``null`` when the caller
+     *     supplied no snapshot.
+     */
+    public String getOldAcctExpiraionDate() {
+        return oldAcctExpiraionDate;
+    }
+
+    /**
+     * :purpose: Set the display-time snapshot of {@code acctExpiraionDate} (``ACUP-OLD-EXPIRAION-DATE``).
+     * :param oldAcctExpiraionDate: the value the caller read before editing.
+     */
+    public void setOldAcctExpiraionDate(String oldAcctExpiraionDate) {
+        this.oldAcctExpiraionDate = oldAcctExpiraionDate;
+    }
+
+    /**
+     * :purpose: Return the display-time snapshot of {@code acctReissueDate} (``ACUP-OLD-REISSUE-DATE``).
+     * :output: the value the caller read before editing, or ``null`` when the caller
+     *     supplied no snapshot.
+     */
+    public String getOldAcctReissueDate() {
+        return oldAcctReissueDate;
+    }
+
+    /**
+     * :purpose: Set the display-time snapshot of {@code acctReissueDate} (``ACUP-OLD-REISSUE-DATE``).
+     * :param oldAcctReissueDate: the value the caller read before editing.
+     */
+    public void setOldAcctReissueDate(String oldAcctReissueDate) {
+        this.oldAcctReissueDate = oldAcctReissueDate;
+    }
+
+    /**
+     * :purpose: Return the display-time snapshot of {@code acctGroupId} (``ACUP-OLD-GROUP-ID``).
+     * :output: the value the caller read before editing, or ``null`` when the caller
+     *     supplied no snapshot.
+     */
+    public String getOldAcctGroupId() {
+        return oldAcctGroupId;
+    }
+
+    /**
+     * :purpose: Set the display-time snapshot of {@code acctGroupId} (``ACUP-OLD-GROUP-ID``).
+     * :param oldAcctGroupId: the value the caller read before editing.
+     */
+    public void setOldAcctGroupId(String oldAcctGroupId) {
+        this.oldAcctGroupId = oldAcctGroupId;
+    }
+
+    /**
+     * :purpose: Return the display-time snapshot of {@code custFirstName} (``ACUP-OLD-CUST-FIRST-NAME``).
+     * :output: the value the caller read before editing, or ``null`` when the caller
+     *     supplied no snapshot.
+     */
+    public String getOldCustFirstName() {
+        return oldCustFirstName;
+    }
+
+    /**
+     * :purpose: Set the display-time snapshot of {@code custFirstName} (``ACUP-OLD-CUST-FIRST-NAME``).
+     * :param oldCustFirstName: the value the caller read before editing.
+     */
+    public void setOldCustFirstName(String oldCustFirstName) {
+        this.oldCustFirstName = oldCustFirstName;
+    }
+
+    /**
+     * :purpose: Return the display-time snapshot of {@code custMiddleName} (``ACUP-OLD-CUST-MIDDLE-NAME``).
+     * :output: the value the caller read before editing, or ``null`` when the caller
+     *     supplied no snapshot.
+     */
+    public String getOldCustMiddleName() {
+        return oldCustMiddleName;
+    }
+
+    /**
+     * :purpose: Set the display-time snapshot of {@code custMiddleName} (``ACUP-OLD-CUST-MIDDLE-NAME``).
+     * :param oldCustMiddleName: the value the caller read before editing.
+     */
+    public void setOldCustMiddleName(String oldCustMiddleName) {
+        this.oldCustMiddleName = oldCustMiddleName;
+    }
+
+    /**
+     * :purpose: Return the display-time snapshot of {@code custLastName} (``ACUP-OLD-CUST-LAST-NAME``).
+     * :output: the value the caller read before editing, or ``null`` when the caller
+     *     supplied no snapshot.
+     */
+    public String getOldCustLastName() {
+        return oldCustLastName;
+    }
+
+    /**
+     * :purpose: Set the display-time snapshot of {@code custLastName} (``ACUP-OLD-CUST-LAST-NAME``).
+     * :param oldCustLastName: the value the caller read before editing.
+     */
+    public void setOldCustLastName(String oldCustLastName) {
+        this.oldCustLastName = oldCustLastName;
+    }
+
+    /**
+     * :purpose: Return the display-time snapshot of {@code custAddrLine1} (``ACUP-OLD-CUST-ADDR-LINE-1``).
+     * :output: the value the caller read before editing, or ``null`` when the caller
+     *     supplied no snapshot.
+     */
+    public String getOldCustAddrLine1() {
+        return oldCustAddrLine1;
+    }
+
+    /**
+     * :purpose: Set the display-time snapshot of {@code custAddrLine1} (``ACUP-OLD-CUST-ADDR-LINE-1``).
+     * :param oldCustAddrLine1: the value the caller read before editing.
+     */
+    public void setOldCustAddrLine1(String oldCustAddrLine1) {
+        this.oldCustAddrLine1 = oldCustAddrLine1;
+    }
+
+    /**
+     * :purpose: Return the display-time snapshot of {@code custAddrLine2} (``ACUP-OLD-CUST-ADDR-LINE-2``).
+     * :output: the value the caller read before editing, or ``null`` when the caller
+     *     supplied no snapshot.
+     */
+    public String getOldCustAddrLine2() {
+        return oldCustAddrLine2;
+    }
+
+    /**
+     * :purpose: Set the display-time snapshot of {@code custAddrLine2} (``ACUP-OLD-CUST-ADDR-LINE-2``).
+     * :param oldCustAddrLine2: the value the caller read before editing.
+     */
+    public void setOldCustAddrLine2(String oldCustAddrLine2) {
+        this.oldCustAddrLine2 = oldCustAddrLine2;
+    }
+
+    /**
+     * :purpose: Return the display-time snapshot of {@code custAddrLine3} (``ACUP-OLD-CUST-ADDR-LINE-3``).
+     * :output: the value the caller read before editing, or ``null`` when the caller
+     *     supplied no snapshot.
+     */
+    public String getOldCustAddrLine3() {
+        return oldCustAddrLine3;
+    }
+
+    /**
+     * :purpose: Set the display-time snapshot of {@code custAddrLine3} (``ACUP-OLD-CUST-ADDR-LINE-3``).
+     * :param oldCustAddrLine3: the value the caller read before editing.
+     */
+    public void setOldCustAddrLine3(String oldCustAddrLine3) {
+        this.oldCustAddrLine3 = oldCustAddrLine3;
+    }
+
+    /**
+     * :purpose: Return the display-time snapshot of {@code custAddrStateCd} (``ACUP-OLD-CUST-ADDR-STATE-CD``).
+     * :output: the value the caller read before editing, or ``null`` when the caller
+     *     supplied no snapshot.
+     */
+    public String getOldCustAddrStateCd() {
+        return oldCustAddrStateCd;
+    }
+
+    /**
+     * :purpose: Set the display-time snapshot of {@code custAddrStateCd} (``ACUP-OLD-CUST-ADDR-STATE-CD``).
+     * :param oldCustAddrStateCd: the value the caller read before editing.
+     */
+    public void setOldCustAddrStateCd(String oldCustAddrStateCd) {
+        this.oldCustAddrStateCd = oldCustAddrStateCd;
+    }
+
+    /**
+     * :purpose: Return the display-time snapshot of {@code custAddrCountryCd} (``ACUP-OLD-CUST-ADDR-COUNTRY-CD``).
+     * :output: the value the caller read before editing, or ``null`` when the caller
+     *     supplied no snapshot.
+     */
+    public String getOldCustAddrCountryCd() {
+        return oldCustAddrCountryCd;
+    }
+
+    /**
+     * :purpose: Set the display-time snapshot of {@code custAddrCountryCd} (``ACUP-OLD-CUST-ADDR-COUNTRY-CD``).
+     * :param oldCustAddrCountryCd: the value the caller read before editing.
+     */
+    public void setOldCustAddrCountryCd(String oldCustAddrCountryCd) {
+        this.oldCustAddrCountryCd = oldCustAddrCountryCd;
+    }
+
+    /**
+     * :purpose: Return the display-time snapshot of {@code custAddrZip} (``ACUP-OLD-CUST-ADDR-ZIP``).
+     * :output: the value the caller read before editing, or ``null`` when the caller
+     *     supplied no snapshot.
+     */
+    public String getOldCustAddrZip() {
+        return oldCustAddrZip;
+    }
+
+    /**
+     * :purpose: Set the display-time snapshot of {@code custAddrZip} (``ACUP-OLD-CUST-ADDR-ZIP``).
+     * :param oldCustAddrZip: the value the caller read before editing.
+     */
+    public void setOldCustAddrZip(String oldCustAddrZip) {
+        this.oldCustAddrZip = oldCustAddrZip;
+    }
+
+    /**
+     * :purpose: Return the display-time snapshot of {@code custPhoneNum1} (``ACUP-OLD-CUST-PHONE-NUM-1``).
+     * :output: the value the caller read before editing, or ``null`` when the caller
+     *     supplied no snapshot.
+     */
+    public String getOldCustPhoneNum1() {
+        return oldCustPhoneNum1;
+    }
+
+    /**
+     * :purpose: Set the display-time snapshot of {@code custPhoneNum1} (``ACUP-OLD-CUST-PHONE-NUM-1``).
+     * :param oldCustPhoneNum1: the value the caller read before editing.
+     */
+    public void setOldCustPhoneNum1(String oldCustPhoneNum1) {
+        this.oldCustPhoneNum1 = oldCustPhoneNum1;
+    }
+
+    /**
+     * :purpose: Return the display-time snapshot of {@code custPhoneNum2} (``ACUP-OLD-CUST-PHONE-NUM-2``).
+     * :output: the value the caller read before editing, or ``null`` when the caller
+     *     supplied no snapshot.
+     */
+    public String getOldCustPhoneNum2() {
+        return oldCustPhoneNum2;
+    }
+
+    /**
+     * :purpose: Set the display-time snapshot of {@code custPhoneNum2} (``ACUP-OLD-CUST-PHONE-NUM-2``).
+     * :param oldCustPhoneNum2: the value the caller read before editing.
+     */
+    public void setOldCustPhoneNum2(String oldCustPhoneNum2) {
+        this.oldCustPhoneNum2 = oldCustPhoneNum2;
+    }
+
+    /**
+     * :purpose: Return the display-time snapshot of {@code custSsn} (``ACUP-OLD-CUST-SSN``).
+     * :output: the value the caller read before editing, or ``null`` when the caller
+     *     supplied no snapshot.
+     */
+    public String getOldCustSsn() {
+        return oldCustSsn;
+    }
+
+    /**
+     * :purpose: Set the display-time snapshot of {@code custSsn} (``ACUP-OLD-CUST-SSN``).
+     * :param oldCustSsn: the value the caller read before editing.
+     */
+    public void setOldCustSsn(String oldCustSsn) {
+        this.oldCustSsn = oldCustSsn;
+    }
+
+    /**
+     * :purpose: Return the display-time snapshot of {@code custGovtIssuedId} (``ACUP-OLD-CUST-GOVT-ISSUED-ID``).
+     * :output: the value the caller read before editing, or ``null`` when the caller
+     *     supplied no snapshot.
+     */
+    public String getOldCustGovtIssuedId() {
+        return oldCustGovtIssuedId;
+    }
+
+    /**
+     * :purpose: Set the display-time snapshot of {@code custGovtIssuedId} (``ACUP-OLD-CUST-GOVT-ISSUED-ID``).
+     * :param oldCustGovtIssuedId: the value the caller read before editing.
+     */
+    public void setOldCustGovtIssuedId(String oldCustGovtIssuedId) {
+        this.oldCustGovtIssuedId = oldCustGovtIssuedId;
+    }
+
+    /**
+     * :purpose: Return the display-time snapshot of {@code custDobYyyyMmDd} (``ACUP-OLD-CUST-DOB-YYYY-MM-DD``).
+     * :output: the value the caller read before editing, or ``null`` when the caller
+     *     supplied no snapshot.
+     */
+    public String getOldCustDobYyyyMmDd() {
+        return oldCustDobYyyyMmDd;
+    }
+
+    /**
+     * :purpose: Set the display-time snapshot of {@code custDobYyyyMmDd} (``ACUP-OLD-CUST-DOB-YYYY-MM-DD``).
+     * :param oldCustDobYyyyMmDd: the value the caller read before editing.
+     */
+    public void setOldCustDobYyyyMmDd(String oldCustDobYyyyMmDd) {
+        this.oldCustDobYyyyMmDd = oldCustDobYyyyMmDd;
+    }
+
+    /**
+     * :purpose: Return the display-time snapshot of {@code custEftAccountId} (``ACUP-OLD-CUST-EFT-ACCOUNT-ID``).
+     * :output: the value the caller read before editing, or ``null`` when the caller
+     *     supplied no snapshot.
+     */
+    public String getOldCustEftAccountId() {
+        return oldCustEftAccountId;
+    }
+
+    /**
+     * :purpose: Set the display-time snapshot of {@code custEftAccountId} (``ACUP-OLD-CUST-EFT-ACCOUNT-ID``).
+     * :param oldCustEftAccountId: the value the caller read before editing.
+     */
+    public void setOldCustEftAccountId(String oldCustEftAccountId) {
+        this.oldCustEftAccountId = oldCustEftAccountId;
+    }
+
+    /**
+     * :purpose: Return the display-time snapshot of {@code custPriCardHolderInd} (``ACUP-OLD-CUST-PRI-HOLDER-IND``).
+     * :output: the value the caller read before editing, or ``null`` when the caller
+     *     supplied no snapshot.
+     */
+    public String getOldCustPriCardHolderInd() {
+        return oldCustPriCardHolderInd;
+    }
+
+    /**
+     * :purpose: Set the display-time snapshot of {@code custPriCardHolderInd} (``ACUP-OLD-CUST-PRI-HOLDER-IND``).
+     * :param oldCustPriCardHolderInd: the value the caller read before editing.
+     */
+    public void setOldCustPriCardHolderInd(String oldCustPriCardHolderInd) {
+        this.oldCustPriCardHolderInd = oldCustPriCardHolderInd;
+    }
+
+    /**
+     * :purpose: Return the display-time snapshot of {@code custFicoCreditScore} (``ACUP-OLD-CUST-FICO-SCORE``).
+     * :output: the value the caller read before editing, or ``null`` when the caller
+     *     supplied no snapshot.
+     */
+    public Integer getOldCustFicoCreditScore() {
+        return oldCustFicoCreditScore;
+    }
+
+    /**
+     * :purpose: Set the display-time snapshot of {@code custFicoCreditScore} (``ACUP-OLD-CUST-FICO-SCORE``).
+     * :param oldCustFicoCreditScore: the value the caller read before editing.
+     */
+    public void setOldCustFicoCreditScore(Integer oldCustFicoCreditScore) {
+        this.oldCustFicoCreditScore = oldCustFicoCreditScore;
     }
 
 }

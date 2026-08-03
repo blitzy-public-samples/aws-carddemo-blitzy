@@ -30,9 +30,12 @@ import static org.mockito.Mockito.when;
 import com.carddemo.common.domain.SecurityUser;
 import com.carddemo.common.dto.AddUserRequestDto;
 import com.carddemo.common.dto.UpdateUserRequestDto;
+import com.carddemo.common.dto.UserListResponseDto;
 import com.carddemo.common.dto.UserResponseDto;
+import com.carddemo.common.dto.UserWriteResponseDto;
 import com.carddemo.common.exception.CardDemoException;
 import com.carddemo.common.exception.RecordNotFoundException;
+import com.carddemo.common.security.SessionPrincipalIndex;
 import com.carddemo.user.mapper.UserMapper;
 import com.carddemo.user.repository.UserRepository;
 import java.util.ArrayList;
@@ -91,6 +94,9 @@ class UserServiceTest {
 
     @Mock
     private PasswordEncoder passwordEncoder;
+
+    @Mock
+    private SessionPrincipalIndex sessionPrincipalIndex;
 
     @InjectMocks
     private UserService userService;
@@ -218,11 +224,13 @@ class UserServiceTest {
         when(userMapper.toEntity(request)).thenReturn(entity);
         when(passwordEncoder.encode("rawPass")).thenReturn("$2a$hash");
         when(userRepository.save(any(SecurityUser.class))).thenReturn(savedUser);
-        when(userMapper.toResponse(savedUser)).thenReturn(expected);
 
-        UserResponseDto result = userService.addUser(request, "rawPass");
+        UserWriteResponseDto result = userService.addUser(request, "rawPass");
 
-        assertThat(result).isSameAs(expected);
+        // COUSR01C reports 'User <id> has been added ...' on the screen, so the write
+        // response carries that verbatim message alongside the persisted projection.
+        assertThat(result.getUserId()).isEqualTo(savedUser.getSecUsrId());
+        assertThat(result.getMessage()).isEqualTo("User USER0001 has been added ...");
         verify(passwordEncoder).encode("rawPass");
 
         ArgumentCaptor<SecurityUser> captor = ArgumentCaptor.forClass(SecurityUser.class);
@@ -351,11 +359,11 @@ class UserServiceTest {
         when(passwordEncoder.matches("newRaw", "$2a$storedHash")).thenReturn(false);
         when(passwordEncoder.encode("newRaw")).thenReturn("$2a$new");
         when(userRepository.save(any(SecurityUser.class))).thenReturn(savedUser);
-        when(userMapper.toResponse(savedUser)).thenReturn(expected);
 
-        UserResponseDto result = userService.updateUser("USER0001", request, "newRaw");
+        UserWriteResponseDto result = userService.updateUser("USER0001", request, "newRaw");
 
-        assertThat(result).isSameAs(expected);
+        assertThat(result.getUserId()).isEqualTo(savedUser.getSecUsrId());
+        assertThat(result.getMessage()).isEqualTo("User USER0001 has been updated ...");
         verify(passwordEncoder).encode("newRaw");
 
         ArgumentCaptor<SecurityUser> captor = ArgumentCaptor.forClass(SecurityUser.class);
@@ -373,11 +381,11 @@ class UserServiceTest {
         when(userRepository.findBySecUsrId("USER0001")).thenReturn(Optional.of(storedUser));
         when(passwordEncoder.matches("samePass", "$2a$storedHash")).thenReturn(true);
         when(userRepository.save(any(SecurityUser.class))).thenReturn(savedUser);
-        when(userMapper.toResponse(savedUser)).thenReturn(expected);
 
-        UserResponseDto result = userService.updateUser("USER0001", request, "samePass");
+        UserWriteResponseDto result = userService.updateUser("USER0001", request, "samePass");
 
-        assertThat(result).isSameAs(expected);
+        assertThat(result.getUserId()).isEqualTo(savedUser.getSecUsrId());
+        assertThat(result.getMessage()).isEqualTo("User USER0001 has been updated ...");
         verify(userRepository).save(any(SecurityUser.class));
         verify(passwordEncoder, never()).encode(any());
     }
@@ -541,6 +549,139 @@ class UserServiceTest {
     }
 
     // ================================================================
+    // Live-session revocation on privilege change and deletion
+    // (no legacy analogue: the 3270 re-read USRSEC on every transaction,
+    //  so maintenance took effect immediately)
+    // ================================================================
+
+    @Test
+    @DisplayName("deleteUser revokes every live session of the deleted user as USER_DELETED")
+    void deleteUser_found_revokesLiveSessions() {
+        when(userRepository.findBySecUsrId("USER0001")).thenReturn(Optional.of(storedUser));
+
+        userService.deleteUser("USER0001");
+
+        verify(sessionPrincipalIndex).revokeSessions("USER0001", "USER_DELETED");
+    }
+
+    @Test
+    @DisplayName("deleteUser does NOT revoke sessions when the user id does not exist")
+    void deleteUser_notFound_doesNotRevokeSessions() {
+        when(userRepository.findBySecUsrId("MISSING1")).thenReturn(Optional.empty());
+
+        assertThatThrownBy(() -> userService.deleteUser("MISSING1"))
+                .isExactlyInstanceOf(RecordNotFoundException.class);
+
+        verifyNoInteractions(sessionPrincipalIndex);
+    }
+
+    @Test
+    @DisplayName("deleteUser does NOT revoke sessions when the delete itself fails")
+    void deleteUser_repositoryError_doesNotRevokeSessions() {
+        when(userRepository.findBySecUsrId("USER0001")).thenReturn(Optional.of(storedUser));
+        doThrow(new DataAccessResourceFailureException("db down"))
+                .when(userRepository).delete(storedUser);
+
+        assertThatThrownBy(() -> userService.deleteUser("USER0001"))
+                .isExactlyInstanceOf(CardDemoException.class);
+
+        verifyNoInteractions(sessionPrincipalIndex);
+    }
+
+    @Test
+    @DisplayName("updateUser revokes sessions as ROLE_CHANGED when SEC-USR-TYPE changes")
+    void updateUser_roleChanged_revokesLiveSessions() {
+        UpdateUserRequestDto request = updReq("John", "Doe", "A");
+        SecurityUser savedUser = user("USER0001", "John", "Doe", "A", "$2a$storedHash");
+
+        when(userRepository.findBySecUsrId("USER0001")).thenReturn(Optional.of(storedUser));
+        when(passwordEncoder.matches("samePass", "$2a$storedHash")).thenReturn(true);
+        when(userRepository.save(any(SecurityUser.class))).thenReturn(savedUser);
+
+        userService.updateUser("USER0001", request, "samePass");
+
+        verify(sessionPrincipalIndex).revokeSessions("USER0001", "ROLE_CHANGED");
+    }
+
+    @Test
+    @DisplayName("updateUser revokes sessions as CREDENTIAL_CHANGED when only the password changes")
+    void updateUser_passwordChangedOnly_revokesLiveSessions() {
+        UpdateUserRequestDto request = updReq("John", "Doe", "U");
+        SecurityUser savedUser = user("USER0001", "John", "Doe", "U", "$2a$new");
+
+        when(userRepository.findBySecUsrId("USER0001")).thenReturn(Optional.of(storedUser));
+        when(passwordEncoder.matches("newRaw", "$2a$storedHash")).thenReturn(false);
+        when(passwordEncoder.encode("newRaw")).thenReturn("$2a$new");
+        when(userRepository.save(any(SecurityUser.class))).thenReturn(savedUser);
+
+        userService.updateUser("USER0001", request, "newRaw");
+
+        verify(sessionPrincipalIndex).revokeSessions("USER0001", "CREDENTIAL_CHANGED");
+    }
+
+    @Test
+    @DisplayName("updateUser reports ROLE_CHANGED once when the role and the password both change")
+    void updateUser_roleAndPasswordChanged_reportsRoleChangedOnly() {
+        UpdateUserRequestDto request = updReq("Johnny", "Doer", "A");
+        SecurityUser savedUser = user("USER0001", "Johnny", "Doer", "A", "$2a$new");
+
+        when(userRepository.findBySecUsrId("USER0001")).thenReturn(Optional.of(storedUser));
+        when(passwordEncoder.matches("newRaw", "$2a$storedHash")).thenReturn(false);
+        when(passwordEncoder.encode("newRaw")).thenReturn("$2a$new");
+        when(userRepository.save(any(SecurityUser.class))).thenReturn(savedUser);
+
+        userService.updateUser("USER0001", request, "newRaw");
+
+        verify(sessionPrincipalIndex).revokeSessions("USER0001", "ROLE_CHANGED");
+        verify(sessionPrincipalIndex, never()).revokeSessions(any(), eq("CREDENTIAL_CHANGED"));
+    }
+
+    @Test
+    @DisplayName("updateUser does NOT revoke sessions when only the name changes (no authority impact)")
+    void updateUser_nameChangedOnly_doesNotRevokeSessions() {
+        UpdateUserRequestDto request = updReq("Johnny", "Doe", "U");
+        SecurityUser savedUser = user("USER0001", "Johnny", "Doe", "U", "$2a$storedHash");
+
+        when(userRepository.findBySecUsrId("USER0001")).thenReturn(Optional.of(storedUser));
+        when(passwordEncoder.matches("samePass", "$2a$storedHash")).thenReturn(true);
+        when(userRepository.save(any(SecurityUser.class))).thenReturn(savedUser);
+
+        userService.updateUser("USER0001", request, "samePass");
+
+        verifyNoInteractions(sessionPrincipalIndex);
+    }
+
+    @Test
+    @DisplayName("updateUser does NOT revoke sessions when nothing changed")
+    void updateUser_noChange_doesNotRevokeSessions() {
+        UpdateUserRequestDto request = updReq("John", "Doe", "U");
+
+        when(userRepository.findBySecUsrId("USER0001")).thenReturn(Optional.of(storedUser));
+        when(passwordEncoder.matches("samePass", "$2a$storedHash")).thenReturn(true);
+
+        assertThatThrownBy(() -> userService.updateUser("USER0001", request, "samePass"))
+                .isExactlyInstanceOf(CardDemoException.class);
+
+        verifyNoInteractions(sessionPrincipalIndex);
+    }
+
+    @Test
+    @DisplayName("addUser never revokes sessions (a new user has none)")
+    void addUser_doesNotRevokeSessions() {
+        AddUserRequestDto request = addReq("USER0009", "New", "User", "U");
+        SecurityUser savedUser = user("USER0009", "New", "User", "U", "$2a$new");
+
+        when(userRepository.existsBySecUsrId("USER0009")).thenReturn(false);
+        when(userMapper.toEntity(request)).thenReturn(user("USER0009", "New", "User", "U", null));
+        when(passwordEncoder.encode("rawPass")).thenReturn("$2a$new");
+        when(userRepository.save(any(SecurityUser.class))).thenReturn(savedUser);
+
+        userService.addUser(request, "rawPass");
+
+        verifyNoInteractions(sessionPrincipalIndex);
+    }
+
+    // ================================================================
     // listUsers / paging (COUSR00C / CU00) — 10 users per page
     // ================================================================
 
@@ -552,9 +693,11 @@ class UserServiceTest {
                 .thenReturn(new PageImpl<>(usersList(10)));
         when(userMapper.toResponseList(anyList())).thenReturn(tenDtos);
 
-        List<UserResponseDto> result = userService.listUsers(0);
+        UserListResponseDto result = userService.listUsers(0);
 
-        assertThat(result).isSameAs(tenDtos).hasSize(10);
+        assertThat(result.getUsers()).isSameAs(tenDtos).hasSize(10);
+        assertThat(result.getPageNumber()).isZero();
+        assertThat(result.getMessage()).isNull();
 
         ArgumentCaptor<Pageable> pageableCaptor = ArgumentCaptor.forClass(Pageable.class);
         verify(userRepository).findAllByOrderBySecUsrIdAsc(pageableCaptor.capture());
@@ -584,9 +727,9 @@ class UserServiceTest {
                 .thenReturn(new PageImpl<>(usersList(3)));
         when(userMapper.toResponseList(anyList())).thenReturn(dtosList(3));
 
-        List<UserResponseDto> result = userService.listUsers(4);
+        UserListResponseDto result = userService.listUsers(4);
 
-        assertThat(result).hasSize(3);
+        assertThat(result.getUsers()).hasSize(3);
     }
 
     @Test
@@ -597,9 +740,10 @@ class UserServiceTest {
                 .thenReturn(usersList(10));
         when(userMapper.toResponseList(anyList())).thenReturn(dtos);
 
-        List<UserResponseDto> result = userService.pageForward("USER0010");
+        UserListResponseDto result = userService.pageForward("USER0010");
 
-        assertThat(result).isSameAs(dtos).hasSize(10);
+        assertThat(result.getUsers()).isSameAs(dtos).hasSize(10);
+        assertThat(result.isNextPage()).isTrue();
 
         ArgumentCaptor<Pageable> pageableCaptor = ArgumentCaptor.forClass(Pageable.class);
         verify(userRepository)
@@ -681,5 +825,93 @@ class UserServiceTest {
                 .isExactlyInstanceOf(CardDemoException.class)
                 .hasMessage(MSG_INVALID_SEL);
         verifyNoInteractions(userRepository, userMapper, passwordEncoder);
+    }
+
+    // ================================================================
+    // COUSR00C paging banners reaching the client (WS-MESSAGE -> ERRMSGO)
+    // ================================================================
+
+    /**
+     * :purpose: An empty first page reports the verbatim ``'You are at the top of the
+     *  page...'`` banner on the response rather than only in the log.
+     */
+    @Test
+    @DisplayName("listUsers on an empty first page carries 'You are at the top of the page...'")
+    void listUsers_emptyFirstPage_carriesTopOfPageBanner() {
+        when(userRepository.findAllByOrderBySecUsrIdAsc(any(Pageable.class)))
+                .thenReturn(new PageImpl<>(List.of()));
+        when(userMapper.toResponseList(anyList())).thenReturn(List.of());
+
+        UserListResponseDto result = userService.listUsers(0);
+
+        assertThat(result.getUsers()).isEmpty();
+        assertThat(result.getMessage()).isEqualTo("You are at the top of the page...");
+    }
+
+    /**
+     * :purpose: An empty page past the first reports the verbatim ``'You have reached the
+     *  bottom of the page...'`` banner on the response.
+     */
+    @Test
+    @DisplayName("listUsers on an empty later page carries 'You have reached the bottom of the page...'")
+    void listUsers_emptyLaterPage_carriesBottomBanner() {
+        when(userRepository.findAllByOrderBySecUsrIdAsc(any(Pageable.class)))
+                .thenReturn(new PageImpl<>(List.of()));
+        when(userMapper.toResponseList(anyList())).thenReturn(List.of());
+
+        UserListResponseDto result = userService.listUsers(7);
+
+        assertThat(result.getUsers()).isEmpty();
+        assertThat(result.getMessage()).isEqualTo("You have reached the bottom of the page...");
+    }
+
+    /**
+     * :purpose: A negative page index has no legacy analogue and reports the same top
+     *  boundary the PF7 key reports, never an unexpected server error.
+     */
+    @Test
+    @DisplayName("listUsers with a negative page reports 'You are already at the top of the page...'")
+    void listUsers_negativePage_reportsTopBoundary() {
+        assertThatThrownBy(() -> userService.listUsers(-1))
+                .isExactlyInstanceOf(CardDemoException.class)
+                .hasMessage("You are already at the top of the page...");
+        verifyNoInteractions(userRepository, userMapper, passwordEncoder);
+    }
+
+    /**
+     * :purpose: A short backward page means the browse reached the first record, so
+     *  ``pageBackward`` reports the verbatim ``'You have reached the top of the page...'``
+     *  banner on the response.
+     */
+    @Test
+    @DisplayName("pageBackward on a short page carries 'You have reached the top of the page...'")
+    void pageBackward_shortPage_carriesReachedTopBanner() {
+        when(userRepository.findBySecUsrIdLessThanOrderBySecUsrIdDesc(eq("USER0004"), any(Pageable.class)))
+                .thenReturn(usersList(3));
+        when(userMapper.toResponseList(anyList())).thenReturn(dtosList(3));
+
+        UserListResponseDto result = userService.pageBackward("USER0004");
+
+        assertThat(result.getUsers()).hasSize(3);
+        assertThat(result.getMessage()).isEqualTo("You have reached the top of the page...");
+        assertThat(result.isNextPage()).isTrue();
+    }
+
+    /**
+     * :purpose: A short forward page means the browse reached end-of-file, so
+     *  ``pageForward`` reports the bottom banner and clears the forward-page flag.
+     */
+    @Test
+    @DisplayName("pageForward on a short page carries the bottom banner and clears nextPage")
+    void pageForward_shortPage_carriesBottomBanner() {
+        when(userRepository.findBySecUsrIdGreaterThanOrderBySecUsrIdAsc(eq("USER0001"), any(Pageable.class)))
+                .thenReturn(usersList(4));
+        when(userMapper.toResponseList(anyList())).thenReturn(dtosList(4));
+
+        UserListResponseDto result = userService.pageForward("USER0001");
+
+        assertThat(result.getUsers()).hasSize(4);
+        assertThat(result.getMessage()).isEqualTo("You have reached the bottom of the page...");
+        assertThat(result.isNextPage()).isFalse();
     }
 }

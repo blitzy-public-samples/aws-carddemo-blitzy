@@ -1,0 +1,99 @@
+---
+# =============================================================================
+# Jaeger v2 Deployment — CardDemo distributed-tracing backend.
+#
+# :purpose: Receives the OpenTelemetry (OTLP) spans every CardDemo service
+#           exports through Micrometer Tracing, and serves the trace query API
+#           and UI. This is the collector half of the Observability rule's
+#           "distributed tracing across service boundaries" deliverable
+#           (AAP 0.7.5): without it, the services record spans that have nowhere
+#           to go and no cross-service trace can ever be inspected.
+# :output:  A Deployment named ``jaeger`` scheduling one pod that accepts OTLP
+#           spans on container ports 4317 (gRPC) and 4318 (HTTP) and serves the
+#           query API/UI on 16686.
+# :notes:   Every backend service points at this collector through the
+#           ``MANAGEMENT_OPENTELEMETRY_TRACING_EXPORT_OTLP_ENDPOINT`` entry of the
+#           ``carddemo-config`` ConfigMap. Span export is deliberately
+#           BEST-EFFORT: no service gates its own startup or readiness on this
+#           workload, so a tracing outage can never take the application down.
+#           Storage is the in-memory default, so traces are transient
+#           observability data held on an ephemeral ``emptyDir`` rather than a
+#           PersistentVolumeClaim — a production deployment swaps in a durable
+#           backing store. Hardened like the other workloads (MJ-10): non-root,
+#           RuntimeDefault seccomp, all capabilities dropped, read-only root
+#           filesystem with writable scratch mounted in.
+# =============================================================================
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: jaeger
+  labels:
+    app: jaeger
+    app.kubernetes.io/part-of: carddemo
+    app.kubernetes.io/component: tracing
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: jaeger
+  template:
+    metadata:
+      labels:
+        app: jaeger
+        app.kubernetes.io/part-of: carddemo
+        app.kubernetes.io/component: tracing
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: jaeger
+          image: jaegertracing/jaeger:2.11.0
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: otlp-grpc
+              containerPort: 4317
+            - name: otlp-http
+              containerPort: 4318
+            - name: query
+              containerPort: 16686
+            - name: admin
+              containerPort: 13133
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: 500m
+              memory: 768Mi
+          # The admin port serves the collector's own health, so the probes use a
+          # TCP check on it rather than an HTTP path (the minimal image ships no
+          # shell utilities and the admin endpoint is not versioned).
+          livenessProbe:
+            tcpSocket:
+              port: 13133
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+          readinessProbe:
+            tcpSocket:
+              port: 4318
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir: {}

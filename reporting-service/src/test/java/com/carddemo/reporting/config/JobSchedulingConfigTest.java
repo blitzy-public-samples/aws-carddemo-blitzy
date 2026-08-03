@@ -73,13 +73,11 @@ class JobSchedulingConfigTest {
         JobExecution execution = mock(JobExecution.class);
         when(jobLauncher.run(eq(statementGenerationJob), any(JobParameters.class)))
                 .thenReturn(execution);
-        JobSchedulingConfig config = new JobSchedulingConfig(jobLauncher, statementGenerationJob);
+        JobSchedulingConfig config = new JobSchedulingConfig(jobLauncher, statementGenerationJob, "statements.txt", "statements.html");
 
-        CompletableFuture<JobExecution> future =
-                config.launchStatementGeneration("Custom", "2024-01-01", "2024-01-31");
+        JobExecution future = config.launchStatementGeneration("Custom", "2024-01-01", "2024-01-31");
 
-        assertThat(future).isCompleted();
-        assertThat(future.get()).isSameAs(execution);
+                assertThat(future).isSameAs(execution);
 
         ArgumentCaptor<JobParameters> captor = ArgumentCaptor.forClass(JobParameters.class);
         verify(jobLauncher).run(eq(statementGenerationJob), captor.capture());
@@ -103,7 +101,7 @@ class JobSchedulingConfigTest {
                 new JobExecutionAlreadyRunningException("job already running");
         when(jobLauncher.run(eq(statementGenerationJob), any(JobParameters.class)))
                 .thenThrow(cause);
-        JobSchedulingConfig config = new JobSchedulingConfig(jobLauncher, statementGenerationJob);
+        JobSchedulingConfig config = new JobSchedulingConfig(jobLauncher, statementGenerationJob, "statements.txt", "statements.html");
 
         assertThatThrownBy(() ->
                 config.launchStatementGeneration("Monthly", "2024-02-01", "2024-02-29"))
@@ -123,7 +121,7 @@ class JobSchedulingConfigTest {
         JobExecution execution = mock(JobExecution.class);
         when(jobLauncher.run(eq(statementGenerationJob), any(JobParameters.class)))
                 .thenReturn(execution);
-        JobSchedulingConfig config = new JobSchedulingConfig(jobLauncher, statementGenerationJob);
+        JobSchedulingConfig config = new JobSchedulingConfig(jobLauncher, statementGenerationJob, "statements.txt", "statements.html");
 
         config.launchStatementGeneration("Custom", "2024-01-01", "2024-01-31");
         config.launchStatementGeneration("Custom", "2024-01-01", "2024-01-31");

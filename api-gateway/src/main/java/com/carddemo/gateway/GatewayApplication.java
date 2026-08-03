@@ -15,24 +15,39 @@
  */
 package com.carddemo.gateway;
 
-import org.springframework.boot.SpringApplication;
-import org.springframework.boot.autoconfigure.SpringBootApplication;
-import org.springframework.context.annotation.Import;
-
 import com.carddemo.common.config.GlobalExceptionHandler;
 import com.carddemo.common.config.ObservabilityConfig;
+import com.carddemo.common.config.SessionRedisConfig;
+import com.carddemo.common.config.WebHardeningConfig;
+import com.carddemo.common.config.WebObservabilityConfig;
 
+import org.springframework.boot.SpringApplication;
+import org.springframework.boot.autoconfigure.SpringBootApplication;
+import org.springframework.boot.security.autoconfigure.UserDetailsServiceAutoConfiguration;
+import org.springframework.context.annotation.Import;
+
+import com.carddemo.common.config.CardDemoErrorController;
+import com.carddemo.common.config.ContainerErrorReportConfig;
+import com.carddemo.common.config.GlobalExceptionHandler;
+import com.carddemo.common.config.SecurityExceptionHandler;
+import com.carddemo.common.config.ObservabilityConfig;
+import com.carddemo.common.config.RedisCommandMetricsConfig;
+import com.carddemo.common.config.SessionRedisConfig;
+import com.carddemo.common.config.WebObservabilityConfig;
 /**
  * :purpose: Executable entry point for the CardDemo API Gateway, a Spring Cloud
  *     Gateway Server WebMVC (servlet) edge router that also serves the
  *     menu-navigation endpoints re-platforming legacy CICS transactions
  *     CM00 (COMEN01C) and CA00 (COADM01C).
- * :note: Explicitly imports the shared carddemo-common ObservabilityConfig and
+ * :note: Explicitly imports the shared carddemo-common ObservabilityConfig,
+ *     WebObservabilityConfig (which registers the shared correlation-id filter) and
  *     GlobalExceptionHandler because that library ships no auto-configuration
  *     imports file.
  */
-@SpringBootApplication
-@Import({ ObservabilityConfig.class, GlobalExceptionHandler.class })
+@SpringBootApplication(exclude = UserDetailsServiceAutoConfiguration.class)
+@Import({ ObservabilityConfig.class, GlobalExceptionHandler.class, CardDemoErrorController.class,
+        SecurityExceptionHandler.class, ContainerErrorReportConfig.class, SessionRedisConfig.class,
+        RedisCommandMetricsConfig.class, WebObservabilityConfig.class, WebHardeningConfig.class })
 public class GatewayApplication {
 
     /**

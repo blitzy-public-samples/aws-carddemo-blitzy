@@ -31,6 +31,21 @@
             <version>${project.version}</version>
         </dependency>
 
+        <!--
+          Shared test-support utilities from carddemo-common (test-jar), above all
+          com.carddemo.common.testsupport.MigratedSchemaContainer / CardDemoSchemaMigrations:
+          they provide a PostgreSQL container whose schema is produced by the owning modules'
+          real committed Flyway migrations, so integration tests validate against the deployed
+          schema instead of one generated from the entities.
+        -->
+        <dependency>
+            <groupId>com.carddemo</groupId>
+            <artifactId>carddemo-common</artifactId>
+            <version>${project.version}</version>
+            <type>test-jar</type>
+            <scope>test</scope>
+        </dependency>
+
         <!-- REST controllers (CICS CU00-CU03 -> HTTP endpoints). -->
         <dependency>
             <groupId>org.springframework.boot</groupId>
@@ -91,11 +106,48 @@
             <artifactId>micrometer-registry-prometheus</artifactId>
         </dependency>
 
-        <!-- Distributed tracing via the OpenTelemetry bridge. -->
+        <!--
+          Distributed tracing (AAP 0.7.5). The Boot OpenTelemetry starter brings the
+          Micrometer Tracing OTel bridge TOGETHER WITH the tracing/OTel
+          auto-configuration and the OTLP span exporter. The bridge alone leaves
+          no Tracer in the context, so no trace context is created and every
+          traceId/spanId stays empty (QA F28).
+        -->
         <dependency>
-            <groupId>io.micrometer</groupId>
-            <artifactId>micrometer-tracing-bridge-otel</artifactId>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-opentelemetry</artifactId>
         </dependency>
+
+        <!--
+          Tracing auto-configuration. Spring Boot 4 ships auto-configuration in
+          dedicated modules, so the bridge above is inert on its own: without these
+          two modules no Tracer or ObservationRegistry tracing handler is created and
+          no traceId/spanId ever reaches the SLF4J MDC, leaving the structured log
+          lines uncorrelatable across service boundaries (AAP 0.7.5).
+        -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-micrometer-tracing</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-micrometer-tracing-opentelemetry</artifactId>
+        </dependency>
+
+        <!--
+          Spring Boot 4 extracted tracing auto-configuration out of spring-boot-actuator into
+          dedicated modules. Without BOTH of the modules below the bridge above is completely
+          inert: no io.micrometer.tracing.Tracer bean is created, no spans are produced, the
+          management.tracing.sampling.probability setting is ignored, and the traceId/spanId
+          fields of the logback-spring.xml pattern stay permanently empty.
+            * spring-boot-micrometer-tracing               -> MicrometerTracingAutoConfiguration
+                                                              (span-producing observation handlers)
+            * spring-boot-micrometer-tracing-opentelemetry -> OpenTelemetryTracingAutoConfiguration
+                                                              (SdkTracerProvider + OtelTracer +
+                                                               W3C context propagators)
+          No OTLP/Zipkin exporter artifact is declared, so spans are created and correlated into
+          the MDC but not shipped off-box; adding an exporter is a deployment-time choice.
+        -->
 
         <!-- PostgreSQL JDBC driver (needed at runtime by the executable service). -->
         <dependency>
@@ -112,6 +164,16 @@
         <dependency>
             <groupId>org.flywaydb</groupId>
             <artifactId>flyway-database-postgresql</artifactId>
+        </dependency>
+        <!--
+          Spring Boot 4 modularized auto-configuration: FlywayAutoConfiguration lives in the
+          spring-boot-flyway module (it is NOT bundled with flyway-core). Without it, the shared
+          carddemo-common migrations never run and Hibernate `validate` fails on the missing
+          business tables (QA Issue 1(a)). It is gated by `spring.flyway.enabled`.
+        -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-flyway</artifactId>
         </dependency>
 
         <!-- Test stack: JUnit 5 (Jupiter), AssertJ, Mockito, Spring Test. -->

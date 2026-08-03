@@ -36,43 +36,43 @@ import jakarta.validation.constraints.Size;
 public class ReportRequestDto {
 
     /** :purpose: MONTHLY selector flag (CORPT00 ``MONTHLYI`` PIC X(01)). */
-    @Size(max = 1)
+    @Size(max = 1, message = "Select a report type to print report...")
     private String monthly;
 
     /** :purpose: YEARLY selector flag (CORPT00 ``YEARLYI`` PIC X(01)). */
-    @Size(max = 1)
+    @Size(max = 1, message = "Select a report type to print report...")
     private String yearly;
 
     /** :purpose: CUSTOM selector flag (CORPT00 ``CUSTOMI`` PIC X(01)). */
-    @Size(max = 1)
+    @Size(max = 1, message = "Select a report type to print report...")
     private String custom;
 
     /** :purpose: Custom start-date month (CORPT00 ``SDTMMI`` PIC X(02)). */
-    @Size(max = 2)
+    @Size(max = 2, message = "Start Date - Not a valid Month...")
     private String startDateMonth;
 
     /** :purpose: Custom start-date day (CORPT00 ``SDTDDI`` PIC X(02)). */
-    @Size(max = 2)
+    @Size(max = 2, message = "Start Date - Not a valid Day...")
     private String startDateDay;
 
     /** :purpose: Custom start-date year (CORPT00 ``SDTYYYYI`` PIC X(04)). */
-    @Size(max = 4)
+    @Size(max = 4, message = "Start Date - Not a valid Year...")
     private String startDateYear;
 
     /** :purpose: Custom end-date month (CORPT00 ``EDTMMI`` PIC X(02)). */
-    @Size(max = 2)
+    @Size(max = 2, message = "End Date - Not a valid Month...")
     private String endDateMonth;
 
     /** :purpose: Custom end-date day (CORPT00 ``EDTDDI`` PIC X(02)). */
-    @Size(max = 2)
+    @Size(max = 2, message = "End Date - Not a valid Day...")
     private String endDateDay;
 
     /** :purpose: Custom end-date year (CORPT00 ``EDTYYYYI`` PIC X(04)). */
-    @Size(max = 4)
+    @Size(max = 4, message = "End Date - Not a valid Year...")
     private String endDateYear;
 
     /** :purpose: Confirmation flag (CORPT00 ``CONFIRMI`` PIC X(01)). */
-    @Size(max = 1)
+    @Size(max = 1, message = "Invalid value. Valid values are (Y/N)...")
     private String confirm;
 
     /**

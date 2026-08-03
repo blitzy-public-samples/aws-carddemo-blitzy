@@ -24,17 +24,15 @@ import com.carddemo.account.repository.CardXrefRepository;
 import com.carddemo.account.repository.CustomerRepository;
 import com.carddemo.account.service.AccountService;
 import com.carddemo.common.domain.Account;
-import com.carddemo.common.domain.CardXref;
 import com.carddemo.common.domain.Customer;
 import com.carddemo.common.dto.AccountUpdateRequestDto;
 import com.carddemo.common.dto.AccountUpdateResponseDto;
+import com.carddemo.common.testsupport.MigratedSchemaContainer;
 
 import java.math.BigDecimal;
 import java.util.Map;
 
-import org.flywaydb.core.Flyway;
 import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -44,10 +42,6 @@ import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
-import org.testcontainers.containers.PostgreSQLContainer;
-import org.testcontainers.junit.jupiter.Container;
-import org.testcontainers.junit.jupiter.Testcontainers;
-import org.testcontainers.utility.DockerImageName;
 
 /**
  * :purpose: Full-context integration test proving that the migrated account
@@ -69,58 +63,22 @@ import org.testcontainers.utility.DockerImageName;
  */
 @SpringBootTest
 @ActiveProfiles("test")
-@Testcontainers
 public class AtomicRollbackIT {
 
     /**
-     * :purpose: Ephemeral PostgreSQL 18 backing datastore, started once for the
-     *     class by the Testcontainers JUnit 5 extension. Its connection details
-     *     are bound to the Spring datasource by {@link #datasourceProperties}.
-     */
-    @Container
-    static final PostgreSQLContainer<?> POSTGRES =
-            new PostgreSQLContainer<>(DockerImageName.parse("postgres:18"))
-                    .withDatabaseName("carddemo")
-                    .withUsername("test")
-                    .withPassword("test");
-
-    /**
-     * :purpose: Bind the running container's JDBC coordinates to the Spring
-     *     datasource and relax Hibernate schema validation for this context. The
-     *     account-service {@code @EntityScan("com.carddemo.common.domain")}
-     *     registers every shared entity, but the account-service Flyway
-     *     migrations (V1-V4) create only the ``customers`` and ``accounts``
-     *     tables; ``ddl-auto=none`` lets the context boot without validating the
-     *     unrelated entities while leaving the Flyway-owned production schema
-     *     untouched (no test-side schema redefinition).
+     * :purpose: Bind the Spring datasource to the shared, already-migrated ``postgres:18``
+     *     container from
+     *     :java:class:`com.carddemo.common.testsupport.MigratedSchemaContainer`. Its schema
+     *     and seed data are produced exclusively by the committed Flyway migrations of every
+     *     owning module, so the ``test`` profile's ``ddl-auto: validate`` verifies all
+     *     entity-scanned mappings (``@EntityScan("com.carddemo.common.domain")``) against the
+     *     schema a deployment gets. No table is redefined in the test tree.
      * :param registry: the dynamic property registry populated before the
      *     application context starts.
      */
     @DynamicPropertySource
     static void datasourceProperties(DynamicPropertyRegistry registry) {
-        registry.add("spring.datasource.url", POSTGRES::getJdbcUrl);
-        registry.add("spring.datasource.username", POSTGRES::getUsername);
-        registry.add("spring.datasource.password", POSTGRES::getPassword);
-        registry.add("spring.datasource.driver-class-name", POSTGRES::getDriverClassName);
-        registry.add("spring.jpa.hibernate.ddl-auto", () -> "none");
-    }
-
-    /**
-     * :purpose: Apply the account-service Flyway migrations (V1 through V4) to the
-     *     ephemeral container once, before any test runs, creating and seeding the
-     *     ``customers`` and ``accounts`` tables. The migration scripts are executed
-     *     directly through the Flyway API against the production migration location
-     *     (``classpath:db/migration``); no schema is redefined in the test tree.
-     */
-    @BeforeAll
-    static void migrateSchema() {
-        Flyway.configure()
-                .dataSource(POSTGRES.getJdbcUrl(), POSTGRES.getUsername(), POSTGRES.getPassword())
-                .locations("classpath:db/migration")
-                .table("flyway_schema_history_account")
-                .baselineOnMigrate(true)
-                .load()
-                .migrate();
+        MigratedSchemaContainer.registerDataSource(registry);
     }
 
     /** :purpose: Seeded account identifier under test (``ACCT-ID PIC 9(11)``). */
@@ -129,16 +87,16 @@ public class AtomicRollbackIT {
     /** :purpose: Seeded customer identifier linked to {@link #ACCT_ID} through the cross-reference (``CUST-ID PIC 9(09)``). */
     private static final Long CUST_ID = 4L;
 
-    /** :purpose: Non-sensitive synthetic 16-digit card number used only to seed the cross-reference linkage (``XREF-CARD-NUM PIC X(16)``). */
-    private static final String TEST_CARD_NUM = "4000000000000004";
 
     /**
-     * :purpose: Monetary value engineered to overflow the account
-     *     ``acct_curr_bal NUMERIC(12,2)`` column (fourteen integer digits against
-     *     a ten-digit maximum), forcing the second (account) write of the single
-     *     transaction to fail on flush.
+     * :purpose: Account group id engineered to overflow the ``acct_group_id VARCHAR(10)``
+     *     column (eleven characters), forcing the account write of the single transaction
+     *     to fail on flush. ``ACCT-GROUP-ID`` is deliberately the lever: COACTUPC does not
+     *     edit it, so the value reaches the column, whereas every monetary field is first
+     *     screened by ``1250-EDIT-SIGNED-9V2`` (nine integer digits) and can therefore
+     *     never be made to overflow ``NUMERIC(12,2)`` through the service.
      */
-    private static final BigDecimal OVERFLOW_BALANCE = new BigDecimal("99999999999999.99");
+    private static final String OVERFLOW_GROUP_ID = "GROUPIDXXXX";
 
     /** :purpose: Valid scale-2 balance used by the success control case. */
     private static final BigDecimal VALID_NEW_BALANCE = new BigDecimal("123.45");
@@ -151,6 +109,18 @@ public class AtomicRollbackIT {
 
     /** :purpose: Non-PII customer change marker for the success control case. */
     private static final String SUCCESS_MARKER_LAST_NAME = "SuccessName";
+
+    /** :purpose: State code whose ZIP prefix pairing is in the ``CSLKPCDY`` state-ZIP table. */
+    private static final String VALID_STATE_CD = "MI";
+
+    /** :purpose: ZIP whose first two digits pair with {@link #VALID_STATE_CD}. */
+    private static final String VALID_ZIP = "48226";
+
+    /** :purpose: Screen-valid phone number 1 whose area code is in ``CSLKPCDY``. */
+    private static final String VALID_PHONE_NUM_1 = "(212)555-0101";
+
+    /** :purpose: Screen-valid phone number 2 whose area code is in ``CSLKPCDY``. */
+    private static final String VALID_PHONE_NUM_2 = "(801)555-0102";
 
     /** :purpose: Account view/update service under test (``COACTVWC``/``COACTUPC``); the transactional proxy. */
     @Autowired
@@ -188,24 +158,24 @@ public class AtomicRollbackIT {
     private String originalCustEftAccountId;
 
     /**
-     * :purpose: Prepare the fixture before each test: create the ``card_xref``
-     *     table (absent from the account-service migration set), capture the
-     *     seeded account and customer originals, neutralize the customer PII
-     *     columns to empty strings so the encrypted-attribute converter reads
-     *     them as pass-through values without a configured key, and seed the
-     *     account-to-customer cross-reference linkage so the update flow reaches
-     *     the write step rather than short-circuiting on a missing reference.
+     * :purpose: Prepare the fixture before each test: capture the seeded account and
+     *     customer originals so the ``@AfterEach`` can restore them, and assert the
+     *     account-to-customer cross-reference linkage the update flow resolves is
+     *     present, so a scenario reaching the write step is exercising real seed data.
+     * :note: No DDL is issued here. ``card_xref`` — like every other table this test
+     *     touches — is created by the owning module's committed Flyway migration, with
+     *     its foreign keys to ``customers`` and ``accounts`` intact; the fixture would
+     *     otherwise silently substitute a constraint-free table and hide referential
+     *     defects. The customer PII columns are read for restoration but never edited,
+     *     so the assertions run against the committed seed exactly as deployed.
      */
     @BeforeEach
     void setUp() {
-        jdbcTemplate.execute("CREATE TABLE IF NOT EXISTS card_xref ("
-                + "xref_card_num VARCHAR(16) PRIMARY KEY, "
-                + "xref_cust_id BIGINT NOT NULL, "
-                + "xref_acct_id BIGINT NOT NULL)");
-
         originalAcctCurrBal = jdbcTemplate.queryForObject(
                 "SELECT acct_curr_bal FROM accounts WHERE acct_id = ?", BigDecimal.class, ACCT_ID);
 
+        // The seeded identifier columns are read (for restoration) but never edited: the
+        // rollback assertions run against the committed seed exactly as deployed.
         Map<String, Object> customerRow = jdbcTemplate.queryForMap(
                 "SELECT cust_last_name, cust_ssn, cust_govt_issued_id, cust_eft_account_id "
                         + "FROM customers WHERE cust_id = ?", CUST_ID);
@@ -214,13 +184,10 @@ public class AtomicRollbackIT {
         originalCustGovtIssuedId = (String) customerRow.get("cust_govt_issued_id");
         originalCustEftAccountId = (String) customerRow.get("cust_eft_account_id");
 
-        // Empty the encrypted PII columns so the CryptoConverter read path is a
-        // key-free pass-through; the plaintext seed values are restored on teardown.
-        jdbcTemplate.update("UPDATE customers SET cust_ssn = '', cust_govt_issued_id = '', "
-                + "cust_eft_account_id = '' WHERE cust_id = ?", CUST_ID);
-
-        cardXrefRepository.deleteAll();
-        cardXrefRepository.save(new CardXref(TEST_CARD_NUM, CUST_ID, ACCT_ID));
+        // The account-to-card cross-reference for this account is part of the card-service
+        // migration seed (accounts 1..50 -> matching customer id), so the linkage the service
+        // resolves is real seed data rather than a test-created row.
+        assertThat(cardXrefRepository.findByXrefAcctId(ACCT_ID)).isPresent();
     }
 
     /**
@@ -236,7 +203,6 @@ public class AtomicRollbackIT {
                         + "cust_govt_issued_id = ?, cust_eft_account_id = ? WHERE cust_id = ?",
                 originalCustLastName, originalCustSsn, originalCustGovtIssuedId,
                 originalCustEftAccountId, CUST_ID);
-        cardXrefRepository.deleteAll();
     }
 
     /**
@@ -244,9 +210,9 @@ public class AtomicRollbackIT {
      *     transaction (the account write) fails, both the account and the
      *     customer changes roll back together, reproducing the legacy
      *     one-logical-unit-of-work semantics (COACTUPC.cbl L4066 + L4086). The
-     *     induced failure is a real ``NUMERIC(12,2)`` overflow on the account
-     *     balance; the post-failure account balance and customer last name are
-     *     re-read with a fresh JDBC query and must both equal their originals.
+     *     induced failure is a real ``VARCHAR(10)`` overflow on the account group id;
+     *     the post-failure account balance and customer last name are re-read with a
+     *     fresh JDBC query and must both equal their originals.
      */
     @Test
     void secondWriteFails_rollsBackBothAccountAndCustomer() {
@@ -254,9 +220,12 @@ public class AtomicRollbackIT {
         Customer customer = customerRepository.findById(CUST_ID).orElseThrow();
 
         AccountUpdateRequestDto request = fullRequestFrom(account, customer);
-        // The account is the SECOND write; an over-precision balance overflows the
-        // NUMERIC(12,2) column on flush so the account write is the failing write.
-        request.setAcctCurrBal(OVERFLOW_BALANCE);
+        // The account is the SECOND write. The balance carries a genuine change, so the
+        // post-failure re-read below proves it was rolled back rather than merely never
+        // altered, and the over-length group id overflows acct_group_id VARCHAR(10) on
+        // flush so the account write is the failing write.
+        request.setAcctCurrBal(VALID_NEW_BALANCE);
+        request.setAcctGroupId(OVERFLOW_GROUP_ID);
         // The customer is the FIRST write; this change must not survive the rollback.
         request.setCustLastName(ROLLBACK_MARKER_LAST_NAME);
 
@@ -288,7 +257,8 @@ public class AtomicRollbackIT {
         AccountUpdateRequestDto request = fullRequestFrom(account, customer);
         // Change the first-written entity (customer) and force the second (account) to fail.
         request.setCustLastName(PARTIAL_MARKER_LAST_NAME);
-        request.setAcctCurrBal(OVERFLOW_BALANCE);
+        request.setAcctCurrBal(VALID_NEW_BALANCE);
+        request.setAcctGroupId(OVERFLOW_GROUP_ID);
 
         assertThatThrownBy(() -> accountService.updateAccount(ACCT_ID, request, null))
                 .isInstanceOf(DataIntegrityViolationException.class);
@@ -359,11 +329,19 @@ public class AtomicRollbackIT {
         request.setCustAddrLine1(customer.getCustAddrLine1());
         request.setCustAddrLine2(customer.getCustAddrLine2());
         request.setCustAddrLine3(customer.getCustAddrLine3());
-        request.setCustAddrStateCd(customer.getCustAddrStateCd());
+        // The fixture's state/ZIP pair is likewise absent from the CSLKPCDY state-ZIP table
+        // (customer 4 stores MI with a 39xxx ZIP), which COACTUPC's 1280-EDIT-US-STATE-ZIP-CD
+        // refuses, so a table-valid pair is submitted.
+        request.setCustAddrStateCd(VALID_STATE_CD);
         request.setCustAddrCountryCd(customer.getCustAddrCountryCd());
-        request.setCustAddrZip(customer.getCustAddrZip());
-        request.setCustPhoneNum1(customer.getCustPhoneNum1());
-        request.setCustPhoneNum2(customer.getCustPhoneNum2());
+        request.setCustAddrZip(VALID_ZIP);
+        // The randomly generated fixture in app/data/ASCII/custdata.txt carries area codes
+        // that are absent from the CSLKPCDY general-purpose table (customer 4 stores
+        // "(156)..."), which COACTUPC's EDIT-AREA-CODE rejects on any update. A screen-valid
+        // number is therefore submitted: this class asserts transaction atomicity, and the
+        // area-code edit itself is covered by the validator's own tests.
+        request.setCustPhoneNum1(VALID_PHONE_NUM_1);
+        request.setCustPhoneNum2(VALID_PHONE_NUM_2);
         request.setCustSsn(customer.getCustSsn());
         request.setCustGovtIssuedId(customer.getCustGovtIssuedId());
         request.setCustDobYyyyMmDd(customer.getCustDobYyyyMmDd());

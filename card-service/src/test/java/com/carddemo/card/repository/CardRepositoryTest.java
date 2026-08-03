@@ -28,13 +28,17 @@ import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.data.jpa.test.autoconfigure.DataJpaTest;
 import org.springframework.boot.jdbc.test.autoconfigure.AutoConfigureTestDatabase;
+import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.test.context.ActiveProfiles;
-import org.testcontainers.junit.jupiter.Testcontainers;
+import org.springframework.test.context.DynamicPropertyRegistry;
+import org.springframework.test.context.DynamicPropertySource;
 
 import com.carddemo.common.domain.Account;
 import com.carddemo.common.domain.Card;
+import com.carddemo.common.testsupport.MigratedSchemaContainer;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * :purpose: Persistence-slice tests for {@link CardRepository}, exercising the derived
@@ -45,19 +49,33 @@ import static org.assertj.core.api.Assertions.assertThat;
  *  ``postgres:18`` Testcontainer.
  */
 @DataJpaTest(showSql = false, properties = {
-        "spring.jpa.hibernate.ddl-auto=create-drop",
+        "spring.jpa.hibernate.ddl-auto=validate",
         "spring.flyway.enabled=false"
 })
-@Testcontainers
 @ActiveProfiles("test")
 @AutoConfigureTestDatabase(replace = AutoConfigureTestDatabase.Replace.NONE)
 class CardRepositoryTest {
 
+    /**
+     * :purpose: Bind the datasource to the shared, already-migrated ``postgres:18`` container
+     *  from :java:class:`com.carddemo.common.testsupport.MigratedSchemaContainer`, whose schema,
+     *  indexes, foreign keys and seed data come exclusively from the committed Flyway
+     *  migrations. With ``ddl-auto: validate`` the entity-to-migration mapping becomes an
+     *  assertion of this test instead of a fixture it manufactures.
+     * :param registry: the dynamic property registry supplied by the Spring Test context.
+     */
+    @DynamicPropertySource
+    static void datasourceProperties(DynamicPropertyRegistry registry) {
+        MigratedSchemaContainer.registerDataSource(registry);
+    }
+
     private static final String CARD_A1 = "4111111111111111";
     private static final String CARD_A2 = "4111111111111112";
     private static final String CARD_B1 = "4222222222222222";
-    private static final Long ACCT_A = 1L;
-    private static final Long ACCT_B = 2L;
+
+    /** :purpose: Account ids outside the 1..50 range the migrations seed, so this test owns its rows. */
+    private static final Long ACCT_A = 90_000_011L;
+    private static final Long ACCT_B = 90_000_012L;
     private static final Long UNKNOWN_ACCT_ID = 9_999_999_999L;
 
     @Autowired
@@ -97,8 +115,11 @@ class CardRepositoryTest {
         account.setAcctCreditLimit(BigDecimal.ZERO);
         account.setAcctCashCreditLimit(BigDecimal.ZERO);
         account.setAcctOpenDate("2020-01-01");
+        account.setAcctExpiraionDate("2099-12-31");
+        account.setAcctReissueDate("2020-01-01");
         account.setAcctCurrCycCredit(BigDecimal.ZERO);
         account.setAcctCurrCycDebit(BigDecimal.ZERO);
+        account.setAcctAddrZip("00000");
         entityManager.persist(account);
         entityManager.flush();
     }
@@ -119,6 +140,22 @@ class CardRepositoryTest {
         assertThat(cards).extracting(Card::getCardNum)
                 .containsExactlyInAnyOrder(CARD_A1, CARD_A2);
         assertThat(cards).extracting(Card::getCardAcctId).containsOnly(ACCT_A);
+    }
+
+    /**
+     * :purpose: The migrated ``cards`` table enforces card ownership in the database
+     *  (AAP 0.1.1): a card naming an account absent from the accounts master is rejected by
+     *  ``fk_cards_account`` instead of being silently written the way the application-enforced
+     *  VSAM read order allowed.
+     * :output: ``DataIntegrityViolationException`` on flush.
+     */
+    @Test
+    @DisplayName("a card referencing an unknown account is rejected by the account foreign key")
+    void unknownAccountIsRejectedByForeignKey() {
+        Card orphan = newCard(CARD_B1, UNKNOWN_ACCT_ID);
+
+        assertThatThrownBy(() -> cardRepository.saveAndFlush(orphan))
+                .isInstanceOf(DataIntegrityViolationException.class);
     }
 
     @Test

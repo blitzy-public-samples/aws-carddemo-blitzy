@@ -25,14 +25,18 @@ spring:
     locations: classpath:db/migration
 
   # Externalized session store, consistent with production, for full-context
-  # (@SpringBootTest) tests. The @DataJpaTest repository slice does not load
+  # (@SpringBootTest) tests: the Redis-backed store is selected by the presence of
+  # spring-session-data-redis on the classpath. The legacy spring.session.store-type
+  # switch was removed in Spring Boot 4.0.0 and is deliberately not set here, as it
+  # would be silently ignored. The @DataJpaTest repository slice does not load
   # Redis/session auto-config; Redis host/port are injected dynamically.
-  session:
-    store-type: redis
 
 # Keep tests hermetic: 0.0 sampling means no spans are recorded, so nothing
-# is exported over the network (overrides the production 1.0). Prometheus is
-# pull-based and needs no test configuration.
+# is exported over the network. This overrides the committed production default
+# of 0.1 (1.0 applies to the api-gateway alone, which is the trace entry point).
+# ObservabilityEndpointsIT re-raises this to 1.0 for its own context so span
+# creation and MDC correlation are actually exercised. Prometheus is pull-based
+# and needs no test configuration.
 management:
   tracing:
     sampling:

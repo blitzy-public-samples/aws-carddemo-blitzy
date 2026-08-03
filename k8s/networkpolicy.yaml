@@ -152,3 +152,37 @@ spec:
       ports:
         - protocol: TCP
           port: 6379
+
+# --- Jaeger: OTLP span ingest from the backend services and the gateway ------
+# Without this allow rule the namespace-wide default-deny would silently drop
+# every exported span, so distributed tracing (AAP 0.7.5) would be dead on
+# arrival in Kubernetes exactly as it was before. Only the two OTLP receiver
+# ports are opened; the trace query API (16686) stays unreachable from workloads
+# and is consumed by operators through port-forward or an authenticated ingress.
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-jaeger-ingress
+  labels:
+    app.kubernetes.io/part-of: carddemo
+    app.kubernetes.io/component: network-policy
+spec:
+  podSelector:
+    matchLabels:
+      app: jaeger
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/component: backend
+        - podSelector:
+            matchLabels:
+              app: api-gateway
+      ports:
+        - protocol: TCP
+          port: 4317
+        - protocol: TCP
+          port: 4318

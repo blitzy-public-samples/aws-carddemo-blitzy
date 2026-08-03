@@ -18,16 +18,29 @@ spring:
   jpa:
     open-in-view: false
     hibernate:
-      # reporting owns no tables and ships no migrations; the throwaway container is empty,
-      # so Hibernate performs no schema action (ITs provision any needed schema themselves).
+      # The throwaway container starts empty, so Hibernate performs no schema action here;
+      # each IT provisions exactly the schema it needs via @DynamicPropertySource.
       ddl-auto: none
-  # reporting-service shares the carddemo database and ships no migrations; keep Flyway disabled (matches prod).
+  # Flyway is ENABLED in the deployed service (it applies the shared carddemo-common
+  # migration set from classpath:db/migration) but is disabled for tests: V3 seeds the
+  # full 50-customer dataset, which the ITs would have to delete around foreign keys they
+  # do not own. Each IT instead provisions only what it asserts on - Hibernate-generated
+  # entity tables and/or the canonical Spring Batch BATCH_* DDL.
   flyway:
     enabled: false
   # Statement/report jobs run on demand via JobLauncher (CICS TDQ 'JOBS' -> JES async submission), never at startup.
   batch:
     job:
       enabled: false
+  # The service now uses the JDBC job repository (QA F23) so runs are auditable.
+  # The throwaway container ships no schema, so the framework's own PostgreSQL
+  # BATCH_* metadata DDL is applied at startup; production uses the equivalent
+  # batch-service Flyway migration that owns these tables.
+  sql:
+    init:
+      mode: always
+      schema-locations: classpath:org/springframework/batch/core/schema-postgresql.sql
+      continue-on-error: true
 logging:
   level:
     com.carddemo: INFO

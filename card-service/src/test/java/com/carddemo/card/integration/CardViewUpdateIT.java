@@ -29,30 +29,27 @@ import com.carddemo.card.repository.CardXrefRepository;
 import com.carddemo.common.domain.Card;
 import com.carddemo.common.dto.CardUpdateRequestDto;
 import com.carddemo.common.dto.SessionContext;
+import com.carddemo.common.testsupport.MigratedSchemaContainer;
 
 import jakarta.persistence.EntityManager;
 import jakarta.persistence.EntityManagerFactory;
 
-import java.sql.Connection;
-import java.sql.DriverManager;
-import java.sql.SQLException;
-import java.sql.Statement;
 
-import javax.sql.DataSource;
 
-import org.flywaydb.core.Flyway;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.DisplayName;
+import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
 import org.springframework.http.MediaType;
+import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
 import org.springframework.test.web.servlet.MockMvc;
-import org.testcontainers.containers.PostgreSQLContainer;
 import org.testcontainers.junit.jupiter.Testcontainers;
 
 import tools.jackson.databind.ObjectMapper;
@@ -71,6 +68,9 @@ import tools.jackson.databind.ObjectMapper;
  *  sensitive CVV and the full card number (PAN) are never asserted (AAP 0.6.7).
  */
 @SpringBootTest
+// The production filter chain IS applied: every request below presents the shared
+// session context, which is exactly how a request authenticates in production, so the
+// security, correlation-id and hardening filters are all exercised end to end.
 @AutoConfigureMockMvc
 @Testcontainers
 @ActiveProfiles("test")
@@ -89,219 +89,21 @@ class CardViewUpdateIT {
     private static final String UNSEEDED_CARD = "9999999999999999";
 
     /**
-     * :purpose: Manually-managed ``postgres:18`` Testcontainer shared by every test in
-     *  this class. Started in the static initializer so the cross-service prerequisite
-     *  schema can be provisioned before the Spring context (and its Flyway migrations)
-     *  connect to it.
-     */
-    static final PostgreSQLContainer<?> POSTGRES =
-            new PostgreSQLContainer<>("postgres:18").withDatabaseName("carddemo");
-
-    /** :purpose: Flyway history table name matching the service's configured card history table. */
-    private static final String FLYWAY_HISTORY_TABLE = "flyway_schema_history_card";
-
-    static {
-        POSTGRES.start();
-        provisionCrossServicePrerequisites();
-        migrateCardSchema();
-    }
-
-    /**
-     * :purpose: Point the application datasource at the manually-managed container. The
-     *  Testcontainers JDBC driver configured by the ``test`` profile is replaced with the
-     *  plain PostgreSQL driver so the context connects to the same instance that the
-     *  static initializer already provisioned and migrated.
-     * :note: The Spring Boot Flyway auto-configuration module is not present in this
-     *  environment (only the raw ``flyway-core`` library is), so ``spring.flyway.*``
-     *  properties are inert; the card ``V1``-``V4`` migrations are therefore applied
-     *  directly against this datasource in :java:meth:`migrateCardSchema` before the
-     *  context refreshes, leaving Hibernate ``ddl-auto: validate`` to confirm the mapping.
+     * :purpose: Bind the application datasource to the shared, already-migrated
+     *  ``postgres:18`` container from
+     *  :java:class:`com.carddemo.common.testsupport.MigratedSchemaContainer`. Its schema is
+     *  produced exclusively by the committed Flyway migrations of every owning module
+     *  (auth, account, card, transaction, batch), so nothing is hand-written here and
+     *  Hibernate ``ddl-auto: validate`` (from the ``test`` profile) verifies every entity
+     *  mapping against the schema a deployment actually gets. The card migrations are
+     *  recorded under the service's own history table, so the Spring-managed Flyway run
+     *  during context refresh finds them applied and is a no-op.
      * :param registry: the dynamic property registry supplied by the Spring Test context.
      */
     @DynamicPropertySource
     static void datasourceProps(DynamicPropertyRegistry registry) {
-        registry.add("spring.datasource.url", POSTGRES::getJdbcUrl);
-        registry.add("spring.datasource.username", POSTGRES::getUsername);
-        registry.add("spring.datasource.password", POSTGRES::getPassword);
-        registry.add("spring.datasource.driver-class-name", () -> "org.postgresql.Driver");
-    }
-
-    /**
-     * :purpose: Apply the card-service's real Flyway migrations (``V1``-``V4``: create
-     *  ``cards`` and ``card_xref`` and seed 50 cards / 50 cross-references) against the
-     *  container, layering them over the pre-provisioned prerequisite tables. Because the
-     *  prerequisite schema is non-empty and carries no card history table, the migration
-     *  baselines at version ``0`` so every card migration (version > 0) runs. This uses
-     *  the service's actual migration scripts rather than redefining any card table.
-     */
-    private static void migrateCardSchema() {
-        Flyway.configure()
-                .dataSource(POSTGRES.getJdbcUrl(), POSTGRES.getUsername(), POSTGRES.getPassword())
-                .locations("classpath:db/migration")
-                .table(FLYWAY_HISTORY_TABLE)
-                .baselineOnMigrate(true)
-                .baselineVersion("0")
-                .load()
-                .migrate();
-    }
-
-    /**
-     * :purpose: Create and minimally seed the entity-scanned tables that ``card-service``
-     *  does not own but that Hibernate ``ddl-auto: validate`` and the card foreign keys
-     *  require. ``CardServiceApplication`` entity-scans ``com.carddemo.common.domain``,
-     *  so every shared entity needs a matching table; ``cards`` and ``card_xref`` are
-     *  created by the service's own Flyway ``V1``/``V2``, while the account, customer and
-     *  reference tables are created here. The ``accounts`` and ``customers`` tables are
-     *  also the foreign-key targets of the card seed rows, so they are seeded with ids
-     *  ``1``-``50``; these rows exist solely to satisfy referential integrity and are
-     *  never asserted upon.
-     */
-    private static void provisionCrossServicePrerequisites() {
-        String[] ddl = {
-            // customers: column-verbatim from account-service V1 so validate matches Customer.
-            """
-            CREATE TABLE IF NOT EXISTS customers (
-                cust_id                  BIGINT        PRIMARY KEY,
-                cust_first_name          VARCHAR(25)   NOT NULL,
-                cust_middle_name         VARCHAR(25)   NOT NULL,
-                cust_last_name           VARCHAR(25)   NOT NULL,
-                cust_addr_line_1         VARCHAR(50)   NOT NULL,
-                cust_addr_line_2         VARCHAR(50)   NOT NULL,
-                cust_addr_line_3         VARCHAR(50)   NOT NULL,
-                cust_addr_state_cd       VARCHAR(2)    NOT NULL,
-                cust_addr_country_cd     VARCHAR(3)    NOT NULL,
-                cust_addr_zip            VARCHAR(10)   NOT NULL,
-                cust_phone_num_1         VARCHAR(15)   NOT NULL,
-                cust_phone_num_2         VARCHAR(15)   NOT NULL,
-                cust_ssn                 VARCHAR(512)  NOT NULL,
-                cust_govt_issued_id      VARCHAR(512)  NOT NULL,
-                cust_dob_yyyy_mm_dd      VARCHAR(10)   NOT NULL,
-                cust_eft_account_id      VARCHAR(512)  NOT NULL,
-                cust_pri_card_holder_ind VARCHAR(1)    NOT NULL,
-                cust_fico_credit_score   INTEGER       NOT NULL,
-                version                  BIGINT        NOT NULL DEFAULT 0
-            )
-            """,
-            // accounts: column-verbatim from account-service V2 (money NUMERIC(12,2) + version).
-            """
-            CREATE TABLE IF NOT EXISTS accounts (
-                acct_id                BIGINT         PRIMARY KEY,
-                acct_active_status     VARCHAR(1)     NOT NULL,
-                acct_curr_bal          NUMERIC(12,2)  NOT NULL,
-                acct_credit_limit      NUMERIC(12,2)  NOT NULL,
-                acct_cash_credit_limit NUMERIC(12,2)  NOT NULL,
-                acct_open_date         VARCHAR(10)    NOT NULL,
-                acct_expiraion_date    VARCHAR(10)    NOT NULL,
-                acct_reissue_date      VARCHAR(10)    NOT NULL,
-                acct_curr_cyc_credit   NUMERIC(12,2)  NOT NULL,
-                acct_curr_cyc_debit    NUMERIC(12,2)  NOT NULL,
-                acct_addr_zip          VARCHAR(10)    NOT NULL,
-                acct_group_id          VARCHAR(10),
-                version                BIGINT         NOT NULL DEFAULT 0
-            )
-            """,
-            // transactions: column-verbatim from transaction-service V1.
-            """
-            CREATE TABLE IF NOT EXISTS transactions (
-                tran_id             VARCHAR(16)   PRIMARY KEY,
-                tran_type_cd        VARCHAR(2),
-                tran_cat_cd         INTEGER,
-                tran_source         VARCHAR(10),
-                tran_desc           VARCHAR(100),
-                tran_amt            NUMERIC(11,2),
-                tran_merchant_id    BIGINT,
-                tran_merchant_name  VARCHAR(50),
-                tran_merchant_city  VARCHAR(50),
-                tran_merchant_zip   VARCHAR(10),
-                tran_card_num       VARCHAR(16),
-                tran_orig_ts        VARCHAR(26),
-                tran_proc_ts        VARCHAR(26)
-            )
-            """,
-            // tran_cat_bal: column-verbatim from transaction-service V3 (compound key).
-            """
-            CREATE TABLE IF NOT EXISTS tran_cat_bal (
-                trancat_acct_id   BIGINT,
-                trancat_type_cd   VARCHAR(2),
-                trancat_cd        INTEGER,
-                tran_cat_bal      NUMERIC(11,2),
-                PRIMARY KEY (trancat_acct_id, trancat_type_cd, trancat_cd)
-            )
-            """,
-            // security_users: column-verbatim from auth-service V1.
-            """
-            CREATE TABLE IF NOT EXISTS security_users (
-                sec_usr_id    VARCHAR(8)   PRIMARY KEY,
-                sec_usr_fname VARCHAR(20)  NOT NULL,
-                sec_usr_lname VARCHAR(20)  NOT NULL,
-                sec_usr_pwd   VARCHAR(100) NOT NULL,
-                sec_usr_type  VARCHAR(1)   NOT NULL,
-                CONSTRAINT chk_sec_usr_type CHECK (sec_usr_type IN ('A','U'))
-            )
-            """,
-            // disclosure_group: derived from DiscGroup (no owning migration in this tranche).
-            """
-            CREATE TABLE IF NOT EXISTS disclosure_group (
-                dis_acct_group_id VARCHAR(10)  NOT NULL,
-                dis_tran_type_cd  VARCHAR(2)   NOT NULL,
-                dis_tran_cat_cd   INTEGER      NOT NULL,
-                dis_int_rate      NUMERIC(6,2),
-                PRIMARY KEY (dis_acct_group_id, dis_tran_type_cd, dis_tran_cat_cd)
-            )
-            """,
-            // tran_category: derived from TranCatg (no owning migration in this tranche).
-            """
-            CREATE TABLE IF NOT EXISTS tran_category (
-                tran_type_cd       VARCHAR(2)  NOT NULL,
-                tran_cat_cd        INTEGER     NOT NULL,
-                tran_cat_type_desc VARCHAR(50),
-                PRIMARY KEY (tran_type_cd, tran_cat_cd)
-            )
-            """,
-            // tran_type: derived from TranType (no owning migration in this tranche).
-            """
-            CREATE TABLE IF NOT EXISTS tran_type (
-                tran_type      VARCHAR(2) PRIMARY KEY,
-                tran_type_desc VARCHAR(50)
-            )
-            """,
-            // Seed customers 1..50: only the NOT-NULL columns, with benign placeholders.
-            """
-            INSERT INTO customers (
-                cust_id, cust_first_name, cust_middle_name, cust_last_name,
-                cust_addr_line_1, cust_addr_line_2, cust_addr_line_3,
-                cust_addr_state_cd, cust_addr_country_cd, cust_addr_zip,
-                cust_phone_num_1, cust_phone_num_2, cust_ssn, cust_govt_issued_id,
-                cust_dob_yyyy_mm_dd, cust_eft_account_id, cust_pri_card_holder_ind,
-                cust_fico_credit_score
-            )
-            SELECT g, 'First', 'Middle', 'Last', 'Addr1', 'Addr2', 'Addr3',
-                   'NC', 'USA', '00000', '0000000000000', '0000000000000',
-                   'x', 'x', '1970-01-01', 'x', 'Y', 700
-            FROM generate_series(1, 50) AS g
-            ON CONFLICT (cust_id) DO NOTHING
-            """,
-            // Seed accounts 1..50: only the NOT-NULL columns, with benign placeholders.
-            """
-            INSERT INTO accounts (
-                acct_id, acct_active_status, acct_curr_bal, acct_credit_limit,
-                acct_cash_credit_limit, acct_open_date, acct_expiraion_date,
-                acct_reissue_date, acct_curr_cyc_credit, acct_curr_cyc_debit, acct_addr_zip
-            )
-            SELECT g, 'Y', 0, 0, 0, '2000-01-01', '2099-12-31', '2000-01-01', 0, 0, '00000'
-            FROM generate_series(1, 50) AS g
-            ON CONFLICT (acct_id) DO NOTHING
-            """
-        };
-        try (Connection connection = DriverManager.getConnection(
-                POSTGRES.getJdbcUrl(), POSTGRES.getUsername(), POSTGRES.getPassword());
-             Statement statement = connection.createStatement()) {
-            for (String sql : ddl) {
-                statement.execute(sql);
-            }
-        } catch (SQLException ex) {
-            throw new IllegalStateException("Failed to provision cross-service prerequisites", ex);
-        }
+        MigratedSchemaContainer.registerDataSource(registry);
+        registry.add("spring.flyway.baseline-version", () -> "0");
     }
 
     /** :purpose: MVC entry point exercised end-to-end (no mocked collaborators). */
@@ -324,9 +126,9 @@ class CardViewUpdateIT {
     @Autowired
     private EntityManagerFactory entityManagerFactory;
 
-    /** :purpose: Application datasource used to neutralize the plaintext-seeded CVV before reads. */
+    /** :purpose: Raw JDBC access used only to observe (never edit) the seeded CVV column. */
     @Autowired
-    private DataSource dataSource;
+    private JdbcTemplate jdbcTemplate;
 
     /** :purpose: Captured embossed name of the mutation-target card, restored after each test. */
     private String origEmbossedName;
@@ -341,20 +143,13 @@ class CardViewUpdateIT {
     private String origCvvCd;
 
     /**
-     * :purpose: Neutralize the plaintext-seeded card CVV column and snapshot the
-     *  mutation-target card. The seed stores the CVV as plaintext, which the
-     *  at-rest ``CryptoConverter`` cannot decrypt on read; setting it to ``NULL`` lets
-     *  every card read succeed (the converter passes ``null`` through). The snapshot of
-     *  card ``CARD_ACCT50`` is captured for deterministic restoration in ``tearDown``.
+     * :purpose: Snapshot the mutation-target card for deterministic restoration in
+     *  ``tearDown``. The seeded ``card_cvv_cd`` column is left EXACTLY as
+     *  ``V3__seed_cards.sql`` wrote it - the read path must hydrate the committed seed as
+     *  deployed - and the CVV is never asserted or echoed to a client (AAP 0.6.7).
      */
     @BeforeEach
     void setUp() {
-        try (Connection connection = dataSource.getConnection();
-             Statement statement = connection.createStatement()) {
-            statement.executeUpdate("UPDATE cards SET card_cvv_cd = NULL WHERE card_cvv_cd IS NOT NULL");
-        } catch (SQLException ex) {
-            throw new IllegalStateException("Failed to neutralize seeded card CVV values", ex);
-        }
         Card card = cardRepository.findById(CARD_ACCT50).orElseThrow();
         origEmbossedName = card.getCardEmbossedName();
         origActiveStatus = card.getCardActiveStatus();
@@ -374,6 +169,31 @@ class CardViewUpdateIT {
         card.setCardExpiraionDate(origExpiraionDate);
         card.setCardCvvCd(origCvvCd);
         cardRepository.save(card);
+    }
+
+    /**
+     * :purpose: The card detail path must work against the committed seed exactly as
+     *  deployed: ``V3__seed_cards.sql`` writes ``card_cvv_cd`` the way the legacy
+     *  fixed-width load did, and the at-rest converter has to hydrate it. No column is
+     *  edited by this test.
+     * :output: HTTP 200 for a seeded card whose CVV column is untouched, with the CVV
+     *  absent from the response body.
+     */
+    @Test
+    void getCard_withUnmodifiedSeededCvv_returns200AndNeverEchoesTheCvv() throws Exception {
+        Integer untouchedCvvs = jdbcTemplate.queryForObject(
+                "SELECT count(*) FROM cards WHERE card_cvv_cd IS NOT NULL", Integer.class);
+        assertThat(untouchedCvvs).isPositive();
+
+        String body = mockMvc.perform(get("/cards/{cardNum}", CARD_ACCT1)
+                        .sessionAttr(SESSION_ATTR, adminSession()))
+                .andExpect(status().isOk())
+                .andReturn()
+                .getResponse()
+                .getContentAsString();
+
+        assertThat(body).doesNotContain("cardCvvCd");
+        assertThat(body).doesNotContain("cvv");
     }
 
     // ------------------------------------------------------------------------
@@ -682,6 +502,86 @@ class CardViewUpdateIT {
             return entityManager.find(Card.class, cardNumber);
         } finally {
             entityManager.close();
+        }
+    }
+
+    // ------------------------------------------------------------------------
+    // Security contract (the service's own port, not only behind the gateway)
+    // ------------------------------------------------------------------------
+
+    /**
+     * :purpose: Freezes the authentication contract of the card service on its own port,
+     *     where an anonymous caller previously read every card and reached the update
+     *     path. It also pins the request-size cap and the hardened response headers,
+     *     which must hold here and not only at the gateway.
+     * :note: Nested inside this integration test so it reuses the provisioned container,
+     *     the seeded schema, and the production filter chain this class already boots.
+     */
+    @Nested
+    @DisplayName("security contract on the card-service port")
+    class SecurityContract {
+
+        @Test
+        @DisplayName("anonymous card reads are rejected with 401 and return no card data")
+        void anonymousReadsAreRejected() throws Exception {
+            String listBody = mockMvc.perform(get("/cards").param("page", "1"))
+                    .andExpect(status().isUnauthorized())
+                    .andReturn().getResponse().getContentAsString();
+            String detailBody = mockMvc.perform(get("/cards/{cardNumber}", CARD_ACCT1))
+                    .andExpect(status().isUnauthorized())
+                    .andReturn().getResponse().getContentAsString();
+
+            assertThat(listBody).doesNotContain(CARD_ACCT1);
+            assertThat(detailBody).doesNotContain(CARD_ACCT1);
+        }
+
+        @Test
+        @DisplayName("an anonymous card update is rejected with 401 and changes nothing")
+        void anonymousUpdateIsRejected() throws Exception {
+            Card before = reloadCardBypassingCache(CARD_ACCT50);
+
+            mockMvc.perform(put("/cards/{cardNumber}", CARD_ACCT50)
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content("{}"))
+                    .andExpect(status().isUnauthorized());
+
+            Card after = reloadCardBypassingCache(CARD_ACCT50);
+            assertThat(after.getCardEmbossedName()).isEqualTo(before.getCardEmbossedName());
+            assertThat(after.getCardActiveStatus()).isEqualTo(before.getCardActiveStatus());
+            assertThat(after.getCardExpiraionDate()).isEqualTo(before.getCardExpiraionDate());
+        }
+
+        @Test
+        @DisplayName("the health probe stays reachable without credentials")
+        void healthProbeIsAnonymous() throws Exception {
+            mockMvc.perform(get("/actuator/health")).andExpect(status().isOk());
+        }
+
+        @Test
+        @DisplayName("an oversized request body is rejected with 413 before authentication")
+        void oversizedBodyIsRejected() throws Exception {
+            byte[] oversized = new byte[(int) (com.carddemo.common.config.RequestSizeLimitFilter
+                    .DEFAULT_MAX_BODY_BYTES + 1024)];
+            java.util.Arrays.fill(oversized, (byte) 'A');
+
+            mockMvc.perform(put("/cards/{cardNumber}", CARD_ACCT50)
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(oversized))
+                    .andExpect(status().isContentTooLarge());
+        }
+
+        @Test
+        @DisplayName("every response carries the hardened security headers")
+        void responsesCarryHardenedHeaders() throws Exception {
+            var response = mockMvc.perform(get("/actuator/health")).andReturn().getResponse();
+
+            assertThat(response.getHeader("X-Content-Type-Options")).isEqualTo("nosniff");
+            assertThat(response.getHeader("X-Frame-Options")).isEqualTo("DENY");
+            assertThat(response.getHeader("Content-Security-Policy")).isNotBlank();
+            assertThat(response.getHeader("Referrer-Policy")).isEqualTo("no-referrer");
+            assertThat(response.getHeader("Permissions-Policy")).isNotBlank();
+            assertThat(response.getHeader("Cache-Control")).contains("no-store");
+            assertThat(response.getHeader("X-Correlation-Id")).isNotBlank();
         }
     }
 }

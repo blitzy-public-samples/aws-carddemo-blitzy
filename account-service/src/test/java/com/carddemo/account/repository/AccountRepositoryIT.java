@@ -28,9 +28,11 @@ import org.springframework.boot.data.jpa.test.autoconfigure.DataJpaTest;
 import org.springframework.boot.jdbc.test.autoconfigure.AutoConfigureTestDatabase;
 import org.springframework.dao.OptimisticLockingFailureException;
 import org.springframework.test.context.ActiveProfiles;
-import org.testcontainers.junit.jupiter.Testcontainers;
+import org.springframework.test.context.DynamicPropertyRegistry;
+import org.springframework.test.context.DynamicPropertySource;
 
 import com.carddemo.common.domain.Account;
+import com.carddemo.common.testsupport.MigratedSchemaContainer;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -46,15 +48,32 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * :output: JUnit 5 assertions; no console output.
  */
 @DataJpaTest(showSql = false, properties = {
-        "spring.jpa.hibernate.ddl-auto=create-drop",
+        "spring.jpa.hibernate.ddl-auto=validate",
         "spring.flyway.enabled=false"
 })
-@Testcontainers
 @ActiveProfiles("test")
 @AutoConfigureTestDatabase(replace = AutoConfigureTestDatabase.Replace.NONE)
 class AccountRepositoryIT {
 
-    private static final Long ACCT_ID = 1L;
+    /**
+     * :purpose: Bind the datasource to the shared, already-migrated ``postgres:18`` container
+     *     from :java:class:`com.carddemo.common.testsupport.MigratedSchemaContainer`, whose
+     *     schema comes exclusively from the committed Flyway migrations. With
+     *     ``ddl-auto: validate`` this turns the entity-to-migration mapping into an assertion
+     *     of this test rather than a fixture it creates.
+     * :param registry: the dynamic property registry supplied by the Spring Test context.
+     */
+    @DynamicPropertySource
+    static void datasourceProperties(DynamicPropertyRegistry registry) {
+        MigratedSchemaContainer.registerDataSource(registry);
+    }
+
+    /**
+     * :purpose: Account id outside the 1..50 range the migrations seed, so this test inserts
+     *     its own row and never mutates seed data (``@DataJpaTest`` rolls the transaction back
+     *     regardless).
+     */
+    private static final Long ACCT_ID = 90_000_001L;
 
     @Autowired
     private AccountRepository accountRepository;

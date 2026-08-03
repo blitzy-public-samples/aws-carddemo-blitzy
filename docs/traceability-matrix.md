@@ -11,12 +11,14 @@ rule-mandated infrastructure or as a derived pattern with no 1:1 legacy field.
 > inventory and the target it maps to in the end-state design. The migration is
 > delivered across multiple tranches, so the *target* implementations are a mix of
 > **delivered** (present in this foundation tranche — the shared `carddemo-common`
-> library, per-service configuration, observability, containers/orchestration, and
-> governance docs) and **planned** (services, controllers, repositories, per-screen
-> pages, and the business-schema migrations delivered in later tranches). A bare
+> library, the consolidated Flyway migration set that provisions the whole
+> `carddemo` schema and its seed data, per-service configuration, observability,
+> containers/orchestration, and governance docs) and **planned** (per-screen pages
+> and the remaining controllers / repositories delivered in later tranches). A bare
 > "100% of files already present on disk" claim is therefore **not** asserted here;
 > coverage is verified per tranche as the target files land. Section 11 enumerates
-> exactly what this tranche delivers.
+> exactly what this tranche delivers, and every migration path asserted anywhere in
+> this matrix resolves to a file on disk.
 
 Rationale for each non-trivial decision lives in `docs/decision-log.md`; this matrix maps
 constructs only and keeps every cell terse. Legacy identifiers and paths are written
@@ -99,11 +101,11 @@ The legacy inventory reconciled against the repository (AAP 0.1.3) and covered i
 | `CVACT02Y` `[app/cpy/CVACT02Y.cpy]` | `domain/Card.java` + `cards` table (`CARD-NUM` `X(16)` → `@Id`; FK to account; `CARD-EXPIRAION-DATE` preserved) | `source → target` |
 | `CVACT03Y` `[app/cpy/CVACT03Y.cpy]` | `domain/CardXref.java` + `card_xref` table (CXACAIX `CARD-NUM` ↔ `CUST-ID` ↔ `ACCT-ID` linkage) | `source → target` |
 | `CVTRA05Y` `[app/cpy/CVTRA05Y.cpy]` | `domain/Transaction.java` + `transactions` table (`TRAN-AMT` COMP-3 → `NUMERIC(11,2)`) | `source → target` |
-| `CVTRA06Y` `[app/cpy/CVTRA06Y.cpy]` | `domain/DailyTransaction.java` — plain POJO batch read model, **NOT** a JPA `@Entity`/table (the daily feed is consumed by the posting job, which writes `Transaction` rows; deviation logged in decision-log §6) | `source → target` |
-| `CVTRA01Y` `[app/cpy/CVTRA01Y.cpy]` | `domain/TranCatBal.java` (compound key → `@IdClass`: acct + type + cat) | `source → target` |
-| `CVTRA02Y` `[app/cpy/CVTRA02Y.cpy]` | `domain/DiscGroup.java` (compound key → `@IdClass`; `DIS-INT-RATE` COMP-3) | `source → target` |
-| `CVTRA03Y` `[app/cpy/CVTRA03Y.cpy]` | `domain/TranType.java` (reference entity, 7 rows) | `source → target` |
-| `CVTRA04Y` `[app/cpy/CVTRA04Y.cpy]` | `domain/TranCatg.java` (compound key → `@IdClass`: type + cat) | `source → target` |
+| `CVTRA06Y` `[app/cpy/CVTRA06Y.cpy]` | `domain/DailyTransaction.java` — JPA `@Entity` + `daily_transactions` table (relational staging image of the sequential `AWS.M2.CARDDEMO.DALYTRAN` feed) read by `transaction-service` `DailyTransactionRepository` (`JpaRepository`, ascending `DALYTRAN-ID` browse order) | `source → target` |
+| `CVTRA01Y` `[app/cpy/CVTRA01Y.cpy]` | `domain/TranCatBal.java` + `tran_cat_bal` table (compound key → `@IdClass`, PK column order `trancat_acct_id, trancat_type_cd, trancat_cd`; FK `fk_tran_cat_bal_acct` → `accounts`) | `source → target` |
+| `CVTRA02Y` `[app/cpy/CVTRA02Y.cpy]` | `domain/DiscGroup.java` + `disclosure_group` table (compound key → `@IdClass`, PK column order `dis_acct_group_id, dis_tran_type_cd, dis_tran_cat_cd`; `DIS-INT-RATE` COMP-3 → `NUMERIC`) | `source → target` |
+| `CVTRA03Y` `[app/cpy/CVTRA03Y.cpy]` | `domain/TranType.java` + `tran_type` table (reference entity, 7 rows) | `source → target` |
+| `CVTRA04Y` `[app/cpy/CVTRA04Y.cpy]` | `domain/TranCatg.java` + `tran_category` table (compound key → `@IdClass`, PK column order `tran_type_cd, tran_cat_cd`) | `source → target` |
 | `CSUSR01Y` `[app/cpy/CSUSR01Y.cpy]` | `domain/SecurityUser.java` + `security_users` table (`SEC-USR-PWD` plaintext → encoded hash; `SEC-USR-TYPE` → role) | `source → target` |
 | `CUSTREC` `[app/cpy/CUSTREC.cpy]` | `domain/Customer.java` (alternate / flat customer layout; covered by `Customer` entity) | `source → target` |
 | `CVCRD01Y` `[app/cpy/CVCRD01Y.cpy]` | `domain/Card.java` (alternate card view; not a distinct entity — covered by `Card`) | `source → target` |
@@ -183,17 +185,17 @@ The legacy inventory reconciled against the repository (AAP 0.1.3) and covered i
 | `POSTTRAN.jcl` `[app/jcl/POSTTRAN.jcl]` | `batch-service` `TransactionPostingJob` (invokes `CBTRN02C`; DALYTRAN reader, DALYREJS reject writer) | `source → target` |
 | `INTCALC.jcl` `[app/jcl/INTCALC.jcl]` | `batch-service` `InterestCalculationJob` (invokes `CBACT04C`) | `source → target` |
 | `CREASTMT.JCL` `[app/jcl/CREASTMT.JCL]` | `reporting-service` `StatementGenerationJob` (invokes `CBSTM03A` / `CBSTM03B`) | `source → target` |
-| `ACCTFILE.jcl` `[app/jcl/ACCTFILE.jcl]` | `db/migration` seed (`accounts`) + `DataManagement*Job` | `source → target` |
-| `CARDFILE.jcl` `[app/jcl/CARDFILE.jcl]` | `db/migration` seed (`cards`) + `DataManagement*Job` | `source → target` |
-| `CUSTFILE.jcl` `[app/jcl/CUSTFILE.jcl]` | `db/migration` seed (`customers`) + `DataManagement*Job` | `source → target` |
-| `XREFFILE.jcl` `[app/jcl/XREFFILE.jcl]` | `db/migration` seed (`card_xref`) + `DataManagement*Job` | `source → target` |
-| `TRANFILE.jcl` `[app/jcl/TRANFILE.jcl]` | `db/migration` seed (`transactions`) + `DataManagement*Job` | `source → target` |
-| `TRANTYPE.jcl` `[app/jcl/TRANTYPE.jcl]` | `db/migration` reference seed (`tran_type`) + `DataManagement*Job` | `source → target` |
-| `TRANCATG.jcl` `[app/jcl/TRANCATG.jcl]` | `db/migration` reference seed (`tran_catg`) + `DataManagement*Job` | `source → target` |
-| `DISCGRP.jcl` `[app/jcl/DISCGRP.jcl]` | `db/migration` reference seed (`disc_group`) + `DataManagement*Job` | `source → target` |
-| `TCATBALF.jcl` `[app/jcl/TCATBALF.jcl]` | `db/migration` seed (`tran_cat_bal`) + `DataManagement*Job` | `source → target` |
-| `DUSRSECJ.jcl` `[app/jcl/DUSRSECJ.jcl]` | `db/migration` seed (`security_users`) + `DataManagement*Job` | `source → target` |
-| `DEFCUST.jcl` `[app/jcl/DEFCUST.jcl]` | `db/migration` customer-default seed + `DataManagement*Job` | `source → target` |
+| `ACCTFILE.jcl` `[app/jcl/ACCTFILE.jcl]` | `V3__seed_test_data.sql` seed (`accounts`, 50 rows) + `DataManagement*Job` | `source → target` |
+| `CARDFILE.jcl` `[app/jcl/CARDFILE.jcl]` | `V3__seed_test_data.sql` seed (`cards`, 50 rows) + `DataManagement*Job` | `source → target` |
+| `CUSTFILE.jcl` `[app/jcl/CUSTFILE.jcl]` | `V3__seed_test_data.sql` seed (`customers`, 50 rows) + `DataManagement*Job` | `source → target` |
+| `XREFFILE.jcl` `[app/jcl/XREFFILE.jcl]` | `V3__seed_test_data.sql` seed (`card_xref`, 50 rows) + `DataManagement*Job` | `source → target` |
+| `TRANFILE.jcl` `[app/jcl/TRANFILE.jcl]` | `V3__seed_test_data.sql` seed (`transactions`, plus the staged `daily_transactions` feed the posting job consumes) + `DataManagement*Job` | `source → target` |
+| `TRANTYPE.jcl` `[app/jcl/TRANTYPE.jcl]` | `V2__seed_reference_data.sql` reference seed (`tran_type`, 7 rows) + `DataManagement*Job` | `source → target` |
+| `TRANCATG.jcl` `[app/jcl/TRANCATG.jcl]` | `V2__seed_reference_data.sql` reference seed (`tran_category`, 18 rows) + `DataManagement*Job` | `source → target` |
+| `DISCGRP.jcl` `[app/jcl/DISCGRP.jcl]` | `V2__seed_reference_data.sql` reference seed (`disclosure_group`, 51 rows) + `DataManagement*Job` | `source → target` |
+| `TCATBALF.jcl` `[app/jcl/TCATBALF.jcl]` | `V3__seed_test_data.sql` seed (`tran_cat_bal`, 50 rows) + `DataManagement*Job` | `source → target` |
+| `DUSRSECJ.jcl` `[app/jcl/DUSRSECJ.jcl]` | `V3__seed_test_data.sql` seed (`security_users`, 10 rows; `{bcrypt}`-prefixed hashes, decision-log §3) + `DataManagement*Job` | `source → target` |
+| `DEFCUST.jcl` `[app/jcl/DEFCUST.jcl]` | `V3__seed_test_data.sql` customer-default seed + `DataManagement*Job` | `source → target` |
 | `DEFGDGB.jcl` `[app/jcl/DEFGDGB.jcl]` | GDG-base definition → database backup / PITR config (out of application-code scope) | `source → target` |
 | `CLOSEFIL.jcl` `[app/jcl/CLOSEFIL.jcl]` | file-close lifecycle → datasource lifecycle config (out of application-code scope) | `source → target` |
 | `OPENFIL.jcl` `[app/jcl/OPENFIL.jcl]` | file-open lifecycle → datasource lifecycle config (out of application-code scope) | `source → target` |
@@ -203,24 +205,29 @@ The legacy inventory reconciled against the repository (AAP 0.1.3) and covered i
 | `DALYREJS.jcl` `[app/jcl/DALYREJS.jcl]` | `TransactionPostingJob` reject `ItemWriter` (DALYREJS reject file, 430-byte record) | `source → target` |
 | `PRTCATBL.jcl` `[app/jcl/PRTCATBL.jcl]` | `batch-service` `DataManagement*Job` (print category balance) | `source → target` |
 | `REPTFILE.jcl` `[app/jcl/REPTFILE.jcl]` | `reporting-service` `DataManagement*Job` (report file) | `source → target` |
-| `TRANREPT.jcl` `[app/jcl/TRANREPT.jcl]` | `reporting-service` `DataManagement*Job` (transaction report) | `source → target` |
+| `TRANREPT.jcl` `[app/jcl/TRANREPT.jcl]` | `batch-service` `config/DataManagementJobConfig.java` → `transactionDetailReportJob` (`CBTRN03C` transaction-detail report) + `batch/TransactionDetailReportWriter.java` | `source → target` |
 | `READACCT.jcl` `[app/jcl/READACCT.jcl]` | `batch-service` `DataManagement*Job` (account read / print, with `CBACT01C`) | `source → target` |
 | `READCARD.jcl` `[app/jcl/READCARD.jcl]` | `batch-service` `DataManagement*Job` (card read / print, with `CBACT02C`) | `source → target` |
 | `READCUST.jcl` `[app/jcl/READCUST.jcl]` | `batch-service` `DataManagement*Job` (customer read / print, with `CBCUS01C`) | `source → target` |
 | `READXREF.jcl` `[app/jcl/READXREF.jcl]` | `batch-service` `DataManagement*Job` (xref read / print, with `CBACT03C`) | `source → target` |
 | `CBADMCDJ.jcl` `[app/jcl/CBADMCDJ.jcl]` | `batch-service` `DataManagement*Job` (admin card-demo job) | `source → target` |
 | `REPROC.prc` `[app/proc/REPROC.prc]` | `config/JobSchedulingConfig.java` (report proc; TDQ 'JOBS' / JES async → `JobLauncher`) | `source → target` |
-| `TRANREPT.prc` `[app/proc/TRANREPT.prc]` | `config/JobSchedulingConfig.java` (transaction-report proc, with `CORPT00C`) | `source → target` |
+| `TRANREPT.prc` `[app/proc/TRANREPT.prc]` | `batch-service` `config/JobSchedulingConfig.java#launchTransactionDetailReport` exposed by `controller/BatchController.java` (`POST /batch/jobs/transactionDetailReportJob`); reached from `CORPT00C` via `reporting-service` `client/BatchJobClient.java` | `source → target` |
 
 ## 8. Configuration, Catalog, Control, Seed Data + Security
 
 | Source Construct | Target Implementation | Direction |
 |------------------|-----------------------|-----------|
-| `app/catlg/LISTCAT.txt` | `db/migration/V1__create_schema.sql` (10 tables + FK constraints + secondary indexes from 3 alternate indexes) | `source → target` |
+| `app/catlg/LISTCAT.txt` | `carddemo-common` `db/migration/V1__create_schema.sql` (**11** business tables in FK order — `customers`, `accounts`, `security_users`, `tran_type`, `tran_category`, `disclosure_group`, `cards`, `card_xref`, `transactions`, `daily_transactions`, `tran_cat_bal` — plus 4 FK constraints, the secondary indexes derived from the 3 alternate indexes, 15 id-width `CHECK` constraints, and `transaction_id_seq`) | `source → target` |
 | `app/csd/CARDDEMO.CSD` | `auth-service` `config/SecurityConfig.java` (`SecurityFilterChain`, route / role rules) + gateway routes | `source → target` |
+| `app/catlg/LISTCAT.txt` | `db/migration/V1__create_schema.sql` (10 tables + FK constraints + secondary indexes from 3 alternate indexes) | `source → target` |
+| `app/csd/CARDDEMO.CSD` | `auth-service` `config/SecurityConfig.java` (`SecurityFilterChain`, sign-on route rules, `401` entry point) | `source → target` |
+| `app/csd/CARDDEMO.CSD` transaction list + `RESSEC(NO)`/`CMDSEC(NO)` (application-layer gating) | `api-gateway` `config/SecurityConfig.java` (path-prefix → role authority rules for `CC00`/`CM00`/`CA00`/`CU00`–`CU03`/`CAVW`/`CAUP`/`CCLI`/`CCDL`/`CCUP`/`CT00`–`CT02`/`CB00`/`CR00`, browser CSRF, logout, source-address rate limiting) + `config/GatewayRoutesConfig` routes | `source → target` |
+| `app/csd/CARDDEMO.CSD` administrator-only transactions `CU00`–`CU03` `[app/cbl/COUSR00C.cbl; app/cbl/COUSR01C.cbl; app/cbl/COUSR02C.cbl; app/cbl/COUSR03C.cbl]` | `user-service` `config/SecurityConfig.java` (`ROLE_ADMIN` on every user-CRUD route, anonymous health status only, CSRF delegated to the gateway) | `source → target` |
+| `app/csd/CARDDEMO.CSD` transaction security applied to the business transactions `CAVW`/`CAUP`/`CCLI`/`CCDL`/`CCUP`/`CT00`–`CT02`/`CB00`/`CR00` | `account-service`, `card-service`, `transaction-service`, `billpay-service`, `reporting-service`, `batch-service` `config/SecurityConfig.java` (shared session-derived chain; authentication required on every direct service port) | `source → target` |
 | `app/ctl/REPROCT.ctl` | Spring Batch sort / step configuration (report processing) | `source → target` |
-| `app/data/ASCII/trantype.txt`, `trancatg.txt`, `discgrp.txt` | `db/migration/V2__seed_reference_data.sql` (7 tran types, 18 categories, 51 disclosure groups) | `source → target` |
-| `app/data/ASCII/custdata.txt`, `acctdata.txt`, `carddata.txt`, `cardxref.txt`, `tcatbal.txt`, `dailytran.txt` | `db/migration/V3__seed_test_data.sql` (50 customers / accounts / cards / xrefs, 100 category balances, transactions) | `source → target` |
+| `app/data/ASCII/trantype.txt`, `trancatg.txt`, `discgrp.txt` | `carddemo-common` `db/migration/V2__seed_reference_data.sql` (7 `tran_type`, 18 `tran_category`, 51 `disclosure_group` rows; `DIS-INT-RATE` decoded from the trailing-overpunch sign) | `source → target` |
+| `app/data/ASCII/custdata.txt`, `acctdata.txt`, `carddata.txt`, `cardxref.txt`, `tcatbal.txt`, `dailytran.txt` | `carddemo-common` `db/migration/V3__seed_test_data.sql` (10 `security_users`, 50 customers / accounts / cards / xrefs, **50** `tran_cat_bal` rows — the fixture's exact distinct-key count, reconciled against the "100" in AAP §0.4.5 in decision-log §2 — 300 `daily_transactions`, and the `transactions` history derived as the posted image of the feed) | `source → target` |
 | `COSGN00C` `[app/cbl/COSGN00C.cbl]` + `CSUSR01Y` `[app/cpy/CSUSR01Y.cpy]` | `auth-service` `security/UserDetailsServiceImpl.java` + `PasswordEncoderConfig` (RACF / USRSEC → BCrypt; `SEC-USR-TYPE` 'A' / 'U' → `ROLE_ADMIN` / `ROLE_USER`) | `source → target` |
 | `app/data/EBCDIC/AWS.M2.CARDDEMO.*` (12 binaries) | EXCLUDED (out of scope, AAP 0.2.2 — ASCII fixtures drive seeding) | `source → target` |
 
@@ -230,9 +237,13 @@ The legacy inventory reconciled against the repository (AAP 0.1.3) and covered i
 | Source Construct | Target Implementation | Direction |
 |------------------|-----------------------|-----------|
 | CICS read-snapshot-compare-rewrite lock pattern `[app/cbl/COACTUPC.cbl:L517-L523]` | `Account.version` (`@Version` optimistic-lock column) | `target → source (derived)` |
+| Field-by-field snapshot comparison before `REWRITE` `[app/cbl/COACTUPC.cbl:L4131-L4189]` | `version` token on `AccountUpdateRequestDto` / `AccountViewResponseDto` / `AccountUpdateResponseDto` + `AccountService.updateAccount` compare step → `OptimisticLockConflictException` ("Record changed by some one else. Please review", HTTP 409) | `target → source (derived)` |
 | Multi-file CICS `REWRITE` units `[app/cbl/COACTUPC.cbl:L4066-L4090]` | `@Transactional` service boundaries (account + customer commit / roll back together) | `target → source (derived)` |
-| Browse-last-then-increment id generation `[app/cbl/COTRN02C.cbl:L444-L451]` | Database sequence / identity for transaction id (16-digit zero-padded form preserved) | `target → source (derived)` |
-| Application-enforced read order `[app/cbl/CBTRN02C.cbl:L371-L397, app/cpy/CVACT03Y.cpy]` | Database FK constraints (card ↔ customer ↔ account) + service-layer validation | `target → source (derived)` |
+| Browse-last-then-increment id generation `[app/cbl/COTRN02C.cbl:L444-L451]` | `transaction_id_seq` PostgreSQL sequence (created and high-water-marked in `V1__create_schema.sql`; 16-digit zero-padded wire form preserved; `setval` guarded by a digits-only regexp because `TRAN-ID` is `PIC X(16)`) | `target → source (derived)` |
+| Application-enforced read order `[app/cbl/CBTRN02C.cbl:L371-L397, app/cpy/CVACT03Y.cpy]` | Database FK constraints (card ↔ customer ↔ account) + service-layer validation; `fk_tran_cat_bal_acct` extends the same rule to category balances | `target → source (derived)` |
+| CXACAIX alternate-index customer browse `[app/cpy/CVACT03Y.cpy, app/cbl/COCRDLIC.cbl]` | Secondary index `idx_card_xref_cust_id` on `card_xref (xref_cust_id)` | `target → source (derived)` |
+| Fixed-width `PIC 9(n)` identifier fields `[app/cpy/CVACT01Y.cpy, app/cpy/CVCUS01Y.cpy, app/cpy/CVACT03Y.cpy, app/cpy/CSUSR01Y.cpy]` | 15 id-width / range `CHECK` constraints in `V1__create_schema.sql` (`chk_accounts_acct_id`, `chk_customers_cust_id`, `chk_card_xref_cust_id`, `chk_customers_fico`, `chk_sec_usr_type`, …) re-establishing the legacy field widths at the storage layer | `target → source (derived)` |
+| Sensitive legacy fields `CUST-SSN`, `CUST-GOVT-ISSUED-ID`, `CUST-EFT-ACCOUNT-ID`, `CARD-CVV-CD` `[app/cpy/CVCUS01Y.cpy, app/cpy/CVACT02Y.cpy]` | `carddemo-common` `migration/SeededPiiEncryptionMigration.java` (Flyway Java migration, version `4`) + `config/SchemaMigrationConfig.java` — encrypts the seeded PII in place through `CryptoConverter` (AES-256-GCM, random IV, environment-supplied key), idempotently | `target → source (derived)` |
 | File-status / RESP reject handling `[app/cbl/CBTRN02C.cbl:L176-L182, L380-L421]` | Reject-code domain exceptions + reject `ItemWriter` (430-byte reject record) | `target → source (derived)` |
 
 ## 10. Rule-Mandated / Standalone-Operation Infrastructure (No Legacy Analogue)
@@ -245,9 +256,15 @@ The legacy inventory reconciled against the repository (AAP 0.1.3) and covered i
 | Containerization + orchestration (standalone operation) | `docker-compose.yml`; `k8s/configmap.yaml`, `k8s/secret.yaml` (per-service DB-role Secrets + shared Redis + postgres bootstrap), `k8s/deployment-{api-gateway,auth-service,user-service,account-service,card-service,transaction-service,billpay-service,reporting-service,batch-service,postgres,redis,frontend}.yaml`, `k8s/service-frontend.yaml`, `k8s/service-redis.yaml`; per-service `Dockerfile`s delivered with the services | `target → rule` |
 | Container/pod hardening rule (MJ-10) | `k8s/networkpolicy.yaml` (default-deny + least-privilege ingress), `k8s/poddisruptionbudget.yaml` (per-workload PDBs), pod/container `securityContext` across all Deployments | `target → rule` |
 | Respecting-.gitignore + externalized-secrets (CR-11) | `.env.example` (required-env template consumed by `docker-compose.yml`; real `.env` git-ignored) | `target → rule` |
+| Observability rule (AAP 0.7.5) | `application.yml` (Actuator health / readiness / liveness + `/actuator/prometheus`; `management.endpoint.health.group.readiness.include: readinessState,db` so readiness tracks the database, with liveness deliberately excluding it, plus bounded Hikari `connection-timeout` / `validation-timeout` so the probe answers inside its timeout) | `target → rule` |
+| Observability rule (AAP 0.7.5) | `logback-spring.xml` (structured JSON logging + correlation ids via MDC; every appender definition scoped inside the `<springProfile>` block that references it) | `target → rule` |
+| Observability rule (distributed tracing) | `org.springframework.boot:spring-boot-micrometer-tracing` + `spring-boot-micrometer-tracing-opentelemetry` (Boot 4 auto-configuration modules) over `io.micrometer:micrometer-tracing-bridge-otel` — activates the OpenTelemetry `Tracer`, W3C `traceparent` propagation and `traceId` / `spanId` MDC enrichment; no OTLP exporter by design (decision-log §6) | `target → rule` |
+| Observability rule (correlation across service boundaries) | `carddemo-common` `config/CorrelationIdFilter` registered by `config/WebObservabilityConfig`, imported by all nine services (single shared implementation; adopts an inbound `X-Correlation-Id` or W3C `traceparent` trace-id, sanitizes CRLF, echoes the header on every response) | `target → rule` |
 | Observability rule (AAP 0.7.5) | `application.yml` (Actuator health / readiness / liveness + `/actuator/prometheus`) | `target → rule` |
 | Observability rule (AAP 0.7.5) | `logback-spring.xml` (structured JSON logging + correlation ids via MDC) | `target → rule` |
-| Observability rule (distributed tracing) | Micrometer Tracing + OpenTelemetry bridge configuration | `target → rule` |
+| Observability rule (distributed tracing) | `carddemo-common/pom.xml` — the Boot 4 tracing auto-configuration module + the OTLP span exporter, inherited by all nine services; `management.opentelemetry.tracing.export.otlp.endpoint` and `management.tracing.sampling.probability` in every `application.yml`; the `jaeger` collector in `docker-compose.yml` and `k8s/deployment-jaeger.yaml` / `k8s/service-jaeger.yaml` | `target → rule` |
+| Observability rule (distributed tracing) — VERIFIED ACTIVE | One request through the gateway yields one joined trace: 13 spans across `api-gateway`+`auth-service`, 17 across `api-gateway`+`account-service`; `traceId`/`spanId` present in every JSON log record. (An earlier revision of this matrix credited `micrometer-tracing` + `micrometer-tracing-bridge-otel` alone, which supply the API and the bridge but NO auto-configuration, NO exporter and no collector, so no span was ever produced.) | `target → rule` |
+| Observability rule (distributed tracing) | Micrometer Tracing + OpenTelemetry bridge configuration: `io.micrometer:micrometer-tracing-bridge-otel` plus the Spring Boot 4 auto-configuration modules `org.springframework.boot:spring-boot-micrometer-tracing` and `spring-boot-micrometer-tracing-opentelemetry` (both REQUIRED for a real `Tracer` bean — see decision-log §6), and `management.tracing.sampling.probability` per service | `target → rule` |
 | Observability rule (AAP 0.7.5) | `observability/prometheus.yml` (scrape config) | `target → rule` |
 | Observability rule (AAP 0.7.5) | `observability/grafana-dashboard.json` (dashboard template) | `target → rule` |
 | Explainability rule (AAP 0.7.2 / 0.7.3) | `docs/decision-log.md` | `target → rule` |
@@ -271,15 +288,62 @@ tranche. They are listed here explicitly so the reverse direction is verifiable 
 | `carddemo-common` `exception/CardDemoException.java` + handlers | RESP / file-status error handling → exceptions | `target → source (derived)` |
 | `carddemo-common` `domain/TranCatBalId.java`, `DiscGroupId.java`, `TranCatgId.java` | Compound VSAM keys of `CVTRA01Y` / `CVTRA02Y` / `CVTRA04Y` (`@IdClass`) | `source → target` |
 | `carddemo-common` `domain/FinancialPrecisionTest.java` | Interest `COMPUTE` truncation pattern `[app/cbl/CBACT04C.cbl:L464-465]` | `target → source (derived)` |
-| `carddemo-common` `config/CorrelationIdContext.java`, `CorrelationIdFilter`, `WebObservabilityConfig`, `ObservabilityConfig` | Observability rule (structured logging + correlation ids) | `target → rule` |
+| `carddemo-common` `config/CorrelationIdContext.java`, `CorrelationIdFilter`, `WebObservabilityConfig` (an `@AutoConfiguration` listed in `META-INF/spring/org.springframework.boot.autoconfigure.AutoConfiguration.imports`), `CorrelationIdThreadLocalAccessor`, `RequestLoggingFilter`, `ObservabilityConfig` | Observability rule (structured logging + correlation ids) | `target → rule` |
+| Correlation-id registration — VERIFIED ACTIVE on all nine services | `X-Correlation-Id` echoed and logged by every service, inbound `traceparent` honoured as a fallback, one access-log line per request, and the id propagated into async and batch threads. (An earlier revision listed these classes as covering the rule while nothing imported `WebObservabilityConfig`, so the shared filter never ran; five services carried diverged local copies, since deleted.) | `target → rule` |
 | `carddemo-common` `config/SessionRedisConfig.java` (strict allowlisted JSON serializer) | COMMAREA session externalization + CWE-502 hardening (decision-log §6) | `target → source (derived)` |
 | `carddemo-common` security password-encoder factory (BCrypt `DelegatingPasswordEncoder`) | `COSGN00C` credential check → encoder (see §8) | `source → target` |
 | `transaction-service` `PostingJobCompletionListener` | `CBTRN02C` batch result codes 0/4/8/12 + rejected tally | `source → target` |
-| `batch-service` `db/migration/V1__batch_metadata.sql` | Spring Batch metadata schema (framework requirement) | `target → rule` |
+| `carddemo-common` `db/migration/V1__create_schema.sql` (11 business tables, 4 FKs, secondary indexes, 15 id-width `CHECK`s, `transaction_id_seq`) | `app/catlg/LISTCAT.txt` + the `CV*` / `CSUSR01Y` record copybooks (see §8) | `source → target` |
+| `carddemo-common` `db/migration/V2__seed_reference_data.sql` (7 / 18 / 51 rows) | `app/data/ASCII/trantype.txt`, `trancatg.txt`, `discgrp.txt` (see §8) | `source → target` |
+| `carddemo-common` `db/migration/V3__seed_test_data.sql` (10 users, 50 customers / accounts / cards / xrefs, 50 `tran_cat_bal`, 300 `daily_transactions`, derived `transactions` history) | `app/data/ASCII/custdata.txt`, `acctdata.txt`, `carddata.txt`, `cardxref.txt`, `tcatbal.txt`, `dailytran.txt` (see §8) | `source → target` |
+| `carddemo-common` `migration/SeededPiiEncryptionMigration.java` (Flyway Java migration, version `4`) + `config/SchemaMigrationConfig.java` (`JavaMigration` `@Bean` registration) | `CUST-SSN` / `CUST-GOVT-ISSUED-ID` / `CUST-EFT-ACCOUNT-ID` / `CARD-CVV-CD` encryption-at-rest posture (see §9; decision-log §2) | `target → source (derived)` |
+| `carddemo-common` `db/migration/V5__batch_metadata.sql` (single migration owner `batch-service`; one `flyway_schema_history`; `spring.batch.jdbc.initialize-schema: never`) | Spring Batch metadata schema (framework requirement) — renumbered into the consolidated version line, decision-log §2 | `target → rule` |
+| `carddemo-common` `domain/DailyTransaction.java` (`@Entity` → `daily_transactions`) + `transaction-service` `repository/DailyTransactionRepository.java` (`JpaRepository`, ascending `DALYTRAN-ID` `@Query`) consumed by `TransactionPostingJob`'s reader | `CVTRA06Y` DALYTRAN feed record (see §3; reversal recorded in decision-log §6) | `source → target` |
+| `carddemo-common` `dto/AccountUpdateRequestDto.java` / `AccountViewResponseDto.java` / `AccountUpdateResponseDto.java` `version` token + `account-service` `AccountService.updateAccount` compare step | `COACTUPC` snapshot-compare-before-`REWRITE` pattern (see §9) | `target → source (derived)` |
+| Compose `depends_on: batch-service: service_healthy` + Kubernetes `await-schema` initContainer | Cross-service schema-provisioning order (no legacy analogue — JCL applied DDL out of band), decision-log §2 | `target → rule` |
+| `carddemo-common` `db/migration/V5__batch_metadata.sql` | Spring Batch metadata schema (framework requirement). Moved out of `batch-service` into the shared set because THREE services run Spring Batch jobs against the one database | `target → rule` |
+| `carddemo-common` `batch/JdbcBatchConfiguration.java` | Spring Batch 6 default `JobRepository` is in-memory (`ResourcelessJobRepository`); a JDBC-backed repository is required for the `BATCH_*` tables above to be used at all | `target → rule` |
 | Per-service `application.yml` + `logback-spring.xml` (9 services) | Observability rule (Actuator health/readiness/liveness/prometheus + JSON logs) | `target → rule` |
 | `observability/prometheus.yml`, `observability/grafana-dashboard.json` | Observability rule (scrape config + dashboard) | `target → rule` |
 | Frontend foundation (`package.json`, `vite.config.ts`, `tsconfig*.json`, `index.css`, `nginx.conf`, `components/Header.tsx`, `types/{common,session}.ts`) | BMS screen shell + REST field contracts + standalone build/serve | `source → target` / `target → rule` |
 | `frontend/package-lock.json` (`lockfileVersion 3`, 491 locked entries, consistent with `package.json`) | AAP §0.5.1 "lock-pinned at scaffold" + `npm ci` reproducible-build requirement (decision-log §6) | `target → rule` |
+| `api-gateway` `config/ObservabilityEndpointsIT` + `SessionRedisRoundTripIT`; `auth-service`, `user-service`, `account-service` `config/ObservabilityEndpointsIT`; `carddemo-common` `config/ObservabilityConfigTest`, `WebObservabilityConfigTest` | Observability rule (AAP §0.7.5) "verified in the local environment" + COMMAREA session externalization `[app/cpy/COCOM01Y.cpy:L18-45]` | `target → rule` |
+
+> The business-schema migrations (`V1__create_schema.sql`,
+> `V2__seed_reference_data.sql`, `V3__seed_test_data.sql`, Java migration `4`,
+> `V5__batch_metadata.sql`) are **delivered** — they live in
+> `carddemo-common/src/main/resources/db/migration` and are applied by the single
+> migration owner (`batch-service`). The remaining per-screen `*RequestDto` /
+> `*ResponseDto` classes, `frontend/src/api`, `frontend/src/types/*`, the 17 page
+> components, and the outstanding services / controllers / repositories are mapped
+## 12. Security, Session & Observability Remediation — Present-on-Disk Targets
+
+Delivered while closing the runtime security-gate findings. Every artifact below is
+present on disk, so the reverse direction is verifiable today. Rationale for each choice
+is in `docs/decision-log.md` §3 (Security & Session) and §6 (Infrastructure &
+Observability); this table records only the source-or-mandate linkage.
+
+| Target Implementation (delivered) | Source Construct / Mandate | Direction |
+|-----------------------------------|----------------------------|-----------|
+| `carddemo-common` `security/SecurityHardening.java` (uniform posture: stateless sessions, no saved-request cache, hardened response headers, `401` entry point, `ERROR`-dispatch permit, session-derived principal) | CICS application-layer gating with `RESSEC(NO)`/`CMDSEC(NO)` `[app/csd/CARDDEMO.CSD]` + Observability/security hardening | `target → source (derived)` |
+| `carddemo-common` `security/SessionContextAuthenticationFilter.java` | COMMAREA identity + `SEC-USR-TYPE` role carried across pseudo-conversational turns `[app/cpy/COCOM01Y.cpy:L18-45,L26-30]` | `source → target` |
+| `carddemo-common` `dto/SessionContext.SESSION_ATTRIBUTE_NAME` (canonical session key) | Single COMMAREA carried between programs `[app/cpy/COCOM01Y.cpy]` | `source → target` |
+| `carddemo-common` `security/SessionPrincipalIndex.java`, `security/SessionRegistryConfig.java` | `USRSEC` re-read on every transaction, so user maintenance took effect immediately `[app/cpy/CSUSR01Y.cpy; app/cbl/COUSR02C.cbl; app/cbl/COUSR03C.cbl]` | `target → source (derived)` |
+| `auth-service` `security/LoginAttemptService.java` | RACF revoke-after-N-failures protecting the `USRSEC` sign-on `[app/cbl/COSGN00C.cbl]` | `target → source (derived)` |
+| `carddemo-common` `security/RateLimitFilter.java` | RACF/CICS throttling of the sign-on transaction `CC00` `[app/csd/CARDDEMO.CSD; app/cbl/COSGN00C.cbl]` | `target → source (derived)` |
+| `api-gateway` `config/CsrfCookieMaterializingFilter.java`, `controller/CsrfController.java` | Browser-facing surface replacing the 3270 terminal session (no legacy analogue) | `target → rule` |
+| `carddemo-common` `security/ManagementSecurityConfig.java` (`monitoring` principal, `ROLE_MONITORING`, `@Order(1)` telemetry chain) | Observability rule (AAP 0.7.5) — authenticated scrape | `target → rule` |
+| `k8s/secret.yaml` `carddemo-monitoring-secret` + `MONITORING_PASSWORD` in `docker-compose.yml` and all 9 Deployments | Observability rule (AAP 0.7.5) — the scrape credential must reach the services, not only Prometheus | `target → rule` |
+| `carddemo-common` `security/SecurityAuditLogger.java`, `security/SecurityAuditConfig.java`, `security/AuditingAuthenticationEntryPoint.java`, `security/AuditingAccessDeniedHandler.java` | Observability rule (AAP 0.7.5) — structured, correlation-aware security-event trail | `target → rule` |
+| `carddemo-common` `security/SensitiveDataMasker.java` | PAN never retained in a log; AAP 0.6.7 sensitive-field handling `[app/cbl/COCRDSLC.cbl; app/cbl/COTRN01C.cbl]` | `target → source (derived)` |
+| `carddemo-common` `config/RequestSizeLimitFilter.java`, `config/LimitedRequestWrapper.java`, `config/WebHardeningConfig.java` | Fixed-width 3270 screen fields bound every legacy input; the REST equivalent is an explicit body cap (CWE-770) plus uniform hardened headers `[app/cpy-bms/]` | `target → source (derived)` |
+| `carddemo-common` `exception/PiiEncryptionException.java`, `crypto/SeededPiiEncryptionMigrator.java`, `crypto/PiiEncryptionConfig.java` | At-rest protection of `CUST-SSN`, `CUST-GOVT-ISSUED-ID`, `CUST-EFT-ACCOUNT-ID`, `CARD-CVV-CD` (AAP 0.6.7) `[app/cpy/CVCUS01Y.cpy; app/cpy/CVACT02Y.cpy]` | `target → source (derived)` |
+| `auth-service` `db/migration/V2__seed_security_users.sql` `{bcrypt}` identifier prefix | `USRSEC` seeded credentials — data set defined by the load job, layout by the copybook `[app/jcl/DUSRSECJ.jcl; app/cpy/CSUSR01Y.cpy]` | `source → target` |
+| `account-service`, `card-service`, `transaction-service`, `billpay-service`, `reporting-service`, `batch-service` `config/SecurityConfig.java` | CICS transaction security for `CAVW`/`CAUP`/`CCLI`/`CCDL`/`CCUP`/`CT00`–`CT02`/`CB00`/`CR00` `[app/csd/CARDDEMO.CSD]` | `source → target` |
+| `carddemo-common` `config/GlobalExceptionHandler` unreadable-body (`413`/`400`) and catch-all handlers | CICS `RESP`/file-status outcome mapping + Observability rule (a trace id on every error payload) | `target → source (derived)` |
+| `carddemo-common` tests `security/{SecurityAuditConfigTest,AuditingAccessDeniedHandlerTest,RateLimitFilterTest,SessionPrincipalIndexTest,SessionContextAuthenticationFilterTest,SensitiveDataMaskerTest}`, `crypto/{CryptoConverterTest,SeededPiiEncryptionMigratorTest}`, `config/{RequestSizeLimitFilterTest,GlobalExceptionHandlerLoggingTest,GlobalExceptionHandlerUnreadableBodyTest,GlobalExceptionHandlerUnhandledTest}` | AAP 0.7.1 test obligation for the controls above | `target → rule` |
+| `auth-service` `security/LoginAttemptServiceTest`; `account-service`, `billpay-service`, `reporting-service`, `transaction-service` `SecurityContractIT`; `card-service` `CardViewUpdateIT.SecurityContract` (nested) | AAP 0.7.1 test obligation — each freezes "an anonymous request to this service port never reaches business logic" | `target → rule` |
+| `.gitignore` `blitzy/` + cookie-jar patterns | Respecting-.gitignore rule (AAP 0.7.2) — QA evidence holds live session ids and must never be staged | `target → rule` |
 
 > The per-screen `*RequestDto` / `*ResponseDto` classes, `frontend/src/api`,
 > `frontend/src/types/*`, the 17 page components, the business-schema migrations
@@ -287,7 +351,91 @@ tranche. They are listed here explicitly so the reverse direction is verifiable 
 > services / controllers / repositories, and the per-service `Dockerfile`s are mapped
 > above in the end-state design and are **delivered in later tranches**.
 
+## 12. QA-Remediation Targets (runtime checkpoint) — Present on Disk
+
+Target artifacts created or substantially reworked while remediating the runtime QA
+checkpoint. They are listed so the reverse direction stays 100% complete: every one either
+transforms a legacy construct, derives from a legacy behavioral pattern, or is mandated by
+a user-specified rule. Rationale for each is in `docs/decision-log.md` §7.
+
+| Target Implementation (delivered) | Source Construct / Mandate | Direction |
+|-----------------------------------|----------------------------|-----------|
+| `carddemo-common` `config/GlobalExceptionHandler.java` (extends `ResponseEntityExceptionHandler`; renders the eight-field `ErrorResponse` envelope for domain AND framework failures, and returns exactly one field error in COBOL edit order) | COBOL single-message screen contract — `IF WS-ERROR-MSG-OFF` guarded `EVALUATE TRUE` emitting one message `[app/cbl/COSGN00C.cbl:L117-L131]` — plus the REST error-contract requirement | `target → source (derived)` |
+| `carddemo-common` `config/ErrorResponseFactory.java` | Shared assembly of the same envelope (`traceId` from the tracing MDC, correlation id fallback) | `target → rule` |
+| `carddemo-common` `config/CardDemoErrorController.java` | Servlet `ERROR` dispatch → same JSON envelope instead of the container's HTML page | `target → rule` |
+| `carddemo-common` `config/ContainerErrorReportConfig.java` (`SilentErrorReportValve`) | Tomcat host-pipeline rejections (e.g. encoded path separators) → same JSON envelope | `target → rule` |
+| `carddemo-common` `config/SecurityExceptionHandler.java` (`@ConditionalOnClass`) | `COSGN00C` / `COMEN01C` authorization refusal → 401/403 in the same envelope | `target → source (derived)` |
+| `carddemo-common` `config/PersistenceExceptionHandler.java` | `WRITE` DUPKEY → `'Tran ID already exist...'`; `REWRITE` conflict → `'Record changed by some one else. Please review'` `[app/cbl/COTRN02C.cbl; app/cbl/COACTUPC.cbl:L4131-L4189]` | `source → target` |
+| `carddemo-common` `crypto/CryptoConverter.java` (AES-GCM JPA `@Converter` on SSN, government id, EFT account id, CVV; fails closed) | Sensitive-field protection with no legacy field-level analogue — `CVCUS01Y` `CUST-SSN` / `CUST-GOVT-ISSUED-ID` / `CUST-EFT-ACCOUNT-ID` and `CVACT02Y` `CARD-CVV-CD` were stored in the clear on VSAM `[app/cpy/CVCUS01Y.cpy; app/cpy/CVACT02Y.cpy]` | `target → rule` |
+| `carddemo-common` `crypto/PiiMasker.java` | 3270 masked display of sensitive fields (`***-**-<last 4>` SSN; identifiers fully masked) | `target → source (derived)` |
+| `carddemo-common` `migration/SeededPiiEncryptionMigration.java` + `crypto/SeededPiiEncryptionMigrator.java` | At-rest normalization of ASCII-fixture seed data to the `CryptoConverter` format `[app/data/ASCII/custdata.txt; app/data/ASCII/carddata.txt]` | `target → rule` |
+| `carddemo-common` `exception/PiiEncryptionException.java` | Fail-closed outcome of the converter (never surfaces plaintext or an opaque 500) | `target → rule` |
+| `carddemo-common` `security/SessionContextAuthenticationFilter.java` | COMMAREA `CDEMO-USER-TYPE` 88-levels → Spring Security authorities on every request `[app/cpy/COCOM01Y.cpy:L26-L30]` | `source → target` |
+| `carddemo-common` `dto/SessionAttributes.java` | Single COMMAREA-equivalent session attribute name shared by every service `[app/cpy/COCOM01Y.cpy:L18-L45]` | `source → target` |
+| `carddemo-common` `config/RedisCommandMetricsConfig.java` (Lettuce `MicrometerCommandLatencyRecorder`) | Observability rule (AAP 0.7.5) — Redis command latency series consumed by `observability/grafana-dashboard.json` | `target → rule` |
+| `carddemo-common` `config/WebObservabilityConfig.java` activated by `auth-service`, `user-service`, `reporting-service` | Observability rule (correlation id in the MDC and in `ErrorResponse.traceId`) | `target → rule` |
+| `carddemo-common` `dto/UserListResponseDto.java`, `dto/UserWriteResponseDto.java` | `COUSR00C` paging literals + `COUSR01C`/`COUSR02C`/`COUSR03C` confirmation messages `[app/cbl/COUSR00C.cbl:L211-L273]` | `source → target` |
+| `account-service` `service/AccountUpdateValidator.java` | `COACTUPC` `1200-EDIT-MAP-INPUTS` 25-field edit sequence + `1280` state/zip cross-field edit + `CSLKPCDY` lookup sets `[app/cbl/COACTUPC.cbl; app/cpy/CSLKPCDY.cpy]` | `source → target` |
+| `carddemo-common` `domain/Transaction.java` implementing `Persistable<String>` | `COTRN02C` / `COBIL00C` `WRITE` semantics — an existing transaction is never overwritten `[app/cbl/COTRN02C.cbl:L444-L451]` | `target → source (derived)` |
+| `reporting-service` `config/StatementOutputResolver.java` | `CREASTMT` / `CBSTM03A` statement destination, confined to a configured root `[app/jcl/CREASTMT.jcl; app/cbl/CBSTM03A.CBL]` | `source → target` |
+| `docker-compose.yml` `jaeger` service + `management.opentelemetry.tracing.export.otlp.endpoint` (docker profile) | Observability rule (AAP 0.7.5) — distributed tracing verifiable in the local environment | `target → rule` |
+## 13. QA Remediation — Runtime-Verified Batch, Security & Integration Targets
+
+Targets added or corrected while resolving the runtime findings raised by end-to-end QA of the integrated backend. Every row was verified against the running application, not only against the source.
+
+**Scope of this section.** It does not restate the forward inventory. Its *Source Construct* column names a SPECIFIC BEHAVIOR WITHIN a construct already enumerated exactly once in Sections 1-8 (for example the `CBTRN02C` feed read and its reject file, rather than `CBTRN02C` itself), or a cross-cutting concern with no legacy analogue. The forward "exactly once" enumeration in Sections 1-8 is therefore unaffected, and this section supplies the reverse (`target -> source (derived)` / `target -> rule`) coverage for the components added during remediation.
+
+| Source Construct | Target Implementation | Direction |
+|------------------|-----------------------|-----------|
+| `CBTRN02C` daily-transaction feed read `[app/cbl/CBTRN02C.cbl:L371-L397]` | `transaction-service` `batch/TransactionPostingJob.java` → `JdbcCursorItemReader` over `daily_transactions` (`DALYTRAN_FEED_SQL`, ordered by `dalytran_id`) + `batch/DailyTransactionRowMapper.java` | `source → target` |
+| `CBTRN02C` reject file `DALYREJS` (430B = 350B image + 80B trailer) `[app/cbl/CBTRN02C.cbl:L176-L182]` | `transaction-service` `batch/RejectFileItemWriter.java`, path resolved through `carddemo-common` `batch/BatchOutputPathResolver.java` | `source → target` |
+| `CBTRN02C` result-code tally 0 / 4 / 12 `[app/cbl/CBTRN02C.cbl:L228]` | `transaction-service` `batch/PostingJobCompletionListener.java` (`COMPLETED_WITH_REJECTS` / `FAILED_EMPTY_FEED`) | `source → target` |
+| `COTRN02C` transaction-id assignment `[app/cbl/COTRN02C.cbl:L444-L451]` | `transaction-service` `service/TransactionService.java#nextUnusedTransactionId` over Flyway `V4__create_transaction_id_sequence.sql` | `source → target` |
+| `CBTRN03C` / `TRANREPT` transaction-detail report `[app/cbl/CBTRN03C.cbl]` | `batch-service` `transactionDetailReportJob` + `batch/TransactionDetailReportWriter.java`, launched by `controller/BatchController.java` | `source → target` |
+| `CORPT00C` `SUBMIT-JOB-TO-INTRDR` write to TDQ `'JOBS'` `[app/cbl/CORPT00C.cbl]` | `reporting-service` `client/BatchJobClient.java#submitTransactionDetailReport` (frozen `Unable to Write TDQ (JOBS)...` on refusal) | `source → target` |
+| `CREASTMT` / `CBSTM03A` statement generation `[app/jcl/CREASTMT.jcl; app/cbl/CBSTM03A.CBL]` | `reporting-service` `batch/StatementGenerationJob.java`, launched by `controller/ReportController.java#generateStatements` (`POST /reports/statements`) | `source → target` |
+| Legacy operator submission of the JCL job streams through TDQ `'JOBS'` / the JES internal reader | `batch-service` `controller/BatchController.java` (`GET /batch/jobs`, `POST /batch/jobs/{jobName}`, `GET /batch/jobs/executions/{id}`) | `source → target` |
+| CICS transaction authorization of an operator-submitted job stream `[app/csd/CARDDEMO.CSD]` | `batch-service` `config/SecurityConfig.java` (session-derived principal, `ROLE_USER`/`ROLE_ADMIN` on `/batch/**`) | `source → target` |
+| JCL `DD` data-set allocation for generated report / dump / statement files `[app/jcl/]` | `carddemo-common` `batch/BatchOutputPathResolver.java` + `batch/BatchPathConfig.java` (allowlisted, writable output and input roots) | `source → target` |
+| `BATCH_*` job metadata tables and restartability | `carddemo-common` `batch/JdbcBatchConfiguration.java` + Flyway `V5__batch_metadata.sql` (no legacy analogue — JES held run history) | `target → source (derived from JES job history)` |
+| Cleanup of a partially written batch output file after a failure | `carddemo-common` `batch/FailedOutputCleanupListener.java` (no legacy analogue — a failed JCL step's data set was deleted by its `DISP` disposition) | `target → source (derived from JCL DISP=(NEW,CATLG,DELETE))` |
+| COMMAREA-derived principal on every request `[app/cpy/COCOM01Y.cpy:L18-L45]` | `carddemo-common` `security/SessionContextAuthenticationFilter.java` | `source → target` |
+| Correlation of a submitted job's output back to the submitting user | `carddemo-common` `config/CorrelationIdFilter` (via `WebObservabilityConfig`) + `config/CorrelationIdTaskDecorator.java` (Observability rule) | `target → rule` |
+| Batch launch acknowledgement and outcome readback | `carddemo-common` `dto/BatchJobExecutionDto.java` (no legacy analogue — the TDQ write was fire-and-forget) | `target → source (derived from TDQ submission)` |
+| Unreachable routed upstream service | `api-gateway` `config/UpstreamFailureHandler.java` → `503` + `Retry-After` (no legacy analogue — CICS returned an abend code) | `target → source (derived from CICS routing failure)` |
+| Generated batch artefacts must never be committed (Respecting .gitignore rule) | `.gitignore` — generated batch artefact names, batch output root, and local run evidence, with `app/data/**` re-included by negation | `target → rule` |
+## 12. Targets Added While Remediating Runtime Findings
+
+Every target file created or relocated while making the delivered stack run, be observable
+and be deployable. Each row names the source construct or rule it serves, so the reverse
+direction stays complete for these files too. The rationale for each choice is in
+`docs/decision-log.md` §7.
+
+| Target Implementation (delivered) | Source Construct / Mandate | Direction |
+|-----------------------------------|----------------------------|-----------|
+| `carddemo-common` `db/migration/V1__create_schema.sql` | `app/catlg/LISTCAT.txt` key positions/lengths + `app/cpy/CV*.cpy`, `CSUSR01Y.cpy` — the 11 business tables, FK constraints and secondary indexes (AAP 0.4.5). Consolidated here from 17 superseded per-service migrations because every service validates the FULL entity set | `source → target` |
+| `carddemo-common` `db/migration/V2__seed_reference_data.sql` | `app/data/ASCII/trantype.txt`, `trancatg.txt`, `discgrp.txt` — 7 transaction types, 18 categories, 51 disclosure groups (AAP 0.4.5) | `source → target` |
+| `carddemo-common` `db/migration/V3__seed_test_data.sql` | `app/data/ASCII/custdata.txt`, `acctdata.txt`, `carddata.txt`, `cardxref.txt`, `tcatbal.txt`, `dailytran.txt` (AAP 0.4.5) | `source → target` |
+| `carddemo-common` `META-INF/spring/org.springframework.boot.autoconfigure.AutoConfiguration.imports` | Observability + configuration-validation rules — the registration mechanism that makes the shared cross-cutting components active in all nine services | `target → rule` |
+| `carddemo-common` `config/RequestLoggingFilter.java` | Observability rule (AAP 0.7.5) — request/access logging with method, URI, status, duration and correlation id | `target → rule` |
+| `carddemo-common` `config/CorrelationIdThreadLocalAccessor.java` | Observability rule — correlation-id propagation into async and Spring Batch worker threads | `target → rule` |
+| `carddemo-common` `config/DeployedConfigurationAutoConfiguration.java` | Observability + fail-fast configuration: rejects a missing datasource URL and an unsupported active profile at startup instead of degrading silently | `target → rule` |
+| `carddemo-common` `crypto/PiiEncryptionKey.java`, `crypto/PiiEncryptionAutoConfiguration.java` | `app/cpy/CVCUS01Y.cpy` SSN / government id / EFT account id and `app/cpy/CVACT02Y.cpy` CVV — sensitive fields the AAP requires masked and encrypted (0.6.7); validates `CARDDEMO_PII_KEY` eagerly | `source → target` |
+| `carddemo-common` `security/SessionContextAuthenticationFilter.java` | `app/cpy/COCOM01Y.cpy` `CDEMO-USER-TYPE` 88-levels `CDEMO-USRTYP-ADMIN` / `CDEMO-USRTYP-USER` → `ROLE_ADMIN` / `ROLE_USER`; converts the externalized COMMAREA into a Spring Security `Authentication` (AAP 0.6.3, 0.6.7) | `source → target` |
+| `carddemo-common` `batch/BatchOutputPathResolver.java` (relocated from `batch-service`) | JCL DD data-set resolution — `CREASTMT` `STMTFILE`/`HTMLFILE`, `DALYREJS`, and the `READ*`/`PRTCATBL`/`COMBTRAN` report data sets — mapped onto a single configured, containment-checked output root | `source → target` |
+| `carddemo-common` `batch/BatchPathConfig.java` | Supplies the resolver to the three batch-capable services only; deliberately NOT auto-configured so a non-batch service never materialises batch directories | `target → source (derived)` |
+| `carddemo-common` `batch/JdbcBatchConfiguration.java` | JES job/step bookkeeping — a JDBC-backed `JobRepository` so the `BATCH_*` metadata is actually written (Spring Batch 6 defaults to an in-memory repository) | `target → source (derived)` |
+| `batch-service` `controller/BatchController.java` | `app/cbl/CORPT00C.cbl` TDQ `'JOBS'` → JES asynchronous submission (AAP 0.4.4): submit-and-poll over HTTP for the nine migrated job streams, replacing the unreachable `launch*` methods | `source → target` |
+| `db/init/01-create-service-roles.sh` | `app/csd/CARDDEMO.CSD` RACF-era per-principal access → per-service PostgreSQL login roles + the shared `carddemo_app` privilege set that `k8s/secret.yaml` references | `source → target` |
+| `k8s/deployment-jaeger.yaml`, `k8s/service-jaeger.yaml` | Observability rule (distributed tracing) — the OTLP collector spans are exported to | `target → rule` |
+| `.dockerignore` (repository root) + `auth-service`, `user-service`, `account-service`, `card-service`, `transaction-service`, `billpay-service`, `batch-service`, `api-gateway` `.dockerignore` | Build hygiene for the containerization mandate (AAP 0.2.1): minimal, cache-correct build contexts. One per Docker CONTEXT, because Docker resolves the file relative to the context root | `target → rule` |
+| `carddemo-common` `src/test/.../batch/BatchOutputPathResolverTest.java`, `.../config/*`, `.../crypto/*`, `.../security/*`; `batch-service` `BatchJobControllerTest`; `transaction-service` `TransactionControllerSessionTest` | AAP 0.7.1 test mandate (50+ unit-test scenarios) applied to the components added above | `target → rule` |
+
 ## Coverage Assertion
+
+Section 12 additionally records the targets added or corrected during QA remediation; its rows
+refine behaviors within constructs already enumerated above rather than adding new sources, so
+the forward enumeration remains one row per legacy construct.
 
 This matrix enumerates the COMPLETE legacy inventory and maps it to the target design.
 It does **not** assert that every target file is already present on disk — the migration
@@ -301,12 +449,31 @@ this tranche delivers):
   configuration, catalog, control, and ASCII seed artifact.
 - **Reverse (`target → source (derived)` / `target → rule`):** every target implementation
   either appears as a Target Implementation in a forward row, or is recorded in Section 9
-  (derived from a legacy behavioral pattern with no 1:1 field) or Section 10 (rule-mandated
-  or standalone-operation infrastructure with no legacy analogue).
+  (derived from a legacy behavioral pattern with no 1:1 field), Section 10 (rule-mandated
+  or standalone-operation infrastructure with no legacy analogue), Section 11 (foundation
+  artifacts present on disk) or Section 12 (artifacts created while remediating the runtime
+  QA checkpoint, including the shared error-envelope handlers and the PII
+  encryption/masking chain).
+  or standalone-operation infrastructure with no legacy analogue), or Section 12 (targets
+  added while remediating runtime findings).
+- **No row claims coverage the runtime does not deliver.** Where an earlier revision credited
+  a component that was present but never activated, the row now names the registration or
+  dependency that makes it active and states the observed evidence; the two such rows were
+  the distributed-tracing row (Section 10) and the correlation-id row (Section 11).
+  artifacts present on disk), or Section 12 (the security, session, and observability
+  remediation artifacts present on disk, including their tests).
 - **Excluded items, recorded for audit completeness:** `app/cpy/UNUSED1Y.cpy` (unused
   copybook) and `app/data/EBCDIC/AWS.M2.CARDDEMO.*` (12 binary data sets; the ASCII
   fixtures in `app/data/ASCII` drive seeding). The developer-only CICS artifacts
   `COCRDSEC` (program) and transaction `CDV1` defined in `app/csd/CARDDEMO.CSD` are
   outside the 17-program online scope and are not transformed.
+- **Path assertions resolve:** every migration script named anywhere in this matrix —
+  `V1__create_schema.sql`, `V2__seed_reference_data.sql`, `V3__seed_test_data.sql`,
+  `V5__batch_metadata.sql`, plus the Java migration `SeededPiiEncryptionMigration`
+  (version `4`) — exists at the single path
+  `carddemo-common/src/main/resources/db/migration` (the Java migration under
+  `carddemo-common/src/main/java/com/carddemo/common/migration`). No row asserts a
+  file that is not on disk, so the mapping is checkable by inspection rather than
+  taken on trust.
 
 No source construct is left unmapped and no target artifact is left untraceable.

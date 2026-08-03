@@ -27,7 +27,11 @@ import tools.jackson.databind.jsontype.PolymorphicTypeValidator;
  * :notes: Following the ``ObservabilityConfig`` convention, this class is NOT
  *     listed in a ``META-INF`` auto-configuration import file; a service
  *     activates it with ``@Import(SessionRedisConfig.class)`` or by broadening
- *     component scanning to ``com.carddemo.common``. The ``@ConditionalOnClass``
+ *     component scanning to ``com.carddemo.common``. Every session-carrying service
+ *     (the eight web modules; the non-web batch service has no session) imports it
+ *     from its application class — omitting the import silently falls back to native
+ *     Java serialization of the session attributes, reopening the gadget surface this
+ *     class exists to close, so the import is mandatory. The ``@ConditionalOnClass``
  *     guard keeps the class inert (never loaded) in modules that do not have
  *     Spring Data Redis and Spring Session Redis on the classpath, such as the
  *     non-web batch service. Design rationale lives in docs/decision-log.md.

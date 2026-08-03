@@ -17,7 +17,6 @@
 package com.carddemo.transaction.batch;
 
 import com.carddemo.common.domain.DailyTransaction;
-import com.carddemo.transaction.repository.DailyTransactionRepository;
 
 import org.springframework.batch.core.ExitStatus;
 import org.springframework.batch.core.configuration.annotation.StepScope;
@@ -32,12 +31,14 @@ import org.springframework.batch.core.step.builder.StepBuilder;
 import org.springframework.batch.infrastructure.item.Chunk;
 import org.springframework.batch.infrastructure.item.ItemReader;
 import org.springframework.batch.infrastructure.item.ItemWriter;
+import org.springframework.batch.infrastructure.item.database.JdbcCursorItemReader;
 import org.springframework.batch.infrastructure.item.support.ClassifierCompositeItemWriter;
-import org.springframework.batch.infrastructure.item.support.IteratorItemReader;
 import org.springframework.classify.Classifier;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.transaction.PlatformTransactionManager;
+
+import javax.sql.DataSource;
 
 /**
  * :purpose: Configure the daily transaction-posting batch job that re-platforms
@@ -58,20 +59,41 @@ import org.springframework.transaction.PlatformTransactionManager;
 public class TransactionPostingJob {
 
     /**
+     * :purpose: Sequential read of the persisted ``DALYTRAN`` feed in ascending key
+     *     order, matching the ``CBTRN02C`` browse of the daily-transaction data set.
+     */
+    private static final String DALYTRAN_FEED_SQL =
+            "SELECT dalytran_id, dalytran_type_cd, dalytran_cat_cd, dalytran_source, "
+                    + "dalytran_desc, dalytran_amt, dalytran_merchant_id, dalytran_merchant_name, "
+                    + "dalytran_merchant_city, dalytran_merchant_zip, dalytran_card_num, "
+                    + "dalytran_orig_ts, dalytran_proc_ts "
+                    + "FROM daily_transactions ORDER BY dalytran_id";
+
+    /** :purpose: JDBC fetch size for the feed cursor, keeping memory bounded. */
+    private static final int FEED_FETCH_SIZE = 100;
+
+    /**
      * :purpose: Read the ``DALYTRAN`` feed one record at a time in ascending
-     *     ``dalytranId`` order, reproducing the ``CBTRN02C`` sequential browse of
-     *     the daily-transaction data set. The feed is a transient in-memory batch
-     *     input staged before launch, so the reader is step-scoped and snapshots
-     *     the staged records at step-execution time.
-     * :param dailyTransactionRepository: the daily-transaction feed store whose
-     *     ``findAll`` returns the staged records sorted by ``dalytranId`` ascending.
-     * :returns: an {@link IteratorItemReader} over the ordered feed snapshot.
+     *     ``dalytran_id`` order, reproducing the ``CBTRN02C`` sequential browse of the
+     *     daily-transaction data set. The reader streams the real
+     *     ``daily_transactions`` table over a JDBC cursor: the job previously read a
+     *     hand-written in-memory ``ConcurrentHashMap`` that nothing ever populated, so
+     *     every run reported ``read=0 write=0`` and finished COMPLETED while the
+     *     persisted feed sat unread - a silent false success in which no transaction was
+     *     ever posted and no record was ever rejected.
+     * :param dataSource: the application datasource holding the persisted feed.
+     * :returns: a step-scoped {@link JdbcCursorItemReader} over the ordered feed.
      */
     @Bean
     @StepScope
-    public IteratorItemReader<DailyTransaction> dailyTransactionReader(
-            DailyTransactionRepository dailyTransactionRepository) {
-        return new IteratorItemReader<>(dailyTransactionRepository.findAll());
+    public JdbcCursorItemReader<DailyTransaction> dailyTransactionReader(DataSource dataSource) {
+        JdbcCursorItemReader<DailyTransaction> reader = new JdbcCursorItemReader<>(
+                dataSource, DALYTRAN_FEED_SQL, new DailyTransactionRowMapper());
+        reader.setName("dailyTransactionReader");
+        // Stream the feed instead of materializing it: the legacy program processed the
+        // data set sequentially and the table can be arbitrarily large.
+        reader.setFetchSize(FEED_FETCH_SIZE);
+        return reader;
     }
 
     /**

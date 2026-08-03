@@ -24,6 +24,7 @@ import com.carddemo.common.dto.CardUpdateResponseDto;
 import com.carddemo.common.dto.SessionContext;
 import com.carddemo.common.exception.CardDemoException;
 
+import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpSession;
 import jakarta.validation.Valid;
 
@@ -61,7 +62,7 @@ public class CardController {
      *  Shared verbatim across every CardDemo controller so the Spring Session (Redis)
      *  context stays consistent as the client moves between services.
      */
-    private static final String SESSION_CONTEXT_ATTRIBUTE = "carddemoSessionContext";
+    private static final String SESSION_CONTEXT_ATTRIBUTE = SessionContext.SESSION_ATTRIBUTE_NAME;
 
     /** :purpose: Card feature business-logic service to which every request delegates. */
     private final CardService cardService;
@@ -84,8 +85,8 @@ public class CardController {
      *  applied.
      * :param cardNumber: optional exact card-number filter passed through to the service.
      * :param page: the one-based page number to return; defaults to the first page.
-     * :param session: the servlet HTTP session carrying the pseudo-conversational
-     *  :java:type:`SessionContext`.
+     * :param httpRequest: the current servlet request; its already-established session,
+     *  when present, carries the pseudo-conversational :java:type:`SessionContext`.
      * :returns: the card-list response holding the requested page of card rows.
      * :raises CardDemoException: when the supplied account filter is not a one-to-eleven
      *  digit number (translated to HTTP 400).
@@ -95,11 +96,18 @@ public class CardController {
             @RequestParam(name = "accountId", required = false) String accountId,
             @RequestParam(name = "cardNumber", required = false) String cardNumber,
             @RequestParam(name = "page", defaultValue = "1") int page,
-            HttpSession session) {
+            @RequestParam(name = "aid", required = false) String aid,
+            @RequestParam(name = "action", required = false) String action,
+            @RequestParam(name = "selectedCardNumber", required = false) String selectedCardNumber,
+            HttpServletRequest httpRequest) {
         Long acctIdFilter = parseAccountFilter(accountId);
-        SessionContext ctx = resolveSessionContext(session);
-        CardListResponseDto response = cardService.listCards(acctIdFilter, cardNumber, page, ctx);
-        session.setAttribute(SESSION_CONTEXT_ATTRIBUTE, ctx);
+        SessionContext ctx = resolveSessionContext(httpRequest);
+        // The navigation action and the row selection are part of the COCRDLIC screen
+        // contract, so they are bound here and passed through: without them the paging keys
+        // and the S/U row selection could never reach 1400-SETUP-MESSAGE.
+        CardListResponseDto response = cardService.listCards(acctIdFilter, cardNumber, page,
+                aid, action, selectedCardNumber, ctx);
+        storeSessionContext(httpRequest, ctx);
         return response;
     }
 
@@ -107,8 +115,8 @@ public class CardController {
      * :purpose: Read a single card for the card-detail screen (legacy ``COCRDSLC``,
      *  CICS ``CCDL``) by its sixteen-digit card number.
      * :param cardNumber: the sixteen-digit card number path variable.
-     * :param session: the servlet HTTP session carrying the pseudo-conversational
-     *  :java:type:`SessionContext`.
+     * :param httpRequest: the current servlet request; its already-established session,
+     *  when present, carries the pseudo-conversational :java:type:`SessionContext`.
      * :returns: the card-detail response for the resolved card.
      * :raises CardDemoException: when the card number is not sixteen digits (translated
      *  to HTTP 400).
@@ -116,11 +124,11 @@ public class CardController {
     @GetMapping("/{cardNumber}")
     public CardDetailResponseDto getCardDetail(
             @PathVariable String cardNumber,
-            HttpSession session) {
+            HttpServletRequest httpRequest) {
         String validated = parseCardNumber(cardNumber);
-        SessionContext ctx = resolveSessionContext(session);
+        SessionContext ctx = resolveSessionContext(httpRequest);
         CardDetailResponseDto response = cardService.getCardDetail(validated, ctx);
-        session.setAttribute(SESSION_CONTEXT_ATTRIBUTE, ctx);
+        storeSessionContext(httpRequest, ctx);
         return response;
     }
 
@@ -131,8 +139,8 @@ public class CardController {
      * :param cardNumber: the sixteen-digit card number path variable.
      * :param request: the editable card fields (embossed name, active status, expiry
      *  date, and CVV).
-     * :param session: the servlet HTTP session carrying the pseudo-conversational
-     *  :java:type:`SessionContext`.
+     * :param httpRequest: the current servlet request; its already-established session,
+     *  when present, carries the pseudo-conversational :java:type:`SessionContext`.
      * :returns: the card-update response reflecting the persisted card.
      * :raises CardDemoException: when the card number is not sixteen digits, or a card
      *  field fails a validation edit (translated to HTTP 400).
@@ -141,11 +149,11 @@ public class CardController {
     public CardUpdateResponseDto updateCard(
             @PathVariable String cardNumber,
             @Valid @RequestBody CardUpdateRequestDto request,
-            HttpSession session) {
+            HttpServletRequest httpRequest) {
         String validated = parseCardNumber(cardNumber);
-        SessionContext ctx = resolveSessionContext(session);
+        SessionContext ctx = resolveSessionContext(httpRequest);
         CardUpdateResponseDto response = cardService.updateCard(validated, request, ctx);
-        session.setAttribute(SESSION_CONTEXT_ATTRIBUTE, ctx);
+        storeSessionContext(httpRequest, ctx);
         return response;
     }
 
@@ -187,16 +195,46 @@ public class CardController {
 
     /**
      * :purpose: Resolve the externalized pseudo-conversational session context from the
-     *  HTTP session under the shared attribute key, creating an empty context when none
-     *  is present.
-     * :param session: the servlet HTTP session.
+     *  request's *already-established* HTTP session under the shared attribute key,
+     *  returning an empty context when the caller has no session or the session carries
+     *  none. ``getSession(false)`` is deliberate (QA Issue 22): declaring an
+     *  ``HttpSession`` controller parameter made Spring's argument resolver call
+     *  ``getSession()`` on every request, so each anonymous call created and persisted a
+     *  brand-new Spring Session entry in Redis even though no pseudo-conversational
+     *  state was ever carried into it.
+     * :param httpRequest: the current servlet request.
      * :returns: the resolved :java:type:`SessionContext`, never ``null``.
      */
-    private SessionContext resolveSessionContext(HttpSession session) {
-        SessionContext ctx = (SessionContext) session.getAttribute(SESSION_CONTEXT_ATTRIBUTE);
-        if (ctx == null) {
-            ctx = new SessionContext();
+    private SessionContext resolveSessionContext(HttpServletRequest httpRequest) {
+        HttpSession session = httpRequest.getSession(false);
+        if (session == null) {
+            return new SessionContext();
         }
-        return ctx;
+        Object attribute = session.getAttribute(SESSION_CONTEXT_ATTRIBUTE);
+        if (attribute instanceof SessionContext ctx) {
+            return ctx;
+        }
+        // A session that carries no context is an invariant violation, not a recoverable
+        // state: fabricating a blank identity here would hand the request a context whose
+        // user type gates nothing. The SecurityFilterChain rejects such a request with 401
+        // before it reaches this controller.
+        throw new IllegalStateException(
+                "No CardDemo session context on the authenticated session; sign on again");
+    }
+
+    /**
+     * :purpose: Flush the (possibly mutated) session context back to the caller's HTTP
+     *  session so the next stateless request sees the updated COMMAREA replacement. Only
+     *  an existing session is written to: a caller without one carries no
+     *  pseudo-conversational state to preserve, and creating a session for it would
+     *  reintroduce the Redis session churn of QA Issue 22.
+     * :param httpRequest: the current servlet request.
+     * :param ctx: the session context to persist.
+     */
+    private void storeSessionContext(HttpServletRequest httpRequest, SessionContext ctx) {
+        HttpSession session = httpRequest.getSession(false);
+        if (session != null) {
+            session.setAttribute(SESSION_CONTEXT_ATTRIBUTE, ctx);
+        }
     }
 }

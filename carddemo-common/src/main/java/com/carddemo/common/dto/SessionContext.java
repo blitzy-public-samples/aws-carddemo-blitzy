@@ -41,6 +41,17 @@ public class SessionContext implements Serializable {
     private static final long serialVersionUID = 1L;
 
     /**
+     * :purpose: Canonical ``HttpSession`` attribute name under which this
+     *  COMMAREA-replacement context is stored by every CardDemo service and the
+     *  API gateway. It is the single coordination point for the shared,
+     *  Redis-backed session: sign-on writes this key and every other component
+     *  (menu role gate, account, card, transaction, bill-pay, and the
+     *  session-derived authentication filter) reads the same key, so a
+     *  divergent literal can never break the role gate again.
+     */
+    public static final String SESSION_ATTRIBUTE_NAME = SessionAttributes.SESSION_CONTEXT;
+
+    /**
      * :purpose: Enumerates COMMAREA ``CDEMO-USER-TYPE`` PIC X(01) 88-levels:
      *  ``CDEMO-USRTYP-ADMIN`` (VALUE 'A') and ``CDEMO-USRTYP-USER`` (VALUE 'U').
      */

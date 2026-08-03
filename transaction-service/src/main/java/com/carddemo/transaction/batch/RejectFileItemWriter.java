@@ -16,6 +16,7 @@
  */
 package com.carddemo.transaction.batch;
 
+import com.carddemo.common.batch.BatchOutputPathResolver;
 import com.carddemo.common.domain.DailyTransaction;
 import java.math.BigDecimal;
 import java.math.BigInteger;
@@ -84,15 +85,28 @@ public class RejectFileItemWriter implements ItemStreamWriter<PostingItem> {
      * :purpose: Construct the writer and its :class:`FlatFileItemWriter` delegate
      *     bound to the configured reject-file resource and the fixed-width line
      *     aggregator.
-     * :param rejectFilePath: filesystem path of the reject sink, resolved from the
-     *     ``carddemo.batch.reject-file`` property and defaulting to the working-dir
-     *     file ``dalyrejs.txt``; never an absolute path baked into the code.
+     * :param rejectFileName: file name of the reject sink, read from the
+     *     ``carddemo.batch.reject-file`` property and defaulting to the legacy
+     *     ``DALYREJS`` data-set name ``dalyrejs.txt``; never an absolute path baked
+     *     into the code.
+     * :param pathResolver: shared resolver that confines the reject file to the
+     *     configured ``carddemo.batch.output-dir`` root, creating the directory so
+     *     the delegate can open the file, and rejecting absolute paths, ``..``
+     *     traversal and symlink escapes (CWE-22).
+     * :note: The name is resolved through the shared batch root rather than opened
+     *     directly (QA Issue 21). ``FileSystemResource`` used to resolve the bare
+     *     default against the PROCESS WORKING DIRECTORY - ``/app`` inside the
+     *     container, on the read-only root filesystem - so the very first rejected
+     *     transaction would have failed the posting step with
+     *     ``java.io.IOException: No such file or directory``, losing the DALYREJS
+     *     reject records that AAP section 0.6.4 makes a frozen 430-byte contract.
      */
     public RejectFileItemWriter(
-            @Value("${carddemo.batch.reject-file:dalyrejs.txt}") String rejectFilePath) {
+            @Value("${carddemo.batch.reject-file:dalyrejs.txt}") String rejectFileName,
+            BatchOutputPathResolver pathResolver) {
         this.delegate = new FlatFileItemWriterBuilder<PostingItem>()
                 .name("rejectFileItemWriter")
-                .resource(new FileSystemResource(rejectFilePath))
+                .resource(new FileSystemResource(pathResolver.resolveOutput(rejectFileName)))
                 .lineAggregator(this::toFixedWidthLine)
                 .build();
     }

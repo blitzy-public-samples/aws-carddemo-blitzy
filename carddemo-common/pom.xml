@@ -52,6 +52,10 @@
         </dependency>
 
         <!-- Actuator types referenced by the shared ObservabilityConfig. -->
+        <!-- Batch support for the shared batch helpers (output path resolution and
+             failed-output cleanup). Optional so only the services that actually run
+             batch jobs inherit the batch runtime. -->
+
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-actuator</artifactId>
@@ -65,17 +69,63 @@
             <optional>true</optional>
         </dependency>
 
-        <!-- Distributed tracing via the OpenTelemetry bridge. -->
+        <!--
+          Distributed tracing (AAP 0.7.5), delivered as three cooperating pieces. All
+          three are deliberately NON-optional so every service that depends on
+          carddemo-common inherits a WORKING tracing stack: an optional dependency is
+          not transitive, which is why the bridge alone previously had to be repeated in
+          each service POM and still produced no spans at all (QA Issue 6).
+            1. spring-boot-micrometer-tracing-opentelemetry - the Spring Boot 4
+               MODULARIZED auto-configuration for Micrometer Tracing over the
+               OpenTelemetry bridge. In Boot 4 this no longer ships inside
+               spring-boot-actuator-autoconfigure, so without this module
+               management.tracing.* / management.opentelemetry.tracing.* are inert, no
+               Tracer/ObservationHandler is created and no span is ever recorded. It
+               transitively supplies spring-boot-micrometer-tracing,
+               spring-boot-micrometer-observation and spring-boot-opentelemetry.
+            2. micrometer-tracing-bridge-otel - the bridge implementation that backs
+               Micrometer's Tracer with the OpenTelemetry SDK and publishes traceId /
+               spanId into the SLF4J MDC, so the structured JSON logs carry them.
+            3. opentelemetry-exporter-otlp - the OTLP span exporter. Without it the
+               configured OTLP endpoint cannot be honoured and spans are dropped on the
+               floor even when they are recorded.
+          Versions come from the Spring Boot / OpenTelemetry BOMs (AAP 0.5.1: only the
+          anchors are pinned).
+        -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-micrometer-tracing-opentelemetry</artifactId>
+        </dependency>
         <dependency>
             <groupId>io.micrometer</groupId>
             <artifactId>micrometer-tracing-bridge-otel</artifactId>
-            <optional>true</optional>
+        </dependency>
+        <dependency>
+            <groupId>io.opentelemetry</groupId>
+            <artifactId>opentelemetry-exporter-otlp</artifactId>
         </dependency>
 
         <!-- Redis connectivity backing externalized session (provider-side only). -->
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-data-redis</artifactId>
+            <optional>true</optional>
+        </dependency>
+
+        <!--
+          Spring Batch, for the shared batch infrastructure the batch-capable services
+          import: BatchOutputPathResolver / BatchPathConfig (allowlisted batch file
+          roots, QA Issue 21 and CWE-22) and JdbcBatchConfiguration (the JDBC-backed
+          JobRepository that persists job and step executions into the BATCH_* tables,
+          replacing the in-memory ResourcelessJobRepository that Spring Batch 6 makes
+          the default). Optional and provider-side only: batch-service,
+          reporting-service and transaction-service declare
+          spring-boot-starter-batch themselves, and the other six services stay free
+          of any batch dependency.
+        -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-batch</artifactId>
             <optional>true</optional>
         </dependency>
 
@@ -110,10 +160,63 @@
             <optional>true</optional>
         </dependency>
 
+        <!--
+          Spring Security for the shared security components: the session-derived
+          authentication filter, the uniform hardening helper, the auditing entry
+          point / access-denied handler, and the management (Prometheus scrape)
+          filter chain. Declared <optional>true</optional> like every other
+          dependency of this library: each consuming service declares
+          spring-boot-starter-security itself, so no service inherits a security
+          filter chain it did not ask for.
+        -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-security</artifactId>
+            <optional>true</optional>
+        </dependency>
+
         <!-- Web MVC / Servlet API for the shared exception types and correlation filter. -->
         <dependency>
             <groupId>org.springframework</groupId>
             <artifactId>spring-webmvc</artifactId>
+            <optional>true</optional>
+        </dependency>
+
+        <!--
+          Spring Boot MVC error infrastructure. Supplies ErrorController /
+          ErrorAttributes / AbstractErrorController so CardDemoErrorController can
+          replace Boot's BasicErrorController body with the documented
+          ErrorResponse envelope, and the Tomcat + web-server factory types so the
+          container's HTML error report can be suppressed. <optional>true</optional>
+          keeps them off the pure batch module's classpath; every web service
+          already has them transitively through spring-boot-starter-web.
+        -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-webmvc</artifactId>
+            <optional>true</optional>
+        </dependency>
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-web-server</artifactId>
+            <optional>true</optional>
+        </dependency>
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-tomcat</artifactId>
+            <optional>true</optional>
+        </dependency>
+
+        <!--
+          Flyway migration API for the shared migration set that ships in this module's
+          resources (classpath:db/migration) together with its code-based member,
+          SeededPiiEncryptionMigration (a JavaMigration). Optional like every other
+          integration dependency: each service that provisions or tests the schema
+          already declares flyway-core plus the Boot Flyway auto-configuration module.
+        -->
+        <dependency>
+            <groupId>org.flywaydb</groupId>
+            <artifactId>flyway-core</artifactId>
             <optional>true</optional>
         </dependency>
 
@@ -151,6 +254,44 @@
             <scope>test</scope>
         </dependency>
 
+        <!--
+          Flyway is used by the shared test-support utility
+          (com.carddemo.common.testsupport.CardDemoSchemaMigrations), which applies the
+          owning modules' committed migrations to a throwaway database so integration
+          tests validate against the real schema. Test scope only: carddemo-common ships
+          no migrations of its own.
+        -->
+        <dependency>
+            <groupId>org.flywaydb</groupId>
+            <artifactId>flyway-database-postgresql</artifactId>
+            <scope>test</scope>
+        </dependency>
+
     </dependencies>
+
+    <build>
+        <plugins>
+            <!--
+              Publish the test classes as a test-jar so every service module can reuse the
+              shared test-support utilities - above all CardDemoSchemaMigrations, which
+              applies the real committed migrations of all owning modules. Without a shared
+              artifact each module would have to hand-write DDL for the tables it does not
+              own, which is exactly the test-realism defect this addresses.
+              Plugin version inherited from the Spring Boot parent plugin management.
+            -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-jar-plugin</artifactId>
+                <executions>
+                    <execution>
+                        <id>test-jar</id>
+                        <goals>
+                            <goal>test-jar</goal>
+                        </goals>
+                    </execution>
+                </executions>
+            </plugin>
+        </plugins>
+    </build>
 
 </project>

@@ -529,6 +529,7 @@ describe('common contract (ErrorResponse + shared primitives)', () => {
       message: 'Over credit limit',
       path: '/accounts/11',
       traceId: 'abc123',
+      correlationId: 'corr-abc123',
       fieldErrors: { acctCreditLimit: 'exceeded' },
     };
     const minimal: ApiErrorResponse = {
@@ -540,7 +541,10 @@ describe('common contract (ErrorResponse + shared primitives)', () => {
     };
 
     expect(err.errorCode).toBe('102');
+    expect(err.traceId).toBe('abc123');
+    expect(err.correlationId).toBe('corr-abc123');
     expect(minimal.errorCode).toBeUndefined();
+    expect(minimal.correlationId).toBeUndefined();
   });
 
   it('binds the shared primitives (Page, FieldError*, message aliases, ActiveStatus)', () => {

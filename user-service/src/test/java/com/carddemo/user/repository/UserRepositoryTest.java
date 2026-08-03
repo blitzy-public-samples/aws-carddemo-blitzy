@@ -37,9 +37,10 @@ import static org.assertj.core.api.Assertions.assertThat;
  *     Data JPA {@code UserRepository}. Extends {@link AbstractIntegrationTest}
  *     to boot the user-service context against a singleton ``postgres:18``
  *     container (PostgreSQL only -- the user-service is stateless, no Redis);
- *     under the ``test`` profile the schema is built by Hibernate
- *     ``ddl-auto=create-drop`` from the shared ``SecurityUser`` entity (no
- *     Flyway seed), so each scenario persists its own fixtures. Covers the keyed
+ *     under the ``test`` profile the schema comes from the owning
+ *     modules' committed Flyway migrations and Hibernate only validates the mapping
+ *     (``ddl-auto: validate``); each scenario starts from an empty ``security_users``
+ *     table and persists its own fixtures. Covers the keyed
  *     lookup, the existence check, the ascending ten-per-page listing, the
  *     forward (PF8) and backward (PF7) keyset cursors with boundary emptiness,
  *     and the count, update, and delete operations.
@@ -47,11 +48,12 @@ import static org.assertj.core.api.Assertions.assertThat;
 class UserRepositoryTest extends AbstractIntegrationTest {
 
     /**
-     * :purpose: Opaque BCrypt-shaped password placeholder stored on every
-     *     fixture; the value is never verified by this repository test.
+     * :purpose: Opaque ``{bcrypt}``-prefixed password placeholder stored on every
+     *     fixture -- the same stored form the seed and ``UserService`` write; the
+     *     value is never verified by this repository test.
      */
     private static final String PLACEHOLDER_PWD =
-            "$2a$10$ucIRth.iIafhA4MgE1RXZ.0whYamgfRIpJebWmPswpnxmLKA/peYm";
+            "{bcrypt}$2a$10$ucIRth.iIafhA4MgE1RXZ.0whYamgfRIpJebWmPswpnxmLKA/peYm";
 
     /**
      * :purpose: Repository under test -- the Spring Data JPA re-platforming of

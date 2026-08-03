@@ -73,9 +73,43 @@ spec:
         seccompProfile:
           type: RuntimeDefault
       automountServiceAccountToken: false
+      # Startup ordering gate: the shared CardDemo schema is provisioned by the
+      # SINGLE Flyway migration owner, batch-service (see its application.yml and
+      # docs/decision-log.md). This service runs with spring.flyway.enabled=false
+      # and Hibernate ddl-auto=validate, so it can only start once that schema
+      # exists; without the gate the pod crash-loops on
+      # "Schema validation: missing table". The init container blocks until the
+      # owner reports READY through its Actuator readiness group, using the same
+      # bash /dev/tcp probe idiom as the Compose healthcheck (the eclipse-temurin
+      # base image ships neither curl nor wget).
+      initContainers:
+        - name: await-schema
+          image: eclipse-temurin:21-jre
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+          command:
+            - bash
+            - -c
+            - >-
+              until exec 3<>/dev/tcp/batch-service/8080 2>/dev/null
+              && printf 'GET /actuator/health/readiness HTTP/1.1\r\nHost: batch-service\r\nConnection: close\r\n\r\n' >&3
+              && grep -q '"status":"UP"' <&3;
+              do echo 'waiting for the schema owner (batch-service) to become ready'; sleep 5; done;
+              echo 'schema owner ready'
       containers:
         - name: auth-service
           # Built by auth-service/Dockerfile (FROM eclipse-temurin:21-jre).
+          # Produced by `docker compose build auth-service` from auth-service/Dockerfile
+          # (docker-compose.yml carries a matching `image:` key with these exact
+          # registry/name/tag defaults), so this reference resolves to an artifact the
+          # repository builds - no undocumented tag-and-push step (QA Issue 17).
+          # Override the registry or tag for a private registry with
+          # CARDDEMO_IMAGE_REGISTRY / CARDDEMO_IMAGE_TAG at build time.
           image: carddemo/auth-service:1.0.0
           imagePullPolicy: IfNotPresent
           ports:
@@ -112,6 +146,11 @@ spec:
             # id, CVV). Services fail closed if it is absent.
             - secretRef:
                 name: carddemo-pii-key
+            # Shared credential of the least-privilege `monitoring` principal
+            # guarding /actuator/prometheus and /actuator/metrics (MJ-17). Must
+            # match the password Prometheus presents, or every scrape gets 401.
+            - secretRef:
+                name: carddemo-monitoring-secret
           # Sized for a JVM Spring Boot service; the 1Gi limit keeps the
           # per-pod footprint within the stated memory budget.
           resources:
@@ -131,6 +170,12 @@ spec:
               port: 8080
             initialDelaySeconds: 10
             periodSeconds: 5
+            # Explicit timeout (QA Issue 3). The default timeoutSeconds is 1, so during any
+            # datastore blip the aggregate health check — which must wait for the bounded
+            # 3s HikariCP / 2s Lettuce dependency timeouts — fails on every attempt and the
+            # pod is killed after failureThreshold x periodSeconds. 4s bounds each attempt
+            # just above the slowest dependency timeout.
+            timeoutSeconds: 4
             failureThreshold: 30
           # Liveness uses the Actuator liveness group: restart the pod only if
           # the application enters a broken (non-recoverable) internal state.

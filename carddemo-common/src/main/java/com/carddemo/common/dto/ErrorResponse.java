@@ -54,8 +54,19 @@ public class ErrorResponse {
     /** :purpose: Request URI that produced the error. */
     private String path;
 
-    /** :purpose: Correlation / trace id sourced from the MDC; null when tracing is absent. */
+    /**
+     * :purpose: Distributed-trace id of the failing request, taken from the ``traceId`` MDC entry
+     *  published by Micrometer Tracing. Null when the request was not traced, so the field never
+     *  reports a value that cannot be looked up in the trace backend.
+     */
     private String traceId;
+
+    /**
+     * :purpose: Business correlation id of the failing request (the ``X-Correlation-Id`` echoed on
+     *  the response and stamped on every log record for the request), so a caller can quote one id
+     *  that always resolves in the log stream even when tracing is disabled or unsampled.
+     */
+    private String correlationId;
 
     /** :purpose: Optional per-field validation messages (field name to message); null or empty otherwise. */
     private Map<String, String> fieldErrors;
@@ -202,19 +213,36 @@ public class ErrorResponse {
     }
 
     /**
-     * :purpose: Return the correlation / trace id sourced from the MDC.
-     * :output: the trace id, or ``null`` when tracing is absent.
+     * :purpose: Return the distributed-trace id of the failing request.
+     * :output: the trace id, or ``null`` when the request was not traced.
      */
     public String getTraceId() {
         return traceId;
     }
 
     /**
-     * :purpose: Set the correlation / trace id.
-     * :param traceId: the trace id sourced from the MDC.
+     * :purpose: Set the distributed-trace id.
+     * :param traceId: the trace id sourced from the ``traceId`` MDC entry, or ``null`` when the
+     *  request was not traced.
      */
     public void setTraceId(String traceId) {
         this.traceId = traceId;
+    }
+
+    /**
+     * :purpose: Return the business correlation id of the failing request.
+     * :output: the correlation id, or ``null`` when none was established.
+     */
+    public String getCorrelationId() {
+        return correlationId;
+    }
+
+    /**
+     * :purpose: Set the business correlation id.
+     * :param correlationId: the id echoed on the ``X-Correlation-Id`` response header.
+     */
+    public void setCorrelationId(String correlationId) {
+        this.correlationId = correlationId;
     }
 
     /**
@@ -260,6 +288,7 @@ public class ErrorResponse {
                 + ", message='" + message + '\''
                 + ", path='" + path + '\''
                 + ", traceId='" + traceId + '\''
+                + ", correlationId='" + correlationId + '\''
                 + ", fieldErrors=" + fieldErrors
                 + '}';
     }

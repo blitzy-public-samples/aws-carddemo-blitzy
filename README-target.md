@@ -203,9 +203,10 @@ carddemo/                        (repository root — legacy app/ retained)
 Each service module follows the package layout
 `com.carddemo.<service>.{controller,service,repository,mapper,config,batch}`,
 with shared code under `com.carddemo.common.*`. Every service module carries its
-own `src/main/resources/application.yml`, `logback-spring.xml`, Flyway
-`db/migration/` scripts (for the tables it owns), `src/test/java` suite, and
-`Dockerfile`.
+own `src/main/resources/application.yml`, `logback-spring.xml`, `src/test/java`
+suite, and `Dockerfile`. The Flyway `db/migration/` scripts are **not** per-service:
+they live once in `carddemo-common` and are applied by a single migration owner (see
+[Data and Database Migrations](#data-and-database-migrations)).
 
 ---
 
@@ -335,23 +336,42 @@ cp .env.example .env
 # REDIS_PASSWORD, GRAFANA_ADMIN_USER / GRAFANA_ADMIN_PASSWORD, MONITORING_PASSWORD
 ```
 
-From the repository root, build and start the entire stack — PostgreSQL, Redis,
-all services, the frontend, Prometheus, and Grafana — with a single command:
+Eight of the nine backend images start from `eclipse-temurin:21-jre` and copy the
+executable JAR produced by the Maven reactor, so **the backend build must run
+first** — a missing or stale `target/<service>.jar` yields a failed or stale image
+(`reporting-service` is the exception: it runs the Maven build inside a
+`maven:3.9.16-eclipse-temurin-21` stage):
 
 ```bash
-docker compose up --build
+mvn -B clean install -DskipTests     # produces the JARs the images copy
 ```
 
-Each backend image is produced by a multi-stage Dockerfile that runs the Maven
-reactor build **inside** the image (compiling from source — it never copies a
-prebuilt JAR), so a clean clone builds end-to-end. The per-service Dockerfiles
-are delivered together with the bootable services; until then `docker compose
-config` validates the full topology. Container health checks use a curl-free
-probe (bash `/dev/tcp` against `/actuator/health`) because the
-`eclipse-temurin:21-jre` base image ships neither `curl` nor `wget`.
+Then, from the repository root, build and start the stack — PostgreSQL, Redis,
+the nine backend services, an OTLP trace collector, Prometheus, and Grafana:
 
-On first start, Flyway applies the schema and seed migrations against the
-PostgreSQL container automatically. To stop and remove the stack:
+```bash
+docker compose up -d --build
+```
+
+The React SPA is delivered in a later tranche (`frontend/src` currently ships the
+REST client, shared components, hooks, and types — the Vite entry point and the 17
+page components are still to come), so the `frontend` service is behind the
+`frontend` Compose profile and is **not** started by the command above. Enable it
+once the SPA lands:
+
+```bash
+docker compose --profile frontend up -d --build frontend
+```
+
+Container health checks use a curl-free probe (bash `/dev/tcp` against
+`/actuator/health`) because the `eclipse-temurin:21-jre` base image ships neither
+`curl` nor `wget`. The frontend image is multi-stage too (`node:24` build stage →
+`nginx:alpine` runtime).
+
+On first start, `batch-service` — the single migration owner — applies the schema
+and seed migrations against the PostgreSQL container automatically, and every other
+service waits for it to report healthy before validating its own mappings. To stop
+and remove the stack:
 
 ```bash
 docker compose down
@@ -367,12 +387,14 @@ docker compose down -v
 
 | Component | URL |
 | :-------- | :-- |
-| Frontend (React SPA) | <http://localhost:3000> |
 | API gateway | <http://localhost:8080> |
 | Prometheus | <http://localhost:9090> (bound to loopback only) |
 | Grafana | <http://localhost:3001> (bound to loopback only) |
+| Jaeger (OTLP trace collector UI) | <http://localhost:16686> (bound to loopback only) |
+| Frontend (React SPA) | <http://localhost:3000> — only with `--profile frontend`, once the SPA tranche lands |
 
-Only the frontend (`3000`) and the API gateway (`8080`) publish host ports. The
+Only the API gateway (`8080`) — plus the frontend (`3000`) when its profile is
+enabled — publishes a host port for application traffic. The
 individual backend services and the datastores (PostgreSQL, Redis) are **not**
 exposed on the host — they are reachable only on the private Compose network and,
 for the browser, exclusively through the gateway (the SPA calls the same-origin
@@ -382,13 +404,29 @@ over that private network, not via a host port.
 
 ### Default Login Credentials
 
-The following users are seeded by Flyway from the legacy security data. The
-credentials match the legacy application:
+Ten users are seeded by Flyway (`auth-service`
+`V2__seed_security_users.sql`) from the legacy security data. The credentials
+match the legacy application:
 
-| User ID | Password | Role |
-| :------ | :------- | :--- |
-| `ADMIN001` | `PASSWORD` | `ROLE_ADMIN` |
-| `USER0001` | `PASSWORD` | `ROLE_USER` |
+| User ID | Password | `SEC-USR-TYPE` | Role | Post-login menu |
+| :------ | :------- | :------------- | :--- | :-------------- |
+| `ADMIN001` … `ADMIN005` | `PASSWORD` | `A` | `ROLE_ADMIN` | Admin menu — `CA00` |
+| `USER0001` … `USER0005` | `PASSWORD` | `U` | `ROLE_USER` | Main menu — `CM00` |
+
+Sign on through the gateway and keep the session cookie for subsequent calls:
+
+```bash
+curl -s -c cookies.txt -X POST http://localhost:8080/auth/signon \
+  -H 'Content-Type: application/json' \
+  -d '{"userId":"ADMIN001","password":"PASSWORD"}'
+# -> 200 {"userId":"ADMIN001","userType":"A","redirectTarget":"CA00"}
+
+curl -s -b cookies.txt http://localhost:8080/accounts/1     # 200 (accounts 1-50 are seeded)
+```
+
+Every credential in the table above is exercised against the seeded database by
+`auth-service` `DocumentedCredentialsSmokeTest`, so this section cannot drift from
+the seed migration unnoticed.
 
 > **Note on passwords.** Unlike the legacy plaintext model, the modernized
 > stack stores passwords as **BCrypt hashes at rest** (seeded via Flyway) and
@@ -409,17 +447,31 @@ become relational primary keys, the three alternate indexes become secondary
 indexes, and application-enforced integrity becomes declarative foreign-key
 constraints.
 
+The whole set lives in one place — `carddemo-common/src/main/resources/db/migration`
+— and is applied by a **single migration owner**, `batch-service`, through one
+`flyway_schema_history` table. Every other service runs with
+`spring.flyway.enabled: false` and `spring.jpa.hibernate.ddl-auto: validate`, so it
+verifies the schema it was given but never mutates it. This is required rather than
+merely tidy: every service scans the shared `com.carddemo.common.domain` package, so
+every service validates against the *whole* schema, and two Flyway instances cannot
+share one `public` schema. Startup order is enforced by the Compose `depends_on:
+batch-service: service_healthy` gate (and the Kubernetes `await-schema`
+initContainer), so bringing up any single service transitively provisions the
+database first. See the [decision log](./docs/decision-log.md) for the full
+rationale.
+
 | Migration | Purpose |
 | :-------- | :------ |
-| `V1__create_schema.sql` | Creates the 10 tables plus foreign-key constraints and secondary indexes (derived from the VSAM catalog and record copybooks). |
-| `V2__seed_reference_data.sql` | Seeds reference data: 7 transaction types, 18 transaction categories, and 51 disclosure groups. |
-| `V3__seed_test_data.sql` | Seeds test data: 50 customers, accounts, cards, and cross-references; 100 category balances; and transactions. |
+| `V1__create_schema.sql` | Creates the 11 business tables in foreign-key order (`customers`, `accounts`, `security_users`, `tran_type`, `tran_category`, `disclosure_group`, `cards`, `card_xref`, `transactions`, `daily_transactions`, `tran_cat_bal`) plus foreign-key constraints, the secondary indexes derived from the three VSAM alternate indexes, the identifier-width `CHECK` constraints, and `transaction_id_seq`. |
+| `V2__seed_reference_data.sql` | Seeds reference data: 7 transaction types, 18 transaction categories, and 51 disclosure groups (interest rates decoded from the fixtures' trailing-overpunch signs). |
+| `V3__seed_test_data.sql` | Seeds test data: 10 security users; 50 customers, accounts, cards, and cross-references; 50 category balances (the fixture's exact distinct-key count); the 300-record daily-transaction feed; and the transaction history derived from that feed. |
+| Java migration `4` | `SeededPiiEncryptionMigration` — encrypts the seeded SSN, government id, EFT account id, and card CVV in place through the AES-GCM `CryptoConverter`, using the deployment's own `CARDDEMO_PII_KEY`. Idempotent. |
+| `V5__batch_metadata.sql` | Creates the Spring Batch metadata tables (`spring.batch.jdbc.initialize-schema: never`, so the framework never races the migrator). |
 
 Seed data is derived from the human-readable ASCII fixed-width fixtures in
 [`app/data/ASCII/`](./app/data/ASCII) (`custdata.txt`, `acctdata.txt`,
 `carddata.txt`, `cardxref.txt`, `tcatbal.txt`, `dailytran.txt`, `discgrp.txt`,
-`trancatg.txt`, `trantype.txt`). Each service owns the migrations for the tables
-it is responsible for.
+`trancatg.txt`, `trantype.txt`).
 
 ### Financial Precision
 
@@ -442,9 +494,16 @@ The application is not considered complete until it is observable. Every service
 ships the following, verifiable in the local Docker Compose environment:
 
 - **Structured logging** — JSON logs with correlation IDs propagated through the
-  MDC, configured in each service's `logback-spring.xml`.
-- **Distributed tracing** — trace context propagated across service boundaries
-  via Micrometer Tracing with an OpenTelemetry bridge.
+  MDC, configured in each service's `logback-spring.xml`. A caller-supplied
+  `X-Correlation-Id` request header is sanitized, placed in the MDC, echoed on the
+  response, and reported as `traceId` in the error envelope when no trace is active.
+- **Distributed tracing** — trace context propagated across service boundaries via
+  Micrometer Tracing with an OpenTelemetry bridge, exported over OTLP/HTTP to the
+  `jaeger` collector on the private Compose network
+  (`management.opentelemetry.tracing.export.otlp.endpoint`, docker profile). Every log
+  line emitted inside a request carries `traceId` and `spanId`, and a gateway-routed
+  call produces one trace containing both the `api-gateway` span and the downstream
+  service span — inspect it at <http://localhost:16686>.
 - **Metrics** — exposed through Spring Boot Actuator and scraped by Prometheus
   at `/actuator/prometheus`.
 - **Health, readiness, and liveness probes** — served by Actuator at
@@ -465,7 +524,7 @@ When running via Docker Compose, Prometheus is reachable at
 
 | Layer | Frameworks | Command |
 | :---- | :--------- | :------ |
-| Backend | JUnit 5 + Testcontainers (real PostgreSQL/Redis) | `mvn test` |
+| Backend | JUnit 5 + Testcontainers (real PostgreSQL/Redis) | `mvn verify` |
 | Frontend | Jest + React Testing Library | `cd frontend && npm test` |
 
 The suite provides at least **50 unit-test scenarios** across the services and
@@ -473,7 +532,24 @@ exercises all **17 UI workflows**, preserving the behavior of the legacy
 application. Testcontainers spins up real PostgreSQL and Redis instances so
 integration tests run against the same technology used in production.
 
-Run the full backend suite from the repository root:
+The backend suite is split across the two standard Maven test phases, so the
+phase you invoke determines what runs:
+
+| Phase | Plugin | Classes | Runs on |
+| :---- | :----- | :------ | :------ |
+| `test` | Surefire | `*Test`, `*Tests`, `Test*`, `*TestCase` | `mvn test` and every later phase |
+| `integration-test` / `verify` | Failsafe | `*IT`, `IT*`, `*ITCase` | `mvn verify` and `mvn install` only |
+
+Failsafe is declared once in the root `pom.xml`, so integration tests execute in
+every module that has them, exactly once per build. `mvn test` alone stops before
+the `verify` phase and therefore **skips every `*IT` class** — always use
+`mvn verify` (or `mvn install`) to run the full backend suite:
+
+```bash
+mvn verify
+```
+
+Unit tests only (faster, no Testcontainers integration tests):
 
 ```bash
 mvn test

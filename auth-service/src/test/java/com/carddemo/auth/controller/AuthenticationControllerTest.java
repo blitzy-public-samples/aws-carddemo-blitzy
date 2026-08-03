@@ -250,9 +250,12 @@ class AuthenticationControllerTest {
                         .accept(MediaType.APPLICATION_JSON)
                         .content(toJson("", "PASS0001")))
                 .andExpect(status().isBadRequest())
+                .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.status").value(400))
-                .andExpect(jsonPath("$.message").value("Validation failed"))
-                .andExpect(jsonPath("$.fieldErrors.userId").value("Please enter User ID ..."));
+                // COSGN00C L117-131 is an EVALUATE TRUE: exactly ONE message is shown.
+                .andExpect(jsonPath("$.message").value("Please enter User ID ..."))
+                .andExpect(jsonPath("$.fieldErrors.userId").value("Please enter User ID ..."))
+                .andExpect(jsonPath("$.fieldErrors.password").doesNotExist());
 
         verify(authenticationService, never()).signon(any(), any());
     }
@@ -271,18 +274,22 @@ class AuthenticationControllerTest {
                         .content(toJson("USER0001", "")))
                 .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.status").value(400))
-                .andExpect(jsonPath("$.message").value("Validation failed"))
-                .andExpect(jsonPath("$.fieldErrors.password").value("Please enter Password ..."));
+                // COSGN00C L117-131 is an EVALUATE TRUE: exactly ONE message is shown.
+                .andExpect(jsonPath("$.message").value("Please enter Password ..."))
+                .andExpect(jsonPath("$.fieldErrors.password").value("Please enter Password ..."))
+                .andExpect(jsonPath("$.fieldErrors.userId").doesNotExist());
 
         verify(authenticationService, never()).signon(any(), any());
     }
 
     /**
-     * :purpose: Both fields blank fail ``@NotBlank`` and return ``400`` carrying
-     *  both verbatim field errors.
+     * :purpose: Both fields blank surface exactly ONE message - the ``userId``
+     *  literal - because ``COSGN00C`` L117-131 evaluates the user id first and
+     *  ``IF WS-RETURN-MSG-OFF`` lets only the first message through. The password
+     *  message must NOT accompany it.
      */
     @Test
-    @DisplayName("POST /auth/signon: both fields blank -> 400 with both field errors")
+    @DisplayName("POST /auth/signon: both fields blank -> 400 with ONLY the userId literal")
     void signonBothFieldsBlankReturnsBadRequest() throws Exception {
         mockMvc.perform(post("/auth/signon")
                         .contentType(MediaType.APPLICATION_JSON)
@@ -290,8 +297,9 @@ class AuthenticationControllerTest {
                         .content(toJson("", "")))
                 .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.status").value(400))
+                .andExpect(jsonPath("$.message").value("Please enter User ID ..."))
                 .andExpect(jsonPath("$.fieldErrors.userId").value("Please enter User ID ..."))
-                .andExpect(jsonPath("$.fieldErrors.password").value("Please enter Password ..."));
+                .andExpect(jsonPath("$.fieldErrors.password").doesNotExist());
 
         verify(authenticationService, never()).signon(any(), any());
     }
@@ -301,11 +309,17 @@ class AuthenticationControllerTest {
      *  Method Not Allowed and never reaches the service.
      */
     @Test
-    @DisplayName("GET /auth/signon -> 405 Method Not Allowed")
+    @DisplayName("GET /auth/signon -> 405 Method Not Allowed with the documented envelope")
     void signonGetReturnsMethodNotAllowed() throws Exception {
         mockMvc.perform(get("/auth/signon")
                         .accept(MediaType.APPLICATION_JSON))
-                .andExpect(status().isMethodNotAllowed());
+                .andExpect(status().isMethodNotAllowed())
+                // The shared advice renders the documented envelope, so the real
+                // outcome is never masked as an opaque empty body.
+                .andExpect(jsonPath("$.status").value(405))
+                .andExpect(jsonPath("$.error").value("Method Not Allowed"))
+                .andExpect(jsonPath("$.path").value("/auth/signon"))
+                .andExpect(jsonPath("$.timestamp").exists());
 
         verify(authenticationService, never()).signon(any(), any());
     }

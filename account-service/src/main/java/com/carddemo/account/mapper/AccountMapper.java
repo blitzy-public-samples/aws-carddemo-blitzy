@@ -22,6 +22,7 @@ import com.carddemo.common.domain.Customer;
 import com.carddemo.common.dto.AccountUpdateRequestDto;
 import com.carddemo.common.dto.AccountUpdateResponseDto;
 import com.carddemo.common.dto.AccountViewResponseDto;
+import com.carddemo.common.crypto.PiiMasker;
 import org.springframework.stereotype.Component;
 
 import java.math.BigDecimal;
@@ -139,10 +140,18 @@ public class AccountMapper {
             customer.setCustAddrZip(request.getCustAddrZip());
             customer.setCustPhoneNum1(request.getCustPhoneNum1());
             customer.setCustPhoneNum2(request.getCustPhoneNum2());
-            customer.setCustSsn(request.getCustSsn());
-            customer.setCustGovtIssuedId(request.getCustGovtIssuedId());
+            // A client that received the masked identifier and submitted the record back
+            // unchanged must not overwrite the stored value with asterisks; a genuinely
+            // edited value is applied as-is (COACTUPC treats both fields as editable).
+            customer.setCustSsn(retainWhenMasked(request.getCustSsn(), customer.getCustSsn()));
+            customer.setCustGovtIssuedId(
+                    retainWhenMasked(request.getCustGovtIssuedId(), customer.getCustGovtIssuedId()));
             customer.setCustDobYyyyMmDd(request.getCustDobYyyyMmDd());
-            customer.setCustEftAccountId(request.getCustEftAccountId());
+            // The EFT account id is masked in BOTH responses this mapper builds, so it needs
+            // the same retention as the SSN and the government-issued id; writing it raw
+            // would replace the stored identifier with its own mask.
+            customer.setCustEftAccountId(
+                    retainWhenMasked(request.getCustEftAccountId(), customer.getCustEftAccountId()));
             customer.setCustPriCardHolderInd(request.getCustPriCardHolderInd());
             customer.setCustFicoCreditScore(request.getCustFicoCreditScore());
         }
@@ -158,6 +167,9 @@ public class AccountMapper {
             return;
         }
         // Account master fields (COACTVWC CACTVWA assembly).
+        // The optimistic-lock version travels with the record so the client can echo it
+        // back on update; it is the snapshot half of the read-snapshot-compare-rewrite.
+        response.setVersion(account.getVersion());
         response.setAcctId(account.getAcctId());
         response.setAcctActiveStatus(account.getAcctActiveStatus());
         response.setAcctCurrBal(scale2(account.getAcctCurrBal()));
@@ -172,8 +184,9 @@ public class AccountMapper {
     }
 
     /**
-     * :purpose: Copy the customer master fields into the view response DTO. SSN
-     *   and government-issued id are copied verbatim for the DTO layer to mask.
+     * :purpose: Copy the customer master fields into the view response DTO. The two
+     *   regulated identifiers (SSN, government-issued id) leave the service masked
+     *   (AAP 0.6.7); every other field is copied verbatim.
      * :param customer: the source customer entity; a no-op when {@code null}.
      * :param response: the view response DTO to populate.
      */
@@ -194,10 +207,13 @@ public class AccountMapper {
         response.setCustAddrCountryCd(customer.getCustAddrCountryCd());
         response.setCustPhoneNum1(customer.getCustPhoneNum1());
         response.setCustPhoneNum2(customer.getCustPhoneNum2());
-        response.setCustSsn(customer.getCustSsn());
-        response.setCustGovtIssuedId(customer.getCustGovtIssuedId());
+        // AAP 0.6.7 -- the social security number, government issued id and EFT account
+        // id are masked before they leave the service boundary; only the trailing four
+        // characters survive so the field the 3270 screen displayed is still present.
+        response.setCustSsn(PiiMasker.maskSsn(customer.getCustSsn()));
+        response.setCustGovtIssuedId(PiiMasker.maskIdentifier(customer.getCustGovtIssuedId()));
         response.setCustDobYyyyMmDd(customer.getCustDobYyyyMmDd());
-        response.setCustEftAccountId(customer.getCustEftAccountId());
+        response.setCustEftAccountId(PiiMasker.maskIdentifier(customer.getCustEftAccountId()));
         response.setCustPriCardHolderInd(customer.getCustPriCardHolderInd());
         response.setCustFicoCreditScore(customer.getCustFicoCreditScore());
     }
@@ -212,6 +228,9 @@ public class AccountMapper {
             return;
         }
         // Account master fields (post-update echo of the persisted ACCTFILE record).
+        // The incremented optimistic-lock version is echoed so a subsequent update can be
+        // issued without re-reading the record.
+        response.setVersion(account.getVersion());
         response.setAcctId(account.getAcctId());
         response.setAcctActiveStatus(account.getAcctActiveStatus());
         response.setAcctCurrBal(scale2(account.getAcctCurrBal()));
@@ -227,7 +246,8 @@ public class AccountMapper {
 
     /**
      * :purpose: Copy the customer master fields into the update echo response DTO.
-     *   SSN and government-issued id are copied verbatim for the DTO layer to mask.
+     *   The two regulated identifiers (SSN, government-issued id) leave the service
+     *   masked (AAP 0.6.7); every other field echoes the persisted value verbatim.
      * :param customer: the source customer entity; a no-op when {@code null}.
      * :param response: the update response DTO to populate.
      */
@@ -235,7 +255,7 @@ public class AccountMapper {
         if (customer == null) {
             return;
         }
-        // Customer master fields (post-update echo of the persisted CUSTFILE record); values copied raw.
+        // Customer master fields (post-update echo of the persisted CUSTFILE record).
         response.setCustId(customer.getCustId());
         response.setCustFirstName(customer.getCustFirstName());
         response.setCustMiddleName(customer.getCustMiddleName());
@@ -248,12 +268,30 @@ public class AccountMapper {
         response.setCustAddrCountryCd(customer.getCustAddrCountryCd());
         response.setCustPhoneNum1(customer.getCustPhoneNum1());
         response.setCustPhoneNum2(customer.getCustPhoneNum2());
-        response.setCustSsn(customer.getCustSsn());
-        response.setCustGovtIssuedId(customer.getCustGovtIssuedId());
+        // AAP 0.6.7 -- the social security number, government issued id and EFT account
+        // id are masked before they leave the service boundary; only the trailing four
+        // characters survive so the field the 3270 screen displayed is still present.
+        response.setCustSsn(PiiMasker.maskSsn(customer.getCustSsn()));
+        response.setCustGovtIssuedId(PiiMasker.maskIdentifier(customer.getCustGovtIssuedId()));
         response.setCustDobYyyyMmDd(customer.getCustDobYyyyMmDd());
-        response.setCustEftAccountId(customer.getCustEftAccountId());
+        response.setCustEftAccountId(PiiMasker.maskIdentifier(customer.getCustEftAccountId()));
         response.setCustPriCardHolderInd(customer.getCustPriCardHolderInd());
         response.setCustFicoCreditScore(customer.getCustFicoCreditScore());
+    }
+
+    /**
+     * :purpose: Resolve the value to persist for a masked identifier: the stored value
+     *   when the client merely echoed a mask back, otherwise the submitted value.
+     * :note: Any mask-shaped submission retains the stored value, not only this record's own
+     *   mask. A regulated identifier is all digits, so a mask character can only have come
+     *   from the view; treating it as "unchanged" makes it impossible for a mismatched echo
+     *   to write asterisks into the column, which is the outcome that would destroy data.
+     * :param submitted: the identifier carried by the update request.
+     * :param stored: the identifier currently persisted on the managed entity.
+     * :returns: the value that must end up in the column.
+     */
+    private static String retainWhenMasked(String submitted, String stored) {
+        return PiiMasker.isMaskShaped(submitted) ? stored : submitted;
     }
 
     /**

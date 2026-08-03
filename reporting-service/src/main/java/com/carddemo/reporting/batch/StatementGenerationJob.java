@@ -16,6 +16,7 @@
  */
 package com.carddemo.reporting.batch;
 
+import com.carddemo.common.batch.BatchOutputPathResolver;
 import com.carddemo.common.domain.Account;
 import com.carddemo.common.domain.CardXref;
 import com.carddemo.common.domain.Customer;
@@ -230,18 +231,35 @@ public class StatementGenerationJob {
 
     /**
      * :purpose: Build the dual-output statement writer, late-binding the text and
-     *  HTML output paths from job parameters so the on-demand launcher can supply
-     *  them while sensible defaults keep the job runnable standalone.
-     * :param stmtPath: the plain-text statement output path.
-     * :param htmlPath: the HTML statement output path.
+     *  HTML output file names from job parameters so the on-demand launcher can
+     *  supply them while the legacy ``STMTFILE`` / ``HTMLFILE`` defaults keep the
+     *  job runnable with no parameters at all.
+     * :param stmtPath: the plain-text statement output file name.
+     * :param htmlPath: the HTML statement output file name.
+     * :param pathResolver: shared resolver that confines both files to the
+     *  configured ``carddemo.batch.output-dir`` root, rejecting absolute paths,
+     *  ``..`` traversal and symlink escapes (CWE-22), and creating the directory
+     *  so the flat-file writers can open their files.
      * :returns: the configured statement item writer.
+     * :note: The names are deliberately bare file names now (QA Issue 21). They
+     *  were previously the relative paths ``output/statements.txt`` and
+     *  ``output/statements.html``, which ``FileSystemResource`` resolved against
+     *  the process working directory - ``/app`` inside the container, on the
+     *  read-only root filesystem - so every run failed at
+     *  ``statementGenerationStep`` with ``Unable to create file`` /
+     *  ``java.io.IOException: No such file or directory`` and the job was recorded
+     *  FAILED. Resolving through the shared root makes the output land in the
+     *  writable, mounted batch directory.
      */
     @Bean
     @StepScope
     public StatementItemWriter statementItemWriter(
-            @Value("#{jobParameters['stmtFile'] ?: 'output/statements.txt'}") String stmtPath,
-            @Value("#{jobParameters['htmlFile'] ?: 'output/statements.html'}") String htmlPath) {
-        return new StatementItemWriter(new FileSystemResource(stmtPath), new FileSystemResource(htmlPath));
+            @Value("#{jobParameters['stmtFile'] ?: 'statements.txt'}") String stmtPath,
+            @Value("#{jobParameters['htmlFile'] ?: 'statements.html'}") String htmlPath,
+            BatchOutputPathResolver pathResolver) {
+        return new StatementItemWriter(
+                new FileSystemResource(pathResolver.resolveOutput(stmtPath)),
+                new FileSystemResource(pathResolver.resolveOutput(htmlPath)));
     }
 
     /**

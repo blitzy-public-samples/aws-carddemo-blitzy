@@ -39,7 +39,9 @@ import static org.assertj.core.api.Assertions.assertThat;
  */
 @SpringBootTest
 @TestPropertySource(properties = {
-        "spring.session.redis.configure-action=none",
+        // Boot 4 relocated the Redis session properties to spring.session.data.redis.*;
+        // the former spring.session.redis.* prefix was removed and is ignored.
+        "spring.session.data.redis.configure-action=none",
         "spring.data.redis.repositories.enabled=false",
         "management.health.redis.enabled=false",
         "spring.autoconfigure.exclude="

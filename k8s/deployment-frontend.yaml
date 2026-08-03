@@ -58,6 +58,12 @@ spec:
         - name: frontend
           # Built by frontend/Dockerfile (build stage FROM node:24; runtime
           # stage serving /usr/share/nginx/html on port 80).
+          # Produced by `docker compose build frontend` from frontend/Dockerfile
+          # (docker-compose.yml carries a matching `image:` key with these exact
+          # registry/name/tag defaults), so this reference resolves to an artifact the
+          # repository builds - no undocumented tag-and-push step (QA Issue 17).
+          # Override the registry or tag for a private registry with
+          # CARDDEMO_IMAGE_REGISTRY / CARDDEMO_IMAGE_TAG at build time.
           image: carddemo/frontend:1.0.0
           imagePullPolicy: IfNotPresent
           # Container-level runtime hardening (MJ-10): drop all capabilities but

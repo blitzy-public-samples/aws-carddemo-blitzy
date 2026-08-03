@@ -27,13 +27,10 @@ import com.carddemo.card.service.CardService;
 import com.carddemo.common.domain.Card;
 import com.carddemo.common.dto.CardUpdateRequestDto;
 import com.carddemo.common.dto.SessionContext;
+import com.carddemo.common.testsupport.MigratedSchemaContainer;
 import com.carddemo.common.exception.OptimisticLockConflictException;
 import jakarta.persistence.EntityManager;
 import jakarta.persistence.PersistenceContext;
-import java.sql.Connection;
-import java.sql.DriverManager;
-import java.sql.SQLException;
-import java.sql.Statement;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -46,7 +43,6 @@ import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
 import org.springframework.test.web.servlet.MockMvc;
-import org.testcontainers.containers.PostgreSQLContainer;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.ObjectMapper;
 
@@ -66,26 +62,18 @@ import tools.jackson.databind.ObjectMapper;
  *     ``docs/decision-log.md``.
  */
 @SpringBootTest
+// The production filter chain IS applied: every request below presents the shared
+// session context, which is exactly how a request authenticates in production, so the
+// security, correlation-id and hardening filters are all exercised end to end.
 @AutoConfigureMockMvc
 @ActiveProfiles("test")
 class OptimisticLockConflictIT {
 
-    /**
-     * :purpose: Shared, manually-managed ``postgres:18`` container (singleton pattern). It is
-     *     started and provisioned once in the static initializer below, before the Spring
-     *     context refreshes, so the card Flyway migrations can create and seed the
-     *     ``cards``/``card_xref`` tables against the cross-service prerequisite schema.
-     */
-    private static final PostgreSQLContainer<?> POSTGRES =
-            new PostgreSQLContainer<>("postgres:18")
-                    .withDatabaseName("carddemo")
-                    .withUsername("test")
-                    .withPassword("test");
-
-    static {
-        POSTGRES.start();
-        provisionPrerequisiteSchema();
-    }
+    // The shared, already-migrated ``postgres:18`` container from
+    // com.carddemo.common.testsupport.MigratedSchemaContainer backs this class: its schema is
+    // produced exclusively by the committed Flyway migrations of every owning module, so the
+    // card-service context boots with ``ddl-auto: validate`` against the deployed schema and
+    // no table definition is fabricated here.
 
     /**
      * :purpose: HTTP session attribute key under which the pseudo-conversational
@@ -105,178 +93,19 @@ class OptimisticLockConflictIT {
     /** :purpose: Seeded active status for the target card. */
     private static final String SEED_STATUS = "Y";
 
-    /**
-     * :purpose: Provision the cross-service prerequisite schema the card-service context
-     *     requires. ``CardServiceApplication`` entity-scans ``com.carddemo.common.domain`` and
-     *     runs with ``ddl-auto: validate``, so every mapped entity's table must exist before
-     *     the context refreshes; the card migrations additionally foreign-key into
-     *     ``accounts``/``customers`` (owned by other services, absent from this classpath).
-     *     This copies the owning services' table definitions verbatim (customers, accounts,
-     *     security_users, transactions, tran_cat_bal) and derives the three reference tables
-     *     that have no migration (disclosure_group, tran_type, tran_category), then seeds
-     *     customers and accounts ids 1..50 so the card foreign keys resolve. The
-     *     ``cards``/``card_xref`` tables are intentionally NOT created here; the real card
-     *     Flyway ``V1``..``V4`` create and seed them.
-     * :note: A non-empty schema plus ``baseline-on-migrate: true`` would otherwise baseline at
-     *     version 1 and skip card ``V1``; the ``@DynamicPropertySource`` below sets
-     *     ``spring.flyway.baseline-version=0`` so all card migrations run.
-     */
-    private static void provisionPrerequisiteSchema() {
-        try (Connection connection = DriverManager.getConnection(
-                POSTGRES.getJdbcUrl(), POSTGRES.getUsername(), POSTGRES.getPassword());
-                Statement statement = connection.createStatement()) {
-
-            // --- customers (account-service V1__create_customers_table.sql, verbatim) --------
-            statement.execute("""
-                    CREATE TABLE IF NOT EXISTS customers (
-                        cust_id                  BIGINT        PRIMARY KEY,
-                        cust_first_name          VARCHAR(25)   NOT NULL,
-                        cust_middle_name         VARCHAR(25)   NOT NULL,
-                        cust_last_name           VARCHAR(25)   NOT NULL,
-                        cust_addr_line_1         VARCHAR(50)   NOT NULL,
-                        cust_addr_line_2         VARCHAR(50)   NOT NULL,
-                        cust_addr_line_3         VARCHAR(50)   NOT NULL,
-                        cust_addr_state_cd       VARCHAR(2)    NOT NULL,
-                        cust_addr_country_cd     VARCHAR(3)    NOT NULL,
-                        cust_addr_zip            VARCHAR(10)   NOT NULL,
-                        cust_phone_num_1         VARCHAR(15)   NOT NULL,
-                        cust_phone_num_2         VARCHAR(15)   NOT NULL,
-                        cust_ssn                 VARCHAR(512)  NOT NULL,
-                        cust_govt_issued_id      VARCHAR(512)  NOT NULL,
-                        cust_dob_yyyy_mm_dd      VARCHAR(10)   NOT NULL,
-                        cust_eft_account_id      VARCHAR(512)  NOT NULL,
-                        cust_pri_card_holder_ind VARCHAR(1)    NOT NULL,
-                        cust_fico_credit_score   INTEGER       NOT NULL,
-                        version                  BIGINT        NOT NULL DEFAULT 0
-                    )""");
-
-            // --- accounts (account-service V2__create_accounts_table.sql, verbatim) ----------
-            statement.execute("""
-                    CREATE TABLE IF NOT EXISTS accounts (
-                        acct_id                BIGINT         PRIMARY KEY,
-                        acct_active_status     VARCHAR(1)     NOT NULL,
-                        acct_curr_bal          NUMERIC(12,2)  NOT NULL,
-                        acct_credit_limit      NUMERIC(12,2)  NOT NULL,
-                        acct_cash_credit_limit NUMERIC(12,2)  NOT NULL,
-                        acct_open_date         VARCHAR(10)    NOT NULL,
-                        acct_expiraion_date    VARCHAR(10)    NOT NULL,
-                        acct_reissue_date      VARCHAR(10)    NOT NULL,
-                        acct_curr_cyc_credit   NUMERIC(12,2)  NOT NULL,
-                        acct_curr_cyc_debit    NUMERIC(12,2)  NOT NULL,
-                        acct_addr_zip          VARCHAR(10)    NOT NULL,
-                        acct_group_id          VARCHAR(10),
-                        version                BIGINT         NOT NULL DEFAULT 0
-                    )""");
-
-            // --- security_users (auth-service V1__create_security_users_table.sql, verbatim) -
-            statement.execute("""
-                    CREATE TABLE IF NOT EXISTS security_users (
-                        sec_usr_id    VARCHAR(8)   PRIMARY KEY,
-                        sec_usr_fname VARCHAR(20)  NOT NULL,
-                        sec_usr_lname VARCHAR(20)  NOT NULL,
-                        sec_usr_pwd   VARCHAR(100) NOT NULL,
-                        sec_usr_type  VARCHAR(1)   NOT NULL,
-                        CONSTRAINT chk_sec_usr_type CHECK (sec_usr_type IN ('A','U'))
-                    )""");
-
-            // --- transactions (transaction-service V1__create_transactions_table.sql) --------
-            statement.execute("""
-                    CREATE TABLE IF NOT EXISTS transactions (
-                        tran_id             VARCHAR(16)   PRIMARY KEY,
-                        tran_type_cd        VARCHAR(2),
-                        tran_cat_cd         INTEGER,
-                        tran_source         VARCHAR(10),
-                        tran_desc           VARCHAR(100),
-                        tran_amt            NUMERIC(11,2),
-                        tran_merchant_id    BIGINT,
-                        tran_merchant_name  VARCHAR(50),
-                        tran_merchant_city  VARCHAR(50),
-                        tran_merchant_zip   VARCHAR(10),
-                        tran_card_num       VARCHAR(16),
-                        tran_orig_ts        VARCHAR(26),
-                        tran_proc_ts        VARCHAR(26)
-                    )""");
-
-            // --- tran_cat_bal (transaction-service V3__create_tran_cat_bal_table.sql) --------
-            statement.execute("""
-                    CREATE TABLE IF NOT EXISTS tran_cat_bal (
-                        trancat_acct_id   BIGINT,
-                        trancat_type_cd   VARCHAR(2),
-                        trancat_cd        INTEGER,
-                        tran_cat_bal      NUMERIC(11,2),
-                        PRIMARY KEY (trancat_acct_id, trancat_type_cd, trancat_cd)
-                    )""");
-
-            // --- disclosure_group (derived from DiscGroup @Entity; no migration exists) ------
-            statement.execute("""
-                    CREATE TABLE IF NOT EXISTS disclosure_group (
-                        dis_acct_group_id VARCHAR(10)  NOT NULL,
-                        dis_tran_type_cd  VARCHAR(2)   NOT NULL,
-                        dis_tran_cat_cd   INTEGER      NOT NULL,
-                        dis_int_rate      NUMERIC(6,2),
-                        PRIMARY KEY (dis_acct_group_id, dis_tran_type_cd, dis_tran_cat_cd)
-                    )""");
-
-            // --- tran_type (derived from TranType @Entity; no migration exists) --------------
-            statement.execute("""
-                    CREATE TABLE IF NOT EXISTS tran_type (
-                        tran_type      VARCHAR(2)  PRIMARY KEY,
-                        tran_type_desc VARCHAR(50)
-                    )""");
-
-            // --- tran_category (derived from TranCatg @Entity; no migration exists) ----------
-            statement.execute("""
-                    CREATE TABLE IF NOT EXISTS tran_category (
-                        tran_type_cd       VARCHAR(2)  NOT NULL,
-                        tran_cat_cd        INTEGER     NOT NULL,
-                        tran_cat_type_desc VARCHAR(50),
-                        PRIMARY KEY (tran_type_cd, tran_cat_cd)
-                    )""");
-
-            // Seed customers and accounts ids 1..50 so the card foreign keys resolve.
-            for (int id = 1; id <= 50; id++) {
-                statement.execute("""
-                        INSERT INTO customers (
-                            cust_id, cust_first_name, cust_middle_name, cust_last_name,
-                            cust_addr_line_1, cust_addr_line_2, cust_addr_line_3,
-                            cust_addr_state_cd, cust_addr_country_cd, cust_addr_zip,
-                            cust_phone_num_1, cust_phone_num_2, cust_ssn, cust_govt_issued_id,
-                            cust_dob_yyyy_mm_dd, cust_eft_account_id, cust_pri_card_holder_ind,
-                            cust_fico_credit_score
-                        ) VALUES (
-                            %d, 'Test', 'M', 'User', 'Addr1', 'Addr2', 'Addr3', 'NY', 'USA',
-                            '00000', '0000000000', '0000000000', '000000000',
-                            'GOVTID00000000000000', '1990-01-01', 'EFT0000000', 'Y', 700
-                        ) ON CONFLICT (cust_id) DO NOTHING""".formatted(id));
-                statement.execute("""
-                        INSERT INTO accounts (
-                            acct_id, acct_active_status, acct_curr_bal, acct_credit_limit,
-                            acct_cash_credit_limit, acct_open_date, acct_expiraion_date,
-                            acct_reissue_date, acct_curr_cyc_credit, acct_curr_cyc_debit,
-                            acct_addr_zip
-                        ) VALUES (
-                            %d, 'Y', 0.00, 0.00, 0.00, '2020-01-01', '2099-12-31',
-                            '2020-01-01', 0.00, 0.00, '00000'
-                        ) ON CONFLICT (acct_id) DO NOTHING""".formatted(id));
-            }
-        } catch (SQLException ex) {
-            throw new IllegalStateException(
-                    "Failed to provision cross-service prerequisite schema for card-service IT", ex);
-        }
-    }
 
     /**
-     * :purpose: Point the Spring datasource at the manually-managed container (overriding the
-     *     ``jdbc:tc:`` URL from ``application-test.yml``) and baseline Flyway at version 0 so
-     *     the card ``V1``..``V4`` migrations all run against the pre-provisioned schema.
+     * :purpose: Point the Spring datasource at the shared migrated container (overriding the
+     *     ``jdbc:tc:`` URL from ``application-test.yml``) so this class validates against the
+     *     schema the committed migrations produce.
      * :param registry: the dynamic property registry supplied by the test context.
      */
     @DynamicPropertySource
     static void registerDatasourceProperties(DynamicPropertyRegistry registry) {
-        registry.add("spring.datasource.url", POSTGRES::getJdbcUrl);
-        registry.add("spring.datasource.username", POSTGRES::getUsername);
-        registry.add("spring.datasource.password", POSTGRES::getPassword);
-        registry.add("spring.datasource.driver-class-name", () -> "org.postgresql.Driver");
+        MigratedSchemaContainer.registerDataSource(registry);
+        // Every card migration is already applied under the service's own history table, so the
+        // Spring-managed Flyway run during context refresh is a no-op; baselining at version 0
+        // keeps that run from treating the populated schema as a version-1 baseline.
         registry.add("spring.flyway.baseline-version", () -> "0");
     }
 
@@ -325,13 +154,15 @@ class OptimisticLockConflictIT {
     }
 
     /**
-     * :purpose: Force the target card's editable columns to the seeded baseline and null the
-     *     CVV column, committing immediately (no surrounding test transaction).
+     * :purpose: Force the target card's editable columns back to the seeded baseline,
+     *     committing immediately (no surrounding test transaction). The ``card_cvv_cd``
+     *     column is deliberately left as the migration seeded it: the at-rest converter
+     *     hydrates the committed seed, and the CVV is never asserted here.
      */
     private void applyBaseline() {
         jdbcTemplate.update(
                 "UPDATE cards SET card_embossed_name = ?, card_expiraion_date = ?, "
-                        + "card_active_status = ?, card_cvv_cd = NULL WHERE card_num = ?",
+                        + "card_active_status = ? WHERE card_num = ?",
                 SEED_NAME, SEED_EXPIRY, SEED_STATUS, TARGET_CARD_NUM);
     }
 
@@ -342,6 +173,9 @@ class OptimisticLockConflictIT {
      */
     private SessionContext adminSession() {
         SessionContext context = new SessionContext();
+        // Sign-on always publishes BOTH the user id and the user type; a context without a
+        // user id is not a signed-on session and authorizes nothing.
+        context.setUserId("ADMIN001");
         context.setUserType(SessionContext.UserType.CDEMO_USRTYP_ADMIN);
         return context;
     }

@@ -28,10 +28,12 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.data.jpa.test.autoconfigure.DataJpaTest;
 import org.springframework.boot.jdbc.test.autoconfigure.AutoConfigureTestDatabase;
 import org.springframework.test.context.ActiveProfiles;
-import org.testcontainers.junit.jupiter.Testcontainers;
+import org.springframework.test.context.DynamicPropertyRegistry;
+import org.springframework.test.context.DynamicPropertySource;
 
 import com.carddemo.common.domain.Account;
 import com.carddemo.common.domain.CardXref;
+import com.carddemo.common.testsupport.MigratedSchemaContainer;
 import com.carddemo.common.domain.Customer;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -44,20 +46,34 @@ import static org.assertj.core.api.Assertions.assertThat;
  *  primary-key ``findById`` round-trip against a real ``postgres:18`` Testcontainer.
  */
 @DataJpaTest(showSql = false, properties = {
-        "spring.jpa.hibernate.ddl-auto=create-drop",
+        "spring.jpa.hibernate.ddl-auto=validate",
         "spring.flyway.enabled=false"
 })
-@Testcontainers
 @ActiveProfiles("test")
 @AutoConfigureTestDatabase(replace = AutoConfigureTestDatabase.Replace.NONE)
 class CardXrefRepositoryTest {
 
+    /**
+     * :purpose: Bind the datasource to the shared, already-migrated ``postgres:18`` container
+     *  from :java:class:`com.carddemo.common.testsupport.MigratedSchemaContainer`, whose schema,
+     *  indexes, foreign keys and seed data come exclusively from the committed Flyway
+     *  migrations. With ``ddl-auto: validate`` the entity-to-migration mapping becomes an
+     *  assertion of this test instead of a fixture it manufactures.
+     * :param registry: the dynamic property registry supplied by the Spring Test context.
+     */
+    @DynamicPropertySource
+    static void datasourceProperties(DynamicPropertyRegistry registry) {
+        MigratedSchemaContainer.registerDataSource(registry);
+    }
+
     private static final String CARD_1 = "4111111111111111";
     private static final String CARD_2 = "4222222222222222";
-    private static final Long CUST_1 = 1L;
-    private static final Long CUST_2 = 2L;
-    private static final Long ACCT_1 = 1L;
-    private static final Long ACCT_2 = 2L;
+
+    /** :purpose: Ids outside the 1..50 range the migrations seed, so this test owns its rows. */
+    private static final Long CUST_1 = 900_000_011L;
+    private static final Long CUST_2 = 900_000_012L;
+    private static final Long ACCT_1 = 90_000_021L;
+    private static final Long ACCT_2 = 90_000_022L;
     private static final Long UNKNOWN_ACCT_ID = 9_999_999_999L;
 
     @Autowired
@@ -90,8 +106,24 @@ class CardXrefRepositoryTest {
         Customer customer = new Customer();
         customer.setCustId(custId);
         customer.setCustFirstName("Test");
+        customer.setCustMiddleName("T");
         customer.setCustLastName("Customer");
+        customer.setCustAddrLine1("Addr line 1");
+        customer.setCustAddrLine2("Addr line 2");
+        customer.setCustAddrLine3("Addr line 3");
+        customer.setCustAddrStateCd("NC");
+        customer.setCustAddrCountryCd("USA");
+        customer.setCustAddrZip("00000");
+        customer.setCustPhoneNum1("(000)000-0000");
+        customer.setCustPhoneNum2("(000)000-0000");
+        customer.setCustDobYyyyMmDd("1970-01-01");
+        customer.setCustPriCardHolderInd("Y");
         customer.setCustFicoCreditScore(700);
+        // The migrated NOT NULL PII columns carry blank values: no real PII is ever seeded
+        // (AAP 0.6.7) and the CryptoConverter passes empty strings through unchanged.
+        customer.setCustSsn("");
+        customer.setCustGovtIssuedId("");
+        customer.setCustEftAccountId("");
         return customer;
     }
 
@@ -108,8 +140,11 @@ class CardXrefRepositoryTest {
         account.setAcctCreditLimit(BigDecimal.ZERO);
         account.setAcctCashCreditLimit(BigDecimal.ZERO);
         account.setAcctOpenDate("2020-01-01");
+        account.setAcctExpiraionDate("2099-12-31");
+        account.setAcctReissueDate("2020-01-01");
         account.setAcctCurrCycCredit(BigDecimal.ZERO);
         account.setAcctCurrCycDebit(BigDecimal.ZERO);
+        account.setAcctAddrZip("00000");
         return account;
     }
 

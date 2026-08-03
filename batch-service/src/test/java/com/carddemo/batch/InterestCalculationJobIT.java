@@ -25,6 +25,7 @@ import com.carddemo.common.domain.Account;
 import com.carddemo.common.domain.CardXref;
 import com.carddemo.common.domain.DiscGroup;
 import com.carddemo.common.domain.TranCatBal;
+import com.carddemo.common.testsupport.MigratedSchemaContainer;
 import com.carddemo.common.domain.Transaction;
 
 import org.junit.jupiter.api.BeforeEach;
@@ -46,7 +47,6 @@ import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
 import org.testcontainers.postgresql.PostgreSQLContainer;
-import org.testcontainers.utility.DockerImageName;
 
 import java.math.BigDecimal;
 import java.util.List;
@@ -92,46 +92,29 @@ class InterestCalculationJobIT {
      * and the ``@Version`` optimistic-locking column (initialized to zero).
      */
     private static final String INSERT_CUSTOMER_SQL =
-            "INSERT INTO customers (cust_id, cust_first_name, cust_last_name, cust_fico_credit_score, version) "
-                    + "VALUES (?, ?, ?, ?, ?)";
+            "INSERT INTO customers (cust_id, cust_first_name, cust_middle_name, cust_last_name, "
+                    + "cust_addr_line_1, cust_addr_line_2, cust_addr_line_3, cust_addr_state_cd, "
+                    + "cust_addr_country_cd, cust_addr_zip, cust_phone_num_1, cust_phone_num_2, "
+                    + "cust_ssn, cust_govt_issued_id, cust_dob_yyyy_mm_dd, cust_eft_account_id, "
+                    + "cust_pri_card_holder_ind, cust_fico_credit_score, version) "
+                    + "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)";
 
     /**
-     * Shared PostgreSQL container for the whole test JVM, started once from a static
-     * initializer. It is intentionally not bound to the JUnit Testcontainers lifecycle: the
-     * container is never stopped by an ``afterAll`` callback, so the Testcontainers Ryuk
-     * reaper removes it only after the fork JVM exits — strictly after the Spring context and
-     * its Hikari connection pool have closed. Closing the datastore resources while the
-     * database is still reachable is what lets context shutdown finish promptly instead of
-     * stalling against an already-stopped container. The ``postgres:18`` image matches the
-     * production database major version.
-     */
-    static final PostgreSQLContainer POSTGRES =
-            new PostgreSQLContainer(DockerImageName.parse("postgres:18"));
-
-    static {
-        POSTGRES.start();
-    }
-
-    /**
-     * :purpose: Point the JPA datasource at the container, then let the context inherit the
-     *     production ``application.yml`` schema-management settings unchanged — Flyway and
-     *     ``spring.batch.jdbc.initialize-schema`` are left at their production values rather than
-     *     overridden — so the test runs against the same schema configuration as production.
-     *     Only ``ddl-auto`` is overridden — to ``create`` — because the shared business tables
-     *     have no ``batch-service`` migration (they are owned by other services and absent from
-     *     this classpath), so Hibernate materializes them from the ``com.carddemo.common.domain``
-     *     entities. ``create`` (rather than ``create-drop``) issues no shutdown DDL, so the
-     *     context closes cleanly.
+     * :purpose: Point the JPA datasource at the shared, already-migrated ``postgres:18``
+     *     container from
+     *     :java:class:`com.carddemo.common.testsupport.MigratedSchemaContainer`, whose schema -
+     *     the batch metadata and ``disclosure_group`` this service owns plus every table owned
+     *     by the other services - is produced exclusively by the committed Flyway migrations.
+     *     ``ddl-auto`` is set to ``validate`` (never ``create``/``update``): the test therefore
+     *     asserts that the entities match the migrated schema instead of materializing tables
+     *     from the entities and hiding a missing migration.
      * :param registry: registry the test framework resolves datasource and schema properties
      *     from before the application context starts.
      */
     @DynamicPropertySource
     static void datasourceProperties(DynamicPropertyRegistry registry) {
-        registry.add("spring.datasource.url", POSTGRES::getJdbcUrl);
-        registry.add("spring.datasource.username", POSTGRES::getUsername);
-        registry.add("spring.datasource.password", POSTGRES::getPassword);
-        registry.add("spring.datasource.driver-class-name", () -> "org.postgresql.Driver");
-        registry.add("spring.jpa.hibernate.ddl-auto", () -> "create");
+        MigratedSchemaContainer.registerDataSource(registry);
+        registry.add("spring.jpa.hibernate.ddl-auto", () -> "validate");
     }
 
     /** Interest-calculation job under test; qualified because nine ``Job`` beans exist in the context. */
@@ -178,6 +161,10 @@ class InterestCalculationJobIT {
         transactionRepository.deleteAll();
         tranCatBalRepository.deleteAll();
         cardXrefRepository.deleteAll();
+        // The migration seed carries 50 cards that foreign-key into accounts, so they are
+        // removed before their parents; this job consumes whole tables, so the test owns
+        // their content.
+        jdbcTemplate.update("DELETE FROM cards");
         discGroupRepository.deleteAll();
         accountRepository.deleteAll();
         jdbcTemplate.update("DELETE FROM customers");
@@ -216,7 +203,17 @@ class InterestCalculationJobIT {
         assertThat(interest.getTranCardNum()).isEqualTo("1234567890123456");
         assertThat(interest.getTranId()).hasSize(16);
         assertThat(interest.getTranId()).startsWith("2022071800");
+        // Z-GET-DB2-FORMAT-TIMESTAMP writes DB2-FORMAT-TS as YYYY-MM-DD-HH.MM.SS.mmmmmm: a
+        // length check alone would also accept the 'YYYY-MM-DD HH:MM:SS.mmmmmm' space/colon
+        // form, so the exact dash/dot layout is pinned here as well as in
+        // InterestCalculationServiceTest, for BOTH timestamps written by the job.
         assertThat(interest.getTranOrigTs()).hasSize(26);
+        assertThat(interest.getTranOrigTs())
+                .matches("^\\d{4}-\\d{2}-\\d{2}-\\d{2}\\.\\d{2}\\.\\d{2}\\.\\d{6}$");
+        assertThat(interest.getTranOrigTs()).endsWith("0000");
+        assertThat(interest.getTranProcTs()).hasSize(26);
+        assertThat(interest.getTranProcTs())
+                .matches("^\\d{4}-\\d{2}-\\d{2}-\\d{2}\\.\\d{2}\\.\\d{2}\\.\\d{6}$");
         assertThat(interest.getTranOrigTs()).isEqualTo(interest.getTranProcTs());
 
         Account rolledUp = accountRepository.findById(1L).orElseThrow();
@@ -291,7 +288,11 @@ class InterestCalculationJobIT {
      * :param custId: the customer id referenced by the seeded {@link CardXref}.
      */
     private void seedCustomer(long custId) {
-        jdbcTemplate.update(INSERT_CUSTOMER_SQL, custId, "Test", "Customer", 750, 0L);
+        // Every NOT NULL column of the migrated ``customers`` table is supplied; the three
+        // encrypted PII columns carry blank values, so no PII is seeded (AAP 0.6.7).
+        jdbcTemplate.update(INSERT_CUSTOMER_SQL, custId, "Test", "T", "Customer",
+                "Addr line 1", "Addr line 2", "Addr line 3", "NC", "USA", "00000",
+                "(000)000-0000", "(000)000-0000", "", "", "1970-01-01", "", "Y", 750, 0L);
     }
 
     /**

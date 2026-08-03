@@ -20,6 +20,7 @@ import com.carddemo.billpay.service.BillPaymentService;
 import com.carddemo.common.dto.BillPaymentRequestDto;
 import com.carddemo.common.dto.BillPaymentResponseDto;
 import com.carddemo.common.dto.SessionContext;
+import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpSession;
 import jakarta.validation.Valid;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -49,7 +50,7 @@ public class BillPaymentController {
      *  {@link SessionContext} (COMMAREA replacement) is stored in Spring Session
      *  (Redis); kept identical across services so they share one session attribute.
      */
-    private static final String SESSION_CONTEXT_ATTRIBUTE = "carddemoSessionContext";
+    private static final String SESSION_CONTEXT_ATTRIBUTE = SessionContext.SESSION_ATTRIBUTE_NAME;
 
     /** :purpose: Bill-payment collaborator that owns all migrated ``COBIL00C`` behavior. */
     private final BillPaymentService billPaymentService;
@@ -71,8 +72,8 @@ public class BillPaymentController {
      *  entire flow to {@link BillPaymentService}.
      * :param request: the validated bill-payment request carrying the account id
      *  (``ACTIDIN``) and the confirm flag (``CONFIRM``).
-     * :param session: the current HTTP session carrying the externalized
-     *  {@link SessionContext}.
+     * :param httpRequest: the current servlet request; its already-established session,
+     *  when present, carries the externalized {@link SessionContext}.
      * :returns: the bill-payment response carrying the account id, the balance to
      *  display, the generated 16-digit transaction id (on a posted payment) and the
      *  outcome message (HTTP 200).
@@ -85,21 +86,46 @@ public class BillPaymentController {
      */
     @PostMapping
     public BillPaymentResponseDto processBillPayment(@Valid @RequestBody BillPaymentRequestDto request,
-                                                     HttpSession session) {
-        SessionContext context = resolveSessionContext(session);
+                                                     HttpServletRequest httpRequest) {
+        SessionContext context = resolveSessionContext(httpRequest);
         BillPaymentResponseDto response = billPaymentService.processBillPayment(request, context);
-        session.setAttribute(SESSION_CONTEXT_ATTRIBUTE, context);
+        storeSessionContext(httpRequest, context);
         return response;
     }
 
     /**
-     * :purpose: Resolve the externalized session context from the current HTTP session,
-     *  creating an empty one when absent (pre-navigation or tests).
-     * :param session: the current Spring Session (Redis-backed) HTTP session.
+     * :purpose: Resolve the externalized session context from the request's
+     *  *already-established* HTTP session, returning an empty one when the caller has no
+     *  session or it carries none (pre-navigation or tests). ``getSession(false)`` is
+     *  deliberate (QA Issue 22): declaring an ``HttpSession`` controller parameter made
+     *  Spring's argument resolver call ``getSession()`` on every request, so each
+     *  anonymous call created and persisted a brand-new Spring Session entry in Redis
+     *  even though no pseudo-conversational state was ever carried into it.
+     * :param httpRequest: the current servlet request.
      * :returns: the existing {@link SessionContext}, or a new empty instance.
      */
-    private SessionContext resolveSessionContext(HttpSession session) {
-        SessionContext context = (SessionContext) session.getAttribute(SESSION_CONTEXT_ATTRIBUTE);
-        return context != null ? context : new SessionContext();
+    private SessionContext resolveSessionContext(HttpServletRequest httpRequest) {
+        HttpSession session = httpRequest.getSession(false);
+        if (session == null) {
+            return new SessionContext();
+        }
+        Object attribute = session.getAttribute(SESSION_CONTEXT_ATTRIBUTE);
+        return attribute instanceof SessionContext context ? context : new SessionContext();
+    }
+
+    /**
+     * :purpose: Flush the (possibly mutated) session context back to the caller's HTTP
+     *  session so the next stateless request sees the updated COMMAREA replacement. Only
+     *  an existing session is written to: a caller without one carries no
+     *  pseudo-conversational state to preserve, and creating a session for it would
+     *  reintroduce the Redis session churn of QA Issue 22.
+     * :param httpRequest: the current servlet request.
+     * :param context: the session context to persist.
+     */
+    private void storeSessionContext(HttpServletRequest httpRequest, SessionContext context) {
+        HttpSession session = httpRequest.getSession(false);
+        if (session != null) {
+            session.setAttribute(SESSION_CONTEXT_ATTRIBUTE, context);
+        }
     }
 }

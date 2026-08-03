@@ -21,37 +21,88 @@ spring:
     username: ${SPRING_DATASOURCE_USERNAME:carddemo}
     password: ${SPRING_DATASOURCE_PASSWORD:carddemo}
     driver-class-name: org.postgresql.Driver
+    # Bounded connection acquisition (QA Issue 3). Without an explicit
+    # connection-timeout HikariCP waits the 30s default for a connection, so the
+    # aggregate /actuator/health blocks with no response at all while PostgreSQL is
+    # unreachable and both the Compose healthcheck and the Kubernetes probes time out
+    # instead of observing a DOWN. 3s is well inside the 5s Compose healthcheck timeout
+    # and the Kubernetes probe timeoutSeconds, so an outage surfaces as HTTP 503
+    # {"status":"DOWN"} rather than a hang.
+    hikari:
+      connection-timeout: 3000
+      validation-timeout: 2000
+      # ------------------------------------------------------------------
+      # Explicit connection budget (QA Issue 13).
+      #
+      # HikariCP defaults to maximumPoolSize 10 AND minimumIdle == maximumPoolSize,
+      # so every one of the eight CardDemo JPA services held ten server connections
+      # open while completely idle - 80 of PostgreSQL's default max_connections of
+      # 100. Starting any two further containers then failed with
+      # "FATAL: sorry, too many clients already".
+      #
+      # This service is sized for its chunk-oriented Spring Batch jobs rather than
+      # for online traffic: a running job holds one connection for the current chunk
+      # transaction plus one for the Spring Batch job-repository update, and the nine
+      # jobs of JobSchedulingConfig are submitted through an asynchronous
+      # SimpleAsyncTaskExecutor-backed JobLauncher, so several may run at once. A
+      # ceiling of twelve covers six genuinely concurrent jobs outright; the
+      # pathological case of all nine at once queues briefly on connection-timeout
+      # instead of failing. minimum-idle is 1 because the service is idle between
+      # runs, so it contributes a single connection to the steady-state budget.
+      #
+      # Whole-deployment budget: ceiling 7 x 8 (online) + 12 = 68, steady state 15,
+      # against the 200 max_connections configured for the PostgreSQL container
+      # (docker-compose.yml / k8s/deployment-postgres.yaml). Both values are
+      # environment-overridable so a larger replica count can be re-budgeted without
+      # rebuilding the image.
+      # ------------------------------------------------------------------
+      maximum-pool-size: ${SPRING_DATASOURCE_HIKARI_MAXIMUM_POOL_SIZE:12}
+      minimum-idle: ${SPRING_DATASOURCE_HIKARI_MINIMUM_IDLE:1}
+      # Return connections acquired for a job run to the server within five minutes
+      # instead of holding them for HikariCP's ten-minute default.
+      idle-timeout: 300000
 
   jpa:
     open-in-view: false
     hibernate:
-      # This service owns no business tables; the owning services create
-      # and migrate the shared schema. Hibernate neither creates nor
-      # validates it here.
-      ddl-auto: none
+      # The shared carddemo-common migration set owns DDL; Hibernate only
+      # validates the entity mapping. 'validate' (not 'none') is deliberate:
+      # every batch job in this service reads the shared business tables, so a
+      # missing or drifted table MUST fail startup instead of letting the
+      # service advertise readiness over a schema its jobs cannot use
+      # (QA Issue 1(e)).
+      ddl-auto: validate
 
-  # batch-service is the SINGLE Flyway migration owner for the shared
-  # 'carddemo' database (QA CR-09/CR-16): it manages the Spring Batch metadata
-  # schema (BATCH_* tables/sequences) via db/migration, and every other service
-  # disables Flyway so only one history exists in the one public schema. A
-  # dedicated history table keeps this bookkeeping isolated. baseline-on-migrate
-  # is FALSE because this is a greenfield database - V1 must run on an empty
-  # schema rather than being skipped past a synthetic baseline. Reconciliation
-  # rationale: docs/decision-log.md.
+  # Flyway applies the SHARED CardDemo migration set that ships in
+  # carddemo-common (classpath:db/migration) against the ONE shared history
+  # table (flyway_schema_history). Every service resolves the same V1..V4
+  # scripts, so whichever service starts first provisions the complete business
+  # schema, the reference data and the Spring Batch metadata, and the rest find
+  # the migrations already applied and continue. Flyway's lock on the shared
+  # history table serialises concurrent starts, so `docker compose up` on a
+  # clean volume brings every service healthy with no required start order and
+  # no manual DB work (QA Issue 1). baseline-on-migrate stays FALSE because the
+  # database is greenfield: V1 must run on an empty schema rather than being
+  # skipped past a synthetic baseline. Rationale: docs/decision-log.md.
   flyway:
     enabled: true
     locations: classpath:db/migration
     baseline-on-migrate: false
-    table: flyway_schema_history_batch
 
-  # Batch jobs run ON-DEMAND via JobLauncher, never automatically at
-  # startup. Flyway owns the metadata schema, so the JDBC initializer is
-  # disabled.
+  # Batch jobs run ON-DEMAND through the asyncJobLauncher (reachable over HTTP via
+  # BatchController, the analogue of the legacy CORPT00C TDQ/JES submission), never
+  # automatically at startup.
+  #
+  # There is deliberately no `jdbc.initialize-schema` key: Spring Boot 4.1 removed the
+  # whole `spring.batch.jdbc.*` group (BatchProperties now carries only `job`), so the
+  # setting was inert - an unknown property that Boot silently ignores. Nothing
+  # initializes the metadata schema in any case: the shared carddemo-common migration
+  # V5__batch_metadata.sql owns the BATCH_* tables, and carddemo-common's
+  # JdbcBatchConfiguration (imported by BatchServiceApplication) supplies the
+  # JDBC-backed JobRepository that reads and writes them.
   batch:
     job:
       enabled: false
-    jdbc:
-      initialize-schema: never
 
   data:
     redis:
@@ -83,18 +134,48 @@ management:
       # anonymous caller cannot enumerate datastore/dependency internals
       # (QA MJ-16). Liveness/readiness aggregate status stays public for probes.
       show-details: when-authorized
+      # The datastore health contributors are CONDITIONAL: Redis health is switched off
+      # in the slice/integration test contexts (spring.autoconfigure.exclude of the Redis
+      # auto-configuration, or management.health.redis.enabled=false), and a deployment
+      # may legitimately run a service without one of them. Boot's default strict group
+      # membership validation aborts context startup when a listed contributor is absent,
+      # so it is relaxed here; the groups themselves are asserted at runtime (readiness
+      # turns 503 when PostgreSQL or Redis goes away).
+      validate-group-membership: false
+      # Explicit probe groups (QA Issue 4). Boot's default readiness group contains only
+      # readinessState, so readiness reported UP while PostgreSQL and Redis were both
+      # unavailable and Kubernetes kept routing traffic to a pod that could not serve a
+      # single datastore-backed request. Readiness now includes this service's actual
+      # datastore dependencies, while liveness deliberately stays limited to
+      # livenessState: a datastore outage must remove the pod from the Service
+      # endpoints, never restart a perfectly healthy container.
+      group:
+        liveness:
+          include: livenessState
+        readiness:
+          include: readinessState,db
   health:
     livenessstate:
       enabled: true
     readinessstate:
       enabled: true
-  # Distributed tracing export (QA CR-12). The OTLP endpoint and the sampling
-  # probability are environment-driven (QA MN-03): 100% capture is unsafe for
-  # p95/memory NFRs in production, so the default is a 10% sample that each
-  # environment overrides (e.g. 1.0 in dev, lower under load).
-  otlp:
+  # Distributed tracing export (AAP 0.7.5). The OTLP span endpoint and the sampling
+  # probability are environment-driven: 100% capture is unsafe for the p95/memory NFRs
+  # under load, so the default is a 10% sample that each environment overrides (the
+  # api-gateway raises it to 1.0 so every request entering the stack starts a sampled
+  # trace).
+  #
+  # PROPERTY NAME: 'management.otlp.tracing.endpoint' was REMOVED in Spring Boot 4.0
+  # (deprecation level "error", replacement below). Using the old key silently exported
+  # nothing, which is one half of why tracing produced no spans at all (QA Issue 6). The
+  # canonical Boot 4.1 key is used here, and the default now points at the OTLP HTTP
+  # receiver of the 'jaeger' collector declared in docker-compose.yml / k8s rather than
+  # at the container's own loopback.
+  opentelemetry:
     tracing:
-      endpoint: ${MANAGEMENT_OTLP_TRACING_ENDPOINT:http://localhost:4318/v1/traces}
+      export:
+        otlp:
+          endpoint: ${MANAGEMENT_OPENTELEMETRY_TRACING_EXPORT_OTLP_ENDPOINT:http://localhost:4318/v1/traces}
   tracing:
     sampling:
       probability: ${MANAGEMENT_TRACING_SAMPLING_PROBABILITY:0.1}
@@ -112,6 +193,24 @@ carddemo:
     input-dir: ${CARDDEMO_BATCH_INPUT_DIR:}
 
 # ---------------------------------------------------------------------
+# Structured-logging members (QA Issue 8).
+#
+# The Logstash structured format emitted by logback-spring.xml carries the
+# message, the level, the logger, the thread and every MDC entry
+# (correlationId/traceId/spanId) but NO service identity, so a JSON record
+# scraped out of an aggregated log stream could not be attributed to the
+# service that produced it - the container name was the only clue, and it is
+# absent once records are shipped. `logging.structured.json.add` adds the
+# member to every record emitted by Spring Boot's StructuredLogEncoder,
+# including the encoder declared explicitly in logback-spring.xml.
+# ---------------------------------------------------------------------
+logging:
+  structured:
+    json:
+      add:
+        service: ${spring.application.name}
+
+# ---------------------------------------------------------------------
 # Docker Compose profile (SPRING_PROFILES_ACTIVE=docker). Compose passes
 # explicit env vars; these defaults resolve the compose service
 # hostnames (postgres, redis) even if a var is unset.
@@ -122,8 +221,43 @@ spring:
     activate:
       on-profile: docker
   datasource:
-    url: ${SPRING_DATASOURCE_URL:jdbc:postgresql://postgres:5432/carddemo}
+    # NO in-file default (QA Issue 12): a deployed service must never fall back to a
+    # packaged connection string. Without SPRING_DATASOURCE_URL this placeholder cannot be
+    # resolved and startup fails immediately with a clear message, instead of silently
+    # connecting to whatever host the default happens to name and reporting healthy.
+    # carddemo-common's DeployedConfigurationValidator enforces the same rule for the k8s and
+    # prod profiles, where no profile document exists.
+    url: ${SPRING_DATASOURCE_URL}
   data:
     redis:
       host: ${SPRING_DATA_REDIS_HOST:redis}
       port: ${SPRING_DATA_REDIS_PORT:6379}
+
+---
+# ---------------------------------------------------------------------------
+# Metrics reach Prometheus by scrape (AAP 0.7.5), so the OTLP metrics registry the
+# OpenTelemetry starter brings along is switched off; only spans are exported over
+# OTLP (see management.opentelemetry.tracing.export.otlp above).
+# ---------------------------------------------------------------------------
+management:
+  otlp:
+    metrics:
+      export:
+        enabled: false
+
+# ---------------------------------------------------------------------------
+# batch-service is the single owner of the shared migration set. baseline-version 0
+# makes Flyway ADOPT a pre-existing non-empty database WITHOUT skipping V1, which a
+# default baseline (version 1) would do.
+# ---------------------------------------------------------------------------
+spring:
+  flyway:
+    baseline-version: 0
+  # The batch job-launch surface reads the shared COMMAREA-equivalent session, so this
+  # service must resolve the SAME Redis namespace as every other service.
+  session:
+    timeout: ${SPRING_SESSION_TIMEOUT:30m}
+    data:
+      redis:
+        namespace: ${SPRING_SESSION_REDIS_NAMESPACE:carddemo:session}
+        flush-mode: on-save

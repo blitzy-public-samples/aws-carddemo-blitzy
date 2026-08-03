@@ -94,32 +94,22 @@ final class MonetaryScaleFidelityTest {
                         .as(label + " type")
                         .isEqualTo(BigDecimal.class);
 
+                // Every monetary field belongs to a persistent JPA entity (the staged
+                // DALYTRAN feed included), and the NUMERIC(precision, scale) column is
+                // derived from @Column, so both numbers must match the COBOL-derived
+                // contract exactly - a wrong precision or scale would silently corrupt
+                // money.
+                softly.assertThat(mf.entity().isAnnotationPresent(Entity.class))
+                        .as(label + " declaring type must be a JPA @Entity")
+                        .isTrue();
+
                 Column col = f.getAnnotation(Column.class);
-                if (mf.entity().isAnnotationPresent(Entity.class)) {
-                    // Persistent JPA entity: the generated NUMERIC(precision, scale)
-                    // DDL is derived from @Column, so both numbers must match the
-                    // COBOL-derived contract exactly (a wrong precision or scale
-                    // would silently corrupt money).
-                    softly.assertThat(col).as(label + " @Column present").isNotNull();
-                    if (col != null) {
-                        softly.assertThat(col.precision())
-                                .as(label + " precision").isEqualTo(mf.precision());
-                        softly.assertThat(col.scale())
-                                .as(label + " scale").isEqualTo(mf.scale());
-                    }
-                } else {
-                    // Transient batch-feed record (DailyTransaction): a non-entity
-                    // value object by design (AAP 0.4.5 defines exactly ten tables;
-                    // the daily feed is a Spring Batch ItemReader input, never a
-                    // persisted row), so it carries no @Column. The (precision,
-                    // scale) contract is enforced on its persisted sibling
-                    // Transaction.tranAmt; here the BigDecimal type check above is
-                    // the fidelity guard, and the absence of @Column is asserted to
-                    // keep the transient feed record from silently acquiring a
-                    // JPA mapping.
-                    softly.assertThat(col)
-                            .as(label + " @Column absent (transient feed record)")
-                            .isNull();
+                softly.assertThat(col).as(label + " @Column present").isNotNull();
+                if (col != null) {
+                    softly.assertThat(col.precision())
+                            .as(label + " precision").isEqualTo(mf.precision());
+                    softly.assertThat(col.scale())
+                            .as(label + " scale").isEqualTo(mf.scale());
                 }
             }
         });

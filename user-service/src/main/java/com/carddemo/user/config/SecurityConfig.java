@@ -16,15 +16,19 @@
  */
 package com.carddemo.user.config;
 
+import com.carddemo.common.security.SessionRegistryConfig;
+import com.carddemo.common.security.SecurityAuditConfig;
+import com.carddemo.common.security.ManagementSecurityConfig;
 import com.carddemo.common.security.PasswordEncoderFactory;
+import com.carddemo.common.security.SecurityHardening;
+import jakarta.servlet.DispatcherType;
 import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Import;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.security.config.annotation.web.builders.HttpSecurity;
 import org.springframework.security.config.annotation.web.configuration.EnableWebSecurity;
-import org.springframework.security.config.http.SessionCreationPolicy;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.security.web.SecurityFilterChain;
-import org.springframework.security.web.csrf.CookieCsrfTokenRepository;
 
 /**
  * :purpose: Declares the HTTP security policy for the User Management
@@ -33,39 +37,47 @@ import org.springframework.security.web.csrf.CookieCsrfTokenRepository;
  *     ``COUSR00C``-``COUSR03C`` (transactions ``CU00``-``CU03``). Every
  *     user-CRUD route requires an authenticated principal bearing the
  *     ``ROLE_ADMIN`` authority.
- * :note: Session topology (finding CR-08) — this service performs no sign-on;
- *     the ``auth-service`` authenticates and creates the session. The
- *     ``SecurityContext`` is persisted in the HTTP session, which is backed by
- *     Spring Session (Redis), so it is shared across every CardDemo service
- *     (the COMMAREA replacement). The policy is therefore
- *     ``SessionCreationPolicy.NEVER``: this service reuses an existing shared
- *     session to load the authenticated principal and role but never creates a
- *     new one, so an unauthenticated caller cannot obtain a session here. Because
- *     authentication is cookie/session based, CSRF protection is enabled with a
- *     ``CookieCsrfTokenRepository`` so the SPA can echo the ``XSRF-TOKEN`` cookie
- *     as a request header; per-request ``httpBasic`` and ``formLogin`` mechanisms
- *     stay disabled because the principal always arrives via the shared session.
- * :note: Management-endpoint exposure (finding MJ-16) — only the Kubernetes
- *     liveness and readiness probes are anonymous; ``/actuator/prometheus``,
- *     ``/actuator/metrics``, ``/actuator/info`` and any health detail require
- *     ``ROLE_ADMIN`` so telemetry is never anonymously exposed. Prometheus
- *     scrapes with a credential or over an isolated network path (configured in
- *     ``application.yml`` and the Kubernetes ``NetworkPolicy``).
+ * :note: Session topology — this service performs no sign-on; the ``auth-service``
+ *     authenticates and writes the shared, Redis-backed ``SessionContext`` (the
+ *     COMMAREA replacement). The shared ``SessionContextAuthenticationFilter``
+ *     installed by {@link SecurityHardening} rebuilds the authenticated principal and
+ *     its role from that context on every request, using an EXISTING session only, so
+ *     an unauthenticated caller can neither authenticate here nor cause a session to be
+ *     created. ``httpBasic`` and ``formLogin`` stay disabled because the principal
+ *     always arrives through the shared session.
+ * :note: CSRF — this service is never called directly by a browser: the api-gateway is
+ *     the only browser-facing surface and enforces cookie double-submit CSRF for every
+ *     state-changing request. Enforcing CSRF a second time here would require a token
+ *     this service never issues, which is what made every administrator write fail.
+ *     The single, coherent model is recorded in docs/decision-log.md.
+ * :note: Management-endpoint exposure — the anonymous surface is the health status and
+ *     the Kubernetes liveness/readiness probes (status only; detail still requires an
+ *     authorized principal via ``show-details: when-authorized``). This matches the
+ *     other eight services and lets the Compose/Kubernetes probe on
+ *     ``/actuator/health`` succeed. ``/actuator/prometheus`` and
+ *     ``/actuator/metrics/**`` are restricted to the dedicated ``monitoring``
+ *     principal by the shared ``ManagementSecurityConfig`` chain, and every remaining
+ *     management endpoint requires ``ROLE_ADMIN``.
  * :note: This configuration also supplies the shared delegating password encoder
  *     ({@link PasswordEncoderFactory}) used to hash security-user credentials at
  *     rest, replacing the legacy plaintext comparison (finding MJ-18).
  */
+@Import({
+        ManagementSecurityConfig.class,
+        SecurityAuditConfig.class,
+        SessionRegistryConfig.class
+})
 @Configuration
 @EnableWebSecurity
 public class SecurityConfig {
 
     /**
-     * :purpose: Builds the shared-session REST security filter chain: enables
-     *     cookie-based CSRF protection for the SPA, reuses (but never creates) the
-     *     Redis-backed shared session to load the authenticated principal, permits
-     *     only the anonymous Kubernetes liveness/readiness probes, and requires the
-     *     ``ROLE_ADMIN`` authority for every other request — including the
-     *     remaining management endpoints — because all user-CRUD functions are
+     * :purpose: Builds the shared-session REST security filter chain: applies the
+     *     shared hardening (session-derived principal, no persisted security context,
+     *     no saved-request cache, hardened response headers, ``401`` entry point),
+     *     permits the anonymous health status and the Kubernetes liveness/readiness
+     *     probes plus the container ``ERROR`` dispatch, and requires the ``ROLE_ADMIN``
+     *     authority for every other request because all user-CRUD functions are
      *     administrator-only and telemetry must not be anonymously exposed.
      * :param http: the Spring Security ``HttpSecurity`` builder.
      * :returns: the configured ``SecurityFilterChain``.
@@ -73,15 +85,21 @@ public class SecurityConfig {
      */
     @Bean
     public SecurityFilterChain securityFilterChain(HttpSecurity http) throws Exception {
-        http
-            .csrf(csrf -> csrf
-                .csrfTokenRepository(CookieCsrfTokenRepository.withHttpOnlyFalse()))
-            .sessionManagement(session ->
-                session.sessionCreationPolicy(SessionCreationPolicy.NEVER))
+        SecurityHardening.apply(http)
+            // CSRF is enforced once, at the api-gateway (the only browser-facing
+            // surface). See the class note and docs/decision-log.md.
+            .csrf(csrf -> csrf.disable())
             .authorizeHttpRequests(authorize -> authorize
+                // The container ERROR dispatch must not be re-authorized: doing so
+                // masks a genuine 4xx/5xx as an authorization failure.
+                .dispatcherTypeMatchers(DispatcherType.ERROR).permitAll()
+                // Same probe set as every other service: the aggregate health endpoint, the
+                // liveness/readiness groups underneath it, and the build identity. The
+                // metrics scrape stays authenticated through ManagementSecurityConfig.
                 .requestMatchers(
-                    "/actuator/health/liveness",
-                    "/actuator/health/readiness").permitAll()
+                    "/actuator/health",
+                    "/actuator/health/**",
+                    "/actuator/info").permitAll()
                 .anyRequest().hasRole("ADMIN"))
             .httpBasic(httpBasic -> httpBasic.disable())
             .formLogin(formLogin -> formLogin.disable());

@@ -7,29 +7,36 @@
 # @DynamicPropertySource - they are deliberately NOT set here.
 #
 # Unlike auth-service, user-service owns NO Flyway migrations (the
-# security_users schema is owned by auth-service). Hibernate therefore
-# builds security_users from the shared
-# com.carddemo.common.domain.SecurityUser entity (ddl-auto: create-drop)
-# in the isolated test database, and Flyway is disabled. user-service is
-# stateless, so no Redis / Spring Session store is configured.
+# security_users schema is owned by auth-service). The integration tests
+# therefore bind to the shared, already-migrated container from
+# com.carddemo.common.testsupport.MigratedSchemaContainer and Hibernate only
+# validates the com.carddemo.common.domain.SecurityUser mapping against it
+# (ddl-auto: validate); this module's own Flyway is disabled. Spring Session is
+# Redis-backed here exactly as in production (classpath-driven in Spring Boot 4),
+# so a full-context test that drives real HTTP supplies its own redis:8 container.
 # =====================================================================
 spring:
-  # Hibernate owns the schema in tests (this module ships no Flyway
-  # migrations). create-drop builds security_users from the SecurityUser
-  # entity in the isolated Testcontainers database and drops it after.
+  # The owning module's committed migrations own the schema in tests (this
+  # module ships no Flyway migrations of its own), so Hibernate validates the
+  # SecurityUser mapping against the deployed security_users table.
   jpa:
     hibernate:
-      ddl-auto: create-drop
+      # The integration tests run against the schema produced by the owning modules'
+      # committed Flyway migrations (see MigratedSchemaContainer), so Hibernate only
+      # validates the entity mapping and never generates a schema of its own.
+      ddl-auto: validate
 
   # No Flyway migrations in this module - disable so the test context
   # does not attempt to run or verify migrations.
   flyway:
     enabled: false
 
-  # Stateless service: neutralize the base 'redis' session store so
-  # full-context tests need no Redis container.
-  session:
-    store-type: none
+  # Spring Session is driven purely by what is on the CLASSPATH in Spring Boot 4;
+  # the legacy spring.session.store-type switch was removed in 4.0.0 and setting it
+  # here would be silently ignored. Slice and @DataJpaTest tests never load the
+  # session filter, so they need no Redis; a full-context test that drives real HTTP
+  # DOES exercise the Redis-backed session filter and therefore starts its own
+  # redis:8 container (see ObservabilityEndpointsIT).
 
 # Keep tests hermetic: 0.0 sampling means no spans are recorded, so
 # nothing is exported over the network (modern Spring Boot 4 key).

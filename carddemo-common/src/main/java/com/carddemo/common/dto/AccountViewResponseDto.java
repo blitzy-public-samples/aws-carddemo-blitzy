@@ -23,6 +23,13 @@ import java.math.BigDecimal;
  */
 public class AccountViewResponseDto {
 
+    /**
+     * :purpose: the current optimistic-lock version of the account record. The client echoes it
+     *  back on ``PUT /accounts/{id}`` so a concurrent modification is detected instead
+     *  of silently overwritten (``COACTUPC`` read-snapshot-compare-rewrite, AAP 0.6.2).
+     */
+    private Long version;
+
     /** :purpose: the account id primary key (``ACCT-ID``). */
     private Long acctId;
 
@@ -114,6 +121,22 @@ public class AccountViewResponseDto {
      * :purpose: Create an empty AccountViewResponseDto. Required for JSON (Jackson) serialization.
      */
     public AccountViewResponseDto() {
+    }
+
+    /**
+     * :purpose: Return the optimistic-lock version of the account record.
+     * :output: the ``version`` value.
+     */
+    public Long getVersion() {
+        return version;
+    }
+
+    /**
+     * :purpose: Set the optimistic-lock version of the account record.
+     * :param version: the ``version`` value.
+     */
+    public void setVersion(Long version) {
+        this.version = version;
     }
 
     /**

@@ -80,6 +80,25 @@ public class CardService {
     /** :purpose: ``COCRDLIC`` browse boundary message. */
     private static final String MSG_NO_MORE_RECORDS = "NO MORE RECORDS TO SHOW";
 
+    /** :purpose: ``COCRDLIC`` L903 backward-paging boundary message. */
+    private static final String MSG_NO_PREVIOUS_PAGES = "NO PREVIOUS PAGES TO DISPLAY";
+
+    /** :purpose: ``COCRDLIC`` ``WS-INFORM-REC-ACTIONS`` (L115-116) informational line. */
+    private static final String MSG_INFORM_REC_ACTIONS =
+            "TYPE S FOR DETAIL, U TO UPDATE ANY RECORD";
+
+    /** :purpose: ``COCRDLIC`` row action selecting the detail screen (``COCRDSLC``). */
+    private static final String ACTION_SELECT = "S";
+
+    /** :purpose: ``COCRDLIC`` row action selecting the update screen (``COCRDUPC``). */
+    private static final String ACTION_UPDATE = "U";
+
+    /** :purpose: ``COCRDLIC`` navigation action requesting the previous page (``DFHPF7``). */
+    public static final String AID_PF7 = "PF7";
+
+    /** :purpose: ``COCRDLIC`` navigation action requesting the next page (``DFHPF8``). */
+    public static final String AID_PF8 = "PF8";
+
     /** :purpose: ``COCRDLIC`` account-filter edit message. */
     private static final String MSG_ACCT_FILTER_11 =
             "ACCOUNT FILTER,IF SUPPLIED MUST BE A 11 DIGIT NUMBER";
@@ -182,6 +201,36 @@ public class CardService {
                                          String cardNumFilter,
                                          int pageNumber,
                                          SessionContext sessionContext) {
+        return listCards(acctIdFilter, cardNumFilter, pageNumber, null, null, null, sessionContext);
+    }
+
+    /**
+     * :purpose: List cards for the card-list screen (``COCRDLIC``, CICS ``CCLI``) including the
+     *  navigation action and the row selection the screen carries, and reproduce
+     *  ``1400-SETUP-MESSAGE`` (L895-925) so the operator sees the same banner the 3270 screen
+     *  would have shown. ``WS-ERROR-MSG`` holds at most one message, and the legacy
+     *  ``IF WS-ERROR-MSG-OFF`` guards mean the FIRST condition to fire wins.
+     * :param acctIdFilter: optional owning-account filter; at most eleven digits when supplied.
+     * :param cardNumFilter: optional exact card-number filter; sixteen digits when supplied.
+     * :param pageNumber: the one-based page number to return (``WS-CA-SCREEN-NUM``).
+     * :param aid: the navigation action, ``"PF7"`` (page back) or ``"PF8"`` (page forward);
+     *  ``null`` or blank means plain entry.
+     * :param action: the row-selection flag, ``"S"`` for detail or ``"U"`` for update.
+     * :param selectedCardNumber: the card number of the selected row.
+     * :param sessionContext: the caller session; a non-admin user is scoped to its account.
+     * :returns: the card-list response holding at most ``MAX_SCREEN_LINES`` rows, the paging
+     *  state, the resolved selection and the two message lines.
+     * :raises CardDemoException: when a supplied filter is invalid, or the row-selection flag
+     *  is neither ``S`` nor ``U``.
+     */
+    @Transactional(readOnly = true)
+    public CardListResponseDto listCards(Long acctIdFilter,
+                                         String cardNumFilter,
+                                         int pageNumber,
+                                         String aid,
+                                         String action,
+                                         String selectedCardNumber,
+                                         SessionContext sessionContext) {
         // Filter edits (COCRDLIC 1210/1220), applied only when a filter is supplied.
         if (acctIdFilter != null && (acctIdFilter <= 0L || acctIdFilter > ACCT_ID_MAX)) {
             throw new CardDemoException(MSG_ACCT_FILTER_11);
@@ -226,15 +275,70 @@ public class CardService {
         // COBOL reads one extra record (WS-MAX-SCREEN-LINES + 1) to know a further page exists.
         boolean morePagesExist = ordered.size() > offset + MAX_SCREEN_LINES;
 
-        if (pageRows.isEmpty()) {
-            // COCRDLIC sets WS-NO-RECORDS-FOUND and redisplays the screen with this message.
-            log.debug(MSG_NO_RECORDS_FOUND);
+        CardListResponseDto response = cardMapper.toListResponse(pageRows);
+        response.setPageNumber(page);
+        response.setNextPage(morePagesExist);
+
+        // COCRDLIC 1300 row-action edit: the only valid flags are 'S' and 'U'. Performed
+        // before 1400-SETUP-MESSAGE so an invalid flag wins over any paging banner, exactly
+        // as WS-INVALID-ACTION-CODE does.
+        if (action != null && !action.isBlank()) {
+            String canonical = action.trim().toUpperCase(java.util.Locale.ROOT);
+            if (!ACTION_SELECT.equals(canonical) && !ACTION_UPDATE.equals(canonical)) {
+                throw new CardDemoException(MSG_INVALID_ACTION_CODE);
+            }
+            response.setSelectedAction(canonical);
+            response.setSelectedCardNumber(selectedCardNumber == null ? null : selectedCardNumber.trim());
+        }
+
+        response.setMessage(resolveListMessage(page, pageRows.isEmpty(), morePagesExist, aid));
+        if (!pageRows.isEmpty()) {
+            response.setInfoMessage(MSG_INFORM_REC_ACTIONS);
+        }
+
+        if (response.getMessage() != null) {
+            log.debug("card list page {} banner: {}", page, response.getMessage());
         } else {
             log.debug("card list page {} returned {} row(s); morePagesExist={}",
                     page, pageRows.size(), morePagesExist);
         }
+        return response;
+    }
 
-        return cardMapper.toListResponse(pageRows);
+    /**
+     * :purpose: Reproduce ``COCRDLIC 1400-SETUP-MESSAGE`` (L895-925) plus the ``ENDFILE``
+     *  branches of the browse loop (L1219/L1239), in the legacy evaluation order and honouring
+     *  the ``IF WS-ERROR-MSG-OFF`` first-message-wins guard.
+     * :param page: the one-based page number returned.
+     * :param empty: whether the returned page holds no rows.
+     * :param morePagesExist: whether a further forward page exists (``CA-NEXT-PAGE-EXISTS``).
+     * :param aid: the navigation action, ``"PF7"``, ``"PF8"``, or ``null``.
+     * :returns: the single ``WS-ERROR-MSG`` line, or ``null`` when no condition applies.
+     */
+    private String resolveListMessage(int page, boolean empty, boolean morePagesExist, String aid) {
+        boolean pf7 = AID_PF7.equalsIgnoreCase(aid);
+        boolean pf8 = AID_PF8.equalsIgnoreCase(aid);
+
+        // WHEN CCARD-AID-PFK07 AND CA-FIRST-PAGE (L902-904).
+        if (pf7 && page <= 1) {
+            return MSG_NO_PREVIOUS_PAGES;
+        }
+        // WHEN CCARD-AID-PFK08 AND CA-NEXT-PAGE-NOT-EXISTS AND CA-LAST-PAGE-SHOWN (L905-909):
+        // asking to advance past a page that is already the last one shown.
+        if (pf8 && !morePagesExist && empty) {
+            return MSG_NO_MORE_PAGES;
+        }
+        // Browse ENDFILE on the first screen with nothing read at all sets
+        // WS-NO-RECORDS-FOUND (L1240-1244).
+        if (empty && page <= 1) {
+            return MSG_NO_RECORDS_FOUND;
+        }
+        // Browse ENDFILE reached (L1219/L1239): either the page came up short or it is empty
+        // beyond the first screen.
+        if (empty || !morePagesExist) {
+            return MSG_NO_MORE_RECORDS;
+        }
+        return null;
     }
 
     /**

@@ -16,9 +16,14 @@
  */
 package com.carddemo.reporting.mapper;
 
+import com.carddemo.common.constant.Titles;
 import com.carddemo.common.dto.ReportRequestDto;
 import com.carddemo.common.dto.ReportResponseDto;
 import org.springframework.stereotype.Component;
+
+import java.time.Clock;
+import java.time.LocalDateTime;
+import java.time.format.DateTimeFormatter;
 
 /**
  * :purpose: Hand-written, stateless mapper that translates between the report
@@ -31,6 +36,49 @@ import org.springframework.stereotype.Component;
  */
 @Component
 public class ReportMapper {
+
+    /**
+     * :purpose: CICS transaction identifier of the report-request screen
+     *  (``CORPT00C WS-TRANID PIC X(04) VALUE 'CR00'``), sent to ``TRNNAMEO``.
+     */
+    public static final String TRAN_NAME = "CR00";
+
+    /**
+     * :purpose: Legacy program name of the report-request screen
+     *  (``CORPT00C WS-PGMNAME PIC X(08) VALUE 'CORPT00C'``), sent to ``PGMNAMEO``.
+     */
+    public static final String PROGRAM_NAME = "CORPT00C";
+
+    /**
+     * :purpose: ``WS-CURDATE-MM-DD-YY`` layout (``CSDAT01Y`` L30-35): two-digit
+     *  month, day and year separated by ``/``.
+     */
+    private static final DateTimeFormatter CURDATE_FORMATTER = DateTimeFormatter.ofPattern("MM/dd/yy");
+
+    /**
+     * :purpose: ``WS-CURTIME-HH-MM-SS`` layout (``CSDAT01Y`` L36-41): two-digit
+     *  hours, minutes and seconds separated by ``:``.
+     */
+    private static final DateTimeFormatter CURTIME_FORMATTER = DateTimeFormatter.ofPattern("HH:mm:ss");
+
+    /** :purpose: Clock supplying the screen header date and time; injectable for tests. */
+    private final Clock clock;
+
+    /**
+     * :purpose: Construct the mapper with the system default-zone clock.
+     */
+    public ReportMapper() {
+        this(Clock.systemDefaultZone());
+    }
+
+    /**
+     * :purpose: Construct the mapper with an explicit clock so the screen header
+     *  date and time are deterministic under test.
+     * :param clock: the clock supplying ``CURDATE``/``CURTIME``.
+     */
+    public ReportMapper(Clock clock) {
+        this.clock = clock;
+    }
 
     /**
      * :purpose: Build a report response DTO that echoes the report-type selector
@@ -50,7 +98,29 @@ public class ReportMapper {
         }
         ReportResponseDto response = new ReportResponseDto();
         applyRequestToResponse(request, response);
+        applyScreenHeader(response);
         return response;
+    }
+
+    /**
+     * :purpose: Populate the CORPT00 screen header exactly as ``CORPT00C``
+     *   ``3000-SEND-MAP`` does (L611-628): the two application titles from
+     *   ``COTTL01Y``, the transaction and program names, and the current date and
+     *   time in the ``CSDAT01Y`` ``mm/dd/yy`` and ``hh:mm:ss`` layouts.
+     * :param target: the report response DTO whose header fields are set; when
+     *   ``null`` the method is a no-op.
+     */
+    public void applyScreenHeader(ReportResponseDto target) {
+        if (target == null) {
+            return;
+        }
+        LocalDateTime now = LocalDateTime.now(clock);
+        target.setTitle01(Titles.CCDA_TITLE01);
+        target.setTitle02(Titles.CCDA_TITLE02);
+        target.setTrnName(TRAN_NAME);
+        target.setPgmName(PROGRAM_NAME);
+        target.setCurrentDate(CURDATE_FORMATTER.format(now));
+        target.setCurrentTime(CURTIME_FORMATTER.format(now));
     }
 
     /**

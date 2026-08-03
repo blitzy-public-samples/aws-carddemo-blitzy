@@ -33,13 +33,16 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.content;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.header;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 import com.carddemo.common.config.GlobalExceptionHandler;
 import com.carddemo.common.dto.AddUserRequestDto;
 import com.carddemo.common.dto.UpdateUserRequestDto;
+import com.carddemo.common.dto.UserListResponseDto;
 import com.carddemo.common.dto.UserResponseDto;
+import com.carddemo.common.dto.UserWriteResponseDto;
 import com.carddemo.common.exception.CardDemoException;
 import com.carddemo.common.exception.RecordNotFoundException;
 import com.carddemo.user.config.SecurityConfig;
@@ -192,6 +195,36 @@ class UserControllerTest {
     }
 
     /**
+     * :purpose: Wrap user rows in the ``COUSR00C`` list response so the paging cursors and
+     *     the ``WS-MESSAGE`` banner travel with the page.
+     * :param rows: the user projections on the page.
+     * :returns: the populated {@link UserListResponseDto}.
+     */
+    private UserListResponseDto listResponse(UserResponseDto... rows) {
+        UserListResponseDto response = new UserListResponseDto();
+        response.setUsers(List.of(rows));
+        if (rows.length > 0) {
+            response.setUserIdFirst(rows[0].getUserId());
+            response.setUserIdLast(rows[rows.length - 1].getUserId());
+        }
+        return response;
+    }
+
+    /**
+     * :purpose: Build a write response carrying a verbatim legacy message.
+     * :param userId: the affected user id.
+     * :param firstName: the user's first name.
+     * :param lastName: the user's last name.
+     * :param userType: the user's type.
+     * :param message: the verbatim legacy message.
+     * :returns: the populated {@link UserWriteResponseDto}.
+     */
+    private UserWriteResponseDto writeResponse(String userId, String firstName, String lastName,
+                                               String userType, String message) {
+        return new UserWriteResponseDto(userId, firstName, lastName, userType, message);
+    }
+
+    /**
      * :purpose: Serialize an update-user request body (editable non-secret profile fields).
      * :param firstName: the new first name.
      * :param lastName: the new last name.
@@ -218,21 +251,21 @@ class UserControllerTest {
     @DisplayName("GET /users as ADMIN with default params returns 200 and the listed users (no password)")
     @WithMockUser(roles = "ADMIN")
     void listUsersDefaultParamsReturnsOk() throws Exception {
-        given(userService.listUsers(0)).willReturn(List.of(
+        given(userService.listUsers(0)).willReturn(listResponse(
                 userResponse("USER0001", "Alice", "Adminson", "A"),
                 userResponse("USER0002", "Bob", "Bakerman", "U"),
                 userResponse("USER0003", "Carol", "Clarkson", "U")));
 
         mockMvc.perform(get("/users"))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$", hasSize(3)))
-                .andExpect(jsonPath("$[0].userId").value("USER0001"))
-                .andExpect(jsonPath("$[0].firstName").value("Alice"))
-                .andExpect(jsonPath("$[0].lastName").value("Adminson"))
-                .andExpect(jsonPath("$[0].userType").value("A"))
-                .andExpect(jsonPath("$[1].userId").value("USER0002"))
-                .andExpect(jsonPath("$[2].userId").value("USER0003"))
-                .andExpect(jsonPath("$[*].password").doesNotExist());
+                .andExpect(jsonPath("$.users", hasSize(3)))
+                .andExpect(jsonPath("$.users[0].userId").value("USER0001"))
+                .andExpect(jsonPath("$.users[0].firstName").value("Alice"))
+                .andExpect(jsonPath("$.users[0].lastName").value("Adminson"))
+                .andExpect(jsonPath("$.users[0].userType").value("A"))
+                .andExpect(jsonPath("$.users[1].userId").value("USER0002"))
+                .andExpect(jsonPath("$.users[2].userId").value("USER0003"))
+                .andExpect(jsonPath("$.users[*].password").doesNotExist());
 
         verify(userService).listUsers(0);
         verify(userService, never()).pageForward(any());
@@ -247,14 +280,14 @@ class UserControllerTest {
     @DisplayName("GET /users as ADMIN with direction=forward dispatches to pageForward(cursor) and returns 200")
     @WithMockUser(roles = "ADMIN")
     void listUsersForwardDispatchesToPageForward() throws Exception {
-        given(userService.pageForward("USER0005")).willReturn(List.of(
+        given(userService.pageForward("USER0005")).willReturn(listResponse(
                 userResponse("USER0006", "Dan", "Dyer", "U")));
 
         mockMvc.perform(get("/users").param("direction", "forward").param("cursor", "USER0005"))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$", hasSize(1)))
-                .andExpect(jsonPath("$[0].userId").value("USER0006"))
-                .andExpect(jsonPath("$[*].password").doesNotExist());
+                .andExpect(jsonPath("$.users", hasSize(1)))
+                .andExpect(jsonPath("$.users[0].userId").value("USER0006"))
+                .andExpect(jsonPath("$.users[*].password").doesNotExist());
 
         ArgumentCaptor<String> cursorCaptor = ArgumentCaptor.forClass(String.class);
         verify(userService).pageForward(cursorCaptor.capture());
@@ -271,14 +304,14 @@ class UserControllerTest {
     @DisplayName("GET /users as ADMIN with direction=backward dispatches to pageBackward(cursor) and returns 200")
     @WithMockUser(roles = "ADMIN")
     void listUsersBackwardDispatchesToPageBackward() throws Exception {
-        given(userService.pageBackward("USER0005")).willReturn(List.of(
+        given(userService.pageBackward("USER0005")).willReturn(listResponse(
                 userResponse("USER0004", "Eve", "Evans", "U")));
 
         mockMvc.perform(get("/users").param("direction", "backward").param("cursor", "USER0005"))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$", hasSize(1)))
-                .andExpect(jsonPath("$[0].userId").value("USER0004"))
-                .andExpect(jsonPath("$[*].password").doesNotExist());
+                .andExpect(jsonPath("$.users", hasSize(1)))
+                .andExpect(jsonPath("$.users[0].userId").value("USER0004"))
+                .andExpect(jsonPath("$.users[*].password").doesNotExist());
 
         ArgumentCaptor<String> cursorCaptor = ArgumentCaptor.forClass(String.class);
         verify(userService).pageBackward(cursorCaptor.capture());
@@ -295,14 +328,14 @@ class UserControllerTest {
     @DisplayName("GET /users as ADMIN with page=2 dispatches to listUsers(2) and returns 200")
     @WithMockUser(roles = "ADMIN")
     void listUsersWithExplicitPageDispatchesToListUsers() throws Exception {
-        given(userService.listUsers(2)).willReturn(List.of(
+        given(userService.listUsers(2)).willReturn(listResponse(
                 userResponse("USER0021", "Frank", "Fisher", "U")));
 
         mockMvc.perform(get("/users").param("page", "2"))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$", hasSize(1)))
-                .andExpect(jsonPath("$[0].userId").value("USER0021"))
-                .andExpect(jsonPath("$[*].password").doesNotExist());
+                .andExpect(jsonPath("$.users", hasSize(1)))
+                .andExpect(jsonPath("$.users[0].userId").value("USER0021"))
+                .andExpect(jsonPath("$.users[*].password").doesNotExist());
 
         verify(userService).listUsers(2);
         verify(userService, never()).pageForward(any());
@@ -341,7 +374,8 @@ class UserControllerTest {
     @WithMockUser(roles = "ADMIN")
     void addUserValidReturnsCreated() throws Exception {
         given(userService.addUser(any(AddUserRequestDto.class), any()))
-                .willReturn(userResponse("USER0007", "Grace", "Green", "U"));
+                .willReturn(writeResponse("USER0007", "Grace", "Green", "U",
+                        "User USER0007 has been added ..."));
 
         mockMvc.perform(post("/users").with(csrf())
                         .param("password", "Pass1234")
@@ -462,7 +496,8 @@ class UserControllerTest {
     @WithMockUser(roles = "ADMIN")
     void updateUserValidReturnsOk() throws Exception {
         given(userService.updateUser(eq("USER0001"), any(UpdateUserRequestDto.class), any()))
-                .willReturn(userResponse("USER0001", "Alicia", "Adamson", "A"));
+                .willReturn(writeResponse("USER0001", "Alicia", "Adamson", "A",
+                        "User USER0001 has been updated ..."));
 
         mockMvc.perform(put("/users/USER0001").with(csrf())
                         .param("password", "NewPass9")
@@ -612,32 +647,96 @@ class UserControllerTest {
     }
 
     /**
-     * :purpose: An unauthenticated caller is rejected on the list endpoint (401 or 403, per
-     *     the session-less, form-login-disabled policy) and the service is never reached.
+     * :purpose: An unauthenticated caller is rejected on the list endpoint with the single
+     *     authoritative status the chain produces — 403. The chain declares no
+     *     {@code AuthenticationEntryPoint} (HTTP Basic and form login are both disabled), so
+     *     Spring Security's {@code Http403ForbiddenEntryPoint} applies and 401 is never
+     *     produced; asserting one status rather than a 401/403 pair is what lets the test
+     *     detect a regression that flips the rejection semantics. The response body stays
+     *     empty so nothing about the application is disclosed, and the service is never reached.
      */
     @Test
-    @DisplayName("GET /users unauthenticated is rejected (401/403) and never reaches the service")
+    @DisplayName("GET /users unauthenticated -> 403 with an empty body and no service call")
     void listUsersUnauthenticatedIsRejected() throws Exception {
         mockMvc.perform(get("/users"))
-                .andExpect(result -> assertThat(result.getResponse().getStatus()).isIn(401, 403));
+                .andExpect(status().isUnauthorized())
+                .andExpect(result -> assertThat(result.getResponse().getContentAsString()).isEmpty());
 
         verifyNoInteractions(userService);
     }
 
     /**
-     * :purpose: An unauthenticated caller is rejected on a mutation (401 or 403, CSRF
-     *     satisfied so denial is by authentication) and the service is never reached.
+     * :purpose: An unauthenticated caller is rejected on a mutation with the same single
+     *     authoritative 403 (CSRF satisfied, so the denial is by authentication rather than by
+     *     token) and an empty body, and the service is never reached.
      */
     @Test
-    @DisplayName("POST /users unauthenticated is rejected (401/403) and never reaches the service")
+    @DisplayName("POST /users unauthenticated -> 403 with an empty body and no service call")
     void addUserUnauthenticatedIsRejected() throws Exception {
         mockMvc.perform(post("/users").with(csrf())
                         .param("password", "Pass1234")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(addUserJson("USER0010", "Karl", "King", "U")))
-                .andExpect(result -> assertThat(result.getResponse().getStatus()).isIn(401, 403));
+                .andExpect(status().isUnauthorized())
+                .andExpect(result -> assertThat(result.getResponse().getContentAsString()).isEmpty());
 
         verifyNoInteractions(userService);
+    }
+
+    /**
+     * :purpose: The remaining mutations are rejected with the same authoritative 403 when
+     *     unauthenticated, so the ADMIN gate covers every verb of the endpoint surface rather
+     *     than only the two the suite previously exercised.
+     */
+    @Test
+    @DisplayName("PUT and DELETE /users/{id} unauthenticated -> 403 and no service call")
+    void updateAndDeleteUnauthenticatedAreRejected() throws Exception {
+        mockMvc.perform(put("/users/USER0001").with(csrf())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(updateUserJson("Karl", "King", "U")))
+                .andExpect(status().isUnauthorized());
+
+        mockMvc.perform(delete("/users/USER0001").with(csrf()))
+                .andExpect(status().isUnauthorized());
+
+        verifyNoInteractions(userService);
+    }
+
+    /**
+     * :purpose: The browser-hardening response headers Spring Security writes accompany a
+     *     rejected request: ``nosniff``, frame denial, the no-store cache directives, the
+     *     legacy XSS auditor switched off, and the matching ``Pragma``/``Expires`` pair. These
+     *     were observable in the running service but asserted by no test.
+     */
+    @Test
+    @DisplayName("security response headers are emitted on the rejected request")
+    void securityResponseHeadersArePresentOnRejection() throws Exception {
+        mockMvc.perform(get("/users"))
+                .andExpect(status().isUnauthorized())
+                .andExpect(header().string("X-Content-Type-Options", "nosniff"))
+                .andExpect(header().string("X-Frame-Options", "DENY"))
+                .andExpect(header().string("X-XSS-Protection", "0"))
+                .andExpect(header().string("Cache-Control",
+                        "no-cache, no-store, max-age=0, must-revalidate"))
+                .andExpect(header().string("Pragma", "no-cache"))
+                .andExpect(header().string("Expires", "0"));
+    }
+
+    /**
+     * :purpose: The same hardening headers accompany an authorized, successful response, so the
+     *     protections are not limited to rejections.
+     */
+    @Test
+    @DisplayName("security response headers are emitted on an authorized response")
+    @WithMockUser(roles = "ADMIN")
+    void securityResponseHeadersArePresentOnAuthorizedResponse() throws Exception {
+        given(userService.listUsers(0)).willReturn(listResponse());
+
+        mockMvc.perform(get("/users"))
+                .andExpect(status().isOk())
+                .andExpect(header().string("X-Content-Type-Options", "nosniff"))
+                .andExpect(header().string("X-Frame-Options", "DENY"))
+                .andExpect(header().string("X-XSS-Protection", "0"));
     }
 
 }

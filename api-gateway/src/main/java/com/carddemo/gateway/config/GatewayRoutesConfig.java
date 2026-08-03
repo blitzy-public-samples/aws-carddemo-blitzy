@@ -22,6 +22,7 @@ import jakarta.servlet.ServletException;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletRequestWrapper;
 import jakarta.servlet.http.HttpServletResponse;
+import jakarta.servlet.http.HttpServletResponseWrapper;
 
 import org.springframework.boot.web.servlet.FilterRegistrationBean;
 import org.springframework.context.annotation.Bean;
@@ -76,11 +77,18 @@ public class GatewayRoutesConfig {
             @Override
             protected void doFilterInternal(HttpServletRequest request, HttpServletResponse response,
                     FilterChain filterChain) throws ServletException, IOException {
+                // The proxied downstream response also carries X-Correlation-Id (every CardDemo
+                // service echoes it), and the proxying layer ADDS response headers, so without
+                // this wrapper the client received the header twice - identical values, but a
+                // browser fetch() joins duplicates into "id, id", which no caller can use as an
+                // id. Collapsing the add into a set keeps the gateway authoritative and the
+                // response contract exactly one header.
+                HttpServletResponse deduped = new SingleCorrelationIdHeaderResponseWrapper(response);
                 String correlationId = CorrelationIdContext.getCorrelationId();
                 if (correlationId != null && !correlationId.isBlank()) {
-                    filterChain.doFilter(new CorrelationIdHeaderRequestWrapper(request, correlationId), response);
+                    filterChain.doFilter(new CorrelationIdHeaderRequestWrapper(request, correlationId), deduped);
                 } else {
-                    filterChain.doFilter(request, response);
+                    filterChain.doFilter(request, deduped);
                 }
             }
         };
@@ -157,6 +165,40 @@ public class GatewayRoutesConfig {
             }
             names.add(CORRELATION_ID_HEADER);
             return Collections.enumeration(names);
+        }
+    }
+
+    /**
+     * :purpose: Guarantee the gateway's response carries the correlation header exactly once by
+     *     turning an ``addHeader`` of ``X-Correlation-Id`` into a ``setHeader``.
+     * :note: The proxying layer copies every downstream response header with ``addHeader``. Since
+     *     the shared ``CorrelationIdFilter`` has already stamped the canonical id on this response
+     *     and every downstream service echoes the same id, the copy produced a second, redundant
+     *     entry. Collapsing it keeps a single authoritative value for the caller.
+     */
+    private static final class SingleCorrelationIdHeaderResponseWrapper extends HttpServletResponseWrapper {
+
+        /**
+         * :purpose: Wrap the gateway response so the correlation header cannot be duplicated.
+         * :param response: the response being written to the client.
+         */
+        SingleCorrelationIdHeaderResponseWrapper(HttpServletResponse response) {
+            super(response);
+        }
+
+        /**
+         * :purpose: Add a response header, collapsing the correlation header onto the single
+         *     canonical value.
+         * :param name: the header name.
+         * :param value: the header value.
+         */
+        @Override
+        public void addHeader(String name, String value) {
+            if (CORRELATION_ID_HEADER.equalsIgnoreCase(name)) {
+                super.setHeader(name, value);
+                return;
+            }
+            super.addHeader(name, value);
         }
     }
 }

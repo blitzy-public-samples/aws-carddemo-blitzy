@@ -46,6 +46,13 @@ public class PostingJobCompletionListener implements JobExecutionListener {
      */
     public static final String REJECT_COUNT_KEY = "posting.rejectCount";
 
+    /**
+     * :purpose: Exit code reported when the daily-transaction feed yielded no records.
+     *     ``CBTRN02C`` treats an unusable input as a hard failure (application result
+     *     code 12), never as a clean run.
+     */
+    public static final String EMPTY_FEED_EXIT_CODE = "FAILED_EMPTY_FEED";
+
     private static final Logger log = LoggerFactory.getLogger(PostingJobCompletionListener.class);
 
     /**
@@ -57,9 +64,10 @@ public class PostingJobCompletionListener implements JobExecutionListener {
      * :param jobExecution: the completed job execution whose ``COMPLETED`` step
      *        executions supply the read count (processed total) and the rejected
      *        count published under :data:`REJECT_COUNT_KEY`.
-     * :output: Sets the ``COMPLETED_WITH_REJECTS`` exit status (return code 4)
-     *          only when the batch status is ``COMPLETED`` and the rejected total
-     *          is greater than zero; otherwise leaves the existing exit status.
+     * :output: Fails the execution with :data:`EMPTY_FEED_EXIT_CODE` (return code 12)
+     *          when a completed run read no records at all; otherwise sets the
+     *          ``COMPLETED_WITH_REJECTS`` exit status (return code 4) when the rejected
+     *          total is greater than zero, and leaves the existing exit status alone.
      */
     @Override
     public void afterJob(JobExecution jobExecution) {
@@ -77,6 +85,20 @@ public class PostingJobCompletionListener implements JobExecutionListener {
 
         log.info("TRANSACTIONS PROCESSED :{}", processedCount);
         log.info("TRANSACTIONS REJECTED  :{}", rejectCount);
+
+        // An empty feed is an operational failure, not a clean run. The legacy job
+        // step was scheduled because a DALYTRAN feed had been delivered, so reading
+        // zero records means the input never arrived or was not visible to this run.
+        // Reporting COMPLETED in that case is a silent false success: the operator
+        // believes the day's transactions were posted when nothing was.
+        if (jobExecution.getStatus() == BatchStatus.COMPLETED && processedCount == 0L) {
+            log.error("Daily transaction feed was empty: no records were read from DALYTRAN");
+            jobExecution.setStatus(BatchStatus.FAILED);
+            jobExecution.setExitStatus(new ExitStatus(
+                    EMPTY_FEED_EXIT_CODE,
+                    "Return code 12: the daily transaction feed contained no records"));
+            return;
+        }
 
         // Map the legacy return code only for a normally completed run. A FAILED
         // or STOPPED job keeps the status and exit code Spring Batch assigned, so

@@ -194,8 +194,13 @@ public class BillPaymentService {
         // 5.4 Persist the transaction (WRITE-TRANSACT-FILE); a duplicate key maps to the
         //     verbatim "Tran ID already exist..." message.
         try {
-            transactionRepository.save(tran);
+            // saveAndFlush, not save: the INSERT must reach the database inside this try
+            // so a duplicate primary key is rejected with the verbatim
+            // "Tran ID already exist..." message (COBIL00C L535-537) rather than
+            // silently overwriting an existing transaction at commit time.
+            transactionRepository.saveAndFlush(tran);
         } catch (DataIntegrityViolationException e) {
+            log.warn("Bill payment rejected duplicate transaction id {}", tranId);
             throw new CardDemoException(MSG_TRAN_ID_EXISTS);
         }
 
@@ -210,7 +215,13 @@ public class BillPaymentService {
         //     with the optimistic-lock backstop mapping concurrent edits to HTTP 409.
         try {
             accountRepository.save(account);
+            // The explicit flush forces the @Version check to run INSIDE this try block.
+            // Without it the StaleStateException is raised at commit, past the catch, and
+            // a concurrent bill payment surfaces as an unexpected 500 instead of the
+            // COBOL concurrency outcome (HTTP 409, "Record changed by some one else...").
+            accountRepository.flush();
         } catch (ObjectOptimisticLockingFailureException | OptimisticLockException e) {
+            log.warn("Optimistic lock conflict posting bill payment for account {}", acctId);
             throw new OptimisticLockConflictException(e);
         }
 

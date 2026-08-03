@@ -34,6 +34,7 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.ResponseStatus;
 import org.springframework.web.bind.annotation.RestController;
 
+import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpSession;
 import jakarta.validation.Valid;
 
@@ -55,7 +56,7 @@ public class TransactionController {
      * :purpose: ``HttpSession`` attribute key under which the externalized
      *  pseudo-conversational {@link SessionContext} is stored and retrieved.
      */
-    private static final String SESSION_CONTEXT_ATTR = "carddemoSessionContext";
+    private static final String SESSION_CONTEXT_ATTR = SessionContext.SESSION_ATTRIBUTE_NAME;
 
     /** :purpose: Online transaction business-logic collaborator (list, view, add). */
     private final TransactionService transactionService;
@@ -77,15 +78,16 @@ public class TransactionController {
      *  no special handling for it.
      * :param request: the list request DTO (tran-id filter, paging cursor, and page
      *  direction), bound from the query parameters.
-     * :param httpSession: the HTTP session backing the externalized session context.
+     * :param httpRequest: the current servlet request; its already-established session,
+     *  when present, backs the externalized session context.
      * :returns: the list response DTO serialized as JSON (HTTP 200).
      */
     @GetMapping
     public TransactionListResponseDto listTransactions(@ModelAttribute TransactionListRequestDto request,
-                                                        HttpSession httpSession) {
-        SessionContext sessionContext = resolveSessionContext(httpSession);
+                                                        HttpServletRequest httpRequest) {
+        SessionContext sessionContext = resolveSessionContext(httpRequest);
         TransactionListResponseDto response = transactionService.listTransactions(request, sessionContext);
-        storeSessionContext(httpSession, sessionContext);
+        storeSessionContext(httpRequest, sessionContext);
         return response;
     }
 
@@ -95,7 +97,8 @@ public class TransactionController {
      *  business logic owned by the service; the raw path variable is passed straight
      *  through without local validation.
      * :param id: the 16-character zero-padded transaction id in its String wire form.
-     * :param httpSession: the HTTP session backing the externalized session context.
+     * :param httpRequest: the current servlet request; its already-established session,
+     *  when present, backs the externalized session context.
      * :returns: the view response DTO serialized as JSON (HTTP 200).
      * :raises CardDemoException: for an empty or blank id (mapped to HTTP 400 by the
      *  shared ``GlobalExceptionHandler``).
@@ -104,10 +107,10 @@ public class TransactionController {
      */
     @GetMapping("/{id}")
     public TransactionViewResponseDto viewTransaction(@PathVariable("id") String id,
-                                                      HttpSession httpSession) {
-        SessionContext sessionContext = resolveSessionContext(httpSession);
+                                                      HttpServletRequest httpRequest) {
+        SessionContext sessionContext = resolveSessionContext(httpRequest);
         TransactionViewResponseDto response = transactionService.viewTransaction(id, sessionContext);
-        storeSessionContext(httpSession, sessionContext);
+        storeSessionContext(httpRequest, sessionContext);
         return response;
     }
 
@@ -117,44 +120,60 @@ public class TransactionController {
      *  message are all service-owned; a successful add returns HTTP 201.
      * :param request: the validated add request DTO; bean-validation violations become
      *  an HTTP 400 with per-field errors produced by the shared ``GlobalExceptionHandler``.
-     * :param httpSession: the HTTP session backing the externalized session context.
+     * :param httpRequest: the current servlet request; its already-established session,
+     *  when present, backs the externalized session context.
      * :returns: the add response DTO carrying the created transaction and its generated
      *  id (HTTP 201).
      */
     @PostMapping
     @ResponseStatus(HttpStatus.CREATED)
     public TransactionAddResponseDto addTransaction(@Valid @RequestBody TransactionAddRequestDto request,
-                                                    HttpSession httpSession) {
-        SessionContext sessionContext = resolveSessionContext(httpSession);
+                                                    HttpServletRequest httpRequest) {
+        SessionContext sessionContext = resolveSessionContext(httpRequest);
         TransactionAddResponseDto response = transactionService.addTransaction(request, sessionContext);
-        storeSessionContext(httpSession, sessionContext);
+        storeSessionContext(httpRequest, sessionContext);
         return response;
     }
 
     /**
      * :purpose: Resolve the externalized pseudo-conversational session context from the
-     *  servlet session, returning a fresh instance when none is present (COMMAREA
-     *  bridge, AAP section 0.6.3).
-     * :param httpSession: the servlet HTTP session.
-     * :returns: the stored {@link SessionContext}, or a new instance when the attribute
-     *  is absent or of an unexpected type.
+     *  request's *already-established* servlet session, returning a fresh instance when
+     *  the caller has no session or none is present (COMMAREA bridge, AAP section
+     *  0.6.3). ``getSession(false)`` is deliberate (QA Issue 22): declaring an
+     *  ``HttpSession`` controller parameter made Spring's argument resolver call
+     *  ``getSession()`` on every request, so each anonymous call created and persisted a
+     *  brand-new Spring Session entry in Redis even though no pseudo-conversational
+     *  state was ever carried into it.
+     * :param httpRequest: the current servlet request.
+     * :returns: the stored {@link SessionContext}, or a new instance when the caller has
+     *  no session, or the attribute is absent or of an unexpected type.
      */
-    private SessionContext resolveSessionContext(HttpSession httpSession) {
+    private SessionContext resolveSessionContext(HttpServletRequest httpRequest) {
+        HttpSession httpSession = httpRequest.getSession(false);
+        if (httpSession == null) {
+            return new SessionContext();
+        }
         Object attribute = httpSession.getAttribute(SESSION_CONTEXT_ATTR);
         if (attribute instanceof SessionContext sessionContext) {
             return sessionContext;
         }
-        return new SessionContext();
+            throw new IllegalStateException(
+                    "No CardDemo session context on the authenticated session; sign on again");
     }
 
     /**
      * :purpose: Re-store the (possibly mutated) session context so any paging cursor,
      *  last-map, or selected-id state the service updated is flushed to the session for
-     *  the next stateless request.
-     * :param httpSession: the servlet HTTP session.
+     *  the next stateless request. Only an existing session is written to: a caller
+     *  without one carries no pseudo-conversational state to preserve, and creating a
+     *  session for it would reintroduce the Redis session churn of QA Issue 22.
+     * :param httpRequest: the current servlet request.
      * :param sessionContext: the session context to persist.
      */
-    private void storeSessionContext(HttpSession httpSession, SessionContext sessionContext) {
-        httpSession.setAttribute(SESSION_CONTEXT_ATTR, sessionContext);
+    private void storeSessionContext(HttpServletRequest httpRequest, SessionContext sessionContext) {
+        HttpSession httpSession = httpRequest.getSession(false);
+        if (httpSession != null) {
+            httpSession.setAttribute(SESSION_CONTEXT_ATTR, sessionContext);
+        }
     }
 }

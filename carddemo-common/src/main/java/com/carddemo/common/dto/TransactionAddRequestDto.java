@@ -35,48 +35,48 @@ import java.math.BigDecimal;
 public class TransactionAddRequestDto {
 
     /** :purpose: Transaction type code (COTRN02 ``TTYPCDI`` / ``TRAN-TYPE-CD`` PIC X(02)). */
-    @Size(max = 2)
+    @Size(max = 2, message = "Type CD must be at most 2 characters")
     private String tranTypeCd;
 
     /** :purpose: Transaction category code (COTRN02 ``TCATCDI`` / ``TRAN-CAT-CD`` PIC 9(04)). */
     private Integer tranCatCd;
 
     /** :purpose: Origination source (COTRN02 ``TRNSRCI`` / ``TRAN-SOURCE`` PIC X(10)). */
-    @Size(max = 10)
+    @Size(max = 10, message = "Source must be at most 10 characters")
     private String tranSource;
 
     /** :purpose: Transaction description (COTRN02 ``TDESCI`` / ``TRAN-DESC`` PIC X(100)). */
-    @Size(max = 100)
+    @Size(max = 100, message = "Description must be at most 100 characters")
     private String tranDesc;
 
     /** :purpose: Monetary amount (COTRN02 ``TRNAMTI`` / ``TRAN-AMT`` PIC S9(09)V99 -> NUMERIC(11,2)). */
     private BigDecimal tranAmt;
 
     /** :purpose: Card number (COTRN02 ``CARDNINI`` / ``TRAN-CARD-NUM`` PIC X(16)). */
-    @Size(max = 16)
+    @Size(max = 16, message = "Card number if supplied must be a 16 digit number")
     private String tranCardNum;
 
     /** :purpose: Merchant id (COTRN02 ``MIDI`` / ``TRAN-MERCHANT-ID`` PIC 9(09)). */
     private Long tranMerchantId;
 
     /** :purpose: Merchant name (COTRN02 ``MNAMEI`` / ``TRAN-MERCHANT-NAME`` PIC X(50)). */
-    @Size(max = 50)
+    @Size(max = 50, message = "Merchant Name must be at most 50 characters")
     private String tranMerchantName;
 
     /** :purpose: Merchant city (COTRN02 ``MCITYI`` / ``TRAN-MERCHANT-CITY`` PIC X(50)). */
-    @Size(max = 50)
+    @Size(max = 50, message = "Merchant City must be at most 50 characters")
     private String tranMerchantCity;
 
     /** :purpose: Merchant postal code (COTRN02 ``MZIPI`` / ``TRAN-MERCHANT-ZIP`` PIC X(10)). */
-    @Size(max = 10)
+    @Size(max = 10, message = "Merchant Zip must be at most 10 characters")
     private String tranMerchantZip;
 
     /** :purpose: Origination timestamp (COTRN02 ``TORIGDTI`` / ``TRAN-ORIG-TS`` PIC X(26)). */
-    @Size(max = 26)
+    @Size(max = 26, message = "Orig Date should be in format YYYY-MM-DD")
     private String tranOrigTs;
 
     /** :purpose: Processing timestamp (COTRN02 ``TPROCDTI`` / ``TRAN-PROC-TS`` PIC X(26)). */
-    @Size(max = 26)
+    @Size(max = 26, message = "Proc Date should be in format YYYY-MM-DD")
     private String tranProcTs;
 
     /**
@@ -84,14 +84,14 @@ public class TransactionAddRequestDto {
      *  priority over ``tranCardNum`` and drives the account-to-card cross-reference
      *  lookup that resolves the card number; it is validated but not persisted.
      */
-    @Size(max = 11)
+    @Size(max = 11, message = "Account number must be a non zero 11 digit number")
     private String acctId;
 
     /**
      * :purpose: Add confirmation flag (COTRN02 ``CONFIRMI``). ``Y``/``y`` confirms the
      *  add; ``N``/``n``/blank/absent requests confirmation; any other value is invalid.
      */
-    @Size(max = 1)
+    @Size(max = 1, message = "Invalid value. Valid values are (Y/N)...")
     private String confirm;
 
     /**

@@ -132,6 +132,13 @@ public class TransactionService {
     /** :purpose: COTRN02C L738 duplicate transaction id on write. */
     private static final String MSG_TRAN_ID_EXISTS = "Tran ID already exist...";
 
+    /**
+     * :purpose: Bound on how many sequence values are probed for an unused transaction
+     *  id before the add is refused. A small bound suffices because the sequence only
+     *  ever has to step past ids the ``DALYTRAN`` feed already posted.
+     */
+    private static final int MAX_TRAN_ID_PROBES = 1000;
+
     /** :purpose: List page size (COTRN00C ``PERFORM ... UNTIL WS-IDX > 10``). */
     private static final int PAGE_SIZE = 10;
     /** :purpose: CSUTLDTC message number treated as a valid-date carve-out (COTRN02C ``NOT = '2513'``). */
@@ -463,13 +470,20 @@ public class TransactionService {
         Transaction entity = transactionMapper.toEntity(request);
         entity.setTranCardNum(resolvedCardNum);
         entity.setTranAmt(amount);
-        String tranId = String.format("%0" + TRAN_ID_WIDTH + "d", transactionRepository.getNextTransactionId());
+        String tranId = nextUnusedTransactionId();
         entity.setTranId(tranId);
 
         Transaction saved;
         try {
-            saved = transactionRepository.save(entity);
+            // saveAndFlush, not save: the INSERT must reach the database INSIDE this
+            // try block so a duplicate primary key surfaces here as the verbatim
+            // "Tran ID already exist..." rejection (COTRN02C DUPKEY/DUPREC) instead of
+            // failing at commit, after the catch. Transaction implements Persistable so
+            // an assigned id is INSERTed and never merged over an existing row.
+            saved = transactionRepository.saveAndFlush(entity);
         } catch (DataIntegrityViolationException ex) {
+            // A concurrent writer claimed the id between the probe and the insert.
+            log.warn("addTransaction rejected duplicate transaction id {}", tranId);
             throw new CardDemoException(MSG_TRAN_ID_EXISTS, ex);
         }
 
@@ -481,6 +495,31 @@ public class TransactionService {
         String message = String.format("Transaction added successfully.  Your Tran ID is %s.", saved.getTranId());
         log.info("addTransaction persisted new transaction id {}", saved.getTranId());
         return new TransactionAddResponseDto(saved.getTranId(), message);
+    }
+
+    /**
+     * :purpose: Draw the next transaction id from the database sequence, skipping any
+     *  value already present in the transaction master. The sequence starts from one
+     *  while the ``DALYTRAN`` feed posts its own sixteen-digit numeric ids, so a raw
+     *  sequence value can name a row the posting job already wrote. Persisting under
+     *  that id previously overwrote the existing financial row, because JPA ``save``
+     *  merges an entity whose identifier already exists instead of failing.
+     * :returns: a sixteen-character zero-padded transaction id not currently in use,
+     *  preserving the ``TRAN-ID PIC X(16)`` wire format (AAP 0.6.5).
+     * :raises CardDemoException: with the frozen ``COTRN02C`` message when no unused id
+     *  is found within the probe bound, rather than silently overwriting a row.
+     */
+    private String nextUnusedTransactionId() {
+        for (int probe = 0; probe < MAX_TRAN_ID_PROBES; probe++) {
+            String candidate = String.format(
+                    "%0" + TRAN_ID_WIDTH + "d", transactionRepository.getNextTransactionId());
+            if (!transactionRepository.existsById(candidate)) {
+                return candidate;
+            }
+            log.warn("Generated transaction id {} is already posted; advancing the sequence",
+                    candidate);
+        }
+        throw new CardDemoException(MSG_TRAN_ID_EXISTS);
     }
 
     /**

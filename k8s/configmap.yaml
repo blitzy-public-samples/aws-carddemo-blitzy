@@ -26,6 +26,13 @@ data:
   # api-gateway raises this to 1.0 via a Deployment-level env override so every
   # request entering the stack starts a sampled trace.
   MANAGEMENT_TRACING_SAMPLING_PROBABILITY: "0.1"
+  # OTLP/HTTP span endpoint of the in-cluster tracing backend (AAP 0.7.5). Every
+  # service — gateway included — exports to this one collector so a request
+  # produces a single joined trace. The key is the canonical Spring Boot 4.1
+  # property name: the pre-4.0 'management.otlp.tracing.endpoint' was removed and
+  # is silently ignored, which is why the previously configured endpoint exported
+  # nothing. Resolves to the 'jaeger' ClusterIP Service (k8s/service-jaeger.yaml).
+  MANAGEMENT_OPENTELEMETRY_TRACING_EXPORT_OTLP_ENDPOINT: "http://jaeger:4318/v1/traces"
   # --- api-gateway downstream routes (CR-10) --------------------------------
   # In-cluster Service DNS URIs consumed by the Spring Cloud Gateway route
   # definitions (${AUTH_SERVICE_URI} ...). Every service resolves the others by

@@ -16,16 +16,22 @@
  */
 package com.carddemo.reporting.service;
 
+import com.carddemo.reporting.client.BatchJobClient;
+import com.carddemo.common.dto.BatchJobExecutionDto;
 import com.carddemo.common.dto.ReportRequestDto;
 import com.carddemo.common.dto.ReportResponseDto;
 import com.carddemo.common.util.DateUtil;
-import com.carddemo.reporting.config.JobSchedulingConfig;
 import com.carddemo.reporting.mapper.ReportMapper;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
+import java.time.Clock;
 import java.time.LocalDate;
 import java.time.format.DateTimeFormatter;
 import java.time.temporal.TemporalAdjusters;
+import java.util.Objects;
 
 /**
  * :purpose: Re-platformed business logic of CICS program ``CORPT00C`` (TRANID
@@ -40,6 +46,9 @@ import java.time.temporal.TemporalAdjusters;
  */
 @Service
 public class ReportService {
+
+    /** :purpose: Structured logger for report submission outcomes. */
+    private static final Logger LOGGER = LoggerFactory.getLogger(ReportService.class);
 
     /** :purpose: Monthly report name (COBOL ``WS-REPORT-NAME`` value ``'Monthly'``). */
     private static final String REPORT_NAME_MONTHLY = "Monthly";
@@ -122,20 +131,49 @@ public class ReportService {
     /** :purpose: ISO ``YYYY-MM-DD`` wire-format formatter for the computed date range. */
     private static final DateTimeFormatter ISO_FORMATTER = DateTimeFormatter.ofPattern("uuuu-MM-dd");
 
-    /** :purpose: Non-blocking launcher of the statement/report generation job. */
-    private final JobSchedulingConfig jobSchedulingConfig;
+    /**
+     * :purpose: Submits the ``CBTRN03C`` / ``TRANREPT`` transaction-detail report to
+     *   batch-service, which owns that job stream (AAP 0.4.4). A report request used to
+     *   launch the statement job instead, so the transaction-detail report was never
+     *   submitted by anything.
+     */
+    private final BatchJobClient batchJobClient;
 
     /** :purpose: Mapper that echoes the screen field contract onto the response. */
     private final ReportMapper reportMapper;
 
     /**
-     * :purpose: Construct the report service with its job launcher and response mapper.
-     * :param jobSchedulingConfig: the asynchronous statement-generation job launcher.
+     * :purpose: Clock supplying the current date for the Monthly and Yearly report
+     *   ranges; injected so callers can freeze time on a month-end or year-end
+     *   boundary instead of racing the wall clock.
+     */
+    private final Clock clock;
+
+    /**
+     * :purpose: Construct the report service with its report submitter and response
+     *   mapper, backed by the system default-zone clock. This is the constructor the
+     *   Spring container uses; ``LocalDate.now(Clock.systemDefaultZone())`` is
+     *   identical to the ``LocalDate.now()`` the legacy range computation used, so the
+     *   runtime range is unchanged.
+     * :param batchJobClient: submitter of the transaction-detail report job stream.
      * :param reportMapper: the report request/response field-echo mapper.
      */
-    public ReportService(JobSchedulingConfig jobSchedulingConfig, ReportMapper reportMapper) {
-        this.jobSchedulingConfig = jobSchedulingConfig;
+    @Autowired
+    public ReportService(BatchJobClient batchJobClient, ReportMapper reportMapper) {
+        this(batchJobClient, reportMapper, Clock.systemDefaultZone());
+    }
+
+    /**
+     * :purpose: Construct the report service with an explicit clock so the computed
+     *   Monthly/Yearly ranges are deterministic.
+     * :param batchJobClient: submitter of the transaction-detail report job stream.
+     * :param reportMapper: the report request/response field-echo mapper.
+     * :param clock: the clock supplying the current date; must be non-null.
+     */
+    public ReportService(BatchJobClient batchJobClient, ReportMapper reportMapper, Clock clock) {
+        this.batchJobClient = batchJobClient;
         this.reportMapper = reportMapper;
+        this.clock = Objects.requireNonNull(clock, "clock");
     }
 
     /**
@@ -153,19 +191,22 @@ public class ReportService {
         ReportResponseDto response = reportMapper.toResponse(request);
         if (response == null) {
             response = new ReportResponseDto();
+            // CORPT00C sends the screen header on every SEND MAP, including the
+            // no-input path, so it is populated here too.
+            reportMapper.applyScreenHeader(response);
         }
         if (request == null) {
             return withMessage(response, MSG_SELECT_REPORT_TYPE);
         }
 
         if (isSelected(request.getMonthly())) {
-            LocalDate today = LocalDate.now();
+            LocalDate today = LocalDate.now(clock);
             String startDate = today.withDayOfMonth(1).format(ISO_FORMATTER);
             String endDate = today.with(TemporalAdjusters.lastDayOfMonth()).format(ISO_FORMATTER);
             return confirmAndLaunch(request, response, REPORT_NAME_MONTHLY, startDate, endDate);
         }
         if (isSelected(request.getYearly())) {
-            int year = LocalDate.now().getYear();
+            int year = LocalDate.now(clock).getYear();
             String startDate = LocalDate.of(year, 1, 1).format(ISO_FORMATTER);
             String endDate = LocalDate.of(year, 12, 31).format(ISO_FORMATTER);
             return confirmAndLaunch(request, response, REPORT_NAME_YEARLY, startDate, endDate);
@@ -269,7 +310,13 @@ public class ReportService {
             return withMessage(response, CONFIRM_PROMPT_PREFIX + reportName + CONFIRM_PROMPT_SUFFIX);
         }
         if (confirmValue.equals("Y") || confirmValue.equals("y")) {
-            jobSchedulingConfig.launchStatementGeneration(reportName, startDate, endDate);
+            // The hand-off is synchronous and its outcome is kept, not discarded: a
+            // refused submission raises the frozen ``Unable to Write TDQ (JOBS)...``
+            // message instead of returning the success text over a job that never ran.
+            BatchJobExecutionDto submitted =
+                    batchJobClient.submitTransactionDetailReport(startDate, endDate);
+            LOGGER.info("{} report submitted as {} execution {}", reportName,
+                    submitted.jobName(), submitted.jobExecutionId());
             resetInputFields(response);
             return withMessage(response, reportName + SUBMIT_SUCCESS_SUFFIX);
         }

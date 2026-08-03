@@ -1,64 +1,85 @@
 package com.carddemo.common.domain;
 
+import jakarta.persistence.Column;
+import jakarta.persistence.Entity;
+import jakarta.persistence.Id;
+import jakarta.persistence.Table;
+
 import java.math.BigDecimal;
 import java.util.Objects;
 
 /**
- * Plain batch-input model for the daily-transaction feed (``DALYTRAN``).
+ * JPA entity for one record of the daily-transaction feed (``DALYTRAN``).
  *
- * :purpose: Represents one record of the legacy COBOL ``DALYTRAN-RECORD`` layout
- *     (``app/cpy/CVTRA06Y.cpy``, record length 350) as read by the
- *     transaction-posting batch job. This is a sequential feed record, NOT a
- *     persistent table: the target schema defines exactly ten tables, so this
- *     type is a non-entity value object (no ``@Entity``/``@Table``/``@Id``
- *     mapping) consumed by the Spring Batch ``ItemReader``/``ItemProcessor`` and
- *     never persisted directly.
- * :output: A mutable carrier exposing the thirteen feed fields (the trailing
- *     20-byte COBOL ``FILLER`` carries no data and is not modeled). Monetary and
- *     identifier fields retain exact fixed-point (``BigDecimal``) and integral
- *     types so downstream posting validation (over-limit, cross-reference, and
- *     expiry checks) reproduces the legacy results byte-for-byte.
+ * :purpose: Maps the legacy COBOL ``DALYTRAN-RECORD`` layout
+ *     (``app/cpy/CVTRA06Y.cpy``, record length 350) onto the relational
+ *     ``daily_transactions`` table, which is the staged image of the sequential
+ *     ``DALYTRAN`` data set that the ``CBTRN02C`` transaction-posting job reads
+ *     (``app/jcl/POSTTRAN.jcl`` DD ``DALYTRAN``). Persisting the feed keeps the
+ *     staged records readable by the posting ``ItemReader`` across job launches
+ *     and across service instances, exactly as the legacy job re-reads its input
+ *     data set.
+ * :output: A persistent feed row keyed by the 16-character ``DALYTRAN-ID``
+ *     (the trailing 20-byte COBOL ``FILLER`` carries no data and is not modeled).
+ *     Monetary and identifier fields retain exact fixed-point
+ *     (``BigDecimal``/``NUMERIC(11,2)``) and integral types so downstream posting
+ *     validation (over-limit, cross-reference, and expiry checks) reproduces the
+ *     legacy results byte-for-byte.
  */
+@Entity
+@Table(name = "daily_transactions")
 public class DailyTransaction {
 
-    /** ``DALYTRAN-ID`` PIC X(16) — natural identifier of the feed record. */
+    /** ``DALYTRAN-ID`` PIC X(16) — natural identifier of the feed record (primary key). */
+    @Id
+    @Column(name = "dalytran_id", length = 16, nullable = false)
     private String dalytranId;
 
     /** ``DALYTRAN-TYPE-CD`` PIC X(02) — transaction type code. */
+    @Column(name = "dalytran_type_cd", length = 2)
     private String dalytranTypeCd;
 
     /** ``DALYTRAN-CAT-CD`` PIC 9(04) — transaction category code. */
+    @Column(name = "dalytran_cat_cd")
     private Integer dalytranCatCd;
 
     /** ``DALYTRAN-SOURCE`` PIC X(10) — originating source channel. */
+    @Column(name = "dalytran_source", length = 10)
     private String dalytranSource;
 
     /** ``DALYTRAN-DESC`` PIC X(100) — transaction description. */
+    @Column(name = "dalytran_desc", length = 100)
     private String dalytranDesc;
 
     /**
-     * ``DALYTRAN-AMT`` PIC S9(09)V99 — signed transaction amount.
+     * ``DALYTRAN-AMT`` PIC S9(09)V99 — signed transaction amount as NUMERIC(11,2).
      *
      * Held as {@link BigDecimal} (never a binary floating-point type) so the
      * over-limit reject computation
      * ``WS-TEMP-BAL = ACCT-CURR-CYC-CREDIT - ACCT-CURR-CYC-DEBIT + DALYTRAN-AMT``
      * preserves exact packed-decimal precision and scale.
      */
+    @Column(name = "dalytran_amt", precision = 11, scale = 2)
     private BigDecimal dalytranAmt;
 
     /** ``DALYTRAN-MERCHANT-ID`` PIC 9(09) — merchant identifier. */
+    @Column(name = "dalytran_merchant_id")
     private Long dalytranMerchantId;
 
     /** ``DALYTRAN-MERCHANT-NAME`` PIC X(50) — merchant name. */
+    @Column(name = "dalytran_merchant_name", length = 50)
     private String dalytranMerchantName;
 
     /** ``DALYTRAN-MERCHANT-CITY`` PIC X(50) — merchant city. */
+    @Column(name = "dalytran_merchant_city", length = 50)
     private String dalytranMerchantCity;
 
     /** ``DALYTRAN-MERCHANT-ZIP`` PIC X(10) — merchant postal code. */
+    @Column(name = "dalytran_merchant_zip", length = 10)
     private String dalytranMerchantZip;
 
     /** ``DALYTRAN-CARD-NUM`` PIC X(16) — card number used for cross-reference lookup. */
+    @Column(name = "dalytran_card_num", length = 16)
     private String dalytranCardNum;
 
     /**
@@ -67,18 +88,21 @@ public class DailyTransaction {
      * string because the posting job compares its first ten characters against
      * the account expiration date for the expiry reject check.
      */
+    @Column(name = "dalytran_orig_ts", length = 26)
     private String dalytranOrigTs;
 
     /** ``DALYTRAN-PROC-TS`` PIC X(26) — processing timestamp (26-character form). */
+    @Column(name = "dalytran_proc_ts", length = 26)
     private String dalytranProcTs;
 
     /**
      * Creates an empty daily-transaction record.
      *
-     * :purpose: No-argument constructor used by the batch item reader/mapper.
+     * :purpose: No-argument constructor required by the JPA provider and used by
+     *     the batch flat-file record mapper.
      */
     public DailyTransaction() {
-        // Intentionally empty; fields are populated by the batch field-set mapper.
+        // Intentionally empty; fields are populated by JPA or the field-set mapper.
     }
 
     /**

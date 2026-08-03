@@ -16,12 +16,19 @@
  */
 package com.carddemo.reporting.controller;
 
+import com.carddemo.common.dto.BatchJobExecutionDto;
 import com.carddemo.common.dto.ReportRequestDto;
 import com.carddemo.common.dto.ReportResponseDto;
+import com.carddemo.reporting.config.JobSchedulingConfig;
 import com.carddemo.reporting.service.ReportService;
+import jakarta.validation.Valid;
+import org.springframework.batch.core.job.JobExecution;
+import org.springframework.http.HttpStatus;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
+import org.springframework.web.bind.annotation.ResponseStatus;
 import org.springframework.web.bind.annotation.RestController;
 
 /**
@@ -40,14 +47,20 @@ public class ReportController {
 
     private final ReportService reportService;
 
+    /** Launcher of the ``CREASTMT`` / ``CBSTM03A`` statement-generation job stream. */
+    private final JobSchedulingConfig jobSchedulingConfig;
+
     /**
-     * :purpose: Construct the controller with its collaborating report service.
+     * :purpose: Construct the controller with its collaborating report service and the
+     *     statement job launcher.
      * :param reportService: the report application service that performs all
      *     report-request business logic (validation, confirmation gate, and
      *     asynchronous job launch).
+     * :param jobSchedulingConfig: launcher of the statement-generation job stream.
      */
-    public ReportController(ReportService reportService) {
+    public ReportController(ReportService reportService, JobSchedulingConfig jobSchedulingConfig) {
         this.reportService = reportService;
+        this.jobSchedulingConfig = jobSchedulingConfig;
     }
 
     /**
@@ -62,9 +75,47 @@ public class ReportController {
      * :raises com.carddemo.common.exception.CardDemoException: when the
      *     asynchronous report job cannot be launched; mapped to HTTP 400 by the
      *     shared ``GlobalExceptionHandler`` and therefore not caught here.
+     * :raises org.springframework.web.bind.MethodArgumentNotValidException: when a
+     *     submitted field exceeds the CORPT00 screen field width declared on
+     *     {@link ReportRequestDto}; mapped to HTTP 400 by the shared
+     *     ``GlobalExceptionHandler``.
      */
     @PostMapping
-    public ReportResponseDto requestReport(@RequestBody ReportRequestDto request) {
+    public ReportResponseDto requestReport(@Valid @RequestBody ReportRequestDto request) {
         return reportService.requestReport(request);
+    }
+
+    /**
+     * :purpose: Submit the ``CREASTMT`` statement-generation job stream (legacy
+     *     ``CBSTM03A``), which produces the plain-text and HTML account statements. It is
+     *     the entry point for the statement path, kept distinct from the ``CORPT00C``
+     *     report request that submits the transaction-detail report; without it the
+     *     statement job stream would have no caller at all.
+     * :param reportType: the statement run label (``Monthly``, ``Yearly`` or ``Custom``).
+     * :param startDate: inclusive window start in ``YYYY-MM-DD`` wire form.
+     * :param endDate: inclusive window end in ``YYYY-MM-DD`` wire form.
+     * :param stmtFile: optional plain-text statement output file name.
+     * :param htmlFile: optional HTML statement output file name.
+     * :returns: the accepted run's durable execution handle (HTTP 202).
+     * :raises com.carddemo.common.exception.CardDemoException: when the job cannot be
+     *     submitted; mapped by the shared ``GlobalExceptionHandler``.
+     */
+    @PostMapping("/statements")
+    @ResponseStatus(HttpStatus.ACCEPTED)
+    public BatchJobExecutionDto generateStatements(
+            @RequestParam(defaultValue = "Monthly") String reportType,
+            @RequestParam String startDate,
+            @RequestParam String endDate,
+            @RequestParam(required = false) String stmtFile,
+            @RequestParam(required = false) String htmlFile) {
+        JobExecution execution = jobSchedulingConfig.launchStatementGeneration(
+                reportType, startDate, endDate, stmtFile, htmlFile);
+        return new BatchJobExecutionDto(
+                "statementGenerationJob",
+                execution.getId(),
+                execution.getJobInstance() == null ? null : execution.getJobInstance().getInstanceId(),
+                execution.getStatus() == null ? null : execution.getStatus().name(),
+                execution.getExitStatus() == null ? null : execution.getExitStatus().getExitCode(),
+                execution.getExitStatus() == null ? null : execution.getExitStatus().getExitDescription());
     }
 }

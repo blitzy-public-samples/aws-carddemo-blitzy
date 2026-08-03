@@ -108,8 +108,13 @@ export interface Page<T> {
  *   absent when the error has no domain-specific code.
  * :field message: human-readable error description.
  * :field path: request path that produced the error.
- * :field traceId: MDC correlation id for the request; absent when tracing is
- *   unavailable.
+ * :field traceId: distributed-trace id of the failing request, resolvable in the
+ *   trace backend; absent when the request was not traced. It is never a
+ *   substitute for ``correlationId``.
+ * :field correlationId: business correlation id of the failing request — the
+ *   value echoed on the ``X-Correlation-Id`` response header and stamped on every
+ *   log record for the request, so it resolves in the log stream even when
+ *   tracing is disabled or the request was not sampled.
  * :field fieldErrors: field name to message map driving per-field messages,
  *   combined by pages with the client ``FieldErrorMap`` highlight state; absent
  *   when the error is not field-specific.
@@ -122,6 +127,7 @@ export interface ApiErrorResponse {
   message: string;
   path: string;
   traceId?: string;
+  correlationId?: string;
   fieldErrors?: Record<string, string>;
 }
 

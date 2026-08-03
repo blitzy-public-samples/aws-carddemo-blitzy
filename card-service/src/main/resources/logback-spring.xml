@@ -21,44 +21,45 @@
     <!-- Application name from the Spring Environment, for correlation. -->
     <springProperty scope="context" name="appName" source="spring.application.name" defaultValue="card-service"/>
 
-    <!-- Structured JSON console (Logstash format); MDC auto-included. -->
-    <appender name="JSON_CONSOLE" class="ch.qos.logback.core.ConsoleAppender">
-        <encoder class="org.springframework.boot.logging.logback.StructuredLogEncoder">
-            <format>logstash</format>
-            <charset>${CONSOLE_LOG_CHARSET:-UTF-8}</charset>
-        </encoder>
-    </appender>
-
-    <!-- Async wrapper for deployed profiles (QA MN-03): decouples request
-         threads from console I/O so structured JSON logging does not inflate
-         p95 latency or memory. neverBlock drops rather than blocks when the
-         ring buffer saturates, protecting the sub-200ms p95 NFR; a 0
-         discardingThreshold keeps INFO/WARN/ERROR until that point. -->
-    <appender name="ASYNC_JSON" class="ch.qos.logback.classic.AsyncAppender">
-        <appender-ref ref="JSON_CONSOLE"/>
-        <queueSize>4096</queueSize>
-        <discardingThreshold>0</discardingThreshold>
-        <neverBlock>true</neverBlock>
-        <includeCallerData>false</includeCallerData>
-    </appender>
-
-    <!-- Human-readable console for local development; explicit MDC ids. -->
-    <appender name="TEXT_CONSOLE" class="ch.qos.logback.core.ConsoleAppender">
-        <encoder>
-            <charset>${CONSOLE_LOG_CHARSET:-UTF-8}</charset>
-            <pattern>%d{yyyy-MM-dd'T'HH:mm:ss.SSSXXX} %-5level [${appName}] [correlationId=%X{correlationId:-},traceId=%X{traceId:-},spanId=%X{spanId:-}] %logger{36} - %msg%n</pattern>
-        </encoder>
-    </appender>
-
-    <!-- Containerized / deployed profiles: JSON logs. -->
-    <springProfile name="docker,k8s,prod">
+    <!-- Structured JSON is the DEFAULT for every profile except the two that exist for humans
+         (QA Issue 12): gating JSON on an explicit "docker,k8s,prod" list meant an unrecognised or
+         misspelt profile silently fell back to the plain-text pattern and structured logging was
+         lost exactly where it was hardest to notice. Any profile other than 'default' (no profile
+         set) and 'test' now logs JSON. -->
+    <springProfile name="!default &amp; !test">
+        <!-- Structured JSON console (Logstash format); MDC auto-included. -->
+        <appender name="JSON_CONSOLE" class="ch.qos.logback.core.ConsoleAppender">
+            <encoder class="org.springframework.boot.logging.logback.StructuredLogEncoder">
+                <format>logstash</format>
+                <charset>${CONSOLE_LOG_CHARSET:-UTF-8}</charset>
+            </encoder>
+        </appender>
+        <!-- Async wrapper for deployed profiles (QA MN-03): decouples request
+             threads from console I/O so structured JSON logging does not inflate
+             p95 latency or memory. neverBlock drops rather than blocks when the
+             ring buffer saturates, protecting the sub-200ms p95 NFR; a 0
+             discardingThreshold keeps INFO/WARN/ERROR until that point. -->
+        <appender name="ASYNC_JSON" class="ch.qos.logback.classic.AsyncAppender">
+            <appender-ref ref="JSON_CONSOLE"/>
+            <queueSize>4096</queueSize>
+            <discardingThreshold>0</discardingThreshold>
+            <neverBlock>true</neverBlock>
+            <includeCallerData>false</includeCallerData>
+        </appender>
         <root level="INFO">
             <appender-ref ref="ASYNC_JSON"/>
         </root>
     </springProfile>
 
-    <!-- Local / default (no docker/k8s/prod profile): readable text logs. -->
-    <springProfile name="!docker &amp; !k8s &amp; !prod">
+    <!-- Local development (no profile active) and the automated-test profile: readable text. -->
+    <springProfile name="default,test">
+        <!-- Human-readable console for local development; explicit MDC ids. -->
+        <appender name="TEXT_CONSOLE" class="ch.qos.logback.core.ConsoleAppender">
+            <encoder>
+                <charset>${CONSOLE_LOG_CHARSET:-UTF-8}</charset>
+                <pattern>%d{yyyy-MM-dd'T'HH:mm:ss.SSSXXX} %-5level [${appName}] [correlationId=%X{correlationId:-},traceId=%X{traceId:-},spanId=%X{spanId:-}] %logger{36} - %msg%n</pattern>
+            </encoder>
+        </appender>
         <root level="INFO">
             <appender-ref ref="TEXT_CONSOLE"/>
         </root>

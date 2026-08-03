@@ -16,6 +16,7 @@
  */
 package com.carddemo.reporting;
 
+import com.carddemo.reporting.config.JobSchedulingConfig;
 import com.carddemo.common.config.GlobalExceptionHandler;
 import com.carddemo.common.dto.ReportRequestDto;
 import com.carddemo.common.dto.ReportResponseDto;
@@ -25,6 +26,8 @@ import com.carddemo.reporting.service.ReportService;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.provider.ValueSource;
+import org.junit.jupiter.params.ParameterizedTest;
 import org.mockito.ArgumentCaptor;
 import org.springframework.http.MediaType;
 import org.springframework.test.web.servlet.MockMvc;
@@ -34,6 +37,7 @@ import tools.jackson.databind.ObjectMapper;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
@@ -97,7 +101,7 @@ class ReportControllerTest {
     void setUp() {
         reportService = mock(ReportService.class);
         mockMvc = MockMvcBuilders
-                .standaloneSetup(new ReportController(reportService))
+                .standaloneSetup(new ReportController(reportService, mock(JobSchedulingConfig.class)))
                 .setControllerAdvice(new GlobalExceptionHandler())
                 .build();
         objectMapper = new ObjectMapper();
@@ -207,5 +211,90 @@ class ReportControllerTest {
 
         ReportResponseDto response = objectMapper.readValue(responseBody, ReportResponseDto.class);
         assertThat(response.getErrorMessage()).isEqualTo(MSG_SELECT_REPORT_TYPE);
+    }
+
+    // =====================================================================
+    // F36 - the CORPT00 screen field widths are enforced (@Valid)
+    // =====================================================================
+
+    /**
+     * :purpose: A selector longer than the single-character CORPT00 screen field is
+     *     rejected with HTTP 400 rather than accepted, and the service is never
+     *     reached.
+     */
+    @Test
+    @DisplayName("POST /reports oversized selector returns 400 and never reaches the service")
+    void oversizedSelector_returns400() throws Exception {
+        String oversized = "A".repeat(200);
+
+        mockMvc.perform(post("/reports")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"monthly\":\"" + oversized + "\",\"confirm\":\"\"}"))
+                .andExpect(status().isBadRequest());
+
+        verify(reportService, never()).requestReport(any(ReportRequestDto.class));
+    }
+
+    /**
+     * :purpose: A path-traversal value in a selector exceeds the one-character
+     *     field width and is therefore rejected before any job can be launched.
+     */
+    @Test
+    @DisplayName("POST /reports path-traversal selector returns 400")
+    void pathTraversalSelector_returns400() throws Exception {
+        mockMvc.perform(post("/reports")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"monthly\":\"../../etc/passwd\",\"confirm\":\"Y\"}"))
+                .andExpect(status().isBadRequest());
+
+        verify(reportService, never()).requestReport(any(ReportRequestDto.class));
+    }
+
+    /**
+     * :purpose: Every over-width field of the CORPT00 screen contract is rejected:
+     *     the three selectors and the confirm flag (one character), the month and
+     *     day parts (two characters) and the year parts (four characters).
+     * :param body: the request body carrying a single over-width field.
+     */
+    @ParameterizedTest
+    @ValueSource(strings = {
+        "{\"yearly\":\"YY\"}",
+        "{\"custom\":\"YY\"}",
+        "{\"confirm\":\"YESPLEASE\"}",
+        "{\"custom\":\"Y\",\"startDateMonth\":\"0123456789\"}",
+        "{\"custom\":\"Y\",\"startDateDay\":\"123\"}",
+        "{\"custom\":\"Y\",\"startDateYear\":\"20244\"}",
+        "{\"custom\":\"Y\",\"endDateMonth\":\"123\"}",
+        "{\"custom\":\"Y\",\"endDateDay\":\"123\"}",
+        "{\"custom\":\"Y\",\"endDateYear\":\"20244\"}"
+    })
+    @DisplayName("POST /reports every over-width screen field returns 400")
+    void overWidthFields_return400(String body) throws Exception {
+        mockMvc.perform(post("/reports")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(body))
+                .andExpect(status().isBadRequest());
+
+        verify(reportService, never()).requestReport(any(ReportRequestDto.class));
+    }
+
+    /**
+     * :purpose: Values that fit the screen field widths are still accepted, so the
+     *     added validation does not narrow the legacy input contract.
+     */
+    @Test
+    @DisplayName("POST /reports within-width custom date parts still reach the service")
+    void withinWidthFields_stillDelegate() throws Exception {
+        ReportResponseDto stubbed = new ReportResponseDto();
+        when(reportService.requestReport(any(ReportRequestDto.class))).thenReturn(stubbed);
+
+        mockMvc.perform(post("/reports")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"custom\":\"Y\",\"startDateMonth\":\"03\",\"startDateDay\":\"01\","
+                                + "\"startDateYear\":\"2024\",\"endDateMonth\":\"03\",\"endDateDay\":\"31\","
+                                + "\"endDateYear\":\"2024\",\"confirm\":\"Y\"}"))
+                .andExpect(status().isOk());
+
+        verify(reportService).requestReport(any(ReportRequestDto.class));
     }
 }

@@ -2,6 +2,8 @@ package com.carddemo.common.domain;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+import jakarta.persistence.Table;
+
 import java.lang.annotation.Annotation;
 import java.lang.reflect.Constructor;
 import java.lang.reflect.Field;
@@ -25,12 +27,12 @@ import org.junit.jupiter.api.Test;
  *     ``DALYTRAN-AMT PIC S9(09)V99`` must be carried by {@link BigDecimal} — never a binary
  *     floating-point type — and the ``X(26)`` origination/processing timestamps must remain
  *     full-width {@link String} values, so the batch posting job reproduces the legacy over-limit,
- *     cross-reference, and expiry results byte-for-byte. ``DailyTransaction`` is a NON-persistent
- *     value object (the target schema defines exactly ten tables and the daily feed is streamed by a
- *     Spring Batch reader, never stored as a row), so the JPA-mapping conditions are asserted in the
- *     negative: the type carries no ``@Entity``/``@Table``/``@Id``/``@Column`` mapping. It mirrors the
- *     {@code Transaction} field set with the ``dalytran`` prefix while intentionally omitting
- *     persistence.
+ *     cross-reference, and expiry results byte-for-byte. ``DailyTransaction`` is the JPA entity for
+ *     the staged ``DALYTRAN`` feed: the ``daily_transactions`` table is the relational image of the
+ *     sequential input data set that the posting job re-reads, so the mapping conditions are asserted
+ *     positively (``@Entity``, ``@Table(name = "daily_transactions")``, ``@Id`` on ``dalytranId`` and
+ *     a ``@Column`` on every modeled field). It mirrors the {@code Transaction} field set with the
+ *     ``dalytran`` prefix.
  * :output: JUnit 5 / AssertJ assertions only, driven purely by ``java.lang.reflect`` and
  *     ``java.math.BigDecimal``; the class holds no state and touches no database, Spring context, or
  *     other external resource.
@@ -118,6 +120,17 @@ final class DailyTransactionTest {
     }
 
     /**
+     * Resolve the mapped table name declared by the entity.
+     *
+     * :return: the ``@Table(name = ...)`` value declared on {@link DailyTransaction}.
+     */
+    private static String tableName() {
+        Table table = DailyTransaction.class.getAnnotation(Table.class);
+        assertThat(table).as("DailyTransaction must be annotated @Table").isNotNull();
+        return table.name();
+    }
+
+    /**
      * Capitalize the first character of a field name for accessor derivation.
      *
      * :param name: the field name.
@@ -139,23 +152,29 @@ final class DailyTransactionTest {
     }
 
     @Test
-    @DisplayName("DailyTransaction is a non-persistent value object, not a JPA-mapped entity")
-    void isNonPersistentValueObjectNotAJpaEntity() {
-        // AAP 0.2/0.3/0.4.5: the relational schema defines exactly ten tables. The daily feed is a
-        // sequential Spring Batch input, never a persisted row, so DailyTransaction MUST NOT carry any
-        // JPA mapping. Verified purely by annotation simple-name (no jakarta.persistence dependency).
+    @DisplayName("DailyTransaction is a JPA @Entity mapped to the \"daily_transactions\" table")
+    void isJpaEntityMappedToDailyTransactionsTable() {
+        // The staged DALYTRAN feed is persisted so the CBTRN02C posting ItemReader can re-read it
+        // across job launches and service instances, exactly as the legacy job re-reads its input
+        // data set. Verified by annotation simple-name so the assertion states the mapping contract
+        // without depending on the jakarta.persistence types.
         List<String> classAnnotations =
                 annotationSimpleNames(DailyTransaction.class.getDeclaredAnnotations());
         assertThat(classAnnotations)
-                .as("DailyTransaction must not be JPA-mapped (transient daily feed record)")
-                .doesNotContain("Entity", "Table", "MappedSuperclass", "Embeddable");
+                .as("DailyTransaction must be JPA-mapped (staged daily feed row)")
+                .contains("Entity", "Table");
+        assertThat(tableName())
+                .as("DailyTransaction must map to the daily_transactions table")
+                .isEqualTo("daily_transactions");
 
         for (Field f : instanceFields()) {
             List<String> fieldAnnotations = annotationSimpleNames(f.getDeclaredAnnotations());
             assertThat(fieldAnnotations)
-                    .as("field '%s' must not carry a JPA mapping annotation", f.getName())
-                    .doesNotContain("Id", "EmbeddedId", "Column", "GeneratedValue", "JoinColumn",
-                            "Version");
+                    .as("field '%s' must carry a @Column mapping", f.getName())
+                    .contains("Column");
+            assertThat(fieldAnnotations)
+                    .as("field '%s' must not be version- or association-mapped", f.getName())
+                    .doesNotContain("Version", "JoinColumn", "GeneratedValue");
         }
     }
 
@@ -169,14 +188,17 @@ final class DailyTransactionTest {
     }
 
     @Test
-    @DisplayName("dalytranId is a String identifier (DALYTRAN-ID X(16)) with no JPA @Id mapping")
-    void dalytranIdIsStringIdentifierWithNoJpaIdMapping() {
+    @DisplayName("dalytranId is the @Id primary key: String (DALYTRAN-ID X(16))")
+    void dalytranIdIsTheStringPrimaryKey() {
         Field id = field("dalytranId");
 
         assertThat(id.getType()).as("dalytranId must be a String").isEqualTo(String.class);
         assertThat(annotationSimpleNames(id.getDeclaredAnnotations()))
-                .as("dalytranId must not be a JPA primary key on this transient record")
-                .doesNotContain("Id", "EmbeddedId", "GeneratedValue");
+                .as("dalytranId must be the JPA primary key of the staged feed row")
+                .contains("Id", "Column");
+        assertThat(annotationSimpleNames(id.getDeclaredAnnotations()))
+                .as("the feed id is the natural DALYTRAN-ID, never database-generated")
+                .doesNotContain("GeneratedValue");
     }
 
     @Test
@@ -211,9 +233,9 @@ final class DailyTransactionTest {
     @DisplayName("dalytranAmt preserves scale-2 and exact precision through its accessors")
     void dalytranAmtPreservesScaleTwoAndPrecisionThroughAccessors() {
         // AAP 0.6.1: the amount participates in the exact packed-decimal over-limit computation
-        // WS-TEMP-BAL = ACCT-CURR-CYC-CREDIT - ACCT-CURR-CYC-DEBIT + DALYTRAN-AMT. NUMERIC(11,2) scale
-        // is enforced on the persisted Transaction entity; on this transient feed record the guarantee
-        // is that BigDecimal carries the value with no binary floating-point representation error.
+        // WS-TEMP-BAL = ACCT-CURR-CYC-CREDIT - ACCT-CURR-CYC-DEBIT + DALYTRAN-AMT. The NUMERIC(11,2)
+        // column contract is asserted separately (MonetaryScaleFidelityTest); here the guarantee is
+        // that BigDecimal carries the value with no binary floating-point representation error.
         DailyTransaction dt = new DailyTransaction();
 
         dt.setDalytranAmt(new BigDecimal("12345.67"));

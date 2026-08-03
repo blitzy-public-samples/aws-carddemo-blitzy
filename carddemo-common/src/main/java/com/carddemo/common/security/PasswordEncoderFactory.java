@@ -31,7 +31,9 @@ import java.util.Map;
  *     prefix (for example ``{bcrypt}``) with every hash, so the encoding
  *     algorithm can be rotated over time without invalidating existing
  *     credentials.
- * :note: Encoding always uses BCrypt at {@link #BCRYPT_STRENGTH}; the map also
+ * :note: Encoding always uses BCrypt at {@link #BCRYPT_STRENGTH}, the same cost
+ *     factor carried by every stored credential, so verification cost does not
+ *     reveal whether a user id exists; the map also
  *     registers PBKDF2 so credentials persisted under that identifier can still
  *     be verified and are transparently rehashed to the default algorithm on the
  *     next successful authentication (Spring Security calls
@@ -42,6 +44,14 @@ import java.util.Map;
  * :note: Callers must enforce the frozen ``PIC X(8)`` password width at the DTO
  *     boundary before invoking the encoder, so oversized input never reaches the
  *     adaptive hashing routine.
+ * :note: Credentials migrated from the legacy ``USRSEC`` file are stored as BARE
+ *     BCrypt hashes carrying no ``{id}`` prefix (see the ``security_users`` seed
+ *     migration). A {@link DelegatingPasswordEncoder} rejects an unprefixed stored
+ *     value with {@link IllegalArgumentException} unless a match-only fallback
+ *     encoder is registered, so BCrypt is installed as that fallback through
+ *     {@link DelegatingPasswordEncoder#setDefaultPasswordEncoderForMatches}.
+ *     Without it no migrated user can sign on at all. Encoding is unaffected: new
+ *     hashes are still written with the ``{bcrypt}`` prefix.
  */
 public final class PasswordEncoderFactory {
 
@@ -52,11 +62,15 @@ public final class PasswordEncoderFactory {
     public static final String DEFAULT_ENCODER_ID = "bcrypt";
 
     /**
-     * :purpose: BCrypt cost factor (work factor) applied to new hashes. Tuned
-     *     above the library default of 10 to harden against offline brute force
-     *     while remaining within the online response-time budget.
+     * :purpose: BCrypt cost factor (work factor) applied to new hashes. Set to the
+     *     library default, which is the cost factor every stored CardDemo credential
+     *     carries, so that a verification against a stored hash and a verification
+     *     against the sign-on timing-equalization hash cost the same. A higher factor
+     *     made an unknown user id measurably slower than a wrong password (a
+     *     user-enumeration oracle) and pushed sign-on past the response-time budget of
+     *     the non-functional requirements.
      */
-    public static final int BCRYPT_STRENGTH = 12;
+    public static final int BCRYPT_STRENGTH = 10;
 
     /**
      * :purpose: Algorithm identifier under which legacy PBKDF2 hashes are matched
@@ -75,7 +89,8 @@ public final class PasswordEncoderFactory {
      *     encoding algorithm and PBKDF2 registered for verification/upgrade.
      * :returns: a {@link PasswordEncoder} that encodes with
      *     ``{bcrypt}`` at strength {@link #BCRYPT_STRENGTH}, verifies any
-     *     registered ``{id}``-prefixed hash, and reports
+     *     registered ``{id}``-prefixed hash, verifies a bare (unprefixed) BCrypt
+     *     hash migrated from ``USRSEC`` through the match-only fallback, and reports
      *     {@link PasswordEncoder#upgradeEncoding(String)} ``true`` for hashes not
      *     already produced by the default algorithm.
      */
@@ -83,6 +98,13 @@ public final class PasswordEncoderFactory {
         Map<String, PasswordEncoder> encoders = new LinkedHashMap<>();
         encoders.put(DEFAULT_ENCODER_ID, new BCryptPasswordEncoder(BCRYPT_STRENGTH));
         encoders.put(PBKDF2_ENCODER_ID, Pbkdf2PasswordEncoder.defaultsForSpringSecurity_v5_8());
-        return new DelegatingPasswordEncoder(DEFAULT_ENCODER_ID, encoders);
+        DelegatingPasswordEncoder delegatingPasswordEncoder =
+                new DelegatingPasswordEncoder(DEFAULT_ENCODER_ID, encoders);
+        // Bare BCrypt hashes carry no {id} prefix; BCrypt reads the cost factor out of
+        // the hash itself, so this fallback verifies the seeded strength-10 values while
+        // new hashes continue to be encoded at BCRYPT_STRENGTH under the {bcrypt} prefix.
+        delegatingPasswordEncoder.setDefaultPasswordEncoderForMatches(
+                new BCryptPasswordEncoder(BCRYPT_STRENGTH));
+        return delegatingPasswordEncoder;
     }
 }

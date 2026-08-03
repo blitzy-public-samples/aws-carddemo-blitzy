@@ -23,15 +23,18 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.context.ApplicationContext;
 import org.springframework.test.context.ActiveProfiles;
+import org.springframework.test.context.DynamicPropertyRegistry;
+import org.springframework.test.context.DynamicPropertySource;
+
+import com.carddemo.common.testsupport.MigratedSchemaContainer;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
  * :purpose: Failsafe integration smoke test that boots the full reporting-service
  *  Spring context against a real, throwaway PostgreSQL provisioned by
- *  Testcontainers (the ``jdbc:tc:postgresql:18:///carddemo`` datasource URL in the
- *  ``test`` profile makes ``ContainerDatabaseDriver`` start and stop the
- *  ``postgres:18`` container automatically). It verifies two invariants of the
+ *  Testcontainers (the shared ``postgres:18`` container carrying the schema the
+ *  committed Flyway migrations produce). It verifies two invariants of the
  *  re-platformed report/statement feature (legacy ``CORPT00C`` online request plus
  *  the ``CBSTM03A``/``CBSTM03B`` batch statement engine driven by ``CREASTMT``):
  *  the application context wires cleanly with the Redis/Spring Session
@@ -46,6 +49,19 @@ import static org.assertj.core.api.Assertions.assertThat;
 @SpringBootTest
 @ActiveProfiles("test")
 class ReportingServiceApplicationIT {
+
+    /**
+     * :purpose: Bind the datasource to the shared, already-migrated ``postgres:18`` container
+     *  from :java:class:`com.carddemo.common.testsupport.MigratedSchemaContainer`, so the
+     *  context - including the JDBC-backed ``JobRepository`` reading the ``BATCH_*`` metadata
+     *  tables - boots against the schema the committed Flyway migrations produce.
+     * :param registry: the dynamic property registry supplied by the Spring Test context.
+     */
+    @DynamicPropertySource
+    static void datasourceProperties(DynamicPropertyRegistry registry) {
+        MigratedSchemaContainer.registerDataSource(registry);
+        registry.add("spring.jpa.hibernate.ddl-auto", () -> "validate");
+    }
 
     /** :purpose: The booted reporting-service application context under test. */
     @Autowired

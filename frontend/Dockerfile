@@ -38,7 +38,10 @@ ENV VITE_API_BASE_URL=$VITE_API_BASE_URL
 RUN npm run build
 
 # --- Stage 2: serve the static bundle with nginx -----------------------------
-FROM nginx:alpine
+# Pinned to an explicit version (QA Issue 19): `alpine` is a floating tag that
+# moves with every nginx release, so two builds of the same commit could ship
+# different servers.
+FROM nginx:1.29-alpine
 
 # Static bundle emitted by the build stage (Vite outDir `dist`).
 COPY --from=build /app/dist /usr/share/nginx/html

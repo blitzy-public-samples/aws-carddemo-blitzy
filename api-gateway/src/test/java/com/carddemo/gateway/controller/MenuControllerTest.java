@@ -19,6 +19,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.hamcrest.Matchers.hasSize;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.csrf;
 import static org.springframework.security.test.web.servlet.setup.SecurityMockMvcConfigurers.springSecurity;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
@@ -44,6 +45,7 @@ import org.springframework.boot.webmvc.test.autoconfigure.WebMvcTest;
 import org.springframework.context.annotation.Import;
 import org.springframework.http.MediaType;
 import org.springframework.security.test.context.support.WithMockUser;
+import org.springframework.test.annotation.DirtiesContext;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.setup.MockMvcBuilders;
 import org.springframework.web.context.WebApplicationContext;
@@ -201,6 +203,7 @@ class MenuControllerTest {
     @WithMockUser(roles = "USER")
     void mainSelectRejectsInvalidOption(String option) throws Exception {
         mockMvc.perform(post("/menu/select")
+                        .with(csrf())
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(body(option, "ENTER")))
                 .andExpect(status().isBadRequest())
@@ -215,6 +218,7 @@ class MenuControllerTest {
     @WithMockUser(roles = "ADMIN")
     void adminSelectRejectsOutOfRangeOption() throws Exception {
         mockMvc.perform(post("/admin/menu/select")
+                        .with(csrf())
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(body("5", "ENTER")))
                 .andExpect(status().isBadRequest())
@@ -229,6 +233,7 @@ class MenuControllerTest {
     @WithMockUser(roles = "USER")
     void mainSelectAcceptsNormalizedOptionFive(String option) throws Exception {
         mockMvc.perform(post("/menu/select")
+                        .with(csrf())
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(body(option, "ENTER")))
                 .andExpect(status().isOk())
@@ -248,6 +253,7 @@ class MenuControllerTest {
     @WithMockUser(roles = "USER")
     void mainSelectRejectsInvalidKey() throws Exception {
         mockMvc.perform(post("/menu/select")
+                        .with(csrf())
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(body("1", "PF9")))
                 .andExpect(status().isBadRequest())
@@ -261,6 +267,7 @@ class MenuControllerTest {
     @WithMockUser(roles = "ADMIN")
     void adminSelectRejectsInvalidKey() throws Exception {
         mockMvc.perform(post("/admin/menu/select")
+                        .with(csrf())
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(body("1", "PF9")))
                 .andExpect(status().isBadRequest())
@@ -276,6 +283,7 @@ class MenuControllerTest {
     @WithMockUser(roles = "USER")
     void mainSelectPf3ReturnsToAuth() throws Exception {
         mockMvc.perform(post("/menu/select")
+                        .with(csrf())
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(body("1", "PF3")))
                 .andExpect(status().isOk())
@@ -290,6 +298,7 @@ class MenuControllerTest {
     @WithMockUser(roles = "ADMIN")
     void adminSelectPf3ReturnsToAuth() throws Exception {
         mockMvc.perform(post("/admin/menu/select")
+                        .with(csrf())
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(body("1", "PF3")))
                 .andExpect(status().isOk())
@@ -311,6 +320,7 @@ class MenuControllerTest {
         String expectedProgram = MenuOptions.MAIN_MENU_OPTIONS.get(optionNumber - 1).programName();
         String expectedRoute = EXPECTED_MAIN_ROUTES.get(expectedProgram);
         mockMvc.perform(post("/menu/select")
+                        .with(csrf())
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(body(String.valueOf(optionNumber), "ENTER")))
                 .andExpect(status().isOk())
@@ -327,6 +337,7 @@ class MenuControllerTest {
     void adminSelectDispatchesValidOption(int optionNumber) throws Exception {
         String expectedProgram = MenuOptions.ADMIN_MENU_OPTIONS.get(optionNumber - 1).programName();
         mockMvc.perform(post("/admin/menu/select")
+                        .with(csrf())
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(body(String.valueOf(optionNumber), "ENTER")))
                 .andExpect(status().isOk())
@@ -352,7 +363,8 @@ class MenuControllerTest {
         SessionContext ctx = new SessionContext();
         ctx.setUserType(SessionContext.UserType.CDEMO_USRTYP_USER);
         mockMvc.perform(post("/menu/select")
-                        .sessionAttr("sessionContext", ctx)
+                        .with(csrf())
+                        .sessionAttr(SessionContext.SESSION_ATTRIBUTE_NAME, ctx)
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(body("1", "ENTER")))
                 .andExpect(status().isOk())
@@ -364,6 +376,53 @@ class MenuControllerTest {
     }
 
     /**
+     * :purpose: Freezes the CSRF contract for the browser-facing edge: a state-changing
+     *           request that does not echo the XSRF-TOKEN cookie back as a header is
+     *           rejected, so a cross-site form post cannot drive the menu.
+     */
+    @Test
+    @DisplayName("POST /menu/select without a CSRF token is rejected with 403")
+    @WithMockUser(roles = "USER")
+    void mainSelectWithoutCsrfTokenIsRejected() throws Exception {
+        mockMvc.perform(post("/menu/select")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(body("1", "ENTER")))
+                .andExpect(status().isForbidden());
+    }
+
+    /**
+     * :purpose: Freezes the cross-service session-attribute contract: the menu MUST read
+     *           and update the SAME key sign-on writes, so the signed-on role reaches the
+     *           admin-only gate instead of being replaced by an empty context.
+     */
+    @Test
+    @DisplayName("GET /menu reads and updates the shared sign-on session key, preserving the role")
+    @WithMockUser(roles = "USER")
+    void mainMenuUsesTheSharedSignonSessionKey() throws Exception {
+        assertThat(SessionContext.SESSION_ATTRIBUTE_NAME).isEqualTo("carddemoSessionContext");
+
+        SessionContext signedOn = new SessionContext();
+        signedOn.setUserId("USER0001");
+        signedOn.setUserType(SessionContext.UserType.CDEMO_USRTYP_USER);
+
+        var session = mockMvc.perform(get("/menu")
+                        .sessionAttr(SessionContext.SESSION_ATTRIBUTE_NAME, signedOn))
+                .andExpect(status().isOk())
+                .andReturn()
+                .getRequest()
+                .getSession(false);
+
+        assertThat(session).isNotNull();
+        assertThat(session.getAttribute("sessionContext")).isNull();
+        SessionContext afterMenu = (SessionContext) session.getAttribute(SessionContext.SESSION_ATTRIBUTE_NAME);
+        assertThat(afterMenu).isNotNull();
+        assertThat(afterMenu.getUserId()).isEqualTo("USER0001");
+        assertThat(afterMenu.getUserType()).isEqualTo(SessionContext.UserType.CDEMO_USRTYP_USER);
+        assertThat(afterMenu.getFromProgram()).isEqualTo("COMEN01C");
+        assertThat(afterMenu.getFromTranid()).isEqualTo("CM00");
+    }
+
+    /**
      * :purpose: Reachable complement for the coming-soon (DUMMY) branch on the main menu:
      *           a real option dispatches and carries no coming-soon message.
      */
@@ -372,6 +431,7 @@ class MenuControllerTest {
     @WithMockUser(roles = "USER")
     void mainSelectDispatchNotComingSoon() throws Exception {
         mockMvc.perform(post("/menu/select")
+                        .with(csrf())
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(body("1", "ENTER")))
                 .andExpect(status().isOk())
@@ -388,6 +448,7 @@ class MenuControllerTest {
     @WithMockUser(roles = "ADMIN")
     void adminSelectDispatchNotComingSoon() throws Exception {
         mockMvc.perform(post("/admin/menu/select")
+                        .with(csrf())
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(body("1", "ENTER")))
                 .andExpect(status().isOk())
@@ -418,6 +479,7 @@ class MenuControllerTest {
     @WithMockUser(roles = "USER")
     void adminSelectForbiddenForUser() throws Exception {
         mockMvc.perform(post("/admin/menu/select")
+                        .with(csrf())
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(body("1", "ENTER")))
                 .andExpect(status().isForbidden());
@@ -441,6 +503,62 @@ class MenuControllerTest {
     @DisplayName("H6: unauthenticated GET /menu returns 401 (not 403)")
     void mainMenuUnauthenticatedIsUnauthorized() throws Exception {
         mockMvc.perform(get("/menu")).andExpect(status().isUnauthorized());
+    }
+
+    @Test
+    @DisplayName("H7: unauthenticated POST without a CSRF token returns 401, not 403")
+    void unauthenticatedWriteIsUnauthorizedNotForbidden() throws Exception {
+        // CsrfFilter runs before AnonymousAuthenticationFilter, so a missing-token denial
+        // reaches the access-denied handler with an empty SecurityContext. The shared
+        // handler delegates such a denial to the 401 entry point, so an unauthenticated
+        // write reports the same status as an unauthenticated read and the SPA (which
+        // redirects to sign-on on 401 only) returns the caller to sign-on.
+        mockMvc.perform(post("/menu/select")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(body("1", "ENTER")))
+                .andExpect(status().isUnauthorized());
+    }
+
+    @Test
+    @DisplayName("H8: an authenticated write without a CSRF token still returns 403")
+    @WithMockUser(roles = "USER")
+    void authenticatedWriteWithoutCsrfTokenIsForbidden() throws Exception {
+        mockMvc.perform(post("/menu/select")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(body("1", "ENTER")))
+                .andExpect(status().isForbidden());
+    }
+
+    /**
+     * :note: A pristine context is demanded before this method because the
+     *     {@code with(csrf())} post-processor used by the write tests in this class
+     *     permanently swaps the cached chain's {@code CookieCsrfTokenRepository} for a
+     *     session-backed test repository. Without this, the assertion below would pass
+     *     or fail purely on JUnit's method ordering: no cookie is issued once the
+     *     repository has been swapped.
+     */
+    @Test
+    @DisplayName("H9: the XSRF-TOKEN cookie is script-readable but Strict and Secure")
+    @WithMockUser(roles = "USER")
+    @DirtiesContext(methodMode = DirtiesContext.MethodMode.BEFORE_METHOD)
+    void csrfCookieCarriesTheSessionCookieTransportPolicy() throws Exception {
+        // The cookie object is asserted rather than the rendered Set-Cookie header:
+        // CookieCsrfTokenRepository carries SameSite as a servlet cookie ATTRIBUTE, which
+        // the real container renders but MockHttpServletResponse renders only for its own
+        // MockCookie type. The wire format is re-verified against a running gateway.
+        jakarta.servlet.http.Cookie cookie = mockMvc.perform(get("/menu"))
+                .andExpect(status().isOk())
+                .andReturn()
+                .getResponse()
+                .getCookie(SecurityConfig.CSRF_COOKIE_NAME);
+
+        assertThat(cookie).isNotNull();
+        assertThat(cookie.getValue()).isNotBlank();
+        // Double submit requires the SPA to read the value, so HttpOnly must stay off.
+        assertThat(cookie.isHttpOnly()).isFalse();
+        assertThat(cookie.getSecure()).isTrue();
+        assertThat(cookie.getPath()).isEqualTo("/");
+        assertThat(cookie.getAttribute("SameSite")).isEqualTo(SecurityConfig.CSRF_COOKIE_SAME_SITE);
     }
 
     // -----------------------------------------------------------------

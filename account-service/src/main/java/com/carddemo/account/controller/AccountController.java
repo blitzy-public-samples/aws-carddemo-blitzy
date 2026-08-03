@@ -23,6 +23,7 @@ import com.carddemo.common.dto.AccountViewResponseDto;
 import com.carddemo.common.dto.SessionContext;
 import com.carddemo.common.exception.CardDemoException;
 
+import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpSession;
 import jakarta.validation.Valid;
 
@@ -59,7 +60,7 @@ public class AccountController {
      *  {@link SessionContext} (the pseudo-conversational COMMAREA replacement) is
      *  stored in Spring Session.
      */
-    private static final String SESSION_CONTEXT_ATTRIBUTE = "carddemoSessionContext";
+    private static final String SESSION_CONTEXT_ATTRIBUTE = SessionContext.SESSION_ATTRIBUTE_NAME;
 
     /** :purpose: Account view/update business-logic service (``COACTVWC``/``COACTUPC``). */
     private final AccountService accountService;
@@ -77,17 +78,18 @@ public class AccountController {
      *  program ``COACTVWC``). Edits the path id, bridges the externalized session,
      *  and delegates the ordered short-circuit read to {@link AccountService}.
      * :param id: the account id path variable (``ACCT-ID PIC 9(11)``).
-     * :param session: the current HTTP session carrying the externalized context.
+     * :param httpRequest: the current servlet request; its already-established session,
+     *  when present, carries the externalized context.
      * :returns: the read-only account view response (HTTP 200).
      * :raises CardDemoException: when the id is not a non-zero eleven-digit number (HTTP 400).
      * :raises RecordNotFoundException: when the cross-reference, account, or customer is not found (HTTP 404).
      */
     @GetMapping("/{id}")
-    public AccountViewResponseDto viewAccount(@PathVariable("id") String id, HttpSession session) {
+    public AccountViewResponseDto viewAccount(@PathVariable("id") String id, HttpServletRequest httpRequest) {
         Long acctId = parseAccountId(id);
-        SessionContext context = resolveSessionContext(session);
+        SessionContext context = resolveSessionContext(httpRequest);
         AccountViewResponseDto response = accountService.viewAccount(acctId, context);
-        session.setAttribute(SESSION_CONTEXT_ATTRIBUTE, context);
+        storeSessionContext(httpRequest, context);
         return response;
     }
 
@@ -98,7 +100,8 @@ public class AccountController {
      *  single-transaction read-snapshot-compare-rewrite to {@link AccountService}.
      * :param id: the account id path variable (``ACCT-ID PIC 9(11)``).
      * :param request: the validated editable account and customer master fields.
-     * :param session: the current HTTP session carrying the externalized context.
+     * :param httpRequest: the current servlet request; its already-established session,
+     *  when present, carries the externalized context.
      * :returns: the post-update account response (HTTP 200).
      * :raises CardDemoException: when the id is not a non-zero eleven-digit number (HTTP 400).
      * :raises RecordNotFoundException: when the cross-reference, account, or customer is not found (HTTP 404).
@@ -107,11 +110,11 @@ public class AccountController {
     @PutMapping("/{id}")
     public AccountUpdateResponseDto updateAccount(@PathVariable("id") String id,
                                                   @Valid @RequestBody AccountUpdateRequestDto request,
-                                                  HttpSession session) {
+                                                  HttpServletRequest httpRequest) {
         Long acctId = parseAccountId(id);
-        SessionContext context = resolveSessionContext(session);
+        SessionContext context = resolveSessionContext(httpRequest);
         AccountUpdateResponseDto response = accountService.updateAccount(acctId, request, context);
-        session.setAttribute(SESSION_CONTEXT_ATTRIBUTE, context);
+        storeSessionContext(httpRequest, context);
         return response;
     }
 
@@ -131,13 +134,39 @@ public class AccountController {
     }
 
     /**
-     * :purpose: Resolve the externalized session context from the current HTTP
-     *  session, creating an empty one when absent (pre-navigation / tests).
-     * :param session: the current Spring Session (Redis-backed) HTTP session.
+     * :purpose: Resolve the externalized session context from the request's
+     *  *already-established* HTTP session, returning a fresh empty context when the
+     *  caller has no session or the session carries no context (pre-navigation /
+     *  tests). ``getSession(false)`` is deliberate (QA Issue 22): declaring an
+     *  ``HttpSession`` controller parameter made Spring's argument resolver call
+     *  ``getSession()`` on every request, so each anonymous call created and persisted
+     *  a brand-new Spring Session entry in Redis even though no pseudo-conversational
+     *  state was ever carried into it.
+     * :param httpRequest: the current servlet request.
      * :returns: the existing {@link SessionContext}, or a new empty instance.
      */
-    private SessionContext resolveSessionContext(HttpSession session) {
-        SessionContext context = (SessionContext) session.getAttribute(SESSION_CONTEXT_ATTRIBUTE);
-        return context != null ? context : new SessionContext();
+    private SessionContext resolveSessionContext(HttpServletRequest httpRequest) {
+        HttpSession session = httpRequest.getSession(false);
+        if (session == null) {
+            return new SessionContext();
+        }
+        Object attribute = session.getAttribute(SESSION_CONTEXT_ATTRIBUTE);
+        return attribute instanceof SessionContext context ? context : new SessionContext();
+    }
+
+    /**
+     * :purpose: Flush the (possibly mutated) session context back to the caller's HTTP
+     *  session so the next stateless request sees the updated COMMAREA replacement.
+     *  Only an existing session is written to: a caller without one carries no
+     *  pseudo-conversational state to preserve, and creating a session for it would
+     *  reintroduce the Redis session churn of QA Issue 22.
+     * :param httpRequest: the current servlet request.
+     * :param context: the session context to persist.
+     */
+    private void storeSessionContext(HttpServletRequest httpRequest, SessionContext context) {
+        HttpSession session = httpRequest.getSession(false);
+        if (session != null) {
+            session.setAttribute(SESSION_CONTEXT_ATTRIBUTE, context);
+        }
     }
 }

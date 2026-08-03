@@ -78,7 +78,10 @@ import tools.jackson.databind.ObjectMapper;
  *  Sensitive customer fields (SSN, government-issued id, card number) are seeded but
  *  never asserted.
  */
-@SpringBootTest(properties = "spring.jpa.hibernate.ddl-auto=update")
+@SpringBootTest(properties = "spring.jpa.hibernate.ddl-auto=validate")
+// The production filter chain IS applied: every request below presents the shared
+// session context, which is exactly how a request authenticates in production, so the
+// security, correlation-id and hardening filters are all exercised end to end.
 @AutoConfigureMockMvc
 @ActiveProfiles("test")
 public class OptimisticLockConflictIT {
@@ -87,17 +90,24 @@ public class OptimisticLockConflictIT {
     // Testcontainers JDBC-URL scheme (``jdbc:tc:postgresql:18:///carddemo`` +
     // ``ContainerDatabaseDriver``), so the ``@Version`` optimistic-lock behavior is
     // exercised against real PostgreSQL without a manually managed container. The
-    // ``spring.jpa.hibernate.ddl-auto=update`` override lets Hibernate create the
-    // entity-scanned tables (for example ``card_xref``) that the account-service
-    // V1..V4 Flyway migrations do not define, so the full application context boots.
+    // shared migration set creates every entity-scanned table (``card_xref``
+    // included), so Hibernate validates the mapping instead of altering the schema:
+    // that database is reused by the other classes in this fork, and a schema export
+    // would silently reshape it underneath them.
 
     static {
         // The customer PII columns are encrypted at rest by a JPA AttributeConverter
         // that resolves its AES-256 key from the ``carddemo.pii.key`` system property.
-        // No key is configured by the test profile, so a throwaway all-zero test key
-        // (never a real secret) is installed before any entity conversion runs, letting
-        // the freshly seeded customer round-trip through encrypt-on-write / decrypt-on-read.
-        System.setProperty("carddemo.pii.key", Base64.getEncoder().encodeToString(new byte[32]));
+        // A throwaway all-zero test key (never a real secret) is installed ONLY when the
+        // environment supplies none, so this class still runs standalone while never
+        // displacing the fixture key the module's Surefire/Failsafe configuration
+        // installs. Overwriting it unconditionally would re-key the JVM for every later
+        // context in the same fork, and the seeded PII already encrypted at rest under
+        // the fixture key would then fail to decrypt (AEADBadTagException).
+        if (System.getProperty("carddemo.pii.key") == null
+                && System.getenv("CARDDEMO_PII_KEY") == null) {
+            System.setProperty("carddemo.pii.key", Base64.getEncoder().encodeToString(new byte[32]));
+        }
     }
 
     /** :purpose: Account identifier of the self-contained fixture row (non-colliding with the 1..50 seed). */
@@ -146,9 +156,14 @@ public class OptimisticLockConflictIT {
     private static final String SEED_CUST_ADDR_LINE_3 = "New Gladys";
     private static final String SEED_CUST_ADDR_STATE_CD = "GA";
     private static final String SEED_CUST_ADDR_COUNTRY_CD = "USA";
-    private static final String SEED_CUST_ADDR_ZIP = "19852";
-    private static final String SEED_CUST_PHONE_1 = "(950)396-9024";
-    private static final String SEED_CUST_PHONE_2 = "(685)168-8826";
+    // Paired with the state code above in the CSLKPCDY state-ZIP table, which
+    // COACTUPC's 1280-EDIT-US-STATE-ZIP-CD checks on every rewrite.
+    private static final String SEED_CUST_ADDR_ZIP = "30301";
+    // Area codes are taken from the CSLKPCDY general-purpose table: COACTUPC's
+    // EDIT-AREA-CODE rejects anything absent from it, and this fixture is submitted
+    // through the full update path whose subject here is the optimistic lock.
+    private static final String SEED_CUST_PHONE_1 = "(212)396-9024";
+    private static final String SEED_CUST_PHONE_2 = "(801)168-8826";
     private static final String SEED_CUST_SSN = "317460867";
     private static final String SEED_CUST_GOVT_ID = "GA1234567";
     private static final String SEED_CUST_DOB = "1987-11-30";
@@ -367,6 +382,7 @@ public class OptimisticLockConflictIT {
                 MvcResult result;
                 try {
                     result = mockMvc.perform(put("/accounts/{id}", SEED_ACCT_ID)
+                                    .sessionAttr(SessionContext.SESSION_ATTRIBUTE_NAME, updatingSession())
                                     .contentType(MediaType.APPLICATION_JSON)
                                     .content(requestJson))
                             .andReturn();
@@ -400,6 +416,19 @@ public class OptimisticLockConflictIT {
         assertThat(persisted.getAcctCurrBal()).isEqualByComparingTo(WINNING_BALANCE);
         assertThat(persisted.getAcctCurrBal()).isNotEqualByComparingTo(STALE_BALANCE);
         assertThat(persisted.getVersion()).isEqualTo(1L);
+    }
+
+    /**
+     * :purpose: The signed-on session context a real caller presents with the update, the
+     *  externalized COMMAREA that carries ``CDEMO-USER-ID`` and ``CDEMO-USER-TYPE`` and from
+     *  which the request's principal and ``ROLE_USER`` authority are rebuilt.
+     * :returns: a regular-user session context for user ``TESTUSR1``.
+     */
+    private SessionContext updatingSession() {
+        SessionContext session = new SessionContext();
+        session.setUserId("TESTUSR1");
+        session.setUserType(SessionContext.UserType.CDEMO_USRTYP_USER);
+        return session;
     }
 
     /**

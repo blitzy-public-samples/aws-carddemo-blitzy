@@ -17,6 +17,7 @@
 package com.carddemo.batch.batch;
 
 import com.carddemo.batch.repository.TransactionRepository;
+import com.carddemo.common.batch.BatchOutputPathResolver;
 import com.carddemo.common.config.CorrelationIdContext;
 import com.carddemo.common.domain.Transaction;
 
@@ -57,8 +58,10 @@ import java.util.List;
  * :note: The batch ``config`` package wires this tasklet into a single-step
  *  ``Job`` via ``new StepBuilder(name, jobRepository).tasklet(tasklet,
  *  transactionManager).build()``, sets the job-level correlation id, and
- *  launches it through the auto-configured ``JobLauncher``; Spring Boot
- *  auto-configures Spring Batch, so ``@EnableBatchProcessing`` is not added.
+ *  launches it through the auto-configured ``JobLauncher``; the module's
+ *  ``JdbcBatchConfiguration`` supplies the JDBC job repository with
+ *  ``@EnableJdbcJobRepository`` so the run is persisted to the ``BATCH_*``
+ *  tables.
  * :note: Structured JSON logging and the ``correlationId`` MDC key are supplied
  *  by the module's ``logback-spring.xml`` together with
  *  {@link CorrelationIdContext}; this tasklet only ensures a correlation id is

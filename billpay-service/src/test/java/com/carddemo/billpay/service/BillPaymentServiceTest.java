@@ -57,6 +57,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.inOrder;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
@@ -387,7 +388,7 @@ public class BillPaymentServiceTest {
         verify(accountRepository).findById(ACCT_ID);
         verify(cardXrefRepository).findByXrefAcctId(ACCT_ID);
         verify(transactionRepository, never()).getNextTransactionId();
-        verify(transactionRepository, never()).save(any(Transaction.class));
+        verify(transactionRepository, never()).saveAndFlush(any(Transaction.class));
         verify(accountRepository, never()).save(any(Account.class));
         verifyNoInteractions(billPaymentMapper);
     }
@@ -423,7 +424,7 @@ public class BillPaymentServiceTest {
         assertThat(response.getCurrentBalance().scale()).isEqualTo(2);
 
         ArgumentCaptor<Transaction> tranCaptor = ArgumentCaptor.forClass(Transaction.class);
-        verify(transactionRepository).save(tranCaptor.capture());
+        verify(transactionRepository).saveAndFlush(tranCaptor.capture());
         Transaction savedTran = tranCaptor.getValue();
         assertThat(savedTran.getTranId()).isEqualTo(tranId);
         assertThat(savedTran.getTranTypeCd()).isEqualTo(FROZEN_TRAN_TYPE_CD);
@@ -442,6 +443,9 @@ public class BillPaymentServiceTest {
 
         ArgumentCaptor<Account> accountCaptor = ArgumentCaptor.forClass(Account.class);
         verify(accountRepository).save(accountCaptor.capture());
+        // The account rewrite must be flushed inside the service's try block so a
+        // concurrent modification is caught there rather than at transaction commit.
+        verify(accountRepository).flush();
         Account savedAccount = accountCaptor.getValue();
         assertThat(savedAccount.getAcctCurrBal().compareTo(ZERO_BALANCE)).isZero();
         assertThat(savedAccount.getAcctCurrBal().scale()).isEqualTo(2);
@@ -490,7 +494,7 @@ public class BillPaymentServiceTest {
         when(transactionRepository.getNextTransactionId()).thenReturn(1L);
         when(billPaymentMapper.toBillPaymentTransaction(account, cardXref, tranId))
                 .thenReturn(mappedTransaction(tranId, POSITIVE_BALANCE));
-        when(transactionRepository.save(any(Transaction.class)))
+        when(transactionRepository.saveAndFlush(any(Transaction.class)))
                 .thenThrow(new DataIntegrityViolationException("dup"));
         BillPaymentRequestDto req = request(ACCT_ID_INPUT, "Y");
 
@@ -498,7 +502,9 @@ public class BillPaymentServiceTest {
                 .isExactlyInstanceOf(CardDemoException.class)
                 .hasMessage(MSG_TRAN_ID_EXISTS);
 
-        verify(transactionRepository).save(any(Transaction.class));
+        // The insert is flushed immediately, so the duplicate key is rejected here and
+        // the account rewrite never runs; the pre-existing transaction row is untouched.
+        verify(transactionRepository).saveAndFlush(any(Transaction.class));
         verify(accountRepository, never()).save(any(Account.class));
     }
 
@@ -520,15 +526,18 @@ public class BillPaymentServiceTest {
         when(transactionRepository.getNextTransactionId()).thenReturn(1L);
         when(billPaymentMapper.toBillPaymentTransaction(account, cardXref, tranId))
                 .thenReturn(mappedTransaction(tranId, POSITIVE_BALANCE));
-        when(accountRepository.save(any(Account.class))).thenThrow(lockException);
+        // The stale-state failure is raised by the explicit flush, which is where a real
+        // Hibernate version mismatch surfaces; it must still be caught by the service.
+        doThrow(lockException).when(accountRepository).flush();
         BillPaymentRequestDto req = request(ACCT_ID_INPUT, "Y");
 
         assertThatThrownBy(() -> billPaymentService.processBillPayment(req, null))
                 .isExactlyInstanceOf(OptimisticLockConflictException.class)
                 .hasMessage(OptimisticLockConflictException.MESSAGE);
 
-        verify(transactionRepository).save(any(Transaction.class));
+        verify(transactionRepository).saveAndFlush(any(Transaction.class));
         verify(accountRepository).save(any(Account.class));
+        verify(accountRepository).flush();
     }
 
     /**
@@ -570,7 +579,8 @@ public class BillPaymentServiceTest {
         inOrder.verify(cardXrefRepository).findByXrefAcctId(ACCT_ID);
         inOrder.verify(transactionRepository).getNextTransactionId();
         inOrder.verify(billPaymentMapper).toBillPaymentTransaction(account, cardXref, tranId);
-        inOrder.verify(transactionRepository).save(any(Transaction.class));
+        inOrder.verify(transactionRepository).saveAndFlush(any(Transaction.class));
         inOrder.verify(accountRepository).save(any(Account.class));
+        inOrder.verify(accountRepository).flush();
     }
 }

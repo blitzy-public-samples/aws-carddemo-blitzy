@@ -47,6 +47,23 @@
             <artifactId>spring-boot-starter-validation</artifactId>
         </dependency>
 
+        <!--
+            Authorization boundary for every route in this service. Without a
+            SecurityFilterChain the service accepted session-less calls and served
+            data to an unauthenticated caller; the principal is rebuilt from the
+            shared Redis session by SessionContextAuthenticationFilter.
+          Spring Security. Every service enforces authentication itself
+          (defence in depth): the api-gateway is not a trust boundary, so a
+          request that reaches this service over the internal network still has
+          to present the shared, Redis-backed session principal. It also
+          protects the Actuator telemetry endpoints with the dedicated
+          monitoring principal (carddemo-common ManagementSecurityConfig).
+        -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-security</artifactId>
+        </dependency>
+
         <!-- Actuator health/readiness/liveness and metrics endpoints. -->
         <dependency>
             <groupId>org.springframework.boot</groupId>
@@ -83,13 +100,48 @@
             <artifactId>micrometer-registry-prometheus</artifactId>
         </dependency>
 
-        <!-- Distributed tracing via the OpenTelemetry bridge. -->
+        <!--
+          Distributed tracing (AAP 0.7.5). The Boot OpenTelemetry starter brings the
+          Micrometer Tracing OTel bridge TOGETHER WITH the tracing/OTel
+          auto-configuration and the OTLP span exporter. The bridge alone leaves
+          no Tracer in the context, so no trace context is created and every
+          traceId/spanId stays empty (QA F28).
+        -->
         <dependency>
-            <groupId>io.micrometer</groupId>
-            <artifactId>micrometer-tracing-bridge-otel</artifactId>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-opentelemetry</artifactId>
         </dependency>
 
-        <!-- Flyway schema/seed migrations under src/main/resources/db/migration/. -->
+        <!--
+          Spring Boot 4 extracted tracing auto-configuration out of spring-boot-actuator into
+          dedicated modules. Without BOTH of the modules below the bridge above is completely
+          inert: no io.micrometer.tracing.Tracer bean is created, no spans are produced, the
+          management.tracing.sampling.probability setting is ignored, and the traceId/spanId
+          fields of the logback-spring.xml pattern stay permanently empty.
+            * spring-boot-micrometer-tracing               -> MicrometerTracingAutoConfiguration
+                                                              (span-producing observation handlers)
+            * spring-boot-micrometer-tracing-opentelemetry -> OpenTelemetryTracingAutoConfiguration
+                                                              (SdkTracerProvider + OtelTracer +
+                                                               W3C context propagators)
+          No OTLP/Zipkin exporter artifact is declared, so spans are created and correlated into
+          the MDC but not shipped off-box; adding an exporter is a deployment-time choice.
+        -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-micrometer-tracing</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-micrometer-tracing-opentelemetry</artifactId>
+        </dependency>
+
+        <!--
+          Flyway: the shared CardDemo migration set ships in carddemo-common
+          (classpath:db/migration) and is applied in production by the single migration
+          owner (batch-service). This service keeps the migration library so its
+          Testcontainers integration tests can provision the identical production schema
+          (business tables plus the Spring Batch metadata the posting job needs).
+        -->
         <dependency>
             <groupId>org.flywaydb</groupId>
             <artifactId>flyway-core</artifactId>
@@ -97,6 +149,16 @@
         <dependency>
             <groupId>org.flywaydb</groupId>
             <artifactId>flyway-database-postgresql</artifactId>
+        </dependency>
+        <!--
+          Spring Boot 4 modularized auto-configuration: FlywayAutoConfiguration lives in the
+          spring-boot-flyway module (it is NOT bundled with flyway-core). Without it, the shared
+          carddemo-common migrations never run and Hibernate `validate` fails on the missing
+          business tables (QA Issue 1(a)). It is gated by `spring.flyway.enabled`.
+        -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-flyway</artifactId>
         </dependency>
 
         <!-- PostgreSQL JDBC driver. -->
@@ -113,10 +175,38 @@
             <version>${project.version}</version>
         </dependency>
 
+        <!--
+          Shared test-support utilities from carddemo-common (test-jar), above all
+          com.carddemo.common.testsupport.CardDemoSchemaMigrations: it applies the real
+          committed Flyway migrations of every owning module to the throwaway test
+          database so integration tests run against the deployed schema instead of DDL
+          fabricated inside the test.
+        -->
+        <dependency>
+            <groupId>com.carddemo</groupId>
+            <artifactId>carddemo-common</artifactId>
+            <version>${project.version}</version>
+            <type>test-jar</type>
+            <scope>test</scope>
+        </dependency>
+
         <!-- Test stack: JUnit 5 (Jupiter), AssertJ, Mockito. -->
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-test</artifactId>
+            <scope>test</scope>
+        </dependency>
+
+        <!--
+          Spring MVC web-slice test support (@WebMvcTest). Spring Boot 4 split the
+          spring-boot-test-autoconfigure module into per-technology modules surfaced
+          through their own starters; @WebMvcTest is no longer transitively provided by
+          spring-boot-starter-test. Backs TransactionControllerTest. Version managed by
+          the Spring Boot BOM.
+        -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-webmvc-test</artifactId>
             <scope>test</scope>
         </dependency>
 
@@ -126,6 +216,14 @@
             <artifactId>spring-batch-test</artifactId>
             <scope>test</scope>
         </dependency>
+
+        <!--
+          Spring MVC test slice (MockMvc auto-configuration). As of Spring Boot 4.0 the
+          Web MVC test support was extracted from the catch-all
+          spring-boot-test-autoconfigure module into its own spring-boot-webmvc-test
+          module, surfaced through this starter; it is no longer transitively provided by
+          spring-boot-starter-test. The version is managed by the Spring Boot BOM.
+        -->
 
         <!-- Spring Security testing utilities for role-gated endpoint tests. -->
         <dependency>
@@ -150,6 +248,26 @@
 
     <build>
         <plugins>
+            <!--
+              A deterministic, NON-PRODUCTION AES-256 key is supplied to the forked test JVM so
+              the carddemo-common CryptoConverter can encrypt the sensitive columns the tests
+              persist (card CVV, customer identifiers). CryptoConverter fails fast when no key is
+              configured, so production deployments MUST still provide the real key via the
+              CARDDEMO_PII_KEY environment variable (see docs/decision-log.md). The value is an
+              obviously-fake, test-only fixture and is never used outside the test phases; it is
+              declared for BOTH forks because Surefire and Failsafe run in separate JVMs.
+              Plugin version inherited from the Spring Boot parent plugin management.
+            -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-surefire-plugin</artifactId>
+                <configuration>
+                    <systemPropertyVariables>
+                        <carddemo.pii.key>Y2FyZGRlbW8tdGVzdC1waWkta2V5LTMyYnl0ZXMhISE=</carddemo.pii.key>
+                    </systemPropertyVariables>
+                </configuration>
+            </plugin>
+
             <!-- Repackage into an executable Spring Boot jar (repackage goal inherited from the parent). -->
             <plugin>
                 <groupId>org.springframework.boot</groupId>
@@ -174,7 +292,12 @@
                         </goals>
                     </execution>
                 </executions>
-            </plugin>
+                <configuration>
+                    <systemPropertyVariables>
+                        <carddemo.pii.key>Y2FyZGRlbW8tdGVzdC1waWkta2V5LTMyYnl0ZXMhISE=</carddemo.pii.key>
+                    </systemPropertyVariables>
+                </configuration>
+</plugin>
         </plugins>
     </build>
 

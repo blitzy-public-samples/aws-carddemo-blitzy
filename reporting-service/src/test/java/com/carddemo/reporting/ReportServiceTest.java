@@ -16,6 +16,8 @@
  */
 package com.carddemo.reporting;
 
+import com.carddemo.common.dto.BatchJobExecutionDto;
+import com.carddemo.reporting.client.BatchJobClient;
 import com.carddemo.common.dto.ReportRequestDto;
 import com.carddemo.common.dto.ReportResponseDto;
 import com.carddemo.common.exception.CardDemoException;
@@ -26,13 +28,12 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 import org.junit.jupiter.api.extension.ExtendWith;
-import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 
-import java.time.LocalDate;
-import java.time.format.DateTimeFormatter;
-import java.time.temporal.TemporalAdjusters;
+import java.time.Clock;
+import java.time.Instant;
+import java.time.ZoneOffset;
 import java.util.concurrent.CompletableFuture;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -54,16 +55,51 @@ import static org.mockito.Mockito.when;
  *   order and derived date range, and {@link CardDemoException} propagation.
  * :output: JUnit 5 assertions executed under Surefire with Mockito mocks only;
  *   no Spring application context, no Testcontainers harness and no database are
- *   involved. Only the two constructor collaborators
- *   ({@link JobSchedulingConfig}, {@link ReportMapper}) are mocked; the static
+ *   involved. Only the two collaborators ({@link JobSchedulingConfig},
+ *   {@link ReportMapper}) are mocked; the static
  *   {@code com.carddemo.common.util.DateUtil} runs for real so the impossible-date
- *   scenarios exercise genuine strict-calendar validation.
+ *   scenarios exercise genuine strict-calendar validation. Time is supplied by a
+ *   {@link java.time.Clock#fixed} clock injected through the service's explicit-clock
+ *   constructor, so every Monthly/Yearly range assertion names literal dates instead
+ *   of recomputing the service's own algorithm from the wall clock — including
+ *   dedicated month-end, leap-February and year-end boundary scenarios.
  */
 @ExtendWith(MockitoExtension.class)
 class ReportServiceTest {
 
-    /** :purpose: FROZEN ``uuuu-MM-dd`` formatter mirroring the service's computed range. */
-    private static final DateTimeFormatter ISO = DateTimeFormatter.ofPattern("uuuu-MM-dd");
+    /**
+     * :purpose: Baseline frozen clock — mid-month, mid-year (2026-03-17T12:00:00Z in
+     *   UTC). Every scenario that does not exercise a calendar boundary runs on this
+     *   clock so the Monthly range is the literal ``2026-03-01``/``2026-03-31`` and
+     *   the Yearly range the literal ``2026-01-01``/``2026-12-31``, never a value
+     *   recomputed from the wall clock.
+     */
+    private static final Clock FIXED_MID_MONTH =
+            Clock.fixed(Instant.parse("2026-03-17T12:00:00Z"), ZoneOffset.UTC);
+
+    /**
+     * :purpose: Frozen clock one second before a non-leap February month-end rolls
+     *   over (2026-02-28T23:59:59Z). Pins the Monthly range across the month
+     *   boundary that a wall-clock test would race.
+     */
+    private static final Clock FIXED_NON_LEAP_MONTH_END =
+            Clock.fixed(Instant.parse("2026-02-28T23:59:59Z"), ZoneOffset.UTC);
+
+    /**
+     * :purpose: Frozen clock on a leap-year February month-end
+     *   (2024-02-29T23:59:59Z), proving ``TemporalAdjusters.lastDayOfMonth`` resolves
+     *   to the 29th rather than a hard-coded 28.
+     */
+    private static final Clock FIXED_LEAP_MONTH_END =
+            Clock.fixed(Instant.parse("2024-02-29T23:59:59Z"), ZoneOffset.UTC);
+
+    /**
+     * :purpose: Frozen clock one second before a year-end rolls over
+     *   (2026-12-31T23:59:59Z). Pins both the Monthly and the Yearly range across the
+     *   year boundary that a wall-clock test would race.
+     */
+    private static final Clock FIXED_YEAR_END =
+            Clock.fixed(Instant.parse("2026-12-31T23:59:59Z"), ZoneOffset.UTC);
 
     /** :purpose: Valid custom start-month component reused as the isolation baseline. */
     private static final String VALID_START_MONTH = "03";
@@ -78,16 +114,18 @@ class ReportServiceTest {
     /** :purpose: Valid custom end-year component reused as the isolation baseline. */
     private static final String VALID_END_YEAR = "2024";
 
-    /** :purpose: Mocked non-blocking statement-generation job launcher. */
+    /** :purpose: Mocked submitter of the CORPT00C transaction-detail report job stream. */
     @Mock
-    private JobSchedulingConfig jobSchedulingConfig;
+    private BatchJobClient batchJobClient;
 
     /** :purpose: Mocked request/response field-echo mapper. */
     @Mock
     private ReportMapper reportMapper;
 
-    /** :purpose: Service under test, constructor-injected with the two mocks above. */
-    @InjectMocks
+    /**
+     * :purpose: Service under test, constructed with the two mocks above and the
+     *   baseline frozen clock so no scenario depends on the wall clock.
+     */
     private ReportService reportService;
 
     /** :purpose: Real response instance the mocked mapper returns for the service to mutate. */
@@ -103,6 +141,17 @@ class ReportServiceTest {
     void setUp() {
         responseDto = new ReportResponseDto();
         when(reportMapper.toResponse(any(ReportRequestDto.class))).thenReturn(responseDto);
+        reportService = new ReportService(batchJobClient, reportMapper, FIXED_MID_MONTH);
+    }
+
+    /**
+     * :purpose: Build the service under test on an explicitly frozen clock so a
+     *   calendar-boundary scenario can pin the computed range to literal dates.
+     * :param clock: the frozen clock supplying the current date to the service.
+     * :returns: a service instance sharing this test's mocked collaborators.
+     */
+    private ReportService serviceWithClock(Clock clock) {
+        return new ReportService(batchJobClient, reportMapper, clock);
     }
 
     /**
@@ -110,8 +159,9 @@ class ReportServiceTest {
      *   scenarios proceed without blocking.
      */
     private void stubLaunchCompleted() {
-        when(jobSchedulingConfig.launchStatementGeneration(any(), any(), any()))
-                .thenReturn(CompletableFuture.completedFuture(null));
+        when(batchJobClient.submitTransactionDetailReport(any(), any()))
+                .thenReturn(new BatchJobExecutionDto("transactionDetailReportJob", 1L, 1L,
+                        "COMPLETED", "COMPLETED", null));
     }
 
     /**
@@ -179,7 +229,7 @@ class ReportServiceTest {
      * :purpose: Assert that the statement-generation job was never launched.
      */
     private void verifyNoLaunch() {
-        verify(jobSchedulingConfig, never()).launchStatementGeneration(any(), any(), any());
+        verify(batchJobClient, never()).submitTransactionDetailReport(any(), any());
     }
 
     /**
@@ -214,13 +264,12 @@ class ReportServiceTest {
     @Test
     void monthlyConfirmY_submits() {
         stubLaunchCompleted();
-        LocalDate now = LocalDate.now();
-        String expectedStart = now.withDayOfMonth(1).format(ISO);
-        String expectedEnd = now.with(TemporalAdjusters.lastDayOfMonth()).format(ISO);
 
         ReportResponseDto result = reportService.requestReport(monthlyRequest("Y"));
 
-        verify(jobSchedulingConfig).launchStatementGeneration("Monthly", expectedStart, expectedEnd);
+        // Literal expected dates for the baseline frozen clock (2026-03-17): the
+        // assertion no longer re-runs the service's own algorithm.
+        verify(batchJobClient).submitTransactionDetailReport("2026-03-01", "2026-03-31");
         assertThat(result.getErrorMessage()).isEqualTo("Monthly report submitted for printing ...");
     }
 
@@ -231,13 +280,58 @@ class ReportServiceTest {
     @Test
     void monthlyConfirmLowercaseY_submits() {
         stubLaunchCompleted();
-        LocalDate now = LocalDate.now();
-        String expectedStart = now.withDayOfMonth(1).format(ISO);
-        String expectedEnd = now.with(TemporalAdjusters.lastDayOfMonth()).format(ISO);
 
         ReportResponseDto result = reportService.requestReport(monthlyRequest("y"));
 
-        verify(jobSchedulingConfig).launchStatementGeneration("Monthly", expectedStart, expectedEnd);
+        verify(batchJobClient).submitTransactionDetailReport("2026-03-01", "2026-03-31");
+        assertThat(result.getErrorMessage()).isEqualTo("Monthly report submitted for printing ...");
+    }
+
+    /**
+     * :purpose: With time frozen one second before a non-leap February rolls over,
+     *   the Monthly range is pinned to the literal ``2026-02-01``/``2026-02-28``: the
+     *   month-end boundary that a wall-clock assertion would race is asserted
+     *   deterministically.
+     */
+    @Test
+    void monthlyRangeAtNonLeapMonthEndIsPinnedToFebruaryTwentyEighth() {
+        stubLaunchCompleted();
+
+        ReportResponseDto result =
+                serviceWithClock(FIXED_NON_LEAP_MONTH_END).requestReport(monthlyRequest("Y"));
+
+        verify(batchJobClient).submitTransactionDetailReport("2026-02-01", "2026-02-28");
+        assertThat(result.getErrorMessage()).isEqualTo("Monthly report submitted for printing ...");
+    }
+
+    /**
+     * :purpose: On a leap-year February month-end the Monthly range ends on the
+     *   literal ``2024-02-29``, proving the last-day-of-month adjuster is calendar
+     *   aware rather than a fixed 28.
+     */
+    @Test
+    void monthlyRangeAtLeapMonthEndIsPinnedToFebruaryTwentyNinth() {
+        stubLaunchCompleted();
+
+        ReportResponseDto result =
+                serviceWithClock(FIXED_LEAP_MONTH_END).requestReport(monthlyRequest("Y"));
+
+        verify(batchJobClient).submitTransactionDetailReport("2024-02-01", "2024-02-29");
+        assertThat(result.getErrorMessage()).isEqualTo("Monthly report submitted for printing ...");
+    }
+
+    /**
+     * :purpose: With time frozen one second before a year rolls over, the Monthly
+     *   range stays inside December of the outgoing year
+     *   (``2026-12-01``/``2026-12-31``).
+     */
+    @Test
+    void monthlyRangeAtYearEndIsPinnedToDecemberOfTheOutgoingYear() {
+        stubLaunchCompleted();
+
+        ReportResponseDto result = serviceWithClock(FIXED_YEAR_END).requestReport(monthlyRequest("Y"));
+
+        verify(batchJobClient).submitTransactionDetailReport("2026-12-01", "2026-12-31");
         assertThat(result.getErrorMessage()).isEqualTo("Monthly report submitted for printing ...");
     }
 
@@ -289,12 +383,41 @@ class ReportServiceTest {
     @Test
     void yearlyConfirmY_submits() {
         stubLaunchCompleted();
-        int yr = LocalDate.now().getYear();
 
         ReportResponseDto result = reportService.requestReport(yearlyRequest("Y"));
 
-        verify(jobSchedulingConfig).launchStatementGeneration(
-                "Yearly", String.format("%04d-01-01", yr), String.format("%04d-12-31", yr));
+        // Literal calendar-year range for the baseline frozen clock (2026-03-17).
+        verify(batchJobClient).submitTransactionDetailReport("2026-01-01", "2026-12-31");
+        assertThat(result.getErrorMessage()).isEqualTo("Yearly report submitted for printing ...");
+    }
+
+    /**
+     * :purpose: With time frozen one second before a year rolls over, the Yearly
+     *   range remains the outgoing calendar year (``2026-01-01``/``2026-12-31``): the
+     *   year-end boundary that a wall-clock assertion would race is asserted
+     *   deterministically.
+     */
+    @Test
+    void yearlyRangeAtYearEndIsPinnedToTheOutgoingYear() {
+        stubLaunchCompleted();
+
+        ReportResponseDto result = serviceWithClock(FIXED_YEAR_END).requestReport(yearlyRequest("Y"));
+
+        verify(batchJobClient).submitTransactionDetailReport("2026-01-01", "2026-12-31");
+        assertThat(result.getErrorMessage()).isEqualTo("Yearly report submitted for printing ...");
+    }
+
+    /**
+     * :purpose: On a leap-year clock the Yearly range still spans the whole calendar
+     *   year (``2024-01-01``/``2024-12-31``); the leap day does not shift either bound.
+     */
+    @Test
+    void yearlyRangeOnALeapYearSpansTheWholeCalendarYear() {
+        stubLaunchCompleted();
+
+        ReportResponseDto result = serviceWithClock(FIXED_LEAP_MONTH_END).requestReport(yearlyRequest("Y"));
+
+        verify(batchJobClient).submitTransactionDetailReport("2024-01-01", "2024-12-31");
         assertThat(result.getErrorMessage()).isEqualTo("Yearly report submitted for printing ...");
     }
 
@@ -322,7 +445,7 @@ class ReportServiceTest {
         ReportResponseDto result = reportService.requestReport(
                 customRequest("03", "01", "2024", "03", "31", "2024", "Y"));
 
-        verify(jobSchedulingConfig).launchStatementGeneration("Custom", "2024-03-01", "2024-03-31");
+        verify(batchJobClient).submitTransactionDetailReport("2024-03-01", "2024-03-31");
         assertThat(result.getErrorMessage()).isEqualTo("Custom report submitted for printing ...");
     }
 
@@ -533,7 +656,7 @@ class ReportServiceTest {
      */
     @Test
     void launchFailurePropagatesCardDemoException() {
-        when(jobSchedulingConfig.launchStatementGeneration(any(), any(), any()))
+        when(batchJobClient.submitTransactionDetailReport(any(), any()))
                 .thenThrow(new CardDemoException("Unable to Write TDQ (JOBS)..."));
         ReportRequestDto request = monthlyRequest("Y");
 
@@ -543,20 +666,20 @@ class ReportServiceTest {
     }
 
     /**
-     * :purpose: The launch is fire-and-forget: even when the returned future never
-     *   completes, ``requestReport`` returns promptly with the submission success
-     *   message, proving the service never calls ``.get()`` / ``.join()`` on the
-     *   future. The timeout guards against a regression that would block the caller.
+     * :purpose: The submission hand-off returns promptly with the frozen success
+     *   message and never waits on the launched run itself. The timeout guards against
+     *   a regression that would block the caller for the duration of the job.
      */
     @Test
     @Timeout(5)
     void requestDoesNotBlockOnJob() {
-        when(jobSchedulingConfig.launchStatementGeneration(any(), any(), any()))
-                .thenReturn(new CompletableFuture<>());
+        when(batchJobClient.submitTransactionDetailReport(any(), any()))
+                .thenReturn(new BatchJobExecutionDto("transactionDetailReportJob", 2L, 2L,
+                        "STARTED", "UNKNOWN", null));
 
         ReportResponseDto result = reportService.requestReport(monthlyRequest("Y"));
 
-        verify(jobSchedulingConfig).launchStatementGeneration(any(), any(), any());
+        verify(batchJobClient).submitTransactionDetailReport(any(), any());
         assertThat(result.getErrorMessage()).isEqualTo("Monthly report submitted for printing ...");
     }
 

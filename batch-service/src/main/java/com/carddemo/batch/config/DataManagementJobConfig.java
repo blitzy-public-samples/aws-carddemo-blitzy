@@ -16,7 +16,7 @@
 
 package com.carddemo.batch.config;
 
-import com.carddemo.batch.batch.BatchOutputPathResolver;
+import com.carddemo.common.batch.BatchOutputPathResolver;
 import com.carddemo.batch.batch.CategoryBalanceReportWriter;
 import com.carddemo.batch.batch.CobolRecordFormatter;
 import com.carddemo.batch.batch.CombineTransactionsTasklet;

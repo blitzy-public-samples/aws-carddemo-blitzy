@@ -28,7 +28,7 @@ import jakarta.validation.constraints.Size;
 public class BillPaymentRequestDto {
 
     /** :purpose: Account id being paid (COBIL00 ``ACTIDIN`` / ``ACCT-ID`` PIC X(11)). */
-    @Size(max = 11)
+    @Size(max = 11, message = "Account number must be a non zero 11 digit number")
     private String accountId;
 
     /**
@@ -36,7 +36,7 @@ public class BillPaymentRequestDto {
      *  executes the payment; ``N``/``n``/blank/absent declines it; any other value is
      *  invalid.
      */
-    @Size(max = 1)
+    @Size(max = 1, message = "Invalid value. Valid values are (Y/N)...")
     private String confirm;
 
     /**

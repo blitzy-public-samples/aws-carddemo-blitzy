@@ -21,7 +21,7 @@ import com.carddemo.auth.dto.SignonResponseDto;
 import com.carddemo.auth.service.AuthenticationService;
 import com.carddemo.common.config.CorrelationIdContext;
 import com.carddemo.common.dto.ErrorResponse;
-import jakarta.servlet.http.HttpSession;
+import jakarta.servlet.http.HttpServletRequest;
 import jakarta.validation.Valid;
 import org.slf4j.MDC;
 import org.springframework.http.HttpStatus;
@@ -62,14 +62,23 @@ public class AuthenticationController {
      * :purpose: Authenticate a sign-on request (CICS ``CC00``) by delegating to
      *  {@link AuthenticationService}.
      * :param request: sign-on credentials (user id and password).
-     * :param session: current HTTP session that receives the externalized
-     *  session context.
+     * :param httpRequest: current request; the service creates its session only
+     *  after the credentials verify, so a rejected sign-on leaves none behind.
      * :returns: the sign-on response (user id, user type, redirect target) with
      *  HTTP 200.
+     * :note: Takes the servlet request rather than an ``HttpSession`` parameter
+     *     deliberately. Spring resolves an ``HttpSession`` argument EAGERLY with
+     *     ``getSession(true)`` before the handler body runs, so declaring one
+     *     minted a Redis session for every sign-on attempt - including the failed
+     *     ones that never reach {@link AuthenticationService}'s publish step.
+     *     Deferring creation to the success path keeps a rejected credential from
+     *     consuming session storage, which is what lets a brute-force attempt be
+     *     absorbed without unbounded session growth.
      */
     @PostMapping("/signon")
-    public SignonResponseDto signon(@Valid @RequestBody SignonRequestDto request, HttpSession session) {
-        return authenticationService.signon(request, session);
+    public SignonResponseDto signon(@Valid @RequestBody SignonRequestDto request,
+                                    HttpServletRequest httpRequest) {
+        return authenticationService.signon(request, httpRequest);
     }
 
     /**
@@ -90,6 +99,7 @@ public class AuthenticationController {
                 ex.getReason(),
                 extractPath(request));
         body.setTraceId(resolveTraceId());
+        body.setCorrelationId(CorrelationIdContext.getCorrelationId());
         return ResponseEntity.status(ex.getStatusCode()).body(body);
     }
 
@@ -112,11 +122,16 @@ public class AuthenticationController {
      *  correlation id.
      * :returns: the trace id, or ``null`` when neither source is present.
      */
+    /**
+     * :purpose: Resolve the DISTRIBUTED-TRACE id of the current request from the ``traceId`` MDC
+     *     entry published by Micrometer Tracing.
+     * :returns: the current trace id, or ``null`` when the request was not traced.
+     * :note: Deliberately no fallback to the correlation id: the envelope reports the two ids in
+     *     their own fields (``traceId`` and ``correlationId``) so each value resolves where it
+     *     actually exists - the trace backend and the log stream respectively.
+     */
     private String resolveTraceId() {
         String traceId = MDC.get("traceId");
-        if (traceId == null || traceId.isBlank()) {
-            traceId = CorrelationIdContext.getCorrelationId();
-        }
-        return traceId;
+        return (traceId == null || traceId.isBlank()) ? null : traceId;
     }
 }

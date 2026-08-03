@@ -42,6 +42,7 @@ import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
 import org.springframework.boot.webmvc.test.autoconfigure.WebMvcTest;
 import org.springframework.context.annotation.Import;
 import org.springframework.http.MediaType;
@@ -49,6 +50,7 @@ import org.springframework.mock.web.MockHttpSession;
 import org.springframework.test.context.ContextConfiguration;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.web.servlet.MockMvc;
+import org.springframework.test.web.servlet.MvcResult;
 
 import tools.jackson.databind.ObjectMapper;
 
@@ -68,13 +70,19 @@ import tools.jackson.databind.ObjectMapper;
  *  ``@EnableJpaRepositories`` would otherwise require a JPA ``EntityManagerFactory`` absent
  *  from this pure web slice.
  */
+// This slice verifies the controller contract only, so the security filter chain is
+// not applied here. Authentication and authorization are configured centrally
+// (carddemo-common SecurityHardening plus this service's SecurityConfig), unit-tested
+// in carddemo-common, asserted for this service by its SecurityContractTest, and
+// verified against the running service.
+@AutoConfigureMockMvc(addFilters = false)
 @WebMvcTest(BillPaymentController.class)
 @ContextConfiguration(classes = BillPaymentController.class)
 @Import(GlobalExceptionHandler.class)
 class BillPaymentControllerTest {
 
     /** :purpose: Frozen ``HttpSession`` attribute key shared by every CardDemo service. */
-    private static final String SESSION_CONTEXT_ATTRIBUTE = "carddemoSessionContext";
+    private static final String SESSION_CONTEXT_ATTRIBUTE = SessionContext.SESSION_ATTRIBUTE_NAME;
 
     /** :purpose: Verbatim ``COBIL00C`` confirm-payment prompt (L237). */
     private static final String MSG_CONFIRM_PAYMENT = "Confirm to make a bill payment...";
@@ -96,6 +104,19 @@ class BillPaymentControllerTest {
     /** :purpose: Mocked bill-payment collaborator; stubbed per scenario, never really invoked. */
     @MockitoBean
     private BillPaymentService billPaymentService;
+
+    /**
+     * :purpose: Build a session in the state sign-on leaves it: carrying the
+     *  externalized {@link SessionContext}. The ``SecurityFilterChain`` authenticates the
+     *  caller from this attribute, so every request that reaches the controller in
+     *  production has it.
+     * :returns: a ``MockHttpSession`` carrying a {@link SessionContext}.
+     */
+    private static MockHttpSession signedOnSession() {
+        MockHttpSession session = new MockHttpSession();
+        session.setAttribute(SESSION_CONTEXT_ATTRIBUTE, new SessionContext());
+        return session;
+    }
 
     /**
      * :purpose: Confirmed payment (confirm ``Y``) returns HTTP 200 with the post-payment balance,
@@ -122,7 +143,7 @@ class BillPaymentControllerTest {
 
         BillPaymentRequestDto request = new BillPaymentRequestDto("12345678901", "Y");
 
-        mockMvc.perform(post("/billpay")
+        mockMvc.perform(post("/billpay").session(signedOnSession())
                         .session(session)
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(objectMapper.writeValueAsString(request)))
@@ -154,7 +175,7 @@ class BillPaymentControllerTest {
 
         BillPaymentRequestDto request = new BillPaymentRequestDto("12345678901", "");
 
-        mockMvc.perform(post("/billpay")
+        mockMvc.perform(post("/billpay").session(signedOnSession())
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(objectMapper.writeValueAsString(request)))
                 .andExpect(status().isOk())
@@ -177,7 +198,7 @@ class BillPaymentControllerTest {
 
         BillPaymentRequestDto request = new BillPaymentRequestDto("12345678901", "Y");
 
-        mockMvc.perform(post("/billpay")
+        mockMvc.perform(post("/billpay").session(signedOnSession())
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(objectMapper.writeValueAsString(request)))
                 .andExpect(status().isBadRequest())
@@ -199,7 +220,7 @@ class BillPaymentControllerTest {
 
         BillPaymentRequestDto request = new BillPaymentRequestDto("99999999999", "Y");
 
-        mockMvc.perform(post("/billpay")
+        mockMvc.perform(post("/billpay").session(signedOnSession())
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(objectMapper.writeValueAsString(request)))
                 .andExpect(status().isNotFound())
@@ -221,7 +242,7 @@ class BillPaymentControllerTest {
 
         BillPaymentRequestDto request = new BillPaymentRequestDto("12345678901", "Y");
 
-        mockMvc.perform(post("/billpay")
+        mockMvc.perform(post("/billpay").session(signedOnSession())
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(objectMapper.writeValueAsString(request)))
                 .andExpect(status().isConflict())
@@ -241,7 +262,7 @@ class BillPaymentControllerTest {
     void validationFailureReturns400WithFieldErrors() throws Exception {
         String invalidBody = "{\"accountId\":\"123456789012\",\"confirm\":\"Y\"}";
 
-        mockMvc.perform(post("/billpay")
+        mockMvc.perform(post("/billpay").session(signedOnSession())
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(invalidBody))
                 .andExpect(status().isBadRequest())
@@ -250,5 +271,33 @@ class BillPaymentControllerTest {
                 .andExpect(jsonPath("$.fieldErrors.accountId").exists());
 
         verifyNoInteractions(billPaymentService);
+    }
+
+    /**
+     * :purpose: Regression guard for QA Issue 22 (Redis session churn). A caller that
+     *  arrives without a session must leave without one: the endpoint takes
+     *  ``HttpServletRequest`` and reads the pseudo-conversational context through
+     *  ``getSession(false)``, so no Spring Session entry is created - and therefore none
+     *  is persisted to Redis - for an anonymous one-off call. Declaring an
+     *  ``HttpSession`` parameter instead made Spring's argument resolver call
+     *  ``getSession()`` unconditionally on every request.
+     */
+    @Test
+    @DisplayName("QA Issue 22: POST /billpay creates no HTTP session for a sessionless caller")
+    void billPaymentCreatesNoSessionForSessionlessCaller() throws Exception {
+        BillPaymentResponseDto stubbed = new BillPaymentResponseDto(
+                "12345678901", new BigDecimal("0.00"), "0000000000000001", "ok");
+        when(billPaymentService.processBillPayment(any(BillPaymentRequestDto.class),
+                any(SessionContext.class)))
+                .thenReturn(stubbed);
+
+        MvcResult result = mockMvc.perform(post("/billpay")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(
+                                new BillPaymentRequestDto("12345678901", "Y"))))
+                .andExpect(status().isOk())
+                .andReturn();
+
+        assertThat(result.getRequest().getSession(false)).isNull();
     }
 }

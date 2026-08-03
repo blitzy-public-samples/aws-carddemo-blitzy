@@ -37,6 +37,7 @@ import org.springframework.batch.infrastructure.repeat.RepeatContext;
 import org.springframework.batch.infrastructure.repeat.RepeatStatus;
 import org.springframework.batch.infrastructure.repeat.context.RepeatContextSupport;
 import org.springframework.batch.infrastructure.repeat.policy.CompletionPolicySupport;
+import org.springframework.batch.core.configuration.annotation.StepScope;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.data.domain.Sort;
@@ -70,8 +71,9 @@ import java.util.Map;
  *     ``interestCalculationJob`` beans. ``JobRepository`` and the batch
  *     ``PlatformTransactionManager`` are supplied by Spring Boot batch
  *     auto-configuration and taken as ``@Bean`` method parameters; no batch
- *     infrastructure is self-instantiated and ``@EnableBatchProcessing`` is
- *     intentionally absent so the Boot auto-configuration stays active. The step
+ *     infrastructure is self-instantiated here, and ``@EnableBatchProcessing``
+ *     with ``@EnableJdbcJobRepository`` is declared once for the module in
+ *     ``JdbcBatchConfiguration`` so executions are persisted. The step
  *     runs single-threaded with no skip or retry so the writer's global,
  *     monotonic interest transaction-id suffix stays contiguous.
  */
@@ -100,8 +102,18 @@ public class InterestCalculationJobConfig {
      *     ``tran_cat_bal`` table supplying category-balance rows.
      * :returns: a ``SingleItemPeekableItemReader`` over {@link TranCatBal} rows in
      *     ascending ``(trancatAcctId, trancatTypeCd, trancatCd)`` order.
+     * :note: ``@StepScope`` is required for correctness, not merely convenience. This
+     *     reader is an ``ItemStream`` carrying the run's page cursor and peeked row; as
+     *     a singleton it was shared by every concurrent step execution, so two
+     *     simultaneous interest runs consumed one another's rows, opened and closed the
+     *     same stream twice, and produced colliding interest transaction ids. Step
+     *     scoping gives each ``StepExecution`` its own reader, delegate, cursor and
+     *     ``ExecutionContext`` entry. The step and the control-break completion policy
+     *     hold the scoped proxy, so every read and peek resolves to the reader belonging
+     *     to the execution that issued it.
      */
     @Bean
+    @StepScope
     public SingleItemPeekableItemReader<TranCatBal> interestTranCatBalReader(
             TranCatBalRepository tranCatBalRepository) {
         // LinkedHashMap preserves the exact multi-key ORDER BY sequence
@@ -176,6 +188,11 @@ public class InterestCalculationJobConfig {
      * :param interestTransactionWriter: writer that persists interest
      *     transactions and performs the once-per-account balance roll-up.
      * :returns: the ``interestCalculationStep`` ``Step``.
+     * :note: ``interestTranCatBalReader`` arrives here as a ``@StepScope`` proxy, so the
+     *     single policy instance held by this singleton step still peeks the reader
+     *     belonging to the calling ``StepExecution``; the policy itself keeps no
+     *     cross-execution state, deriving each chunk's account from a fresh
+     *     ``AccountChunkContext``.
      */
     @Bean
     @SuppressWarnings({"deprecation", "removal"})

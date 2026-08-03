@@ -84,11 +84,48 @@
             <artifactId>micrometer-registry-prometheus</artifactId>
         </dependency>
 
-        <!-- Distributed tracing via the OpenTelemetry bridge. -->
+        <!--
+          Distributed tracing (AAP 0.7.5). The Boot OpenTelemetry starter brings the
+          Micrometer Tracing OTel bridge TOGETHER WITH the tracing/OTel
+          auto-configuration and the OTLP span exporter. The bridge alone leaves
+          no Tracer in the context, so no trace context is created and every
+          traceId/spanId stays empty (QA F28).
+        -->
         <dependency>
-            <groupId>io.micrometer</groupId>
-            <artifactId>micrometer-tracing-bridge-otel</artifactId>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-opentelemetry</artifactId>
         </dependency>
+
+        <!--
+          Tracing auto-configuration. Spring Boot 4 ships auto-configuration in
+          dedicated modules, so the bridge above is inert on its own: without these
+          two modules no Tracer or ObservationRegistry tracing handler is created and
+          no traceId/spanId ever reaches the SLF4J MDC, leaving the structured log
+          lines uncorrelatable across service boundaries (AAP 0.7.5).
+        -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-micrometer-tracing</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-micrometer-tracing-opentelemetry</artifactId>
+        </dependency>
+
+        <!--
+          Spring Boot 4 extracted tracing auto-configuration out of spring-boot-actuator into
+          dedicated modules. Without BOTH of the modules below the bridge above is completely
+          inert: no io.micrometer.tracing.Tracer bean is created, no spans are produced, the
+          management.tracing.sampling.probability setting is ignored, and the traceId/spanId
+          fields of the logback-spring.xml pattern stay permanently empty.
+            * spring-boot-micrometer-tracing               -> MicrometerTracingAutoConfiguration
+                                                              (span-producing observation handlers)
+            * spring-boot-micrometer-tracing-opentelemetry -> OpenTelemetryTracingAutoConfiguration
+                                                              (SdkTracerProvider + OtelTracer +
+                                                               W3C context propagators)
+          No OTLP/Zipkin exporter artifact is declared, so spans are created and correlated into
+          the MDC but not shipped off-box; adding an exporter is a deployment-time choice.
+        -->
 
         <!-- PostgreSQL JDBC driver. -->
         <dependency>
@@ -97,7 +134,7 @@
             <scope>runtime</scope>
         </dependency>
 
-        <!-- Flyway schema and seed migrations. -->
+        <!-- Flyway engine + PostgreSQL support for the shared carddemo-common migration set. -->
         <dependency>
             <groupId>org.flywaydb</groupId>
             <artifactId>flyway-core</artifactId>
@@ -126,6 +163,21 @@
             <version>${project.version}</version>
         </dependency>
 
+        <!--
+          Shared test-support utilities from carddemo-common (test-jar), above all
+          com.carddemo.common.testsupport.CardDemoSchemaMigrations: it applies the real
+          committed Flyway migrations of every owning module to the throwaway test
+          database so integration tests run against the deployed schema instead of DDL
+          fabricated inside the test.
+        -->
+        <dependency>
+            <groupId>com.carddemo</groupId>
+            <artifactId>carddemo-common</artifactId>
+            <version>${project.version}</version>
+            <type>test-jar</type>
+            <scope>test</scope>
+        </dependency>
+
         <!-- Test stack: JUnit 5 (Jupiter), AssertJ, Mockito, Spring test support. -->
         <dependency>
             <groupId>org.springframework.boot</groupId>
@@ -143,6 +195,17 @@
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-webmvc-test</artifactId>
+            <scope>test</scope>
+        </dependency>
+
+        <!--
+            Spring Security test support: supplies the springSecurity() MockMvc configurer and
+            @WithMockUser, required to exercise the production SecurityFilterChain with the
+            servlet filters ENABLED (SecurityConfigTest) rather than bypassed.
+        -->
+        <dependency>
+            <groupId>org.springframework.security</groupId>
+            <artifactId>spring-security-test</artifactId>
             <scope>test</scope>
         </dependency>
 

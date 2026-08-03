@@ -21,6 +21,7 @@ import com.carddemo.billpay.repository.CardXrefRepository;
 import com.carddemo.billpay.repository.TransactionRepository;
 import com.carddemo.billpay.service.BillPaymentService;
 import com.carddemo.common.domain.Account;
+import com.carddemo.common.testsupport.MigratedSchemaContainer;
 import com.carddemo.common.domain.Transaction;
 import com.carddemo.common.dto.BillPaymentRequestDto;
 import com.carddemo.common.dto.BillPaymentResponseDto;
@@ -43,13 +44,9 @@ import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
 
-import org.testcontainers.containers.PostgreSQLContainer;
-import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
-import org.testcontainers.utility.DockerImageName;
 
 import java.math.BigDecimal;
-import java.util.Base64;
 import java.util.Optional;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -77,22 +74,21 @@ import static org.mockito.Mockito.when;
 public class BillPaymentIntegrationTest {
 
     /*
-     * Configure a throwaway PII encryption key before the Spring context (and any
-     * JPA attribute converter) initialises. The shared Customer entity encrypts its
-     * PII columns through CryptoConverter, which fails fast when no key is present;
-     * the fixtures here leave those columns null, but the key is set defensively so
-     * the context can never fail on a missing key. The value is a Base64-encoded
-     * 32-byte (256-bit) all-zero key usable only for tests.
+     * The PII encryption key CryptoConverter fails fast without is supplied by this
+     * module's surefire AND failsafe <systemPropertyVariables> configuration, so it is
+     * present for every test in the module regardless of execution order or of which
+     * class runs first. It is deliberately NOT set from a static initializer here: a
+     * test class that installs a process-wide system property makes every other class
+     * in the fork depend on it having run, which is precisely the isolation defect the
+     * build configuration exists to avoid.
      */
-    static {
-        if (System.getProperty("carddemo.pii.key") == null
-                && System.getenv("CARDDEMO_PII_KEY") == null) {
-            System.setProperty("carddemo.pii.key",
-                    Base64.getEncoder().encodeToString(new byte[32]));
-        }
-    }
 
     /** Sequence backing ``TransactionRepository.getNextTransactionId()`` (native query). */
+    /**
+     * :purpose: Idempotent guard for ``transaction_id_seq``. The sequence is created by the
+     *  transaction-service migration ``V4__create_transaction_id_sequence.sql``; the
+     *  ``IF NOT EXISTS`` form keeps the fixture reset self-contained without redefining it.
+     */
     private static final String TRANSACTION_ID_SEQ =
             "CREATE SEQUENCE IF NOT EXISTS transaction_id_seq AS BIGINT START WITH 1 INCREMENT BY 1";
 
@@ -127,8 +123,10 @@ public class BillPaymentIntegrationTest {
 
     // --- Deterministic fixture identifiers. ---
 
-    private static final long ACCT_ID_1 = 100000000001L;
-    private static final long ACCT_ID_2 = 100000000002L;
+    // ACCT-ID is PIC 9(11), and chk_accounts_acct_id enforces that width, so a fixture id
+    // must stay within eleven digits; 9xxxxxxxxxx keeps it clear of the 1..50 seed range.
+    private static final long ACCT_ID_1 = 90000000001L;
+    private static final long ACCT_ID_2 = 90000000002L;
     private static final long CUST_ID_1 = 100000001L;
     private static final long CUST_ID_2 = 100000002L;
     private static final String CARD_NUM_1 = "4111111111111111";
@@ -137,35 +135,19 @@ public class BillPaymentIntegrationTest {
     private static final BigDecimal ZERO_BALANCE = new BigDecimal("0.00");
 
     /**
-     * Ephemeral PostgreSQL 18 container shared by every test in this class (started once
-     * by the Testcontainers extension). The legacy ``org.testcontainers.containers``
-     * ``PostgreSQLContainer`` is used deliberately: it retains the self-referential
-     * generic type, so the ``<?>`` wildcard and fluent builder calls compile under
-     * Testcontainers 2.x.
-     */
-    @Container
-    @SuppressWarnings("deprecation")
-    static final PostgreSQLContainer<?> POSTGRES =
-            new PostgreSQLContainer<>(DockerImageName.parse("postgres:18"))
-                    .withDatabaseName("carddemo")
-                    .withUsername("test")
-                    .withPassword("test");
-
-    /**
-     * :purpose: Bind the Spring datasource to the running container and switch Hibernate
-     *  to ``create-drop`` so the shared ``carddemo-common`` entity tables (``accounts``,
-     *  ``card_xref``, ``transactions`` and the remaining scanned entities) are generated
-     *  into the otherwise-empty container. Overrides the ``jdbc:tc:`` URL and
-     *  Testcontainers driver declared in ``application-test.yml``.
+     * :purpose: Bind the Spring datasource to the shared, already-migrated ``postgres:18``
+     *  container from :java:class:`com.carddemo.common.testsupport.MigratedSchemaContainer`,
+     *  whose schema - ``accounts``, ``card_xref``, ``transactions``, the transaction-id
+     *  sequence and every other scanned entity's table - is produced exclusively by the
+     *  owning modules' committed Flyway migrations. Hibernate is set to ``validate``, never
+     *  ``create-drop``: the mapping is asserted against the deployed schema. Overrides the
+     *  ``jdbc:tc:`` URL and Testcontainers driver declared in ``application-test.yml``.
      * :param registry: the Spring dynamic-property registry to populate.
      */
     @DynamicPropertySource
     static void datasourceProperties(DynamicPropertyRegistry registry) {
-        registry.add("spring.datasource.url", POSTGRES::getJdbcUrl);
-        registry.add("spring.datasource.username", POSTGRES::getUsername);
-        registry.add("spring.datasource.password", POSTGRES::getPassword);
-        registry.add("spring.datasource.driver-class-name", () -> "org.postgresql.Driver");
-        registry.add("spring.jpa.hibernate.ddl-auto", () -> "create-drop");
+        MigratedSchemaContainer.registerDataSource(registry);
+        registry.add("spring.jpa.hibernate.ddl-auto", () -> "validate");
     }
 
     @Autowired
@@ -204,6 +186,12 @@ public class BillPaymentIntegrationTest {
         jdbc.execute(TRANSACTION_ID_SEQ);
         jdbc.execute("DELETE FROM card_xref");
         jdbc.execute("DELETE FROM transactions");
+        // The migration seed carries 50 cards that foreign-key into accounts, so they are
+        // removed before their parents; these tests own the content of the fixture tables.
+        jdbc.execute("DELETE FROM cards");
+        // tran_cat_bal foreign-keys into accounts (fk_tran_cat_bal_acct), so the seeded
+        // category balances go before their parent accounts.
+        jdbc.execute("DELETE FROM tran_cat_bal");
         jdbc.execute("DELETE FROM accounts");
         jdbc.execute("DELETE FROM customers");
     }
@@ -234,9 +222,16 @@ public class BillPaymentIntegrationTest {
      */
     static void seedCustomer(JdbcTemplate jdbc, long custId) {
         jdbc.update(
-                "INSERT INTO customers (cust_id, cust_first_name, cust_last_name, "
-                        + "cust_fico_credit_score, version) VALUES (?, ?, ?, ?, ?)",
-                custId, "Test", "Customer", 700, 0L);
+                "INSERT INTO customers (cust_id, cust_first_name, cust_middle_name, "
+                        + "cust_last_name, cust_addr_line_1, cust_addr_line_2, cust_addr_line_3, "
+                        + "cust_addr_state_cd, cust_addr_country_cd, cust_addr_zip, "
+                        + "cust_phone_num_1, cust_phone_num_2, cust_ssn, cust_govt_issued_id, "
+                        + "cust_dob_yyyy_mm_dd, cust_eft_account_id, cust_pri_card_holder_ind, "
+                        + "cust_fico_credit_score, version) "
+                        + "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                custId, "Test", "T", "Customer", "Addr line 1", "Addr line 2", "Addr line 3",
+                "NC", "USA", "00000", "(000)000-0000", "(000)000-0000", "", "", "1970-01-01",
+                "", "Y", 700, 0L);
     }
 
     /**
@@ -251,10 +246,13 @@ public class BillPaymentIntegrationTest {
         jdbc.update(
                 "INSERT INTO accounts (acct_id, acct_active_status, acct_curr_bal, "
                         + "acct_credit_limit, acct_cash_credit_limit, acct_open_date, "
-                        + "acct_curr_cyc_credit, acct_curr_cyc_debit, version) "
-                        + "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                        + "acct_expiraion_date, acct_reissue_date, acct_curr_cyc_credit, "
+                        + "acct_curr_cyc_debit, acct_addr_zip, version) "
+                        + "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 acctId, "Y", balance, new BigDecimal("5000.00"), new BigDecimal("5000.00"),
-                "2020-01-01", new BigDecimal("0.00"), new BigDecimal("0.00"), 0L);
+                // The legacy copybook misspelling ACCT-EXPIRAION-DATE is preserved verbatim.
+                "2020-01-01", "2099-12-31", "2020-01-01", new BigDecimal("0.00"),
+                new BigDecimal("0.00"), "00000", 0L);
     }
 
     /**

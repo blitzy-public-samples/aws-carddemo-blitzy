@@ -23,15 +23,18 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.context.ApplicationContext;
 import org.springframework.test.context.ActiveProfiles;
+import org.springframework.test.context.DynamicPropertyRegistry;
+import org.springframework.test.context.DynamicPropertySource;
+
+import com.carddemo.common.testsupport.MigratedSchemaContainer;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
  * :purpose: Failsafe integration smoke test that boots the full transaction-service
  *  Spring context against a real, throwaway PostgreSQL provisioned by Testcontainers
- *  (the ``jdbc:tc:postgresql:18:///carddemo`` datasource URL in the ``test`` profile
- *  makes ``ContainerDatabaseDriver`` start and stop the ``postgres:18`` container
- *  automatically). It verifies two invariants of the re-platformed transaction
+ *  (the shared ``postgres:18`` container carrying the schema the committed Flyway
+ *  migrations produce). It verifies two invariants of the re-platformed transaction
  *  feature (legacy online ``COTRN00C``/``COTRN01C``/``COTRN02C`` plus the
  *  ``CBTRN02C`` batch posting engine driven by ``POSTTRAN.jcl``): the application
  *  context wires cleanly with the Redis/Spring Session auto-configuration excluded,
@@ -42,14 +45,27 @@ import static org.assertj.core.api.Assertions.assertThat;
  *  ``transactionPostingJob`` bean whose name matches its frozen identifier while
  *  reporting zero job instances at boot.
  */
-@SpringBootTest(properties = {
-        // Create the scanned entity tables not owned by transaction-service migrations.
-        "spring.jpa.hibernate.ddl-auto=update",
-        // Provision the Spring Batch metadata tables for the JobRepository query.
-        "spring.batch.jdbc.initialize-schema=always"
-})
+// The shared migration set in carddemo-common (enabled for the ``test`` profile) provisions the
+// whole schema - business tables AND the Spring Batch metadata the JobRepository query needs - so
+// the context boots on the production settings: Hibernate ``ddl-auto: validate`` with the JDBC
+// batch-schema initializer left off.
+@SpringBootTest
 @ActiveProfiles("test")
 public class TransactionServiceApplicationIT {
+
+    /**
+     * :purpose: Bind the datasource to the shared, already-migrated ``postgres:18`` container
+     *  from :java:class:`com.carddemo.common.testsupport.MigratedSchemaContainer`. Its schema -
+     *  including the transaction tables and reference data this service owns and the Spring
+     *  Batch metadata tables - is produced exclusively by the committed Flyway migrations, so
+     *  the ``test`` profile's ``ddl-auto: validate`` asserts the entity-to-migration contract
+     *  rather than letting Hibernate create whatever the entities imply.
+     * :param registry: the dynamic property registry supplied by the Spring Test context.
+     */
+    @DynamicPropertySource
+    static void datasourceProperties(DynamicPropertyRegistry registry) {
+        MigratedSchemaContainer.registerDataSource(registry);
+    }
 
     /** :purpose: The booted transaction-service application context under test. */
     @Autowired

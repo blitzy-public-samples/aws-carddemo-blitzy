@@ -58,11 +58,11 @@ public class MenuController {
 
     /**
      * :purpose: ``HttpSession`` attribute key under which the pseudo-conversational
-     *  :java:type:`SessionContext` is stored. This key must stay consistent with the
-     *  key used by the other services' session handling (a coordination point; the
-     *  ``com.carddemo.gateway.config.SessionConfig`` is not yet created).
+     *  :java:type:`SessionContext` is stored. It is the canonical constant published by
+     *  :java:type:`SessionContext`, the single key written by sign-on and read by every
+     *  service, so the admin-only menu gate always sees the signed-on role.
      */
-    private static final String SESSION_CONTEXT_ATTR = "sessionContext";
+    private static final String SESSION_CONTEXT_ATTR = SessionContext.SESSION_ATTRIBUTE_NAME;
 
     /** :purpose: Action-key value modeling COBOL ``DFHENTER`` (submit / select). */
     private static final String AID_ENTER = "ENTER";

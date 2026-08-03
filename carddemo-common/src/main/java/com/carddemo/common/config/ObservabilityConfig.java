@@ -16,16 +16,20 @@
 package com.carddemo.common.config;
 
 import io.micrometer.common.KeyValue;
+import io.micrometer.context.ContextRegistry;
 import io.micrometer.core.instrument.Meter;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.config.MeterFilter;
 import io.micrometer.core.instrument.distribution.DistributionStatisticConfig;
 import io.micrometer.observation.ObservationFilter;
+import jakarta.annotation.PostConstruct;
 import java.time.Duration;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.micrometer.metrics.autoconfigure.MeterRegistryCustomizer;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.core.task.TaskDecorator;
+import org.springframework.core.task.support.ContextPropagatingTaskDecorator;
 
 /**
  * :purpose: Shared observability configuration that realizes the CardDemo Observability rule for
@@ -54,6 +58,21 @@ public class ObservabilityConfig {
      *           as a histogram bucket boundary so Prometheus exposes an ``le="0.2"`` bucket.
      */
     private static final Duration LATENCY_SLO = Duration.ofMillis(200);
+
+    /**
+     * :purpose: Carry the correlation id of the submitting thread onto the worker thread of
+     *           every task run through a Spring-managed executor, so ``@Async`` methods and
+     *           asynchronously launched batch jobs log under the same correlation id as the
+     *           request that triggered them. Declared here as the single
+     *           {@link org.springframework.core.task.TaskDecorator} bean so Spring Boot's task
+     *           executor builder applies it to the auto-configured ``applicationTaskExecutor``
+     *           without any per-service wiring.
+     * :returns: the shared correlation-id propagating task decorator.
+     */
+    @Bean
+    CorrelationIdTaskDecorator correlationIdTaskDecorator() {
+        return new CorrelationIdTaskDecorator();
+    }
 
     /**
      * :purpose: Tag every meter with the service name so per-service metrics are queryable at
@@ -105,5 +124,42 @@ public class ObservabilityConfig {
                 return config;
             }
         };
+    }
+
+    /**
+     * :purpose: Carry the ambient observation/trace scope (and every other registered
+     *           ``ThreadLocalAccessor`` context, including the correlation id) across thread
+     *           boundaries, so work handed to an executor keeps the trace of the request that
+     *           submitted it. Spring Boot applies a single ``TaskDecorator`` bean to the
+     *           auto-configured application task executor, which is what backs ``@Async`` — this is
+     *           how the asynchronous report launch in reporting-service stays attached to its
+     *           caller's trace instead of starting an orphan with no ``traceId``/``spanId``.
+     * :note: Executors built by hand (for example the batch ``TaskExecutorJobLauncher``) are not
+     *        reached by that auto-configuration and set this decorator on themselves.
+     * :returns: a context-propagating task decorator shared by every service.
+     */
+    @Bean
+    TaskDecorator contextPropagatingTaskDecorator() {
+        return new ContextPropagatingTaskDecorator();
+    }
+
+    /**
+     * :purpose: Register {@link CorrelationIdThreadLocalAccessor} in Micrometer's global
+     *           ``ContextRegistry`` so the business correlation id travels with the trace context
+     *           across every thread boundary crossed by {@link #contextPropagatingTaskDecorator()}
+     *           — ``@Async`` report launches and Spring Batch worker threads included.
+     * :note: The decorator alone only propagates contexts that have a registered accessor. Without
+     *        this registration the MDC's ``correlationId`` (a plain ``ThreadLocal``) was lost the
+     *        moment work left the request thread, so asynchronous and batch log records could not be
+     *        correlated back to the request that launched them.
+     * :note: Declared here rather than in {@link WebObservabilityConfig} because the correlation id
+     *        is not web-specific: a non-web module that imports this configuration gets the same
+     *        cross-thread propagation. ``registerThreadLocalAccessor`` replaces any accessor already
+     *        registered under the same key, so repeated context refreshes in a test JVM are
+     *        idempotent.
+     */
+    @PostConstruct
+    void registerCorrelationIdContextAccessor() {
+        ContextRegistry.getInstance().registerThreadLocalAccessor(new CorrelationIdThreadLocalAccessor());
     }
 }

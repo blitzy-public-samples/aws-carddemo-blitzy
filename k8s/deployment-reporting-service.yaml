@@ -68,11 +68,45 @@ spec:
         seccompProfile:
           type: RuntimeDefault
       automountServiceAccountToken: false
+      # Startup ordering gate: the shared CardDemo schema is provisioned by the
+      # SINGLE Flyway migration owner, batch-service (see its application.yml and
+      # docs/decision-log.md). This service runs with spring.flyway.enabled=false
+      # and Hibernate ddl-auto=validate, so it can only start once that schema
+      # exists; without the gate the pod crash-loops on
+      # "Schema validation: missing table". The init container blocks until the
+      # owner reports READY through its Actuator readiness group, using the same
+      # bash /dev/tcp probe idiom as the Compose healthcheck (the eclipse-temurin
+      # base image ships neither curl nor wget).
+      initContainers:
+        - name: await-schema
+          image: eclipse-temurin:21-jre
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+          command:
+            - bash
+            - -c
+            - >-
+              until exec 3<>/dev/tcp/batch-service/8080 2>/dev/null
+              && printf 'GET /actuator/health/readiness HTTP/1.1\r\nHost: batch-service\r\nConnection: close\r\n\r\n' >&3
+              && grep -q '"status":"UP"' <&3;
+              do echo 'waiting for the schema owner (batch-service) to become ready'; sleep 5; done;
+              echo 'schema owner ready'
       containers:
         - name: reporting-service
           # Built by reporting-service/Dockerfile (runtime stage FROM
           # eclipse-temurin:21-jre). Locally built tag, so never pull if
           # the image is already present on the node.
+          # Produced by `docker compose build reporting-service` from reporting-service/Dockerfile (root build context)
+          # (docker-compose.yml carries a matching `image:` key with these exact
+          # registry/name/tag defaults), so this reference resolves to an artifact the
+          # repository builds - no undocumented tag-and-push step (QA Issue 17).
+          # Override the registry or tag for a private registry with
+          # CARDDEMO_IMAGE_REGISTRY / CARDDEMO_IMAGE_TAG at build time.
           image: carddemo/reporting-service:1.0.0
           imagePullPolicy: IfNotPresent
           ports:
@@ -93,6 +127,24 @@ spec:
           volumeMounts:
             - name: tmp
               mountPath: /tmp
+            # Writable batch working directory (QA Issue 21). The read-only root
+            # filesystem leaves nowhere for a job to write, so the statement and
+            # report writers failed with "No such file or directory" while the
+            # caller had already been told the report was submitted. An emptyDir
+            # is created by the kubelet with the pod's fsGroup, so the non-root
+            # container owns it; carddemo-common's BatchOutputPathResolver proves
+            # it writable while the context refreshes.
+            - name: batch-work
+              mountPath: /var/carddemo/batch
+          env:
+            # Batch file roots consumed by carddemo-common's
+            # BatchOutputPathResolver, pointing at the writable emptyDir above.
+            # Substituting a PersistentVolumeClaim for the emptyDir needs no image
+            # or code change because the path is externalized here.
+            - name: CARDDEMO_BATCH_OUTPUT_DIR
+              value: /var/carddemo/batch/output
+            - name: CARDDEMO_BATCH_INPUT_DIR
+              value: /var/carddemo/batch/input
           envFrom:
             - configMapRef:
                 name: carddemo-config
@@ -108,6 +160,11 @@ spec:
             # id, CVV). Services fail closed if it is absent.
             - secretRef:
                 name: carddemo-pii-key
+            # Shared credential of the least-privilege `monitoring` principal
+            # guarding /actuator/prometheus and /actuator/metrics (MJ-17). Must
+            # match the password Prometheus presents, or every scrape gets 401.
+            - secretRef:
+                name: carddemo-monitoring-secret
           resources:
             requests:
               cpu: 250m
@@ -127,6 +184,12 @@ spec:
               port: 8080
             initialDelaySeconds: 10
             periodSeconds: 5
+            # Explicit timeout (QA Issue 3). The default timeoutSeconds is 1, so during any
+            # datastore blip the aggregate health check — which must wait for the bounded
+            # 3s HikariCP / 2s Lettuce dependency timeouts — fails on every attempt and the
+            # pod is killed after failureThreshold x periodSeconds. 4s bounds each attempt
+            # just above the slowest dependency timeout.
+            timeoutSeconds: 4
             failureThreshold: 30
           livenessProbe:
             httpGet:
@@ -146,4 +209,12 @@ spec:
       # Boot fat-jar only needs a writable /tmp (Tomcat work dir, JVM temp).
       volumes:
         - name: tmp
+          emptyDir: {}
+        - name: batch-work
+          # Writable batch working directory for the read-only root filesystem
+          # (QA Issue 21). Deliberately an emptyDir in the reference manifests:
+          # batch output is operational evidence rather than durable data, and an
+          # emptyDir carries no ReadWriteOnce single-writer constraint, so the
+          # Deployment stays scalable. A durable deployment substitutes a
+          # PersistentVolumeClaim here and leaves everything else unchanged.
           emptyDir: {}

@@ -22,6 +22,7 @@ import com.carddemo.common.domain.Customer;
 import com.carddemo.common.dto.AccountUpdateRequestDto;
 import com.carddemo.common.dto.AccountUpdateResponseDto;
 import com.carddemo.common.dto.AccountViewResponseDto;
+import com.carddemo.common.crypto.PiiMasker;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -113,6 +114,44 @@ class AccountMapperTest {
     }
 
     /**
+     * :purpose: Build an update request carrying the fully-valued customer's own values, so
+     *   a scenario can change exactly one field and attribute the outcome to it.
+     * :returns: a populated {@link AccountUpdateRequestDto} mirroring the fixtures.
+     */
+    private AccountUpdateRequestDto newFullyValuedUpdateRequest() {
+        Customer source = newFullyValuedCustomer();
+        AccountUpdateRequestDto request = new AccountUpdateRequestDto();
+        request.setAcctActiveStatus("Y");
+        request.setAcctCurrBal(new BigDecimal("1000.00"));
+        request.setAcctCreditLimit(new BigDecimal("5000.00"));
+        request.setAcctCashCreditLimit(new BigDecimal("2000.00"));
+        request.setAcctCurrCycCredit(new BigDecimal("300.00"));
+        request.setAcctCurrCycDebit(new BigDecimal("150.00"));
+        request.setAcctOpenDate("2020-01-15");
+        request.setAcctExpiraionDate("2025-12-31");
+        request.setAcctReissueDate("2023-06-01");
+        request.setAcctGroupId("GRP001");
+        request.setCustFirstName(source.getCustFirstName());
+        request.setCustMiddleName(source.getCustMiddleName());
+        request.setCustLastName(source.getCustLastName());
+        request.setCustAddrLine1(source.getCustAddrLine1());
+        request.setCustAddrLine2(source.getCustAddrLine2());
+        request.setCustAddrLine3(source.getCustAddrLine3());
+        request.setCustAddrStateCd(source.getCustAddrStateCd());
+        request.setCustAddrCountryCd(source.getCustAddrCountryCd());
+        request.setCustAddrZip(source.getCustAddrZip());
+        request.setCustPhoneNum1(source.getCustPhoneNum1());
+        request.setCustPhoneNum2(source.getCustPhoneNum2());
+        request.setCustSsn(source.getCustSsn());
+        request.setCustGovtIssuedId(source.getCustGovtIssuedId());
+        request.setCustDobYyyyMmDd(source.getCustDobYyyyMmDd());
+        request.setCustEftAccountId(source.getCustEftAccountId());
+        request.setCustPriCardHolderInd(source.getCustPriCardHolderInd());
+        request.setCustFicoCreditScore(source.getCustFicoCreditScore());
+        return request;
+    }
+
+    /**
      * :purpose: Build a card cross-reference fixture. The PAN is an
      *   obviously-fake placeholder and is never asserted as a full value.
      * :returns: a populated {@link CardXref}.
@@ -152,6 +191,8 @@ class AccountMapperTest {
         AccountViewResponseDto dto = mapper.toViewResponse(account, customer, cardXref);
 
         // Account master fields.
+        // The optimistic-lock version travels with the view so the client can echo it back.
+        assertThat(dto.getVersion()).isEqualTo(7L);
         assertThat(dto.getAcctId()).isEqualTo(12345678901L);
         assertThat(dto.getAcctActiveStatus()).isEqualTo("Y");
         assertThat(dto.getAcctCurrBal()).isEqualByComparingTo("1000.00");
@@ -178,9 +219,75 @@ class AccountMapperTest {
         assertThat(dto.getCustPhoneNum1()).isEqualTo("(555)111-2222");
         assertThat(dto.getCustPhoneNum2()).isEqualTo("(555)333-4444");
         assertThat(dto.getCustDobYyyyMmDd()).isEqualTo("1980-05-20");
-        assertThat(dto.getCustEftAccountId()).isEqualTo("EFT0001");
         assertThat(dto.getCustPriCardHolderInd()).isEqualTo("Y");
         assertThat(dto.getCustFicoCreditScore()).isEqualTo(750);
+
+        // AAP 0.6.7 -- the three sensitive customer identifiers leave the service masked:
+        // only the trailing four characters survive, and the original length is preserved
+        // so the field width of the 3270 screen is still recognisable.
+        assertThat(dto.getCustSsn()).isEqualTo("***-**-0000");
+        assertThat(dto.getCustGovtIssuedId()).isEqualTo("***********0000");
+        assertThat(dto.getCustEftAccountId()).isEqualTo("***0001");
+        assertThat(dto.getCustSsn()).doesNotContain("000000000");
+        assertThat(dto.getCustGovtIssuedId()).doesNotContain("FAKEID");
+    }
+
+    /**
+     * :purpose: AAP 0.6.7 - the regulated customer identifiers must leave the mapper
+     *   masked on BOTH outbound paths (view and post-update echo), never as the stored
+     *   value, with the field length preserved and only the trailing four characters
+     *   visible.
+     */
+    @Test
+    @DisplayName("toViewResponse and toUpdateResponse mask the SSN and government-issued id")
+    void outboundResponsesMaskRegulatedIdentifiers() {
+        Account account = newFullyValuedAccount();
+        Customer customer = newFullyValuedCustomer();
+        String storedSsn = customer.getCustSsn();
+        String storedGovtId = customer.getCustGovtIssuedId();
+
+        AccountViewResponseDto view = mapper.toViewResponse(account, customer, newCardXref());
+        assertThat(view.getCustSsn()).isEqualTo(PiiMasker.maskSsn(storedSsn));
+        // The SSN mask keeps the ``***-**-nnnn`` presentation the 3270 map used, so it is
+        // deliberately wider than the 9 stored digits; what matters is that only the last
+        // four digits survive.
+        assertThat(view.getCustSsn()).isNotEqualTo(storedSsn)
+                .endsWith(storedSsn.substring(storedSsn.length() - 4))
+                .doesNotContain(storedSsn.substring(0, storedSsn.length() - 4));
+        assertThat(view.getCustGovtIssuedId()).isEqualTo(PiiMasker.maskIdentifier(storedGovtId));
+        assertThat(view.getCustGovtIssuedId()).isNotEqualTo(storedGovtId);
+
+        AccountUpdateResponseDto echo = mapper.toUpdateResponse(account, customer, newCardXref());
+        assertThat(echo.getCustSsn()).isEqualTo(PiiMasker.maskSsn(storedSsn));
+        assertThat(echo.getCustGovtIssuedId()).isEqualTo(PiiMasker.maskIdentifier(storedGovtId));
+    }
+
+    /**
+     * :purpose: A masked identifier echoed back by a client is "unchanged", so
+     *   {@code applyUpdate} must keep the stored value; a genuinely edited identifier is
+     *   applied. Without this the masking control would silently destroy stored PII on
+     *   every COACTUPC update.
+     */
+    @Test
+    @DisplayName("applyUpdate keeps the stored identifier when the client echoes its mask, and applies a real edit")
+    void applyUpdateDistinguishesEchoedMaskFromGenuineEdit() {
+        Customer customer = newFullyValuedCustomer();
+        String storedSsn = customer.getCustSsn();
+        String storedGovtId = customer.getCustGovtIssuedId();
+
+        AccountUpdateRequestDto echoed = newFullyValuedUpdateRequest();
+        echoed.setCustSsn(PiiMasker.maskSsn(storedSsn));
+        echoed.setCustGovtIssuedId(PiiMasker.maskIdentifier(storedGovtId));
+        mapper.applyUpdate(echoed, newFullyValuedAccount(), customer);
+        assertThat(customer.getCustSsn()).isEqualTo(storedSsn);
+        assertThat(customer.getCustGovtIssuedId()).isEqualTo(storedGovtId);
+
+        AccountUpdateRequestDto edited = newFullyValuedUpdateRequest();
+        edited.setCustSsn("111111111");
+        edited.setCustGovtIssuedId("NEWID00000000001");
+        mapper.applyUpdate(edited, newFullyValuedAccount(), customer);
+        assertThat(customer.getCustSsn()).isEqualTo("111111111");
+        assertThat(customer.getCustGovtIssuedId()).isEqualTo("NEWID00000000001");
     }
 
     /**
@@ -200,6 +307,28 @@ class AccountMapperTest {
         assertThat(dto.getAcctId()).isEqualTo(12345678901L);
         assertThat(dto.getCustId()).isEqualTo(123456789L);
         assertThat(dto.getAcctExpiraionDate()).isEqualTo("2025-12-31");
+    }
+
+    /**
+     * :purpose: Verify {@code toUpdateResponse} echoes the persisted state including the
+     *   optimistic-lock version, so the client can submit a further update with the
+     *   value it just received instead of re-reading the record.
+     */
+    @Test
+    @DisplayName("toUpdateResponse echoes the persisted account/customer state and the optimistic-lock version")
+    void toUpdateResponseEchoesPersistedStateAndVersion() {
+        Account account = newFullyValuedAccount();
+        Customer customer = newFullyValuedCustomer();
+        CardXref cardXref = newCardXref();
+
+        AccountUpdateResponseDto dto = mapper.toUpdateResponse(account, customer, cardXref);
+
+        assertThat(dto.getVersion()).isEqualTo(7L);
+        assertThat(dto.getAcctId()).isEqualTo(12345678901L);
+        assertThat(dto.getCustId()).isEqualTo(123456789L);
+        assertThat(dto.getAcctCurrBal()).isEqualByComparingTo("1000.00");
+        assertThat(dto.getAcctExpiraionDate()).isEqualTo("2025-12-31");
+        assertThat(dto.getCustLastName()).isEqualTo("PUBLIC");
     }
 
     /**

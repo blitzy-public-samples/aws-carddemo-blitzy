@@ -18,6 +18,7 @@ package com.carddemo.card.service;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatExceptionOfType;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.inOrder;
@@ -34,6 +35,7 @@ import com.carddemo.card.repository.CardXrefRepository;
 import com.carddemo.common.domain.Card;
 import com.carddemo.common.domain.CardXref;
 import com.carddemo.common.dto.CardDetailResponseDto;
+import com.carddemo.common.dto.CardListItemDto;
 import com.carddemo.common.dto.CardListResponseDto;
 import com.carddemo.common.dto.CardUpdateRequestDto;
 import com.carddemo.common.dto.CardUpdateResponseDto;
@@ -43,6 +45,7 @@ import com.carddemo.common.exception.RecordNotFoundException;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
+import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.ArgumentCaptor;
@@ -789,4 +792,147 @@ class CardServiceTest {
         verify(card, never()).setCardAcctId(any());
     }
 
+
+    // =====================================================================
+    // COCRDLIC 1400-SETUP-MESSAGE banners reaching the client (WS-ERROR-MSG)
+    // =====================================================================
+
+    /**
+     * :purpose: Answer the mapper with a real response carrier so the service's message and
+     *  paging assignments are observable, which a mocked carrier would swallow.
+     * :param rows: the number of rows the page holds.
+     */
+    private void stubRealListResponse(int rows) {
+        when(cardMapper.toListResponse(any())).thenAnswer(invocation -> {
+            CardListResponseDto real = new CardListResponseDto();
+            List<Card> page = invocation.getArgument(0);
+            real.setCards(new ArrayList<>());
+            for (int i = 0; i < (page == null ? 0 : page.size()); i++) {
+                real.getCards().add(new CardListItemDto());
+            }
+            return real;
+        });
+    }
+
+    /**
+     * :purpose: ``COCRDLIC`` L1240-1244: the first screen with nothing read at all sets
+     *  ``WS-NO-RECORDS-FOUND``, and that banner now reaches the client.
+     */
+    @Test
+    @DisplayName("an empty first page carries 'NO RECORDS FOUND FOR THIS SEARCH CONDITION.'")
+    void listCards_emptyFirstPage_carriesNoRecordsFound() {
+        when(cardRepository.findAll()).thenReturn(cards(0));
+        stubRealListResponse(0);
+
+        CardListResponseDto result = cardService.listCards(null, null, 1, null, null, null, null);
+
+        assertThat(result.getMessage()).isEqualTo("NO RECORDS FOUND FOR THIS SEARCH CONDITION.");
+        assertThat(result.getInfoMessage()).isNull();
+        assertThat(result.getPageNumber()).isEqualTo(1);
+        assertThat(result.isNextPage()).isFalse();
+    }
+
+    /**
+     * :purpose: ``COCRDLIC`` L1219/L1239: a page past the end means the browse reached
+     *  ``ENDFILE``, so ``'NO MORE RECORDS TO SHOW'`` is displayed.
+     */
+    @Test
+    @DisplayName("a page past the end carries 'NO MORE RECORDS TO SHOW'")
+    void listCards_pagePastTheEnd_carriesNoMoreRecords() {
+        when(cardRepository.findAll()).thenReturn(cards(3));
+        stubRealListResponse(0);
+
+        CardListResponseDto result = cardService.listCards(null, null, 3, null, null, null, null);
+
+        assertThat(result.getCards()).isEmpty();
+        assertThat(result.getMessage()).isEqualTo("NO MORE RECORDS TO SHOW");
+        assertThat(result.getPageNumber()).isEqualTo(3);
+    }
+
+    /**
+     * :purpose: ``COCRDLIC`` L905-909: pressing PF8 when no further page exists and the last
+     *  page has already been shown displays ``'NO MORE PAGES TO DISPLAY'``.
+     */
+    @Test
+    @DisplayName("PF8 past the last page carries 'NO MORE PAGES TO DISPLAY'")
+    void listCards_pf8PastLastPage_carriesNoMorePages() {
+        when(cardRepository.findAll()).thenReturn(cards(7));
+        stubRealListResponse(0);
+
+        CardListResponseDto result =
+                cardService.listCards(null, null, 2, CardService.AID_PF8, null, null, null);
+
+        assertThat(result.getCards()).isEmpty();
+        assertThat(result.getMessage()).isEqualTo("NO MORE PAGES TO DISPLAY");
+    }
+
+    /**
+     * :purpose: ``COCRDLIC`` L902-904: pressing PF7 on the first page displays
+     *  ``'NO PREVIOUS PAGES TO DISPLAY'``, and it wins over any later condition because
+     *  ``WS-ERROR-MSG`` holds only the first message.
+     */
+    @Test
+    @DisplayName("PF7 on the first page carries 'NO PREVIOUS PAGES TO DISPLAY'")
+    void listCards_pf7OnFirstPage_carriesNoPreviousPages() {
+        when(cardRepository.findAll()).thenReturn(cards(3));
+        stubRealListResponse(3);
+
+        CardListResponseDto result =
+                cardService.listCards(null, null, 1, CardService.AID_PF7, null, null, null);
+
+        assertThat(result.getMessage()).isEqualTo("NO PREVIOUS PAGES TO DISPLAY");
+    }
+
+    /**
+     * :purpose: ``COCRDLIC`` ``WS-INVALID-ACTION-CODE`` (L125-126): a row-selection flag other
+     *  than ``S`` or ``U`` is rejected with the verbatim message.
+     */
+    @Test
+    @DisplayName("an invalid row action reports 'INVALID ACTION CODE'")
+    void listCards_invalidRowAction_reportsInvalidActionCode() {
+        when(cardRepository.findAll()).thenReturn(cards(3));
+        stubRealListResponse(3);
+
+        assertThatThrownBy(() -> cardService.listCards(null, null, 1, null, "X", CARD_NUM, null))
+                .isExactlyInstanceOf(CardDemoException.class)
+                .hasMessage("INVALID ACTION CODE");
+    }
+
+    /**
+     * :purpose: The two valid row actions are echoed in canonical upper case together with the
+     *  selected card number, so the client can transfer to the detail or update screen exactly
+     *  as ``COCRDLIC`` transfers to ``COCRDSLC``/``COCRDUPC``.
+     */
+    @Test
+    @DisplayName("row actions S and U are echoed with the selected card number")
+    void listCards_validRowActions_areEchoed() {
+        when(cardRepository.findAll()).thenReturn(cards(3));
+        stubRealListResponse(3);
+
+        CardListResponseDto select = cardService.listCards(null, null, 1, null, "s", CARD_NUM, null);
+        assertThat(select.getSelectedAction()).isEqualTo("S");
+        assertThat(select.getSelectedCardNumber()).isEqualTo(CARD_NUM);
+
+        CardListResponseDto update = cardService.listCards(null, null, 1, null, "U", CARD_NUM, null);
+        assertThat(update.getSelectedAction()).isEqualTo("U");
+    }
+
+    /**
+     * :purpose: ``COCRDLIC`` ``WS-INFORM-REC-ACTIONS`` (L115-116): a page holding rows carries
+     *  the informational line the screen shows beneath the list.
+     */
+    @Test
+    @DisplayName("a populated page carries 'TYPE S FOR DETAIL, U TO UPDATE ANY RECORD'")
+    void listCards_populatedPage_carriesInformationalLine() {
+        when(cardRepository.findAll()).thenReturn(cards(10));
+        stubRealListResponse(7);
+
+        CardListResponseDto result = cardService.listCards(null, null, 1, null, null, null, null);
+
+        assertThat(result.getCards()).hasSize(7);
+        assertThat(result.isNextPage()).isTrue();
+        assertThat(result.getInfoMessage()).isEqualTo("TYPE S FOR DETAIL, U TO UPDATE ANY RECORD");
+        // A page with a further forward page available reports no boundary banner.
+        assertThat(result.getMessage()).isNull();
+    }
 }

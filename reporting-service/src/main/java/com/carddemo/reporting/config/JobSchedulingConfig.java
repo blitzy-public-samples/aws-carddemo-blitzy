@@ -16,6 +16,7 @@
  */
 package com.carddemo.reporting.config;
 
+import com.carddemo.common.config.CorrelationIdTaskDecorator;
 import com.carddemo.common.exception.CardDemoException;
 
 import org.slf4j.Logger;
@@ -29,13 +30,15 @@ import org.springframework.batch.core.launch.JobExecutionAlreadyRunningException
 import org.springframework.batch.core.launch.JobInstanceAlreadyCompleteException;
 import org.springframework.batch.core.launch.JobLauncher;
 import org.springframework.batch.core.launch.JobRestartException;
+import org.springframework.batch.core.launch.support.TaskExecutorJobLauncher;
+import org.springframework.batch.core.repository.JobRepository;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Qualifier;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Configuration;
-import org.springframework.scheduling.annotation.Async;
-import org.springframework.scheduling.annotation.EnableAsync;
 
+import org.springframework.core.task.SimpleAsyncTaskExecutor;
 import java.util.UUID;
-import java.util.concurrent.CompletableFuture;
 
 /**
  * :purpose: Re-platforms the legacy CICS asynchronous batch-submission mechanism
@@ -51,7 +54,6 @@ import java.util.concurrent.CompletableFuture;
  *  surfaced as a {@link CardDemoException}.
  */
 @Configuration
-@EnableAsync
 public class JobSchedulingConfig {
 
     /** :purpose: Logger for asynchronous statement-generation job submission. */
@@ -67,66 +69,180 @@ public class JobSchedulingConfig {
     private static final String PARAM_END_DATE = "endDate";
 
     /**
-     * :purpose: Job-parameter key whose unique value forces a fresh ``JobInstance``
-     *  per submission, mirroring the legacy behavior where every CICS submit wrote
-     *  a brand-new job to the JES internal reader.
+     * :purpose: Job-parameter key carrying a per-submission unique token, recorded for
+     *  traceability as a NON-identifying parameter. It was previously identifying,
+     *  which made every submission a brand-new ``JobInstance``: a failed statement run
+     *  could never be restarted from its last committed point and a re-submission of an
+     *  already-completed report was never rejected. A ``JobInstance`` is now identified
+     *  by its report type and date range - the ``PARM`` values the legacy job stream
+     *  identified a run by.
      */
     private static final String PARAM_RUN_ID = "run.id";
+
+    /** :purpose: Job-parameter key carrying the plain-text statement output name. */
+    private static final String PARAM_STMT_FILE = "stmtFile";
+
+    /** :purpose: Job-parameter key carrying the HTML statement output name. */
+    private static final String PARAM_HTML_FILE = "htmlFile";
 
     /** :purpose: Frozen operator-visible message emitted when the submission fails. */
     private static final String SUBMIT_FAILURE_MESSAGE = "Unable to Write TDQ (JOBS)...";
 
-    /** :purpose: Auto-configured Spring Batch launcher used to submit the job. */
-    private final JobLauncher jobLauncher;
-
-    /** :purpose: The statement-generation job launched on each report request. */
-    private final Job statementGenerationJob;
+    /** :purpose: Upper bound on jobs running concurrently on the launch executor. */
+    private static final int MAX_CONCURRENT_JOBS = 4;
 
     /**
-     * :purpose: Construct the scheduler with the auto-configured launcher and the
+     * :purpose: Asynchronous launcher used to submit the job. Submission is synchronous
+     *  - an unusable parameter set, an instance already running or already complete is
+     *  raised to the caller - while the accepted run proceeds on a bounded executor.
+     */
+    private final JobLauncher jobLauncher;
+
+    /** :purpose: The statement-generation job launched on each statement request. */
+    private final Job statementGenerationJob;
+
+    /** :purpose: Configured default plain-text statement output file name. */
+    private final String statementTextFile;
+
+    /** :purpose: Configured default HTML statement output file name. */
+    private final String statementHtmlFile;
+
+    /**
+     * :purpose: Construct the scheduler with a bounded asynchronous launcher and the
      *  statement-generation job resolved by bean name.
-     * :param jobLauncher: the Spring Boot auto-configured job launcher.
+     * :param jobRepository: batch job repository the launcher records executions in.
      * :param statementGenerationJob: the ``statementGenerationJob`` batch job bean.
+     * :param statementTextFile: configured default plain-text statement output name.
+     * :param statementHtmlFile: configured default HTML statement output name.
+     */
+    @Autowired
+    public JobSchedulingConfig(JobRepository jobRepository,
+                               @Qualifier("statementGenerationJob") Job statementGenerationJob,
+                               @Value("${carddemo.batch.statement-text-file:statements.txt}")
+                               String statementTextFile,
+                               @Value("${carddemo.batch.statement-html-file:statements.html}")
+                               String statementHtmlFile) {
+        this(buildAsyncJobLauncher(jobRepository), statementGenerationJob,
+                statementTextFile, statementHtmlFile);
+    }
+
+    /**
+     * :purpose: Construct the scheduler over an explicitly supplied launcher, so a
+     *  caller (or a test) can control how submitted runs are executed.
+     * :param jobLauncher: the launcher submitted runs are handed to.
+     * :param statementGenerationJob: the ``statementGenerationJob`` batch job bean.
+     * :param statementTextFile: configured default plain-text statement output name.
+     * :param statementHtmlFile: configured default HTML statement output name.
      */
     public JobSchedulingConfig(JobLauncher jobLauncher,
-                               @Qualifier("statementGenerationJob") Job statementGenerationJob) {
+                               Job statementGenerationJob,
+                               String statementTextFile,
+                               String statementHtmlFile) {
         this.jobLauncher = jobLauncher;
         this.statementGenerationJob = statementGenerationJob;
+        this.statementTextFile = statementTextFile;
+        this.statementHtmlFile = statementHtmlFile;
+    }
+
+    /**
+     * :purpose: Construct a {@link TaskExecutorJobLauncher} bound to the batch job
+     *  repository and a bounded {@link SimpleAsyncTaskExecutor} whose threads are named
+     *  ``statement-N``. The executor is decorated so the submitting request's correlation
+     *  id follows the job onto its worker thread.
+     * :param jobRepository: batch job repository the launcher records executions in.
+     * :returns: a fully initialized asynchronous {@link JobLauncher}.
+     */
+    private static JobLauncher buildAsyncJobLauncher(JobRepository jobRepository) {
+        TaskExecutorJobLauncher launcher = new TaskExecutorJobLauncher();
+        launcher.setJobRepository(jobRepository);
+        SimpleAsyncTaskExecutor taskExecutor = new SimpleAsyncTaskExecutor("statement-");
+        taskExecutor.setTaskDecorator(new CorrelationIdTaskDecorator());
+        // SimpleAsyncTaskExecutor pools no threads, so without a limit each submission
+        // spawns a new thread and a burst of launches can exhaust memory.
+        taskExecutor.setConcurrencyLimit(MAX_CONCURRENT_JOBS);
+        launcher.setTaskExecutor(taskExecutor);
+        try {
+            launcher.afterPropertiesSet();
+        } catch (Exception ex) {
+            throw new IllegalStateException("Unable to initialize the statement job launcher", ex);
+        }
+        return launcher;
     }
 
     /**
      * :purpose: Launch the statement-generation batch job asynchronously,
      *  re-platforming ``CORPT00C``'s TDQ ``'JOBS'`` internal-reader submission as a
      *  non-blocking {@link JobLauncher} invocation carrying the report parameters.
-     *  A unique ``run.id`` parameter is added so each request starts a fresh
-     *  ``JobInstance`` and repeat report submissions are never rejected.
+     *  A ``run.id`` token is recorded for traceability without participating in job
+     *  identity, so the report type and date range identify the ``JobInstance``.
      * :param reportType: the report name (``Monthly``, ``Yearly`` or ``Custom``).
      * :param startDate: the ``PARM-START-DATE`` in ``YYYY-MM-DD`` wire form.
      * :param endDate: the ``PARM-END-DATE`` in ``YYYY-MM-DD`` wire form.
-     * :return: a {@link CompletableFuture} completed with the launched job's
-     *  {@link JobExecution}.
-     * :raises CardDemoException: when the job cannot be submitted to the launcher.
+     * :return: the accepted run's {@link JobExecution}, carrying its durable execution
+     *  id so the outcome can be followed.
+     * :raises CardDemoException: when the job cannot be submitted to the launcher. The
+     *  submission is synchronous precisely so this failure reaches the caller: the method
+     *  was previously ``@Async`` on a ``@Configuration`` class and returned a
+     *  ``CompletableFuture`` that the caller discarded, so neither a refused submission
+     *  nor a failed run could ever be observed.
      */
-    @Async
-    public CompletableFuture<JobExecution> launchStatementGeneration(String reportType,
-                                                                     String startDate,
-                                                                     String endDate) {
+    public JobExecution launchStatementGeneration(String reportType,
+                                                 String startDate,
+                                                 String endDate) {
+        return launchStatementGeneration(reportType, startDate, endDate, null, null);
+    }
+
+    /**
+     * :purpose: Launch the statement-generation job with explicit output file names.
+     * :param reportType: the report name (``Monthly``, ``Yearly`` or ``Custom``).
+     * :param startDate: the ``PARM-START-DATE`` in ``YYYY-MM-DD`` wire form.
+     * :param endDate: the ``PARM-END-DATE`` in ``YYYY-MM-DD`` wire form.
+     * :param stmtFile: plain-text statement output file name; the configured default is
+     *  used when blank.
+     * :param htmlFile: HTML statement output file name; the configured default is used
+     *  when blank.
+     * :return: the accepted run's {@link JobExecution}.
+     * :raises CardDemoException: when the job cannot be submitted to the launcher.
+     * :note: Both file names are always passed as job parameters. They were previously
+     *  omitted entirely, so the writer fell back to the working-directory-relative
+     *  ``output/statements.txt``, which is unwritable in the delivered read-only
+     *  container; the writer now resolves every name through the shared batch output
+     *  resolver.
+     */
+    public JobExecution launchStatementGeneration(String reportType,
+                                                 String startDate,
+                                                 String endDate,
+                                                 String stmtFile,
+                                                 String htmlFile) {
         JobParameters jobParameters = new JobParametersBuilder()
                 .addString(PARAM_REPORT_TYPE, reportType)
                 .addString(PARAM_START_DATE, startDate)
                 .addString(PARAM_END_DATE, endDate)
-                .addString(PARAM_RUN_ID, UUID.randomUUID().toString())
+                .addString(PARAM_STMT_FILE, effectiveFile(stmtFile, statementTextFile))
+                .addString(PARAM_HTML_FILE, effectiveFile(htmlFile, statementHtmlFile))
+                .addString(PARAM_RUN_ID, UUID.randomUUID().toString(), false)
                 .toJobParameters();
 
-        LOGGER.info("Submitting statementGenerationJob (reportType={}, startDate={}, endDate={})",
-                reportType, startDate, endDate);
+        LOGGER.info("Submitting statementGenerationJob (reportType={}, startDate={}, endDate={},"
+                + " stmtFile={}, htmlFile={})", reportType, startDate, endDate,
+                jobParameters.getString(PARAM_STMT_FILE), jobParameters.getString(PARAM_HTML_FILE));
 
         try {
-            JobExecution jobExecution = jobLauncher.run(statementGenerationJob, jobParameters);
-            return CompletableFuture.completedFuture(jobExecution);
+            return jobLauncher.run(statementGenerationJob, jobParameters);
         } catch (JobExecutionAlreadyRunningException | JobRestartException
                  | JobInstanceAlreadyCompleteException | InvalidJobParametersException e) {
             throw new CardDemoException(SUBMIT_FAILURE_MESSAGE, e);
         }
     }
+
+    /**
+     * :purpose: Choose the requested file name when supplied, else the configured default.
+     * :param requested: the caller-supplied name, possibly null or blank.
+     * :param configured: the configured default name.
+     * :returns: the effective file name, never blank.
+     */
+    private static String effectiveFile(String requested, String configured) {
+        return (requested == null || requested.isBlank()) ? configured : requested.trim();
+    }
+
 }

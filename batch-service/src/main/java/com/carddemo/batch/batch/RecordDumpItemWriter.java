@@ -16,6 +16,7 @@
 
 package com.carddemo.batch.batch;
 
+import com.carddemo.common.batch.BatchOutputPathResolver;
 import com.carddemo.common.config.CorrelationIdContext;
 
 import org.slf4j.Logger;

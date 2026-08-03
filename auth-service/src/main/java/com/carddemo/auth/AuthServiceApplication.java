@@ -15,8 +15,17 @@
  */
 package com.carddemo.auth;
 
+import com.carddemo.common.config.CardDemoErrorController;
+import com.carddemo.common.config.ContainerErrorReportConfig;
 import com.carddemo.common.config.GlobalExceptionHandler;
+import com.carddemo.common.config.SecurityExceptionHandler;
 import com.carddemo.common.config.ObservabilityConfig;
+import com.carddemo.common.config.PersistenceExceptionHandler;
+import com.carddemo.common.config.RedisCommandMetricsConfig;
+import com.carddemo.common.config.SessionRedisConfig;
+import com.carddemo.common.config.WebObservabilityConfig;
+import com.carddemo.common.config.SchemaMigrationConfig;
+import com.carddemo.common.config.WebHardeningConfig;
 
 import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
@@ -38,7 +47,10 @@ import org.springframework.data.jpa.repository.config.EnableJpaRepositories;
 @SpringBootApplication
 @EntityScan("com.carddemo.common.domain")
 @EnableJpaRepositories("com.carddemo.auth.repository")
-@Import({ ObservabilityConfig.class, GlobalExceptionHandler.class })
+@Import({ ObservabilityConfig.class, WebObservabilityConfig.class, GlobalExceptionHandler.class,
+        CardDemoErrorController.class, SecurityExceptionHandler.class, ContainerErrorReportConfig.class,
+        PersistenceExceptionHandler.class, SessionRedisConfig.class, RedisCommandMetricsConfig.class,
+        SchemaMigrationConfig.class, WebHardeningConfig.class })
 public class AuthServiceApplication {
 
     /**

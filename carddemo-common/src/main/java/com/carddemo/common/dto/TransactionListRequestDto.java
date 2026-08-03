@@ -36,33 +36,33 @@ public class TransactionListRequestDto {
      *  selection), ``PF7`` (page back), or ``PF8`` (page forward). A ``null`` or
      *  blank value is treated as ``ENTER``.
      */
-    @Size(max = 8)
+    @Size(max = 8, message = "Action must be at most 8 characters")
     private String action;
 
     /** :purpose: Optional transaction-id filter (COTRN00 ``TRNIDINI``); the inclusive lower bound of the forward browse. */
-    @Size(max = 16)
+    @Size(max = 16, message = "Tran ID must be at most 16 characters")
     private String tranIdFilter;
 
     /** :purpose: Current page number (COTRN00 ``CDEMO-CT00-PAGE-NUM``), echoed across turns. */
     private int pageNumber;
 
     /** :purpose: First transaction id shown on the current page (COTRN00 ``CDEMO-CT00-TRNID-FIRST``); the PF7 page-back cursor. */
-    @Size(max = 16)
+    @Size(max = 16, message = "Tran ID must be at most 16 characters")
     private String tranIdFirst;
 
     /** :purpose: Last transaction id shown on the current page (COTRN00 ``CDEMO-CT00-TRNID-LAST``); the PF8 page-forward cursor. */
-    @Size(max = 16)
+    @Size(max = 16, message = "Tran ID must be at most 16 characters")
     private String tranIdLast;
 
     /** :purpose: Whether the current page has a further forward page (COTRN00 ``NEXT-PAGE-YES``/``NEXT-PAGE-NO``); gates the PF8 boundary. */
     private boolean nextPage;
 
     /** :purpose: Row selection flag (COTRN00 ``SEL00nnI``); ``S``/``s`` selects the row identified by ``selectedTranId``. */
-    @Size(max = 1)
+    @Size(max = 1, message = "Invalid selection. Valid value is S")
     private String selectionFlag;
 
     /** :purpose: Transaction id of the selected row (COTRN00 ``TRNIDnnI``); paired with ``selectionFlag``. */
-    @Size(max = 16)
+    @Size(max = 16, message = "Tran ID must be at most 16 characters")
     private String selectedTranId;
 
     /**

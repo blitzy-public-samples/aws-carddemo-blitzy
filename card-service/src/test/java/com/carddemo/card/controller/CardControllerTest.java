@@ -16,7 +16,9 @@
  */
 package com.carddemo.card.controller;
 
+import static org.mockito.ArgumentMatchers.anyString;
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.never;
@@ -45,17 +47,20 @@ import com.carddemo.common.exception.RecordNotFoundException;
 import jakarta.persistence.EntityManagerFactory;
 import java.util.ArrayList;
 import java.util.List;
+import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
 import org.mockito.ArgumentCaptor;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
 import org.springframework.boot.webmvc.test.autoconfigure.WebMvcTest;
 import org.springframework.context.annotation.Import;
 import org.springframework.http.MediaType;
 import org.springframework.mock.web.MockHttpSession;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.web.servlet.MockMvc;
+import org.springframework.test.web.servlet.MvcResult;
 import tools.jackson.databind.ObjectMapper;
 
 /**
@@ -71,12 +76,18 @@ import tools.jackson.databind.ObjectMapper;
  * :output: JUnit 5 / MockMvc / AssertJ / Mockito assertions only; the card verification
  *  value and full card numbers are never asserted.
  */
+// This slice verifies the controller contract only, so the security filter chain is
+// not applied here. Authentication and authorization are configured centrally
+// (carddemo-common SecurityHardening plus this service's SecurityConfig), unit-tested
+// in carddemo-common, asserted for this service by its SecurityContractTest, and
+// verified against the running service.
+@AutoConfigureMockMvc(addFilters = false)
 @WebMvcTest(CardController.class)
 @Import(GlobalExceptionHandler.class)
 class CardControllerTest {
 
     /** :purpose: Session attribute key shared verbatim across every CardDemo controller. */
-    private static final String SESSION_CONTEXT_ATTRIBUTE = "carddemoSessionContext";
+    private static final String SESSION_CONTEXT_ATTRIBUTE = SessionContext.SESSION_ATTRIBUTE_NAME;
 
     /** :purpose: Synthetic sixteen-digit card-number path variable (satisfies ``\d{16}``). */
     private static final String VALID_CARD = "1234567890123456";
@@ -176,6 +187,19 @@ class CardControllerTest {
     }
 
     /**
+     * :purpose: Build a session in the state sign-on leaves it: carrying the
+     *  externalized {@link SessionContext}. The ``SecurityFilterChain`` authenticates the
+     *  caller from this attribute, so every request that reaches the controller in
+     *  production has it.
+     * :returns: a ``MockHttpSession`` carrying a {@link SessionContext}.
+     */
+    private static MockHttpSession signedOnSession() {
+        MockHttpSession session = new MockHttpSession();
+        session.setAttribute(SESSION_CONTEXT_ATTRIBUTE, new SessionContext());
+        return session;
+    }
+
+    /**
      * :purpose: A valid sixteen-digit card-detail request returns HTTP 200 with the non-PII
      *  detail fields.
      */
@@ -184,7 +208,7 @@ class CardControllerTest {
         when(cardService.getCardDetail(eq(VALID_CARD), any(SessionContext.class)))
                 .thenReturn(detailStub());
 
-        mockMvc.perform(get("/cards/{cardNumber}", VALID_CARD))
+        mockMvc.perform(get("/cards/{cardNumber}", VALID_CARD).session(signedOnSession()))
                 .andExpect(status().isOk())
                 .andExpect(content().contentTypeCompatibleWith(MediaType.APPLICATION_JSON))
                 .andExpect(jsonPath("$.cardAcctId").value(VALID_ACCT_ID))
@@ -203,7 +227,7 @@ class CardControllerTest {
     @ParameterizedTest
     @ValueSource(strings = {"abc", "123", "12345678901234567"})
     void getCardDetail_withInvalidNumber_returns400(String badCard) throws Exception {
-        mockMvc.perform(get("/cards/{cardNumber}", badCard))
+        mockMvc.perform(get("/cards/{cardNumber}", badCard).session(signedOnSession()))
                 .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.status").value(400))
                 .andExpect(jsonPath("$.message").value("Card number if supplied must be a 16 digit number"));
@@ -220,7 +244,7 @@ class CardControllerTest {
         when(cardService.getCardDetail(eq(VALID_CARD), any(SessionContext.class)))
                 .thenThrow(new RecordNotFoundException("Did not find cards for this search condition"));
 
-        mockMvc.perform(get("/cards/{cardNumber}", VALID_CARD))
+        mockMvc.perform(get("/cards/{cardNumber}", VALID_CARD).session(signedOnSession()))
                 .andExpect(status().isNotFound())
                 .andExpect(jsonPath("$.status").value(404))
                 .andExpect(jsonPath("$.message").value("Did not find cards for this search condition"));
@@ -236,7 +260,7 @@ class CardControllerTest {
                 .thenReturn(updateResponseStub());
         String json = objectMapper.writeValueAsString(updateRequest("Y"));
 
-        mockMvc.perform(put("/cards/{cardNumber}", VALID_CARD)
+        mockMvc.perform(put("/cards/{cardNumber}", VALID_CARD).session(signedOnSession())
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(json))
                 .andExpect(status().isOk())
@@ -258,7 +282,7 @@ class CardControllerTest {
                 .thenThrow(new CardDemoException("Card Active Status must be Y or N"));
         String json = objectMapper.writeValueAsString(updateRequest("X"));
 
-        mockMvc.perform(put("/cards/{cardNumber}", VALID_CARD)
+        mockMvc.perform(put("/cards/{cardNumber}", VALID_CARD).session(signedOnSession())
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(json))
                 .andExpect(status().isBadRequest())
@@ -274,7 +298,7 @@ class CardControllerTest {
      */
     @Test
     void updateCard_withMalformedJson_returns400AndServiceNotInvoked() throws Exception {
-        mockMvc.perform(put("/cards/{cardNumber}", VALID_CARD)
+        mockMvc.perform(put("/cards/{cardNumber}", VALID_CARD).session(signedOnSession())
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("{ \"cardActiveStatus\": "))
                 .andExpect(status().isBadRequest());
@@ -292,7 +316,7 @@ class CardControllerTest {
                 .thenThrow(new OptimisticLockConflictException());
         String json = objectMapper.writeValueAsString(updateRequest("Y"));
 
-        mockMvc.perform(put("/cards/{cardNumber}", VALID_CARD)
+        mockMvc.perform(put("/cards/{cardNumber}", VALID_CARD).session(signedOnSession())
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(json))
                 .andExpect(status().isConflict())
@@ -301,19 +325,26 @@ class CardControllerTest {
     }
 
     /**
-     * :purpose: The controller creates and stores a fresh {@link SessionContext} under the
-     *  shared attribute key when the session carries none.
+     * :purpose: A session carrying no context is an invariant violation, not a
+     *  recoverable state: the controller must refuse to serve the request rather than
+     *  fabricate a blank identity. In production the ``SecurityFilterChain`` rejects such
+     *  a request with 401 before it reaches the controller.
      */
     @Test
-    void getCardDetail_bridgesSessionContext_createsWhenAbsent() throws Exception {
-        when(cardService.getCardDetail(eq(VALID_CARD), any(SessionContext.class)))
-                .thenReturn(detailStub());
+    void getCardDetail_withNoSessionContext_doesNotFabricateContext() throws Exception{
         MockHttpSession session = new MockHttpSession();
 
+        // This slice imports the shared GlobalExceptionHandler, so the invariant violation is
+        // reported as the generic error envelope rather than propagating; either way the
+        // request is refused and no blank identity is fabricated.
         mockMvc.perform(get("/cards/{cardNumber}", VALID_CARD).session(session))
-                .andExpect(status().isOk());
+                .andExpect(status().isInternalServerError())
+                .andExpect(jsonPath("$.message").value("An unexpected error occurred"));
 
-        assertThat(session.getAttribute(SESSION_CONTEXT_ATTRIBUTE)).isInstanceOf(SessionContext.class);
+        verify(cardService, never()).getCardDetail(anyString(), any());
+
+        assertThat(session.getAttribute(SESSION_CONTEXT_ATTRIBUTE)).isNull();
+        verifyNoInteractions(cardService);
     }
 
     /**
@@ -343,10 +374,10 @@ class CardControllerTest {
      */
     @Test
     void listCards_withDefaultPage_returns200AndInvokesService() throws Exception {
-        when(cardService.listCards(any(), any(), eq(1), any(SessionContext.class)))
+        when(cardService.listCards(any(), any(), eq(1), any(), any(), any(), any(SessionContext.class)))
                 .thenReturn(listStub(3));
 
-        mockMvc.perform(get("/cards"))
+        mockMvc.perform(get("/cards").session(signedOnSession()))
                 .andExpect(status().isOk())
                 .andExpect(content().contentTypeCompatibleWith(MediaType.APPLICATION_JSON))
                 .andExpect(jsonPath("$.cards").isArray())
@@ -354,7 +385,8 @@ class CardControllerTest {
                 .andExpect(jsonPath("$.cards[0].cardAcctId").value(VALID_ACCT_ID))
                 .andExpect(jsonPath("$.cards[0].cardActiveStatus").value("Y"));
 
-        verify(cardService).listCards(any(), any(), eq(1), any(SessionContext.class));
+        verify(cardService).listCards(any(), any(), eq(1), any(), any(), any(),
+                any(SessionContext.class));
     }
 
     /**
@@ -363,13 +395,14 @@ class CardControllerTest {
      */
     @Test
     void listCards_withPageParam_bindsPageTwo() throws Exception {
-        when(cardService.listCards(any(), any(), eq(2), any(SessionContext.class)))
+        when(cardService.listCards(any(), any(), eq(2), any(), any(), any(), any(SessionContext.class)))
                 .thenReturn(listStub(1));
 
-        mockMvc.perform(get("/cards").param("page", "2"))
+        mockMvc.perform(get("/cards").session(signedOnSession()).param("page", "2"))
                 .andExpect(status().isOk());
 
-        verify(cardService).listCards(any(), any(), eq(2), any(SessionContext.class));
+        verify(cardService).listCards(any(), any(), eq(2), any(), any(), any(),
+                any(SessionContext.class));
     }
 
     /**
@@ -378,11 +411,49 @@ class CardControllerTest {
      */
     @Test
     void listCards_whenAccountFilterInvalid_returns400AndServiceNotInvoked() throws Exception {
-        mockMvc.perform(get("/cards").param("accountId", "xyz"))
+        mockMvc.perform(get("/cards").session(signedOnSession()).param("accountId", "xyz"))
                 .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.status").value(400))
                 .andExpect(jsonPath("$.message").value("ACCOUNT FILTER,IF SUPPLIED MUST BE A 11 DIGIT NUMBER"));
 
         verifyNoInteractions(cardService);
+    }
+
+    /**
+     * :purpose: Regression guard for QA Issue 22 (Redis session churn). A caller that
+     *  arrives without a session must leave without one: every endpoint takes
+     *  ``HttpServletRequest`` and reads the pseudo-conversational context through
+     *  ``getSession(false)``, so no Spring Session entry is created - and therefore none
+     *  is persisted to Redis - for an anonymous one-off call. Declaring an
+     *  ``HttpSession`` parameter instead made Spring's argument resolver call
+     *  ``getSession()`` unconditionally on every request.
+     */
+    @Test
+    @DisplayName("QA Issue 22: no card endpoint creates an HTTP session for a sessionless caller")
+    void cardEndpointsCreateNoSessionForSessionlessCaller() throws Exception {
+        when(cardService.listCards(any(), any(), eq(1), any(SessionContext.class)))
+                .thenReturn(listStub(1));
+        when(cardService.getCardDetail(eq(VALID_CARD), any(SessionContext.class)))
+                .thenReturn(detailStub());
+        when(cardService.updateCard(eq(VALID_CARD), any(CardUpdateRequestDto.class),
+                any(SessionContext.class)))
+                .thenReturn(updateResponseStub());
+
+        MvcResult listResult = mockMvc.perform(get("/cards"))
+                .andExpect(status().isOk())
+                .andReturn();
+        assertThat(listResult.getRequest().getSession(false)).isNull();
+
+        MvcResult detailResult = mockMvc.perform(get("/cards/{cardNumber}", VALID_CARD))
+                .andExpect(status().isOk())
+                .andReturn();
+        assertThat(detailResult.getRequest().getSession(false)).isNull();
+
+        MvcResult updateResult = mockMvc.perform(put("/cards/{cardNumber}", VALID_CARD)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(updateRequest("Y"))))
+                .andExpect(status().isOk())
+                .andReturn();
+        assertThat(updateResult.getRequest().getSession(false)).isNull();
     }
 }

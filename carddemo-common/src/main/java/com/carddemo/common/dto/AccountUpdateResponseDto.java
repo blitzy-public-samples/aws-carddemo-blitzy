@@ -23,6 +23,13 @@ import java.math.BigDecimal;
  */
 public class AccountUpdateResponseDto {
 
+    /**
+     * :purpose: the optimistic-lock version of the account record after the update committed. The
+     *  client may echo this incremented value back on a subsequent ``PUT`` without
+     *  re-reading the record (AAP 0.6.2).
+     */
+    private Long version;
+
     /** :purpose: the account id primary key (``ACCT-ID``). */
     private Long acctId;
 
@@ -114,6 +121,22 @@ public class AccountUpdateResponseDto {
      * :purpose: Create an empty AccountUpdateResponseDto. Required for JSON (Jackson) serialization.
      */
     public AccountUpdateResponseDto() {
+    }
+
+    /**
+     * :purpose: Return the optimistic-lock version of the account record.
+     * :output: the ``version`` value.
+     */
+    public Long getVersion() {
+        return version;
+    }
+
+    /**
+     * :purpose: Set the optimistic-lock version of the account record.
+     * :param version: the ``version`` value.
+     */
+    public void setVersion(Long version) {
+        this.version = version;
     }
 
     /**

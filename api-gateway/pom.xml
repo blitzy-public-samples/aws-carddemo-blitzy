@@ -104,11 +104,48 @@
             <artifactId>micrometer-registry-prometheus</artifactId>
         </dependency>
 
-        <!-- Distributed tracing via the OpenTelemetry bridge. -->
+        <!--
+          Distributed tracing (AAP 0.7.5). The Boot OpenTelemetry starter brings the
+          Micrometer Tracing OTel bridge TOGETHER WITH the tracing/OTel
+          auto-configuration and the OTLP span exporter. The bridge alone leaves
+          no Tracer in the context, so no trace context is created and every
+          traceId/spanId stays empty (QA F28).
+        -->
         <dependency>
-            <groupId>io.micrometer</groupId>
-            <artifactId>micrometer-tracing-bridge-otel</artifactId>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-opentelemetry</artifactId>
         </dependency>
+
+        <!--
+          Tracing auto-configuration. Spring Boot 4 ships auto-configuration in
+          dedicated modules, so the bridge above is inert on its own: without these
+          two modules no Tracer or ObservationRegistry tracing handler is created and
+          no traceId/spanId ever reaches the SLF4J MDC, leaving the structured log
+          lines uncorrelatable across service boundaries (AAP 0.7.5).
+        -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-micrometer-tracing</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-micrometer-tracing-opentelemetry</artifactId>
+        </dependency>
+
+        <!--
+          Spring Boot 4 extracted tracing auto-configuration out of spring-boot-actuator into
+          dedicated modules. Without BOTH of the modules below the bridge above is completely
+          inert: no io.micrometer.tracing.Tracer bean is created, no spans are produced, the
+          management.tracing.sampling.probability setting is ignored, and the traceId/spanId
+          fields of the logback-spring.xml pattern stay permanently empty.
+            * spring-boot-micrometer-tracing               -> MicrometerTracingAutoConfiguration
+                                                              (span-producing observation handlers)
+            * spring-boot-micrometer-tracing-opentelemetry -> OpenTelemetryTracingAutoConfiguration
+                                                              (SdkTracerProvider + OtelTracer +
+                                                               W3C context propagators)
+          No OTLP/Zipkin exporter artifact is declared, so spans are created and correlated into
+          the MDC but not shipped off-box; adding an exporter is a deployment-time choice.
+        -->
 
         <!-- Shared library: domain, DTOs, constants, cross-cutting config and exception types. -->
         <dependency>
@@ -142,6 +179,17 @@
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-webmvc-test</artifactId>
+            <scope>test</scope>
+        </dependency>
+
+        <!--
+            Testcontainers: the session integration test runs against a real redis:8 so the
+            COMMAREA-equivalent SessionContext is proven to serialize, persist and reload
+            across requests through the actual store (AAP 0.6.3), not an in-memory stand-in.
+        -->
+        <dependency>
+            <groupId>org.testcontainers</groupId>
+            <artifactId>testcontainers-junit-jupiter</artifactId>
             <scope>test</scope>
         </dependency>
 

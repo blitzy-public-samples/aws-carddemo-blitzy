@@ -60,6 +60,12 @@ spec:
         - name: api-gateway
           # Built by api-gateway/Dockerfile FROM eclipse-temurin:21-jre
           # (AAP 0.5.1); tagged carddemo/api-gateway:1.0.0.
+          # Produced by `docker compose build api-gateway` from api-gateway/Dockerfile
+          # (docker-compose.yml carries a matching `image:` key with these exact
+          # registry/name/tag defaults), so this reference resolves to an artifact the
+          # repository builds - no undocumented tag-and-push step (QA Issue 17).
+          # Override the registry or tag for a private registry with
+          # CARDDEMO_IMAGE_REGISTRY / CARDDEMO_IMAGE_TAG at build time.
           image: carddemo/api-gateway:1.0.0
           imagePullPolicy: IfNotPresent
           ports:
@@ -85,6 +91,11 @@ spec:
                 name: carddemo-config
             - secretRef:
                 name: carddemo-redis-secret
+            # Shared credential of the least-privilege `monitoring` principal
+            # guarding /actuator/prometheus and /actuator/metrics (MJ-17). Must
+            # match the password Prometheus presents, or every scrape gets 401.
+            - secretRef:
+                name: carddemo-monitoring-secret
           # Gateway-level trace sampling override (MN-03): the entry point
           # samples every request so each trace originates here, overriding the
           # 0.1 backend default supplied by carddemo-config (explicit env wins
@@ -110,6 +121,12 @@ spec:
               port: 8080
             initialDelaySeconds: 10
             periodSeconds: 5
+            # Explicit timeout (QA Issue 3). The default timeoutSeconds is 1, so during any
+            # datastore blip the aggregate health check — which must wait for the bounded
+            # 3s HikariCP / 2s Lettuce dependency timeouts — fails on every attempt and the
+            # pod is killed after failureThreshold x periodSeconds. 4s bounds each attempt
+            # just above the slowest dependency timeout.
+            timeoutSeconds: 4
             failureThreshold: 30
           # Liveness: restart the container if the JVM/context becomes
           # unhealthy after startup has completed.

@@ -19,7 +19,9 @@ package com.carddemo.account.service;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatExceptionOfType;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.inOrder;
+import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
@@ -30,15 +32,18 @@ import com.carddemo.account.mapper.AccountMapper;
 import com.carddemo.account.repository.AccountRepository;
 import com.carddemo.account.repository.CardXrefRepository;
 import com.carddemo.account.repository.CustomerRepository;
+import com.carddemo.common.crypto.PiiMasker;
 import com.carddemo.common.domain.Account;
 import com.carddemo.common.domain.CardXref;
 import com.carddemo.common.domain.Customer;
 import com.carddemo.common.dto.AccountUpdateRequestDto;
 import com.carddemo.common.dto.AccountUpdateResponseDto;
 import com.carddemo.common.dto.AccountViewResponseDto;
+import com.carddemo.common.exception.CardDemoException;
 import com.carddemo.common.exception.OptimisticLockConflictException;
 import com.carddemo.common.exception.RecordNotFoundException;
 
+import java.math.BigDecimal;
 import java.util.Optional;
 
 import org.junit.jupiter.api.Test;
@@ -86,7 +91,15 @@ class AccountServiceTest {
     @Mock
     private AccountMapper accountMapper;
 
-    /** :purpose: Service under test with the four mocks injected via its single constructor. */
+    /**
+     * :purpose: COACTUPC ``1200-EDIT-MAP-INPUTS`` edit-sequence mock. These tests exercise
+     *  the service's orchestration; the edit sequence itself is covered exhaustively by
+     *  {@link AccountUpdateValidatorTest}.
+     */
+    @Mock
+    private AccountUpdateValidator accountUpdateValidator;
+
+    /** :purpose: Service under test with the five mocks injected via its single constructor. */
     @InjectMocks
     private AccountService accountService;
 
@@ -229,13 +242,19 @@ class AccountServiceTest {
         CardXref cardXref = xref();
         Account account = mock(Account.class);
         Customer customer = mock(Customer.class);
-        AccountUpdateRequestDto request = mock(AccountUpdateRequestDto.class);
+        AccountUpdateRequestDto request = new AccountUpdateRequestDto();
         AccountUpdateResponseDto expected = mock(AccountUpdateResponseDto.class);
 
         when(cardXrefRepository.findByXrefAcctId(ACCT_ID)).thenReturn(Optional.of(cardXref));
         when(accountRepository.findById(ACCT_ID)).thenReturn(Optional.of(account));
         when(customerRepository.findById(CUST_ID)).thenReturn(Optional.of(customer));
+        // The client echoes back the version it read, so the compare step passes.
+        request.setVersion(2L);
+        when(account.getVersion()).thenReturn(2L);
         when(accountMapper.toUpdateResponse(account, customer, cardXref)).thenReturn(expected);
+        // One submitted value that differs from the stored record, so COACTUPC
+        // 1205-COMPARE-OLD-NEW reports a change rather than NO-CHANGES-DETECTED.
+        request.setAcctActiveStatus("Y");
 
         AccountUpdateResponseDto result = accountService.updateAccount(ACCT_ID, request, null);
 
@@ -258,11 +277,15 @@ class AccountServiceTest {
         CardXref cardXref = xref();
         Account account = mock(Account.class);
         Customer customer = mock(Customer.class);
-        AccountUpdateRequestDto request = mock(AccountUpdateRequestDto.class);
+        AccountUpdateRequestDto request = new AccountUpdateRequestDto();
+        request.setAcctActiveStatus("Y");
 
         when(cardXrefRepository.findByXrefAcctId(ACCT_ID)).thenReturn(Optional.of(cardXref));
         when(accountRepository.findById(ACCT_ID)).thenReturn(Optional.of(account));
         when(customerRepository.findById(CUST_ID)).thenReturn(Optional.of(customer));
+        // The snapshot still matches at read time; the competing commit lands before the flush.
+        request.setVersion(5L);
+        when(account.getVersion()).thenReturn(5L);
         when(accountRepository.save(any(Account.class)))
                 .thenThrow(new ObjectOptimisticLockingFailureException(Account.class, ACCT_ID));
 
@@ -275,6 +298,177 @@ class AccountServiceTest {
     }
 
     /**
+     * :purpose: Verify the ``COACTUPC`` compare step: when the version snapshot carried by
+     *  the request no longer matches the stored record, the update is abandoned with the
+     *  verbatim conflict message BEFORE anything is applied or written, so a stale client
+     *  can never overwrite a concurrent change (``DATA-WAS-CHANGED-BEFORE-UPDATE``).
+     */
+    @Test
+    void updateAccount_staleVersionSnapshot_throwsConflictAndWritesNothing() {
+        CardXref cardXref = xref();
+        Account account = mock(Account.class);
+        Customer customer = mock(Customer.class);
+        AccountUpdateRequestDto request = new AccountUpdateRequestDto();
+
+        when(cardXrefRepository.findByXrefAcctId(ACCT_ID)).thenReturn(Optional.of(cardXref));
+        when(accountRepository.findById(ACCT_ID)).thenReturn(Optional.of(account));
+        when(customerRepository.findById(CUST_ID)).thenReturn(Optional.of(customer));
+        // The screen was displayed at version 3; the stored record has since moved to 7.
+        request.setVersion(3L);
+        when(account.getVersion()).thenReturn(7L);
+
+        assertThatExceptionOfType(OptimisticLockConflictException.class)
+                .isThrownBy(() -> accountService.updateAccount(ACCT_ID, request, null))
+                .withMessage(MSG_DATA_WAS_CHANGED)
+                .withNoCause();
+
+        verify(accountMapper, never()).applyUpdate(any(), any(), any());
+        verify(customerRepository, never()).save(any(Customer.class));
+        verify(accountRepository, never()).save(any(Account.class));
+        verify(accountRepository, never()).flush();
+    }
+
+    /**
+     * :purpose: Verify the ``COACTUPC`` snapshot compare accepts the masked form of the
+     *  three regulated identifiers, because the view and update responses only ever emit
+     *  them masked (``PiiMasker``, AAP 0.6.7) and so a mask is the only snapshot a client
+     *  can echo. Comparing it against the stored cleartext would report drift on every
+     *  request and make the account update unreachable through its own API.
+     */
+    @Test
+    void updateAccount_maskedIdentifierSnapshotEcho_isNotAConcurrentChange() {
+        String storedSsn = "611264288";
+        String storedGovtId = "1234567890123456";
+        String storedEftId = "9876541756";
+
+        CardXref cardXref = xref();
+        Account account = mock(Account.class);
+        Customer customer = mock(Customer.class);
+        AccountUpdateResponseDto expected = mock(AccountUpdateResponseDto.class);
+
+        when(cardXrefRepository.findByXrefAcctId(ACCT_ID)).thenReturn(Optional.of(cardXref));
+        when(accountRepository.findById(ACCT_ID)).thenReturn(Optional.of(account));
+        when(customerRepository.findById(CUST_ID)).thenReturn(Optional.of(customer));
+        when(customer.getCustSsn()).thenReturn(storedSsn);
+        when(customer.getCustGovtIssuedId()).thenReturn(storedGovtId);
+        when(customer.getCustEftAccountId()).thenReturn(storedEftId);
+        when(accountMapper.toUpdateResponse(account, customer, cardXref)).thenReturn(expected);
+
+        AccountUpdateRequestDto request = new AccountUpdateRequestDto();
+        request.setOldCustSsn(PiiMasker.maskSsn(storedSsn));
+        request.setOldCustGovtIssuedId(PiiMasker.maskIdentifier(storedGovtId));
+        request.setOldCustEftAccountId(PiiMasker.maskIdentifier(storedEftId));
+        request.setCustSsn(PiiMasker.maskSsn(storedSsn));
+        request.setCustGovtIssuedId(PiiMasker.maskIdentifier(storedGovtId));
+        request.setCustEftAccountId(PiiMasker.maskIdentifier(storedEftId));
+        // One genuine edit so 1205-COMPARE-OLD-NEW reports a change rather than
+        // NO-CHANGES-DETECTED, which is what makes the write path observable here.
+        request.setAcctActiveStatus("N");
+
+        AccountUpdateResponseDto result = accountService.updateAccount(ACCT_ID, request, null);
+
+        assertThat(result).isSameAs(expected);
+        verify(accountMapper).applyUpdate(request, account, customer);
+        verify(customerRepository).save(customer);
+        verify(accountRepository).save(account);
+    }
+
+    /**
+     * :purpose: Verify accepting a masked snapshot does not blunt concurrency detection:
+     *  a mask whose visible digits no longer match the stored identifier means the record
+     *  moved after the screen was displayed, so ``DATA-WAS-CHANGED-BEFORE-UPDATE`` is still
+     *  reported and nothing is written.
+     */
+    @Test
+    void updateAccount_maskedIdentifierSnapshotOfDifferentValue_throwsConflict() {
+        String storedSsn = "611264288";
+
+        CardXref cardXref = xref();
+        Account account = mock(Account.class);
+        Customer customer = mock(Customer.class);
+
+        when(cardXrefRepository.findByXrefAcctId(ACCT_ID)).thenReturn(Optional.of(cardXref));
+        when(accountRepository.findById(ACCT_ID)).thenReturn(Optional.of(account));
+        when(customerRepository.findById(CUST_ID)).thenReturn(Optional.of(customer));
+        when(customer.getCustSsn()).thenReturn(storedSsn);
+
+        AccountUpdateRequestDto request = new AccountUpdateRequestDto();
+        // The screen was displayed while the SSN still ended 9999; it now ends 4288.
+        request.setOldCustSsn(PiiMasker.maskSsn("611269999"));
+        request.setAcctActiveStatus("N");
+
+        assertThatExceptionOfType(OptimisticLockConflictException.class)
+                .isThrownBy(() -> accountService.updateAccount(ACCT_ID, request, null))
+                .withMessage(MSG_DATA_WAS_CHANGED)
+                .withNoCause();
+
+        verify(accountMapper, never()).applyUpdate(any(), any(), any());
+        verify(customerRepository, never()).save(any(Customer.class));
+        verify(accountRepository, never()).save(any(Account.class));
+    }
+
+    /**
+     * :purpose: Verify the compare step is fail-closed: a request that carries no version
+     *  snapshot at all cannot prove the client read the current record, so the rewrite is
+     *  refused with the legacy conflict message rather than applied.
+     */
+    @Test
+    void updateAccount_staleVersionWithUnchangedValues_stillThrowsConflict() {
+        CardXref cardXref = xref();
+        Account account = mock(Account.class);
+        Customer customer = mock(Customer.class);
+        AccountUpdateRequestDto request = new AccountUpdateRequestDto();
+
+        when(cardXrefRepository.findByXrefAcctId(ACCT_ID)).thenReturn(Optional.of(cardXref));
+        when(accountRepository.findById(ACCT_ID)).thenReturn(Optional.of(account));
+        when(customerRepository.findById(CUST_ID)).thenReturn(Optional.of(customer));
+        // The submitted value equals what is on file, so the no-change determination would
+        // also match - but the version proves the record moved after the screen was shown,
+        // and the concurrency outcome must win over the benign no-change message.
+        request.setVersion(3L);
+        request.setAcctActiveStatus("Y");
+        // Deliberately lenient: this stub is never consulted, and that is the guarantee -
+        // the version compare refuses the rewrite before the stored value is weighed.
+        lenient().when(account.getAcctActiveStatus()).thenReturn("Y");
+        when(account.getVersion()).thenReturn(7L);
+
+        assertThatExceptionOfType(OptimisticLockConflictException.class)
+                .isThrownBy(() -> accountService.updateAccount(ACCT_ID, request, null))
+                .withMessage(MSG_DATA_WAS_CHANGED);
+
+        verify(accountMapper, never()).applyUpdate(any(), any(), any());
+        verify(customerRepository, never()).save(any(Customer.class));
+        verify(accountRepository, never()).save(any(Account.class));
+    }
+
+    /**
+     * :purpose: Verify a matching version snapshot passes the compare step, so the update
+     *  proceeds and the echo response carries the record the mapper assembled.
+     */
+    @Test
+    void updateAccount_matchingVersionSnapshot_appliesAndPersists() {
+        CardXref cardXref = xref();
+        Account account = mock(Account.class);
+        Customer customer = mock(Customer.class);
+        AccountUpdateRequestDto request = new AccountUpdateRequestDto();
+        AccountUpdateResponseDto expected = mock(AccountUpdateResponseDto.class);
+
+        when(cardXrefRepository.findByXrefAcctId(ACCT_ID)).thenReturn(Optional.of(cardXref));
+        when(accountRepository.findById(ACCT_ID)).thenReturn(Optional.of(account));
+        when(customerRepository.findById(CUST_ID)).thenReturn(Optional.of(customer));
+        request.setVersion(4L);
+        when(account.getVersion()).thenReturn(4L);
+        when(accountMapper.toUpdateResponse(account, customer, cardXref)).thenReturn(expected);
+
+        AccountUpdateResponseDto result = accountService.updateAccount(ACCT_ID, request, null);
+
+        verify(accountMapper).applyUpdate(request, account, customer);
+        verify(customerRepository).save(customer);
+        verify(accountRepository).save(account);
+        assertThat(result).isSameAs(expected);
+    }
+
+    /**
      * :purpose: Verify the service delegates all field mutation to the mapper and
      *  never re-assigns the account id, customer id, or optimistic-lock version
      *  itself (COACTUPC ``9700-CHECK-CHANGE`` excludes id/version from the update).
@@ -284,11 +478,14 @@ class AccountServiceTest {
         CardXref cardXref = xref();
         Account account = mock(Account.class);
         Customer customer = mock(Customer.class);
-        AccountUpdateRequestDto request = mock(AccountUpdateRequestDto.class);
+        AccountUpdateRequestDto request = new AccountUpdateRequestDto();
+        request.setAcctActiveStatus("Y");
 
         when(cardXrefRepository.findByXrefAcctId(ACCT_ID)).thenReturn(Optional.of(cardXref));
         when(accountRepository.findById(ACCT_ID)).thenReturn(Optional.of(account));
         when(customerRepository.findById(CUST_ID)).thenReturn(Optional.of(customer));
+        request.setVersion(1L);
+        when(account.getVersion()).thenReturn(1L);
 
         accountService.updateAccount(ACCT_ID, request, null);
 
@@ -296,5 +493,106 @@ class AccountServiceTest {
         verify(account, never()).setAcctId(any());
         verify(customer, never()).setCustId(any());
         verify(account, never()).setVersion(any());
+    }
+
+    /**
+     * :purpose: Verify the COACTUPC ``1200-EDIT-MAP-INPUTS`` edit sequence runs BEFORE any
+     *  file is read, so an invalid submission never touches the account, customer or
+     *  cross-reference records (QA F18/F19).
+     */
+    @Test
+    void updateAccount_runsEditSequenceBeforeAnyFileRead() {
+        AccountUpdateRequestDto request = new AccountUpdateRequestDto();
+        request.setAcctActiveStatus("Z");
+        doThrow(new CardDemoException(AccountUpdateValidator.MSG_STATUS_YN))
+                .when(accountUpdateValidator).validate(request);
+
+        assertThatExceptionOfType(CardDemoException.class)
+                .isThrownBy(() -> accountService.updateAccount(ACCT_ID, request, null))
+                .withMessage("Account Active Status must be Y or N");
+
+        verifyNoInteractions(cardXrefRepository, accountRepository, customerRepository, accountMapper);
+    }
+
+    /**
+     * :purpose: Verify COACTUPC ``9300-CHECK-CHANGE-IN-REC`` (L4131-4189): when the caller
+     *  carries the display-time ``ACUP-OLD-*`` snapshot and the stored record no longer
+     *  matches it, the update is abandoned with the verbatim conflict message and nothing
+     *  is written (QA F20 lost update).
+     */
+    @Test
+    void updateAccount_staleSnapshot_throwsOptimisticLockConflictAndWritesNothing() {
+        CardXref cardXref = xref();
+        Account account = mock(Account.class);
+        Customer customer = mock(Customer.class);
+        AccountUpdateRequestDto request = new AccountUpdateRequestDto();
+        // The caller saw 103.00 at display time and submits 111.00; the record now holds 999.99.
+        request.setOldAcctCurrBal(new BigDecimal("103.00"));
+        request.setAcctCurrBal(new BigDecimal("111.00"));
+
+        when(cardXrefRepository.findByXrefAcctId(ACCT_ID)).thenReturn(Optional.of(cardXref));
+        when(accountRepository.findById(ACCT_ID)).thenReturn(Optional.of(account));
+        when(customerRepository.findById(CUST_ID)).thenReturn(Optional.of(customer));
+        when(account.getAcctCurrBal()).thenReturn(new BigDecimal("999.99"));
+
+        assertThatExceptionOfType(OptimisticLockConflictException.class)
+                .isThrownBy(() -> accountService.updateAccount(ACCT_ID, request, null))
+                .withMessage(MSG_DATA_WAS_CHANGED);
+
+        verify(accountMapper, never()).applyUpdate(any(), any(), any());
+        verify(accountRepository, never()).save(any(Account.class));
+        verify(customerRepository, never()).save(any(Customer.class));
+    }
+
+    /**
+     * :purpose: Verify COACTUPC ``9300-CHECK-CHANGE-IN-REC`` passes when the stored record
+     *  still matches the caller's display-time snapshot, so a well-behaved read-modify-write
+     *  is not spuriously rejected.
+     */
+    @Test
+    void updateAccount_matchingSnapshot_proceedsToRewrite() {
+        CardXref cardXref = xref();
+        Account account = mock(Account.class);
+        Customer customer = mock(Customer.class);
+        AccountUpdateRequestDto request = new AccountUpdateRequestDto();
+        request.setOldAcctCurrBal(new BigDecimal("103.00"));
+        request.setAcctCurrBal(new BigDecimal("111.00"));
+        AccountUpdateResponseDto expected = mock(AccountUpdateResponseDto.class);
+
+        when(cardXrefRepository.findByXrefAcctId(ACCT_ID)).thenReturn(Optional.of(cardXref));
+        when(accountRepository.findById(ACCT_ID)).thenReturn(Optional.of(account));
+        when(customerRepository.findById(CUST_ID)).thenReturn(Optional.of(customer));
+        when(accountMapper.toUpdateResponse(account, customer, cardXref)).thenReturn(expected);
+        when(account.getAcctCurrBal()).thenReturn(new BigDecimal("103.00"));
+
+        assertThat(accountService.updateAccount(ACCT_ID, request, null)).isSameAs(expected);
+
+        verify(accountMapper).applyUpdate(request, account, customer);
+    }
+
+    /**
+     * :purpose: Verify COACTUPC ``1205-COMPARE-OLD-NEW``: a submission whose values already
+     *  match the stored record reports ``NO-CHANGES-DETECTED`` and rewrites nothing.
+     */
+    @Test
+    void updateAccount_noChangeSubmitted_reportsNoChangesDetected() {
+        CardXref cardXref = xref();
+        Account account = mock(Account.class);
+        Customer customer = mock(Customer.class);
+        AccountUpdateRequestDto request = new AccountUpdateRequestDto();
+        request.setAcctActiveStatus("Y");
+
+        when(cardXrefRepository.findByXrefAcctId(ACCT_ID)).thenReturn(Optional.of(cardXref));
+        when(accountRepository.findById(ACCT_ID)).thenReturn(Optional.of(account));
+        when(customerRepository.findById(CUST_ID)).thenReturn(Optional.of(customer));
+        when(account.getAcctActiveStatus()).thenReturn("Y");
+
+        assertThatExceptionOfType(CardDemoException.class)
+                .isThrownBy(() -> accountService.updateAccount(ACCT_ID, request, null))
+                .withMessage("No change detected with respect to values fetched.");
+
+        verify(accountMapper, never()).applyUpdate(any(), any(), any());
+        verify(accountRepository, never()).save(any(Account.class));
+        verify(customerRepository, never()).save(any(Customer.class));
     }
 }

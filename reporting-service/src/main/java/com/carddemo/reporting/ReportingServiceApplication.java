@@ -16,12 +16,24 @@
  */
 package com.carddemo.reporting;
 
+import com.carddemo.common.config.CardDemoErrorController;
+import com.carddemo.common.config.ContainerErrorReportConfig;
+import com.carddemo.common.batch.BatchPathConfig;
+import com.carddemo.common.batch.JdbcBatchConfiguration;
 import com.carddemo.common.config.GlobalExceptionHandler;
 import com.carddemo.common.config.ObservabilityConfig;
+import com.carddemo.common.config.PersistenceExceptionHandler;
+import com.carddemo.common.config.RedisCommandMetricsConfig;
+import com.carddemo.common.config.SessionRedisConfig;
+import com.carddemo.common.config.WebObservabilityConfig;
+import com.carddemo.common.config.SchemaMigrationConfig;
+import com.carddemo.common.crypto.PiiEncryptionConfig;
+import com.carddemo.common.config.WebHardeningConfig;
 
 import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
 import org.springframework.boot.persistence.autoconfigure.EntityScan;
+import org.springframework.boot.security.autoconfigure.UserDetailsServiceAutoConfiguration;
 import org.springframework.context.annotation.Import;
 import org.springframework.data.jpa.repository.config.EnableJpaRepositories;
 
@@ -35,11 +47,30 @@ import org.springframework.data.jpa.repository.config.EnableJpaRepositories;
  *     exception handling.
  * :output: A running stateless REST service exposing report endpoints
  *     plus a JobLauncher-driven statement-generation job.
+ * :note: {@link BatchPathConfig} is imported from ``carddemo-common`` to supply
+ *     the shared ``BatchOutputPathResolver``. The statement writer previously
+ *     opened a path relative to the process working directory, which is inside
+ *     the read-only container root, so every run failed with
+ *     ``java.io.IOException: No such file or directory`` (QA Issue 21); the
+ *     resolver confines the statement files to the configured, writable
+ *     ``carddemo.batch.output-dir`` and proves that root writable at startup.
+ * :note: {@link JdbcBatchConfiguration} is imported so the statement job's
+ *     executions are persisted in the ``BATCH_*`` metadata tables instead of the
+ *     in-memory ``ResourcelessJobRepository`` that Spring Batch 6 makes the
+ *     default.
  */
-@SpringBootApplication
+// UserDetailsServiceAutoConfiguration is excluded: this service authenticates from the
+// shared CardDemo session, never from an in-memory user. Left enabled, Spring Boot
+// generates a random development credential and logs it at WARN on every start, which
+// both advertises a usable in-memory account and is an unrequested secret in the log.
+@SpringBootApplication(exclude = UserDetailsServiceAutoConfiguration.class)
 @EntityScan("com.carddemo.common.domain")
 @EnableJpaRepositories("com.carddemo.reporting.repository")
-@Import({ ObservabilityConfig.class, GlobalExceptionHandler.class })
+@Import({ ObservabilityConfig.class, WebObservabilityConfig.class, GlobalExceptionHandler.class,
+        CardDemoErrorController.class, ContainerErrorReportConfig.class, PersistenceExceptionHandler.class,
+        SessionRedisConfig.class, RedisCommandMetricsConfig.class, SchemaMigrationConfig.class,
+        BatchPathConfig.class, JdbcBatchConfiguration.class,
+        WebHardeningConfig.class, PiiEncryptionConfig.class })
 public class ReportingServiceApplication {
 
     public static void main(String[] args) {

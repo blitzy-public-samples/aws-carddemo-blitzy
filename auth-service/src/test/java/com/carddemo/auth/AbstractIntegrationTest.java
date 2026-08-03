@@ -20,37 +20,34 @@ import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
+import com.carddemo.common.testsupport.MigratedSchemaContainer;
+
 import org.testcontainers.containers.GenericContainer;
-import org.testcontainers.containers.PostgreSQLContainer;
 import org.testcontainers.junit.jupiter.Testcontainers;
 import org.testcontainers.utility.DockerImageName;
 
 /**
- * :purpose: Shared base class for auth-service integration tests. It starts a
- *     single PostgreSQL (``postgres:18``) container and a single Redis
- *     (``redis:8``) container for the whole test run and injects their
- *     runtime coordinates into the Spring ``Environment`` via
- *     ``@DynamicPropertySource`` so that Spring Data JPA, Flyway, and Spring
- *     Session (Redis) bind to the real containers. Subclasses extend this
- *     class to obtain the full application context under the ``test`` profile.
+ * :purpose: Shared base class for auth-service integration tests. It binds the
+ *     shared, already-migrated PostgreSQL (``postgres:18``) container from
+ *     :java:class:`com.carddemo.common.testsupport.MigratedSchemaContainer` - whose
+ *     schema is produced exclusively by the committed Flyway migrations of every
+ *     owning module - and starts a single Redis (``redis:8``) container for the whole
+ *     test run, injecting their runtime coordinates into the Spring ``Environment``
+ *     via ``@DynamicPropertySource`` so that Spring Data JPA, Flyway, and Spring
+ *     Session (Redis) bind to the real containers. Subclasses extend this class to
+ *     obtain the full application context under the ``test`` profile, where
+ *     ``ddl-auto: validate`` verifies every entity mapping against that schema.
  */
 @SpringBootTest
 @Testcontainers
 @ActiveProfiles("test")
 public abstract class AbstractIntegrationTest {
 
-    protected static final PostgreSQLContainer<?> POSTGRES =
-            new PostgreSQLContainer<>(DockerImageName.parse("postgres:18"))
-                    .withDatabaseName("carddemo")
-                    .withUsername("carddemo")
-                    .withPassword("carddemo");
-
     protected static final GenericContainer<?> REDIS =
             new GenericContainer<>(DockerImageName.parse("redis:8"))
                     .withExposedPorts(6379);
 
     static {
-        POSTGRES.start();
         REDIS.start();
     }
 
@@ -63,9 +60,7 @@ public abstract class AbstractIntegrationTest {
      */
     @DynamicPropertySource
     static void registerDynamicProperties(DynamicPropertyRegistry registry) {
-        registry.add("spring.datasource.url", POSTGRES::getJdbcUrl);
-        registry.add("spring.datasource.username", POSTGRES::getUsername);
-        registry.add("spring.datasource.password", POSTGRES::getPassword);
+        MigratedSchemaContainer.registerDataSource(registry);
         registry.add("spring.data.redis.host", REDIS::getHost);
         registry.add("spring.data.redis.port", () -> REDIS.getMappedPort(6379));
         registry.add("spring.flyway.enabled", () -> true);

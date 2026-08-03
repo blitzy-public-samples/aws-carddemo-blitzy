@@ -16,12 +16,23 @@
  */
 package com.carddemo.transaction;
 
+import com.carddemo.common.config.CardDemoErrorController;
+import com.carddemo.common.config.ContainerErrorReportConfig;
+import com.carddemo.common.batch.BatchPathConfig;
+import com.carddemo.common.batch.JdbcBatchConfiguration;
 import com.carddemo.common.config.GlobalExceptionHandler;
 import com.carddemo.common.config.ObservabilityConfig;
+import com.carddemo.common.config.PersistenceExceptionHandler;
+import com.carddemo.common.config.RedisCommandMetricsConfig;
+import com.carddemo.common.config.SessionRedisConfig;
+import com.carddemo.common.config.WebObservabilityConfig;
+import com.carddemo.common.config.SchemaMigrationConfig;
+import com.carddemo.common.config.WebHardeningConfig;
 
 import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
 import org.springframework.boot.persistence.autoconfigure.EntityScan;
+import org.springframework.boot.security.autoconfigure.UserDetailsServiceAutoConfiguration;
 import org.springframework.context.annotation.Import;
 import org.springframework.data.jpa.repository.config.EnableJpaRepositories;
 
@@ -35,11 +46,29 @@ import org.springframework.data.jpa.repository.config.EnableJpaRepositories;
  *     exception handling.
  * :output: A running stateless REST service exposing transaction endpoints
  *     plus a JobLauncher-driven posting job.
+ * :note: {@link BatchPathConfig} is imported from ``carddemo-common`` to supply the
+ *     shared ``BatchOutputPathResolver``, which confines the ``DALYREJS`` reject
+ *     file the posting job writes to the configured, writable
+ *     ``carddemo.batch.output-dir`` root and proves that root writable while the
+ *     context refreshes. The reject writer previously opened a path relative to the
+ *     process working directory, which is on the read-only container root
+ *     filesystem (QA Issue 21).
+ * :note: {@link JdbcBatchConfiguration} is imported so the posting job's executions
+ *     are persisted in the ``BATCH_*`` metadata tables instead of the in-memory
+ *     ``ResourcelessJobRepository`` that Spring Batch 6 makes the default.
  */
-@SpringBootApplication
+// UserDetailsServiceAutoConfiguration is excluded: this service authenticates from the
+// shared CardDemo session, never from an in-memory user. Left enabled, Spring Boot
+// generates a random development credential and logs it at WARN on every start, which
+// both advertises a usable in-memory account and is an unrequested secret in the log.
+@SpringBootApplication(exclude = UserDetailsServiceAutoConfiguration.class)
 @EntityScan("com.carddemo.common.domain")
 @EnableJpaRepositories("com.carddemo.transaction.repository")
-@Import({ ObservabilityConfig.class, GlobalExceptionHandler.class })
+@Import({ ObservabilityConfig.class, GlobalExceptionHandler.class, CardDemoErrorController.class,
+        ContainerErrorReportConfig.class, PersistenceExceptionHandler.class, SessionRedisConfig.class,
+        RedisCommandMetricsConfig.class, SchemaMigrationConfig.class, WebObservabilityConfig.class,
+        BatchPathConfig.class, JdbcBatchConfiguration.class,
+        WebHardeningConfig.class })
 public class TransactionServiceApplication {
 
     /**
