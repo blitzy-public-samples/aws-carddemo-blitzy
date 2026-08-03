@@ -1,0 +1,153 @@
+# One Apache Kafka broker in Kafka Raft (KRaft) mode, plus the Service the
+# six card-platform services reach it through.
+# Architecture before and after: card-platform/docs/architecture-before-after.md
+# Rationale for every choice in this folder: card-platform/docs/decision-log.md
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: kafka
+  namespace: carddemo
+  labels:
+    app.kubernetes.io/name: kafka
+    app.kubernetes.io/component: event-broker
+    app.kubernetes.io/part-of: card-platform
+spec:
+  replicas: 1
+  # Recreate stops the running broker Pod before it starts the replacement.
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: kafka
+      app.kubernetes.io/part-of: card-platform
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: kafka
+        app.kubernetes.io/component: event-broker
+        app.kubernetes.io/part-of: card-platform
+    spec:
+      # The image runs as user 1000 in group 1000.
+      # fsGroup gives that group the volume.
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: kafka
+          image: apache/kafka:4.2.1
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+          ports:
+            - name: internal
+              containerPort: 9092
+            - name: controller
+              containerPort: 9093
+          env:
+            # One process fills both the broker role and the controller role.
+            # Clients use port 9092, and the controller quorum uses 9093.
+            - name: KAFKA_NODE_ID
+              value: "1"
+            - name: KAFKA_PROCESS_ROLES
+              value: broker,controller
+            - name: KAFKA_CONTROLLER_QUORUM_VOTERS
+              value: 1@localhost:9093
+            - name: KAFKA_CONTROLLER_LISTENER_NAMES
+              value: CONTROLLER
+            - name: KAFKA_INTER_BROKER_LISTENER_NAME
+              value: INTERNAL
+            - name: KAFKA_LISTENER_SECURITY_PROTOCOL_MAP
+              value: CONTROLLER:PLAINTEXT,INTERNAL:PLAINTEXT
+            - name: KAFKA_LISTENERS
+              value: INTERNAL://:9092,CONTROLLER://:9093
+            # Clients receive kafka:9092, the Service in the second document.
+            - name: KAFKA_ADVERTISED_LISTENERS
+              value: INTERNAL://kafka:9092
+            # The broker writes the cluster identifier into its log directory.
+            - name: CLUSTER_ID
+              value: cardDemoPlatformKRaft1
+            # Replication factor 1. One broker cannot replicate.
+            - name: KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR
+              value: "1"
+            - name: KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR
+              value: "1"
+            - name: KAFKA_TRANSACTION_STATE_LOG_MIN_ISR
+              value: "1"
+            - name: KAFKA_DEFAULT_REPLICATION_FACTOR
+              value: "1"
+            - name: KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS
+              value: "0"
+            # The broker creates a topic on first use, with 3 partitions.
+            # Auto-create covers the event topics and every dead-letter topic.
+            - name: KAFKA_AUTO_CREATE_TOPICS_ENABLE
+              value: "true"
+            - name: KAFKA_NUM_PARTITIONS
+              value: "3"
+            - name: KAFKA_LOG_DIRS
+              value: /var/lib/kafka/data
+            - name: KAFKA_HEAP_OPTS
+              value: -Xms256m -Xmx512m
+          # Readiness probe allows time for cluster formation at startup.
+          readinessProbe:
+            exec:
+              command:
+                - /opt/kafka/bin/kafka-topics.sh
+                - --bootstrap-server
+                - localhost:9092
+                - --list
+            initialDelaySeconds: 40
+            periodSeconds: 20
+            timeoutSeconds: 15
+            failureThreshold: 6
+          livenessProbe:
+            tcpSocket:
+              port: internal
+            initialDelaySeconds: 90
+            periodSeconds: 20
+            timeoutSeconds: 5
+            failureThreshold: 6
+          resources:
+            requests:
+              cpu: 250m
+              memory: 512Mi
+            limits:
+              cpu: "1"
+              memory: 1Gi
+          volumeMounts:
+            - name: kafka-data
+              mountPath: /var/lib/kafka/data
+      # Storage is an emptyDir volume. The broker log starts empty after
+      # every Pod restart.
+      volumes:
+        - name: kafka-data
+          emptyDir: {}
+---
+# Every service reads kafka:9092 as its bootstrap address.
+# ClusterIP only. Nothing outside the cluster connects to the broker.
+apiVersion: v1
+kind: Service
+metadata:
+  name: kafka
+  namespace: carddemo
+  labels:
+    app.kubernetes.io/name: kafka
+    app.kubernetes.io/component: event-broker
+    app.kubernetes.io/part-of: card-platform
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: kafka
+    app.kubernetes.io/part-of: card-platform
+  ports:
+    - name: internal
+      port: 9092
+      targetPort: internal
+      protocol: TCP

@@ -1,0 +1,159 @@
+# =============================================================================
+# card-platform notification-service — the runtime contract for one container.
+# =============================================================================
+# Values that change between environments read a variable and fall back to a
+# working demo default, so the service starts with no .env file present.
+# docker-compose.yml overrides the values it injects, and
+# card-platform/.env.example names every variable a developer can set.
+#
+# Rationale for every setting below: card-platform/docs/decision-log.md
+# =============================================================================
+
+spring:
+
+  # The application name for this module. Each of the six services carries its own.
+  application:
+    name: notification-service
+
+  # ===========================================================================
+  # PostgreSQL
+  # ===========================================================================
+  # One private database holds one schema, and no other service reads either.
+  # The password default is a demo credential for a disposable local container.
+  datasource:
+    url: "${SPRING_DATASOURCE_URL:jdbc:postgresql://${POSTGRES_HOST:postgres}:\
+      ${POSTGRES_PORT:5432}/${NOTIFICATION_DB_NAME:carddemo_notification}\
+      ?currentSchema=${NOTIFICATION_DB_SCHEMA:notification_service}}"
+    username: "${SPRING_DATASOURCE_USERNAME:${POSTGRES_USER:carddemo}}"
+    password: "${SPRING_DATASOURCE_PASSWORD:${POSTGRES_PASSWORD:carddemo}}"
+    driver-class-name: org.postgresql.Driver
+
+  # ===========================================================================
+  # Flyway
+  # ===========================================================================
+  # Flyway creates the schema on first start and owns every table in it.
+  # docker-compose.yml creates the database and defines no schema object.
+  # db/migration/V1__schema.sql is the only migration this service carries.
+  flyway:
+    enabled: true
+    create-schemas: true
+    schemas: "${SPRING_FLYWAY_SCHEMAS:${NOTIFICATION_DB_SCHEMA:notification_service}}"
+    default-schema: "${SPRING_FLYWAY_DEFAULT_SCHEMA:${NOTIFICATION_DB_SCHEMA:notification_service}}"
+    baseline-on-migrate: false
+    validate-on-migrate: true
+
+  # ===========================================================================
+  # Jakarta Persistence
+  # ===========================================================================
+  # Hibernate checks its mapping against the migrated schema and creates
+  # nothing. A column name or type that disagrees with V1__schema.sql stops
+  # startup.
+  jpa:
+    hibernate:
+      ddl-auto: validate
+    open-in-view: false
+    show-sql: false
+    properties:
+      hibernate:
+        default_schema: "${SPRING_JPA_PROPERTIES_HIBERNATE_DEFAULT_SCHEMA:${NOTIFICATION_DB_SCHEMA:notification_service}}"
+        auto_quote_keyword: true
+
+  # ===========================================================================
+  # Kafka
+  # ===========================================================================
+  # A service container reaches the broker on kafka:29092 inside the compose
+  # network. Host tooling uses the published port named in .env.example.
+  kafka:
+    bootstrap-servers: "${SPRING_KAFKA_BOOTSTRAP_SERVERS:${KAFKA_BOOTSTRAP_SERVERS:kafka:29092}}"
+
+    # No listener in this module publishes. The three settings below hold the
+    # platform producer contract.
+    producer:
+      acks: all
+      properties:
+        enable.idempotence: true
+        max.in.flight.requests.per.connection: 5
+
+    # Two listeners read two topics under two group identifiers, named further
+    # down under carddemo. The value below is the default the listener
+    # container factory applies.
+    consumer:
+      group-id: "${SPRING_KAFKA_CONSUMER_GROUP_ID:${GROUP_NOTIFICATION_POSTED:notification-posted}}"
+      enable-auto-commit: false
+      auto-offset-reset: "${SPRING_KAFKA_CONSUMER_AUTO_OFFSET_RESET:earliest}"
+      key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+      # The wrapper below catches a failure raised inside poll, where schema
+      # validation runs. Without it such a message never reaches the
+      # dead-letter topic.
+      value-deserializer: org.springframework.kafka.support.serializer.ErrorHandlingDeserializer
+      properties:
+        spring.deserializer.value.delegate.class: com.carddemo.events.serde.JsonSchemaValidatingDeserializer
+
+    # A listener acknowledges a message once its own writes commit.
+    listener:
+      ack-mode: manual
+
+# =============================================================================
+# Platform properties the two listeners and the dead-letter route read
+# =============================================================================
+carddemo:
+  kafka:
+
+    # One group per listener. Two listeners sharing one group would split the
+    # messages between them.
+    groups:
+      transaction-posted: "${GROUP_NOTIFICATION_POSTED:notification-posted}"
+      fraud-assessed: "${GROUP_NOTIFICATION_FRAUD:notification-fraud}"
+
+    # FraudFlagged and FraudCleared travel on fraud.assessed, and the listener
+    # routes on the envelope eventType field. docker-compose.yml creates one
+    # dead-letter topic per consumed topic by appending the suffix below.
+    topics:
+      transaction-posted: "${TOPIC_TRANSACTION_POSTED:transaction.posted}"
+      fraud-assessed: "${TOPIC_FRAUD_ASSESSED:fraud.assessed}"
+      dead-letter-suffix: "${TOPIC_DEAD_LETTER_SUFFIX:.DLT}"
+
+  consumer:
+
+    # Delivery attempts a listener makes before the message routes to the
+    # dead-letter topic, and the wait between two attempts in milliseconds.
+    retry:
+      max-attempts: "${CONSUMER_MAX_RETRY_ATTEMPTS:3}"
+      backoff-ms: "${CONSUMER_RETRY_BACKOFF_MS:1000}"
+
+# =============================================================================
+# Actuator
+# =============================================================================
+# The container health check reads /actuator/health on the port below. The
+# exposure list adds the info, metrics and Prometheus endpoints.
+management:
+  endpoints:
+    web:
+      exposure:
+        include: "${MANAGEMENT_ENDPOINTS_WEB_EXPOSURE_INCLUDE:${MANAGEMENT_ENDPOINTS:health,info,metrics,prometheus}}"
+  prometheus:
+    metrics:
+      export:
+        enabled: true
+
+# =============================================================================
+# Server
+# =============================================================================
+# Container port. docker-compose.yml publishes host port 8084 onto it and
+# probes /actuator/health on the container port from inside the container.
+server:
+  port: 8080
+
+# =============================================================================
+# Logging
+# =============================================================================
+# The console format key below turns every log line into JSON, which is the
+# whole of the structured logging setup. This module carries no logging
+# configuration file.
+logging:
+  structured:
+    format:
+      console: logstash
+  level:
+    root: "${LOGGING_LEVEL_ROOT:${LOG_LEVEL:INFO}}"
+    com.carddemo: "${LOGGING_LEVEL_COM_CARDDEMO:${LOG_LEVEL_CARDDEMO:DEBUG}}"
