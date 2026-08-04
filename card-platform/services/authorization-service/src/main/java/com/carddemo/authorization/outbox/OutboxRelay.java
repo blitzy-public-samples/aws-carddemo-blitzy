@@ -92,8 +92,8 @@ public class OutboxRelay {
      * round trip, which is the price of the claim and is bounded by
      * {@code carddemo.outbox.relay.batch-size} rows per sweep.
      */
-    @Transactional
     @Scheduled(fixedDelayString = "${carddemo.outbox.relay.fixed-delay-ms:500}")
+    @Transactional
     public void publishPendingEvents() {
         List<OutboxEventEntity> pending = outboxEvents.claimPendingBatch(Limit.of(batchSize));
 

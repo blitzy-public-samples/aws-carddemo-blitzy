@@ -1,0 +1,1461 @@
+package com.carddemo.card.entity;
+
+import static org.junit.jupiter.api.Assertions.assertAll;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+
+import com.carddemo.cobol.PicClause;
+import jakarta.persistence.Column;
+import jakarta.persistence.EntityManager;
+import jakarta.persistence.Id;
+import jakarta.persistence.Index;
+import jakarta.persistence.PersistenceContext;
+import jakarta.persistence.Table;
+import jakarta.persistence.Version;
+import java.lang.reflect.Constructor;
+import java.lang.reflect.Field;
+import java.lang.reflect.Method;
+import java.lang.reflect.Modifier;
+import java.sql.Connection;
+import java.sql.DatabaseMetaData;
+import java.sql.ResultSet;
+import java.sql.SQLException;
+import java.time.Instant;
+import java.time.LocalDate;
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Locale;
+import java.util.Map;
+import java.util.TreeMap;
+import java.util.UUID;
+import javax.sql.DataSource;
+import org.junit.jupiter.api.DisplayName;
+import org.junit.jupiter.api.Nested;
+import org.junit.jupiter.api.Test;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.test.context.DynamicPropertyRegistry;
+import org.springframework.test.context.DynamicPropertySource;
+import org.springframework.transaction.annotation.Transactional;
+import org.testcontainers.postgresql.PostgreSQLContainer;
+
+/**
+ * Asserts that the four Jakarta Persistence (JPA) entity classes of the card service map field for
+ * field onto the COBOL (Common Business Oriented Language) record layouts. Both trailing fillers
+ * are dropped, and the migrated schema carries the derived column types.
+ *
+ * <p>Two copybooks supply the mapped fields. {@code app/cpy/CVACT02Y.cpy:L5-L10} declares the six
+ * card fields, and {@code app/cpy/CVACT02Y.cpy:L11} declares a trailing {@code FILLER PIC X(59)}.
+ * {@code app/cpy/CVACT03Y.cpy:L5-L7} declares the three cross-reference fields, and
+ * {@code app/cpy/CVACT03Y.cpy:L8} declares a trailing {@code FILLER PIC X(14)}. Neither filler
+ * carries a column. The tests below count the mapped attributes and scan every name, so a seventh
+ * card column or a fourth copybook-derived cross-reference column fails the count.
+ *
+ * <p>Two Job Control Language (JCL) members supply the keys and the record widths of the two
+ * Virtual Storage Access Method (VSAM) datasets. {@code app/jcl/CARDFILE.jcl:L54} declares
+ * {@code KEYS(16 0)} and {@code app/jcl/CARDFILE.jcl:L55} declares {@code RECORDSIZE(150 150)}.
+ * {@code app/jcl/CARDFILE.jcl:L83-L88} defines an alternate index carrying {@code KEYS(11 16)} at
+ * L85 and {@code NONUNIQUEKEY} at L86: an eleven-byte key at offset 16, where
+ * {@code CARD-ACCT-ID} starts. {@code app/jcl/XREFFILE.jcl:L43} declares {@code KEYS(16 0)},
+ * {@code app/jcl/XREFFILE.jcl:L44} declares {@code RECORDSIZE(50 50)}, and
+ * {@code app/jcl/XREFFILE.jcl:L74} declares {@code KEYS(11,25)}, where offset 25 is 16 plus 9.
+ *
+ * <p>{@code app/cpy/CVACT03Y.cpy:L7} is the width authority for the account identifier across this
+ * platform. {@code XREF-ACCT-ID PIC 9(11)} fixes the eleven digits that
+ * {@code outbox_event.aggregate_id} and the aggregate identifier of the shared event envelope both
+ * carry. The eleven-character Kafka message key belongs to the tests under
+ * {@code com.carddemo.card.messaging}, and no test here repeats it.
+ *
+ * <p>Column {@code expiration_date} carries a {@code DATE} type, and
+ * {@link PicClause#CARD_EXPIRATION_DATE_COLUMN_TYPE} names it. Three readings of
+ * {@code app/cbl/COCRDUPC.cbl} establish the card expiry as a separator-delimited calendar date.
+ * L115 to L123 redefine the ten characters as a four-character year, a one-character separator, a
+ * two-character month, a second separator and a two-character day. L1361 to L1366 slice the field
+ * at {@code (1:4)}, {@code (6:2)} and {@code (9:2)}, skipping positions 5 and 8. L1467 to L1474
+ * assemble the value with {@code STRING} around two literal hyphens.
+ *
+ * <p>The fixture agrees. All 50 records of {@code app/data/ASCII/carddata.txt} hold
+ * {@code YYYY-MM-DD} at columns 81 through 90, with no malformed value. The account service holds
+ * {@code ACCT-EXPIRAION-DATE PIC X(10)} as
+ * {@link PicClause#ACCT_EXPIRATION_DATE_COLUMN_TYPE}, and
+ * {@code app/cbl/CBTRN02C.cbl:L414} compares that field with the first ten characters of a
+ * 26-character origin timestamp. No test here reads an account-service class.
+ *
+ * <p>The two fixtures disagree on the cross-reference record width.
+ * {@code app/data/ASCII/carddata.txt} holds 50 records of exactly 150 characters, matching
+ * {@code RECORDSIZE(150 150)}. {@code app/data/ASCII/cardxref.txt} holds 50 records of exactly 36
+ * characters against the 50 that {@code RECORDSIZE(50 50)} declares, and the 14-byte filler
+ * reaches neither the fixture nor the table. AAP section 0.6.3 register item 25 carries the
+ * finding, and a fixture parser has to tolerate both widths.
+ *
+ * <p>No test here opens a file under {@code app/}. Flyway loads the fixture values from
+ * {@code src/main/resources/db/migration/V2__seed.sql}, which inserts 50 card rows and 50
+ * cross-reference rows.
+ *
+ * <p>Record one of {@code app/data/ASCII/carddata.txt} arrives as a database row. That row carries
+ * card number {@code 0500024453765740}, account identifier {@code 00000000050} and card
+ * verification value {@code 747}. It also carries embossed name {@code Aniya Von}, expiration date
+ * {@code 2023-03-09} and active status {@code Y}. Its cross-reference row carries
+ * {@code 0500024453765740}, {@code 000000050} and {@code 00000000050}.
+ *
+ * <p>Column 91 holds {@code Y} on all 50 records, so an inactive card is constructed here and
+ * never loaded. The fixture field positions are card number 1 to 16, account identifier 17 to 27
+ * and card verification value 28 to 30. The remaining positions are embossed name 31 to 80,
+ * expiration date 81 to 90, active status 91 and filler 92 to 150. The filler measures 59
+ * characters. {@code card-platform/docs/data-model.md} draws the table shapes and the lookup path
+ * between them.
+ *
+ * <p>Three subjects belong to sibling test classes and appear in no assertion here.
+ * {@code CardholderDataExposureTest} owns the card verification value: its absent accessor, its
+ * {@code JsonIgnore} annotation, and every rendering that withholds it. The tests under
+ * {@code com.carddemo.card.domain} own the presented form of the embossed name, which
+ * {@code app/cbl/COCRDUPC.cbl:L1356-L1358} folds to upper case with
+ * {@code INSPECT CARD-EMBOSSED-NAME CONVERTING LIT-LOWER TO LIT-UPPER}. The tests under
+ * {@code com.carddemo.card.messaging} own the message key and the non-emission of cardholder data.
+ * This class asserts the persisted form of the embossed name, which
+ * {@code app/cbl/COCRDUPC.cbl:L1466} writes with no fold.
+ *
+ * <p>Five deviations carry an entry in {@code card-platform/docs/decision-log.md}.
+ *
+ * <ul>
+ *   <li>The {@code DATE} column type here, where the account service holds ten characters of
+ *       text.</li>
+ *   <li>The corrected spelling of {@code CARD-EXPIRAION-DATE} at
+ *       {@code app/cpy/CVACT02Y.cpy:L9}.</li>
+ *   <li>The dropped 59-byte and 14-byte trailing fillers.</li>
+ *   <li>The split between the persisted and the presented casing of the embossed name.</li>
+ *   <li>The third working-storage redefine pair at {@code app/cpy/CVCRD01Y.cpy:L40-L42}.</li>
+ * </ul>
+ *
+ * <p>{@code app/cpy/CVCRD01Y.cpy} declares three redefine pairs whose primary picture clause is
+ * alphanumeric. The pairs are {@code CC-ACCT-ID PIC X(11)} with {@code CC-ACCT-ID-N PIC 9(11)} at
+ * L34 to L36, {@code CC-CARD-NUM PIC X(16)} with {@code CC-CARD-NUM-N PIC 9(16)} at L37 to L39,
+ * and {@code CC-CUST-ID PIC X(09)} with {@code CC-CUST-ID-N PIC 9(9)} at L40 to L42. Every
+ * identifier column asserted below holds text and keeps its leading zeros. A numeric column
+ * returns {@code 50} for a stored {@code 00000000050}.
+ *
+ * <p>The same copybook declares three screen-navigation fields:
+ * {@code CCARD-NEXT-PROG PIC X(8)} at L21, {@code CCARD-NEXT-MAPSET PIC X(7)} at L23 and
+ * {@code CCARD-NEXT-MAP PIC X(7)} at L24. AAP transformation rule T6 drops all three, and
+ * {@code card-platform/docs/traceability-matrix.md} records each omission. A test below scans for
+ * a column matching any of them.
+ *
+ * <p>No entity declares a {@link Version} field. AAP section 0.3.3 fixes the concurrency
+ * mechanism as a field-level compare-and-swap, and
+ * {@code app/cbl/COCRDUPC.cbl:L1455-L1457} reads
+ * {@code IF DATA-WAS-CHANGED-BEFORE-UPDATE GO TO 9200-WRITE-PROCESSING-EXIT}, which follows the
+ * field comparison at {@code app/cbl/COCRDUPC.cbl:L1503-L1508}. The comparison itself belongs to
+ * the {@code com.carddemo.card.domain} tests, and this class asserts the absence alone.
+ *
+ * <p>No test adds a card-number checksum. {@code app/cbl/COCRDUPC.cbl:L194} carries the one
+ * card-number rule in the source, and its text names sixteen digits. AAP section 0.6.3 register
+ * item 24 records the non-addition.
+ *
+ * <p><b>How this class runs.</b> One PostgreSQL 18.4 container serves the whole class, and the
+ * image tag matches {@code card-platform/docker-compose.yml}.
+ * {@code src/main/resources/application.yml} sets {@code spring.flyway.create-schemas: true}, so
+ * Flyway creates the schema, applies {@code V1__schema.sql} and loads {@code V2__seed.sql}. The
+ * same file sets {@code spring.jpa.hibernate.ddl-auto: validate}, so Hibernate compares all four
+ * entity mappings with the migrated schema at start-up. A column name, type, precision, scale or
+ * nullability that drifts from the migration stops the context, and every test in this class
+ * carries that check by starting.
+ *
+ * <p>{@link DynamicPropertySource} points three datasource properties at the container, and the
+ * annotation {@code ServiceConnection} appears nowhere here: the artifact that declares it,
+ * {@code org.springframework.boot:spring-boot-testcontainers}, is absent from
+ * {@code card-platform/services/card-service/pom.xml}. The class annotation supplies one inert
+ * value for each of the four variables that {@code application.yml} leaves without a default. The
+ * broker password reaches no broker, and a {@code noop} identity password authenticates nobody.
+ */
+@SpringBootTest(
+        webEnvironment = SpringBootTest.WebEnvironment.NONE,
+        properties = {
+                "KAFKA_SASL_PASSWORD=not-a-real-broker-password",
+                "ADMIN_PASSWORD_HASH={noop}not-a-real-admin-password",
+                "USER_PASSWORD_HASH={noop}not-a-real-user-password",
+                "MONITORING_PASSWORD_HASH={noop}not-a-real-monitoring-password"
+        })
+@DisplayName("Card entities map onto CVACT02Y.cpy and CVACT03Y.cpy, filler dropped")
+class CardEntityMappingTest {
+
+    /** The image tag {@code card-platform/docker-compose.yml} also names. */
+    private static final String POSTGRES_IMAGE = "postgres:18.4";
+
+    /** The database name, the login name and the password of the container, one value for all. */
+    private static final String POSTGRES_CREDENTIAL = "carddemo";
+
+    /** Card number of record one of {@code app/data/ASCII/carddata.txt}, seeded by Flyway. */
+    private static final String SEEDED_CARD_NUMBER = "0500024453765740";
+
+    /** Account identifier of that record, eleven characters at columns 17 through 27. */
+    private static final String SEEDED_ACCOUNT_ID = "00000000050";
+
+    /** Customer identifier of the matching cross-reference row, nine characters. */
+    private static final String SEEDED_CUSTOMER_ID = "000000050";
+
+    /** Embossed name of that record, trimmed of the padding {@code PIC X(50)} carries. */
+    private static final String SEEDED_EMBOSSED_NAME = "Aniya Von";
+
+    /** Expiration date of that record, columns 81 through 90. */
+    private static final LocalDate SEEDED_EXPIRATION_DATE = LocalDate.of(2023, 3, 9);
+
+    /** Active status of that record, and of all 50 of them, at column 91. */
+    private static final String SEEDED_ACTIVE_STATUS = "Y";
+
+    /** Card verification value of that record, held as a number for every comparison here. */
+    private static final int SEEDED_CARD_VERIFICATION_VALUE = 747;
+
+    /** Row count {@code V2__seed.sql} loads into each of the two seeded tables. */
+    private static final int SEEDED_ROW_COUNT = 50;
+
+    /**
+     * The four entity classes of this service, in the order {@code V1__schema.sql} creates their
+     * tables. Every scan below walks this list, so a fifth entity added to the package reaches the
+     * scans with no change here.
+     */
+    private static final List<Class<?>> ENTITY_CLASSES = List.of(
+            CardEntity.class,
+            CardCrossReferenceEntity.class,
+            OutboxEventEntity.class,
+            ProcessedEventEntity.class);
+
+    /** The table each entity class maps onto, keyed by the class. */
+    private static final Map<Class<?>, String> TABLE_NAMES = Map.of(
+            CardEntity.class, "card",
+            CardCrossReferenceEntity.class, "card_xref",
+            OutboxEventEntity.class, "outbox_event",
+            ProcessedEventEntity.class, "processed_event");
+
+    /**
+     * The one container every test in this class shares.
+     *
+     * <p>The class name comes from {@code org.testcontainers.postgresql}, the package
+     * Testcontainers 2.0.5 ships it in.
+     * {@code org.testcontainers.containers.PostgreSQLContainer} carries a deprecation on the same
+     * artifact.
+     *
+     * <p>No annotation manages the lifecycle of the field, and no code here stops the container.
+     * Testcontainers removes it when the Java Virtual Machine (JVM) exits.
+     */
+    private static final PostgreSQLContainer POSTGRES;
+
+    static {
+        POSTGRES = new PostgreSQLContainer(POSTGRES_IMAGE)
+                .withDatabaseName(POSTGRES_CREDENTIAL)
+                .withUsername(POSTGRES_CREDENTIAL)
+                .withPassword(POSTGRES_CREDENTIAL);
+        POSTGRES.start();
+    }
+
+    /**
+     * Points the Spring datasource at the running container.
+     *
+     * <p>Three properties leave here. {@code application.yml} sits on the test classpath and
+     * carries every other datasource, Flyway and persistence setting, and no line below repeats
+     * one.
+     *
+     * @param registry the registry the Spring test context supplies
+     */
+    @DynamicPropertySource
+    static void datasourceProperties(DynamicPropertyRegistry registry) {
+        registry.add("spring.datasource.url", POSTGRES::getJdbcUrl);
+        registry.add("spring.datasource.username", POSTGRES::getUsername);
+        registry.add("spring.datasource.password", POSTGRES::getPassword);
+    }
+
+    /** Reads column and index metadata straight from the migrated schema. */
+    @Autowired
+    private DataSource dataSource;
+
+    /** Reads and writes rows through the same mappings the running service uses. */
+    @PersistenceContext
+    private EntityManager entityManager;
+
+    /**
+     * The schema Flyway created and Hibernate qualifies with, from
+     * {@code spring.jpa.properties.hibernate.default_schema} in {@code application.yml}.
+     */
+    @Value("${spring.jpa.properties.hibernate.default_schema}")
+    private String schema;
+
+    // ---------------------------------------------------------------------------------------
+    // Helpers. Each one answers a single question about a mapping, and none asserts.
+    // ---------------------------------------------------------------------------------------
+
+    /** One column of the migrated schema, as Java Database Connectivity (JDBC) reports it. */
+    private record ColumnFact(String typeName, int size, int decimalDigits, boolean nullable) {
+    }
+
+    /** One index of the migrated schema, with its key columns in key order. */
+    private record IndexFact(List<String> columns, boolean unique) {
+    }
+
+    /**
+     * Returns the persistent fields an entity class declares, in declaration order.
+     *
+     * <p>A static field is a constant of the class and carries no column. A synthetic field is one
+     * the compiler adds. The filter drops both, and the remainder is the mapped attribute set.
+     *
+     * @param entity the entity class to read
+     * @return the mapped fields, in the order the class declares them
+     */
+    private static List<Field> mappedFields(Class<?> entity) {
+        List<Field> fields = new ArrayList<>();
+        for (Field field : entity.getDeclaredFields()) {
+            if (Modifier.isStatic(field.getModifiers()) || field.isSynthetic()) {
+                continue;
+            }
+            fields.add(field);
+        }
+        return fields;
+    }
+
+    /**
+     * Returns the column name an entity field maps onto.
+     *
+     * @param field the mapped field to read
+     * @return the value of {@link Column#name()}
+     * @throws AssertionError if the field carries no {@link Column} annotation, or if that
+     *                        annotation names no column
+     */
+    private static String columnName(Field field) {
+        Column column = field.getAnnotation(Column.class);
+        assertNotNull(column, field.getDeclaringClass().getSimpleName() + "." + field.getName()
+                + " carries no Column annotation");
+        assertFalse(column.name().isBlank(), field.getDeclaringClass().getSimpleName() + "."
+                + field.getName() + " names no column");
+        return column.name();
+    }
+
+    /**
+     * Returns the column names an entity class maps onto, in declaration order.
+     *
+     * @param entity the entity class to read
+     * @return the column names, in the order the class declares its fields
+     */
+    private static List<String> columnNames(Class<?> entity) {
+        List<String> names = new ArrayList<>();
+        for (Field field : mappedFields(entity)) {
+            names.add(columnName(field));
+        }
+        return names;
+    }
+
+    /**
+     * Returns the field names an entity class maps, in declaration order.
+     *
+     * @param entity the entity class to read
+     * @return the mapped field names
+     */
+    private static List<String> fieldNames(Class<?> entity) {
+        List<String> names = new ArrayList<>();
+        for (Field field : mappedFields(entity)) {
+            names.add(field.getName());
+        }
+        return names;
+    }
+
+    /**
+     * Returns a name in one comparable form: lower case with every underscore removed.
+     *
+     * <p>{@code card_number} and {@code cardNumber} both reduce to {@code cardnumber}, so one scan
+     * covers a column name and the field name beside it.
+     *
+     * @param name the column name or field name to fold
+     * @return the folded form
+     */
+    private static String folded(String name) {
+        return name.toLowerCase(Locale.ROOT).replace("_", "");
+    }
+
+    /**
+     * Returns the public methods an entity class declares, excluding the three
+     * {@link Object} overrides every entity here carries.
+     *
+     * @param entity the entity class to read
+     * @return the declared public method names, without {@code equals}, {@code hashCode} and
+     *         {@code toString}
+     */
+    private static List<String> declaredPublicMethodNames(Class<?> entity) {
+        List<String> names = new ArrayList<>();
+        for (Method method : entity.getDeclaredMethods()) {
+            if (!Modifier.isPublic(method.getModifiers()) || method.isSynthetic()) {
+                continue;
+            }
+            String name = method.getName();
+            if (name.equals("equals") || name.equals("hashCode") || name.equals("toString")) {
+                continue;
+            }
+            names.add(name);
+        }
+        return names;
+    }
+
+    /**
+     * Returns the declared public methods of an entity class whose name opens with {@code set}.
+     *
+     * <p>A setter is the shortest path to a changed field, and the name prefix is how a reader
+     * finds one. A mutator carrying another name is named in the assertion that reads this list.
+     *
+     * @param entity the entity class to read
+     * @return the setter names the class declares
+     */
+    private static List<String> declaredSetterNames(Class<?> entity) {
+        List<String> names = new ArrayList<>();
+        for (String name : declaredPublicMethodNames(entity)) {
+            if (name.startsWith("set")) {
+                names.add(name);
+            }
+        }
+        return names;
+    }
+
+    /**
+     * Reads every column of one table of the migrated schema.
+     *
+     * @param connection an open connection to the container
+     * @param schemaName the schema Flyway created
+     * @param table      the table to read
+     * @return one entry per column, keyed by column name, in schema order
+     * @throws SQLException if the metadata read fails
+     */
+    private static Map<String, ColumnFact> columnFacts(Connection connection, String schemaName,
+            String table) throws SQLException {
+        Map<String, ColumnFact> facts = new LinkedHashMap<>();
+        DatabaseMetaData metaData = connection.getMetaData();
+        try (ResultSet columns = metaData.getColumns(null, schemaName, table, null)) {
+            while (columns.next()) {
+                facts.put(columns.getString("COLUMN_NAME"),
+                        new ColumnFact(columns.getString("TYPE_NAME"),
+                                columns.getInt("COLUMN_SIZE"),
+                                columns.getInt("DECIMAL_DIGITS"),
+                                "YES".equals(columns.getString("IS_NULLABLE"))));
+            }
+        }
+        return facts;
+    }
+
+    /**
+     * Reads every index of one table of the migrated schema, key columns in key order.
+     *
+     * @param connection an open connection to the container
+     * @param schemaName the schema Flyway created
+     * @param table      the table to read
+     * @return one entry per index, keyed by index name
+     * @throws SQLException if the metadata read fails
+     */
+    private static Map<String, IndexFact> indexFacts(Connection connection, String schemaName,
+            String table) throws SQLException {
+        Map<String, Map<Short, String>> columnsByIndex = new LinkedHashMap<>();
+        Map<String, Boolean> uniqueByIndex = new LinkedHashMap<>();
+        DatabaseMetaData metaData = connection.getMetaData();
+        try (ResultSet indexes = metaData.getIndexInfo(null, schemaName, table, false, false)) {
+            while (indexes.next()) {
+                String name = indexes.getString("INDEX_NAME");
+                if (name == null) {
+                    continue;
+                }
+                columnsByIndex.computeIfAbsent(name, key -> new TreeMap<>())
+                        .put(indexes.getShort("ORDINAL_POSITION"),
+                                indexes.getString("COLUMN_NAME"));
+                uniqueByIndex.put(name, !indexes.getBoolean("NON_UNIQUE"));
+            }
+        }
+        Map<String, IndexFact> facts = new LinkedHashMap<>();
+        columnsByIndex.forEach((name, positions) -> facts.put(name,
+                new IndexFact(List.copyOf(positions.values()), uniqueByIndex.get(name))));
+        return facts;
+    }
+
+    /**
+     * Returns the index names an entity class declares on its {@link Table} annotation, with the
+     * key columns of each one in the order the annotation lists them.
+     *
+     * <p>Flyway owns every Data Definition Language (DDL) statement, and Hibernate compares column
+     * mappings alone under {@code ddl-auto: validate}. The annotation states which indexes the
+     * migration creates, and the tests below compare the two lists.
+     *
+     * @param entity the entity class to read
+     * @return one entry per declared index, keyed by index name
+     */
+    private static Map<String, List<String>> declaredIndexes(Class<?> entity) {
+        Table table = entity.getAnnotation(Table.class);
+        assertNotNull(table, entity.getSimpleName() + " carries no Table annotation");
+        Map<String, List<String>> declared = new LinkedHashMap<>();
+        for (Index index : table.indexes()) {
+            List<String> columns = new ArrayList<>();
+            for (String column : index.columnList().split(",")) {
+                columns.add(column.trim());
+            }
+            declared.put(index.name(), List.copyOf(columns));
+        }
+        return declared;
+    }
+
+    /**
+     * Returns the table name of this class's assertion target, qualified with the migrated schema.
+     *
+     * <p>Hibernate qualifies a mapped query with {@code hibernate.default_schema}, and a native
+     * query carries the qualification the caller writes. The schema name is checked against the
+     * form an unquoted PostgreSQL identifier takes before it reaches a statement.
+     *
+     * @param table the unqualified table name
+     * @return the qualified name a native query takes
+     */
+    private String qualified(String table) {
+        assertNotNull(schema, "spring.jpa.properties.hibernate.default_schema resolved to null");
+        assertTrue(schema.matches("^[a-z_][a-z0-9_]{0,62}$"),
+                "schema name is not a plain lower-case identifier: " + schema);
+        return schema + "." + table;
+    }
+
+    /**
+     * Returns the row count of one table of the migrated schema.
+     *
+     * @param table the unqualified table name
+     * @return the number of rows the table holds
+     */
+    private long rowCount(String table) {
+        Object count = entityManager
+                .createNativeQuery("SELECT count(*) FROM " + qualified(table))
+                .getSingleResult();
+        return ((Number) count).longValue();
+    }
+
+    /**
+     * Reads the record widths out of {@link PicClause} and adds them up.
+     *
+     * <p>Every width below reaches the entity mapping, the migration and the fixture parser from
+     * one constant, so a width correction moves all three at once.
+     */
+    @Nested
+    @DisplayName("Record widths from CVACT02Y.cpy, CVACT03Y.cpy and the two JCL members")
+    class RecordWidths {
+
+        @Test
+        @DisplayName("the seven card field widths sum to 150, matching CARDFILE.jcl:L55")
+        void cardFieldWidthsSumToTheDeclaredRecordLength() {
+            assertAll(
+                    () -> assertEquals(16, PicClause.CARD_NUM_WIDTH,
+                            "CARD-NUM PIC X(16) at app/cpy/CVACT02Y.cpy:L5"),
+                    () -> assertEquals(11, PicClause.CARD_ACCT_ID_WIDTH,
+                            "CARD-ACCT-ID PIC 9(11) at app/cpy/CVACT02Y.cpy:L6"),
+                    () -> assertEquals(3, PicClause.CARD_CVV_CD_WIDTH,
+                            "CARD-CVV-CD PIC 9(03) at app/cpy/CVACT02Y.cpy:L7"),
+                    () -> assertEquals(50, PicClause.CARD_EMBOSSED_NAME_WIDTH,
+                            "CARD-EMBOSSED-NAME PIC X(50) at app/cpy/CVACT02Y.cpy:L8"),
+                    () -> assertEquals(10, PicClause.CARD_EXPIRATION_DATE_WIDTH,
+                            "CARD-EXPIRAION-DATE PIC X(10) at app/cpy/CVACT02Y.cpy:L9"),
+                    () -> assertEquals(1, PicClause.CARD_ACTIVE_STATUS_WIDTH,
+                            "CARD-ACTIVE-STATUS PIC X(01) at app/cpy/CVACT02Y.cpy:L10"),
+                    () -> assertEquals(59, PicClause.CARD_RECORD_FILLER_WIDTH,
+                            "FILLER PIC X(59) at app/cpy/CVACT02Y.cpy:L11"),
+                    () -> assertEquals(150, PicClause.CARD_RECORD_LENGTH,
+                            "RECORDSIZE(150 150) at app/jcl/CARDFILE.jcl:L55"),
+                    () -> assertEquals(PicClause.CARD_RECORD_LENGTH,
+                            PicClause.CARD_NUM_WIDTH
+                                    + PicClause.CARD_ACCT_ID_WIDTH
+                                    + PicClause.CARD_CVV_CD_WIDTH
+                                    + PicClause.CARD_EMBOSSED_NAME_WIDTH
+                                    + PicClause.CARD_EXPIRATION_DATE_WIDTH
+                                    + PicClause.CARD_ACTIVE_STATUS_WIDTH
+                                    + PicClause.CARD_RECORD_FILLER_WIDTH,
+                            "16 plus 11 plus 3 plus 50 plus 10 plus 1 plus 59"));
+        }
+
+        @Test
+        @DisplayName("the four cross-reference field widths sum to 50, matching XREFFILE.jcl:L44")
+        void crossReferenceFieldWidthsSumToTheDeclaredRecordLength() {
+            assertAll(
+                    () -> assertEquals(16, PicClause.XREF_CARD_NUM_WIDTH,
+                            "XREF-CARD-NUM PIC X(16) at app/cpy/CVACT03Y.cpy:L5"),
+                    () -> assertEquals(9, PicClause.XREF_CUST_ID_WIDTH,
+                            "XREF-CUST-ID PIC 9(09) at app/cpy/CVACT03Y.cpy:L6"),
+                    () -> assertEquals(11, PicClause.XREF_ACCT_ID_WIDTH,
+                            "XREF-ACCT-ID PIC 9(11) at app/cpy/CVACT03Y.cpy:L7"),
+                    () -> assertEquals(14, PicClause.CARD_XREF_RECORD_FILLER_WIDTH,
+                            "FILLER PIC X(14) at app/cpy/CVACT03Y.cpy:L8"),
+                    () -> assertEquals(50, PicClause.CARD_XREF_RECORD_LENGTH,
+                            "RECORDSIZE(50 50) at app/jcl/XREFFILE.jcl:L44"),
+                    () -> assertEquals(PicClause.CARD_XREF_RECORD_LENGTH,
+                            PicClause.XREF_CARD_NUM_WIDTH
+                                    + PicClause.XREF_CUST_ID_WIDTH
+                                    + PicClause.XREF_ACCT_ID_WIDTH
+                                    + PicClause.CARD_XREF_RECORD_FILLER_WIDTH,
+                            "16 plus 9 plus 11 plus 14"));
+        }
+
+        @Test
+        @DisplayName("the alternate-index key widths match CARDFILE.jcl:L85 and XREFFILE.jcl:L74")
+        void alternateIndexKeyWidthsMatchTheAccountIdentifierWidths() {
+            assertAll(
+                    () -> assertEquals(11, PicClause.CARD_ACCT_ID_WIDTH,
+                            "KEYS(11 16) at app/jcl/CARDFILE.jcl:L85"),
+                    () -> assertEquals(11, PicClause.XREF_ACCT_ID_WIDTH,
+                            "KEYS(11,25) at app/jcl/XREFFILE.jcl:L74"),
+                    () -> assertEquals(16, PicClause.CARD_NUM_WIDTH,
+                            "offset 16 of KEYS(11 16) at app/jcl/CARDFILE.jcl:L85"),
+                    () -> assertEquals(25,
+                            PicClause.XREF_CARD_NUM_WIDTH + PicClause.XREF_CUST_ID_WIDTH,
+                            "offset 25 of KEYS(11,25) at app/jcl/XREFFILE.jcl:L74 is 16 plus 9"));
+        }
+
+        @Test
+        @DisplayName("the expiry slices at COCRDUPC.cbl:L117-L121 sum to the ten-character field")
+        void expiryDateSlicesSumToTheFieldWidth() {
+            assertAll(
+                    () -> assertEquals(4, PicClause.CARD_EXPIRATION_DATE_YEAR_WIDTH,
+                            "CARD-EXPIRY-YEAR PIC X(4) at app/cbl/COCRDUPC.cbl:L117"),
+                    () -> assertEquals(2, PicClause.CARD_EXPIRATION_DATE_MONTH_WIDTH,
+                            "CARD-EXPIRY-MONTH PIC X(2) at app/cbl/COCRDUPC.cbl:L119"),
+                    () -> assertEquals(2, PicClause.CARD_EXPIRATION_DATE_DAY_WIDTH,
+                            "CARD-EXPIRY-DAY PIC X(2) at app/cbl/COCRDUPC.cbl:L121"),
+                    () -> assertEquals(1, PicClause.CARD_EXPIRATION_DATE_SEPARATOR_WIDTH,
+                            "FILLER PIC X(1) at app/cbl/COCRDUPC.cbl:L118 and L120"),
+                    () -> assertEquals(PicClause.CARD_EXPIRATION_DATE_WIDTH,
+                            PicClause.CARD_EXPIRATION_DATE_YEAR_WIDTH
+                                    + PicClause.CARD_EXPIRATION_DATE_SEPARATOR_WIDTH
+                                    + PicClause.CARD_EXPIRATION_DATE_MONTH_WIDTH
+                                    + PicClause.CARD_EXPIRATION_DATE_SEPARATOR_WIDTH
+                                    + PicClause.CARD_EXPIRATION_DATE_DAY_WIDTH,
+                            "4 plus 1 plus 2 plus 1 plus 2"),
+                    () -> assertEquals(0, PicClause.CARD_EXPIRATION_DATE_YEAR_OFFSET,
+                            "slice (1:4) at app/cbl/COCRDUPC.cbl:L1361"),
+                    () -> assertEquals(5, PicClause.CARD_EXPIRATION_DATE_MONTH_OFFSET,
+                            "slice (6:2) at app/cbl/COCRDUPC.cbl:L1363"),
+                    () -> assertEquals(8, PicClause.CARD_EXPIRATION_DATE_DAY_OFFSET,
+                            "slice (9:2) at app/cbl/COCRDUPC.cbl:L1365"));
+        }
+
+        @Test
+        @DisplayName("the two fixtures carry 50 records each, at 150 and at 36 characters")
+        void fixtureRecordCountsAndWidthsMatchTheMeasuredFiles() {
+            assertAll(
+                    () -> assertEquals(SEEDED_ROW_COUNT, PicClause.CARDDATA_FIXTURE_RECORD_COUNT,
+                            "record count of app/data/ASCII/carddata.txt"),
+                    () -> assertEquals(SEEDED_ROW_COUNT, PicClause.CARDXREF_FIXTURE_RECORD_COUNT,
+                            "record count of app/data/ASCII/cardxref.txt"),
+                    () -> assertEquals(PicClause.CARD_RECORD_LENGTH,
+                            PicClause.CARDDATA_FIXTURE_RECORD_WIDTH,
+                            "carddata.txt holds the full 150-character record"),
+                    () -> assertEquals(36, PicClause.CARDXREF_FIXTURE_RECORD_WIDTH,
+                            "cardxref.txt holds 36 characters against the declared 50"),
+                    () -> assertEquals(PicClause.CARD_XREF_RECORD_LENGTH
+                                    - PicClause.CARD_XREF_RECORD_FILLER_WIDTH,
+                            PicClause.CARDXREF_FIXTURE_RECORD_WIDTH,
+                            "the 14-byte filler reaches neither the fixture nor the table"),
+                    () -> assertNotEquals(PicClause.CARD_XREF_RECORD_LENGTH,
+                            PicClause.CARDXREF_FIXTURE_RECORD_WIDTH,
+                            "AAP section 0.6.3 register item 25, a width-tolerant parser"));
+        }
+    }
+
+    /**
+     * Counts the mapped attributes of each entity class and scans every mapped name.
+     *
+     * <p>A count is what catches a column the copybook does not declare. A test naming only the
+     * columns it expects passes with a seventh column present.
+     */
+    @Nested
+    @DisplayName("Mapped attributes, with both trailing fillers dropped")
+    class MappedAttributes {
+
+        @Test
+        @DisplayName("CardEntity maps six columns, in the order CVACT02Y.cpy:L5-L10 declares them")
+        void cardEntityMapsTheSixCopybookFields() {
+            assertEquals(
+                    List.of("card_number", "account_id", "card_verification_value",
+                            "embossed_name", "expiration_date", "active_status"),
+                    columnNames(CardEntity.class),
+                    "the six mapped columns of card, in copybook order");
+        }
+
+        @Test
+        @DisplayName("CardCrossReferenceEntity maps CVACT03Y.cpy:L5-L7 and three additive columns")
+        void crossReferenceEntityMapsThreeCopybookFieldsAndThreeAdditiveColumns() {
+            List<String> columns = columnNames(CardCrossReferenceEntity.class);
+            assertAll(
+                    () -> assertEquals(List.of("card_number", "customer_id", "account_id"),
+                            columns.subList(0, 3),
+                            "the three mapped columns of card_xref, in copybook order"),
+                    () -> assertEquals(
+                            List.of("source_event_id", "source_occurred_at", "observed_at"),
+                            columns.subList(3, columns.size()),
+                            "the three additive replica-freshness columns, no COBOL ancestor"),
+                    () -> assertEquals(6, columns.size(),
+                            "three copybook columns plus three additive columns"));
+        }
+
+        @Test
+        @DisplayName("OutboxEventEntity maps six event columns and eight additive relay columns")
+        void outboxEventEntityMapsFourteenColumns() {
+            List<String> columns = columnNames(OutboxEventEntity.class);
+            assertAll(
+                    () -> assertTrue(columns.containsAll(List.of("event_id", "event_type",
+                                    "aggregate_id", "payload", "published", "created_at")),
+                            "the six event columns of outbox_event"),
+                    () -> assertTrue(columns.containsAll(List.of("relay_state", "attempt_count",
+                                    "next_attempt_at", "last_attempt_at", "last_error",
+                                    "claimed_by", "claimed_at", "published_at")),
+                            "the eight additive relay columns, no COBOL ancestor"),
+                    () -> assertEquals(14, columns.size(),
+                            "six event columns plus eight relay columns"));
+        }
+
+        @Test
+        @DisplayName("ProcessedEventEntity maps the duplicate-delivery marker and its topic")
+        void processedEventEntityMapsThreeColumns() {
+            List<String> columns = columnNames(ProcessedEventEntity.class);
+            assertAll(
+                    () -> assertEquals(List.of("event_id", "processed_at", "consumed_topic"),
+                            columns, "the three mapped columns of processed_event"),
+                    () -> assertEquals(3, columns.size(), "no fourth column"));
+        }
+
+        @Test
+        @DisplayName("no entity maps a filler column, from CVACT02Y.cpy:L11 or CVACT03Y.cpy:L8")
+        void noEntityMapsAFillerColumn() {
+            List<String> offenders = new ArrayList<>();
+            for (Class<?> entity : ENTITY_CLASSES) {
+                for (Field field : mappedFields(entity)) {
+                    if (folded(field.getName()).contains("filler")
+                            || folded(columnName(field)).contains("filler")) {
+                        offenders.add(entity.getSimpleName() + "." + field.getName());
+                    }
+                }
+            }
+            assertEquals(List.of(), offenders,
+                    "the 59-byte and the 14-byte trailing filler carry no column");
+        }
+
+        @Test
+        @DisplayName("the corrected expiry identifier is mapped and CARD-EXPIRAION is absent")
+        void theExpiryIdentifierCarriesTheCorrectedSpelling() {
+            List<String> misspelt = new ArrayList<>();
+            for (Class<?> entity : ENTITY_CLASSES) {
+                for (Field field : mappedFields(entity)) {
+                    if (folded(field.getName()).contains("expiraion")
+                            || folded(columnName(field)).contains("expiraion")) {
+                        misspelt.add(entity.getSimpleName() + "." + field.getName());
+                    }
+                }
+            }
+            assertAll(
+                    () -> assertTrue(fieldNames(CardEntity.class).contains("expirationDate"),
+                            "field expirationDate"),
+                    () -> assertTrue(columnNames(CardEntity.class).contains("expiration_date"),
+                            "column expiration_date"),
+                    () -> assertEquals(List.of(), misspelt,
+                            "app/cpy/CVACT02Y.cpy:L9 spells the field CARD-EXPIRAION-DATE, and the"
+                                    + " rename is recorded in the traceability matrix"));
+        }
+
+        @Test
+        @DisplayName("no entity maps a screen-navigation field from CVCRD01Y.cpy:L21-L24")
+        void noEntityMapsAScreenNavigationField() {
+            List<String> dropped = List.of("nextprog", "nextmapset", "nextmap");
+            List<String> offenders = new ArrayList<>();
+            for (Class<?> entity : ENTITY_CLASSES) {
+                for (Field field : mappedFields(entity)) {
+                    for (String navigation : dropped) {
+                        if (folded(field.getName()).contains(navigation)
+                                || folded(columnName(field)).contains(navigation)) {
+                            offenders.add(entity.getSimpleName() + "." + field.getName());
+                        }
+                    }
+                }
+            }
+            assertEquals(List.of(), offenders,
+                    "CCARD-NEXT-PROG, CCARD-NEXT-MAPSET and CCARD-NEXT-MAP are dropped under"
+                            + " transformation rule T6");
+        }
+
+        @Test
+        @DisplayName("no entity declares a version field, per AAP section 0.3.3")
+        void noEntityDeclaresAVersionField() {
+            List<String> versioned = new ArrayList<>();
+            for (Class<?> entity : ENTITY_CLASSES) {
+                for (Field field : mappedFields(entity)) {
+                    if (field.isAnnotationPresent(Version.class)) {
+                        versioned.add(entity.getSimpleName() + "." + field.getName());
+                    }
+                }
+            }
+            assertEquals(List.of(), versioned,
+                    "the concurrency mechanism is the field comparison at"
+                            + " app/cbl/COCRDUPC.cbl:L1503-L1508");
+        }
+
+        @Test
+        @DisplayName("each entity declares one identifier field, from its KEYS parameter")
+        void eachEntityDeclaresOneIdentifierField() {
+            Map<Class<?>, String> identifiers = new LinkedHashMap<>();
+            for (Class<?> entity : ENTITY_CLASSES) {
+                for (Field field : mappedFields(entity)) {
+                    if (field.isAnnotationPresent(Id.class)) {
+                        assertNull(identifiers.put(entity, columnName(field)),
+                                entity.getSimpleName() + " declares more than one identifier");
+                    }
+                }
+            }
+            assertAll(
+                    () -> assertEquals("card_number", identifiers.get(CardEntity.class),
+                            "KEYS(16 0) at app/jcl/CARDFILE.jcl:L54"),
+                    () -> assertEquals("card_number",
+                            identifiers.get(CardCrossReferenceEntity.class),
+                            "KEYS(16 0) at app/jcl/XREFFILE.jcl:L43"),
+                    () -> assertEquals("event_id", identifiers.get(OutboxEventEntity.class),
+                            "the event identifier is the outbox key"),
+                    () -> assertEquals("event_id", identifiers.get(ProcessedEventEntity.class),
+                            "the event identifier is the duplicate-delivery key"));
+        }
+    }
+
+    /**
+     * Reads the column types out of the migrated schema and compares them with the derived types.
+     *
+     * <p>PostgreSQL reports a fixed-width character column as {@code bpchar} through Java Database
+     * Connectivity (JDBC) metadata. Every identifier column below holds characters and keeps its
+     * leading zeros.
+     */
+    @Nested
+    @DisplayName("Column types derived in AAP section 0.3.1")
+    class ColumnTypes {
+
+        @Test
+        @DisplayName("each entity maps exactly the columns its table declares")
+        void eachEntityMapsExactlyTheColumnsItsTableDeclares() throws SQLException {
+            try (Connection connection = dataSource.getConnection()) {
+                for (Class<?> entity : ENTITY_CLASSES) {
+                    String table = TABLE_NAMES.get(entity);
+                    Map<String, ColumnFact> facts = columnFacts(connection, schema, table);
+                    assertEquals(List.copyOf(facts.keySet()).stream().sorted().toList(),
+                            columnNames(entity).stream().sorted().toList(),
+                            "mapped columns of " + entity.getSimpleName()
+                                    + " against the columns of " + table);
+                }
+            }
+        }
+
+        @Test
+        @DisplayName("card holds four character columns, one date and one flag, none nullable")
+        void cardColumnsCarryTheDerivedTypes() throws SQLException {
+            try (Connection connection = dataSource.getConnection()) {
+                Map<String, ColumnFact> facts = columnFacts(connection, schema, "card");
+                assertAll(
+                        () -> assertEquals(new ColumnFact("bpchar", PicClause.CARD_NUM_WIDTH, 0,
+                                        false), facts.get("card_number"),
+                                "CARD-NUM PIC X(16) at app/cpy/CVACT02Y.cpy:L5"),
+                        () -> assertEquals(new ColumnFact("bpchar", PicClause.CARD_ACCT_ID_WIDTH, 0,
+                                        false), facts.get("account_id"),
+                                "CARD-ACCT-ID PIC 9(11) at app/cpy/CVACT02Y.cpy:L6"),
+                        () -> assertEquals(new ColumnFact("bpchar", PicClause.CARD_CVV_CD_WIDTH, 0,
+                                        false), facts.get("card_verification_value"),
+                                "CARD-CVV-CD PIC 9(03) at app/cpy/CVACT02Y.cpy:L7"),
+                        () -> assertEquals(new ColumnFact("bpchar",
+                                        PicClause.CARD_EMBOSSED_NAME_WIDTH, 0, false),
+                                facts.get("embossed_name"),
+                                "CARD-EMBOSSED-NAME PIC X(50) at app/cpy/CVACT02Y.cpy:L8"),
+                        () -> assertEquals("date", facts.get("expiration_date").typeName(),
+                                "CARD-EXPIRAION-DATE PIC X(10) at app/cpy/CVACT02Y.cpy:L9"),
+                        () -> assertFalse(facts.get("expiration_date").nullable(),
+                                "expiration_date NOT NULL"),
+                        () -> assertEquals(new ColumnFact("bpchar",
+                                        PicClause.CARD_ACTIVE_STATUS_WIDTH, 0, false),
+                                facts.get("active_status"),
+                                "CARD-ACTIVE-STATUS PIC X(01) at app/cpy/CVACT02Y.cpy:L10"));
+            }
+        }
+
+        @Test
+        @DisplayName("card_xref holds a nine-character customer identifier and an eleven-character"
+                + " account identifier")
+        void crossReferenceColumnsCarryTheDerivedTypes() throws SQLException {
+            try (Connection connection = dataSource.getConnection()) {
+                Map<String, ColumnFact> facts = columnFacts(connection, schema, "card_xref");
+                assertAll(
+                        () -> assertEquals(new ColumnFact("bpchar", PicClause.XREF_CARD_NUM_WIDTH,
+                                        0, false), facts.get("card_number"),
+                                "XREF-CARD-NUM PIC X(16) at app/cpy/CVACT03Y.cpy:L5"),
+                        () -> assertEquals(new ColumnFact("bpchar", PicClause.XREF_CUST_ID_WIDTH, 0,
+                                        false), facts.get("customer_id"),
+                                "XREF-CUST-ID PIC 9(09) at app/cpy/CVACT03Y.cpy:L6"),
+                        () -> assertEquals(new ColumnFact("bpchar", PicClause.XREF_ACCT_ID_WIDTH, 0,
+                                        false), facts.get("account_id"),
+                                "XREF-ACCT-ID PIC 9(11) at app/cpy/CVACT03Y.cpy:L7"),
+                        () -> assertEquals("uuid", facts.get("source_event_id").typeName(),
+                                "the additive provenance column"),
+                        () -> assertTrue(facts.get("source_event_id").nullable(),
+                                "a seeded row names no event"),
+                        () -> assertEquals("timestamptz",
+                                facts.get("source_occurred_at").typeName(),
+                                "the additive ordering column"),
+                        () -> assertFalse(facts.get("observed_at").nullable(),
+                                "observed_at NOT NULL, the freshness column"));
+            }
+        }
+
+        @Test
+        @DisplayName("outbox_event.aggregate_id holds the eleven characters CVACT03Y.cpy:L7 fixes")
+        void outboxEventColumnsCarryTheDerivedTypes() throws SQLException {
+            try (Connection connection = dataSource.getConnection()) {
+                Map<String, ColumnFact> facts = columnFacts(connection, schema, "outbox_event");
+                assertAll(
+                        () -> assertEquals(new ColumnFact("bpchar", PicClause.XREF_ACCT_ID_WIDTH, 0,
+                                        false), facts.get("aggregate_id"),
+                                "the account identifier and the message key, leading zeros kept"),
+                        () -> assertEquals(PicClause.XREF_ACCT_ID_WIDTH,
+                                OutboxEventEntity.AGGREGATE_ID_LENGTH,
+                                "the entity reads its width from the same constant"),
+                        () -> assertEquals("uuid", facts.get("event_id").typeName(),
+                                "the event identifier is a Universally Unique Identifier (UUID)"),
+                        () -> assertEquals(new ColumnFact("varchar",
+                                        OutboxEventEntity.EVENT_TYPE_MAX_LENGTH, 0, false),
+                                facts.get("event_type"), "the routing discriminator"),
+                        () -> assertEquals("text", facts.get("payload").typeName(),
+                                "one serialized event as text"),
+                        () -> assertEquals("bool", facts.get("published").typeName(),
+                                "the publication flag"),
+                        () -> assertEquals("timestamptz", facts.get("created_at").typeName(),
+                                "the arrival order of the relay"),
+                        () -> assertEquals(6, facts.get("created_at").decimalDigits(),
+                                "TIMESTAMP(6) WITH TIME ZONE"));
+            }
+        }
+
+        @Test
+        @DisplayName("processed_event holds a UUID key, a timestamp and a topic name")
+        void processedEventColumnsCarryTheDerivedTypes() throws SQLException {
+            try (Connection connection = dataSource.getConnection()) {
+                Map<String, ColumnFact> facts = columnFacts(connection, schema, "processed_event");
+                assertAll(
+                        () -> assertEquals("uuid", facts.get("event_id").typeName(),
+                                "the duplicate-delivery key"),
+                        () -> assertFalse(facts.get("event_id").nullable(), "event_id NOT NULL"),
+                        () -> assertEquals("timestamptz", facts.get("processed_at").typeName(),
+                                "when the consumer finished"),
+                        () -> assertFalse(facts.get("processed_at").nullable(),
+                                "processed_at NOT NULL"),
+                        () -> assertEquals(new ColumnFact("varchar",
+                                        ProcessedEventEntity.CONSUMED_TOPIC_MAX_LENGTH, 0, true),
+                                facts.get("consumed_topic"), "which topic the delivery arrived on"),
+                        () -> assertEquals(3, facts.size(), "no fourth column"));
+            }
+        }
+
+        @Test
+        @DisplayName("the card expiry column type differs from the account expiry column type")
+        void theCardExpiryCarriesACalendarDateAndTheAccountExpiryCarriesText() throws Exception {
+            Field expiry = CardEntity.class.getDeclaredField("expirationDate");
+            assertAll(
+                    () -> assertEquals("DATE", PicClause.CARD_EXPIRATION_DATE_COLUMN_TYPE,
+                            "the card expiry is decomposed and displayed, never compared as text"),
+                    () -> assertEquals("VARCHAR(10)", PicClause.ACCT_EXPIRATION_DATE_COLUMN_TYPE,
+                            "app/cbl/CBTRN02C.cbl:L414 compares the account expiry as text"),
+                    () -> assertNotEquals(PicClause.ACCT_EXPIRATION_DATE_COLUMN_TYPE,
+                            PicClause.CARD_EXPIRATION_DATE_COLUMN_TYPE,
+                            "one Picture clause, two column types"),
+                    () -> assertEquals(LocalDate.class, expiry.getType(),
+                            "the Java attribute of expiration_date"));
+        }
+    }
+
+    /**
+     * Compares the indexes the entity classes declare with the indexes the migration creates.
+     *
+     * <p>{@code NONUNIQUEKEY} at {@code app/jcl/CARDFILE.jcl:L86} and at
+     * {@code app/jcl/XREFFILE.jcl:L75} admits many rows per account, and both account indexes below
+     * carry no unique constraint. {@code app/cbl/COCRDLIC.cbl:L1157-L1158} treats
+     * {@code DFHRESP(NORMAL)} and {@code DFHRESP(DUPREC)} as one outcome.
+     */
+    @Nested
+    @DisplayName("Table names and indexes, against the JCL key definitions")
+    class Indexes {
+
+        @Test
+        @DisplayName("each entity names the table V1__schema.sql creates")
+        void eachEntityNamesItsTable() {
+            for (Class<?> entity : ENTITY_CLASSES) {
+                Table table = entity.getAnnotation(Table.class);
+                assertNotNull(table, entity.getSimpleName() + " carries no Table annotation");
+                assertEquals(TABLE_NAMES.get(entity), table.name(),
+                        "table of " + entity.getSimpleName());
+                assertTrue(table.schema().isEmpty(),
+                        entity.getSimpleName() + " names no schema, and application.yml supplies"
+                                + " one at run time");
+            }
+        }
+
+        @Test
+        @DisplayName("each entity declares exactly the indexes the migration creates")
+        void eachEntityDeclaresExactlyTheIndexesTheMigrationCreates() throws SQLException {
+            try (Connection connection = dataSource.getConnection()) {
+                for (Class<?> entity : ENTITY_CLASSES) {
+                    String table = TABLE_NAMES.get(entity);
+                    Map<String, IndexFact> created = indexFacts(connection, schema, table);
+                    List<String> secondary = created.keySet().stream()
+                            .filter(name -> !created.get(name).unique())
+                            .sorted()
+                            .toList();
+                    assertEquals(secondary,
+                            declaredIndexes(entity).keySet().stream().sorted().toList(),
+                            "declared indexes of " + entity.getSimpleName()
+                                    + " against the non-unique indexes of " + table);
+                }
+            }
+        }
+
+        @Test
+        @DisplayName("card carries pk_card and the non-unique idx_card_account_id")
+        void cardCarriesItsPrimaryKeyAndTheAccountIndex() throws SQLException {
+            try (Connection connection = dataSource.getConnection()) {
+                Map<String, IndexFact> facts = indexFacts(connection, schema, "card");
+                assertAll(
+                        () -> assertEquals(new IndexFact(List.of("card_number"), true),
+                                facts.get("pk_card"),
+                                "KEYS(16 0) at app/jcl/CARDFILE.jcl:L54"),
+                        () -> assertEquals(new IndexFact(List.of("account_id"), false),
+                                facts.get("idx_card_account_id"),
+                                "KEYS(11 16) and NONUNIQUEKEY at app/jcl/CARDFILE.jcl:L85-L86"),
+                        () -> assertEquals(2, facts.size(), "no third index on card"));
+            }
+        }
+
+        @Test
+        @DisplayName("card_xref carries pk_card_xref, idx_card_xref_account_id and the freshness"
+                + " index")
+        void crossReferenceCarriesItsPrimaryKeyAndTheAccountIndex() throws SQLException {
+            try (Connection connection = dataSource.getConnection()) {
+                Map<String, IndexFact> facts = indexFacts(connection, schema, "card_xref");
+                assertAll(
+                        () -> assertEquals(new IndexFact(List.of("card_number"), true),
+                                facts.get("pk_card_xref"),
+                                "KEYS(16 0) at app/jcl/XREFFILE.jcl:L43"),
+                        () -> assertEquals(new IndexFact(List.of("account_id"), false),
+                                facts.get("idx_card_xref_account_id"),
+                                "KEYS(11,25) and NONUNIQUEKEY at app/jcl/XREFFILE.jcl:L74-L75"),
+                        () -> assertEquals(new IndexFact(List.of("observed_at"), false),
+                                facts.get("ix_card_xref_observed_at"),
+                                "the additive replica-freshness index"),
+                        () -> assertEquals(3, facts.size(), "no fourth index on card_xref"));
+            }
+        }
+
+        @Test
+        @DisplayName("the unpublished outbox index keys on created_at then event_id, in that order")
+        void theUnpublishedOutboxIndexKeysOnArrivalOrder() throws SQLException {
+            try (Connection connection = dataSource.getConnection()) {
+                Map<String, IndexFact> facts = indexFacts(connection, schema, "outbox_event");
+                assertAll(
+                        () -> assertEquals(new IndexFact(List.of("created_at", "event_id"), false),
+                                facts.get("ix_outbox_event_pending"),
+                                "the relay reads unpublished rows in arrival order, event_id"
+                                        + " breaking a tie"),
+                        () -> assertEquals(
+                                new IndexFact(List.of("relay_state", "next_attempt_at"), false),
+                                facts.get("ix_outbox_event_claimable"),
+                                "the claim query filters on relay_state and orders on"
+                                        + " next_attempt_at"),
+                        () -> assertEquals(new IndexFact(List.of("published_at"), false),
+                                facts.get("ix_outbox_event_published_at"),
+                                "the retention path over published rows"),
+                        () -> assertEquals(new IndexFact(List.of("event_id"), true),
+                                facts.get("pk_outbox_event"), "the event identifier is the key"),
+                        () -> assertEquals(4, facts.size(), "no fifth index on outbox_event"));
+            }
+        }
+
+        @Test
+        @DisplayName("processed_event carries its primary key and the processed_at range index")
+        void processedEventCarriesItsPrimaryKeyAndTheRangeIndex() throws SQLException {
+            try (Connection connection = dataSource.getConnection()) {
+                Map<String, IndexFact> facts = indexFacts(connection, schema, "processed_event");
+                assertAll(
+                        () -> assertEquals(new IndexFact(List.of("event_id"), true),
+                                facts.get("pk_processed_event"),
+                                "the primary key is the duplicate-delivery guard"),
+                        () -> assertEquals(new IndexFact(List.of("processed_at"), false),
+                                facts.get("ix_processed_event_processed_at"),
+                                "the range a purge job scans"),
+                        () -> assertEquals(2, facts.size(), "no third index on processed_event"));
+            }
+        }
+    }
+
+    /**
+     * Reads the constructor and method surface of each entity class.
+     *
+     * <p>{@code app/cbl/COCRDUPC.cbl:L1466}, L1467 to L1474 and L1475 move an embossed name, an
+     * assembled expiration date and an active status onto the record. Those three fields are the
+     * whole update surface of {@link CardEntity#applyUpdate}.
+     */
+    @Nested
+    @DisplayName("Constructor and mutator surface")
+    class ApiShape {
+
+        @Test
+        @DisplayName("each entity declares a protected no-argument constructor for the provider")
+        void eachEntityDeclaresAProtectedNoArgumentConstructor() throws Exception {
+            for (Class<?> entity : ENTITY_CLASSES) {
+                Constructor<?> constructor = entity.getDeclaredConstructor();
+                assertTrue(Modifier.isProtected(constructor.getModifiers()),
+                        entity.getSimpleName() + " declares a protected no-argument constructor");
+            }
+        }
+
+        @Test
+        @DisplayName("CardEntity declares one public constructor taking the six mapped fields")
+        void cardEntityDeclaresOneAllArgumentsConstructor() {
+            List<Constructor<?>> publicConstructors = new ArrayList<>();
+            for (Constructor<?> constructor : CardEntity.class.getDeclaredConstructors()) {
+                if (Modifier.isPublic(constructor.getModifiers())) {
+                    publicConstructors.add(constructor);
+                }
+            }
+            assertAll(
+                    () -> assertEquals(1, publicConstructors.size(),
+                            "one public constructor on CardEntity"),
+                    () -> assertEquals(
+                            List.of(String.class, String.class, String.class, String.class,
+                                    LocalDate.class, String.class),
+                            List.of(publicConstructors.get(0).getParameterTypes()),
+                            "the six mapped fields in copybook order"));
+        }
+
+        @Test
+        @DisplayName("applyUpdate(String, LocalDate, String) is the only mutator of CardEntity")
+        void applyUpdateIsTheOnlyMutatorOfCardEntity() throws Exception {
+            Method applyUpdate = CardEntity.class.getDeclaredMethod("applyUpdate", String.class,
+                    LocalDate.class, String.class);
+            assertAll(
+                    () -> assertTrue(Modifier.isPublic(applyUpdate.getModifiers()),
+                            "applyUpdate is public"),
+                    () -> assertEquals(void.class, applyUpdate.getReturnType(),
+                            "applyUpdate returns nothing"),
+                    () -> assertEquals(List.of(), declaredSetterNames(CardEntity.class),
+                            "CardEntity declares no setter"),
+                    () -> assertTrue(declaredPublicMethodNames(CardEntity.class)
+                                    .containsAll(List.of("applyUpdate", "getCardNumber",
+                                            "getAccountId", "getEmbossedName",
+                                            "getExpirationDate", "getActiveStatus")),
+                            "one mutator beside the five accessors"),
+                    () -> assertEquals(6, declaredPublicMethodNames(CardEntity.class).size(),
+                            "no seventh public method on CardEntity"));
+        }
+
+        @Test
+        @DisplayName("markObserved is the only mutator of the cross-reference replica")
+        void markObservedIsTheOnlyMutatorOfTheCrossReferenceReplica() throws Exception {
+            Method markObserved = CardCrossReferenceEntity.class.getDeclaredMethod("markObserved",
+                    UUID.class, Instant.class, Instant.class);
+            assertAll(
+                    () -> assertTrue(Modifier.isPublic(markObserved.getModifiers()),
+                            "markObserved is public"),
+                    () -> assertEquals(List.of(),
+                            declaredSetterNames(CardCrossReferenceEntity.class),
+                            "the replica declares no setter, and an event replaces a row whole"),
+                    () -> assertEquals(1, declaredPublicMethodNames(CardCrossReferenceEntity.class)
+                                    .stream().filter(name -> name.startsWith("mark")).count(),
+                            "one mark method on the replica"));
+        }
+
+        @Test
+        @DisplayName("OutboxEventEntity mutates through markPublished, claim and recordFailure")
+        void outboxEventEntityDeclaresThreeNamedMutators() throws Exception {
+            assertAll(
+                    () -> assertNotNull(OutboxEventEntity.class.getDeclaredMethod("markPublished",
+                            Instant.class), "markPublished(Instant)"),
+                    () -> assertNotNull(OutboxEventEntity.class.getDeclaredMethod("claim",
+                            String.class, Instant.class), "claim(String, Instant)"),
+                    () -> assertNotNull(OutboxEventEntity.class.getDeclaredMethod("recordFailure",
+                                    String.class, Instant.class, Instant.class),
+                            "recordFailure(String, Instant, Instant)"),
+                    () -> assertEquals(List.of(), declaredSetterNames(OutboxEventEntity.class),
+                            "the outbox row declares no setter"));
+        }
+
+        @Test
+        @DisplayName("ProcessedEventEntity mutates through setConsumedTopic alone")
+        void processedEventEntityDeclaresOneSetter() throws Exception {
+            assertAll(
+                    () -> assertNotNull(ProcessedEventEntity.class.getDeclaredConstructor(
+                            UUID.class, Instant.class), "the two-argument constructor"),
+                    () -> assertEquals(List.of("setConsumedTopic"),
+                            declaredSetterNames(ProcessedEventEntity.class),
+                            "the topic name is the one field a later write records"));
+        }
+    }
+
+    /**
+     * Compares two rows that differ in every mapped field except the card number.
+     *
+     * <p>A caller supplies the primary key at construction, and no database sequence assigns one.
+     * The comparison reads {@code card_number} alone on both entities that carry it.
+     */
+    @Nested
+    @DisplayName("Identity on the card number alone, the key from KEYS(16 0)")
+    class Identity {
+
+        private static final String FIRST_CARD_NUMBER = "1111111111111111";
+
+        private static final String SECOND_CARD_NUMBER = "2222222222222222";
+
+        @Test
+        @DisplayName("two card rows sharing a card number are equal and hash alike")
+        void twoCardRowsSharingACardNumberAreEqual() {
+            CardEntity first = new CardEntity(FIRST_CARD_NUMBER, "00000000001", "001",
+                    "First Holder", LocalDate.of(2023, 1, 1), SEEDED_ACTIVE_STATUS);
+            CardEntity second = new CardEntity(FIRST_CARD_NUMBER, "00000000002", "002",
+                    "Second Holder", LocalDate.of(2024, 2, 2), "N");
+            assertAll(
+                    () -> assertEquals(first, second, "equal on the card number alone"),
+                    () -> assertEquals(first.hashCode(), second.hashCode(),
+                            "hashCode reads the card number alone"));
+        }
+
+        @Test
+        @DisplayName("two card rows differing only in the card number are not equal")
+        void twoCardRowsDifferingOnlyInTheCardNumberAreNotEqual() {
+            CardEntity first = new CardEntity(FIRST_CARD_NUMBER, SEEDED_ACCOUNT_ID, "747",
+                    SEEDED_EMBOSSED_NAME, SEEDED_EXPIRATION_DATE, SEEDED_ACTIVE_STATUS);
+            CardEntity second = new CardEntity(SECOND_CARD_NUMBER, SEEDED_ACCOUNT_ID, "747",
+                    SEEDED_EMBOSSED_NAME, SEEDED_EXPIRATION_DATE, SEEDED_ACTIVE_STATUS);
+            assertNotEquals(first, second, "the card number is the only field the test reads");
+        }
+
+        @Test
+        @DisplayName("two cross-reference rows sharing a card number are equal and hash alike")
+        void twoCrossReferenceRowsSharingACardNumberAreEqual() {
+            Instant firstObservation = Instant.parse("2026-01-02T03:04:05.123456Z");
+            Instant secondObservation = Instant.parse("2026-02-03T04:05:06.654321Z");
+            CardCrossReferenceEntity first = new CardCrossReferenceEntity(FIRST_CARD_NUMBER,
+                    "000000001", "00000000001", firstObservation);
+            CardCrossReferenceEntity second = new CardCrossReferenceEntity(FIRST_CARD_NUMBER,
+                    "000000002", "00000000002", secondObservation);
+            assertAll(
+                    () -> assertEquals(first, second, "equal on the card number alone"),
+                    () -> assertEquals(first.hashCode(), second.hashCode(),
+                            "hashCode reads the card number alone"));
+        }
+
+        @Test
+        @DisplayName("two cross-reference rows differing only in the card number are not equal")
+        void twoCrossReferenceRowsDifferingOnlyInTheCardNumberAreNotEqual() {
+            Instant observation = Instant.parse("2026-01-02T03:04:05.123456Z");
+            CardCrossReferenceEntity first = new CardCrossReferenceEntity(FIRST_CARD_NUMBER,
+                    SEEDED_CUSTOMER_ID, SEEDED_ACCOUNT_ID, observation);
+            CardCrossReferenceEntity second = new CardCrossReferenceEntity(SECOND_CARD_NUMBER,
+                    SEEDED_CUSTOMER_ID, SEEDED_ACCOUNT_ID, observation);
+            assertNotEquals(first, second, "the card number is the only field the test reads");
+        }
+    }
+
+    /**
+     * Reads the seeded rows back through the mappings the running service uses.
+     *
+     * <p>Flyway loads them from {@code src/main/resources/db/migration/V2__seed.sql}, and every
+     * value there is decoded from a fixture. No test below opens a file under {@code app/}.
+     *
+     * <p>A fixed-width character column returns its padding, so a value comparison trims and a
+     * width comparison reads the length.
+     */
+    @Nested
+    @Transactional
+    @DisplayName("Seeded rows from V2__seed.sql, decoded from the two fixtures")
+    class SeededRows {
+
+        @Test
+        @DisplayName("Flyway loaded 50 card rows and 50 cross-reference rows")
+        void flywayLoadedFiftyRowsIntoEachSeededTable() {
+            assertAll(
+                    () -> assertEquals(SEEDED_ROW_COUNT, rowCount("card"),
+                            "50 records of app/data/ASCII/carddata.txt"),
+                    () -> assertEquals(SEEDED_ROW_COUNT, rowCount("card_xref"),
+                            "50 records of app/data/ASCII/cardxref.txt"));
+        }
+
+        @Test
+        @DisplayName("record one of carddata.txt reads back field for field")
+        void theFirstSeededCardRowReadsBackFieldForField() {
+            CardEntity card = entityManager.find(CardEntity.class, SEEDED_CARD_NUMBER);
+            assertNotNull(card, "the seeded card row");
+            assertAll(
+                    () -> assertEquals(SEEDED_CARD_NUMBER, card.getCardNumber(),
+                            "columns 1 through 16"),
+                    () -> assertEquals(SEEDED_ACCOUNT_ID, card.getAccountId(),
+                            "columns 17 through 27, leading zeros intact"),
+                    () -> assertEquals(PicClause.CARD_ACCT_ID_WIDTH,
+                            card.getAccountId().length(),
+                            "the eleven characters CARD-ACCT-ID PIC 9(11) declares"),
+                    () -> assertEquals(SEEDED_EMBOSSED_NAME, card.getEmbossedName().trim(),
+                            "columns 31 through 80, trimmed of the padding"),
+                    () -> assertEquals(PicClause.CARD_EMBOSSED_NAME_WIDTH,
+                            card.getEmbossedName().length(),
+                            "the fifty characters CARD-EMBOSSED-NAME PIC X(50) declares"),
+                    () -> assertEquals(SEEDED_EXPIRATION_DATE, card.getExpirationDate(),
+                            "columns 81 through 90, read as a calendar date"),
+                    () -> assertEquals(SEEDED_ACTIVE_STATUS, card.getActiveStatus(),
+                            "column 91"));
+        }
+
+        @Test
+        @DisplayName("the seeded card verification value reads back as the number 747")
+        void theFirstSeededCardVerificationValueReadsBackAsANumber() {
+            Object stored = entityManager
+                    .createNativeQuery("SELECT card_verification_value FROM " + qualified("card")
+                            + " WHERE card_number = :cardNumber")
+                    .setParameter("cardNumber", SEEDED_CARD_NUMBER)
+                    .getSingleResult();
+            String text = String.valueOf(stored);
+            assertAll(
+                    () -> assertEquals(PicClause.CARD_CVV_CD_WIDTH, text.length(),
+                            "the three characters CARD-CVV-CD PIC 9(03) declares"),
+                    () -> assertTrue(text.matches("^[0-9]{3}$"), "three decimal digits"),
+                    () -> assertEquals(SEEDED_CARD_VERIFICATION_VALUE, Integer.parseInt(text),
+                            "compared as a number, so a leading zero changes nothing"));
+        }
+
+        @Test
+        @DisplayName("record one of cardxref.txt reads back field for field")
+        void theFirstSeededCrossReferenceRowReadsBackFieldForField() {
+            CardCrossReferenceEntity xref =
+                    entityManager.find(CardCrossReferenceEntity.class, SEEDED_CARD_NUMBER);
+            assertNotNull(xref, "the seeded cross-reference row");
+            assertAll(
+                    () -> assertEquals(SEEDED_CARD_NUMBER, xref.getCardNumber(),
+                            "offset 0, the key from KEYS(16 0)"),
+                    () -> assertEquals(SEEDED_CUSTOMER_ID, xref.getCustomerId(),
+                            "offset 16, nine characters, leading zeros intact"),
+                    () -> assertEquals(PicClause.XREF_CUST_ID_WIDTH,
+                            xref.getCustomerId().length(),
+                            "the nine characters XREF-CUST-ID PIC 9(09) declares"),
+                    () -> assertEquals(SEEDED_ACCOUNT_ID, xref.getAccountId(),
+                            "offset 25, the alternate-index key from KEYS(11,25)"),
+                    () -> assertEquals(PicClause.XREF_ACCT_ID_WIDTH,
+                            xref.getAccountId().length(),
+                            "the eleven characters XREF-ACCT-ID PIC 9(11) declares"));
+        }
+
+        @Test
+        @DisplayName("a seeded cross-reference row names no event and carries an observation time")
+        void aSeededCrossReferenceRowNamesNoEvent() {
+            CardCrossReferenceEntity xref =
+                    entityManager.find(CardCrossReferenceEntity.class, SEEDED_CARD_NUMBER);
+            assertNotNull(xref, "the seeded cross-reference row");
+            assertAll(
+                    () -> assertNull(xref.getSourceEventId(),
+                            "the seed is the initial load and names no event"),
+                    () -> assertNull(xref.getSourceOccurredAt(),
+                            "both halves of the provenance are absent together"),
+                    () -> assertNotNull(xref.getObservedAt(),
+                            "observed_at carries the moment the migration ran"));
+        }
+    }
+
+    /**
+     * Writes a row through each mapping and reads it back inside the same transaction.
+     *
+     * <p>Spring rolls each test below back, so the seeded row counts hold for every other test in
+     * this class.
+     *
+     * <p>Column 91 of all 50 records of {@code app/data/ASCII/carddata.txt} holds {@code Y}. The
+     * inactive card below is constructed here, and no fixture row supplies one.
+     */
+    @Nested
+    @Transactional
+    @DisplayName("Round trip through the migrated schema")
+    class RoundTrip {
+
+        /** A card number outside the 50 the fixture holds, whose largest value opens with 98. */
+        private static final String UNSEEDED_CARD_NUMBER = "9999999999999999";
+
+        @Test
+        @DisplayName("a mixed-case embossed name persists with its casing preserved")
+        void aMixedCaseEmbossedNamePersistsWithItsCasingPreserved() {
+            String submitted = "MiXeD cAsE nAmE";
+            entityManager.persist(new CardEntity(UNSEEDED_CARD_NUMBER, SEEDED_ACCOUNT_ID, "007",
+                    submitted, LocalDate.of(2025, 12, 31), "N"));
+            entityManager.flush();
+            entityManager.clear();
+
+            CardEntity reread = entityManager.find(CardEntity.class, UNSEEDED_CARD_NUMBER);
+            assertNotNull(reread, "the row just written");
+            assertAll(
+                    () -> assertEquals(submitted, reread.getEmbossedName().trim(),
+                            "app/cbl/COCRDUPC.cbl:L1466 writes the submitted casing with no fold"),
+                    () -> assertEquals(PicClause.CARD_EMBOSSED_NAME_WIDTH,
+                            reread.getEmbossedName().length(), "the column pads to fifty"),
+                    () -> assertEquals("N", reread.getActiveStatus(),
+                            "the flag domain of app/cbl/COCRDUPC.cbl:L91 holds Y and N"));
+        }
+
+        @Test
+        @DisplayName("an expiration date persists and reads back as a LocalDate")
+        void anExpirationDatePersistsAndReadsBackAsACalendarDate() {
+            LocalDate submitted = LocalDate.of(2025, 12, 31);
+            entityManager.persist(new CardEntity(UNSEEDED_CARD_NUMBER, SEEDED_ACCOUNT_ID, "007",
+                    "Round Trip", submitted, SEEDED_ACTIVE_STATUS));
+            entityManager.flush();
+            entityManager.clear();
+
+            CardEntity reread = entityManager.find(CardEntity.class, UNSEEDED_CARD_NUMBER);
+            assertNotNull(reread, "the row just written");
+            assertAll(
+                    () -> assertEquals(submitted, reread.getExpirationDate(),
+                            "the DATE column returns the calendar date it stored"),
+                    () -> assertEquals(LocalDate.class, reread.getExpirationDate().getClass(),
+                            "the attribute type of expiration_date"));
+        }
+
+        @Test
+        @DisplayName("an eleven-digit aggregate identifier keeps its leading zeros")
+        void anElevenDigitAggregateIdentifierKeepsItsLeadingZeros() {
+            UUID eventId = UUID.fromString("11111111-2222-3333-4444-555555555555");
+            Instant createdAt = Instant.parse("2026-01-02T03:04:05.123456Z");
+            entityManager.persist(new OutboxEventEntity(eventId, "CardUpdated", SEEDED_ACCOUNT_ID,
+                    "{}", createdAt));
+            entityManager.flush();
+            entityManager.clear();
+
+            OutboxEventEntity reread = entityManager.find(OutboxEventEntity.class, eventId);
+            assertNotNull(reread, "the row just written");
+            assertAll(
+                    () -> assertEquals(SEEDED_ACCOUNT_ID, reread.getAggregateId(),
+                            "a numeric column would return 50 for a stored 00000000050"),
+                    () -> assertEquals(PicClause.XREF_ACCT_ID_WIDTH,
+                            reread.getAggregateId().length(),
+                            "the width XREF-ACCT-ID PIC 9(11) fixes"),
+                    () -> assertTrue(reread.getAggregateId().matches("^[0-9]{11}$"),
+                            "eleven decimal digits"),
+                    () -> assertEquals(createdAt, reread.getCreatedAt(),
+                            "TIMESTAMP(6) WITH TIME ZONE holds microsecond precision"),
+                    () -> assertFalse(reread.isPublished(), "a new row waits for the relay"));
+        }
+
+        @Test
+        @DisplayName("a duplicate-delivery marker persists and reads back on its two mapped values")
+        void aDuplicateDeliveryMarkerPersistsAndReadsBack() {
+            UUID eventId = UUID.fromString("66666666-7777-8888-9999-aaaaaaaaaaaa");
+            Instant processedAt = Instant.parse("2026-03-04T05:06:07.987654Z");
+            entityManager.persist(new ProcessedEventEntity(eventId, processedAt));
+            entityManager.flush();
+            entityManager.clear();
+
+            ProcessedEventEntity reread =
+                    entityManager.find(ProcessedEventEntity.class, eventId);
+            assertNotNull(reread, "the marker just written");
+            assertAll(
+                    () -> assertEquals(eventId, reread.getEventId(), "the primary key"),
+                    () -> assertEquals(processedAt, reread.getProcessedAt(),
+                            "microsecond precision holds"),
+                    () -> assertNull(reread.getConsumedTopic(),
+                            "the constructor records no topic"));
+        }
+    }
+}

@@ -365,19 +365,21 @@ class ApiSurfaceSecurityContractTest {
             "@ResponseStatus");
 
     /**
-     * Files declaring a web-endpoint annotation. Three carry a controller and two carry the handler
+     * Files declaring a web-endpoint annotation. Four carry a controller and two carry the handler
      * that answers a rejected request. Keys take the form {@code module/FileName.java}, which is how
      * {@link #MAIN_SOURCES} keys a source.
      *
-     * <p>The ledger controller carries no handler beside it. Its one route constrains its path
-     * variable, and the framework answers a miss with its own problem document.</p>
+     * <p>The ledger controller and the fraud controller carry no handler beside them. Each
+     * constrains the identifier its route accepts, and the framework answers a miss with its own
+     * problem document.</p>
      */
     private static final Set<String> ENDPOINT_SOURCE_FILES = Set.of(
             "authorization-service/AuthorizationController.java",
             "authorization-service/GlobalExceptionHandler.java",
             "ledger-posting-service/BalanceQueryController.java",
             "notification-service/NotificationHistoryController.java",
-            "notification-service/NotificationApiExceptionHandler.java");
+            "notification-service/NotificationApiExceptionHandler.java",
+            "fraud-detection-service/FraudAssessmentController.java");
 
     /**
      * Annotations and types every service declares to configure a filter chain. Each of the six
@@ -1748,20 +1750,31 @@ class ApiSurfaceSecurityContractTest {
     class WebSurfaceAccessControl {
 
         /**
-         * Three modules declare a web endpoint and five files carry the annotations: the synchronous
+         * Four modules declare a web endpoint and six files carry the annotations: the synchronous
          * authorization surface the plan requires at {@code POST /authorizations}, the read-only
-         * balance query at {@code GET /balances/{accountId}}, and the read-only notification
-         * history. All three are named here by file, so a fourth module or a sixth file fails this
-         * assertion and the failure text names what then has to be written.
+         * balance query at {@code GET /balances/{accountId}}, the read-only notification history,
+         * and the read-only fraud assessment query at {@code GET /fraud-assessments}. All four are
+         * named here by file, so a fifth module or a seventh file fails this assertion and the
+         * failure text names what then has to be written.
          *
          * <p>The balance query returns the four values {@code 1200-SETUP-SCREEN-VARS} at
          * {@code app/cbl/COACTVWC.cbl:L460} moves, less the six the account service owns. It reads
          * and writes nothing, so it adds a route to the surface and no path that changes a
          * balance.</p>
+         *
+         * <p>The fraud assessment query reads the rows the fraud consumer records and carries no
+         * write route, so it adds no path that drives an assessment from a request. Its two
+         * operations sit behind the one rule {@link #API_ROUTE_RULES} declares for that module,
+         * {@code GET /fraud-assessments/**}, and the three assertions this contract owed a new
+         * endpoint already cover it: {@link #anUnauthenticatedCallerReceivesAChallengeThatNamesNothing}
+         * measures the status an anonymous caller receives,
+         * {@link #anAuthenticatedCallerWithoutTheAuthorityReceivesARefusalNamingNothing} measures
+         * the refusal body, and both measure the headers the response carries. Each runs over
+         * {@link #ALL_MODULES}, so the fraud detection service was already among them.</p>
          */
         @Test
-        @DisplayName("the web endpoints are the five files three services declare")
-        void theWebEndpointsAreTheFiveFilesThreeServicesDeclare() {
+        @DisplayName("the web endpoints are the six files four services declare")
+        void theWebEndpointsAreTheSixFilesFourServicesDeclare() {
             assertTrue(MAIN_SOURCES.get().size() >= MAIN_SOURCE_FILE_FLOOR,
                     "the scan reached " + MAIN_SOURCES.get().size() + " main sources of the six "
                             + "services and the two libraries, under the "
@@ -1783,11 +1796,11 @@ class ApiSurfaceSecurityContractTest {
                             + "assertions above: " + declaring);
             assertEquals(
                     Set.of("authorization-service", "ledger-posting-service",
-                            "notification-service"),
+                            "notification-service", "fraud-detection-service"),
                     modules,
-                    "the synchronous surface is the authorization endpoint, the balance query and "
-                            + "the notification history, and no other module answers a request: "
-                            + modules);
+                    "the synchronous surface is the authorization endpoint, the balance query, the "
+                            + "notification history and the fraud assessment query, and no other "
+                            + "module answers a request: " + modules);
         }
 
         /**

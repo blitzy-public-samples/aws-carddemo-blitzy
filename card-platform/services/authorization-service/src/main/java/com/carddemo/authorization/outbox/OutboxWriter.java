@@ -3,95 +3,208 @@ package com.carddemo.authorization.outbox;
 import com.carddemo.authorization.entity.OutboxEventEntity;
 import com.carddemo.authorization.repository.OutboxEventRepository;
 import com.carddemo.events.EventEnvelope;
+import com.carddemo.events.TransactionAuthorized;
+import com.carddemo.events.TransactionDeclined;
 import com.carddemo.events.serde.EventContracts;
 import java.time.Clock;
 import java.util.List;
+import java.util.Objects;
 import org.springframework.stereotype.Component;
-import tools.jackson.databind.ObjectMapper;
+import org.springframework.transaction.annotation.Transactional;
 import tools.jackson.databind.json.JsonMapper;
 
 /**
- * Writes one event into {@code outbox_event}, inside the transaction its caller already opened.
+ * Writes one event into {@code outbox_event}, in the transaction that already holds the decision.
  *
- * <p>ADDITIVE. The source publishes nothing. Its one asynchronous handoff is the transient data queue
- * write at {@code app/cbl/CORPT00C.cbl:L515-L523}, where one program writes a record and a separate
- * job later picks it up. This class plays the write half of that handoff, and
- * {@link OutboxRelay} plays the pick-up half.
+ * <p>ADDITIVE. No CardDemo program stores an event. The source holds one asynchronous handoff:
+ * paragraph {@code WIRTE-JOBSUB-TDQ} at {@code app/cbl/CORPT00C.cbl:L515-L523} writes a record to a
+ * Customer Information Control System (CICS) transient data queue, and a separate job reads that
+ * record later. This class plays the write half of the handoff and {@link OutboxRelay} plays the
+ * pick-up half.
  *
- * <p>The row and the decision commit together. {@code app/cbl/CBTRN02C.cbl:L440-L442} performs three
- * writes unconditionally with no rollback, and every file definition at
- * {@code app/csd/CARDDEMO.CSD:L3-L9} carries {@code RECOVERY(NONE) JOURNAL(NO)}, so the source
- * offers no atomicity to reproduce. One local transaction is therefore an addition, recorded in
- * {@code card-platform/docs/decision-log.md} (planned).
+ * <p>The decision and the row commit together, or neither commits. Both write operations carry
+ * {@code @Transactional} at the default propagation, so each joins the transaction
+ * {@code domain/AuthorizationService} opened around the decision. The source offers no atomicity to
+ * reproduce. {@code app/cbl/CBTRN02C.cbl:L440-L442} runs three writes under no condition and
+ * {@code :L444} is the exit, and all eight file definitions of {@code app/csd/CARDDEMO.CSD} carry
+ * {@code JOURNAL(NO)} at {@code :L7} and {@code RECOVERY(NONE)} at {@code :L9}.
  *
- * <p>This class opens no transaction of its own and starts no thread. A caller annotated
- * {@code @Transactional} calls it, and the row it saves is part of that caller's unit of work. A
- * caller that has no transaction open would write the row without the decision, which is the failure
- * the outbox exists to prevent.
+ * <p>That atomicity is ADDITIVE. So is the idempotency the primary key of the table gives:
+ * {@code event_id} is that key, so one event yields one row.
  *
- * <p>Nothing here publishes. The relay reads the row afterwards, so request handling never waits for
- * a broker.
+ * <p>One call writes one row. An approval writes one {@link TransactionAuthorized} and a decline
+ * writes one {@link TransactionDeclined}, never both and never two of either.
+ *
+ * <p>Each payload is one flat JavaScript Object Notation (JSON) object. The five envelope
+ * properties sit beside the payload properties, so no nested key reaches the row:
+ * {@code transaction-authorized-v1.json} names nineteen required properties and
+ * {@code transaction-declined-v1.json} names eleven.
+ *
+ * <p>Every payload is measured against the document its event type and contract version select,
+ * before the row is saved. A payload the publish gate refuses therefore never reaches the table,
+ * where it would stall the relay. A rejection message holds JSON pointers and broken keywords, so no
+ * card number and no account identifier reaches a log through it.
+ *
+ * <p>This class publishes nothing, holds no broker type, and starts no thread. It allocates no
+ * transaction identifier either: {@code domain/TransactionIdentifierSource} allocates the sixteen
+ * characters of {@code TRAN-ID PIC X(16)} at {@code app/cpy/CVTRA05Y.cpy:L5} from the database
+ * sequence {@code transaction_id_seq}, which replaces the browse-backwards allocation at
+ * {@code app/cbl/COTRN02C.cbl:L444-L449} and {@code app/cbl/COBIL00C.cbl:L212-L217}.
+ *
+ * <p>This class writes no {@code processed_event} marker. That marker guards an event a consumer
+ * receives, and this service registers no consumer, so it has no inbound delivery to guard. The
+ * marker is ADDITIVE where a consumer does write one, and the deviation here is the absence of one.
+ *
+ * <p>Design decisions: {@code card-platform/docs/decision-log.md} (planned).
  */
 @Component
 public class OutboxWriter {
 
-    /** Stores the rows the relay later reads. */
+    /** Stores the rows {@link OutboxRelay} later reads. */
     private final OutboxEventRepository outboxEvents;
 
     /**
-     * Supplies the moment each row records, in Coordinated Universal Time.
+     * Writes one event record to text. Jackson 3, matching the platform.
      *
-     * <p>The relay reads rows in the order this field stamps them, so one zone governs every row.
+     * <p>The mapper belongs to this class. A payload is therefore shaped by the contract of its own
+     * event, and by no setting of the web layer.
+     */
+    private final JsonMapper jsonMapper = JsonMapper.builder().build();
+
+    /**
+     * Stamps {@code created_at}, in Coordinated Universal Time.
+     *
+     * <p>{@link OutboxRelay} sweeps rows oldest first, so one zone governs every row.
      */
     private final Clock clock = Clock.systemUTC();
 
-    /** Writes an event record to text. Jackson 3, matching the platform. */
-    private final ObjectMapper objectMapper = JsonMapper.builder().build();
-
     /**
-     * Takes the repository this writer saves through.
+     * Takes the store this writer saves through.
      *
      * @param outboxEvents store of unpublished events
+     * @throws NullPointerException when {@code outboxEvents} is {@code null}
      */
     public OutboxWriter(OutboxEventRepository outboxEvents) {
-        this.outboxEvents = outboxEvents;
+        this.outboxEvents = Objects.requireNonNull(outboxEvents, "outboxEvents must be present");
     }
 
     /**
-     * Writes one event as an unpublished outbox row.
+     * Writes one approval event as an unpublished row.
      *
-     * <p>The row takes its identifier from the envelope, so the event identifier a consumer
-     * deduplicates on is the primary key of this row. Writing the same event twice therefore fails on
-     * the primary key rather than producing two messages.
+     * <p>The event carries fourteen payload properties. Twelve come from the twelve field moves of
+     * paragraph {@code 2000-POST-TRANSACTION} at {@code app/cbl/CBTRN02C.cbl:L425-L436}, the
+     * thirteenth is the account identifier the cross-reference read at
+     * {@code app/cbl/CBTRN02C.cbl:L382-L383} resolved, and the fourteenth is the currency.
      *
-     * <p>The payload is validated against the schema document its event type names before the row is
-     * written. A payload that fails is rejected here, while the transaction can still roll back,
-     * rather than at publish time when the decision has already committed. The rejection message
-     * holds JSON pointers and broken keywords only, so no card number and no account identifier
-     * reaches a log through it.
+     * <p>The masked card number and the currency are ADDITIVE. The source masks nothing: the card
+     * number occupies its full sixteen characters unprotected on the card detail map at
+     * {@code app/bms/COCRDSL.bms:L96} with {@code LENGTH=16} at {@code :L99}.
      *
-     * @param envelope the five fields the event carries, whose {@code eventType} must be registered
-     * @param event    the event record, written flat with its envelope
-     * @return the row saved, carrying the event identifier the relay publishes under
-     * @throws IllegalArgumentException when the event type is not registered, or when the written
-     *                                  payload fails the document that type names
+     * @param event the approval event, carrying its own envelope and its masked card number
+     * @return the row saved, keyed on the event identifier {@link OutboxRelay} publishes under
+     * @throws NullPointerException     when {@code event} is {@code null}
+     * @throws IllegalArgumentException when the written payload breaks the document its contract
+     *                                  version selects
      */
-    public OutboxEventEntity write(EventEnvelope envelope, Object event) {
-        String eventType = envelope.eventType();
-        if (!EventContracts.isRegistered(eventType)) {
-            throw new IllegalArgumentException("the event type '" + eventType
-                    + "' has no contract, and " + EventContracts.eventTypes()
-                    + " are the registered types");
-        }
+    @Transactional
+    public OutboxEventEntity writeAuthorized(TransactionAuthorized event) {
+        Objects.requireNonNull(event, "event must be present");
 
-        String payload = objectMapper.writeValueAsString(event);
+        return write(event.envelope(), event);
+    }
+
+    /**
+     * Writes one decline event as an unpublished row.
+     *
+     * <p>A decline is ordinary traffic. {@code app/cbl/CBTRN02C.cbl:L229-L230} moves 4 into the
+     * return code once the reject count rises above zero, and the batch job then ends normally.
+     *
+     * <p>The event carries the reject code and its text as one value of {@code DeclineReason}. The
+     * four values are assigned at {@code app/cbl/CBTRN02C.cbl:L385-L387}, {@code :L397-L399},
+     * {@code :L410-L412} and {@code :L417-L419}, and their widths come from
+     * {@code WS-VALIDATION-FAIL-REASON PIC 9(04)} at {@code :L181} and
+     * {@code WS-VALIDATION-FAIL-REASON-DESC PIC X(76)} at {@code :L182}. Those two fields are the
+     * eighty-byte trailer of the reject record at {@code :L176-L178}.
+     *
+     * <p>The three-hundred-and-fifty-byte reject payload the source writes at
+     * {@code app/cbl/CBTRN02C.cbl:L446-L465} stays out of this row. The ledger posting service owns
+     * it, in its own {@code rejected_transaction} table.
+     *
+     * @param event the decline event, carrying its own envelope, its reject code and its masked card
+     *              number
+     * @return the row saved, keyed on the event identifier {@link OutboxRelay} publishes under
+     * @throws NullPointerException     when {@code event} is {@code null}
+     * @throws IllegalArgumentException when the event carries no eleven-digit account key, or when
+     *                                  the written payload breaks the document its contract version
+     *                                  selects
+     */
+    @Transactional
+    public OutboxEventEntity writeDeclined(TransactionDeclined event) {
+        Objects.requireNonNull(event, "event must be present");
+
+        return write(event.envelope(), event);
+    }
+
+    /**
+     * Writes and checks one payload, then saves the single row that carries it.
+     *
+     * <p>The row takes its identifiers from the envelope the event itself carries. The primary key of
+     * the row, the message key the relay publishes under, and the values inside the payload therefore
+     * hold one account and one event identifier.
+     *
+     * <p>The order of the three steps is the guarantee. The account key is read first, the payload is
+     * written and measured second, and the row is saved last. Every rejection therefore leaves the
+     * caller's transaction able to roll back with nothing stored.
+     *
+     * @param envelope the five envelope values of the event
+     * @param event    the event record to store
+     * @return the row saved
+     * @throws IllegalArgumentException when the envelope carries no eleven-digit account key, or when
+     *                                  the written payload breaks the document its contract version
+     *                                  selects
+     */
+    private OutboxEventEntity write(EventEnvelope envelope, Record event) {
+        String eventType = envelope.eventType();
+        String accountKey = accountKeyOf(envelope);
+        String payload = jsonMapper.writeValueAsString(event);
+
         List<String> violations = EventContracts.violationsOf(eventType, payload);
         if (!violations.isEmpty()) {
             throw new IllegalArgumentException(
                     EventContracts.describeViolations(eventType, violations));
         }
 
-        return outboxEvents.save(new OutboxEventEntity(envelope.eventId(), eventType,
-                envelope.aggregateId(), payload, clock.instant()));
+        return outboxEvents.save(new OutboxEventEntity(envelope.eventId(), eventType, accountKey,
+                payload, clock.instant()));
+    }
+
+    /**
+     * Reads the eleven-digit account key the row records, and the relay publishes under.
+     *
+     * <p>Width from {@code XREF-ACCT-ID PIC 9(11)} at {@code app/cpy/CVACT03Y.cpy:L7}. Column
+     * {@code aggregate_id} is fixed-width character storage of that width, and the key travels as
+     * text. The leading zeros of an identifier therefore belong to the value and survive: account
+     * seven renders as eleven characters ending in seven. Keying every event of one account on that
+     * value keeps the events of that account on one partition and in publish order.
+     *
+     * <p>One contract carries a different key. A decline whose card the cross-reference resolved no
+     * account for is keyed on its sixteen-character transaction identifier, and reject code
+     * {@code 0100} at {@code app/cbl/CBTRN02C.cbl:L385-L387} fires exactly then. That contract has no
+     * account key for this column, and {@code domain/AuthorizationService} records the attempt in
+     * {@code unresolved_card_attempt} without an event.
+     *
+     * @param envelope the five envelope values of the event
+     * @return the account key, eleven decimal digits
+     * @throws IllegalArgumentException when the envelope carries another key form. The message names
+     *                                  the pattern and the length, and never the value
+     */
+    private static String accountKeyOf(EventEnvelope envelope) {
+        if (!envelope.carriesAccountKey()) {
+            throw new IllegalArgumentException("aggregateId must match "
+                    + EventEnvelope.AGGREGATE_ID_PATTERN + ", the account key column aggregate_id"
+                    + " records, and the supplied envelope holds "
+                    + envelope.aggregateId().length() + " characters");
+        }
+        return envelope.aggregateId();
     }
 }

@@ -44,6 +44,12 @@ class EventRedactionTest {
     /** Masked card number every fixture carries. Twelve mask characters then four digits. */
     private static final String MASKED_CARD_NUMBER = "************4321";
 
+    /**
+     * Event identifier every fixture carries, fixed so a rendering stays comparable. The value
+     * holds none of the markers above, so it cannot collide with an assertion below.
+     */
+    private static final UUID EVENT_ID = UUID.fromString("0e5f7a6c-9b1d-4c8e-a7f0-5d2b6e9c1a3f");
+
     /** Moment every fixture carries, fixed so a rendering stays comparable. */
     private static final Instant WHEN = Instant.parse("2026-08-03T18:31:53.613Z");
 
@@ -60,7 +66,7 @@ class EventRedactionTest {
      */
     private static List<Object> allEventRecords() {
         EventEnvelope envelope =
-                new EventEnvelope(UUID.randomUUID(), "TransactionAuthorized", 1, WHEN, ACCOUNT_ID);
+                new EventEnvelope(EVENT_ID, "TransactionAuthorized", 1, WHEN, ACCOUNT_ID);
         return List.of(
                 envelope,
                 TransactionAuthorized.of(ACCOUNT_ID, TRANSACTION_ID, "01", "0001", "POS",
@@ -115,7 +121,7 @@ class EventRedactionTest {
     @DisplayName("a rendering keeps the identifiers a reader needs to correlate an event")
     void keepsCorrelationIdentifiers() {
         EventEnvelope envelope =
-                new EventEnvelope(UUID.randomUUID(), "FraudCleared", 1, WHEN, ACCOUNT_ID);
+                new EventEnvelope(EVENT_ID, "FraudCleared", 1, WHEN, ACCOUNT_ID);
 
         assertThat(envelope.toString())
                 .contains(envelope.eventId().toString())

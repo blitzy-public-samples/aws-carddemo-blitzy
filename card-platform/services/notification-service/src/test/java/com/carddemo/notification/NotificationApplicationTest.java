@@ -6,6 +6,7 @@ import com.carddemo.notification.domain.HtmlRenderer;
 import com.carddemo.notification.domain.NotificationRenderer;
 import com.carddemo.notification.domain.NotificationRenderer.RenderedFormat;
 import com.carddemo.notification.domain.PlainTextRenderer;
+import com.carddemo.notification.repository.NotificationLogRepository;
 import com.carddemo.notification.repository.StatementTransactionRepository;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
@@ -93,6 +94,10 @@ class NotificationApplicationTest {
     /**
      * Starts a context over the production component scan with a meter registry in place of the
      * auto-configured one.
+     *
+     * <p>No auto-configuration loads here, so Spring Data builds neither repository. Each one
+     * arrives as a mock instead: the read model behind {@code api/NotificationHistoryController},
+     * and the delivery-attempt table behind {@code domain/NotificationService}.</p>
      */
     private static final ApplicationContextRunner RUNNER = new ApplicationContextRunner()
             .withInitializer(new ConfigDataApplicationContextInitializer())
@@ -100,6 +105,8 @@ class NotificationApplicationTest {
             .withBean(MeterRegistry.class, SimpleMeterRegistry::new)
             .withBean(StatementTransactionRepository.class,
                     () -> Mockito.mock(StatementTransactionRepository.class))
+            .withBean(NotificationLogRepository.class,
+                    () -> Mockito.mock(NotificationLogRepository.class))
             .withUserConfiguration(ProductionComponentScan.class);
 
     /**

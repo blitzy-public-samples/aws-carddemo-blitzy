@@ -197,7 +197,7 @@ public class AuthorizationService {
                 request.merchantCity(), request.merchantZip(),
                 PanMasker.maskCardNumber(context.getCardNumber()), request.originTimestamp());
 
-        outboxWriter.write(event.envelope(), event);
+        outboxWriter.writeAuthorized(event);
         meters.counter(EVENT_COUNTER, "eventType", TransactionAuthorized.EVENT_TYPE).increment();
         countOutcome("approved");
         return AuthorizationResponse.approve(transactionId, accountId);
@@ -219,7 +219,7 @@ public class AuthorizationService {
         TransactionDeclined event = TransactionDeclined.of(accountId, transactionId, reason, amount,
                 PanMasker.maskCardNumber(context.getCardNumber()));
 
-        outboxWriter.write(event.envelope(), event);
+        outboxWriter.writeDeclined(event);
         meters.counter(EVENT_COUNTER, "eventType", TransactionDeclined.EVENT_TYPE).increment();
         countOutcome(reason.code());
         return AuthorizationResponse.decline(transactionId, accountId, reason);

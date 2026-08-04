@@ -1,0 +1,184 @@
+# card-platform ledger-posting-service.
+#
+# The Representational State Transfer (REST) interface this module serves.
+# One read-only endpoint, hand-written and checked in.
+# api/BalanceQueryController serves the path below, and no documentation
+# generator joins the classpath.
+#
+# Field provenance. Paragraph 1200-SETUP-SCREEN-VARS at
+# app/cbl/COACTVWC.cbl:L460-L491 moves ten account fields to the account
+# view screen. Three of them belong to this service: ACCT-CURR-BAL at
+# :L475, ACCT-CURR-CYC-CREDIT at :L482 and ACCT-CURR-CYC-DEBIT at :L485.
+# The account service owns the other seven, together with the whole
+# 300-byte record they sit in. The account identifier this response echoes
+# is the value moved at :L468.
+#
+# Field-by-field mapping and every omitted field:
+# card-platform/docs/traceability-matrix.md
+# Flagged source findings: card-platform/docs/business-rule-flags.md
+# Design decisions: card-platform/docs/decision-log.md
+---
+openapi: 3.1.0
+
+info:
+  title: CardDemo Ledger Posting Service
+  description: >-
+    Returns the balance of one account with the two billing-cycle accumulators.
+    One read-only operation answers, and it writes no row. Every field width
+    follows ACCOUNT-RECORD at app/cpy/CVACT01Y.cpy. Each amount travels as a
+    decimal string in JavaScript Object Notation (JSON) and never as a JSON
+    number.
+  version: 1.0.0
+
+servers:
+  - url: http://localhost:8082
+    description: >-
+      Local demo stack. The container listens on port 8080, and
+      card-platform/docker-compose.yml publishes LEDGER_PORT on the loopback
+      address, defaulting to 8082.
+
+tags:
+  - name: balance-query
+    description: Read access to the account balance projection.
+
+paths:
+
+  /balances/{accountId}:
+
+    get:
+      tags:
+        - balance-query
+      operationId: getAccountBalance
+      summary: Return one account's balance and cycle accumulators.
+      description: >-
+        Returns four values for the account the path names: the identifier, the
+        balance and the two billing-cycle accumulators. The operation reads one
+        row of account_balance_projection and writes nothing. An account the
+        table holds answers 200, and an account it does not hold answers 404.
+      parameters:
+
+        - name: accountId
+          in: path
+          required: true
+          description: >-
+            The eleven-digit account identifier, padded on the left with zeros.
+            Width from ACCT-ID PIC 9(11) at app/cpy/CVACT01Y.cpy:L5 and from
+            KEYS(11 0) at app/jcl/ACCTFILE.jcl:L40. Column account_id
+            VARCHAR(11) in src/main/resources/db/migration/V1__schema.sql holds
+            the same value. Record one of app/data/ASCII/acctdata.txt holds
+            00000000001.
+          schema:
+            type: string
+            pattern: '^[0-9]{11}$'
+          examples:
+            seededAccount:
+              value: '00000000001'
+
+      responses:
+
+        '200':
+          description: >-
+            The row the projection table holds for this account. Each amount is
+            a decimal string carrying two fractional digits.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AccountBalance'
+              examples:
+
+                seeded:
+                  summary: >-
+                    Account 00000000001 as
+                    src/main/resources/db/migration/V2__seed.sql loads it. The
+                    same values sit in record one of
+                    app/data/ASCII/acctdata.txt.
+                  value:
+                    accountId: '00000000001'
+                    currentBalance: '194.00'
+                    cycleCredit: '0.00'
+                    cycleDebit: '0.00'
+
+                afterRefundPosted:
+                  summary: >-
+                    The same account once a refund of 25.00 has posted. The
+                    cycle debit accumulator carries a minus sign.
+                  value:
+                    accountId: '00000000001'
+                    currentBalance: '169.00'
+                    cycleCredit: '0.00'
+                    cycleDebit: '-25.00'
+
+        '400':
+          description: >-
+            The path value missed the eleven-digit pattern. The framework writes
+            the body, and this file declares no schema for it.
+
+        '404':
+          description: >-
+            The projection table holds no row for this account identifier. The
+            response carries no body.
+
+components:
+
+  schemas:
+
+    AccountBalance:
+      type: object
+      description: >-
+        The balance of one account with the two billing-cycle accumulators.
+        Four properties and no others. Each amount is a decimal string at the
+        two fractional digits PIC S9(10)V99 declares, rendered through
+        BigDecimal.toPlainString(). Column NUMERIC(12,2) in
+        src/main/resources/db/migration/V1__schema.sql holds each one.
+      additionalProperties: false
+      required:
+        - accountId
+        - currentBalance
+        - cycleCredit
+        - cycleDebit
+      properties:
+
+        accountId:
+          type: string
+          pattern: '^[0-9]{11}$'
+          description: >-
+            The account identifier the path named, echoed back. Eleven digits,
+            padded on the left with zeros. From ACCT-ID PIC 9(11) at
+            app/cpy/CVACT01Y.cpy:L5, moved at app/cbl/COACTVWC.cbl:L468.
+          examples:
+            - '00000000001'
+
+        currentBalance:
+          type: string
+          pattern: '^-?\d{1,10}\.\d{2}$'
+          description: >-
+            The account balance after the last posted transaction. From
+            ACCT-CURR-BAL PIC S9(10)V99 at app/cpy/CVACT01Y.cpy:L7, moved at
+            app/cbl/COACTVWC.cbl:L475. app/cbl/CBTRN02C.cbl:L547 adds each
+            posted amount to it. The value may carry a minus sign.
+          examples:
+            - '194.00'
+
+        cycleCredit:
+          type: string
+          pattern: '^-?\d{1,10}\.\d{2}$'
+          description: >-
+            Posted amounts of zero and above, accumulated across the current
+            billing cycle. From ACCT-CURR-CYC-CREDIT PIC S9(10)V99 at
+            app/cpy/CVACT01Y.cpy:L13, moved at app/cbl/COACTVWC.cbl:L482.
+            app/cbl/CBTRN02C.cbl:L548-L549 routes an amount of zero and above
+            here. PIC S9(10)V99 is signed, and the pattern admits a minus sign.
+          examples:
+            - '0.00'
+
+        cycleDebit:
+          type: string
+          pattern: '^-?\d{1,10}\.\d{2}$'
+          description: >-
+            Posted amounts below zero, accumulated across the current billing
+            cycle. From ACCT-CURR-CYC-DEBIT PIC S9(10)V99 at
+            app/cpy/CVACT01Y.cpy:L14, moved at app/cbl/COACTVWC.cbl:L485.
+            app/cbl/CBTRN02C.cbl:L551 adds an amount below zero here. The value
+            grows more negative as such amounts post.
+          examples:
+            - '-25.00'

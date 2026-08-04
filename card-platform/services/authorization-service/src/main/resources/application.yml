@@ -115,6 +115,7 @@ spring:
         org.apache.kafka.common.security.plain.PlainLoginModule required
         username="${KAFKA_SASL_USERNAME:carddemo-authorization}"
         password="${KAFKA_SASL_PASSWORD}";
+    # messaging/EventPublisherPort.java passes a topic, a key and a payload, all strings.
     # The key serializer below takes the account identifier as text, so
     # XREF-ACCT-ID PIC 9(11) at app/cpy/CVACT03Y.cpy:L7 keeps its leading zero.
     #
@@ -133,6 +134,11 @@ spring:
     # publish-side schema gate of this platform runs at write time inside OutboxWriter,
     # where a rejected event can still roll back its own transaction.
     # account-service and card-service carry the same reasoning in their own files.
+    #
+    # config/KafkaProducerConfig.java pins both serializers, acks and enable.idempotence
+    # on the producer factory it builds. Those four settings therefore hold even if an
+    # override changes the four keys below, and the keys are kept here so a reader sees
+    # every producer setting in one place.
     producer:
       acks: all
       key-serializer: org.apache.kafka.common.serialization.StringSerializer

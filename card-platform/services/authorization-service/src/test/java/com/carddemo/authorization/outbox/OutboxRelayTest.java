@@ -16,10 +16,12 @@ import static org.mockito.Mockito.when;
 import com.carddemo.authorization.entity.OutboxEventEntity;
 import com.carddemo.authorization.messaging.EventPublisherPort;
 import com.carddemo.authorization.repository.OutboxEventRepository;
+import com.carddemo.cobol.PanMasker;
+import com.carddemo.events.DeclineReason;
 import com.carddemo.events.EventEnvelope;
 import com.carddemo.events.TransactionAuthorized;
+import com.carddemo.events.TransactionDeclined;
 import com.carddemo.events.serde.EventContracts;
-import com.fasterxml.jackson.annotation.JsonUnwrapped;
 import java.math.BigDecimal;
 import java.time.Instant;
 import java.util.ArrayList;
@@ -28,6 +30,10 @@ import java.util.UUID;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
+import org.springframework.transaction.annotation.Propagation;
+import org.springframework.transaction.annotation.Transactional;
+import tools.jackson.databind.JsonNode;
+import tools.jackson.databind.json.JsonMapper;
 
 /**
  * Write and relay tests for {@link OutboxWriter} and {@link OutboxRelay}.
@@ -51,6 +57,12 @@ final class OutboxRelayTest {
 
     /** The account every row below is keyed on. */
     private static final String ACCOUNT_ID = "00000000077";
+
+    /** The card of fixture record one, from {@code app/data/ASCII/dailytran.txt}. */
+    private static final String FIXTURE_CARD_NUMBER = "4859452612877065";
+
+    /** Reads a stored payload back. Jackson 3, as the writer writes it. */
+    private static final JsonMapper MAPPER = JsonMapper.builder().build();
 
     private OutboxEventRepository outboxEvents;
     private EventPublisherPort publisher;
@@ -81,7 +93,7 @@ final class OutboxRelayTest {
     void oneWriteStoresOneUnpublishedRowUnderTheEventIdentifier() {
         TransactionAuthorized event = approvalEvent();
 
-        OutboxEventEntity row = writer.write(event.envelope(), event);
+        OutboxEventEntity row = writer.writeAuthorized(event);
 
         assertEquals(1, stored.size(), "one write stores one row");
         assertEquals(event.envelope().eventId(), row.getEventId(),
@@ -93,35 +105,126 @@ final class OutboxRelayTest {
         assertFalse(row.isPublished(), "a fresh row is unpublished");
     }
 
-    /**
-     * Asserts a payload that fails its schema document is rejected before the row is stored.
-     *
-     * <p>Rejecting at write time lets the caller's transaction roll back. Rejecting at publish time
-     * would leave a decision committed with an event that can never leave.
-     */
+    /** Asserts one decline write stores one unpublished row keyed on the account. */
     @Test
-    void aPayloadThatFailsItsDocumentIsRejectedBeforeStorage() {
-        EventEnvelope envelope = EventEnvelope.of(TransactionAuthorized.EVENT_TYPE, ACCOUNT_ID);
+    void oneDeclineWriteStoresOneUnpublishedRowKeyedOnTheAccount() {
+        TransactionDeclined event = declineEvent();
 
-        IllegalArgumentException thrown = assertThrows(IllegalArgumentException.class,
-                () -> writer.write(envelope, new UndeclaredEvent(envelope, "0000000000683580")),
-                "a payload missing declared properties is not one the outbox stores");
+        OutboxEventEntity row = writer.writeDeclined(event);
 
-        assertTrue(thrown.getMessage().contains(TransactionAuthorized.EVENT_TYPE),
-                "the rejection names the event type whose document failed");
-        assertEquals(List.of(), stored, "nothing is stored for a rejected payload");
+        assertEquals(1, stored.size(), "one write stores one row");
+        assertEquals(TransactionDeclined.EVENT_TYPE, row.getEventType(),
+                "the row records the event type, which names both the document and the topic");
+        assertEquals(ACCOUNT_ID, row.getAggregateId(), "the row records the message key");
+        assertTrue(row.getPayload().contains(DeclineReason.OVER_CREDIT_LIMIT.code()),
+                "the payload carries the reject code as its four-character text");
     }
 
-    /** Asserts an unregistered event type is rejected before the row is stored. */
+    /**
+     * Asserts the contract that carries no account key is refused before the row is stored.
+     *
+     * <p>Reject code {@code 0100} follows a cross-reference read that resolved no account, so that
+     * decline is keyed on its transaction identifier and column {@code aggregate_id} has no account
+     * key to record. Rejecting at write time lets the caller's transaction roll back.
+     */
     @Test
-    void anUnregisteredEventTypeIsRejectedBeforeStorage() {
-        EventEnvelope envelope = new EventEnvelope(UUID.randomUUID(), "TransactionReversed",
-                EventEnvelope.SCHEMA_VERSION, Instant.now(), ACCOUNT_ID);
+    void aDeclineCarryingNoAccountKeyIsRefusedBeforeStorage() {
+        TransactionDeclined unresolved = TransactionDeclined.ofUnresolvedAccount(
+                "0000000000683580", new BigDecimal("504.77"), "************7065");
 
-        assertThrows(IllegalArgumentException.class,
-                () -> writer.write(envelope, new UndeclaredEvent(envelope, "0000000000683580")),
-                "an event type no contract registers has no document and no topic");
-        assertEquals(List.of(), stored, "nothing is stored for an unregistered event type");
+        IllegalArgumentException thrown = assertThrows(IllegalArgumentException.class,
+                () -> writer.writeDeclined(unresolved),
+                "a decline naming no account is not one the outbox stores");
+
+        assertTrue(thrown.getMessage().contains(EventEnvelope.AGGREGATE_ID_PATTERN),
+                "the rejection names the pattern the account key column records");
+        assertEquals(List.of(), stored, "nothing is stored for a refused event");
+    }
+
+    /**
+     * Asserts each payload is one flat object carrying the envelope beside the payload properties.
+     *
+     * <p>{@code transaction-authorized-v1.json} names nineteen required properties and
+     * {@code transaction-declined-v1.json} names eleven. A payload nested under an envelope key
+     * would fail both documents on the {@code required} array and never reach a topic.
+     */
+    @Test
+    void eachPayloadIsOneFlatObjectOfTheCountItsDocumentRequires() {
+        JsonNode approval = MAPPER.readTree(writer.writeAuthorized(approvalEvent()).getPayload());
+        stored.clear();
+        JsonNode decline = MAPPER.readTree(writer.writeDeclined(declineEvent()).getPayload());
+
+        assertEquals(19, approval.size(), "fourteen payload properties beside five envelope ones");
+        assertEquals(11, decline.size(), "six payload properties beside five envelope ones");
+        assertTrue(approval.path("envelope").isMissingNode(), "no nested envelope object");
+        assertTrue(decline.path("envelope").isMissingNode(), "no nested envelope object");
+        assertEquals(ACCOUNT_ID, approval.path("aggregateId").asString(), "the message key");
+        assertEquals(ACCOUNT_ID, approval.path("accountId").asString(), "one account, two names");
+    }
+
+    /**
+     * Asserts money travels as a decimal string truncated toward zero, on both signs.
+     *
+     * <p>The {@code ROUNDED} phrase appears zero times across the twenty-eight programs of
+     * {@code app/cbl/}, so every arithmetic store truncates. Half-up rounding would carry
+     * {@code 504.779} to {@code 504.78}, and the floor of a negative amount would carry
+     * {@code -504.779} to {@code -504.78}.
+     */
+    @Test
+    void moneyTravelsAsADecimalStringTruncatedTowardZero() {
+        JsonNode positive = MAPPER.readTree(
+                writer.writeAuthorized(approvalEvent(new BigDecimal("504.779"))).getPayload());
+        stored.clear();
+        JsonNode negative = MAPPER.readTree(
+                writer.writeAuthorized(approvalEvent(new BigDecimal("-504.779"))).getPayload());
+
+        assertTrue(positive.path("amount").isString(), "money is a string, never a JSON number");
+        assertEquals("504.77", positive.path("amount").asString(), "truncated toward zero");
+        assertEquals("-504.77", negative.path("amount").asString(), "toward zero on a refund too");
+    }
+
+    /** Asserts the envelope timestamp travels as text and the card number travels masked. */
+    @Test
+    void theEnvelopeTimestampTravelsAsTextAndTheCardNumberTravelsMasked() {
+        String payload = writer.writeAuthorized(approvalEvent()).getPayload();
+        JsonNode event = MAPPER.readTree(payload);
+
+        assertTrue(event.path("occurredAt").isString(), "an epoch number would fail the document");
+        assertTrue(event.path("occurredAt").asString().endsWith("Z"), "Coordinated Universal Time");
+        assertTrue(event.path("schemaVersion").isNumber(), "the version stays an integer");
+        assertEquals("************7065", event.path("maskedCardNumber").asString(), "ADDITIVE");
+        assertFalse(payload.contains(FIXTURE_CARD_NUMBER), "no full card number travels");
+    }
+
+    /**
+     * Asserts both write operations join the transaction their caller opened.
+     *
+     * <p>{@link org.springframework.transaction.annotation.Propagation#REQUIRES_NEW} would open a
+     * second transaction, and the row would then commit apart from the decision it describes.
+     */
+    @Test
+    void bothWriteOperationsJoinTheCallersTransaction() throws NoSuchMethodException {
+        Transactional approval = OutboxWriter.class
+                .getMethod("writeAuthorized", TransactionAuthorized.class)
+                .getAnnotation(Transactional.class);
+        Transactional decline = OutboxWriter.class
+                .getMethod("writeDeclined", TransactionDeclined.class)
+                .getAnnotation(Transactional.class);
+
+        for (Transactional annotation : List.of(approval, decline)) {
+            assertEquals(Propagation.REQUIRED, annotation.propagation(), "the caller's transaction");
+            assertFalse(annotation.readOnly(), "the operation writes a row");
+        }
+    }
+
+    /** Asserts an absent event is refused by both write operations before anything is stored. */
+    @Test
+    void anAbsentEventIsRefusedBeforeStorage() {
+        assertThrows(NullPointerException.class, () -> writer.writeAuthorized(null),
+                "an approval write takes one event");
+        assertThrows(NullPointerException.class, () -> writer.writeDeclined(null),
+                "a decline write takes one event");
+        assertEquals(List.of(), stored, "nothing is stored for an absent event");
     }
 
     /** Asserts the relay sends each pending row to the topic its event type belongs on. */
@@ -225,9 +328,31 @@ final class OutboxRelayTest {
      * @return the event
      */
     private static TransactionAuthorized approvalEvent() {
+        return approvalEvent(new BigDecimal("504.77"));
+    }
+
+    /**
+     * Builds a valid approval event carrying one amount.
+     *
+     * @param amount the amount the event carries, at any scale
+     * @return the event
+     */
+    private static TransactionAuthorized approvalEvent(BigDecimal amount) {
         return TransactionAuthorized.of(ACCOUNT_ID, "0000000000683580", "01", "0001", "POS TERM",
-                "Purchase at Abshire-Lowe", new BigDecimal("504.77"), "800000000", "Abshire-Lowe",
-                "North Enoshaven", "72112", "************7065", "2022-06-10 19:27:53.412000");
+                "Purchase at Abshire-Lowe", amount, "800000000", "Abshire-Lowe",
+                "North Enoshaven", "72112", PanMasker.maskCardNumber(FIXTURE_CARD_NUMBER),
+                "2022-06-10 19:27:53.412000");
+    }
+
+    /**
+     * Builds a valid decline event, carrying reject code {@code 0102}.
+     *
+     * @return the event
+     */
+    private static TransactionDeclined declineEvent() {
+        return TransactionDeclined.of(ACCOUNT_ID, "0000000000683580",
+                DeclineReason.OVER_CREDIT_LIMIT, new BigDecimal("504.77"),
+                PanMasker.maskCardNumber(FIXTURE_CARD_NUMBER));
     }
 
     /**
@@ -241,14 +366,5 @@ final class OutboxRelayTest {
      */
     private static OutboxEventEntity row(String eventType) {
         return new OutboxEventEntity(UUID.randomUUID(), eventType, ACCOUNT_ID, "{}", Instant.now());
-    }
-
-    /**
-     * A payload declaring an envelope and one field, used to prove the writer validates.
-     *
-     * @param envelope      the five envelope fields, written flat
-     * @param transactionId the one payload field
-     */
-    private record UndeclaredEvent(@JsonUnwrapped EventEnvelope envelope, String transactionId) {
     }
 }
