@@ -109,7 +109,11 @@ data:
   KAFKA_BOOTSTRAP_SERVERS: "kafka:9092"
   # The broker writes this identifier into its log directory. 10-kafka.yaml binds
   # this key rather than repeating the value, and a new value orphans the data
-  # already there.
+  # already there. On this deployment path that data lives in an emptyDir volume,
+  # so "already there" means the produced events of the running Pod and nothing
+  # older: replacing the Pod discards the log directory and the identifier alike.
+  # 10-kafka.yaml says the same beside the volume. A demo that has to survive a
+  # Pod replacement needs a PersistentVolumeClaim there, as 20-postgres.yaml has.
   KAFKA_CLUSTER_ID: "cardDemoPlatformKRaft1"
   # Partitions and copies per partition. 10-kafka.yaml binds both keys, for the
   # broker defaults and for the topics it creates, so raising a number here
