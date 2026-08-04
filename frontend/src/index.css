@@ -193,7 +193,12 @@ button:disabled {
 /*
  * Screen titles are semantic headings (h1 = title01, h2 = title02) for
  * assistive technology, but must still render as plain 3270 title text: no
- * default browser margin, size, or bold weight.
+ * default browser margin, size, or bold weight. Header renders the heading with
+ * the modifier class on the element itself, so the element-level selectors are
+ * the matching ones; the descendant form covers a nested arrangement. Only the
+ * descendant form resets the color, which there is inherited from the centered
+ * parent; on the element-level form the co-applied .title keeps the titles
+ * YELLOW.
  */
 .appHeader__center h1,
 .appHeader__center h2 {
@@ -212,6 +217,50 @@ h2.appHeader__center {
   font-weight: normal;
 }
 
+/*
+ * Screen-title literals inside the routed body (for example the BMS line-4
+ * COLOR=NEUTRAL literal of COCRDSL) are semantic headings, but a 3270 screen has
+ * one uniform character cell: no browser heading size, weight, or margin. Scoped
+ * to the body region so the header titles keep their own treatment above.
+ */
+main h1,
+main h2,
+main h3 {
+  margin: 0;
+  font: inherit;
+  font-weight: normal;
+}
+
+/* A body screen title the mapset centers across the 80 columns (COCRDSL line 4). */
+.screenTitle {
+  text-align: center;
+}
+
+/*
+ * Read-only field rows in the routed body (for example the COCRDSL captions on
+ * lines 11/13/15 at column 4 with their values at column 25) occupy ONE terminal
+ * row, one blank column apart. The description list therefore drops its block
+ * stacking and the user-agent value indent.
+ */
+main dl > div {
+  display: flex;
+  gap: 1ch;
+}
+
+main dl dd {
+  margin-inline-start: 0;
+}
+
+/*
+ * A BMS caption carries its own column padding (for example the 19-character
+ * `Name on card      :`), so the runs of spaces are preserved rather than
+ * collapsed and every value lands on the one column the mapset places it in.
+ */
+main form label,
+main dl dt {
+  white-space: pre;
+}
+
 /* ------------------------------------------------------------------ */
 /* Error region (BMS line 23: ERRMSG X(78), ATTRB BRT, COLOR RED)     */
 /* ------------------------------------------------------------------ */
@@ -226,6 +275,15 @@ h2.appHeader__center {
 /* Hidden state still reserves the one-line area. */
 .errorBanner--empty {
   visibility: hidden;
+}
+
+/*
+ * An informational line-23 message keeps the GREEN attribute the programs move
+ * into ERRMSGC for a successful outcome (MOVE DFHGREEN TO ERRMSGC in
+ * COADM01C, COBIL00C, COMEN01C, CORPT00C, COTRN02C and COUSR01C-COUSR03C).
+ */
+.errorBanner[role="status"] {
+  color: var(--term-green);
 }
 
 /*
@@ -260,6 +318,61 @@ h2.appHeader__center {
 .pfKeyBar button,
 .pfKeyBar .pfKey {
   white-space: nowrap;
+}
+
+/* ------------------------------------------------------------------ */
+/* Card update screen (app/bms/COCRDUP.bms): caption column + fields  */
+/* ------------------------------------------------------------------ */
+.cardUpdate {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  column-gap: 1ch;
+  row-gap: var(--term-line);
+  align-items: baseline;
+  width: 100%;
+}
+
+/* The BMS caption literals carry their own column padding; their spaces are kept. */
+.cardUpdate__label {
+  white-space: pre;
+}
+
+/* Heading and action row span the caption and field columns. */
+.cardUpdate__heading,
+.cardUpdate__actions {
+  grid-column: 1 / -1;
+}
+
+/* Typography only: the heading renders as plain NEUTRAL screen text. */
+.cardUpdate__heading {
+  margin: 0;
+  font: inherit;
+  font-weight: normal;
+}
+
+/* One field cell: the blank marker, the entry field(s), and their separators. */
+.cardUpdate__value {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 0;
+}
+
+/* The blank-required marker occupies one fixed character cell in every field cell. */
+.cardUpdate__marker {
+  flex: 0 0 1ch;
+  color: var(--term-red);
+  font-weight: bold;
+}
+
+/* Expiry month / year separator: '/' with one blank column on either side. */
+.cardUpdate__separator {
+  padding-inline: 1ch;
+}
+
+/* Protected fields (DFHBMPRF) drop the green entry-field treatment. */
+.cardUpdate input:read-only {
+  color: var(--term-neutral);
+  border-color: var(--term-neutral-dim);
 }
 
 /* ------------------------------------------------------------------ */
@@ -307,4 +420,36 @@ h2.appHeader__center {
 .dataTable tbody tr:focus-within {
   color: var(--term-bg);
   background: var(--term-green);
+}
+
+/* ------------------------------------------------------------------ */
+/* Report request screen (app/bms/CORPT00.bms, transaction CR00)      */
+/* ------------------------------------------------------------------ */
+
+/* Screen heading on the character grid, like the header title lines. */
+.reportPage__heading {
+  margin: 0;
+  font: inherit;
+  font-weight: normal;
+}
+
+/*
+ * The End Date caption carries the mapset's two leading spaces (BMS
+ * ``INITIAL='  End Date :'``), so whitespace is preserved and both date rows
+ * start their entry fields in the same column, as POS(13,29) / POS(14,29) do.
+ */
+.reportPage__dateRow .prompt {
+  white-space: pre;
+}
+
+/* The date parts accept input only for the custom window; dimmed like the keys. */
+.reportPage__dateRow input:disabled {
+  color: var(--term-neutral-dim);
+  border-color: var(--term-neutral-dim);
+  cursor: not-allowed;
+}
+
+/* Keep the report-window selection indicator on the GREEN entry-field tone. */
+.reportPage__types input {
+  accent-color: var(--term-green);
 }

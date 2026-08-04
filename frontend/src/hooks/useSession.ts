@@ -221,6 +221,30 @@ function signOut(): Promise<void> {
 }
 
 /**
+ * :purpose: Seed the module-level store directly with a user id and role, without
+ *     a network round trip, so a test can place the SPA in an authenticated or
+ *     signed-out state. Passing ``null`` for both arguments restores the
+ *     signed-out state.
+ * :param user: the user id to publish (``CDEMO-USER-ID``), or ``null``.
+ * :param role: the role to publish (``CDEMO-USER-TYPE`` — ``'A'`` / ``'U'``), or
+ *     ``null``.
+ * :note: Test seam only; never called by application code. It notifies
+ *     ``useSyncExternalStore`` subscribers, so callers must wrap it in ``act``.
+ */
+export function __setSession(user: string | null, role: Role | null): void {
+  if (user === null || role === null) {
+    setState(EMPTY_STATE);
+    return;
+  }
+  const session: SessionContext = {
+    userId: user,
+    userType: role,
+    programContext: PGM_CONTEXT_ENTER,
+  };
+  setState({ user, role, session });
+}
+
+/**
  * :purpose: Return contract of :func:`useSession`.
  * :field user: authenticated user id, or ``null`` when signed out.
  * :field role: user role (``'A'`` / ``'U'``), or ``null`` when signed out.

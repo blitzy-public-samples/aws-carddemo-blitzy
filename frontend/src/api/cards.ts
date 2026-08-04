@@ -37,8 +37,10 @@ import type {
  *   ``COCRDLIC``). The account-scoped browse can additionally narrow to a single
  *   card number, and pages 7 rows at a time.
  * :param request: optional ``accountId`` and ``cardNum`` filters plus the
- *   zero-based ``page`` index; carried as query parameters (undefined values are
- *   omitted by axios and never sent as empty strings).
+ *   ``page`` index; carried as query parameters (undefined values are omitted by
+ *   axios and never sent as empty strings). The card filter is sent under the
+ *   ``cardNumber`` parameter name bound by the ``card-service`` card-list route,
+ *   while the client-side field keeps its ``cardNum`` DTO spelling.
  * :returns: the page of card rows as a :ts:type:`CardListResponseDto`.
  */
 export async function listCards(
@@ -47,7 +49,7 @@ export async function listCards(
   const response = await apiClient.get<CardListResponseDto>('/cards', {
     params: {
       accountId: request.accountId,
-      cardNum: request.cardNum,
+      cardNumber: request.cardNum,
       page: request.page,
     },
   });

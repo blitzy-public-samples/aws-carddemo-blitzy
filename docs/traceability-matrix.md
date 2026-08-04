@@ -254,6 +254,7 @@ The legacy inventory reconciled against the repository (AAP 0.1.3) and covered i
 | Respecting-.gitignore rule (AAP 0.7.2) | `.gitignore` (Java + Node ignore patterns) | `target → rule` |
 | Standalone build (AAP 0.5) | root `pom.xml` (aggregator / parent BOM) + per-module `pom.xml` (×10: `carddemo-common`, `auth-service`, `user-service`, `account-service`, `card-service`, `transaction-service`, `billpay-service`, `reporting-service`, `batch-service`, `api-gateway`) | `target → rule` |
 | Standalone build (React 19 / Node 24) | `frontend/package.json` | `target → rule` |
+| Frontend test harness (AAP 0.2.1 "Jest with React Testing Library") | `frontend/src/setupTests.ts` (`@testing-library/jest-dom` matchers + the `TextEncoder` / `TextDecoder` globals `jsdom` omits and `react-router` requires, so every routed screen is renderable under test) | `target → rule` |
 | Containerization + orchestration (standalone operation) | `docker-compose.yml`; `k8s/configmap.yaml`, `k8s/secret.yaml` (per-service DB-role Secrets + shared Redis + postgres bootstrap), `k8s/deployment-{api-gateway,auth-service,user-service,account-service,card-service,transaction-service,billpay-service,reporting-service,batch-service,postgres,redis,frontend}.yaml`, `k8s/service-frontend.yaml`, `k8s/service-redis.yaml`; per-service `Dockerfile`s delivered with the services | `target → rule` |
 | Container/pod hardening rule (MJ-10) | `k8s/networkpolicy.yaml` (default-deny + least-privilege ingress), `k8s/poddisruptionbudget.yaml` (per-workload PDBs), pod/container `securityContext` across all Deployments | `target → rule` |
 | Respecting-.gitignore + externalized-secrets (CR-11) | `.env.example` (required-env template consumed by `docker-compose.yml`; real `.env` git-ignored) | `target → rule` |
@@ -272,6 +273,7 @@ The legacy inventory reconciled against the repository (AAP 0.1.3) and covered i
 | Explainability rule (AAP 0.7.2 / 0.7.4) | `docs/traceability-matrix.md` (this file) | `target → rule` |
 | Standalone-operation documentation | `README-target.md` | `target → rule` |
 | Observability rule / cross-cutting infra | `carddemo-common` `config/` (observability, tracing, exception handling) + `exception/` handlers | `target → rule` |
+| Passing UI-workflow tests (AAP 0.7.1) — the 17 routed screens are only testable under jsdom once the Web encoding globals `react-router` needs at import time exist | `frontend/src/setupTests.ts` (`@testing-library/jest-dom` matchers + guarded `TextEncoder` / `TextDecoder` polyfill from `node:util`) | `target → rule` |
 
 ## 11. Delivered in This Tranche (Foundation) — Present-on-Disk Targets
 
@@ -308,6 +310,7 @@ tranche. They are listed here explicitly so the reverse direction is verifiable 
 | `observability/prometheus.yml`, `observability/grafana-dashboard.json` | Observability rule (scrape config + dashboard) | `target → rule` |
 | Frontend foundation (`package.json`, `vite.config.ts`, `tsconfig*.json`, `index.css`, `nginx.conf`, `components/Header.tsx`, `types/{common,session}.ts`) | BMS screen shell + REST field contracts + standalone build/serve | `source → target` / `target → rule` |
 | `frontend/package-lock.json` (`lockfileVersion 3`, 491 locked entries, consistent with `package.json`) | AAP §0.5.1 "lock-pinned at scaffold" + `npm ci` reproducible-build requirement (decision-log §6) | `target → rule` |
+| `frontend/src/setupTests.ts` (`@testing-library/jest-dom` matcher registration + guarded `TextEncoder` / `TextDecoder` globals from `node:util`) | AAP §0.7.1 "all 17 UI workflows behave identically" — `jsdom` omits both globals and React Router reads `TextEncoder` at module load, so every routed page test needs them defined in `setupFilesAfterEnv` (decision-log §13) | `target → rule` |
 | Frontend barrels `frontend/src/hooks/index.ts` (re-exports `useSession` / `UseSessionResult`, `usePagination` / `UsePaginationResult` with `CARD_LIST_PAGE_SIZE` 7, `TRANSACTION_LIST_PAGE_SIZE` 10, `USER_LIST_PAGE_SIZE` 10, and `useApi` / `UseApiResult`), `frontend/src/types/index.ts`, `frontend/src/api/index.ts` | AAP §0.5.3 frontend ES-module import convention — one import specifier per folder; organizational only, no runtime logic, no default export, no legacy analogue | `target → rule` |
 | `api-gateway` `config/ObservabilityEndpointsIT` + `SessionRedisRoundTripIT`; `auth-service`, `user-service`, `account-service` `config/ObservabilityEndpointsIT`; `carddemo-common` `config/ObservabilityConfigTest`, `WebObservabilityConfigTest` | Observability rule (AAP §0.7.5) "verified in the local environment" + COMMAREA session externalization `[app/cpy/COCOM01Y.cpy:L18-45]` | `target → rule` |
 
@@ -496,8 +499,59 @@ direction stays complete for these artifacts too; the rationale for every choice
 | `carddemo-common` `config/RequestLoggingFilter`, `config/GlobalExceptionHandler`, `config/CardDemoErrorController` and `api-gateway` `config/UpstreamFailureHandler` PAN masking on every log path (Q19) | `CARD-NUM PIC X(16)` protection AAP 0.6.7 + the "no sensitive values in logs" rule; `security/SensitiveDataMasker` `[app/cpy/CVACT02Y.cpy]` | `target → rule` |
 | `reporting-service` `src/test/.../client/BatchJobClientTest.java`; `batch-service` `JobLaunchParameterIT` repeatability and identifying-flag cases; `card-service` `OptimisticLockConflictIT` CVV-retention and version-token cases; the new `CardServiceTest`, `TransactionServiceTest`, `BillPaymentServiceTest`, `UserServiceTest`, `AccountServiceTest` and `AccountUpdateValidatorTest` regression cases | AAP 0.7.1 "at least 50 unit-test scenarios must pass" — each case pins one remediated legacy behavior | `target → rule` |
 
+## 18. Frontend Shared Screen Shell — Presentation Tranche Targets
+
+Targets delivered while building the shared 24x80 screen shell and its colocated suite. Each row
+names the legacy construct or rule it serves, so the reverse direction stays complete; the
+rationale for every choice is in `docs/decision-log.md` §12.
+
+| Target Implementation (delivered) | Source Construct / Mandate | Direction |
+|-----------------------------------|----------------------------|-----------|
+| `frontend/src/components/Layout.tsx` — the `.screen` frame composing `Header` (rows 1-3), `main.screen__body` (rows 4-22), `ErrorBanner` (line 23) and `PFKeyBar` (line 24) | The fixed BMS mapset frame every screen inherits: `DFHMDI SIZE=(24,80)` with the `Tran :` / `Prog :` / `Date :` / `Time :` header rows `[app/bms/COSGN00.bms:L26-L74]`; PF-key legend semantics `[app/cpy/CSSTRPFY.cpy]`; screen-attribute semantics `[app/cpy/CSSETATY.cpy]` | `source → target` |
+| `frontend/src/components/Layout.tsx` — `ScreenChrome` / `ScreenChromeContextValue` and the `useScreenChrome()` context hook | The COMMAREA fields a program moved into the shared symbolic map before `SEND MAP`, including `CDEMO-LAST-MAP` / `CDEMO-LAST-MAPSET PIC X(7)` `[app/cpy/COCOM01Y.cpy:L18-L45, L44]` | `source → target` |
+| `frontend/src/components/Layout.tsx` — `data-authenticated` on the `.screen` frame | `CDEMO-USER-TYPE` sign-on state gating screen entry, `88 CDEMO-USRTYP-ADMIN VALUE 'A'` / `88 CDEMO-USRTYP-USER VALUE 'U'` `[app/cpy/COCOM01Y.cpy:L26-L30]`; the `COSGN00C` routing that follows a successful sign-on `[app/cbl/COSGN00C.cbl:L227, L231-L237]` | `target → source (derived)` |
+| `frontend/src/hooks/useSession.ts` — `__setSession(user, role)` test seam | No legacy analogue — a test-only entry point into the provider-free session store, required to exercise the authenticated and signed-out states of the shell without a network round trip (AAP 0.7.1: the UI workflows must be verifiable) | `target → rule` |
+| `frontend/src/hooks/index.ts` — barrel over `useApi`, `usePagination`, `useSession` | No legacy analogue — the ES-module single-specifier import convention AAP 0.5.3 mandates for the frontend, matching the existing `api/` and `types/` barrels | `target → rule` |
+| `frontend/src/components/Layout.test.tsx` — three cases: the frame renders header, routed children and the `Function keys` toolbar; a page publishes tran/prog/title/error/keys through `useScreenChrome`; `data-authenticated` tracks `useSession().isAuthenticated` | AAP 0.7.1 "at least 50 unit-test scenarios must pass" and "all 17 UI workflows must behave identically" — each case pins one behavior of the shell every screen inherits. The published error literal is the optimistic-lock message `Record changed by some one else. Please review` `[app/cbl/COACTUPC.cbl:L517-L523]`, and the published `CAUP` / `COACTUPC` pair is the account-update transaction and program `[app/cbl/COACTUPC.cbl]` | `target → rule` |
+
+## 19. SPA Card-Detail Screen — Present-on-Disk Targets
+
+Targets delivered while building the card-detail screen. Each row names the legacy construct or
+rule it serves, so the reverse direction stays complete for these artifacts too; the rationale for
+every choice is in `docs/decision-log.md` §12.
+
+| Target Implementation (delivered) | Source Construct / Mandate | Direction |
+|-----------------------------------|----------------------------|-----------|
+| `frontend/src/pages/CardDetailPage.tsx` | `COCRDSL` mapset + `CCRDSLA` symbolic map + `COCRDSLC` field edits and screen setup `[app/bms/COCRDSL.bms; app/cpy-bms/COCRDSL.CPY; app/cbl/COCRDSLC.cbl]` | `source → target` |
+| `CardDetailPage` caption literals `Account Number    :` / `Card Number       :` / `Name on card      :` / `Card Active Y/N   :` / `Expiry Date       :` | The TURQUOISE `DFHMDF INITIAL` literals on lines 7, 8, 11, 13, 15 `[app/bms/COCRDSL.bms:L79-L125]` | `source → target` |
+| `CardDetailPage` chrome payload `transactionId` `CCDL` / `programName` `COCRDSLC` / PF legend `ENTER=Search Cards` + `F3=Exit` | `LIT-THISTRANID` / `LIT-THISPGM` and the `FKEYS` line-24 literal `[app/cbl/COCRDSLC.cbl:L162-L170; app/bms/COCRDSL.bms:L148-L152]` | `source → target` |
+| `CardDetailPage` `validateSearchFilters` — the four verbatim edit literals in account-then-card order | `2210-EDIT-ACCOUNT` / `2220-EDIT-CARD` and the `WS-RETURN-MSG` 88-levels `[app/cbl/COCRDSLC.cbl:L143-L149, L646-L720]` | `source → target` |
+| `CardDetailPage` `splitExpiraionDate` — positional `EXPMON` / `EXPYEAR` display | `CARD-EXPIRAION-DATE-X` redefined by `CARD-EXPIRY-YEAR` / `CARD-EXPIRY-MONTH`, moved to `EXPMONO` / `EXPYEARO` `[app/cbl/COCRDSLC.cbl:L84-L92, L477-L482]` | `source → target` |
+| `frontend/src/components/Layout.tsx` (`ScreenChrome`, `useScreenChrome`, `Layout` shell) | The 3270 screen frame: header lines 1-2, the line-23 `ERRMSG` region and the line-24 `FKEYS` legend, published per screen as `POPULATE-HEADER-INFO` / `SETUP MESSAGE` do before `SEND MAP` `[app/bms/COCRDSL.bms:L29-L152; app/cpy/CSSTRPFY.cpy; app/cpy/CSSETATY.cpy]` | `source → target` |
+| `frontend/src/hooks/index.ts` (hook barrel) | AAP §0.3.2 `hooks/` module layout and the ES-module single-specifier import convention (AAP §0.5.3) — no legacy analogue | `target → rule` |
+| `frontend/src/index.css` terminal-fidelity rules (`main` heading reset, `h1/h2.appHeader__center` reset, `main dl` row layout, caption `white-space: pre`, `.screenTitle`) | The 24×80 uniform character cell: caption at column 4 with its value at column 25, and the centered line-4 title at `POS(4,30)` `[app/bms/COCRDSL.bms:L75-L136]` | `source → target` |
+| `frontend/src/setupTests.ts` `TextEncoder` / `TextDecoder` polyfills | Testability of the routed screens under Jest/jsdom; AAP §0.2.1 frontend test deliverable — no legacy analogue | `target → rule` |
+
+## 20. Card Update Screen (`CardUpdatePage` checkpoint) — Present on Disk
+
+| Source Construct | Target Implementation | Direction |
+|------------------|-----------------------|-----------|
+| `COCRDUP` mapset body — the `CCRDUPA` caption/field grid, `ACCTSID` `X(11)` / `CARDSID` `X(16)` protected once a record is displayed, `CRDNAME` `X(50)`, `CRDSTCD` `X(01)`, `EXPMON` `X(02)` / `EXPYEAR` `X(04)` with `EXPDAY` never displayed, and the `FKEYS` / `FKEYSC` legend `[app/bms/COCRDUP.bms; app/cpy-bms/COCRDUP.CPY; app/cbl/COCRDUPC.cbl:L1085-L1196]` | `frontend/src/pages/CardUpdatePage.tsx` — `getCard` read on mount, the five padded captions bound by `label[for]`, read-only key fields, the three editable fields at their legacy widths, `updateCard` rewrite, and the `CCUP` / `COCRDUPC` chrome with `ENTER=Process` / `F3=Exit` / `F5=Save` / `F12=Cancel` published through `useScreenChrome` | `source → target` |
+| `COCRDUPC` edit literals `Card number if supplied must be a 16 digit number`, `Card Active Status must be Y or N`, `Card expiry month must be between 1 and 12`, `Invalid card expiry year` and the `IF WS-RETURN-MSG-OFF` first-error-wins guard `[app/cbl/COCRDUPC.cbl:L193-L199, L806-L945]` | `CardUpdatePage` `editMapInputs` — same edit order (key → status → month → year), only the first failing edit publishes its message, every failing field flagged `fieldError` | `source → target` |
+| `COCRDUPC` info-message state machine `FOUND-CARDS-FOR-ACCOUNT` / `PROMPT-FOR-CONFIRMATION` / `CONFIRM-UPDATE-SUCCESS` / `INFORM-FAILURE` and `DATA-WAS-CHANGED-BEFORE-UPDATE` `[app/cbl/COCRDUPC.cbl:L160-L171, L208, L1139-L1161]` | `CardUpdatePage` `infoMessage` / `errorMessage` published to the shell: `Details of selected card shown above`, `Changes validated.Press F5 to save`, `Changes committed to database`, `Changes unsuccessful. Please try again`, and `Record changed by some one else. Please review` on the HTTP 409 `ApiError` | `source → target` |
+| `CARD-EXPIRAION-DATE-X` `X(10)` redefined year / month / day, with `CCUP-OLD-EXPDAY` moved back unchanged because the map never presents the day `[app/cbl/COCRDUPC.cbl:L115-L123, L1124-L1126]` | `CardUpdatePage` `splitExpiraionDate` / `joinExpiraionDate` — month and year edited, the day carried over from the record read, reassembled as the `cardExpiraionDate` `YYYY-MM-DD` wire value (legacy misspelling preserved) | `source → target` |
+| `CSSETATY` re-entry attribute logic — `FLG-<field>-BLANK` marks a blank required field with `'*'` written into the map field `[app/cpy/CSSETATY.cpy; app/cbl/COCRDUPC.cbl:L623-L636]` | `CardUpdatePage` `.cardUpdate__marker` — a reserved one-character gutter per field cell filled from `fieldMarker`, so the `*` appears without overwriting the operator's value and without moving the field column (decision log Section 13) | `target → source (derived)` |
+| CICS `SEND MAP` atomicity — the body, the line-23 `ERRMSG` and the line-24 legend reach the terminal in one transmission `[app/bms/COCRDUP.bms; app/cbl/COCRDUPC.cbl:L1085-L1161]` | `CardUpdatePage` chrome publication from `useLayoutEffect` (flushed synchronously at commit), so the shell's message and PF keys never trail the body they belong to (decision log Section 13) | `target → source (derived)` |
+| Jest/jsdom test-runtime gap (no WHATWG encoding API for react-router) — rule-mandated test infrastructure, no legacy analogue | `frontend/src/setupTests.ts` — guarded `TextEncoder` / `TextDecoder` installation enabling every routed page suite to run | `target → rule` |
+
 ## Coverage Assertion
 
-Sections 12 through 17 additionally record the targets added or corrected during successive
+Sections 12 through 18 additionally record the targets added or corrected during successive
+QA-remediation and delivery passes; their rows refine behaviors within constructs already
+enumerated above rather than adding new sources, so the forward enumeration remains one row per
+legacy construct.
+
+QA-remediation and screen-delivery passes; their rows refine behaviors within constructs already enumerated above
+
 QA-remediation passes; their rows refine behaviors within constructs already enumerated above
 rather than adding new sources, so the forward enumeration remains one row per legacy construct.
