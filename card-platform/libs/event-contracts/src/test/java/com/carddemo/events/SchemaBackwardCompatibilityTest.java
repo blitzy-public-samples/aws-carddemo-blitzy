@@ -453,7 +453,7 @@ class SchemaBackwardCompatibilityTest {
      *
      * <p>{@code CARD-CVV-CD PIC 9(03)} sits at {@code app/cpy/CVACT02Y.cpy:L7} and
      * {@code CARD-NUM PIC X(16)} at {@code app/cpy/CVACT02Y.cpy:L5}.
-     * {@code SEC-USR-PWD PIC X(08)} sits at {@code app/cpy/CSUSR01Y.cpy:L20} and
+     * {@code SEC-USR-PWD PIC X(08)} sits at {@code app/cpy/CSUSR01Y.cpy:L21} and
      * {@code CUST-SSN PIC 9(09)} at {@code app/cpy/CVCUS01Y.cpy:L17}.
      */
     private static final List<String> FORBIDDEN_PROPERTY_NAMES = List.of(
@@ -469,6 +469,29 @@ class SchemaBackwardCompatibilityTest {
             "maskedCardNumber", "activeStatus", "accountId", "aggregateId", "transactionId",
             "merchantName", "embossedName", "expirationDate", "settlementReference",
             "shippingAddress");
+
+    /**
+     * The property name every probe uses when it needs a name no document declares.
+     *
+     * <p>Three probes need one. An instance carrying this property at the top level must fail its
+     * document. A document that adds this property as optional must stay compatible with the one
+     * that does not. A document that adds it as required must not. No document may ever declare it,
+     * which keeps all three probes honest: a contributor who adds a field of their own therefore
+     * turns none of them red.</p>
+     */
+    private static final String NEVER_DECLARED_PROBE_PROPERTY = "probeOnlyNeverDeclaredProperty";
+
+    /**
+     * Sensitive names spelled with underscores, each one a member name the bounded
+     * {@code extensions} object of every document admits.
+     *
+     * <p>The member-name pattern is {@code ^[a-zA-Z][a-zA-Z0-9_]{0,39}$}, which permits an
+     * underscore and refuses a hyphen. Every entry below therefore satisfies the document and
+     * reaches the publish-side guard, which is the gate that refuses it.</p>
+     */
+    private static final List<String> SEPARATOR_SPELLED_SENSITIVE_MEMBERS = List.of(
+            "card_number", "CARD_NUMBER", "card_verification_value", "social_security_number",
+            "primary_account_number", "p_a_n", "pin_block", "user_password", "c_v_v", "s_s_n");
 
     /** Reads and writes JSON trees. Jackson 3 only; no Jackson 2 type appears in this class. */
     private static final ObjectMapper MAPPER = new ObjectMapper();
@@ -1050,8 +1073,26 @@ class SchemaBackwardCompatibilityTest {
         }
     }
 
+    /**
+     * Asserts {@code triggeredRules} declares no {@code maxItems} bound, and pins the three rule
+     * identifiers its items enumerate.
+     *
+     * <p>The two assertions cover different things. The absent {@code maxItems} keyword leaves the
+     * array length unbounded, so a flagged event naming a fourth rule fits the document a consumer
+     * on version one already reads. The final assertion pins the value set, so a new identifier
+     * reaches a reader of this class before it reaches a topic.</p>
+     *
+     * <p>Adding a fourth identifier takes two edits: the value joins
+     * {@code properties.triggeredRules.items.enum} in {@code schemas/fraud-flagged-v1.json}, and it
+     * joins {@link #TRIGGERED_RULE_VALUES} here. The compatibility evaluator reads a widened
+     * enumeration as compatible, which the closing block of
+     * {@code retypingOrNarrowingAnExistingPropertyIsBreaking} asserts on the decline codes.</p>
+     *
+     * <p>The three identifiers have no COBOL ancestor. The source performs no risk scoring, so the
+     * rule names come from the fraud service this platform adds.</p>
+     */
     @Test
-    void triggeredRulesStaysUnboundedSoAFourthRuleValueIsNotBreaking() {
+    void triggeredRulesHasNoMaxItemsAndPinsItsThreeRuleIdentifiers() {
         JsonNode triggeredRules = propertiesOf(FLAGGED).get("triggeredRules");
 
         assertEquals("array", typeOf(triggeredRules),
@@ -1067,8 +1108,9 @@ class SchemaBackwardCompatibilityTest {
 
         List<String> declared = stringsOf(triggeredRules.get("items").get("enum"));
         assertEquals(TRIGGERED_RULE_VALUES, declared,
-                FLAGGED + " changed the triggeredRules identifiers, and now enumerates "
-                        + declared);
+                FLAGGED + " changed the triggeredRules identifiers, and now enumerates " + declared
+                        + ". Add a fourth identifier to TRIGGERED_RULE_VALUES in this class to "
+                        + "record the change here as well");
     }
 
     /**
@@ -1247,10 +1289,11 @@ class SchemaBackwardCompatibilityTest {
                             + "consumer on version one");
 
             ObjectNode smuggled = validPayloadFor(document);
-            smuggled.put("settlementReference", "0000000000000001");
+            smuggled.put(NEVER_DECLARED_PROBE_PROPERTY, "0000000000000001");
             assertInvalid(document, smuggled,
-                    document + " accepted an undeclared top-level property, so a producer could "
-                            + "carry a field no schema describes inside a known event type");
+                    document + " accepted the undeclared top-level property "
+                            + NEVER_DECLARED_PROBE_PROPERTY + ", so a producer could carry a field "
+                            + "no schema describes inside a known event type");
 
             ObjectNode oversized = validPayloadFor(document);
             ObjectNode wide = MAPPER.createObjectNode();
@@ -1465,6 +1508,69 @@ class SchemaBackwardCompatibilityTest {
     }
 
     /**
+     * Asserts the guard reads a sensitive name the same way whatever separators its spelling uses,
+     * and reads a legitimate name the same way too.
+     *
+     * <p>The {@code extensions} object of every document admits a member name matching
+     * {@code ^[a-zA-Z][a-zA-Z0-9_]{0,39}$}, so {@code card_number} and {@code CARD_NUMBER} satisfy
+     * the document as readily as {@code cardNumber}. The last loop puts an underscore spelling
+     * inside {@code extensions}, asserts the document accepts the member, and asserts the guard
+     * refuses it. That pairing pins which of the two gates closes this door.</p>
+     *
+     * <p>{@code CARD-NUM PIC X(16)} at {@code app/cpy/CVACT02Y.cpy:L5} and
+     * {@code CARD-CVV-CD PIC 9(03)} at {@code app/cpy/CVACT02Y.cpy:L7} are the two values a member
+     * of this shape would carry.</p>
+     */
+    @Test
+    void thePublishSideGuardReadsANameTheSameWayInEverySpelling() {
+        for (String forbidden : FORBIDDEN_PROPERTY_NAMES) {
+            for (String spelling : separatorSpellingsOf(forbidden)) {
+                assertTrue(SensitiveEventProperties.isForbidden(spelling),
+                        "the guard refuses the property name " + forbidden + " and admits the "
+                                + "spelling " + spelling + ", so the same value travels under a "
+                                + "different name");
+            }
+        }
+
+        for (String allowed : ALLOWED_PROPERTY_NAMES) {
+            for (String spelling : separatorSpellingsOf(allowed)) {
+                assertFalse(SensitiveEventProperties.isForbidden(spelling),
+                        "the guard began refusing the spelling " + spelling + " of the property "
+                                + "name " + allowed + ", which a document declares or a later "
+                                + "version may add");
+            }
+        }
+
+        for (String document : DOCUMENTS) {
+            for (String member : SEPARATOR_SPELLED_SENSITIVE_MEMBERS) {
+                ObjectNode carrying = validPayloadFor(document);
+                carrying.set(EXTENSIONS_PROPERTY,
+                        MAPPER.createObjectNode().put(member, "4859452612877065"));
+
+                assertValid(document, carrying,
+                        document + " stopped admitting the extensions member name " + member
+                                + ", so this assertion no longer reaches the guard");
+                assertEquals(member,
+                        SensitiveEventProperties.firstForbiddenProperty(carrying),
+                        document + " carried the extensions member " + member + " past the "
+                                + "publish-side guard, and the document admits that member name, "
+                                + "so nothing stopped the value");
+            }
+
+            ObjectNode legitimate = validPayloadFor(document);
+            legitimate.set(EXTENSIONS_PROPERTY,
+                    MAPPER.createObjectNode().put("settlement_reference", "0000000000000001"));
+
+            assertValid(document, legitimate,
+                    document + " rejected an extensions member spelled with an underscore, which "
+                            + "its member-name pattern admits");
+            assertNull(SensitiveEventProperties.firstForbiddenProperty(legitimate),
+                    document + " refused the extensions member settlement_reference, so the guard "
+                            + "now blocks a name a later version may add");
+        }
+    }
+
+    /**
      * Asserts the guard reaches a forbidden property nested inside an object and inside an array.
      *
      * <p>A guard reading the top level only would miss a secret one level down.</p>
@@ -1603,7 +1709,7 @@ class SchemaBackwardCompatibilityTest {
                     document + " reported an incompatibility against an identical copy of itself");
 
             ObjectNode extended = mutableCopy(document);
-            ((ObjectNode) extended.get("properties")).putObject("settlementReference")
+            ((ObjectNode) extended.get("properties")).putObject(NEVER_DECLARED_PROBE_PROPERTY)
                     .put("type", "string");
             assertEquals(List.of(), incompatibilities(baseline, extended),
                     document + " reported an added property as breaking, so the next field added "
@@ -1639,9 +1745,9 @@ class SchemaBackwardCompatibilityTest {
             }
 
             ObjectNode widened = mutableCopy(document);
-            ((ObjectNode) widened.get("properties")).putObject("settlementReference")
+            ((ObjectNode) widened.get("properties")).putObject(NEVER_DECLARED_PROBE_PROPERTY)
                     .put("type", "string");
-            ((ArrayNode) widened.get("required")).add("settlementReference");
+            ((ArrayNode) widened.get("required")).add(NEVER_DECLARED_PROBE_PROPERTY);
             assertFalse(incompatibilities(baseline, widened).isEmpty(),
                     document + " reported a new required property as compatible, and a producer on "
                             + "version one writes no such field");
@@ -1727,9 +1833,9 @@ class SchemaBackwardCompatibilityTest {
                             + "from travelling undeclared");
 
             ObjectNode required = mutableCopy(document);
-            ((ObjectNode) required.get("properties")).putObject("settlementReference")
+            ((ObjectNode) required.get("properties")).putObject(NEVER_DECLARED_PROBE_PROPERTY)
                     .put("type", "string");
-            ((ArrayNode) required.get("required")).add("settlementReference");
+            ((ArrayNode) required.get("required")).add(NEVER_DECLARED_PROBE_PROPERTY);
             assertFalse(incompatibilities(baseline, required).isEmpty(),
                     document + " reported a newly required property as compatible");
 
@@ -2065,6 +2171,37 @@ class SchemaBackwardCompatibilityTest {
             values.add(entry.asString());
         }
         return values;
+    }
+
+    /**
+     * The separator spellings of one camel-case property name.
+     *
+     * <p>Each spelling names the same value a producer could write. The list holds the camel-case
+     * name itself, the underscore spelling, the upper-case underscore spelling, and the hyphen
+     * spelling. A name of three letters or fewer gains a character-separated spelling, which is how
+     * {@code pan} reaches {@code p_a_n}.</p>
+     *
+     * @param camelCaseName the property name as a document or a record spells it
+     * @return the spellings the guard must read alike, the given name first
+     */
+    private static List<String> separatorSpellingsOf(String camelCaseName) {
+        StringBuilder underscored = new StringBuilder();
+        for (int index = 0; index < camelCaseName.length(); index++) {
+            char letter = camelCaseName.charAt(index);
+            if (Character.isUpperCase(letter) && index > 0) {
+                underscored.append('_');
+            }
+            underscored.append(Character.toLowerCase(letter));
+        }
+
+        String snake = underscored.toString();
+        List<String> spellings = new ArrayList<>(List.of(camelCaseName, snake,
+                snake.toUpperCase(Locale.ROOT), snake.replace('_', '-')));
+
+        if (camelCaseName.length() <= 3) {
+            spellings.add(String.join("_", camelCaseName.split("")));
+        }
+        return spellings;
     }
 
     /**
